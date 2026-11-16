@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { apiErrorReason } from '@/api/errors';
 import { deleteWorkspaceFiles } from '../../utils/api';
+import type { ComputerAway } from './useComputerAway';
 
 /** Multi-select mode + two-step delete for FilePanel (authenticated mode only —
  * delete has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted }: {
+export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted, away }: {
   workspaceId: string;
   filteredSortedFiles: string[];
   targetDirectory?: string | null;
   onRefreshFiles?: () => void;
   /** The paths the server confirmed gone, so open state on them can follow. */
   onDeleted?: (paths: string[]) => void;
+  /** The workspace's computer, while it may be away. */
+  away: ComputerAway;
 }) {
+  const describeAway = away.describe;
   const { t } = useTranslation();
   // Selection / delete state
   const [selectMode, setSelectMode] = useState(false);
@@ -98,14 +103,13 @@ export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirec
         }
       })
       .catch((err: unknown) => {
-        const e = err as { response?: { data?: { detail?: string } }; message?: string };
-        setDeleteError(e?.response?.data?.detail || e?.message || t('filePanel.deleteFailed'));
+        setDeleteError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.deleteFailed'));
       })
       .finally(() => {
         setDeleteLoading(false);
         onRefreshFiles?.();
       });
-  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, t]);
+  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, describeAway, t]);
 
   useEffect(() => {
     if (!deleteConfirm) return;

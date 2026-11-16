@@ -200,7 +200,8 @@ async def record_handoff(
 
     A thread archived while the call still waited had no row for the
     archive's stop to mark, so the row is written marked by it, and the
-    watcher ends the job at once."""
+    watcher ends the job at once. A command launched on the computer is a
+    read of it, so its other commands are no longer away (``away_since``)."""
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -237,6 +238,12 @@ async def record_handoff(
                 ),
             )
             row = await cur.fetchone()
+            if row is not None:
+                await cur.execute(
+                    "UPDATE command_runs SET away_since = NULL"
+                    " WHERE computer_id = %s AND away_since IS NOT NULL",
+                    (computer_id,),
+                )
             if row is None:
                 # A retried write finds its own row. Another thread's under
                 # the same id is a collision, never this command's row.
@@ -292,23 +299,56 @@ async def schedule_next_check(
     """Move each claimed row's next check to ``in_s`` from now, where it
     still holds the lease its claim set (``leases``: id and that
     ``next_check_at``). A row a stop marked since keeps the stop's grace, and
-    one that ended has no check."""
+    one that ended has no check. Its computer was read, so none of that
+    computer's commands is away any more (``away_since``)."""
+    await _schedule(leases, in_s, away=False)
+
+
+async def schedule_away_check(
+    leases: Sequence[Tuple[str, datetime]], in_s: float
+) -> None:
+    """``schedule_next_check`` for rows whose computer's machine is away:
+    ``away_since`` keeps when it was first found so, which the watcher reads
+    to give up on a machine that never comes back."""
+    await _schedule(leases, in_s, away=True)
+
+
+async def _schedule(
+    leases: Sequence[Tuple[str, datetime]], in_s: float, *, away: bool
+) -> None:
     if not leases:
         return
     async with pool.get_db_connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 UPDATE command_runs c
                 SET next_check_at = clock_timestamp() + make_interval(secs => %s),
+                    away_since = CASE WHEN %s THEN COALESCE(c.away_since, NOW()) END,
                     updated_at = NOW()
                 FROM unnest(%s::text[], %s::timestamptz[]) AS t(command_id, lease)
                 WHERE c.command_id = t.command_id
                   AND c.status = 'running'
                   AND c.next_check_at = t.lease
+                RETURNING c.computer_id
                 """,
-                (float(in_s), [c for c, _ in leases], [lease for _, lease in leases]),
+                (float(in_s), away, [c for c, _ in leases], [lease for _, lease in leases]),
             )
+            held = {row["computer_id"] for row in await cur.fetchall()}
+            if not away and held:
+                # The read answered for the whole machine: a command on it
+                # not due this pass would otherwise keep an old stamp and give
+                # the machine's next absence up as already past its limit.
+                # Only a read whose lease held speaks for now: one taken over
+                # meanwhile may be older than the away its taker found.
+                await cur.execute(
+                    """
+                    UPDATE command_runs SET away_since = NULL
+                    WHERE away_since IS NOT NULL AND status = 'running'
+                      AND computer_id = ANY(%s)
+                    """,
+                    (list(held),),
+                )
 
 
 async def finalize(
@@ -705,6 +745,27 @@ async def statuses_on(computer_id: str, command_ids: Sequence[str]) -> Dict[str,
                 (computer_id, list(command_ids)),
             )
             return {str(r["command_id"]): str(r["status"]) for r in await cur.fetchall()}
+
+
+async def computer_has_running_command(computer_id: str) -> bool:
+    """Whether a command handed off on this computer is still running there,
+    whichever worker follows it."""
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return False
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM command_runs
+                    WHERE computer_id = %s AND status = 'running'
+                )
+                """,
+                (computer_id,),
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0])
 
 
 async def list_for_thread(

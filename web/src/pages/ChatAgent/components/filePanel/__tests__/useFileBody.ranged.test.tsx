@@ -17,7 +17,7 @@ function ranged(etag: string, length = 6_000_000): RangedFile {
 }
 
 function setup(versions: RangedFile[]) {
-  const openRanged = vi.fn(async () => versions.shift()!);
+  const openRanged = vi.fn(async () => ({ ranged: versions.shift()!, from: { kind: 'live' } }));
   const readers = { openRanged } as unknown as BodyReaders;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (

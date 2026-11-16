@@ -5,6 +5,8 @@ import { toast } from '@/components/ui/use-toast';
 import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
 import { holdReload } from '@/lib/reloadHolds';
 import { DownloadProgress, DownloadStarted } from '../components/filePanel/DownloadProgress';
+import type { ReadFrom } from './api/readFrom';
+import { backupCode, SERVICE_CODE } from './computerAway';
 
 // Below this a save feels instant and a notice would only flash.
 const NOTICE_AFTER_MS = 400;
@@ -16,6 +18,8 @@ const SLOW_AFTER_MS = 8000;
 const STARTED_HOLD_MS = 3000;
 // Long enough to read the confirmation, short enough not to pile up.
 const STARTED_NOTICE_MS = 4000;
+// A download from the backup says why, which takes longer to read.
+const AWAY_NOTICE_MS = 8000;
 
 const inFlight = new Map<string, Promise<boolean>>();
 const started = new Map<string, ReturnType<typeof setTimeout>>();
@@ -132,7 +136,7 @@ export type DownloadProgressReport = (fraction: number) => void;
 export function withDownloadNotice(
   key: string,
   fileName: string,
-  save: (report: DownloadProgressReport, current: () => boolean) => Promise<void>,
+  save: (report: DownloadProgressReport, current: () => boolean) => Promise<ReadFrom | void>,
 ): Promise<void> {
   return trackPending(key, async () => {
     const current = authSessionCheck();
@@ -166,8 +170,9 @@ export function withDownloadNotice(
       fraction = clamped;
       notice.current?.update({ description: render() });
     };
+    let from: ReadFrom | void;
     try {
-      await save(report, current);
+      from = await save(report, current);
     } catch (err) {
       notice.current?.dismiss();
       throw err;
@@ -180,10 +185,17 @@ export function withDownloadNotice(
       notice.current?.dismiss();
       return false;
     }
-    const done = <DownloadStarted text={i18n.t('filePanel.downloadStartedNotice', { name: fileName })} />;
+    // From the backup while the computer is away: it may be older than the
+    // file on the machine, which the browser's own cue would never say.
+    const away = from ? backupCode(from) : null;
+    const text = away
+      ? i18n.t(away === SERVICE_CODE ? 'filePanel.away.downloadedBackupService' : 'filePanel.away.downloadedBackup', { name: fileName })
+      : i18n.t('filePanel.downloadStartedNotice', { name: fileName });
+    const lasts = away ? AWAY_NOTICE_MS : STARTED_NOTICE_MS;
+    const done = <DownloadStarted text={text} />;
     const shown = notice.current;
     if (shown) shown.update({ description: done });
-    const confirmation = shown ?? toast({ description: done, duration: STARTED_NOTICE_MS });
+    const confirmation = shown ?? toast({ description: done, duration: lasts });
     // Registered until it expires: it names the file, so a sign-out in the
     // meantime has to take it down with the rest.
     const expire = () => {
@@ -191,7 +203,7 @@ export function withDownloadNotice(
       confirmation.dismiss();
       notices.delete(expire);
     };
-    const expiry = setTimeout(expire, STARTED_NOTICE_MS);
+    const expiry = setTimeout(expire, lasts);
     notices.add(expire);
     return true;
   }).then(() => undefined);

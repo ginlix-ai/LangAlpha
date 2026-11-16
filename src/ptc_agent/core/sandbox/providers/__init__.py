@@ -62,6 +62,16 @@ def provider_runs_remote(kind: str | None) -> bool:
         return False
 
 
+def is_own_machine(kind: str) -> bool:
+    """Whether a computer of ``kind`` is a machine of the user's own, which the
+    deployment neither builds again nor can always reach (asleep, offline).
+
+    Raises:
+        ValueError: If ``kind`` names no known provider.
+    """
+    return not provider_class(kind).recreatable
+
+
 def may_be_primary(kind: str) -> bool:
     """Whether a computer of ``kind`` may be the user's primary. Home lives on
     the primary, which is never removed, so only a machine the deployment can
@@ -71,7 +81,7 @@ def may_be_primary(kind: str) -> bool:
     Raises:
         ValueError: If ``kind`` names no known provider.
     """
-    return provider_class(kind).recreatable
+    return not is_own_machine(kind)
 
 
 def build_provider(

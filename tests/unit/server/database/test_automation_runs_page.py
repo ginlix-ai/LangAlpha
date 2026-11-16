@@ -31,3 +31,18 @@ async def test_a_page_reads_one_row_past_itself(db, fetched, has_more):
     sql, params = db.execute.await_args.args
     assert "COUNT" not in sql.upper()
     assert params[-2:] == (3, 4)
+
+
+@pytest.mark.asyncio
+async def test_a_wait_reason_narrows_before_the_page_is_cut(db):
+    """Runs waiting for a computer must not push a thread's waiting runs off
+    the page, so the reason is a condition of the query, not a filter after."""
+    db.fetchall.return_value = []
+
+    await exec_db.list_executions(
+        "user-1", thread_id="t-1", status="waiting", wait_reason="thread_busy", limit=10
+    )
+
+    sql, params = db.execute.await_args.args
+    assert "COALESCE(e.wait_reason, CASE WHEN e.status = 'waiting' THEN 'thread_busy' END) = %s" in sql
+    assert "thread_busy" in params

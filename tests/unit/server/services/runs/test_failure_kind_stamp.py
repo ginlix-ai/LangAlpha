@@ -71,6 +71,29 @@ async def test_a_provider_failure_is_stamped_as_the_providers():
 
 
 @pytest.mark.asyncio
+async def test_a_machine_gone_mid_run_is_stamped_with_which_one():
+    """The live card names the machine to wake, which for a Chief of Staff is
+    not always its page's computer, so a reload has to name it too."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    exc = SSHConnectError(
+        "not_connected", "The machine is not connected.", computer_id="c-mini"
+    )
+    computer = {"computer_id": "c-mini", "name": "Studio Mac"}
+    with patch(
+        "src.server.database.computer.get_computer", AsyncMock(return_value=computer)
+    ):
+        metadata = await _failed_metadata(exc)
+
+    assert {k: metadata.get(k) for k in ("error_kind", "error_code", "computer_id", "computer_name")} == {
+        "error_kind": "computer_unreachable",
+        "error_code": "not_connected",
+        "computer_id": "c-mini",
+        "computer_name": "Studio Mac",
+    }
+
+
+@pytest.mark.asyncio
 async def test_the_turn_time_limit_is_not_stamped():
     metadata = await _failed_metadata(TurnTimeLimitError("Workflow exceeded timeout of 60 seconds"))
     assert "error_kind" not in metadata
@@ -202,6 +225,94 @@ def test_a_reload_keeps_the_time_limits_live_words():
     assert "error_kind" not in item["data"]
 
 
+def _machine_went_to_sleep() -> Exception:
+    """What a turn nobody watches raises when its Mac stops answering mid-turn."""
+    from ptc_agent.agent.middleware.tool.unreachable_stop import ComputerUnreachableError
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise SSHConnectError("not_connected", "Work Mac is not connected.")
+    except SSHConnectError as e:
+        try:
+            raise ComputerUnreachableError(e) from e
+        except ComputerUnreachableError as stopped:
+            return stopped
+
+
+@pytest.mark.asyncio
+async def test_a_machine_gone_mid_turn_reads_live_and_on_reload_as_at_the_start():
+    """Stamped with the kind and code a turn whose machine was gone at its
+    start gets, and the frame carries them too, so the card the user sees
+    names the machine either way."""
+    exc = _machine_went_to_sleep()
+    unreachable = {"error_kind": "computer_unreachable", "error_code": "not_connected"}
+
+    metadata = await _failed_metadata(exc)
+    assert {k: metadata[k] for k in unreachable} == unreachable
+
+    frame = await _kept_frame(exc)
+    assert {k: frame[k] for k in unreachable} == unreachable
+    assert "hints" not in frame
+
+    row = _failed_row([str(exc)], metadata, frame)
+    (item,) = replay_items.terminal_items(_KEY[0], row, [])
+    assert {k: item["data"][k] for k in unreachable} == unreachable
+    assert item["data"]["error"] == "Work Mac is not connected."
+
+
+@pytest.mark.asyncio
+async def test_a_machine_gone_mid_turn_names_which_computer_live_and_on_reload():
+    """A Chief of Staff works on computers its page does not show, so the
+    card names the computer the failure recorded, not the workspace's."""
+    from unittest.mock import AsyncMock, patch
+
+    from ptc_agent.agent.middleware.tool.unreachable_stop import ComputerUnreachableError
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise SSHConnectError("not_connected", "mini is not connected.")
+    except SSHConnectError as e:
+        try:
+            raise ComputerUnreachableError(e, computer_id="c-mini") from e
+        except ComputerUnreachableError as stopped:
+            exc = stopped
+    named = {"computer_id": "c-mini", "computer_name": "mini"}
+
+    with patch(
+        "src.server.database.computer.get_computer",
+        new=AsyncMock(return_value={"computer_id": "c-mini", "name": "mini"}),
+    ):
+        frame = await _kept_frame(exc)
+        row = _failed_row([str(exc)], await _failed_metadata(exc), frame)
+    assert {k: frame[k] for k in named} == named
+
+    (item,) = replay_items.terminal_items(_KEY[0], row, [])
+    assert {k: item["data"][k] for k in named} == named
+
+
+def test_a_row_alone_replays_which_computer_did_not_answer():
+    data = _replayed_error(
+        ["mini is not connected."],
+        {
+            "error_kind": "computer_unreachable",
+            "error_code": "not_connected",
+            "computer_id": "c-mini",
+            "computer_name": "mini",
+        },
+    )
+    assert (data["computer_id"], data["computer_name"]) == ("c-mini", "mini")
+
+
+def test_a_row_alone_replays_an_unreachable_machine_with_its_code():
+    data = _replayed_error(
+        ["Work Mac is not connected."],
+        {"error_kind": "computer_unreachable", "error_code": "not_connected"},
+    )
+    assert data["error_kind"] == "computer_unreachable"
+    assert data["error_code"] == "not_connected"
+    assert data["error"] == "Work Mac is not connected."
+
+
 def test_a_kept_frame_of_our_own_fault_drops_its_diagnostic():
     frame = {"error": _QUOTA, "error_kind": "internal"}
     row = _failed_row([_QUOTA], {"error_kind": "internal"}, frame)
@@ -262,6 +373,19 @@ _WORKER_LOST = "worker_lost: no live executor holds this run's writer fence"
             None,
             id="its_own_time_limit",
         ),
+        pytest.param(
+            ProducerRecord(
+                error_frame={
+                    "error": "Work Mac is not connected.",
+                    "error_kind": "computer_unreachable",
+                    "error_code": "not_connected",
+                    "computer_id": "c-mac",
+                    "computer_name": "Work Mac",
+                }
+            ),
+            "computer_unreachable",
+            id="its_own_machine_asleep",
+        ),
     ],
 )
 async def test_a_recovered_failure_is_ours_unless_the_run_framed_its_own(record, kind):
@@ -287,6 +411,9 @@ async def test_a_recovered_failure_is_ours_unless_the_run_framed_its_own(record,
 
     (metadata,) = written
     assert metadata.get("error_kind") == kind
+    if kind == "computer_unreachable":
+        assert metadata["error_code"] == "not_connected"
+        assert (metadata["computer_id"], metadata["computer_name"]) == ("c-mac", "Work Mac")
     if kind == "internal":
         assert _replayed_error([_WORKER_LOST], metadata)["error"] == ""
 
@@ -319,3 +446,24 @@ async def test_a_dead_dispatch_reads_as_our_fault_live_and_on_a_reload():
     assert written[0]["error_kind"] == "internal"
     frame = executor.append_run_end_event.await_args.kwargs["error_frame"]
     assert frame["error_kind"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_tunnel_gateway_ended_settles_its_firing_as_our_outage():
+    """The gateway going down mid-turn stamped the run with the generic kind,
+    so the automation that ran it took a strike for the service's outage, as
+    the same outage before the turn already did not."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+    from src.server.services.automation_settlement import Outcome, ledger_outcome
+
+    try:
+        raise RuntimeError("acquire failed") from SSHConnectError(
+            "gateway_unreachable", "The tunnel is not answering."
+        )
+    except RuntimeError as e:
+        exc = e
+
+    metadata = await _failed_metadata(exc)
+
+    assert metadata.get("error_kind") != "computer_unreachable"
+    assert ledger_outcome({"status": "error", "metadata": metadata}) is Outcome.FAILED_OURS

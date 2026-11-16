@@ -740,9 +740,35 @@ async def test_run_feed_is_not_captured_by_the_automation_route(client):
     assert resp.json()["executions"][0]["automation_name"] == "Daily Briefing"
     assert resp.json()["has_more"] is False
     mock_list.assert_awaited_once_with(
-        "test-user-123", thread_id=None, status=None, limit=20, offset=0
+        "test-user-123", thread_id=None, status=None, wait_reason=None, limit=20, offset=0
     )
     mock_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_feed_narrows_by_wait_reason_before_paging(client):
+    with patch(
+        f"{EXEC_DB}.list_executions",
+        new_callable=AsyncMock,
+        return_value=([], False),
+    ) as mock_list:
+        resp = await client.get(
+            "/api/v1/automations/executions?status=waiting&wait_reason=thread_busy&limit=10"
+        )
+
+    assert resp.status_code == 200
+    mock_list.assert_awaited_once_with(
+        "test-user-123", thread_id=None, status="waiting", wait_reason="thread_busy", limit=10, offset=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_feed_refuses_an_unknown_wait_reason(client):
+    with patch(f"{EXEC_DB}.list_executions", new_callable=AsyncMock) as mock_list:
+        resp = await client.get("/api/v1/automations/executions?wait_reason=bored")
+
+    assert resp.status_code == 422
+    mock_list.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

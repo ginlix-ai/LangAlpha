@@ -18,11 +18,18 @@ settles each row by ``settle.decide`` and ``settle.settle``:
 - A stop under way is left to its stopper for ``STOP_GRACE_S`` and then
   finished here, with the stops the hour makes, in one exec a computer
   (``control.stop_marked``).
+- A computer on a machine of the user's own is read from the machine, stopped
+  or not, since a stop the machine did not answer (asleep, offline) ended
+  nothing there: a job still running is watched, one that ended reports at
+  the thread's next turn, and only a machine that says the computer stopped,
+  or rebooted, ends them as lost. While its tunnel is down nothing is dialed
+  or settled: its commands are looked at again every ``AWAY_RECHECK_S``.
 
 While a command is covered (``settle``'s module says what covers it), its
 computer is kept up past the idle sweep. Once not, on a computer the sweep
 would stop, it is stopped here and fails ``after_turn_limit``. An always-on
-computer has no hour.
+computer has no hour, nor a machine of the user's own, which the sweep never
+stops.
 
 Nothing is kept between passes. Every step either commits on the row or
 leaves it running for the next claim, so a worker that dies mid-pass only
@@ -36,13 +43,16 @@ import asyncio
 import logging
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ptc_agent.core.sandbox import jobs
 
 from src.server.database.runs import command_runs as cr_db
+from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 from src.server.services.commands.control import (
+    ComputerAway,
     computer_jobs_runtime,
     computer_reach,
     still_up,
@@ -71,6 +81,20 @@ _LOG = "[CommandWatcher]"
 
 #: How often a running command's computer is read.
 CHECK_INTERVAL_S = 15.0
+#: How often the commands of a machine whose tunnel is down are looked at
+#: again: one read of the tunnel's record, so a machine back from sleep has
+#: them judged within a minute without anything dialing it meanwhile.
+AWAY_RECHECK_S = 60.0
+#: How often the commands of a machine dialed directly that did not answer
+#: are looked at again: each look is a dial, so it is spaced further apart.
+DIAL_RECHECK_S = 300.0
+#: How long a machine may stay away before its commands settle as lost, so
+#: one that never comes back stops being looked at.
+AWAY_LIMIT = timedelta(days=AWAY_GIVE_UP_DAYS)
+#: As ``AWAY_LIMIT``, for a stopped computer on a machine dialed directly: its
+#: owner stopped it, and only a stop the machine missed could have left a job
+#: there, which a day of unanswered dials gives up on.
+STOPPED_DIAL_LIMIT = timedelta(days=1)
 # How long a claim's computers have, counted from the claim: a computer still
 # waiting for a slot or still answering when it runs out is left to its
 # lease, so a dark machine holds up nobody else's commands, and a claim with
@@ -115,6 +139,42 @@ async def _stuck_between(computer: Mapping[str, Any], now: datetime) -> bool:
 
     # None (Redis did not answer) counts as no stopper: the row is old enough.
     return await computer_stop_heartbeat_present(str(computer["computer_id"])) is not True
+
+
+@dataclass(frozen=True)
+class _StillAway:
+    """A look's result when the computer's machine did not answer and has not
+    been away for long enough to give its commands up: they are looked at
+    again in ``recheck_s``, quietly, since that is how a machine of the
+    user's own spends much of its time."""
+
+    recheck_s: float
+
+
+def _machine_away(e: BaseException) -> bool:
+    """A failure that is the machine's silence: its tunnel down
+    (``ComputerAway``), or a direct dial it did not answer. The tunnel
+    gateway down is ours and fails the look as any other error does."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
+
+    return isinstance(e, ComputerAway) or unreachable_code(e) is not None
+
+
+def _away_too_long(
+    rows: Sequence[Mapping[str, Any]],
+    computer: Mapping[str, Any],
+    now: datetime,
+    *,
+    dialed: bool,
+) -> bool:
+    """Whether the machine has been away past its limit, by the earliest
+    ``away_since`` among the rows (none yet: away since this look)."""
+    since = [r["away_since"] for r in rows if r.get("away_since") is not None]
+    if not since:
+        return False
+    stopped = computer.get("status") == "stopped"
+    limit = STOPPED_DIAL_LIMIT if dialed and stopped else AWAY_LIMIT
+    return now - min(since) >= limit
 
 
 async def _covered_now(row: Mapping[str, Any]) -> bool:
@@ -245,12 +305,13 @@ class CommandWatcher:
         gate = asyncio.Semaphore(_COMPUTER_CONCURRENCY)
 
         checked: List[Dict[str, Any]] = []
+        away: Dict[float, List[Dict[str, Any]]] = defaultdict(list)
 
         async def one(computer_id: str, group: List[Dict[str, Any]]) -> int:
             try:
                 # The wait for a slot counts: the claim's lease does not wait.
                 async with asyncio.timeout_at(deadline), gate:
-                    ended = await self._check_computer(computer_id, group, coverage, now)
+                    looked = await self._check_computer(computer_id, group, coverage, now)
             except Exception as e:  # noqa: BLE001 - the rows come due again
                 logger.warning(
                     f"{_LOG} computer {computer_id} not checked "
@@ -258,8 +319,11 @@ class CommandWatcher:
                     "their lease"
                 )
                 return 0
+            if isinstance(looked, _StillAway):
+                away[looked.recheck_s].extend(group)
+                return 0
             checked.extend(group)
-            return ended
+            return looked
 
         counts = await asyncio.gather(*(one(c, g) for c, g in by_computer.items()))
         try:
@@ -270,8 +334,14 @@ class CommandWatcher:
                 [(str(r["command_id"]), r["next_check_at"]) for r in checked],
                 self._interval,
             )
+            for recheck_s, group in away.items():
+                await cr_db.schedule_away_check(
+                    [(str(r["command_id"]), r["next_check_at"]) for r in group],
+                    recheck_s,
+                )
         except Exception as e:  # noqa: BLE001 - the lease brings them back
-            logger.warning(f"{_LOG} rescheduling {len(checked)} commands failed: {e}")
+            waiting = len(checked) + sum(len(g) for g in away.values())
+            logger.warning(f"{_LOG} rescheduling {waiting} commands failed: {e}")
         return sum(counts)
 
     async def _check_computer(
@@ -280,7 +350,9 @@ class CommandWatcher:
         rows: List[Dict[str, Any]],
         coverage: Mapping[str, Coverage],
         now: datetime,
-    ) -> int:
+    ) -> int | _StillAway:
+        """How many of the computer's commands ended, or ``_StillAway`` when
+        its machine is silent and they wait for it."""
         from src.server.database.computer import get_computer
         from src.server.services.workspace_manager import WorkspaceManager
 
@@ -305,6 +377,38 @@ class CommandWatcher:
         hour_applies = window is not None or computer is None
         if reach == "gone":
             return await self._settle_gone(rows, computer, coverage, now, hour_applies)
+        try:
+            return await self._read_computer(
+                computer, reach, rows, coverage, now, manager, window, hour_applies
+            )
+        except Exception as e:
+            if not _machine_away(e):
+                raise
+            dialed = not isinstance(e, ComputerAway)
+            if not _away_too_long(rows, computer, now, dialed=dialed):
+                return _StillAway(DIAL_RECHECK_S if dialed else AWAY_RECHECK_S)
+        logger.info(
+            f"{_LOG} computer {computer_id}'s machine has not answered since "
+            f"{min(r['away_since'] for r in rows if r.get('away_since')).isoformat()}; "
+            f"settling its {len(rows)} commands as lost"
+        )
+        return await self._settle_gone(rows, computer, coverage, now, hour_applies)
+
+    async def _read_computer(
+        self,
+        computer: Mapping[str, Any],
+        reach: str,
+        rows: List[Dict[str, Any]],
+        coverage: Mapping[str, Coverage],
+        now: datetime,
+        manager,
+        window: Optional["IdleWindow"],
+        hour_applies: bool,
+    ) -> int:
+        """Read the computer's jobs and settle its rows by them; raises as
+        ``computer_jobs_runtime`` does, and with the machine's own failure
+        when a read finds it silent."""
+        computer_id = str(computer["computer_id"])
         async with computer_jobs_runtime(computer) as runtime:
             if runtime is None:
                 # Its provider says the sandbox is gone, ahead of the row.
@@ -314,6 +418,11 @@ class CommandWatcher:
             # Once for all its rows: an end read on a computer a stop has
             # taken since reports at the thread's next turn.
             up = await still_up(computer)
+            # A stopped computer whose machine still runs it: the stop never
+            # reached the machine, so its jobs are judged as on a running
+            # machine, and their ends report at the thread's next turn rather
+            # than starting the computer its owner stopped.
+            machine_runs = up or reach == "own_stopped"
             ended = 0
             stops: List[Mapping[str, Any]] = []
             watched: List[Mapping[str, Any]] = []
@@ -328,7 +437,8 @@ class CommandWatcher:
                 verdict = decide(
                     row,
                     state,
-                    up=up,
+                    machine_runs=machine_runs,
+                    reports_now=up,
                     hour_applies=hour_applies,
                     cov=coverage[str(row["conversation_thread_id"])],
                     now=now,
@@ -384,7 +494,8 @@ class CommandWatcher:
             outcome = decide(
                 row,
                 GONE,
-                up=False,
+                machine_runs=False,
+                reports_now=False,
                 hour_applies=hour_applies,
                 cov=coverage[str(row["conversation_thread_id"])],
                 now=at,

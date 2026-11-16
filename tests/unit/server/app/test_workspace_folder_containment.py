@@ -188,6 +188,9 @@ class _ComputerSandbox:
             return False
         return True
 
+    async def awrite_file_text_guarded(self, filepath: str, content: str, _guard) -> str | None:
+        return "" if await self.awrite_file_text(filepath, content) else None
+
     async def aupload_file_bytes(self, filepath: str, content: bytes, **_: object) -> bool:
         self.writes.append(filepath)
         try:

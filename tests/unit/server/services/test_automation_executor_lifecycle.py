@@ -10,6 +10,7 @@ here ends.
 """
 
 import asyncio
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,11 @@ from src.server.handlers.chat.admission_gate import (
 from src.server.services import automation_delivery
 from src.server.services import automation_executor as executor_mod
 from src.server.services.automation_delivery import Delivery, Target
+from src.server.services import automation_computer_wait as computer_wait
+from src.server.services.automation_computer_wait import (
+    COMPUTER_WAIT_CAP_SECONDS,
+    ONE_SHOT_WAIT_CAP_SECONDS,
+)
 from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
@@ -37,6 +43,7 @@ from src.server.services.turn_runtime import TurnRoute
 from src.server.services.writer_guard import WriterGuardUnavailable
 
 _MOD = "src.server.services.automation_executor"
+_WAIT = "src.server.services.automation_computer_wait"
 _USER = "user-1"
 _EXEC = "exec-1"
 _HOME = get_home_workspace_id(_USER)
@@ -79,12 +86,14 @@ def _run(run_id, status="completed", **metadata):
 
 
 @contextmanager
-def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
+def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,), away=()):
     """Patch everything a firing touches.
 
     ``turns`` stand in for successive astream calls. ``runs`` maps a turn's
     index to what the ledger says of its run (in progress by default).
-    ``busy`` is what successive idle checks of the thread answer.
+    ``busy`` is what successive idle checks of the thread answer, and
+    ``away`` what successive looks at the turn's computer do (reachable
+    once they run out).
     """
     runs = runs or {}
     db = MagicMock()
@@ -100,6 +109,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
     db.stamp_delivery = AsyncMock(return_value=True)
     db.update_automation = AsyncMock()
     db.get_execution_status = AsyncMock(return_value="waiting")
+    db.park_execution = AsyncMock(return_value=True)
     db.has_earlier_waiting_execution = AsyncMock(return_value=False)
     db.get_automation = AsyncMock(return_value=fresh)
     run_ids: list[str] = []
@@ -116,6 +126,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
         return _run(run_id, run)
 
     busy_answers = iter(busy)
+    away_answers = iter(away)
     fx = SimpleNamespace(
         db=db,
         run_ids=run_ids,
@@ -129,6 +140,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
     with (
         patch(f"{_MOD}.auto_db", new=db),
         patch(f"{_MOD}.exec_db", new=db),
+        patch(f"{_WAIT}.exec_db", new=db),
         patch("src.server.services.automation_settlement.auto_db", new=db),
         patch("src.server.services.automation_settlement.exec_db", new=db),
         patch(f"{_MOD}.is_byok_active", new=fx.byok),
@@ -143,6 +155,10 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
         patch(
             "src.server.services.workspace_manager.WorkspaceManager.get_instance",
             return_value=MagicMock(ensure_home_bound=AsyncMock()),
+        ),
+        patch(
+            "src.server.services.ssh_computers.computer_away",
+            new=AsyncMock(side_effect=lambda *_, **__: next(away_answers, None)),
         ),
         patch(f"{_MOD}.WebhookClient", return_value=MagicMock(fire_event=fx.started)),
         patch(
@@ -244,6 +260,26 @@ async def test_a_failed_look_keeps_the_firing_waiting():
 
     assert fx.astream.call_count == 1
     assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_thread_says_what_it_waits_for():
+    pinned = _automation(thread_strategy="continue", conversation_thread_id="thread-1")
+    with _firing([_streams], busy=(True,), fresh=pinned) as fx:
+        await AutomationExecutor().execute(pinned, _EXEC)
+
+    assert _wait_reasons(fx) == ["thread_busy"]
+
+
+def _wait_reasons(fx):
+    """What the firing waited for, in order: a park is a wait for the computer."""
+    reasons = []
+    for name, _, kwargs in fx.db.mock_calls:
+        if name == "park_execution":
+            reasons.append("computer_unreachable")
+        elif name == "transition_execution" and kwargs["to"] == "waiting":
+            reasons.append(kwargs.get("wait_reason"))
+    return reasons
 
 
 @pytest.mark.asyncio
@@ -914,7 +950,235 @@ async def test_a_chief_of_staff_automation_runs_in_home():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("checked", ["computer-1", None])
 async def test_a_run_now_starts_its_turn_held_to_the_computer_it_was_checked_on(checked):
+    """Read off the row the start moves, whichever process starts it."""
     with _firing([_streams]) as fx, _delivery(None):
-        await AutomationExecutor().execute(_automation(), _EXEC, checked_computer_id=checked)
+        fx.db.transition_execution.return_value = {
+            "conversation_thread_id": None, "checked_computer_id": checked,
+        }
+        await AutomationExecutor().execute(_automation(), _EXEC)
 
     assert _turn_args(fx)["request"].checked_computer_id == checked
+
+
+_MAC = {"computer_id": "mac-1", "name": "MacBook"}
+_PRICE = {"symbol": "NVDA", "conditions": [{"type": "price_above", "value": 200}]}
+
+
+def _parked(automation_id="auto-1", **verdict):
+    """A firing parked for its computer, as the scheduler's sweep lists it."""
+    return {
+        "automation_execution_id": _EXEC,
+        "automation_id": automation_id,
+        "user_id": _USER,
+        "parked_status": "active",
+        "superseded": False,
+        "reachable": False,
+        "expired": False,
+        **verdict,
+    }
+
+
+async def _sweep_parked(fx, row):
+    """The scheduler's sweep over one parked firing, settling for real."""
+    from src.server.services import automation_computer_wait
+
+    with patch(f"{_WAIT}.auto_db", new=fx.db):
+        await automation_computer_wait.sweep_one(row, MagicMock(), stopping=lambda: False)
+
+
+@pytest.mark.asyncio
+async def test_a_firing_parks_for_its_computer_without_running():
+    """A machine asleep is not the automation failing: the firing waits for
+    it, parked in Postgres, rather than fail at its connect and count a
+    strike."""
+    with _firing([_streams], fresh=_automation(), away=(_MAC,)) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    moves = fx.db.transition_execution.call_args_list
+    assert [c.kwargs["to"] for c in moves] == ["running"]
+    assert _wait_reasons(fx) == ["computer_unreachable"]
+    parked = fx.db.park_execution.await_args.kwargs
+    assert parked["awaits_computer"] == "mac-1"
+    assert parked["parked_status"] == "active"
+    assert parked["wait_seconds"] == COMPUTER_WAIT_CAP_SECONDS
+    # The credit gate is asked once the firing runs, whose verdict a night's
+    # wait must not outlive.
+    fx.credit.assert_not_awaited()
+    fx.astream.assert_not_called()
+    fx.db.settle_execution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "once"},
+        {"trigger_type": "price", "trigger_config": _PRICE},
+    ],
+    ids=["one-time", "one-shot price alert"],
+)
+async def test_an_automation_that_runs_once_waits_days_for_its_computer(trigger):
+    """Nothing later stands in for it, so a late run beats none."""
+    automation = _automation(**trigger)
+    with _firing([_streams], fresh=automation, away=(_MAC,)) as fx:
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    assert fx.db.park_execution.await_args.kwargs["wait_seconds"] == ONE_SHOT_WAIT_CAP_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_price_alert_that_re_arms_waits_a_day_for_its_computer():
+    """Its next crossing stands in for this one, as the settle's own rule
+    says (``runs_once``)."""
+    automation = _automation(
+        trigger_type="price",
+        trigger_config={**_PRICE, "retrigger": {"mode": "recurring"}},
+    )
+    with _firing([_streams], fresh=automation, away=(_MAC,)) as fx:
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    assert fx.db.park_execution.await_args.kwargs["wait_seconds"] == COMPUTER_WAIT_CAP_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_computer_gives_way_to_the_next_firing():
+    """Missed runs come back as one run: the next firing takes the wait over."""
+    with _firing([_streams], fresh=_automation()) as fx:
+        fx.db.settle_execution.return_value["settled_from"] = "waiting"
+        await _sweep_parked(fx, _parked(superseded=True, reachable=True))
+
+    fx.astream.assert_not_called()
+    fx.credit.assert_not_awaited()
+    assert _settled(fx)["to"] == "skipped"
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+    assert _settled(fx)["strike"] is None
+    fx.settled_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_computer_ends_at_its_cap():
+    with _firing([_streams], fresh=_automation()) as fx:
+        await _sweep_parked(fx, _parked(expired=True))
+
+    fx.astream.assert_not_called()
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+
+
+@pytest.mark.asyncio
+async def test_a_firing_released_after_a_night_for_its_computer_still_waits_out_a_busy_thread():
+    """The thread's wait is counted from the computer's return: one counted
+    from the firing would be spent by the night, and the first look at a busy
+    thread would skip the run."""
+    clock = [0.0]
+    pinned = _automation(thread_strategy="continue", conversation_thread_id="thread-1")
+    with (
+        _firing([_streams], fresh=pinned, busy=(False, True, True), away=(_MAC,)) as fx,
+        # The module's clock only: the event loop keeps the real one.
+        patch(f"{_MOD}.time", new=SimpleNamespace(monotonic=lambda: clock[0], time=time.time)),
+    ):
+        executor = AutomationExecutor()
+        await executor.execute(pinned, _EXEC)
+        clock[0] += 8 * 60 * 60
+        # The sweep's release puts it back to pending and starts it again.
+        await executor.execute(pinned, _EXEC)
+
+    assert _wait_reasons(fx) == ["computer_unreachable", "thread_busy"]
+    assert fx.astream.call_count == 1
+    assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_computer_did_not_answer_is_skipped_not_struck():
+    """Before its turn reached the ledger: three nights of a machine asleep
+    must not switch the automation off."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise RuntimeError("could not start") from SSHConnectError("not_connected", "asleep")
+    except RuntimeError as e:
+        refused = e
+    with _firing([_loses(refused)], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx)["to"] == "skipped"
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+    assert _settled(fx)["strike"] is None
+    # The terminal event a channel clears its started notice on still goes.
+    assert fx.settled_webhook.await_args.args[0] == "automation.failed"
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_gateway_down_is_not_the_users_computer_unreachable():
+    """Our gateway's outage says nothing of the machine: the firing does not
+    record that the user's computer could not be reached, and fails as an
+    outage of ours, which never counts toward turning the automation off."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise RuntimeError("could not start") from SSHConnectError(
+            "gateway_unreachable", "The tunnel is not answering."
+        )
+    except RuntimeError as e:
+        refused = e
+    with _firing([_loses(refused)], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx).get("skip_reason") != "computer_unreachable"
+    assert _settled(fx)["failure_reason"] == "server_error"
+    assert _settled(fx)["strike"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_machine_that_answered_and_refused_is_the_automations_failure():
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    with _firing([_loses(SSHConnectError("auth_failed", "refused"))], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx)["to"] == "failed"
+    assert _settled(fx)["strike"] == "count"
+
+
+class TestARunReleasedLate:
+    """A run that waited for its computer past when it was due tells its
+    agent when that was, so time-bound work can say it is late."""
+
+    @staticmethod
+    def _row(due_ago, wait_reason="computer_unreachable"):
+        from datetime import datetime, timezone
+
+        return {
+            "scheduled_at": datetime.now(timezone.utc) - due_ago,
+            "wait_reason": wait_reason,
+            "awaits_computer": "computer-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_it_says_when_it_was_due_and_what_it_waited_for(self):
+        from datetime import timedelta
+
+        with patch(
+            "src.server.database.computer.get_computer",
+            new=AsyncMock(return_value={"name": "MacBook Pro"}),
+        ):
+            note = await computer_wait.late_note(
+                {"timezone": "America/New_York"}, self._row(timedelta(hours=3))
+            )
+
+        assert note.startswith("This run was due at ")
+        assert 'It waited for computer "MacBook Pro"' in note
+        assert "say the run is late and work from current data" in note
+
+    @pytest.mark.parametrize(
+        ("due_ago_min", "wait_reason"),
+        [(5, "computer_unreachable"), (180, None), (180, "thread_busy")],
+        ids=["just late", "never waited", "waited for its thread"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_run_on_time_or_never_held_for_its_computer_says_nothing(
+        self, due_ago_min, wait_reason
+    ):
+        from datetime import timedelta
+
+        row = self._row(timedelta(minutes=due_ago_min), wait_reason)
+        assert await computer_wait.late_note({}, row) is None

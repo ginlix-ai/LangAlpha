@@ -889,11 +889,13 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // display by kind to avoid showing the same error twice:
       //   - upstream → inline card on the failed assistant turn (part of
       //     the transcript; the user's model choice is what triggered it)
+      //   - computer_unreachable → inline too: the user's own machine did
+      //     not answer, and the card says how to bring it back
       //   - internal → banner near the chat input (our service failed;
       //     don't pollute the conversation history)
       // Either way what the turn streamed stays its reply: the failure rides
       // apart from the content, so the reply never renders as the error.
-      const kind = event.error_kind as 'upstream' | 'internal' | undefined;
+      const kind = event.error_kind;
       const structured: StructuredError | undefined = busyCode !== null
         ? { message: errorMessage as string, kind: 'notice' }
         : readStreamFailure(event, errorMessage as string, rt.workspaceId, rt.t);

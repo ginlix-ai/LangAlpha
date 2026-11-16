@@ -5,6 +5,12 @@ read it, and create and delete the rows. A tunnel counts as live while its
 latest connect is newer than its latest disconnect and the gateway has seen
 it within ``LIVE_WITHIN``: a gateway that died without writing the disconnect
 stops refreshing ``seen_at``, so its tunnels lapse on their own.
+
+A tunnel that is not live is only judged down while the gateway itself is
+settled (``ssh_gateway_state``, migration 129): it beat within
+``LIVE_WITHIN`` and started at least that long ago. A gateway that died, or
+just restarted and is still taking its machines back, is the service's
+outage, never every user's machine gone at once.
 """
 
 from datetime import datetime, timedelta
@@ -35,10 +41,18 @@ TAKE_OFF_WINDOW = timedelta(seconds=30)
 # mint tunnels in a loop reaches it.
 MAX_TUNNELS_PER_USER = 50
 
+# Literals rather than parameters, so every statement that judges a tunnel
+# can include them as they are.
+_WITHIN_LIVE = f"make_interval(secs => {LIVE_WITHIN.total_seconds()})"
+
+# How long a machine may go unseen before work waiting on it gives up: a
+# notification parked for it, and a command left running there.
+AWAY_GIVE_UP_DAYS = 7
+
 _LIVE = (
     "(connected_at IS NOT NULL "
     " AND (disconnected_at IS NULL OR connected_at > disconnected_at) "
-    " AND seen_at > NOW() - %(live_within)s)"
+    f" AND seen_at > NOW() - {_WITHIN_LIVE})"
 )
 # Down since a newer pairing of its machine superseded it (migration 124). A
 # connect after that stamp, as from a folder restored with the old keys, is
@@ -48,11 +62,33 @@ _PAIRED_ELSEWHERE = (
     " AND (connected_at IS NULL OR superseded_at > connected_at)"
     f" AND NOT {_LIVE})"
 )
+# The gateway has beaten within ``LIVE_WITHIN`` and has run that long, the
+# time its machines' keepalives take to give up on a connection the previous
+# gateway held and connect again.
+_GATEWAY_SETTLED = (
+    "EXISTS (SELECT 1 FROM ssh_gateway_state g"
+    f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
+    f" AND g.started_at <= NOW() - {_WITHIN_LIVE})"
+)
+# A gateway beating but not settled: it has just started, and its machines
+# are still connecting back to it.
+_GATEWAY_STARTING = (
+    "EXISTS (SELECT 1 FROM ssh_gateway_state g"
+    f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
+    f" AND g.started_at > NOW() - {_WITHIN_LIVE})"
+)
+# A row's ``state``: superseded, then not judged while the gateway is not
+# settled (a row a previous gateway saw live is not live on this one yet, so a
+# dial to it fails as this gateway's start), then live, else down. ``live``
+# stays a column of its own: whether the machine was last seen connected,
+# settled or not.
 _COLUMNS = (
     "tunnel_id::text AS tunnel_id, user_id, public_key, fingerprint, hostname, "
     "username, host_key, port, created_at, paired_at, "
     f"connected_at, disconnected_at, seen_at, {_LIVE} AS live, "
-    f"{_PAIRED_ELSEWHERE} AS paired_elsewhere"
+    f"CASE WHEN {_PAIRED_ELSEWHERE} THEN 'paired_elsewhere' "
+    f"WHEN NOT {_GATEWAY_SETTLED} THEN 'unsettled' "
+    f"WHEN {_LIVE} THEN 'live' ELSE 'down' END AS state"
 )
 
 # No computer that is not deleted names the tunnel ``t``, whoever owns it: a
@@ -69,8 +105,104 @@ _NOT_TAKING_OFF = (
 )
 
 
-def _params(**kw: Any) -> Dict[str, Any]:
-    return {"live_within": LIVE_WITHIN, **kw}
+def _tunneled_sql(computer_id: str, tunnel_rows: str = "TRUE") -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    is not deleted and connects out through a tunnel, and ``tunnel_rows``
+    (SQL over its ``computers c`` row) holds. A computer reached directly or
+    deleted never matches."""
+    return f"""EXISTS (
+        SELECT 1 FROM computers c
+        WHERE c.computer_id = ({computer_id})::uuid
+          AND c.kind = 'ssh' AND c.{FENCE_NOT_DELETED}
+          AND COALESCE(c.provider_config->>'tunnel', '') <> ''
+          AND {tunnel_rows})"""
+
+
+def _no_tunnel_row_sql(tunnel_ok: str) -> str:
+    """SQL over a ``computers c`` row: no row of its tunnel that ``tunnel_ok``
+    holds for."""
+    return f"""NOT EXISTS (
+              SELECT 1 FROM ssh_tunnels
+              WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
+                AND {tunnel_ok})"""
+
+
+def _tunnel_judged_sql(computer_id: str, tunnel_ok: str) -> str:
+    """SQL true while the gateway is settled and the computer ``computer_id``
+    (an SQL text expression) connects out through a tunnel with no row that
+    ``tunnel_ok`` holds for. None matches while the gateway is not settled
+    (``_GATEWAY_SETTLED``): its dials then fail as the gateway's outage."""
+    return f"({_GATEWAY_SETTLED} AND {_tunneled_sql(computer_id, _no_tunnel_row_sql(tunnel_ok))})"
+
+
+# Not down: live, or superseded by a newer pairing of its machine, which is
+# not a machine that will answer later but one its owner must reconnect, so
+# a dial says that rather than work waiting for it.
+_NOT_DOWN = f"({_LIVE} OR {_PAIRED_ELSEWHERE})"
+
+
+def computer_tunnel_down_sql(computer_id: str) -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    connects out through a tunnel that is not live, for a statement every
+    worker may run, and the one judgment of it (:func:`computer_tunnel_down`
+    evaluates it alone). A tunnel its machine was paired again past is not
+    down (``_NOT_DOWN``)."""
+    return _tunnel_judged_sql(computer_id, _NOT_DOWN)
+
+
+async def gateway_settled(*, conn=None) -> bool:
+    """Whether the gateway has run long enough to judge its tunnels
+    (``_GATEWAY_SETTLED``), on ``conn`` where a caller passes one."""
+    async with get_db_connection(conn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"SELECT {_GATEWAY_SETTLED} AS settled")
+            row = await cur.fetchone()
+            return bool(row and row["settled"])
+
+
+async def computer_tunnel_down(computer_id: str, *, conn=None) -> bool:
+    """Whether the computer connects out through a tunnel that is not live
+    (:func:`computer_tunnel_down_sql`), on ``conn`` where a caller passes one."""
+    async with get_db_connection(conn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {computer_tunnel_down_sql('%(computer_id)s')} AS down",
+                {"computer_id": str(computer_id)},
+            )
+            row = await cur.fetchone()
+            return bool(row and row["down"])
+
+
+def computer_tunnel_lost_sql(computer_id: str) -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    connects out through a tunnel the gateway has not seen for
+    ``AWAY_GIVE_UP_DAYS``, or that is gone: a machine that has not come back
+    in that long, which work waiting on it gives up on."""
+    return _tunnel_judged_sql(
+        computer_id,
+        "COALESCE(ssh_tunnels.seen_at, ssh_tunnels.created_at)"
+        f" > NOW() - make_interval(days => {AWAY_GIVE_UP_DAYS})",
+    )
+
+
+def awaited_computer_back_sql(awaits: str, workspace_id: str) -> str:
+    """SQL true once work waiting for the computer ``awaits`` (an SQL text
+    expression) may look again: it no longer connects through a tunnel, its
+    tunnel is not down, or the workspace ``workspace_id`` (an SQL
+    expression) its turn runs in is on another computer now (moved, or its
+    computer removed). Its start then looks at the computer it is on now,
+    and waits again naming that one if it is away too. Not while a gateway
+    that just started settles: its machines are still connecting back, and
+    work let go would dial one that may be asleep and be skipped for it. A
+    gateway that stopped beating judges no tunnel down, so work is let go
+    and fails as the service's outage."""
+    return f"""(NOT {_tunneled_sql(awaits)}
+        OR (NOT {_GATEWAY_STARTING} AND NOT {computer_tunnel_down_sql(awaits)})
+        OR EXISTS (
+        SELECT 1 FROM workspaces ws
+        WHERE ws.workspace_id = ({workspace_id})
+          AND ws.computer_id IS NOT NULL
+          AND ws.computer_id::text IS DISTINCT FROM ({awaits})))"""
 
 
 class TunnelKeyTaken(Exception):
@@ -96,7 +228,7 @@ async def upsert_tunnel(
             from the first account's computers.
         TooManyTunnels: The user holds ``MAX_TUNNELS_PER_USER`` already.
     """
-    params = _params(
+    params = dict(
         user_id=user_id,
         public_key=public_key,
         fingerprint=fingerprint,
@@ -193,7 +325,7 @@ async def get_tunnel(tunnel_id: str) -> Optional[Dict[str, Any]]:
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = %(tunnel_id)s::uuid",
-                _params(tunnel_id=tunnel_id),
+                dict(tunnel_id=tunnel_id),
             )
             return await cur.fetchone()
 
@@ -205,7 +337,7 @@ async def get_user_tunnel(user_id: str, tunnel_id: str) -> Optional[Dict[str, An
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = %(tunnel_id)s::uuid AND user_id = %(user_id)s",
-                _params(tunnel_id=tunnel_id, user_id=user_id),
+                dict(tunnel_id=tunnel_id, user_id=user_id),
             )
             return await cur.fetchone()
 
@@ -218,7 +350,7 @@ async def get_tunnels(tunnel_ids: Iterable[str], *, conn=None) -> Dict[str, Dict
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = ANY(%(tunnel_ids)s::uuid[])",
-                _params(tunnel_ids=list(tunnel_ids)),
+                dict(tunnel_ids=list(tunnel_ids)),
             )
             return {row["tunnel_id"]: row for row in await cur.fetchall()}
 
@@ -273,7 +405,7 @@ async def claim_unused_tunnels(
                 FROM unused WHERE tunnel_id = unused.id
                 RETURNING {_COLUMNS}
                 """,
-                _params(
+                dict(
                     paired_before=paired_before,
                     retry_after=retry_after,
                     give_up_after=give_up_after,
@@ -312,7 +444,7 @@ async def claim_released_tunnel(
                                AND t.paired_at > NOW() - %(paired_within)s))
                 RETURNING {_COLUMNS}
                 """,
-                _params(
+                dict(
                     tunnel_id=tunnel_id,
                     retry_after=retry_after,
                     made_at=made_at,
@@ -441,30 +573,61 @@ async def mark_superseded(tunnel_id: str) -> None:
             )
 
 
-async def mark_seen(tunnel_ids: Iterable[str]) -> Set[str]:
-    """Refresh the tunnels still connected; answers those that still exist."""
+async def gateway_beat(tunnel_ids: Iterable[str]) -> Set[str]:
+    """The gateway's heartbeat: it is up, and the tunnels it holds still
+    connected; answers those that still exist.
+
+    One transaction, so a tunnel never outlives the gateway's own beat: when
+    the beats stop, the tunnels lapse no earlier than the gateway stops
+    counting as settled, and none reads as down for it.
+    """
     ids = list(tunnel_ids)
-    if not ids:
-        return set()
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
+    async with get_db_connection() as conn, conn.transaction():
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("UPDATE ssh_gateway_state SET seen_at = NOW()")
+            if not ids:
+                return set()
             await cur.execute(
                 "UPDATE ssh_tunnels SET seen_at = NOW() "
-                "WHERE tunnel_id = ANY(%s::uuid[]) RETURNING tunnel_id::text",
+                "WHERE tunnel_id = ANY(%s::uuid[]) "
+                "RETURNING tunnel_id::text AS tunnel_id",
                 (ids,),
             )
-            return {row[0] for row in await cur.fetchall()}
+            return {row["tunnel_id"] for row in await cur.fetchall()}
 
 
-async def mark_all_disconnected() -> int:
-    """At the gateway's start: none of the connections it held survived it."""
-    async with get_db_connection() as conn:
+_ALL_DOWN = (
+    "UPDATE ssh_tunnels SET disconnected_at = NOW() "
+    "WHERE connected_at IS NOT NULL "
+    "AND (disconnected_at IS NULL OR connected_at > disconnected_at)"
+)
+
+
+async def gateway_started() -> int:
+    """At the gateway's start: none of the connections it held survived it,
+    and it is not settled until its machines have had time to connect again.
+
+    One transaction, so no worker sees the tunnels down under the previous
+    gateway's beat, which may still be fresh after a crash.
+    """
+    async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE ssh_tunnels SET disconnected_at = NOW() "
-                "WHERE connected_at IS NOT NULL "
-                "AND (disconnected_at IS NULL OR connected_at > disconnected_at)"
+                "INSERT INTO ssh_gateway_state (singleton, started_at, seen_at) "
+                "VALUES (TRUE, NOW(), NOW()) ON CONFLICT (singleton) "
+                "DO UPDATE SET started_at = NOW(), seen_at = NOW()"
             )
+            await cur.execute(_ALL_DOWN)
+            return cur.rowcount
+
+
+async def gateway_stopped() -> int:
+    """At the gateway's stop: its connections end with it, and no tunnel
+    reads as down until a gateway is back and settled."""
+    async with get_db_connection() as conn, conn.transaction():
+        async with conn.cursor() as cur:
+            await cur.execute("UPDATE ssh_gateway_state SET seen_at = NULL")
+            await cur.execute(_ALL_DOWN)
             return cur.rowcount
 
 

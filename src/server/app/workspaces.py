@@ -97,6 +97,7 @@ from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientErr
 from src.server.utils.error_sanitization import sandbox_failure_http
 from src.server.models.workspace_refresh import WorkspaceRefreshResponse
 from src.server.services.turn_runtime import ensure_home
+from src.server.services.ssh_computers import computer_away
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.workspace_status_pubsub import subscribe_to_status
 
@@ -634,6 +635,18 @@ async def start_workspace(
             await manager.reconcile_stopping_computer(str(workspace["computer_id"]))
             workspace = await db_get_workspace(workspace_id)
             require_workspace_owner(workspace, user_id=x_user_id)
+
+        if lazy and workspace["status"] in {"stopped", "running"}:
+            # A warm opens a workspace; nobody asked for a start. On a machine
+            # that is asleep or offline it could only fail, show a start beside
+            # the card saying the machine is away, and record that failure on
+            # the computer. The machine connects by itself once awake.
+            if await computer_away(workspace_id):
+                return WorkspaceActionResponse(
+                    workspace_id=workspace_id,
+                    status=workspace["status"],
+                    message="The workspace's computer can't be reached",
+                )
 
         def _warm_in_background() -> Response:
             """202 now, the attach in a background task.

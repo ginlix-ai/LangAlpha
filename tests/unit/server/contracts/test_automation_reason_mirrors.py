@@ -1,10 +1,10 @@
-"""The automation skip and failure reasons, spelled once per language.
+"""The automation wait, skip and failure reasons, spelled once per language.
 
-The server writes ``skip_reason`` and ``failure_reason`` as open strings, and
-the web app words each reason from a table keyed by the same spellings. Neither
-side's type checker can see the other's list, so a reason added to one and not
-the other drifts silently: a failed run shows no word on why, or the web keeps
-a note for a reason the server never sends.
+The server writes ``wait_reason``, ``skip_reason`` and ``failure_reason`` as
+open strings, and the web app words each reason from a table keyed by the same
+spellings. Neither side's type checker can see the other's list, so a reason
+added to one and not the other drifts silently: a failed run shows no word on
+why, or the web keeps a note for a reason the server never sends.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import get_args
 
 import pytest
 
-from src.server.models.automation import FailureReason, SkipReason
+from src.server.models.automation import FailureReason, SkipReason, WaitReason
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -49,8 +49,9 @@ def _ts_table_keys(name: str) -> set[str]:
     [
         (SkipReason, "SkipReason", "SKIP_REASON_NOTE"),
         (FailureReason, "FailureReason", "FAILURE_REASON_NOTE"),
+        (WaitReason, "WaitReason", "WAIT_REASON_NOTE"),
     ],
-    ids=["skip_reason", "failure_reason"],
+    ids=["skip_reason", "failure_reason", "wait_reason"],
 )
 def test_the_web_words_every_reason_the_server_writes(
     server_literal, web_union: str, web_table: str

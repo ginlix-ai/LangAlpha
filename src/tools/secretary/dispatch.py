@@ -117,6 +117,23 @@ def _unknown_dispatch_command(
     )
 
 
+async def _unreachable_computer(workspace_id: str) -> str | None:
+    """The workspace's computer, named for the agent, while it is a machine
+    of the user's own that can't be reached, else None. A read that fails is
+    None: the hand-off then fails, if at all, where it always did."""
+    from src.server.services.ssh_computers import computer_away
+
+    try:
+        computer = await computer_away(workspace_id)
+    except Exception as e:
+        logger.warning(f"Could not read the computer of workspace {workspace_id}: {e}")
+        return None
+    if computer is None:
+        return None
+    name = computer.get("name")
+    return f'computer "{name}"' if name else "a computer of the user's own"
+
+
 async def _owned_workspace(workspace_id: str, user_id: str) -> dict | None:
     """The workspace row when ``user_id`` owns it, else None.
 
@@ -220,6 +237,17 @@ async def dispatch(
     # which the owner check above already proved.
     if workspace is None and not is_continuation:
         return error_command("workspace not found", tool_call_id)
+    if workspace is not None and (away := await _unreachable_computer(workspace_id)):
+        # Its files are on that computer, so its analyst cannot run anywhere
+        # else; refused before the card, so nothing is approved and dropped.
+        return error_command(
+            "Nothing was handed off: "
+            + (f'workspace "{workspace_name}"' if workspace_name else "that workspace")
+            + f" is on {away}, which can't be reached right now (it may be asleep "
+            "or offline), and its analyst works only there. Tell the user; a "
+            "hand-off in a later turn goes through once it is back.",
+            tool_call_id,
+        )
 
     if not preapproved:
         approved, response = hitl_confirm(

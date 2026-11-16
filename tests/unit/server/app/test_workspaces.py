@@ -985,6 +985,43 @@ async def test_start_workspace_forbidden(client):
     assert resp.status_code == 403
 
 
+@pytest.fixture(autouse=True)
+def _computer_answers():
+    """Every start here is on a computer that answers, unless a test says otherwise."""
+    with patch(
+        "src.server.app.workspaces.computer_away", AsyncMock(return_value=None)
+    ) as away:
+        yield away
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["stopped", "running"])
+async def test_a_warm_leaves_a_computer_that_is_away_alone(
+    client, _computer_answers, status
+):
+    """Opening a workspace on a sleeping machine starts nothing: the start
+    could only fail and leave a failed start on the computer."""
+    ws = _ws(status=status)
+    _computer_answers.return_value = {"computer_id": COMPUTER_ID}
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+        patch("src.server.app.workspaces._schedule_warm_restart") as mock_schedule,
+    ):
+        MockWM.get_instance.return_value = AsyncMock()
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/start?lazy=true"
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == status
+    mock_schedule.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_start_workspace_lazy_returns_202_and_schedules(client):
     """lazy=true returns 202 with status='starting' and schedules a background task."""

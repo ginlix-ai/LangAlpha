@@ -622,3 +622,24 @@ async def test_a_resume_refused_while_the_computer_is_busy_gives_the_steers_back
         max_refusals=task_steer.MAX_RESUME_REFUSALS,
         counted=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_waits_for_its_machine_instead_of_posting_into_it_asleep():
+    """The resume turn is nobody's to watch: posted while the user's machine
+    sleeps it would fail at its connect, so the steer parks for the machine."""
+    job, row = _claimed_job(2)
+    post = AsyncMock(return_value=("dispatched", "run-1"))
+    away = AsyncMock(return_value=True)
+    with (
+        patch(f"{_OUTBOX}.get_steer_job", new=AsyncMock(return_value=row)),
+        patch.object(task_steer, "_divert", new=AsyncMock(return_value=False)),
+        patch.object(task_steer, "_computer_full", new=AsyncMock(return_value=False)),
+        patch(f"{_NOTIFY}.park_while_thread_busy", new=AsyncMock(return_value=False)),
+        patch(f"{_NOTIFY}.park_while_computer_away", new=away),
+        patch(f"{_NOTIFY}.post_notification_turn", new=post),
+    ):
+        await task_steer.execute_task_steer(job)
+
+    post.assert_not_awaited()
+    assert away.await_args.kwargs["workspace_id"] == "w-1"

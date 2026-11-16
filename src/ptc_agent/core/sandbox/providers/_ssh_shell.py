@@ -287,6 +287,17 @@ def uninstall_script(root: str, sandbox_id: str) -> str:
     )
 
 
+def hold_awake_script(seconds: int) -> str:
+    """Hold a Mac out of idle sleep for ``seconds``, detached so the script
+    returns at once. Not one of the computer's processes, so no stop ends it:
+    it is short and runs out by itself. A machine with no ``caffeinate`` does
+    nothing."""
+    return (
+        f"{{ [ ! -x /usr/bin/caffeinate ] || nohup /usr/bin/caffeinate -i -t {int(seconds)}; }} "
+        "</dev/null >/dev/null 2>&1 &\n"
+    )
+
+
 def read_state_script(cdir: str) -> str:
     """Prints 1 when the computer is marked running on this boot, else 0."""
     return f"d={shlex.quote(cdir)}; {state_sh('$d')}echo $__la_up\n"

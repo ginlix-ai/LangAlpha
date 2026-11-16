@@ -307,8 +307,14 @@ async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
 
         # A live turn takes the report in as a steer before its next model
         # call (``report_back.steer``).
-        if p.parks and await park_while_thread_busy(
-            job_id, attempts, thread_id, log_prefix=log, subject=subject
+        if await park_unless_ready(
+            job_id,
+            attempts,
+            thread_id,
+            workspace_id=verdict.workspace_id,
+            log_prefix=log,
+            subject=subject,
+            wait_for_thread=p.parks,
         ):
             return None
 
@@ -409,6 +415,48 @@ async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
     return None
 
 
+async def park_unless_ready(
+    job_id: str,
+    attempts: int,
+    thread_id: str,
+    *,
+    workspace_id: Optional[str],
+    log_prefix: str,
+    subject: str,
+    wait_for_thread: bool = True,
+    wait_for_computer: bool = True,
+    parks_at_ceiling: bool = False,
+) -> bool:
+    """Park a claimed notification until the turn it posts can run: while its
+    thread holds notifications (``park_while_thread_busy``), then while the
+    computer that turn runs on cannot be reached
+    (``park_while_computer_away``). True when it parked and the caller must
+    stop; False when the turn may be posted now.
+
+    ``wait_for_thread`` is False for a notification a live turn takes in some
+    other way, ``wait_for_computer`` False for a turn someone watches (the
+    user's own steer, theirs to see fail and retry). ``parks_at_ceiling`` is
+    as for ``park_while_thread_busy``.
+    """
+    if wait_for_thread and await park_while_thread_busy(
+        job_id,
+        attempts,
+        thread_id,
+        log_prefix=log_prefix,
+        subject=subject,
+        parks_at_ceiling=parks_at_ceiling,
+    ):
+        return True
+    return wait_for_computer and await park_while_computer_away(
+        job_id,
+        attempts,
+        thread_id,
+        workspace_id=workspace_id,
+        log_prefix=log_prefix,
+        subject=subject,
+    )
+
+
 async def park_while_thread_busy(
     job_id: str,
     attempts: int,
@@ -458,6 +506,51 @@ async def park_while_thread_busy(
         latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
         if not await holds_notifications(thread_id, latest):
             await release_parked_notifications(thread_id)
+    return True
+
+
+async def park_while_computer_away(
+    job_id: str,
+    attempts: int,
+    thread_id: str,
+    *,
+    workspace_id: Optional[str],
+    log_prefix: str,
+    subject: str,
+) -> bool:
+    """Park a claimed notification while the computer its turn would run on
+    cannot be reached, until that computer connects again; True when the
+    caller must stop.
+
+    A wake or report-back is nobody's request now: posted while the user's
+    machine sleeps, its turn would fail at the connect after its notice was
+    read as delivered, and nothing would deliver it again. Held instead, a
+    wakeup's notice stays unread, so the slots its series reaches meanwhile
+    are skipped and the machine's return brings one wake, not a burst. The
+    drainer releases it once the computer's tunnel is live again
+    (``outbox.release_for_reachable_computers``).
+    """
+    from src.server.database.runs import outbox as outbox_db
+    from src.server.services.ssh_computers import computer_away
+
+    if not workspace_id:
+        from src.server.database import conversation as conv_db
+
+        thread = await conv_db.get_thread_by_id(thread_id)
+        workspace_id = str((thread or {}).get("workspace_id") or "") or None
+    if not workspace_id:
+        return False
+    away = await computer_away(str(workspace_id))
+    if away is None:
+        return False
+    parked = await outbox_db.park_for_computer(
+        job_id, attempts=attempts, computer_id=str(away["computer_id"])
+    )
+    logger.info(
+        f"{log_prefix} Parked job {job_id} for {subject} on thread {thread_id} "
+        f"until computer {away['computer_id']} can be reached again "
+        f"(parked={parked})"
+    )
     return True
 
 

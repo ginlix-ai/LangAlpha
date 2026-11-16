@@ -14,7 +14,12 @@ import re
 import uuid
 from typing import ClassVar
 
-from ptc_agent.core.sandbox.providers._proc_sh import EXEC_MARK, PROC_SH, ps_start_sh
+from ptc_agent.core.sandbox.providers._proc_sh import (
+    EXEC_MARK,
+    HOLD_AWAKE_SH,
+    PROC_SH,
+    ps_start_sh,
+)
 from ptc_agent.core.sandbox.runtime import (
     SandboxRuntime,
     SessionCommandResult,
@@ -113,7 +118,8 @@ class ExecSessionRuntime(SandboxRuntime):
         # Its .pid is written aside and renamed in, so no reader sees half
         # of it. A stop can land before then: delete_session moves the
         # session aside before reading PIDs, so the rename fails and a
-        # command the stop missed never runs.
+        # command the stop missed never runs. On a Mac it holds the machine
+        # awake while it runs (``HOLD_AWAKE_SH``).
         wrapped = (
             f'{self._session_sh}D="$R/{session_id}"; '
             "L=; if command -v setsid >/dev/null 2>&1; then L=setsid; else set -m; fi; "
@@ -122,6 +128,7 @@ class ExecSessionRuntime(SandboxRuntime):
             f"{{ {ps_start_sh('$$')}; }}); "
             f"echo \"$$ $__la_s\" > \"$1/{cmd_id}.new\" "
             f"&& mv \"$1/{cmd_id}.new\" \"$1/{cmd_id}.pid\" || exit; "
+            f"{HOLD_AWAKE_SH}"
             f"export {EXEC_MARK}=\"$$-$__la_s\"; "
             f"( set --; unset __la_s; eval \"$(echo {encoded} | base64 -d)\" ); "
             f"echo $? > \"$1/{cmd_id}.exit\""

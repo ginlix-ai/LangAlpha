@@ -12,6 +12,9 @@ follows):
   wakeups that fire together share one block and one turn;
 - a turn is running, or the latest one waits on the user: the job parks for
   that turn to take in, or for its ending to release;
+- the computer the wake would run on cannot be reached (the user's machine
+  asleep): the job parks until it connects again, its notice unread, so the
+  slots a series reaches meanwhile are skipped and its return brings one wake;
 - the wake is refused: a refusal that clears by itself is retried under the
   outbox backoff, and once that runs out, or at once on one that does not
   (the user's usage limit), the job and its riders are held for the
@@ -131,8 +134,9 @@ class _Wake:
 # How a claim ended, for the riders it froze: kept by the run that shows
 # them (``settled``), by the head a refusal held (``held``) or a new owner
 # (``fence_lost``); given back to the thread because no wake was admitted
-# (``release``), or because the head parked for a live turn or to wait for
-# room among the user's Claude Code turns (``parked``).
+# (``release``), or because the head parked for a live turn, for its
+# computer, or to wait for room among the user's Claude Code turns
+# (``parked``).
 _Exit = Literal["settled", "held", "fence_lost", "release", "parked"]
 
 
@@ -276,7 +280,7 @@ async def _deliver(wake: _Wake) -> _Exit:
     from src.server.services.hook_outbox import LEASE_SECONDS, MAX_ATTEMPTS
     from src.server.services.report_back.notify_turn import (
         TURN_ROOM_WAIT_S,
-        park_while_thread_busy,
+        park_unless_ready,
         post_notification_turn,
         release_if_a_turn_ended,
         run_marker,
@@ -391,10 +395,11 @@ async def _deliver(wake: _Wake) -> _Exit:
             logger.info(f"{_LOG} {subject} was delivered or settled meanwhile")
             return "release"
 
-        if await park_while_thread_busy(
+        if await park_unless_ready(
             job_id,
             attempts,
             thread_id,
+            workspace_id=str(thread["workspace_id"]),
             log_prefix=_LOG,
             subject=subject,
             parks_at_ceiling=True,

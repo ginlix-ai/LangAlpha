@@ -142,7 +142,7 @@ async def test_one_whose_host_is_reachable_is_picked_asleep_or_not_else_passed_o
     _found(cache, "c-9", "works", ago=300)
     if unreached:
         cache.values[unreached_key("c-8")] = "1"
-    tunnels = {"tun-8": {"live": live}} if tunnel else None
+    tunnels = {"tun-8": {"state": "live" if live else "down"}} if tunnel else None
     assert await _pick([laptop, studio], cache, tunnels) == ((laptop if picked else studio), None)
 
 
@@ -165,7 +165,7 @@ async def test_one_this_server_is_starting_or_stopping_is_picked_while_its_host_
     cache = Cache()
     _found(cache, "c-8", "works", ago=10)
     _found(cache, "c-9", "works", ago=300)
-    tunnels = {"tun-8": {"live": live}} if tunnel else None
+    tunnels = {"tun-8": {"state": "live" if live else "down"}} if tunnel else None
     assert await _pick([laptop, studio], cache, tunnels) == ((laptop if picked else studio), None)
     assert await _pick([laptop], cache, tunnels) == ((laptop, None) if picked else (None, "Laptop"))
 
@@ -185,7 +185,7 @@ async def test_with_every_one_signed_in_offline_none_runs_it_and_the_first_is_na
     if why == "unreached":
         cache.values[unreached_key("c-9")] = "1"
         cache.values[unreached_key("c-8")] = "1"
-    tunnels = {"tun-9": {"live": why != "tunnel_down"}, "tun-8": {"live": why != "tunnel_down"}}
+    tunnels = {tid: {"state": "down" if why == "tunnel_down" else "live"} for tid in ("tun-9", "tun-8")}
     assert await _pick([CLOUD, _own("c-7", "Old Mac"), studio, laptop], cache, tunnels) == (None, "Studio")
 
 

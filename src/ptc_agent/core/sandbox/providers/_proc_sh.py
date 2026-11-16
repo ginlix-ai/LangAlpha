@@ -114,3 +114,15 @@ PROC_SH = (
     'case " $S " in *" $p=$s "*) ;; *) [ -z "$s" ] || continue;; esac; '
     'kill -KILL "-$p" 2>/dev/null; done; }\n'
 )
+
+#: Bash run first thing in a wrapper that outlives its exec (a detached job,
+#: an exec session's command): on a Mac it holds the machine out of idle sleep
+#: until the wrapper ends, since a Mac its owner left alone sleeps and takes
+#: the command with it. ``caffeinate -w`` lets go when the wrapper exits, and
+#: in the wrapper's group it ends with any stop that signals the group. ``-i``
+#: is idle sleep only: closing the lid still sleeps, which nothing short of
+#: root can hold off. Linux has no ``caffeinate`` and no ``darwin`` OSTYPE.
+HOLD_AWAKE_SH = (
+    "case $OSTYPE in darwin*) [ ! -x /usr/bin/caffeinate ] || "
+    "/usr/bin/caffeinate -i -w $$ </dev/null >/dev/null 2>&1 & ;; esac; "
+)

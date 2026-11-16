@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.server.services.turn_runtime import TurnRoute
+from src.server.services.report_back.handoff.carry import PriorAttempt
 
 PTC = "src.server.handlers.chat.ptc_run"
 CODE = "claude-haiku-5-5-code"
@@ -83,8 +84,9 @@ async def _resume_as(role: str, model: str):
             ("normalize_request_messages", built),
             ("read_disk_notice", AsyncMock(return_value=(None, False))),
             ("_resolve_origin_meta", AsyncMock(return_value={})),
-            ("carry.carried_pair", AsyncMock(return_value={})),
-            ("carry.carried_delivery", AsyncMock(return_value=None)),
+            ("carry.prior_attempt", AsyncMock(return_value=PriorAttempt(latest=None, retried=None))),
+            ("carry.carried_pair", MagicMock(return_value={})),
+            ("carry.carried_delivery", MagicMock(return_value=None)),
         ]:
             stack.enter_context(patch(f"{PTC}.{target}", value))
         for target, value in [

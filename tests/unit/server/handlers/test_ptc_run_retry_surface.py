@@ -17,6 +17,7 @@ import pytest
 from src.server.handlers.chat.request_prep import PriorThread, build_turn_context
 from src.server.models.chat import ChatRequest
 from src.server.services.turn_runtime import TurnRoute
+from src.server.services.report_back.handoff.carry import PriorAttempt
 
 PTC = "src.server.handlers.chat.ptc_run"
 PREP = "src.server.handlers.chat.request_prep"
@@ -55,6 +56,7 @@ async def _start(request: ChatRequest, prior: PriorThread, failed_run: dict):
     config.subagents.enabled = False
     with (
         patch(f"{PTC}.setup"),
+        patch(f"{PTC}.carry.prior_attempt", new=AsyncMock(return_value=PriorAttempt(latest=None, retried=None))),
         patch(f"{PTC}.WorkspaceManager") as workspaces,
         patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=prior)),
         patch(f"{PTC}.wait_or_steer", new=AsyncMock(return_value=(True, None))),
@@ -63,9 +65,9 @@ async def _start(request: ChatRequest, prior: PriorThread, failed_run: dict):
         patch(f"{PTC}.build_turn_context", side_effect=_capture),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}._resolve_origin_meta", new=AsyncMock(return_value={})),
-        patch(f"{PTC}.carry.carried_pair", new=AsyncMock(return_value={})),
-        patch(f"{PTC}.carry.carried_delivery", new=AsyncMock(return_value=None)),
-        patch(f"{PTC}.carry.carried_firing", new=AsyncMock(return_value={})),
+        patch(f"{PTC}.carry.carried_pair", new=MagicMock(return_value={})),
+        patch(f"{PTC}.carry.carried_delivery", new=MagicMock(return_value=None)),
+        patch(f"{PTC}.carry.carried_firing", new=MagicMock(return_value={})),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.begin_run", new=AsyncMock(side_effect=_Admitted())) as begin,
         patch(f"{PREP}.tl_db.get_run", new=AsyncMock(return_value=failed_run)) as get_run,
@@ -143,3 +145,21 @@ async def test_a_retry_of_a_notification_runs_under_the_last_rules_stated():
     assert context.platform == "slack"
     assert context.inherits_rules is True
     assert stamped["surface"] == {"platform": "slack", "inherits_rules": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", [None, "wakeup"], ids=["person", "wake"])
+async def test_a_turn_nobody_watches_says_so_on_its_run(query_type):
+    """A restart's resume reads it back, so a person's own turn cut short
+    resumes as theirs, and a wake as a turn nobody watches."""
+    from src.server.contracts.turn_kinds import UNWATCHED_RUN_META
+
+    request = ChatRequest(
+        workspace_id="ws-1",
+        messages=[{"role": "user", "content": "hi"}],
+        query_type=query_type,
+    )
+
+    stamped, _, _ = await _start(request, PriorThread(), failed_run={})
+
+    assert stamped[UNWATCHED_RUN_META] is (query_type is not None)

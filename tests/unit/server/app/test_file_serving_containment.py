@@ -44,8 +44,8 @@ from src.server.services.workspace_file_containment import (
     resolve_in_sandbox,
     serving_roots,
 )
+from src.server.app.workspace_files._shared import RANGE_MAX_BYTES
 from src.server.app.workspace_files.crud import (
-    RANGE_MAX_BYTES,
     download_workspace_file,
     read_workspace_file,
 )
@@ -1036,13 +1036,13 @@ async def test_workspace_download_returns_a_contained_file(tree) -> None:
 
 _CRUD_VAULT = "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction"
 _CRUD_READ_RANGE = "src.server.app.workspace_files.crud.read_contained_sandbox_range"
-_RANGE_MAX = "src.server.app.workspace_files.crud.RANGE_MAX_BYTES"
+_RANGE_MAX = "src.server.app.workspace_files._shared.RANGE_MAX_BYTES"
 _CRUD_WARM = "src.server.app.workspace_files.crud.warm_sandbox"
 VAULT_SECRET = "vault-secret-value-1234"
 # A version line as stat prints it (size, mtime, ctime, inode), and the clock.
 STAMPED = "10 1700000000.5 1700000000.5 42"
 CLOCK = "1700000100"
-_VERSION_MIN_AGE = "src.server.services.workspace_file_containment._VERSION_MIN_AGE_S"
+_VERSION_MIN_AGE = "ptc_agent.core.sandbox.file_version._SETTLED_AFTER_S"
 
 
 @pytest.fixture
@@ -1170,8 +1170,9 @@ async def test_a_ranged_read_returns_the_slice_and_the_file_it_was_cut_from(
     sliced = await _read_range(tree, "work/chart.png", 2, 4)
     assert sliced.canonical == f"{tree.root}/work/chart.png"
     assert (sliced.size, sliced.content, sliced.head) == (10, chart[2:6], chart)
-    # mtime, ctime and inode from GNU or BSD stat, with the fraction both give.
-    assert re.fullmatch(r"\d+\.\d+-\d+\.\d+-\d+", sliced.version)
+    # Size, mtime, ctime and inode from GNU or BSD stat, with the fraction
+    # both give.
+    assert re.fullmatch(r"10-\d+\.\d+-\d+\.\d+-\d+", sliced.version)
 
 
 @pytest.mark.usefixtures("settled")
@@ -1326,7 +1327,7 @@ async def test_a_ctime_counts_once_the_clock_is_two_seconds_past_it(
         _b64(canonical.encode()), line, clock, _b64(b"head"), _b64(b"abcd"), line
     )
     sliced = await _read_range(tree, "work/chart.png", 0, 4)
-    assert sliced.version == (f"1700000000.5-{ctime}-42" if versioned else None)
+    assert sliced.version == (f"10-1700000000.5-{ctime}-42" if versioned else None)
 
 
 @pytest.mark.usefixtures("settled")
@@ -1472,6 +1473,39 @@ async def test_a_file_without_a_version_goes_whole(tree) -> None:
         response = await _ranged_download(tree, "bytes=0-3")
     assert response.status_code == 200
     assert response.body == chart
+
+
+@pytest.mark.asyncio
+async def test_a_range_the_live_read_gave_up_on_still_reaches_the_backup(tree) -> None:
+    """The warm read found no version and sent the live read for the whole
+    file; when that read failed over, the backup served the whole file to a
+    request for a slice."""
+    from fastapi.responses import Response
+
+    from src.server.services.workspace_files import FromBackup
+
+    async def live_then_backup(_ws_id, _workspace, live, backup, *, away_ok):
+        try:
+            return await live()
+        except SandboxTransientError:
+            return await backup(FromBackup())
+
+    from_backup = AsyncMock(return_value=Response(status_code=206))
+    crud = "src.server.app.workspace_files.crud"
+    with (
+        patch(f"{crud}._warm_range_response", AsyncMock(return_value=(True, None))),
+        patch(
+            f"{crud}._download_live",
+            AsyncMock(side_effect=SandboxTransientError("machine away")),
+        ) as whole,
+        patch(f"{crud}.files_from", live_then_backup),
+        patch(f"{crud}.download_from_backup", from_backup),
+    ):
+        response = await _ranged_download(tree, "bytes=0-3")
+
+    assert response.status_code == 206
+    assert whole.await_args.args[4] is None
+    assert from_backup.await_args.args[5] == (0, 3)
 
 
 @pytest.mark.asyncio

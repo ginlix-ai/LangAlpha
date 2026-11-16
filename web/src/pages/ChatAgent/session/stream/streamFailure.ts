@@ -6,7 +6,8 @@ import type { SSEEvent } from '../types';
 /**
  * The failure an `error` frame reports, as the server classified it: its
  * `error_kind` says whose fault it was (the model provider's, or this
- * service's), with the status, hints and models an upstream failure carries.
+ * service's, or neither: the turn's own machine did not answer), with the
+ * status, hints and models an upstream failure carries.
  * Undefined for a frame the server did not classify. A Claude Code refusal
  * the app words reads in its words, in the user's language, and a Claude
  * plan's limit carries its window and reset for the card to word in the
@@ -24,6 +25,24 @@ export function readStreamFailure(
     if (messageKey) return { message: worded };
   }
   const kind = event.error_kind;
+  // A replayed frame names its run as `response_id`.
+  const runId = typeof event.run_id === 'string' ? event.run_id
+    : typeof event.response_id === 'string' ? event.response_id : undefined;
+  // Worded where it is drawn, from the code and the computer that did not
+  // answer: the one the frame names, else the workspace's.
+  if (kind === 'computer_unreachable') {
+    const text = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+    return {
+      message,
+      kind,
+      unreachable: {
+        code: text(event.error_code),
+        computerId: text(event.computer_id),
+        computerName: text(event.computer_name),
+      },
+      runId,
+    };
+  }
   if (kind !== 'upstream' && kind !== 'internal') return undefined;
   // Models the resilience middleware tried this turn (primary + fallbacks).
   // Type-filtered defensively: the backend fields may be absent or partial.
@@ -54,8 +73,6 @@ export function readStreamFailure(
     // a model-aware headline and an "Also tried" line.
     model: typeof event.model === 'string' ? event.model : undefined,
     attemptedModels: attemptedModels && attemptedModels.length > 0 ? attemptedModels : undefined,
-    // A replayed frame names its run as `response_id`.
-    runId: typeof event.run_id === 'string' ? event.run_id
-      : typeof event.response_id === 'string' ? event.response_id : undefined,
+    runId,
   };
 }

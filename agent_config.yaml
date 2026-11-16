@@ -73,7 +73,7 @@ sandbox:
   # HTTP with `auth: data_token`, and not over stdio. Removing the computer
   # takes those credentials off the machine; the folder stays the owner's.
   ssh:
-    auto_stop_interval: 7200 # seconds idle before the computer's processes are stopped (2 h); the machine keeps running, and starting again takes about a second
+    auto_stop_interval: 7200 # seconds idle before each server worker drops its connection to the machine (2 h); the server never stops the computer for being idle, only its owner does
     allow_private_addresses: false # true lets users add machines at private, loopback or link-local addresses
     # true sends SSH machines what any computer gets from this server: the
     # built-in data servers' keys (FMP_API_KEY and the rest) and the GitHub

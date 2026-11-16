@@ -31,6 +31,7 @@ from typing import Any, Dict, Literal, Optional
 
 from src.observability import automation_executions, safe_add
 from src.server.contracts.status import (
+    GATEWAY_OUTAGE_META,
     INTERRUPT_REASON_CREDIT_PAUSE,
     is_restart_interrupted,
     is_user_stop,
@@ -57,8 +58,13 @@ logger = logging.getLogger(__name__)
 
 INTERRUPTED_ERROR = "The server restarted during the run"
 STOPPED_ERROR = "Stopped by the user"
+UNREACHABLE_ERROR = "The computer could not be reached"
 
 _ERROR_MAX_CHARS = 500
+
+# The run ledger's ``error_kind`` for a turn whose computer did not answer,
+# as the turn's failure frame names it.
+COMPUTER_UNREACHABLE = "computer_unreachable"
 
 # A provider's refusal of the credential that made the model call. Only a
 # 401 says the credential itself is bad; a 403 is a working key refused one
@@ -101,6 +107,11 @@ class Outcome(StrEnum):
     # event still goes out, since it is the one terminal event a channel
     # clears its "started" notice on.
     STOPPED = "stopped"
+    # The computer the turn runs on did not answer: a machine of the user's
+    # own asleep, offline or disconnected. Not the automation's doing, so it
+    # reads as a skip for that reason, as a wait for the computer that ran
+    # out does: no strike, and it counts as the firing.
+    UNREACHABLE = "unreachable"
     SKIPPED = "skipped"
 
 
@@ -203,6 +214,18 @@ _POLICIES: Dict[Outcome, _Policy] = {
         error=STOPPED_ERROR,
         skip_reason="user",
     ),
+    # As a stop, the failure event still goes out: it is the one terminal
+    # event a channel clears a started notice on.
+    Outcome.UNREACHABLE: _Policy(
+        status="skipped",
+        from_statuses=("pending", "waiting", "running"),
+        metric="unreachable",
+        schedule="close",
+        webhook="automation.failed",
+        finish="failed",
+        error=UNREACHABLE_ERROR,
+        skip_reason="computer_unreachable",
+    ),
     # Not a failure: no strike, no webhook. It still counts as the firing,
     # so the schedule moves on as it would after a run.
     Outcome.SKIPPED: _Policy(
@@ -227,10 +250,12 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     """How a firing ended, by its admitted run's ledger row; None while the
     run is still going.
 
-    A run a restart stopped goes on in the turn that takes it over, for as
+    A run that ended because its computer did not answer was skipped for
+    that, whichever role ran it. A run a restart stopped goes on in the turn that takes it over, for as
     long as one may (``carried_firing``). Any other cancel the reader did
-    not ask for is a server stopping, and an error
-    written by the ledger's recovery is a worker lost: both are ours. A run
+    not ask for is a server stopping, an error
+    written by the ledger's recovery is a worker lost, and one the tunnel
+    gateway not answering ended is its outage: all are ours. A run
     the credit gate paused hit a usage limit, and one the Claude plan stopped
     (``claude_plan``, ``plan_stop_metadata``) the plan's, and one another
     subscription refused at its limit (``plan_limit``) that one's. A model call refused 401/403
@@ -247,6 +272,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     if status == "completed":
         return Outcome.COMPLETED
     metadata = run.get("metadata") or {}
+    if status == "error" and metadata.get("error_kind") == COMPUTER_UNREACHABLE:
+        return Outcome.UNREACHABLE
     if status == "cancelled":
         if is_restart_interrupted(run) and not restart_resume_expired(
             run["cancel_requested_at"]
@@ -258,6 +285,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     if status == "error":
         if metadata.get("recovery"):
             return Outcome.INTERRUPTED
+        if metadata.get(GATEWAY_OUTAGE_META):
+            return Outcome.FAILED_OURS
         if metadata.get("claude_plan"):
             return Outcome.PLAN_LIMITED
         upstream = metadata.get("upstream") or {}
@@ -362,14 +391,20 @@ async def plan_message(
         return None
 
 
-def _one_shot_price(automation: Dict[str, Any]) -> bool:
+def runs_once(automation: Dict[str, Any]) -> bool:
+    """Whether the automation fires once: a one-time automation, or a price
+    alert that does not re-arm. Nothing later stands in for a firing of one
+    that never happens."""
+    trigger = automation.get("trigger_type")
+    if trigger != "price":
+        return trigger == "once"
     try:
         config = PriceTriggerConfig(**(automation.get("trigger_config") or {}))
     except Exception as e:
         # Re-arming is the move that loses nothing if the config is wrong.
         logger.warning(
             f"[AUTOMATION_SETTLE] Unreadable price trigger on "
-            f"automation_id={automation['automation_id']}, re-arming: {e}"
+            f"automation_id={automation['automation_id']}, read as re-arming: {e}"
         )
         return False
     return config.retrigger.mode == RetriggerMode.ONE_SHOT
@@ -382,7 +417,7 @@ def _schedule_action(
     done, and a price alert is either done or watching again."""
     trigger = automation.get("trigger_type")
     if trigger == "price" and policy.schedule is not None:
-        if policy.schedule != "rearm_price" and _one_shot_price(automation):
+        if policy.schedule != "rearm_price" and runs_once(automation):
             return "close_price"
         return "rearm_price"
     if trigger == "once" and policy.schedule == "close":
@@ -402,6 +437,7 @@ async def settle(
     skip_reason: Optional[SkipReason] = None,
     excerpt: Optional[str] = None,
     quiet_for: Optional[int] = None,
+    parked: bool = False,
     delivery: Optional[automation_delivery.Delivery] = None,
     final_text: Optional[str] = None,
 ) -> bool:
@@ -410,7 +446,8 @@ async def settle(
 
     The execution must belong to ``automation``, which keeps the skip
     endpoint to its own automation's firings. ``quiet_for`` is the sweep's:
-    settle only while the heartbeat is still that many seconds quiet.
+    settle only while the heartbeat is still that many seconds quiet, and
+    ``parked`` the parked sweep's: only while still parked for its computer.
     ``delivery`` is how the firing's start left its delivery: one the
     messaging service holds ends there instead of firing the webhook, and
     ``final_text`` is the result a completed one hands over; one the service
@@ -441,6 +478,7 @@ async def settle(
         strike=policy.strike,
         schedule=_schedule_action(policy, automation),
         quiet_for=quiet_for,
+        parked=parked,
         in_transaction=leave_finish,
         conversation_thread_id=thread_id,
         conversation_response_id=run_id,

@@ -1,12 +1,15 @@
 """Chat-stream failure classification, shared by the producer's error frame
 and the ledger metadata a failed model call leaves on its run."""
 
+import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 
 from ptc_agent.config.agent import CredentialPayer, Payer
+from ptc_agent.core.sandbox.unreachable import unreachable_code, unreachable_computer_id
 from src.llms.claude_code import ClaudeTurnFailed
 from src.llms.provider_errors import ProviderRefusal, Reason, read_refusal
+from src.server.database import computer as computer_db
 from src.server.services.llm.claude_code import claude_code_refusal
 from src.server.services.llm.payers import plan_display_name, source_payer
 from src.server.services.oauth_health import subscription_token_refusal
@@ -67,7 +70,58 @@ _UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
     "groq",
 )
 
+logger = logging.getLogger(__name__)
+
 _STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
+
+#: The kind of a run that failed because the user's own machine did not
+#: answer. A client words it from the connect code (``error_code``) in the
+#: user's terms, so it is neither party's fault the two kinds above name.
+COMPUTER_UNREACHABLE = "computer_unreachable"
+
+
+def unreachable_kind(exc: BaseException) -> Dict[str, Any]:
+    """``error_kind`` and ``error_code`` for a failure whose cause is a
+    machine that did not answer, else ``{}``. The setup funnel stamps the
+    same pair, so a turn reads alike whether its machine was gone at the
+    start or went mid-turn."""
+    code = unreachable_code(exc)
+    return {"error_kind": COMPUTER_UNREACHABLE, "error_code": code} if code else {}
+
+
+async def unreachable_failure(
+    exc: BaseException, *, workspace_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """:func:`unreachable_kind` with the ``computer_id`` and
+    ``computer_name`` of the machine that did not answer, for its frame and
+    the run row a reload words it from; ``{}`` for any other failure.
+
+    The computer a raise recorded (``unreachable_computer_id``), else the
+    workspace's: a turn's own computer is the one its workspace runs on.
+    Named so the card says which machine to wake, which for a Chief of Staff
+    is not always the computer its page shows. Best effort: a failed read
+    names nothing, and the card falls back to the workspace's computer.
+    """
+    facts = unreachable_kind(exc)
+    if not facts:
+        return {}
+    computer_id = unreachable_computer_id(exc)
+    try:
+        if computer_id:
+            row = await computer_db.get_computer(computer_id)
+        elif workspace_id:
+            row = await computer_db.get_computer_for_workspace(workspace_id)
+        else:
+            row = None
+    except Exception as e:  # noqa: BLE001 - the frame goes out without a name
+        logger.warning(f"Could not read the computer a failure names: {e}")
+        row = None
+    if not row:
+        return {**facts, "computer_id": computer_id} if computer_id else facts
+    facts["computer_id"] = str(row["computer_id"])
+    if row.get("name"):
+        facts["computer_name"] = str(row["name"])
+    return facts
 
 
 def _parse_status_from_message(text: str) -> Optional[int]:
@@ -259,7 +313,7 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
 
     if isinstance(exc, TurnTimeLimitError) or claude_code_refusal(exc, None) is not None:
         return {}
-    return {"error_kind": failure_kind(exc)["kind"]}
+    return unreachable_kind(exc) or {"error_kind": failure_kind(exc)["kind"]}
 
 
 def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
@@ -368,7 +422,8 @@ def error_event_data(
     """The ``error`` frame's data.
 
     With ``exc`` the frame carries ``error_kind`` (``upstream`` or
-    ``internal``), ``status_code`` when available, and ``hints`` for the
+    ``internal``, or ``computer_unreachable`` with only its ``error_code``),
+    ``status_code`` when available, and ``hints`` for the
     frontend to render user-actionable guidance; the legacy ``error`` and
     ``message`` fields stay so older clients keep working.
 
@@ -395,6 +450,8 @@ def error_event_data(
         "error": sanitize_error_text(error_message),
         "message": "An error occurred during processing",
     }
+    if exc is not None and (unreachable := unreachable_kind(exc)):
+        return {**data, **unreachable}
     if exc is not None:
         info = failure_kind(exc)
         trace = find_resilience_trace(exc)

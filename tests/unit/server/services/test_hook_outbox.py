@@ -1092,6 +1092,8 @@ class TestAlertSweeps:
             "revive_dead_cleanup_jobs": AsyncMock(return_value=[]),
             "revive_dead_alerts": AsyncMock(return_value=[]),
             "close_unowed_waiting_alerts": AsyncMock(return_value=[]),
+            "release_for_reachable_computers": AsyncMock(return_value=[]),
+            "close_for_lost_computers": AsyncMock(return_value=[]),
             "purge_terminal_jobs": AsyncMock(return_value=0),
             "claim_outbox_jobs": AsyncMock(return_value=[]),
             **overrides,
@@ -1134,6 +1136,49 @@ class TestAlertSweeps:
         assert any("a-1" in str(c.args[0]) for c in warning.call_args_list)
 
     @pytest.mark.asyncio
+    async def test_notifications_parked_for_a_computer_are_released_on_their_own_clock(self):
+        """A machine connecting again is read off its tunnel's row on every
+        worker, every COMPUTER_RELEASE_INTERVAL, and what it releases is
+        claimed on the same pass."""
+        import contextlib
+
+        drainer = HookOutboxDrainer()
+        calls = []
+        mocks, patches = self._sweeps(
+            release_for_reachable_computers=AsyncMock(
+                side_effect=lambda: calls.append("release")
+                or [{"hook_outbox_id": "w-1", "hook_type": "wakeup"}]
+            ),
+            claim_outbox_jobs=AsyncMock(
+                side_effect=lambda **_: calls.append("claim") or []
+            ),
+        )
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            await self._passes(drainer, 3)
+        mocks["release_for_reachable_computers"].assert_awaited_once()
+        assert calls[:2] == ["release", "claim"]
+
+    @pytest.mark.asyncio
+    async def test_notifications_for_a_machine_that_never_comes_back_are_given_up(self):
+        """Parked for good otherwise: the close sweep gives them up once the
+        machine has been gone as long as a command's notice is kept."""
+        import contextlib
+
+        drainer = HookOutboxDrainer()
+        mocks, patches = self._sweeps(
+            close_for_lost_computers=AsyncMock(
+                return_value=[{"hook_outbox_id": "r-1", "hook_type": "subagent_report_back"}]
+            ),
+        )
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            await self._passes(drainer, 3)
+        mocks["close_for_lost_computers"].assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_the_close_runs_on_a_shorter_clock_than_the_revive(self):
         """A dead alert must stay dead ten minutes before it qualifies, so
         the revive runs every ten minutes; the close keeps its minute."""
@@ -1147,7 +1192,7 @@ class TestAlertSweeps:
             passes[0] += 1
             if passes[0] == 1:
                 # A minute on: the close is due again, the revive is not.
-                drainer._next_alert_close = 0.0
+                drainer._due["alert close"] = 0.0
             else:
                 drainer._stopping.set()
 
@@ -1160,7 +1205,7 @@ class TestAlertSweeps:
         mocks["revive_dead_alerts"].assert_awaited_once()
         assert hook_outbox.ALERT_CLOSE_INTERVAL == 60.0
         assert hook_outbox.ALERT_REVIVE_INTERVAL == 600.0
-        assert drainer._next_alert_revive - drainer._next_alert_close == pytest.approx(
+        assert drainer._due["alert revive"] - drainer._due["alert close"] == pytest.approx(
             hook_outbox.ALERT_REVIVE_INTERVAL - hook_outbox.ALERT_CLOSE_INTERVAL, abs=5
         )
 

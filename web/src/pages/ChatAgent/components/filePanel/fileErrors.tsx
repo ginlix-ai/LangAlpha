@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
 import { downloadLabel, type DownloadState } from '../../utils/downloadNotice';
+import { unreachableCode } from '../../utils/computerAway';
 
 // --- File error categorization ---
 
@@ -10,6 +11,7 @@ export type FileErrorCategory =
   | 'not_backed_up'
   | 'sandbox_starting'
   | 'sandbox_unavailable'
+  | 'computer_unreachable'
   | 'binary_file'
   | 'too_large'
   | 'access_denied'
@@ -20,6 +22,8 @@ export interface FileError {
   detail?: string;
   /** The server's own sentence, shown in place of the category's hint. */
   message?: string;
+  /** On `computer_unreachable`: the connect code, which the panel words for the machine. */
+  code?: string;
 }
 
 const ERROR_I18N_KEY: Record<FileErrorCategory, string> = {
@@ -27,6 +31,7 @@ const ERROR_I18N_KEY: Record<FileErrorCategory, string> = {
   not_backed_up: 'notBackedUp',
   sandbox_starting: 'sandboxStarting',
   sandbox_unavailable: 'sandboxUnavailable',
+  computer_unreachable: 'computerUnreachable',
   binary_file: 'binaryFile',
   too_large: 'tooLarge',
   access_denied: 'accessDenied',
@@ -50,11 +55,17 @@ export function categorizeFileError(err: unknown, wsStatus?: string): FileError 
       return { category: 'too_large', detail };
     case 415:
       return { category: 'binary_file', detail };
-    case 503:
+    case 503: {
+      // The server names an owner's machine that did not answer in a header,
+      // so its name (one called "starting-mac") is never read as a state. Its
+      // code words the error, the service's own gateway included.
+      const code = unreachableCode(err);
+      if (code) return { category: 'computer_unreachable', detail, code };
       if (detail.toLowerCase().includes('starting')) {
         return { category: 'sandbox_starting', detail };
       }
       return { category: 'sandbox_unavailable', detail };
+    }
     case 400:
       // Home before its first start or turn has no computer; the open that
       // led here is starting one.
@@ -86,7 +97,8 @@ export function FileErrorDisplay({ error, onRetry, onDownload, downloadState = '
   const { t } = useTranslation();
   const key = ERROR_I18N_KEY[error.category];
 
-  const showRetry = error.category === 'sandbox_starting' || error.category === 'sandbox_unavailable' || error.category === 'unknown';
+  const showRetry = error.category === 'sandbox_starting' || error.category === 'sandbox_unavailable'
+    || error.category === 'computer_unreachable' || error.category === 'unknown';
   const downloadable = error.category === 'binary_file' || error.category === 'too_large';
   const showDownload = downloadable && !!onDownload;
   // These hints end "but you can download it", which is a promise only the

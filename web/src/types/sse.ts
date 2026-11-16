@@ -204,6 +204,10 @@ export interface AttemptedModel {
   attempts?: number;
 }
 
+/** Whose fault a failed turn was: the model provider's, this service's, or
+ *  neither, the turn's own machine not answering. */
+export type ErrorKind = 'upstream' | 'internal' | 'computer_unreachable';
+
 export interface ErrorEvent extends BaseSSEEvent {
   event: 'error';
   /** Legacy single-field message; newer backends send ``error``/``message``. */
@@ -212,7 +216,14 @@ export interface ErrorEvent extends BaseSSEEvent {
   /** Enriched fields from ``stream_errors.error_event_data``. */
   error?: string;
   message?: string;
-  error_kind?: 'upstream' | 'internal';
+  /** ``computer_unreachable``: the turn's own machine did not answer, with
+   *  the connect code in ``error_code``. */
+  error_kind?: ErrorKind;
+  /** ``timeout``, ``unreachable`` or ``not_connected``. */
+  error_code?: string;
+  /** With ``computer_unreachable``: the computer that did not answer, when known. */
+  computer_id?: string;
+  computer_name?: string;
   status_code?: number | null;
   hints?: string[];
   /** User-configured (primary) model name, when the failure is model-attributable. */

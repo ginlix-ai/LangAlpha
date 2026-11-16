@@ -55,13 +55,6 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# The inline write carries the file as base64 inside one shell script, and a
-# runtime that runs it as `bash -c <script>` (Docker) passes the script as a
-# single argument, which Linux caps at 128 KiB (MAX_ARG_STRLEN): past it the
-# exec fails E2BIG, exit 255 with no stderr. Base64 grows the file by 4/3, so
-# 64 KiB of text stays well under the cap; larger files take the upload path.
-_INLINE_TEXT_WRITE_LIMIT = 64 * 1024
-_INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
 # Outside sed's own exit codes (0, 1, 2, 4); EISDIR's number, for the reader.
 _IS_DIRECTORY_EXIT = errno.EISDIR
 # Grep output past this renders off the event loop. Rendering costs about
@@ -104,6 +97,21 @@ class SandboxWriteVerificationError(SandboxTransientError):
     edit path keeps re-raising it instead of answering the agent with "your edit
     was wrong" for a write that never landed.
     """
+
+
+# The text writes live in ``text_write``, which builds on this module; their
+# names stay importable here for the sandbox's delegators.
+_TEXT_WRITE_NAMES = frozenset(
+    {"WriteGuard", "WritePreconditionFailed", "awrite_file_text", "awrite_file_text_guarded"}
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _TEXT_WRITE_NAMES:
+        from ptc_agent.core.sandbox import text_write
+
+        return getattr(text_write, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _lock_scope(sandbox: "PTCSandbox") -> str:
@@ -481,134 +489,6 @@ async def _upload_once(
             error=str(e),
         )
         return False
-
-
-async def _exec_text_write_once(
-    sandbox: "PTCSandbox", filepath: str, normalized_path: str, content: bytes
-) -> tuple[bool, int | None]:
-    payload = base64.b64encode(content).decode("ascii")
-    target = shlex.quote(normalized_path)
-    command = "\n".join(
-        [
-            "set -eu",
-            f"target={target}",
-            'mkdir -p -- "$(dirname -- "$target")"',
-            'tmp=$(mktemp "${target}.tmp.XXXXXX")',
-            "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM",
-            f"base64 -d > \"$tmp\" <<'{_INLINE_TEXT_MARKER}'",
-            payload,
-            _INLINE_TEXT_MARKER,
-            'count=$(wc -c < "$tmp")',
-            # BSD mv (a macOS machine) has no -T. As -T does, refuse a
-            # directory, and replace a link to one rather than move into it.
-            'if [ "$(uname -s)" = Darwin ]; then',
-            '  if [ -d "$target" ]; then',
-            '    [ -L "$target" ] || { echo "mv: $target: Is a directory" >&2; exit 1; }',
-            '    rm -f -- "$target"',
-            "  fi",
-            '  mv -f -- "$tmp" "$target"',
-            "else",
-            '  mv -fT -- "$tmp" "$target"',
-            "fi",
-            "trap - EXIT HUP INT TERM",
-            "printf '%s\\n' \"$count\"",
-        ]
-    )
-    try:
-        assert sandbox.runtime is not None
-        result = await sandbox._runtime_call(
-            sandbox.runtime.exec,
-            command,
-            timeout=30,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        exit_code = getattr(result, "exit_code", -1)
-        if exit_code < 0:
-            # The Docker runtime folds a timeout or an exec exception into
-            # exit -1 rather than raising, so this is a transport failure and
-            # belongs to the same classification as a raised one.
-            raise RuntimeError(
-                f"exec did not complete: {getattr(result, 'stderr', '') or exit_code}"
-            )
-    except Exception as e:
-        await _raise_normalized(sandbox, e, op="write_file", path=normalized_path)
-        logger.warning(
-            "Failed to write text file",
-            filepath=filepath,
-            normalized_path=normalized_path,
-            error=str(e),
-        )
-        return False, None
-
-    if exit_code != 0:
-        # The sandbox answered, so this is the script failing on the file (a
-        # permission, a full disk, a directory in the way), not the runtime
-        # failing to reach it. Routing it through the liveness classifier
-        # relabels every such error "Sandbox is not reachable".
-        logger.warning(
-            "Text write script failed",
-            filepath=filepath,
-            normalized_path=normalized_path,
-            exit_code=exit_code,
-            stderr=(getattr(result, "stderr", "") or "").strip()[:500],
-        )
-        return False, None
-    safe_record(workspace_fs_bytes, len(content), {"op": "write"})
-    try:
-        return True, int((getattr(result, "stdout", "") or "").strip())
-    except ValueError:
-        return True, None
-
-
-async def awrite_file_text(sandbox: "PTCSandbox", filepath: str, content: str) -> bool:
-    """Write UTF-8 text to a sandbox file (overwrites).
-
-    This path is safe to retry automatically. The write is serialised per
-    absolute path and its landed size is checked, so a lost or truncated
-    write surfaces instead of being reported as success.
-    """
-    try:
-        encoded = content.encode("utf-8")
-    except UnicodeEncodeError as e:
-        logger.debug("Failed to encode file as utf-8", filepath=filepath, error=str(e))
-        return False
-
-    if len(encoded) >= _INLINE_TEXT_WRITE_LIMIT:
-        return await sandbox.aupload_file_bytes(filepath, encoded, verify=True)
-
-    await sandbox._wait_ready()
-    normalized_path = sandbox.normalize_path(filepath)
-    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-        filepath
-    ):
-        logger.error(f"Access denied: {filepath} is not in allowed directories")
-        return False
-
-    async with path_write_lock(sandbox, normalized_path):
-        for attempt in (1, 2):
-            written, landed_size = await _exec_text_write_once(
-                sandbox, filepath, normalized_path, encoded
-            )
-            if not written:
-                return False
-            landed = (
-                landed_size == len(encoded)
-                if landed_size is not None
-                else await _write_landed(sandbox, normalized_path, encoded)
-            )
-            if landed:
-                return True
-            logger.warning(
-                "File did not read back as written",
-                normalized_path=normalized_path,
-                attempt=attempt,
-                size=len(encoded),
-            )
-
-    raise SandboxWriteVerificationError(
-        f"Write verification failed for {normalized_path}: the file does not match "
-        f"the {len(encoded)} bytes written, after one rewrite"
-    )
 
 
 async def aread_file_range(

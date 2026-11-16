@@ -190,15 +190,14 @@ async def execute_report_back(job: dict) -> None:
     else:
         # A live turn on the thread takes the report in as a steer before its
         # next model call (``report_back.steer``), as a task's report-back
-        # does.
-        from src.server.services.report_back.notify_turn import (
-            park_while_thread_busy,
-        )
+        # does. The summary turn runs in Home, on Home's computer.
+        from src.server.services.report_back.notify_turn import park_unless_ready
 
-        if await park_while_thread_busy(
+        if await park_unless_ready(
             job_id,
             attempts,
             dispatcher_thread_id,
+            workspace_id=origin.get(ORIGIN_WORKSPACE_FIELD),
             log_prefix="[HANDOFF_REPORT_BACK]",
             subject=f"PTC thread {ptc_thread_id}",
         ):

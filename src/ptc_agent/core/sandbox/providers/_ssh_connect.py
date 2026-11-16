@@ -22,7 +22,10 @@ from typing import Any
 import asyncssh
 import structlog
 
-from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from ptc_agent.core.sandbox.providers.ssh_errors import (
+    SSHConnectError,
+    SSHMachineBusy,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -186,6 +189,19 @@ GATEWAY_NOT_CONNECTED = "not connected"
 # The reason it gives instead when a newer pairing of the machine, perhaps for
 # another account, superseded the tunnel.
 GATEWAY_PAIRED_ELSEWHERE = "paired elsewhere"
+# And for one connected that did not answer the dial in time.
+GATEWAY_NO_ANSWER = "no answer"
+# And for one with no tunnel open while the gateway is too new to tell a
+# machine that is away from one still connecting back to it: the gateway's
+# own restart, not the machine's absence.
+GATEWAY_STARTING = "starting"
+# How long the gateway waits for a machine to answer a channel open before it
+# answers GATEWAY_NO_ANSWER.
+GATEWAY_CHANNEL_OPEN_TIMEOUT_S = 15
+# A tunneled login's whole connect: past the gateway's wait, so the gateway's
+# own answer arrives rather than the worker giving up first, with room for the
+# handshake's round trips over a slow link.
+TUNNELED_CONNECT_TIMEOUT_S = GATEWAY_CHANNEL_OPEN_TIMEOUT_S + 15
 _GATEWAY_CONNECT_TIMEOUT_S = 10
 _GATEWAY_DOWN = (
     "The tunnel that machines connect through is not answering right now. "
@@ -314,6 +330,23 @@ def _gateway() -> _Gateway:
     return found
 
 
+def _busy(target: SSHTarget) -> SSHMachineBusy:
+    return SSHMachineBusy(
+        f"{target.host or 'The machine'} did not answer in time. It may be "
+        "asleep or on a slow network.",
+    )
+
+
+def not_connected_error(name: str, *, computer_id: str | None = None) -> SSHConnectError:
+    """What a dial through the gateway gets for a machine whose tunnel is down."""
+    return SSHConnectError(
+        "not_connected",
+        f"{name} is not connected. It connects by itself whenever it is on "
+        "and online, so check that it is awake and has internet.",
+        computer_id=computer_id,
+    )
+
+
 def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConnectError:
     name = target.host or "The machine"
     if exc.reason == GATEWAY_PAIRED_ELSEWHERE:
@@ -323,13 +356,15 @@ def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConne
             "Reconnect it to use it here.",
         )
     if exc.reason == GATEWAY_NOT_CONNECTED:
-        return SSHConnectError(
-            "not_connected",
-            f"{name} is not connected. It connects by itself whenever it is on "
-            "and online, so check that it is awake and has internet.",
-        )
+        return not_connected_error(name)
+    if exc.reason == GATEWAY_NO_ANSWER:
+        return _busy(target)
+    if exc.reason == GATEWAY_STARTING:
+        return SSHConnectError("gateway_unreachable", _GATEWAY_DOWN)
+    # The machine's own end refused the open: its sshd is off or turned the
+    # connection away. It answered, so it is not away, and its owner fixes it.
     return SSHConnectError(
-        "unreachable",
+        "refused",
         f"{name} is connected, but its SSH server did not take the connection "
         f"({exc.reason or 'refused'}). On a Mac, check that Remote Login is on "
         "in System Settings, General, Sharing.",
@@ -364,6 +399,14 @@ async def _through_gateway(
                 continue
             if isinstance(e, asyncssh.ChannelOpenError):
                 raise _tunnel_error(target, e) from e
+            if isinstance(e, TimeoutError):
+                # The gateway answers every open itself within
+                # GATEWAY_CHANNEL_OPEN_TIMEOUT_S, a machine that does not
+                # answer included (GATEWAY_NO_ANSWER), so a dial that ran out
+                # the clock was held up between this process and the gateway,
+                # or in a handshake the machine did answer. Neither says the
+                # machine is away.
+                raise SSHConnectError("gateway_unreachable", _GATEWAY_DOWN) from e
             raise _connect_error(target, e) from e
     raise AssertionError("unreachable")  # pragma: no cover
 
@@ -500,6 +543,9 @@ async def connect(target: SSHTarget, private_key: str) -> asyncssh.SSHClientConn
         "keepalive_count_max": max(1, target.keepalive_count_max - 1),
     }
     if target.tunnel:
+        options["connect_timeout"] = max(
+            target.connect_timeout, TUNNELED_CONNECT_TIMEOUT_S
+        )
         return await _through_gateway(target, options)
     addresses = await dial_addresses(
         target.host,

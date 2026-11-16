@@ -1,17 +1,28 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
-import { listWorkspaceFiles } from '../utils/api';
+import { listWorkspaceFiles, type ReadFrom } from '../utils/api';
 import { apiErrorDetail, apiErrorStatus } from '@/api/errors';
+import { awayRefetch, backupCode, unreachableCode } from '../utils/computerAway';
 
 interface UseWorkspaceFilesOptions {
   includeSystem?: boolean;
+}
+
+/** The workspace's computer did not answer: `code` is the server's connect
+ *  code, and `backup` says whether the files listed are its backup standing
+ *  in, or there is none and the listing failed. */
+export interface FilesAway {
+  code: string;
+  backup: boolean;
 }
 
 interface UseWorkspaceFilesResult {
   files: string[];
   loading: boolean;
   error: string | null;
+  /** Null while the computer answers, and for a stopped workspace's backup. */
+  away: FilesAway | null;
   /** For a user's action: starts a stopped computer to list it live. */
   refresh: () => Promise<void>;
   /**
@@ -41,6 +52,15 @@ function filesErrorText(error: unknown): string {
   return 'Failed to load files';
 }
 
+function awayOf(from: ReadFrom | undefined, error: unknown): FilesAway | null {
+  if (error) {
+    const refused = unreachableCode(error);
+    return refused ? { code: refused, backup: false } : null;
+  }
+  const backup = backupCode(from);
+  return backup ? { code: backup, backup: true } : null;
+}
+
 export function useWorkspaceFiles(
   workspaceId: string | null,
   { includeSystem = false }: UseWorkspaceFilesOptions = {},
@@ -56,7 +76,14 @@ export function useWorkspaceFiles(
       count < 3 && [500, 503].includes(err?.response?.status ?? 0),
     retryDelay: (attempt: number) => (attempt + 1) * 1000,
     staleTime: 30_000,
+    // A computer that went away comes back by itself, so its listing is asked
+    // for again until it answers live. Never by `refresh`, which would start
+    // a stopped one. A backup still on screen keeps it asking past a failed
+    // poll, as an open file does.
+    refetchInterval: (q) => awayRefetch(q, unreachableCode(q.state.error) ?? backupCode(q.state.data?.from)),
   });
+
+  const away = useMemo(() => awayOf(data?.from, error), [data?.from, error]);
 
   // File pings arrive in bursts (attaching to a live subagent replays one per
   // write in a single tick), so a refresh asked for mid-fetch joins one
@@ -103,6 +130,7 @@ export function useWorkspaceFiles(
     files: data?.files || NO_FILES,
     loading: isLoading,
     error: error ? filesErrorText(error) : null,
+    away,
     refresh,
     refreshInBackground,
   };

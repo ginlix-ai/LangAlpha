@@ -11,6 +11,10 @@ import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage'
 import type { OpenFileHandler } from '../utils/fileLocation';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
+import { useWorkspace } from '@/hooks/useWorkspace';
+import { useWorkspaceId } from '../contexts/WorkspaceContext';
+import { useComputer } from '../hooks/useComputers';
+import { awayMachineOf, unreachableTurnCopy } from '../utils/computerAway';
 import {
   planStopCopy, planStopOf, UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy, type PlanStop,
 } from '@/lib/upstreamFailure';
@@ -90,6 +94,7 @@ function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   if (stop) return <PlanStopCard stop={stop} />;
   if (err.kind === 'notice') return <NoticeLine message={err.message} className="py-1.5" />;
   if (err.kind === 'upstream') return <StructuredErrorDisplay err={err} />;
+  if (err.kind === 'computer_unreachable') return <ComputerUnreachableCard err={err} />;
   if (err.kind === 'internal') {
     return <ErrorDisplay parsed={{ title: t('chat.errorInternalHeadline'), detail: err.message || null, model: null, statusCode: null }} />;
   }
@@ -102,6 +107,26 @@ function PlanStopCard({ stop }: { stop: PlanStop }): React.ReactElement {
   const { t } = useTranslation();
   const { title, text } = planStopCopy(t, stop, usePlanClock());
   return <ErrorDisplay parsed={{ title, detail: text, model: null, statusCode: null }} />;
+}
+
+/** A turn a machine did not answer, worded for the computer the failure
+ *  names, else the workspace's: a Chief of Staff works on computers other
+ *  than the one its page shows. A shared view has no workspace, so its card
+ *  names no machine. */
+function ComputerUnreachableCard({ err }: { err: StructuredError }): React.ReactElement {
+  const { t } = useTranslation();
+  const workspaceId = useWorkspaceId();
+  const { data: workspace } = useWorkspace(workspaceId);
+  const named = err.unreachable;
+  const computerId = workspaceId ? named?.computerId ?? workspace?.computer_id ?? null : null;
+  const { data: computer } = useComputer(computerId);
+  // One the list read does not hold (null, not still loading) is named as
+  // the failure named it.
+  const machine = computer === null && named?.computerName
+    ? { ...awayMachineOf(null), name: named.computerName }
+    : awayMachineOf(computer);
+  const { title, detail } = unreachableTurnCopy(t, named?.code, machine);
+  return <ErrorDisplay parsed={{ title, detail, model: null, statusCode: null }} />;
 }
 
 interface ErrorDisplayProps {

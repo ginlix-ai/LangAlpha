@@ -144,4 +144,28 @@ describe('categorizeFileError', () => {
       detail: '',
     });
   });
+
+  describe('a computer that did not answer', () => {
+    const withCode = (code: string, detail: string) => ({
+      response: { status: 503, data: { detail }, headers: { 'x-computer-unreachable': code } },
+    });
+
+    it.each(['not_connected', 'unreachable', 'timeout'])('reads the machine code %s off the header', (code) => {
+      expect(categorizeFileError(withCode(code, 'Sandbox is not reachable: anything'))).toEqual({
+        category: 'computer_unreachable',
+        detail: 'Sandbox is not reachable: anything',
+        code,
+      });
+    });
+
+    it('reads the service gateway being down by its code too, which words it for the service', () => {
+      expect(categorizeFileError(withCode('gateway_unreachable', 'Sandbox is not reachable: x')))
+        .toMatchObject({ category: 'computer_unreachable', code: 'gateway_unreachable' });
+    });
+
+    it('does not read a machine named "starting" as a sandbox starting', () => {
+      const detail = 'Sandbox is not reachable: starting-mac is not connected.';
+      expect(categorizeFileError(withCode('not_connected', detail)).category).toBe('computer_unreachable');
+    });
+  });
 });

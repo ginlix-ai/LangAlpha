@@ -297,6 +297,89 @@ class TestWarmCooldownNoQuery:
         assert not wm._machine(computer_id).resolve_superseded
 
 
+class TestWarmSessionOnAMachineThatIsAway:
+    """A cached session does not change when its machine goes to sleep, so a
+    warm acquire must ask whether the machine's tunnel is up before handing
+    it out, and fail as a dial through the gateway would."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    async def _acquire(self, binding, *, tunnel_down):
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        wm.resolve_binding = AsyncMock(return_value=binding)
+        wm._ensure_project_attached = AsyncMock()
+        session = _make_session(version=0, summary="cached", config_owner=binding.workspace_id)
+        wm._machine(binding.computer_id).session = session
+        wm._record_sync(binding.computer_id)  # cooldown active
+        identity = AsyncMock(
+            return_value={
+                "status": "running",
+                "sandbox_id": "sb-1",
+                "computer_status": "running",
+                "provider_ref": "sb-1",
+            }
+        )
+        with (
+            patch("src.server.services.mcp_config.resolve_mcp_config", new_callable=AsyncMock),
+            cm_patch("db_get_workspace_identity", identity),
+            patch("src.server.services.ssh_computers.computer_tunnel_down", tunnel_down),
+        ):
+            return session, await wm.get_session_for_workspace(
+                binding.workspace_id, user_id="user-1"
+            )
+
+    @staticmethod
+    def _mac(**kw):
+        return _make_binding(
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            kind="ssh",
+            root_dir="/Users/me/langalpha",
+            provider_config={"host": "mac-mini.local", "user": "me", "tunnel": "tun-1"},
+            **kw,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_tunnel_that_is_down_fails_the_acquire_as_a_dial_would(self):
+        from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+        from ptc_agent.core.sandbox.unreachable import unreachable_computer_id
+        from src.server.services.runs.stream_errors import unreachable_kind
+
+        binding = self._mac()
+        tunnel_down = AsyncMock(return_value=True)
+        with pytest.raises(SSHConnectError) as refused:
+            await self._acquire(binding, tunnel_down=tunnel_down)
+
+        tunnel_down.assert_awaited_once_with(binding.computer_id, conn=None)
+        assert unreachable_kind(refused.value) == {
+            "error_kind": "computer_unreachable",
+            "error_code": "not_connected",
+        }
+        assert unreachable_computer_id(refused.value) == binding.computer_id
+
+    @pytest.mark.asyncio
+    async def test_a_machine_that_is_connected_pays_one_read(self):
+        binding = self._mac()
+        tunnel_down = AsyncMock(return_value=False)
+        session, result = await self._acquire(binding, tunnel_down=tunnel_down)
+
+        assert result is session
+        tunnel_down.assert_awaited_once_with(binding.computer_id, conn=None)
+
+    @pytest.mark.asyncio
+    async def test_a_cloud_computer_pays_no_read(self):
+        binding = _make_binding(str(uuid.uuid4()), str(uuid.uuid4()))
+        tunnel_down = AsyncMock(return_value=True)
+        session, result = await self._acquire(binding, tunnel_down=tunnel_down)
+
+        assert result is session
+        tunnel_down.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Session caches registry + summary; second acquire reuses without re-resolve
 # ---------------------------------------------------------------------------

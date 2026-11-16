@@ -633,3 +633,20 @@ async def test_a_notice_on_a_thread_whose_workspace_was_deleted_is_dropped():
     env.defer.assert_not_awaited()
     env.exhaust.assert_not_awaited()
     env.mark.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_notice_whose_machine_is_asleep_waits_for_it_unread():
+    """Posted while the user's machine sleeps, the wake would fail at its
+    connect with the notice already stamped; parked, it arrives once the
+    machine connects."""
+    env = Env(target=_target())
+    away = AsyncMock(return_value=True)
+    with _env(env), patch(
+        "src.server.services.report_back.notify_turn.park_while_computer_away", new=away
+    ):
+        await execute_market_target(_job())
+
+    env.post.assert_not_awaited()
+    env.mark.assert_not_awaited()
+    assert away.await_args.kwargs["workspace_id"] == "ws-1"

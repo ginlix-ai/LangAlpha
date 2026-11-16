@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { holdReload } from '@/lib/reloadHolds';
 import { classifyUploadError } from '../../utils/partUpload';
 import { uploadToWorkspace } from '../../utils/workspaceUpload';
+import type { ComputerAway } from './useComputerAway';
 
 function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): string {
   const failure = classifyUploadError(err);
@@ -23,10 +24,13 @@ function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): 
 
 /** Upload + drag-and-drop state for FilePanel (authenticated mode only —
  * upload has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileUpload({ workspaceId, onRefreshFiles }: {
+export function useFileUpload({ workspaceId, onRefreshFiles, away }: {
   workspaceId: string;
   onRefreshFiles?: () => void;
+  /** The workspace's computer, while it may be away. */
+  away: ComputerAway;
 }) {
+  const { blockedReason, describe: describeAway } = away;
   const { t } = useTranslation();
   // Upload state: a percentage while the bytes go up, then `uploadSaving`
   // while the workspace takes the file.
@@ -43,6 +47,10 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
 
   const handleUpload = useCallback(async (file: globalThis.File) => {
     if (!file || !workspaceId || uploadRef.current) return;
+    if (blockedReason) {
+      setUploadError(blockedReason);
+      return;
+    }
     const ctrl = new AbortController();
     uploadRef.current = ctrl;
     setUploadError(null);
@@ -67,7 +75,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
     } catch (err: unknown) {
       if (!ctrl.signal.aborted) {
         console.error('[FilePanel] Upload failed:', err);
-        setUploadError(uploadErrorMessage(err, file, t));
+        setUploadError(describeAway(err) ?? uploadErrorMessage(err, file, t));
       }
     } finally {
       release();
@@ -75,7 +83,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
       setUploadProgress(null);
       setUploadSaving(false);
     }
-  }, [workspaceId, onRefreshFiles, t]);
+  }, [workspaceId, onRefreshFiles, blockedReason, describeAway, t]);
 
   /** Ends an upload still sending; once the workspace is taking the file it runs to the end. */
   const cancelUpload = useCallback(() => uploadRef.current?.abort(), []);

@@ -6,7 +6,9 @@ A stop is steps that cannot be one transaction: mark the row
 as ``settle.decide`` judges it. The mark comes first, so a stopper that dies
 after its kill leaves a row saying who stopped it, and the watcher finishes
 that stop once the grace has passed. A stop never resumes a stopped computer:
-the job is already gone with it, so the row is simply finalized. On a
+the job is already gone with it, so the row is simply finalized, unless the
+computer is on a machine of the user's own, which a stop may not have
+reached: there the machine says whether the job still runs. On a
 computer still starting or stopping it leaves the mark, and the watcher
 finishes it once the machine settles.
 
@@ -39,7 +41,8 @@ from typing import (
 )
 
 from ptc_agent.core.sandbox import jobs
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxRuntime
+from ptc_agent.core.sandbox.providers import is_own_machine
+from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxGoneError, SandboxRuntime
 
 from src.server.database.runs import command_runs as cr_db
 from src.server.database.runs.command_runs import Outcome
@@ -62,9 +65,12 @@ _ending: set[asyncio.Task[None]] = set()
 
 #: How a computer's jobs can be reached: ``running`` (read them now),
 #: ``between`` (creating, starting or stopping: they may still run, and nothing
-#: can read them until the machine settles, so look again later), or ``gone``
-#: (stopped, in error, deleted or no row: they ended with it).
-Reach = Literal["running", "between", "gone"]
+#: can read them until the machine settles, so look again later),
+#: ``own_stopped`` (stopped, on a machine of the user's own: a stop the machine
+#: did not answer settled without ending anything there, so the machine says
+#: whether they still run), or ``gone`` (stopped, in error, deleted or no row:
+#: they ended with it).
+Reach = Literal["running", "between", "own_stopped", "gone"]
 
 _BETWEEN_STATUSES = frozenset(
     {ComputerStatus.CREATING, ComputerStatus.STARTING, ComputerStatus.STOPPING}
@@ -77,12 +83,24 @@ def computer_reach(computer: Optional[Mapping[str, Any]]) -> Reach:
         return "running"
     if status in _BETWEEN_STATUSES:
         return "between"
+    if status == ComputerStatus.STOPPED and computer.get("provider_ref"):
+        try:
+            if is_own_machine(computer.get("kind")):
+                return "own_stopped"
+        except ValueError:
+            pass  # no provider knows its kind, so none could still run its jobs
     return "gone"
 
 
 class ComputerBetweenStates(RuntimeError):
     """The computer is creating, starting or stopping: its jobs cannot be
     read or ended now, and may still be running."""
+
+
+class ComputerAway(ComputerBetweenStates):
+    """The computer's machine is the user's own and its tunnel is down
+    (asleep, offline): its jobs may still be running, and are read once it is
+    back. Known from the tunnel's record, so nothing dials it meanwhile."""
 
 
 @asynccontextmanager
@@ -93,8 +111,17 @@ async def computer_jobs_runtime(
     running, None when it is gone: its jobs ended with it, and nothing here
     starts one. This worker's session runtime when it holds that sandbox,
     else a detached one, which only looks the sandbox up. None as well for a
-    sandbox its provider says is gone. Raises ``ComputerBetweenStates`` for
-    a computer between states, whose jobs a stop must not take as ended."""
+    sandbox its provider says is gone.
+
+    A stopped computer on a machine of the user's own is read from the
+    machine: a runtime while the machine still marks it running (the stop
+    never reached it, so its jobs ran on), None once the machine says it
+    stopped, which ended them, or rebooted.
+
+    Raises ``ComputerBetweenStates`` for a computer between states, and
+    ``ComputerAway`` for one whose machine's tunnel is down: their jobs may
+    still run, so a stop must not take them as ended."""
+    from src.server.services.ssh_computers import computer_unreachable
     from src.server.services.workspace_manager import WorkspaceManager
 
     reach = computer_reach(computer)
@@ -103,6 +130,9 @@ async def computer_jobs_runtime(
     if reach == "gone":
         yield None
         return
+    # One Postgres read, so a sweep asks this before it dials.
+    if await computer_unreachable(computer):
+        raise ComputerAway("its machine is not connected")
     manager = WorkspaceManager.current()
     if manager is None:
         # Not a stopped computer: this process cannot reach any.
@@ -112,6 +142,8 @@ async def computer_jobs_runtime(
             runtime = await stack.enter_async_context(
                 manager.computer_runtime(dict(computer), str(computer["provider_ref"]))
             )
+            if reach == "own_stopped" and await runtime.get_state() != RuntimeState.RUNNING:
+                runtime = None
         except SandboxGoneError:
             # The row has not caught up with a sandbox that is gone, and
             # every job in it went too.
@@ -174,7 +206,7 @@ async def stop_marked(
     settled = []
     for row in rows:
         command_id = str(row["command_id"])
-        outcome = decide(row, states[command_id], up=up)
+        outcome = decide(row, states[command_id], machine_runs=up, reports_now=up)
         if not isinstance(outcome, Outcome):
             continue
         try:

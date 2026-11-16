@@ -739,6 +739,33 @@ async def test_stop_ends_the_whole_group(shell, computer):
     assert await jobs.stop_job(shell, spec.ref) is False
 
 
+@pytest.mark.skipif(
+    not (sys.platform == "darwin" and os.access("/usr/bin/caffeinate", os.X_OK)),
+    reason="only a Mac holds itself awake",
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", ["exit", "stop"])
+async def test_a_job_on_a_mac_holds_it_awake_until_it_ends(shell, computer, end):
+    mark = _marker()
+    spec = computer.spec(f"sleep {mark}")
+    await jobs.run_job(shell, spec, 0)
+    pid = Path(spec.ref.state_dir, "pid")
+    # The wrapper makes the file before it writes the record.
+    await _until(lambda: pid.exists() and bool(pid.read_text().split()))
+    wrapper = pid.read_text().split()[0]
+    hold = f"/usr/bin/caffeinate -i -w {wrapper}"
+    await _until(lambda: bool(_processes(hold)))
+
+    if end == "stop":
+        assert await jobs.stop_job(shell, spec.ref) is True
+    else:
+        # The hold can start before the command does.
+        await _until(lambda: bool(_processes(f"sleep {mark}")))
+        for line in _processes(f"sleep {mark}"):
+            subprocess.run(["pkill", "-f", line], env={"PATH": _PATH}, check=False)
+    await _until(lambda: not _processes(hold))
+
+
 @pytest.mark.asyncio
 async def test_a_stop_at_a_deadline_reads_the_trace_and_leaves_the_log_in_place(
     shell, computer

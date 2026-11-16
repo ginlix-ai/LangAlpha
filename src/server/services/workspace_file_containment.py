@@ -12,16 +12,15 @@ import base64
 import binascii
 import logging
 import posixpath
-import re
 import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Any
 from urllib.parse import unquote
 from uuid import uuid4
 
 from ptc_agent.core.paths import SANDBOX_ROOTS, SandboxLayout, strip_previous_dir_name
+from ptc_agent.core.sandbox.file_version import FileStamp, line_size, version_line
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.utils.error_sanitization import single_line
 
@@ -83,23 +82,8 @@ _RESOLVE_SH = (
 
 # How much of a file's start decides whether a range of it may go unredacted.
 UTF8_SNIFF_BYTES = 8192
-# A ranged read's version line: size, mtime, ctime and inode from one stat,
-# GNU's nanoseconds, then its seconds, then BSD's fraction. Each attempt fills
-# ``v`` on its own, since a failed one can still print (GNU reads ``-f`` as file
-# system status). ``wc`` is the last resort, for the size alone, as BusyBox's
-# reads every byte; BSD's pads it with spaces.
-_VERSION_LINE = (
-    "v=$(stat -c '%s %.9Y %.9Z %i' -- \"$tt\" 2>/dev/null) "
-    "|| v=$(stat -c '%s %Y %Z %i' -- \"$tt\" 2>/dev/null) "
-    "|| v=$(stat -f '%z %Fm %Fc %i' -- \"$tt\" 2>/dev/null) "
-    "|| v=$(wc -c < \"$tt\" | tr -d ' '); "
-)
-_TIMESTAMP = re.compile(r"\d+(\.\d+)?", re.ASCII)
-# How far the sandbox clock must have left a file's ctime behind before no
-# write still to come can share it. A write moves the ctime only by the clock's
-# step, a kernel tick or a whole second; the second beyond that covers a
-# filesystem clock a little off the sandbox's.
-_VERSION_MIN_AGE_S = 2
+# The resolved file's version line, into ``v``.
+_VERSION_LINE = version_line('"$tt"')
 
 
 class FileChangedWhileRead(Exception):
@@ -122,18 +106,26 @@ class FileTooLargeToServe(Exception):
 
 @dataclass(frozen=True)
 class ContainedFile:
-    """A contained file read whole, with the version it was read at.
+    """A contained file read whole, with the stamp it was read at.
 
-    ``content`` is None when the file is still at the version the caller
-    named, which the read then leaves unread. ``version`` is None when the
-    file has none that tells it from its next write, or it changed while it
-    was read.
+    ``content`` is None when the file is still at a stamp the caller named,
+    which the read then leaves unread. ``stamp`` is the one the read saw
+    however recent, for a save to name: checked exactly on the machine, not
+    trusted as a cache validator. None where stat gave none, or the file
+    changed while it was read. ``settled`` is whether it also tells the file
+    from its next write (:meth:`FileStamp.settled`).
     """
 
     canonical: str
     size: int
-    version: str | None
     content: bytes | None
+    stamp: FileStamp | None = None
+    settled: bool = False
+
+    @property
+    def version(self) -> str | None:
+        """The file's ETag value, for a stamp that has settled."""
+        return self.stamp.etag if self.stamp is not None and self.settled else None
 
 
 @dataclass(frozen=True)
@@ -143,7 +135,8 @@ class ContainedSlice:
     whether it is text describe one file.
 
     ``content`` is None when the offset is at or past the end, and ``version``
-    None when the file has none that tells it from its next write.
+    (an ETag value) None when the file has none that tells it from its next
+    write.
     """
 
     canonical: str
@@ -590,27 +583,35 @@ async def read_contained_sandbox_file(
 
 
 async def read_contained_sandbox_file_versioned(
-    sandbox: Any, absolute_path: str, *, work_dir: str, unless: Sequence[str] = ()
+    sandbox: Any,
+    absolute_path: str,
+    *,
+    work_dir: str,
+    unless: Sequence[FileStamp] = (),
 ) -> ContainedFile | None:
-    """``read_contained_sandbox_file`` with the version the file was read at,
-    and, given ``unless`` (``stamps_of_etag``), no read of a file still at it.
+    """``read_contained_sandbox_file`` with the stamp the file was read at,
+    and no read of a file still at one of ``unless``.
 
     Raises :class:`FileTooLargeToServe` as the plain read does.
     """
     read = await _contained_read(
-        sandbox, absolute_path, work_dir=work_dir, versioned=True, unless=unless
+        sandbox,
+        absolute_path,
+        work_dir=work_dir,
+        versioned=True,
+        unless=[stamp.line for stamp in unless],
     )
     if read is None:
         return None
     exit_code, canonical, rest = read
     lines = rest.split("\n")
-    before = _size_and_stamps(lines[0])
+    before = _stat(lines[0])
     if before is None or len(lines) < 3:
         return None
-    size, stamps = before
-    version = _version(stamps, lines[1])
+    size, stamp = before
+    settled = stamp is not None and stamp.settled(lines[1])
     if exit_code == READ_NOT_MODIFIED:
-        return ContainedFile(canonical, size, version, None)
+        return ContainedFile(canonical, size, None, stamp, settled)
     if exit_code == READ_TOO_LARGE:
         try:
             raise FileTooLargeToServe(canonical, int(lines[2].strip()))
@@ -620,44 +621,12 @@ async def read_contained_sandbox_file_versioned(
         content = base64.b64decode(lines[2], validate=True)
     except (binascii.Error, ValueError):
         return None
-    after = _size_and_stamps(lines[3]) if len(lines) > 3 else None
+    after = _stat(lines[3]) if len(lines) > 3 else None
     if after != before or len(content) != size:
-        # Rewritten while it was read: the bytes are good, the version is not
+        # Rewritten while it was read: the bytes are good, the stamp is not
         # theirs.
-        version = None
-    return ContainedFile(canonical, len(content), version, content)
-
-
-def version_etag(size: int, version: str) -> str:
-    """The validator a file's version gives a download, ranged or whole."""
-    return f"{size}-{version}"
-
-
-# One entity-tag of an If-None-Match list: quoted, so a comma inside one is
-# part of it rather than the start of the next.
-_ENTITY_TAG = re.compile(r'(?:W/)?"([^"]*)"')
-
-
-def stamps_of_etag(if_none_match: str | None) -> tuple[str, ...]:
-    """The version line each ``version_etag`` in ``if_none_match`` was made
-    from, as stat prints it, for a versioned read to compare; none for any
-    other tag."""
-    lines: list[str] = []
-    for tag in _ENTITY_TAG.findall(if_none_match or ""):
-        parts = tag.split("-")
-        if len(parts) != 4:
-            continue
-        size, mtime, ctime, inode = parts
-        if (
-            size.isascii()
-            and size.isdigit()
-            and _TIMESTAMP.fullmatch(mtime)
-            and _TIMESTAMP.fullmatch(ctime)
-            and inode.isascii()
-            and inode.isdigit()
-        ):
-            lines.append(f"{size} {mtime} {ctime} {inode}")
-    return tuple(lines)
+        return ContainedFile(canonical, len(content), content)
+    return ContainedFile(canonical, size, content, stamp, settled)
 
 
 async def read_contained_sandbox_range(
@@ -676,11 +645,12 @@ async def read_contained_sandbox_range(
         return None
     exit_code, canonical, rest = read
     lines = rest.split("\n")
-    before = _size_and_stamps(lines[0])
+    before = _stat(lines[0])
     if before is None:
         return None
-    size, stamps = before
-    version = _version(stamps, lines[1] if len(lines) > 1 else "")
+    size, stamp = before
+    clock = lines[1] if len(lines) > 1 else ""
+    version = stamp.etag if stamp is not None and stamp.settled(clock) else None
     if exit_code == READ_UNSATISFIABLE:
         return ContainedSlice(canonical, size, version, b"", None)
     if len(lines) < 5:
@@ -690,60 +660,17 @@ async def read_contained_sandbox_range(
         content = base64.b64decode(lines[3], validate=True)
     except (binascii.Error, ValueError):
         return None
-    if _size_and_stamps(lines[4]) != before or len(content) != min(
+    if _stat(lines[4]) != before or len(content) != min(
         length, size - offset
     ):
         raise FileChangedWhileRead(canonical)
     return ContainedSlice(canonical, size, version, head, content)
 
 
-def _size_and_stamps(
-    line: str,
-) -> tuple[int, tuple[str, str, str] | None] | None:
-    """A version line's size, and its mtime, ctime and inode when stat gave
-    all three.
-
-    They land in an ETag, so anything but stat's digits is none.
-    """
-    fields = line.split()
-    if not fields or not fields[0].isascii() or not fields[0].isdigit():
-        return None
-    size = int(fields[0])
-    if len(fields) != 4:
-        return size, None
-    mtime, ctime, inode = fields[1:]
-    if not (
-        _TIMESTAMP.fullmatch(mtime)
-        and _TIMESTAMP.fullmatch(ctime)
-        and inode.isascii()
-        and inode.isdigit()
-    ):
-        return size, None
-    return size, (mtime, ctime, inode)
-
-
-def _version(stamps: tuple[str, str, str] | None, clock: str) -> str | None:
-    """The stamps as one version, or None when they cannot tell the file from
-    its next write.
-
-    mtime alone cannot, since a writer can set it (``cp -p``, ``touch -r``, an
-    unpacked archive). No writer sets the ctime, and a file renamed over the
-    name brings its own inode; but a write moves the ctime only by the clock's
-    step, a kernel tick or a whole second, so two same-size writes within one
-    step share every stamp, however many digits the ctime shows. A version
-    counts only once the sandbox clock has left the last write behind, as
-    Apache's ETags do.
-    """
-    if stamps is None:
-        return None
-    clock = clock.strip()
-    if not (clock.isascii() and clock.isdigit()):
-        return None
-    mtime, ctime, inode = stamps
-    # Exact, so a fractional ctime is held to the same two seconds.
-    if Decimal(clock) - Decimal(ctime) < _VERSION_MIN_AGE_S:
-        return None
-    return f"{mtime}-{ctime}-{inode}"
+def _stat(line: str) -> tuple[int, FileStamp | None] | None:
+    """A version line's size, and its stamp where stat gave one."""
+    size = line_size(line)
+    return None if size is None else (size, FileStamp.from_line(line))
 
 
 def batch_probe_command(

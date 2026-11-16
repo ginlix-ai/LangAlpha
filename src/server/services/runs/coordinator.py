@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 from uuid import uuid4
 
+from src.server.contracts.status import unreachable_facts
 from src.server.contracts.turn_kinds import RUN_ORIGIN_META, classify_origin
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.lifecycle import (  # re-exported for callers
@@ -164,6 +165,10 @@ def _with_detached_failure_kind(outcome: RunOutcome) -> RunOutcome:
     kind = sent.get("error_kind") if sent else "internal"
     if kind:
         outcome.metadata = {**(outcome.metadata or {}), "error_kind": kind}
+        # An unreachable machine's code and name, which the row's own replay
+        # words it by.
+        if kind == "computer_unreachable" and sent:
+            outcome.metadata.update(unreachable_facts(sent))
     return outcome
 
 

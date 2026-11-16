@@ -3,15 +3,22 @@
 //! end once this machine paired again: a login that tells the gateway a newer
 //! pairing superseded the tunnel.
 
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, ChannelOpenHandle, Handle};
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{Channel, ChannelMsg};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tokio::time::Sleep;
 use tracing::{info, warn};
 
 use crate::folder::{Connection, Paired};
@@ -26,6 +33,11 @@ const SUPERSEDE: &str = "supersede";
 // It is told once, best effort: a gateway that never hears it reads the
 // tunnel as down, as it would have.
 const SUPERSEDE_TIMEOUT: Duration = Duration::from_secs(15);
+// How long the gateway may take none of what is sent before the connection
+// counts as dead. A live link, however saturated, acks within seconds; a
+// connection the gateway has left can otherwise hold until the kernel stops
+// retransmitting, about nine minutes on macOS.
+const STALL: Duration = Duration::from_secs(60);
 
 pub struct Gateway {
     host: String,
@@ -63,10 +75,13 @@ impl Gateway {
     where
         H: client::Handler<Error = anyhow::Error> + Send + 'static,
     {
-        let mut handle = tokio::time::timeout(
-            Duration::from_secs(15),
-            client::connect(Arc::new(config), (self.host.as_str(), self.port), handler),
-        )
+        let mut handle = tokio::time::timeout(Duration::from_secs(15), async {
+            let socket = TcpStream::connect((self.host.as_str(), self.port)).await?;
+            if let Err(e) = give_up_unacked(&socket, STALL) {
+                warn!("Could not bound the tunnel's retransmissions: {e}");
+            }
+            client::connect_stream(Arc::new(config), WriteWatch::new(socket, STALL), handler).await
+        })
         .await
         .context("no answer from the gateway")??;
         let key = PrivateKeyWithHashAlg::new(self.key.clone(), None);
@@ -245,6 +260,119 @@ impl client::Handler for Client {
     }
 }
 
+/// Has the kernel drop the connection once sent data has gone unacknowledged
+/// for `after`, rather than retransmitting for minutes. russh's keepalives
+/// cannot see this case: they are written by the same loop that is blocked
+/// writing into the full send buffer.
+fn give_up_unacked(socket: &TcpStream, after: Duration) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let (option, value) = {
+        // <netinet/tcp.h>, in seconds; the libc crate does not carry it.
+        const TCP_RXT_CONNDROPTIME: libc::c_int = 0x80;
+        (TCP_RXT_CONNDROPTIME, after.as_secs() as libc::c_int)
+    };
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let (option, value) = (libc::TCP_USER_TIMEOUT, after.as_millis() as libc::c_uint);
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+    {
+        use std::os::fd::AsRawFd;
+        let rc = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                option,
+                (&raw const value).cast(),
+                size_of_val(&value) as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+    let _ = (socket, after);
+    Ok(())
+}
+
+/// A stream whose write fails once it has waited `limit` with the socket
+/// taking nothing. russh's session loop awaits each flush racing only its
+/// inactivity timer, so while the send buffer is full of data a dead gateway
+/// will never ack, neither its keepalive timer nor its reads are polled, and
+/// failing the write is what ends the session. It times the waiting write,
+/// not the quiet since anything arrived: reads go unpolled during any long
+/// flush, so on a slow but live link they would look stalled too.
+pub(crate) struct WriteWatch<S> {
+    inner: S,
+    limit: Duration,
+    // Started at the first write the socket did not take, cleared by any
+    // that it did.
+    stall: Option<Pin<Box<Sleep>>>,
+}
+
+impl<S> WriteWatch<S> {
+    pub(crate) fn new(inner: S, limit: Duration) -> Self {
+        Self {
+            inner,
+            limit,
+            stall: None,
+        }
+    }
+
+    fn settle<T>(
+        &mut self,
+        cx: &mut TaskContext<'_>,
+        poll: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if poll.is_ready() {
+            self.stall = None;
+            return poll;
+        }
+        let limit = self.limit;
+        let stall = self
+            .stall
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+        match stall.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("the gateway took nothing sent for {}s", limit.as_secs()),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for WriteWatch<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for WriteWatch<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let poll = Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.settle(cx, poll)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let poll = Pin::new(&mut this.inner).poll_flush(cx);
+        this.settle(cx, poll)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use russh::keys::Algorithm;
@@ -394,5 +522,66 @@ mod tests {
             "ran something for a login it refused"
         );
         Ok(())
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn bounds_the_kernels_retransmissions() -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let socket = TcpStream::connect(listener.local_addr()?).await?;
+        give_up_unacked(&socket, STALL)?;
+        #[cfg(target_os = "macos")]
+        let (option, want) = (0x80, STALL.as_secs());
+        #[cfg(target_os = "linux")]
+        let (option, want) = (libc::TCP_USER_TIMEOUT, STALL.as_millis() as u64);
+        let mut value: libc::c_int = 0;
+        let mut len = size_of_val(&value) as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                option,
+                (&raw mut value).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+        assert_eq!(value as u64, want);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_the_peer_never_takes_fails_after_the_limit() {
+        use tokio::io::AsyncWriteExt;
+
+        let (near, _far) = tokio::io::duplex(64);
+        let mut watched = WriteWatch::new(near, STALL);
+        let started = tokio::time::Instant::now();
+        let e = watched.write_all(&[0; 1024]).await.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), STALL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_peer_that_keeps_taking_never_trips_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (near, mut far) = tokio::io::duplex(64);
+        let mut watched = WriteWatch::new(near, STALL);
+        // Each wait is short of the limit, the whole write far past it.
+        let reader = tokio::spawn(async move {
+            let mut buf = [0; 64];
+            let mut got = 0;
+            while got < 1024 {
+                tokio::time::sleep(STALL - Duration::from_secs(1)).await;
+                got += far.read(&mut buf).await.unwrap();
+            }
+        });
+        let started = tokio::time::Instant::now();
+        watched.write_all(&[0; 1024]).await.unwrap();
+        assert!(started.elapsed() > STALL * 10);
+        reader.await.unwrap();
     }
 }

@@ -36,7 +36,11 @@ from src.server.database.provenance import MAIN_PROVENANCE_LANE
 from src.server.database.runs.lifecycle import ProducerRecord
 from src.server.services.runs.credit_usage import build_credit_usage_data
 from src.server.services.runs.reasoning_facts import ReasoningDurations
-from src.server.services.runs.stream_errors import error_event_data
+from src.server.services.runs.stream_errors import (
+    COMPUTER_UNREACHABLE,
+    error_event_data,
+    unreachable_failure,
+)
 from src.tools.wakeups.models import WakeupArtifact
 from src.tools.wakeups.quiet import quiet_result
 from src.server.utils.text_phase import TextPhaseTracker
@@ -850,7 +854,7 @@ class RunSSEProducer:
                         f"thread_id={self.thread_id} run_id={self.run_id} — "
                         f"suppressing interrupt SSE; turn will finalize failed"
                     )
-                    yield self._build_error_event(
+                    yield await self._build_error_event(
                         "The assistant paused for input but the pause could not be "
                         "saved. Please retry this message.",
                     )
@@ -921,7 +925,7 @@ class RunSSEProducer:
             _stream_span.record_exception(e)
             _stream_span.set_status(Status(StatusCode.ERROR))
             if not isinstance(e, TurnTimeLimitError):
-                yield self._build_error_event(str(e), exc=e)
+                yield await self._build_error_event(str(e), exc=e)
             raise  # Re-raise so the run executor finalizes as failed
         finally:
             # Safety net: if the stream ends (timeout / error / CancelledError /
@@ -1779,24 +1783,22 @@ class RunSSEProducer:
 
         return result
 
-    def _build_error_event(
-        self,
-        error_message: str,
-        *,
-        exc: Optional[BaseException] = None,
+    async def _build_error_event(
+        self, error_message: str, *, exc: Optional[BaseException] = None
     ) -> StreamFrame:
         """Build an error frame; ``exc`` enables the classification
-        ``error_event_data`` describes."""
-        frame = self._build_sse_event(
-            "error",
-            error_event_data(
-                self.thread_id,
-                error_message,
-                exc=exc,
-                model=getattr(getattr(self.agent_config, "llm", None), "name", None),
-                config=self.agent_config,
-            ),
+        ``error_event_data`` describes, and names a machine that did not
+        answer (``unreachable_failure``)."""
+        data = error_event_data(
+            self.thread_id,
+            error_message,
+            exc=exc,
+            model=getattr(getattr(self.agent_config, "llm", None), "name", None),
+            config=self.agent_config,
         )
+        if exc is not None and data.get("error_kind") == COMPUTER_UNREACHABLE:
+            data.update(await unreachable_failure(exc))
+        frame = self._build_sse_event("error", data)
         self._error_frame = kept_error_frame(frame.data)
         return frame
 

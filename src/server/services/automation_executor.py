@@ -27,6 +27,11 @@ from src.server.database.runs import lifecycle as tl_db
 from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services import automation_delivery
+from src.server.services.automation_computer_wait import (
+    late_note,
+    park_for_computer,
+    stopped_meanwhile,
+)
 from src.server.services.automation_settlement import (
     LIMITS,
     Outcome,
@@ -58,11 +63,6 @@ ABANDONED_AFTER_SECONDS = 5 * 60
 # 429s that are our capacity rather than the user's usage limit.
 _OUR_429_TYPES = frozenset({"burst_limit", "service_unavailable"})
 
-# Automations a firing may still run under after a wait. Any other status,
-# unless the firing started under it (a manual run of a paused automation),
-# means it was paused, disabled or finished meanwhile.
-_RUNNABLE = frozenset({"active", "executing"})
-
 # ``_look_again``'s answer while the thread is still busy.
 _STILL_WAITING = object()
 
@@ -72,7 +72,6 @@ async def hand_off(
     thread_id: str,
     *,
     from_status: str,
-    checked_computer_id: str | None = None,
 ) -> None:
     """Leave a firing this draining process has not started a turn for to the
     next process: back to ``pending``, with a job that starts it there."""
@@ -80,7 +79,6 @@ async def hand_off(
         execution_id=execution_id,
         automation_id=str(automation["automation_id"]),
         user_id=automation["user_id"],
-        checked_computer_id=checked_computer_id,
     )
     handed = await exec_db.hand_off_execution(
         execution_id, from_statuses=(from_status,), thread_id=thread_id, job=job
@@ -113,11 +111,17 @@ async def start_handed_off(job: Dict[str, Any]) -> None:
     automation = await auto_db.get_automation(payload["automation_id"], payload["user_id"])
     if automation is None:
         return
+    if checked := payload.get("checked_computer_id"):
+        # A hand-off from a build that kept the checked computer in the job
+        # rather than on the row: onto the row, where the start reads it.
+        await exec_db.transition_execution(
+            payload["execution_id"], from_statuses=("pending",), to="pending",
+            checked_computer_id=checked,
+        )
     AutomationScheduler.get_instance().dispatch(
         automation,
         payload["execution_id"],
         name=f"handed_exec_{payload['automation_id'][:8]}",
-        checked_computer_id=payload.get("checked_computer_id"),
     )
 
 
@@ -154,6 +158,9 @@ class _Firing:
     # The starts made, and the entries the last one was made for.
     delivery_starts: int = 0
     delivery_entries: Optional[list[str]] = None
+    # What the run tells its agent about starting late, once a wait for its
+    # computer held it past when it was due; None when it is on time.
+    late: Optional[str] = None
 
     @property
     def held(self) -> bool:
@@ -291,19 +298,33 @@ def _limit_message(e: BaseException) -> Optional[str]:
     return e.detail.get("message") or DEFAULT_STOP_MESSAGE
 
 
+def _computer_unreachable(e: BaseException) -> bool:
+    """The turn's computer did not answer its connect: a machine of the
+    user's own asleep, offline or disconnected, which the firing is skipped
+    for, not failed. One that answered and refused is the automation's, and
+    the tunnel gateway down is ours (``unreachable_code``)."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
+
+    return unreachable_code(e) is not None
+
+
 def _our_failure(e: BaseException) -> bool:
     """An outage of ours rather than the automation's failure.
 
     The credit gate's 503 is its fail-closed answer when the quota service
     gives no verdict, a burst or unavailable 429 is our capacity, an
-    unavailable writer guard is the checkpoint store, and a workspace moving
-    to another computer is its owner's doing, not the automation's. A usage
-    limit is not here either: it is ``_limit_message``'s, and never a strike.
+    unavailable writer guard is the checkpoint store, the tunnel gateway not
+    answering is the service's own, and a workspace moving to another
+    computer is its owner's doing, not the automation's. A usage limit is not
+    here either: it is ``_limit_message``'s, and never a strike.
     """
+    from ptc_agent.core.sandbox.unreachable import unanswered_code
     from src.server.database.workspace import WorkspaceMovingError
     from src.server.services.writer_guard import WriterGuardUnavailable
 
     if isinstance(e, (WriterGuardUnavailable, WorkspaceMovingError)):
+        return True
+    if unanswered_code(e) == "gateway_unreachable":
         return True
     if not isinstance(e, HTTPException):
         return False
@@ -312,6 +333,25 @@ def _our_failure(e: BaseException) -> bool:
         and isinstance(e.detail, dict)
         and e.detail.get("type") in _OUR_429_TYPES
     )
+
+
+async def _failure_outcome(e: BaseException, user_id: str) -> tuple[Outcome, Optional[str]]:
+    """How a firing that failed before its run took it over settles, and the
+    error it records: the computer not answering, a Claude plan or usage
+    limit (none a strike), an outage of ours, or the automation's own
+    failure."""
+    # Lazy: the Claude Code services import the automation tools.
+    from src.server.services.llm.claude_code import plan_detail
+
+    if _computer_unreachable(e):
+        return Outcome.UNREACHABLE, None
+    if (plan := plan_detail(e)) is not None:
+        message = await plan_message(plan, user_id)
+        return Outcome.PLAN_LIMITED, message or clean_error_text(str(plan.get("message")))
+    if (limit := _limit_message(e)) is not None:
+        return Outcome.LIMITED, limit
+    error = f"{type(e).__name__}: {clean_error_text(str(e))}"
+    return (Outcome.FAILED_OURS if _our_failure(e) else Outcome.FAILED), error
 
 
 async def _credentials(user_id: str) -> tuple[bool, bool]:
@@ -479,7 +519,6 @@ class AutomationExecutor:
         execution_id: str,
         thread_id: str,
         deadline: float,
-        checked_computer_id: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         """Hold the firing as ``waiting`` until its thread's turn ends.
 
@@ -498,6 +537,7 @@ class AutomationExecutor:
             to="waiting",
             conversation_thread_id=thread_id,
             started_at=datetime.now(timezone.utc),
+            wait_reason="thread_busy",
         ):
             return None
         logger.info(
@@ -535,11 +575,7 @@ class AutomationExecutor:
                 # firing on, still in line for the thread.
                 if restart_drain.draining():
                     await hand_off(
-                        automation,
-                        execution_id,
-                        thread_id,
-                        from_status="waiting",
-                        checked_computer_id=checked_computer_id,
+                        automation, execution_id, thread_id, from_status="waiting"
                     )
                 else:
                     await self._skip_interrupted(automation, execution_id)
@@ -584,10 +620,7 @@ class AutomationExecutor:
             return None
         if not await _thread_busy(thread_id):
             fresh = await auto_db.get_automation(automation_id, automation["user_id"])
-            if fresh is None or (
-                fresh["status"] not in _RUNNABLE
-                and fresh["status"] != automation["status"]
-            ):
+            if stopped_meanwhile(fresh, automation["status"]):
                 await settle(
                     automation, execution_id, Outcome.SKIPPED, skip_reason="user"
                 )
@@ -804,6 +837,11 @@ class AutomationExecutor:
                 # (``services/notices``).
                 run_metadata["automation_name"] = name
             extra_configurable = None
+            if firing.late:
+                additional_context = [
+                    *(additional_context or []),
+                    {"type": "directive", "content": firing.late},
+                ]
             if firing.held:
                 additional_context = [
                     *(additional_context or []),
@@ -873,11 +911,7 @@ class AutomationExecutor:
                 return True
             firing.run_id = None
             fresh = await self._wait_for_thread(
-                automation,
-                execution_id,
-                firing.thread_id,
-                deadline,
-                checked_computer_id=firing.checked_computer_id,
+                automation, execution_id, firing.thread_id, deadline
             )
             if fresh is None:
                 return False
@@ -888,13 +922,7 @@ class AutomationExecutor:
             has_byok, has_cred = await _credentials(user_id)
             await enforce_credit_limit(user_id, byok=has_cred)
 
-    async def execute(
-        self,
-        automation: Dict[str, Any],
-        execution_id: str,
-        *,
-        checked_computer_id: str | None = None,
-    ) -> None:
+    async def execute(self, automation: Dict[str, Any], execution_id: str) -> None:
         """Run one firing of ``automation`` until it settles or its run does.
 
         It starts only from ``pending``: the sweep may have settled it while
@@ -902,7 +930,10 @@ class AutomationExecutor:
         finalize settles it. Every other exit goes through ``settle`` here,
         which refuses when a skip or the sweep ended the firing first; the
         firing then stays as they recorded it. A firing a draining process
-        handed over (``hand_off``) runs on the thread it had there.
+        handed over (``hand_off``) runs on the thread it had there, and one
+        parked for its computer (``park_for_computer``) starts here again
+        once the sweep releases it. Every start holds the turn to the computer
+        the row's ``checked_computer_id`` names.
         """
         automation_id = str(automation["automation_id"])
         user_id = automation["user_id"]
@@ -924,6 +955,13 @@ class AutomationExecutor:
             )
             return
         handed_thread = started.get("conversation_thread_id")
+        # Read before the heartbeat starts: only the ``finally`` below stops it.
+        checked = started.get("checked_computer_id")
+        firing = _Firing(
+            automation=automation,
+            checked_computer_id=str(checked) if checked else None,
+            late=await late_note(automation, started),
+        )
 
         _trigger = automation.get("trigger_type") or "unknown"
         _exec_span = _otel_tracer.start_span(
@@ -937,8 +975,6 @@ class AutomationExecutor:
             _keep_alive(execution_id),
             name=f"automation_heartbeat_{execution_id[:8]}",
         )
-
-        firing = _Firing(automation=automation, checked_computer_id=checked_computer_id)
         wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
         try:
             # ─── Wait out a running turn ──────────────────────────
@@ -948,11 +984,7 @@ class AutomationExecutor:
             pinned = _pinned_thread(automation)
             if pinned and await _thread_busy(pinned):
                 fresh = await self._wait_for_thread(
-                    automation,
-                    execution_id,
-                    pinned,
-                    wait_deadline,
-                    checked_computer_id=firing.checked_computer_id,
+                    automation, execution_id, pinned, wait_deadline
                 )
                 if fresh is None:
                     _exec_span.set_attribute("status", "skipped")
@@ -961,13 +993,22 @@ class AutomationExecutor:
                 # as it now stands, its workspace and thread included.
                 firing.automation = fresh
 
+            # ─── Wait for the computer ────────────────────────────
+            # Also before the credit gate: the wait can last the night. A
+            # firing parked here starts over once the computer is back, so
+            # its wait for a busy thread is counted from the computer's
+            # return, not spent by the night.
+            place = await _turn_place(firing.automation)
+            route = turn_route(user_id, place.workspace)
+            if await park_for_computer(firing.automation, execution_id, route.workspace_id):
+                _exec_span.set_attribute("status", "waiting_for_computer")
+                return
+
             # ─── Credential check + credit gate ───────────────────
             has_byok, has_cred = await _credentials(user_id)
             await enforce_credit_limit(user_id, byok=has_cred)
 
             # ─── Resolve workspace + thread ───────────────────────
-            place = await _turn_place(firing.automation)
-            route = turn_route(user_id, place.workspace)
             await route.bind(user_id, place.workspace)
             firing.route = route
             firing.thread_id = (
@@ -1015,11 +1056,7 @@ class AutomationExecutor:
 
         except restart_drain.Draining:
             await hand_off(
-                firing.automation,
-                execution_id,
-                firing.thread_id,
-                from_status="running",
-                checked_computer_id=firing.checked_computer_id,
+                firing.automation, execution_id, firing.thread_id, from_status="running"
             )
             _exec_span.set_attribute("status", "handed_off")
         except Exception as e:
@@ -1027,37 +1064,14 @@ class AutomationExecutor:
             if await self._left_to_run(execution_id, e, firing):
                 _exec_span.set_attribute("status", "handed_to_run")
                 return
-            # Lazy: the Claude Code services import the automation tools.
-            from src.server.services.llm.claude_code import plan_detail
-
-            limit_message = _limit_message(e)
-            plan = plan_detail(e)
-            if plan is not None:
-                outcome = Outcome.PLAN_LIMITED
-                error_msg = await plan_message(plan, user_id) or clean_error_text(str(plan.get("message")))
-                logger.warning(
-                    f"[AUTOMATION_EXEC] The Claude plan refused the firing, no "
-                    f"strike: execution_id={execution_id}"
-                )
-            elif limit_message is not None:
-                outcome, error_msg = Outcome.LIMITED, limit_message
-                logger.warning(
-                    f"[AUTOMATION_EXEC] A usage limit refused the firing, no "
-                    f"strike: execution_id={execution_id} error={error_msg}"
-                )
-            else:
-                ours = _our_failure(e)
-                outcome = Outcome.FAILED_OURS if ours else Outcome.FAILED
-                error_msg = f"{type(e).__name__}: {clean_error_text(str(e))}"
-                logger.error(
-                    f"[AUTOMATION_EXEC] Execution failed: "
-                    f"execution_id={execution_id} error={error_msg}"
-                )
-                if ours:
-                    logger.warning(
-                        f"[AUTOMATION_EXEC] Not counting a strike against "
-                        f"automation_id={automation_id}: the failure was ours"
-                    )
+            outcome, error_msg = await _failure_outcome(e, user_id)
+            failed = outcome in (Outcome.FAILED, Outcome.FAILED_OURS)
+            log = logger.error if failed else logger.warning
+            log(
+                f"[AUTOMATION_EXEC] The firing ended {outcome}: "
+                f"automation_id={automation_id} execution_id={execution_id} "
+                f"error={error_msg if error_msg is not None else type(e).__name__}"
+            )
             await self._start_delivery_unstarted(execution_id, firing)
             settled = await settle(
                 firing.automation, execution_id, outcome,

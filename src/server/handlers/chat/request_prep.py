@@ -606,6 +606,7 @@ def build_turn_context(
     disk_known: bool = False,
     inherits_rules: bool = False,
     sent_at: float | None = None,
+    carried_unwatched: bool | None = None,
 ) -> TurnContext:
     """What this turn knows about itself: the request's surface plus the prior row.
 
@@ -616,8 +617,11 @@ def build_turn_context(
     automation stamps the origin on every request it sends, so nothing is lost.
     ``disk_free_mb`` and ``disk_known`` come from :func:`read_disk_notice`.
     ``inherits_rules`` is set for a retry whose attempt ran under the last
-    rules stated (:func:`retried_on_its_surface`). ``sent_at`` is when the
-    server received the request, ahead of admission and the workspace's start.
+    rules stated (:func:`retried_on_its_surface`). ``unwatched`` is a turn
+    nobody is there to see run (:func:`is_unwatched_turn`), or as recorded on
+    the turn a restart stopped that this one resumes (``carried_unwatched``,
+    from ``carry.carried_unwatched``). ``sent_at`` is when the server
+    received the request, ahead of admission and the workspace's start.
 
     The zone is the profile's before the request's: a channel or an
     automation's own request names none, and the request alone would put
@@ -636,6 +640,9 @@ def build_turn_context(
         origin_agent=request.origin.agent if request.origin else None,
         surface_rules=request.surface_rules,
         inherits_rules=inherits_rules or is_notification_turn(request),
+        unwatched=(
+            is_unwatched_turn(request) if carried_unwatched is None else carried_unwatched
+        ),
         disk_free_mb=disk_free_mb,
         disk_known=disk_known,
         timezone=zone,
@@ -655,6 +662,25 @@ def is_notification_turn(request: ChatRequest) -> bool:
     (``threads/messaging.py``), so a client cannot claim one.
     """
     return request.query_type in NOTIFICATION_QUERY_TYPES and not request.platform
+
+
+def is_unwatched_turn(request: ChatRequest) -> bool:
+    """Whether nobody is there to see the turn run, so nobody can wake a
+    machine of theirs that stops answering during it.
+
+    A turn this server posts (a report-back, a wake), whatever surface it
+    reports to, an automation's run, and work another agent sends (a Chief of
+    Staff hand-off, a computer's agent through the ``la`` CLI). ``query_type``
+    and the announced keys are stripped from a client's body
+    (``threads/messaging.py``), and only a session or the server states an
+    origin (``principal.stamp_origin``). A restart's resume takes it from
+    the turn it carries on instead (``carry.carried_unwatched``).
+    """
+    return (
+        request.query_type in NOTIFICATION_QUERY_TYPES
+        or bool(request.wakeup or request.market_target)
+        or (request.origin is not None and request.origin.type in ("automation", "agent"))
+    )
 
 
 def turn_surface(request: ChatRequest, prior: PriorThread) -> Optional[str]:

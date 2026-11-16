@@ -43,6 +43,12 @@ _ACT_MARGIN_S = 60
 _after_cancel: set[asyncio.Task[None]] = set()
 
 _STOPPED_AFTER_THE_HOUR = "It is stopped an hour after your turn ends."
+# On a computer the idle sweep never stops, nothing ends a command for its
+# turn, so a server left running is the agent's to stop.
+_RUNS_ON = (
+    "It is not stopped when your turn ends: it runs until it finishes or is "
+    "stopped, so stop a server or watcher once it is no longer needed."
+)
 _WAKEUP_CHECK = (
     "It is stopped an hour after your turn ends. If it needs longer, schedule a "
     "wakeup to check on it before then: it keeps running until an hour after "
@@ -270,12 +276,11 @@ async def _drive(
         if hand_off is not None:
             if await held.hand_over(call, hand_off):
                 log = hand_off.log_path(outcome.ref)
+                after = await _after_turn(call.computer_id(), wakeups=hand_off.wakeups)
                 text = (
-                    background_result(outcome, wakeups=hand_off.wakeups, log=log)
+                    background_result(outcome, after_turn=after, log=log)
                     if background
-                    else handoff_result(
-                        outcome, waited_s=wait_s, wakeups=hand_off.wakeups, log=log
-                    )
+                    else handoff_result(outcome, waited_s=wait_s, after_turn=after, log=log)
                 )
                 return (text, {"mcp_trace": [], "command_id": outcome.ref.command_id}), Outbox()
             if background:
@@ -495,32 +500,56 @@ def _ran_for(seconds: float) -> str:
     return format_duration(round(seconds))
 
 
-def handoff_result(outcome: Running, *, waited_s: float, wakeups: bool, log: str) -> str:
+async def _after_turn(computer_id: str | None, *, wakeups: bool) -> str:
+    """What a handed-off command's result says happens to it after the turn.
+
+    The watcher stops it an hour after the turn only on a computer the idle
+    sweep would stop. A computer that cannot be read keeps the hour, the
+    text every computer got before the sweep spared any.
+    """
+    try:
+        # Lazy: a build with no server behind it never hands off.
+        from src.server.database.computer import get_computer
+        from src.server.services.idle_policy import spared_by_idle_sweep
+
+        computer = await get_computer(computer_id) if computer_id else None
+        if computer is not None:
+            try:
+                spared = spared_by_idle_sweep(computer)
+            except ValueError:
+                # No provider knows its kind, so the sweep never stops it.
+                spared = True
+            if spared:
+                return _RUNS_ON
+    except Exception as e:  # noqa: BLE001 - the hour is the safe thing to say
+        logger.warning("Could not read a handed-off command's computer", error=str(e))
+    return _WAKEUP_CHECK if wakeups else _STOPPED_AFTER_THE_HOUR
+
+
+def handoff_result(outcome: Running, *, waited_s: float, after_turn: str, log: str) -> str:
     """What a call that waited and handed its job off returns.
 
     ``waited_s`` is the wait the call asked for, not the job's age: the
     launch's own round trip, or an auto-install rerun that started the clock
     over, would otherwise read as a wait nobody chose ("21s" for 20).
     """
-    middle = _WAKEUP_CHECK if wakeups else _STOPPED_AFTER_THE_HOUR
     return (
         f"Still running after {format_duration(waited_s)}, so it moved to the "
         f"background as command_id {outcome.ref.command_id}. Its output goes to "
         f"{log} as it runs, and you will be notified when it "
         "finishes. To stop it early, use ThreadStatus with stop.\n\n"
-        f"{middle}\n\n"
+        f"{after_turn}\n\n"
         "Meanwhile do other work, or tell the user it is running and end your turn."
     )
 
 
-def background_result(outcome: Running, *, wakeups: bool, log: str) -> str:
+def background_result(outcome: Running, *, after_turn: str, log: str) -> str:
     """What ``run_in_background`` returns at launch."""
-    middle = _WAKEUP_CHECK if wakeups else _STOPPED_AFTER_THE_HOUR
     return (
         f"Started in the background as command_id {outcome.ref.command_id}. Its "
         f"output goes to {log} as it runs, and you will be "
         "notified when it finishes. To stop it early, use ThreadStatus with stop.\n\n"
-        f"{middle}"
+        f"{after_turn}"
     )
 
 

@@ -233,6 +233,25 @@ class TestSweepClaim:
         push.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_an_own_machine_whose_tunnel_is_down_is_not_dialed(self):
+        sweeper = DataTokenSweeper()
+        manager = MagicMock(_detached_runtime=MagicMock(side_effect=AssertionError("dialed")))
+        row = {**_row(), "kind": "ssh", "provider_config": {"tunnel": "tun-1"}}
+
+        with (
+            patch.object(db, "load", AsyncMock(return_value=db.DataTokenRow())),
+            patch(
+                "src.server.services.computer_manager.ComputerManager.get_instance",
+                return_value=manager,
+            ),
+            patch(
+                "src.server.services.ssh_computers.computer_tunnel_down",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            assert await sweeper._write_locked(COMPUTER_ID, row) is False
+
+    @pytest.mark.asyncio
     async def test_a_sandbox_paused_during_the_mint_is_not_written(self):
         # Attaching resumes a paused E2B sandbox, which would undo the stop.
         from ptc_agent.core.sandbox.runtime import RuntimeState
@@ -781,6 +800,18 @@ class TestSweepSparesIdleComputers:
     ):
         with self._manager(), self._executor(False):
             assert await data_token_sweep.keeps_running(self._idle_row(idle_s)) is kept
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("own_machine", "kept"), [(True, True), (False, False)])
+    async def test_an_own_machine_keeps_its_token_fresh_however_long_it_is_quiet(
+        self, own_machine, kept
+    ):
+        """No sweep stops a machine of the user's own, so a server or an app
+        the agent left running there may call the data servers hours after
+        the last turn stamped it, with no command of the agent's in flight."""
+        row = {**self._idle_row(4 * 3600), "kind": "ssh" if own_machine else "daytona"}
+        with self._manager(), self._executor(False):
+            assert await data_token_sweep.keeps_running(row) is kept
 
     @pytest.mark.asyncio
     async def test_an_idle_computer_with_nothing_running_is_not_written(self):

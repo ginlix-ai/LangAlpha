@@ -11,6 +11,7 @@ from typing import Literal
 ConnectErrorCode = Literal[
     "auth_failed",
     "unreachable",
+    "refused",
     "timeout",
     "not_connected",
     "paired_elsewhere",
@@ -23,7 +24,9 @@ ConnectErrorCode = Literal[
 ]
 # The codes of a machine that did not answer, as against one that answered and
 # refused. ``not_connected`` is a tunneled machine with no tunnel up, and
-# ``gateway_unreachable`` the tunnel gateway itself not answering.
+# ``gateway_unreachable`` the tunnel gateway itself not answering. ``refused``
+# is a tunneled machine whose own end turned the connection away (its SSH
+# server off), which answered.
 UNANSWERED_CODES: frozenset[ConnectErrorCode] = frozenset(
     {"unreachable", "timeout", "not_connected", "gateway_unreachable"}
 )
@@ -43,11 +46,15 @@ class SSHConnectError(RuntimeError):
 
     ``code`` is what a client words its copy from; ``str(exc)`` is a sentence
     the machine's owner can act on, so unlike other provider text it may be
-    shown to them.
+    shown to them. ``computer_id`` names the computer, where the raiser knows
+    it, for its ``computer_unreachable`` frame.
     """
 
-    def __init__(self, code: ConnectErrorCode, message: str) -> None:
+    def __init__(
+        self, code: ConnectErrorCode, message: str, *, computer_id: str | None = None
+    ) -> None:
         self.code: ConnectErrorCode = code
+        self.computer_id = computer_id
         super().__init__(message)
 
     @property
@@ -57,12 +64,37 @@ class SSHConnectError(RuntimeError):
         return self.code not in UNANSWERED_CODES
 
     @property
+    def machine_silent(self) -> bool:
+        """The machine itself did not answer: asleep, offline or its tunnel
+        down. Not the tunnel gateway failing, which is the service's outage,
+        retried as one, and nothing the machine's owner can fix."""
+        return not self.answered and self.code != "gateway_unreachable"
+
+    @property
     def for_owner(self) -> str:
         """The sentence for the owner, with what to check when it is their
         machine that did not answer."""
         if self.answered or self.code in _SELF_EXPLAINED_CODES:
             return str(self)
         return f"{self} {CHECK_MACHINE}"
+
+
+class SSHMachineBusy(SSHConnectError):
+    """A tunneled machine its tunnel still lists that did not answer a dial in
+    time.
+
+    It went to sleep since its tunnel's keepalives last answered, or its
+    answer queued behind what it is sending or crawled over a slow link. The
+    code stays ``timeout``, which clients word as a machine not answering,
+    and the sentence names both causes rather than asking whether it is on.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__("timeout", message)
+
+    @property
+    def for_owner(self) -> str:
+        return str(self)
 
 
 # A computer's id on its machine, as its folder's mark holds it. Only an id

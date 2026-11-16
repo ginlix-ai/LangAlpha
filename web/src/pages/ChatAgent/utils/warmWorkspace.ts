@@ -15,6 +15,7 @@ import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { queryKeys } from '@/lib/queryKeys';
 import type { ComputersResponse, Workspace, WorkspacesResponse } from '@/types/api';
 
+import { cachedComputer } from '../hooks/useComputers';
 import { startWorkspace } from './api';
 import type { WarmReason } from './api/workspaces';
 import { cachedHomeRow, workspaceDetailQuery } from './workspaceQueries';
@@ -133,10 +134,8 @@ async function homeComputerId(queryClient: QueryClient, workspaceId: string): Pr
 /** What the caches believe a machine is doing: its own row, else a workspace
  * bound to it. */
 function cachedComputerStatus(queryClient: QueryClient, computerId: string): string | undefined {
-  for (const [, data] of queryClient.getQueriesData<ComputersResponse>({ queryKey: queryKeys.computers.lists() })) {
-    const computer = data?.computers?.find((c) => c.computer_id === computerId);
-    if (computer) return computer.status;
-  }
+  const computer = cachedComputer(queryClient, computerId);
+  if (computer) return computer.status;
   return cachedWorkspaceLists(queryClient)
     .find((w) => w.computer_id === computerId && w.status !== 'deleted')
     ?.status;
@@ -211,10 +210,15 @@ export function warmWorkspace(
     return Promise.resolve();
   }
 
+  // Released from the promise, not the body: a cached detail can end the body
+  // before its first await, which is before the entry is set below.
   const p = (async () => {
     try {
       const detail = cached ?? (await queryClient.fetchQuery(workspaceDetailQuery(workspaceId)));
       if (!detail?.status || !['stopped', 'running'].includes(detail.status)) return;
+      // A warm now could only fail beside the card that says the machine is
+      // away: asleep or offline, it connects by itself once awake.
+      if (cachedComputer(queryClient, detail.computer_id)?.ssh?.tunnel_connected === false) return;
 
       const resp = await startWorkspace(workspaceId, { lazy: true, reason });
       // Only reflect the 202 'starting' if nothing has advanced the cache past
@@ -237,10 +241,8 @@ export function warmWorkspace(
       if (import.meta.env?.DEV) {
         console.warn('[warmWorkspace] failed', workspaceId, err);
       }
-    } finally {
-      inFlight.delete(workspaceId);
     }
-  })();
+  })().finally(() => inFlight.delete(workspaceId));
 
   inFlight.set(workspaceId, p);
   return p;

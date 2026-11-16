@@ -23,7 +23,8 @@ OWNER = "3cd2aabcfce04ecf83f69a2e2952866c"
     [
         ("folder_marked", "ssh", "reinstall"),
         ("root_dir", "ssh", "reinstall"),
-        ("not_connected", "ssh", "reconnect"),
+        # A machine whose tunnel is down is asleep or offline, not unpaired.
+        ("not_connected", "ssh", "retry"),
         ("paired_elsewhere", "ssh", "reconnect"),
         ("auth_failed", "ssh", "reconnect"),
         ("host_key_mismatch", "ssh", "reconnect"),
@@ -42,25 +43,19 @@ def test_the_server_chooses_the_repair(code, kind, remedy):
 def test_a_marked_folder_names_the_computer_whose_mark_it_is():
     exc = SSHFolderMarked("/home/dev/langalpha on box is the folder of ...", OWNER)
 
-    failure = sf.describe_start_failure(exc, kind="ssh")
+    failure = sf.describe_start_failure(exc)
 
-    assert failure == {
-        "code": "folder_marked",
-        "message": str(exc),
-        "owner": OWNER,
-        "remedy": "reinstall",
-    }
+    assert failure == {"code": "folder_marked", "message": str(exc), "owner": OWNER}
 
 
 def test_a_machine_that_paired_elsewhere_is_told_in_its_own_words():
     """No check-the-machine advice: it is not away, it moved."""
     exc = SSHConnectError("paired_elsewhere", "mac is now connected elsewhere.")
 
-    assert sf.describe_start_failure(exc, kind="ssh") == {
+    assert sf.describe_start_failure(exc) == {
         "code": "paired_elsewhere",
         "message": "mac is now connected elsewhere.",
         "owner": None,
-        "remedy": "reconnect",
     }
 
 
@@ -74,21 +69,19 @@ def test_a_machine_that_did_not_answer_is_found_behind_its_wrapper():
         except SSHConnectError as e:
             raise SandboxHostUnavailableError("abc", e.for_owner) from e
     except SandboxHostUnavailableError as wrapped:
-        failure = sf.describe_start_failure(wrapped, kind="ssh")
+        failure = sf.describe_start_failure(wrapped)
 
     assert failure["code"] == "not_connected"
     assert failure["message"] == cause.for_owner
-    assert failure["remedy"] == "reconnect"
     assert failure["owner"] is None
 
 
 def test_any_other_failure_never_shows_the_providers_text():
     exc = RuntimeError("POST https://admin:hunter2@api.vendor/sandboxes/sbx-1 500")
 
-    failure = sf.describe_start_failure(exc, kind="daytona")
+    failure = sf.describe_start_failure(exc)
 
     assert failure["code"] == "start_failed"
-    assert failure["remedy"] == "retry"
     assert "hunter2" not in failure["message"]
     assert "sbx-1" not in failure["message"]
 
@@ -98,7 +91,7 @@ async def test_a_write_that_fails_never_replaces_the_starts_own_error():
     with patch.object(
         sf, "record_computer_start_failure", AsyncMock(side_effect=OSError("db down"))
     ) as write:
-        await sf.record_start_failure("c-1", RuntimeError("boom"), kind="ssh")
+        await sf.record_start_failure("c-1", RuntimeError("boom"))
 
     write.assert_awaited_once()
 
@@ -106,7 +99,7 @@ async def test_a_write_that_fails_never_replaces_the_starts_own_error():
 @pytest.mark.asyncio
 async def test_nothing_is_written_for_a_project_on_no_computer():
     with patch.object(sf, "record_computer_start_failure", AsyncMock()) as write:
-        await sf.record_start_failure(None, RuntimeError("boom"), kind="ssh")
+        await sf.record_start_failure(None, RuntimeError("boom"))
 
     write.assert_not_awaited()
 
@@ -134,11 +127,11 @@ def test_every_computer_response_carries_it(sample_computer_dict):
     row = sample_computer_dict(
         kind="ssh",
         status="stopped",
+        # As a start records it: the remedy is the read's to derive.
         start_failure={
             "code": "root_dir",
             "message": "Choose a new or empty folder.",
             "owner": None,
-            "remedy": "reinstall",
             "at": "2026-10-25T16:33:00+00:00",
         },
     )
@@ -149,3 +142,21 @@ def test_every_computer_response_carries_it(sample_computer_dict):
     assert body["start_failure"]["remedy"] == "reinstall"
     assert body["start_failure"]["at"].startswith("2026-10-25T16:33:00")
     assert computer_to_response({**row, "start_failure": None}).start_failure is None
+
+
+def test_a_failure_recorded_under_an_older_rule_offers_todays_fix():
+    """A sleeping machine's failed start once recorded the reconnect remedy,
+    which sends its owner back through pairing; read now, it is a retry."""
+    parsed = sf.start_failure_from_row(
+        {
+            "kind": "ssh",
+            "start_failure": {
+                "code": "not_connected",
+                "message": "m",
+                "owner": None,
+                "remedy": "reconnect",
+                "at": "2026-10-25T16:33:00+00:00",
+            },
+        }
+    )
+    assert parsed is not None and parsed.remedy == "retry"

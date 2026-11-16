@@ -35,6 +35,7 @@ from src.server.services.history.window import runs_held
 from src.server.services.llm.claude_code import run_stamp
 from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
 from src.server.services.runs.sse_producer import RunSSEProducer
+from src.server.services.turn_awake import held_awake
 from src.server.models.chat import (
     ChatRequest,
     serialize_hitl_response_map,
@@ -103,7 +104,7 @@ from .request_prep import (
     turn_surface,
     user_skill_commands,
 )
-from src.server.contracts.turn_kinds import announced
+from src.server.contracts.turn_kinds import UNWATCHED_RUN_META, announced
 from src.server.services import automation_delivery, automation_settlement
 from src.server.services.credit_gate_port import build_run_credit_gate
 from src.server.services.report_back.handoff import carry
@@ -405,6 +406,8 @@ async def astream_ptc_workflow(
             # /retry builds its attempt with no surface: it runs where the
             # attempt it retries did, under the same rules.
             request, inherits_rules = await retried_on_its_surface(request)
+            # The attempts this turn may continue, read once for all it carries.
+            prior = await carry.prior_attempt(request, thread_id)
             disk_free_mb, disk_known = await read_disk_notice(workspace_id)
             user_profile = (
                 await get_user_profile_for_prompt(user_id) if user_id else None
@@ -417,6 +420,7 @@ async def astream_ptc_workflow(
                 disk_known=disk_known,
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
+                carried_unwatched=carry.carried_unwatched(request, prior),
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
@@ -532,12 +536,12 @@ async def astream_ptc_workflow(
             if (run_metadata or {}).get("automation_execution_id") and restart_drain.draining():
                 raise restart_drain.Draining()
             origin_meta = await _resolve_origin_meta(request, thread_id)
-            carried = await carry.carried_pair(request, thread_id)
-            firing = await carry.carried_firing(request, thread_id)
+            carried = carry.carried_pair(request, prior)
+            firing = carry.carried_firing(request, prior)
             # A resume or a retry names no automation run of its own: it sends for
             # the one the turn it continues sent for.
             if automation_delivery.delivery_of_turn(extra_configurable or {}) is None:
-                sends_for = await carry.carried_delivery(request, thread_id)
+                sends_for = carry.carried_delivery(request, prior)
                 if sends_for:
                     extra_configurable = {**(extra_configurable or {}), **sends_for}
             run_handle = await begin_run(
@@ -563,6 +567,10 @@ async def astream_ptc_workflow(
                         inherits_rules=turn_context.inherits_rules,
                     ),
                     **automation_delivery.turn_metadata(extra_configurable),
+                    # Recorded once, here, either way: a restart's resume
+                    # reads it off the run, to keep one of a watched turn
+                    # watched, and a run without it predates the stamp.
+                    UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
                     **firing,
                     **(run_metadata or {}),
@@ -1092,15 +1100,20 @@ async def astream_ptc_workflow(
                 project,
                 run_with_credit_gate(
                     credit_gate,
-                    # Relay sessions for direct tools open and close with the
-                    # run, in the run's task, not with this request's generator.
-                    direct_mcp.drive(
-                        handler.stream_workflow(
-                            graph=ptc_graph,
-                            input_state=input_state,
-                            config=graph_config,
-                            settled_results=cancelled_calls,
-                        )
+                    # A Mac the turn runs on stays out of idle sleep until the
+                    # turn ends, between its calls as well as in them.
+                    held_awake(
+                        lambda: getattr(getattr(session, "sandbox", None), "runtime", None),
+                        # Relay sessions for direct tools open and close with the
+                        # run, in the run's task, not with this request's generator.
+                        direct_mcp.drive(
+                            handler.stream_workflow(
+                                graph=ptc_graph,
+                                input_state=input_state,
+                                config=graph_config,
+                                settled_results=cancelled_calls,
+                            )
+                        ),
                     ),
                 ),
             ),

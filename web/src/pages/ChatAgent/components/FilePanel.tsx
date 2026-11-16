@@ -15,7 +15,7 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import {
   readWorkspaceFile, readWorkspaceFileFull, writeWorkspaceFile, downloadWorkspaceFileAsArrayBuffer,
-  openWorkspaceFileRanged, triggerFileDownload, resolveWorkspaceFile,
+  openWorkspaceFileRanged, triggerFileDownload, resolveWorkspaceFile, LIVE, type FullRead,
 } from '../utils/api';
 import { folderLinkTarget, linkCandidates } from '../utils/fileRefResolver';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
@@ -71,6 +71,8 @@ import type { NewTabMenu } from './filePanel/panelLaunchers';
 import { useWatchTab } from './filePanel/useWatchTab';
 import type { MarketWatchState } from '../session/marketWatchEvents';
 import { useThreadWakeups } from '../hooks/useWakeups';
+import type { FilesAway } from '../hooks/useWorkspaceFiles';
+import { useComputerAway } from './filePanel/useComputerAway';
 import { RouteLeaveGuardContext, type RouteLeaveGuard } from '../contexts/RouteLeaveGuardContext';
 import type { SubagentInfo } from './ToolCallDetailView';
 import type { TranscriptReader } from './filePanel/useTranscript';
@@ -117,6 +119,10 @@ interface FilePanelProps {
   files?: string[];
   filesLoading?: boolean;
   filesError?: string | null;
+  /** The workspace's computer did not answer: the files are its backup, or
+   *  there is none and the listing failed. Nothing can change until it is
+   *  back. Null while it answers. */
+  filesAway?: FilesAway | null;
   onRefreshFiles?: () => void;
   readOnly?: boolean;
   /** Whether this viewer may save a file's bytes. A copy-link share grants
@@ -174,6 +180,7 @@ function FilePanel({
   files = [],
   filesLoading = false,
   filesError = null,
+  filesAway = null,
   onRefreshFiles,
   readOnly = false,
   canDownload = true,
@@ -205,15 +212,21 @@ function FilePanel({
     const adapter: ApiAdapter = apiAdapter ?? {};
     const { readFile, readFileFull, downloadFileAsArrayBuffer, triggerDownload, writeFile, resolveFile } = adapter;
     return {
-      readFileFn: readFile ? (_: string, p: string) => readFile(p) : readWorkspaceFile,
-      readFileFullFn: readFileFull ? (_: string, p: string) => readFileFull(p) : readWorkspaceFileFull,
+      // A share serves its files as they stand, never from a backup.
+      readFileFn: readFile ? async (_: string, p: string) => ({ ...(await readFile(p)), from: LIVE }) : readWorkspaceFile,
+      readFileFullFn: readFileFull
+        ? async (_: string, p: string): Promise<FullRead> =>
+          ({ content: (await readFileFull(p)).content, version: null, rewriting: false, from: LIVE })
+        : readWorkspaceFileFull,
       downloadFileAsArrayBufferFn: downloadFileAsArrayBuffer
-        ? (_: string, p: string) => downloadFileAsArrayBuffer(p)
+        ? async (_: string, p: string) => ({ buffer: await downloadFileAsArrayBuffer(p), from: LIVE })
         : downloadWorkspaceFileAsArrayBuffer,
       // A share's route redacts each file whole, so it has no ranges to read.
       openRangedFn: apiAdapter ? undefined : openWorkspaceFileRanged,
       triggerDownloadFn: triggerDownload ? (_: string, p: string) => triggerDownload(p) : triggerFileDownload,
-      writeFileFn: writeFile ? (_: string, p: string, c: string) => writeFile(p, c) : writeWorkspaceFile,
+      writeFileFn: writeFile
+        ? async (_: string, p: string, c: string) => { await writeFile(p, c); return { version: null }; }
+        : writeWorkspaceFile,
       resolveFileFn: apiAdapter
         ? resolveFile ?? null
         : (candidates: string[], recentWrites: string[]) => resolveWorkspaceFile(workspaceId, candidates, recentWrites),
@@ -289,13 +302,17 @@ function FilePanel({
   useEffect(() => () => dropBodies(), []);
 
   const downloads = useFileDownloads({ workspaceId, triggerDownloadFn, workspaceStatus: wsData?.status });
-  const fileError = downloads.errorFor(selectedFile) ?? readError;
+  const away = useComputerAway({
+    filesAway, filesError, bodyFrom: body?.from, fileError: downloads.errorFor(selectedFile) ?? readError,
+    computerId: wsData?.computer_id ?? null, invalidate: cache.invalidate,
+  });
+  const { fileError } = away;
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
 
   const { uploadProgress, uploadSaving, cancelUpload, uploadError, setUploadError, fileInputRef, isDragOver, handleFileInputChange, handleDragEnter, handleDragLeave, handleDragOver, handleDrop } =
-    useFileUpload({ workspaceId, onRefreshFiles });
+    useFileUpload({ workspaceId, onRefreshFiles, away });
 
   const setFileContent = useCallback((next: React.SetStateAction<string | null>) => {
     if (!selectedFile) return;
@@ -314,6 +331,7 @@ function FilePanel({
 
   const edit = useFileEdit({
     tabId: activeTab.id, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled,
+    invalidate: cache.invalidate, away,
   });
   // Taken apart here: the hook hands back a new object every render, so a
   // callback that closed over `edit` would be new every render too.
@@ -403,7 +421,7 @@ function FilePanel({
     }
     tabs.forgetPaths(paths);
   }, [tabs, forgetTab, forgetChanged, cache]);
-  const selection = useFileSelection({ workspaceId, filteredSortedFiles: filter.filteredSortedFiles, targetDirectory: scopeDir, onRefreshFiles, onDeleted: forgetDeleted });
+  const selection = useFileSelection({ workspaceId, filteredSortedFiles: filter.filteredSortedFiles, targetDirectory: scopeDir, onRefreshFiles, onDeleted: forgetDeleted, away });
   // A restore offer holds the folder's backup until the reader answers it.
   const restoreOffered = !!wsData?.files_restore_offered_at;
   const backup = useFileBackup({
@@ -705,7 +723,8 @@ function FilePanel({
   // in the grid (`other`) but edits as the text it is; a file already in the
   // editor keeps its verdict rather than reading the editor as `other`.
   const selectedExt = selectedFile ? getFileExtension(selectedFile) : '';
-  const canEdit = !!(selectedFile && !readOnly && !fileError
+  // An editor already open keeps its draft, and its Save says why it waits.
+  const canEdit = !!(selectedFile && !readOnly && !fileError && (!away.blockedReason || edit.isEditing)
     && EDITABLE_EXTENSIONS.has(selectedExt)
     && (edit.isEditing || viewer === 'code' || viewer === 'markdown' || (viewer === 'other' && selectedExt === 'csv' && fileMime !== 'image')));
 
@@ -851,8 +870,9 @@ function FilePanel({
         // The tree shows this itself; the body takes it over while the tree is
         // folded or absent, so a listing that failed is never a silent blank.
         // A tab that is not a listing carries neither notice.
-        filesError={treeShown || !listingTab ? null : filesError}
+        filesError={treeShown || !listingTab ? null : away.filesError}
         filesRestoreIncomplete={treeShown || !listingTab ? false : filesRestoreIncomplete}
+        backupNotice={listingTab ? away.backupNotice : null}
         onRefreshFiles={onRefreshFiles}
         busy={selection.deleteLoading || backup.backingUp || uploadSaving}
         backupResult={backup.backupOff ? null : backup.backupResult}
@@ -977,7 +997,7 @@ function FilePanel({
               selection={selection}
               backup={backup}
               filesLoading={filesLoading}
-              filesError={filesError}
+              filesError={away.filesError}
               onRefreshFiles={onRefreshFiles}
               showSystemFiles={showSystemFiles}
               onToggleSystemFiles={onToggleSystemFiles}

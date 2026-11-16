@@ -415,3 +415,36 @@ async def test_a_newer_run_settles_the_thread_itself(mock_db_connection, mock_cu
     with patch.object(rr_db, "release_deferred_notifications", release):
         assert await rr_db.settle_declined("thread-1", "run-1") is False
     release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stamp", "unwatched"),
+    [(False, False), (True, True), (None, True)],
+    ids=["watched", "unwatched", "admitted-before-the-stamp"],
+)
+async def test_a_resume_is_as_watched_as_the_turn_it_carries_on(stamp, unwatched):
+    """A person's own turn cut short by a restart is still theirs: its resume
+    must not be ended as a turn nobody sees when their machine stops
+    answering. One nobody watched (a wake, a report-back) stays unwatched,
+    and so does the resume of a run admitted before the stamp, as every
+    resume was then: an automation's turn across the deploy stays one."""
+    from src.server.contracts.turn_kinds import UNWATCHED_RUN_META
+    from src.server.handlers.chat.request_prep import PriorThread, build_turn_context
+    from src.server.models.chat import ChatRequest
+    from src.server.services.report_back.handoff import carry
+
+    meta = {} if stamp is None else {UNWATCHED_RUN_META: stamp}
+    stopped = _state(**meta)
+    verdict = await _verdict(stopped)
+    route, body = restart.resume_turn(verdict, "00000000-0000-4000-8000-000000000001")
+
+    assert route == "messages"
+    assert body["query_type"] == "system"
+    resume = ChatRequest(**body)
+    stopped_run = {**stopped, "cancel_requested_at": datetime.now(timezone.utc)}
+    carried = carry.carried_unwatched(resume, carry.PriorAttempt(stopped_run, None))
+    context = build_turn_context(
+        resume, PriorThread(), user_profile=None, carried_unwatched=carried
+    )
+    assert context.unwatched is unwatched

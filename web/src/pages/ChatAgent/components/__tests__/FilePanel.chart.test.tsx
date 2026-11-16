@@ -7,9 +7,9 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
   const orig = await importOriginal<Record<string, unknown>>();
   return {
     ...orig,
-    readWorkspaceFile: vi.fn(async () => ({ content: '# Notes', mime: 'text/markdown', truncated: false })),
-    readWorkspaceFileFull: vi.fn(async () => ({ content: '# Notes' })),
-    writeWorkspaceFile: vi.fn(async () => ({})),
+    readWorkspaceFile: vi.fn(async () => ({ content: '# Notes', mime: 'text/markdown', truncated: false, from: { kind: 'live' } })),
+    readWorkspaceFileFull: vi.fn(async () => ({ content: '# Notes', version: null, rewriting: false, from: { kind: 'live' } })),
+    writeWorkspaceFile: vi.fn(async () => ({ version: null })),
     downloadWorkspaceFileAsArrayBuffer: vi.fn(),
     triggerFileDownload: vi.fn(),
     resolveWorkspaceFile: vi.fn(),

@@ -336,26 +336,48 @@ def test_a_listing_says_whether_the_helper_answers_for_the_machine(stored, helpe
 
 
 @pytest.mark.parametrize(
-    ("live", "paired_elsewhere", "connected", "elsewhere"),
+    ("state", "connected", "elsewhere"),
     [
-        (True, False, True, False),
-        (False, False, False, False),
-        (False, True, False, True),
+        ("live", True, False),
+        ("down", False, False),
+        ("paired_elsewhere", False, True),
+        # The gateway restarting or down: not known, rather than every
+        # machine shown disconnected.
+        ("unsettled", None, False),
     ],
 )
-def test_a_listing_says_when_the_machine_paired_elsewhere(
-    live, paired_elsewhere, connected, elsewhere
-):
+def test_a_listing_says_when_the_machine_paired_elsewhere(state, connected, elsewhere):
     from src.server.services.ssh_computers import ssh_info
 
     tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
     computer = _ssh("/Users/alex/langalpha", host="mac")
     computer["provider_config"]["tunnel"] = tunnel_id
-    tunnels = {tunnel_id: {"live": live, "paired_elsewhere": paired_elsewhere}}
 
-    info = ssh_info(computer, tunnels)
+    info = ssh_info(computer, {tunnel_id: {"state": state}})
     assert info.tunnel_connected is connected
     assert info.paired_elsewhere is elsewhere
+
+
+@pytest.mark.parametrize(("settled", "connected"), [(True, False), (False, None)])
+@pytest.mark.asyncio
+async def test_a_tunnel_no_longer_there_is_down_only_once_the_gateway_settled(
+    monkeypatch, settled, connected
+):
+    """As the shared down predicate judges it: a gateway still taking its
+    machines back has not found any of them gone."""
+    from unittest.mock import AsyncMock
+
+    import src.server.services.ssh_computers as module
+
+    tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    computer = _ssh("/Users/alex/langalpha", host="mac")
+    computer["provider_config"]["tunnel"] = tunnel_id
+    monkeypatch.setattr(module, "get_tunnels", AsyncMock(return_value={}))
+    monkeypatch.setattr(module, "gateway_settled", AsyncMock(return_value=settled))
+
+    tunnels = await module.tunnels_for("user-1", [computer])
+
+    assert module.ssh_info(computer, tunnels).tunnel_connected is connected
 
 
 @pytest.mark.parametrize(("os", "stored"), [("Darwin", "Darwin"), ("", None)])
@@ -642,3 +664,58 @@ def test_a_take_over_names_only_a_machine_id(take_over):
 
     with pytest.raises(ValidationError):
         _marked_spec(take_over=take_over)
+
+
+_TUNNEL = "00000000-0000-0000-0000-0000000000aa"
+
+
+@pytest.mark.parametrize(
+    ("computer", "tunnels", "unreachable"),
+    [
+        (None, {}, False),
+        ({"kind": "daytona", "provider_config": {}}, {}, False),
+        ({"kind": "ssh", "provider_config": {"host": "h"}}, {}, False),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {_TUNNEL: {"live": True}}, False),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {_TUNNEL: {"live": False}}, True),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {}, True),
+        (
+            {"kind": "ssh", "status": "deleted", "provider_config": {"tunnel": _TUNNEL}},
+            {},
+            False,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_a_tunneled_machine_whose_tunnel_is_down_is_unreachable(
+    monkeypatch, computer, tunnels, unreachable
+):
+    import src.server.services.ssh_computers as module
+
+    async def computer_tunnel_down(computer_id, *, conn=None):
+        assert computer_id == "c1"
+        return not (tunnels.get(_TUNNEL) or {}).get("live")
+
+    monkeypatch.setattr(module, "computer_tunnel_down", computer_tunnel_down)
+    if computer is not None:
+        computer = {"computer_id": "c1", **computer}
+    assert await module.computer_unreachable(computer) is unreachable
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_is_away_only_while_its_computer_cannot_be_reached(monkeypatch):
+    import src.server.services.ssh_computers as module
+
+    computer = {"computer_id": "c1", "kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}
+    live = {"value": False}
+
+    async def get_computer_for_workspace(workspace_id, *, conn=None):
+        return computer
+
+    async def computer_tunnel_down(computer_id, *, conn=None):
+        return not live["value"]
+
+    monkeypatch.setattr(module, "get_computer_for_workspace", get_computer_for_workspace)
+    monkeypatch.setattr(module, "computer_tunnel_down", computer_tunnel_down)
+    assert (await module.computer_away("w1"))["computer_id"] == "c1"
+    live["value"] = True
+    assert await module.computer_away("w1") is None

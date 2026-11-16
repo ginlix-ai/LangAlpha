@@ -24,7 +24,7 @@ Endpoints (/api/v1/automations):
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -120,12 +120,18 @@ async def list_automation_runs(
     offset: int = Query(0, ge=0),
     thread_id: Optional[UUID] = Query(None),
     status: Optional[ExecutionStatus] = Query(None),
+    wait_reason: Literal["thread_busy", "computer_unreachable"] | None = Query(None),
 ):
-    """List executions across all of the current user's automations."""
+    """List executions across all of the current user's automations.
+
+    ``wait_reason`` narrows on the server, before the page is cut, so runs
+    waiting for one reason cannot push those waiting for the other off it.
+    """
     return await _runs_page(
         user_id,
         thread_id=str(thread_id) if thread_id else None,
         status=status,
+        wait_reason=wait_reason,
         limit=limit,
         offset=offset,
     )

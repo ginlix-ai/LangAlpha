@@ -82,7 +82,7 @@ class TestRunSSEProducerFormatting:
 
     def test_build_error_event(self):
         handler = self._make_handler(thread_id="err-thread")
-        frame = handler._build_error_event("Something went wrong")
+        frame = asyncio.run(handler._build_error_event("Something went wrong"))
         assert frame.event == "error"
         parsed = frame.data
         assert parsed["thread_id"] == "err-thread"
@@ -106,7 +106,7 @@ class TestRunSSEProducerFormatting:
         Exception.__init__(exc, "Error code: 500 - {'error': {'message': 'Internal service error'}}")
 
         handler = self._make_handler(thread_id="err-thread")
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 500
         assert parsed["provider_module"] == "anthropic"
@@ -127,7 +127,7 @@ class TestRunSSEProducerFormatting:
         Exception.__init__(exc, "invalid x-api-key")
 
         handler = self._make_handler(thread_id="err-thread")
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 401
         assert parsed["reason"] == "invalid_key"
@@ -143,7 +143,7 @@ class TestRunSSEProducerFormatting:
         Exception.__init__(exc, "Connection reset by peer")
 
         handler = self._make_handler(thread_id="err-thread")
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["hints"] == [
             "api_key",
@@ -166,7 +166,7 @@ class TestRunSSEProducerFormatting:
         handler = self._make_handler(
             thread_id="err-thread", credential_source=credential_source
         )
-        return handler._build_error_event(str(exc), exc=exc).data["hints"]
+        return asyncio.run(handler._build_error_event(str(exc), exc=exc)).data["hints"]
 
     @pytest.mark.parametrize("status", [400, 405, 422])
     def test_request_refused_offers_only_a_model_switch(self, monkeypatch, status):
@@ -184,7 +184,7 @@ class TestRunSSEProducerFormatting:
             thread_id="err-thread", credential_source=credential_source, model=model,
             payer=payer, account=account,
         )
-        return handler._build_error_event(str(exc), exc=exc).data
+        return asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
 
     def test_own_key_failure_names_the_account_it_came_from(self, monkeypatch):
         """A 402 on the user's own key is their provider balance, theirs to fix.
@@ -365,7 +365,7 @@ class TestRunSSEProducerFormatting:
         """Bare Exception from our code is classified as internal, no hints."""
         exc = RuntimeError("workspace state corrupted")
         handler = self._make_handler(thread_id="err-thread")
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "internal"
         assert "hints" not in parsed
 
@@ -384,7 +384,7 @@ class TestRunSSEProducerFormatting:
             exc = e
 
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["provider_module"] == "anthropic"
 
@@ -1649,7 +1649,7 @@ class TestErrorEventResilienceTrace:
         exc = RuntimeError("Error calling model 'primary-model'")
         exc.__model_resilience__ = self._trace()
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["model"] == "primary-model"
         attempted = parsed["attempted_models"]
         assert [a["model"] for a in attempted] == ["primary-model", "fallback-a"]
@@ -1668,13 +1668,13 @@ class TestErrorEventResilienceTrace:
         except RuntimeError as outer:
             exc = outer
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["model"] == "primary-model"
 
     def test_no_trace_no_new_fields(self):
         exc = RuntimeError("plain failure")
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert "model" not in parsed
         assert "attempted_models" not in parsed
         assert parsed["error_kind"] == "internal"
@@ -1687,7 +1687,7 @@ class TestErrorEventResilienceTrace:
         exc = RuntimeError("Error calling model 'primary-model'")
         exc.__model_resilience__ = self._trace()
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         # Status comes from the primary attempt record; 404 drives the hints.
         assert parsed["status_code"] == 404
@@ -1700,7 +1700,7 @@ class TestErrorEventResilienceTrace:
         exc = RuntimeError("model call blew up without a status")
         exc.__model_resilience__ = trace
         handler = self._make_handler()
-        parsed = handler._build_error_event(str(exc), exc=exc).data
+        parsed = asyncio.run(handler._build_error_event(str(exc), exc=exc)).data
         assert parsed["error_kind"] == "upstream"
         assert "status_code" not in parsed
         assert parsed["hints"] == [

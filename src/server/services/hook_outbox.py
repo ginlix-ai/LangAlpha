@@ -19,9 +19,11 @@ swallowed read — is the retry path.
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
 
 from src.server.database.runs import outbox as outbox_db
+from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,14 @@ PURGE_BATCH = 5000
 # cool-down anyway (``outbox.revive_dead_alerts``), and reads terminal rows.
 ALERT_CLOSE_INTERVAL = 60.0
 ALERT_REVIVE_INTERVAL = 600.0
+# How often the drainer gives up the notifications parked for a computer that
+# has not connected for ``AWAY_GIVE_UP_DAYS``. Days late either way, so a
+# minute is plenty.
+LOST_COMPUTER_INTERVAL = 60.0
+# How often the drainer makes due the notifications parked while their
+# computer could not be reached, once it connects again: a wake or a
+# report-back arrives within this of the machine coming back.
+COMPUTER_RELEASE_INTERVAL = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +162,66 @@ def register_hook_executor(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _Sweep:
+    """One of the drainer's sweeps: ``run`` moves rows in one guarded
+    statement every worker may run, and each row it returns goes to
+    ``on_row``; at most once per ``interval`` seconds, or every pass at 0."""
+
+    name: str
+    interval: float
+    run: Callable[[], Awaitable[Iterable[Dict[str, Any]]]]
+    on_row: Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+async def _log_revived_cleanup(row: Dict[str, Any]) -> None:
+    logger.warning(
+        f"[HookOutbox] revived dead cleanup job={row.get('hook_outbox_id')} "
+        f"key={row.get('ordering_key')}"
+    )
+
+
+async def _log_revived_alert(row: Dict[str, Any]) -> None:
+    logger.warning(
+        f"[HookOutbox] revived dead alert job={row.get('hook_outbox_id')} "
+        f"key={row.get('ordering_key')} for another wake"
+    )
+
+
+async def _log_closed_alert(row: Dict[str, Any]) -> None:
+    logger.info(
+        f"[HookOutbox] closed notice job={row.get('hook_outbox_id')} "
+        f"key={row.get('ordering_key')}: no turn will take it in"
+    )
+
+
+async def _log_released_for_computer(row: Dict[str, Any]) -> None:
+    logger.info(
+        f"[HookOutbox] released job={row.get('hook_outbox_id')} "
+        f"type={row.get('hook_type')}: its computer can be reached again"
+    )
+
+
+async def _no_row(row: Dict[str, Any]) -> None:
+    pass
+
+
+async def _purge_terminal_jobs() -> list:
+    """Purge terminal rows past retention, a batch at a time; logs what it
+    purged and moves no row for ``on_row``."""
+    purged = 0
+    for _ in range(10):
+        n = await outbox_db.purge_terminal_jobs(
+            retention_seconds=RETENTION_SECONDS, batch_size=PURGE_BATCH
+        )
+        purged += n
+        if n < PURGE_BATCH:
+            break
+    if purged:
+        logger.info(f"[HookOutbox] purged {purged} terminal jobs past retention")
+    return []
+
+
 class HookOutboxDrainer:
     """Per-process drainer: claim → execute concurrently → ack/nack, forever.
 
@@ -179,9 +249,61 @@ class HookOutboxDrainer:
         self._stopping = asyncio.Event()
         # task -> hook_type, so per-type quotas can count in-flight work.
         self._inflight: Dict[asyncio.Task, str] = {}
-        self._next_purge = 0.0
-        self._next_alert_revive = 0.0
-        self._next_alert_close = 0.0
+        # When each sweep is next due, by name (``_run_due_sweeps``).
+        self._due: Dict[str, float] = {}
+        self._sweeps = (
+            # Dead-park expired claims that already burned max_attempts
+            # leases (crashed owners never nack); their chains unwedge here.
+            # The watch_clear compensation rides the same statement.
+            _Sweep(
+                "park", 0.0,
+                lambda: outbox_db.park_exhausted_jobs(max_attempts=MAX_ATTEMPTS),
+                self._parked_exhausted,
+            ),
+            # Dead terminal-cleanup jobs get a durable successor: a dead
+            # report_back is compensated with a watch_clear, but a dead
+            # watch_clear otherwise had none, and its pair state (memberships,
+            # cap slot, error wake) would sit until the 24h origin TTL.
+            _Sweep(
+                "revive", 0.0,
+                lambda: outbox_db.revive_dead_cleanup_jobs(),
+                _log_revived_cleanup,
+            ),
+            # An alert out of attempts waits for its thread's next turn
+            # instead of going dead. One an older build dead-lettered is made
+            # due again, at most twice, while its notice is owed, as is a
+            # command's report, a type an older build cannot run; one no turn
+            # will take in (not owed, or its thread archived or its workspace
+            # deleted) is closed rather than left pending for good.
+            _Sweep(
+                "alert revive", ALERT_REVIVE_INTERVAL,
+                lambda: outbox_db.revive_dead_alerts(),
+                _log_revived_alert,
+            ),
+            _Sweep(
+                "alert close", ALERT_CLOSE_INTERVAL,
+                lambda: outbox_db.close_unowed_waiting_alerts(),
+                _log_closed_alert,
+            ),
+            _Sweep(
+                "lost computer", LOST_COMPUTER_INTERVAL,
+                lambda: outbox_db.close_for_lost_computers(),
+                self._gave_up_for_lost_computer,
+            ),
+            # A notification parked while its computer was away is due again
+            # once the computer connects: the gateway writes that to the
+            # tunnel's row, which this reads, so it holds across workers. The
+            # claim after the sweeps takes what it releases on the same pass.
+            _Sweep(
+                "computer release", COMPUTER_RELEASE_INTERVAL,
+                lambda: outbox_db.release_for_reachable_computers(),
+                _log_released_for_computer,
+            ),
+            # Retention: purge terminal rows past every read-back window so
+            # the table (and the sweeps above) stays flat on a long-lived
+            # deployment.
+            _Sweep("retention purge", PURGE_INTERVAL, _purge_terminal_jobs, _no_row),
+        )
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -234,110 +356,7 @@ class HookOutboxDrainer:
 
     async def _loop(self) -> None:
         while not self._stopping.is_set():
-            # Dead-park expired claims that already burned max_attempts leases
-            # (crashed owners never nack); their chains unwedge here. The
-            # watch_clear compensation rides the same statement.
-            try:
-                for parked in await outbox_db.park_exhausted_jobs(
-                    max_attempts=MAX_ATTEMPTS
-                ):
-                    if parked.get("status") != "dead":
-                        await self._exhausted(parked)
-                        continue
-                    logger.error(
-                        f"[HookOutbox] parked exhausted job="
-                        f"{parked.get('hook_outbox_id')} "
-                        f"type={parked.get('hook_type')} as dead"
-                    )
-                    await self._close_followup(parked)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.error("[HookOutbox] park sweep failed", exc_info=True)
-
-            # Dead terminal-cleanup jobs get a durable successor: a dead
-            # report_back is compensated with a watch_clear, but a dead
-            # watch_clear otherwise had none — its pair state (memberships,
-            # cap slot, error wake) would sit until the 24h origin TTL.
-            try:
-                for revived in await outbox_db.revive_dead_cleanup_jobs():
-                    logger.warning(
-                        f"[HookOutbox] revived dead cleanup job="
-                        f"{revived.get('hook_outbox_id')} "
-                        f"key={revived.get('ordering_key')}"
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.error("[HookOutbox] revive sweep failed", exc_info=True)
-
-            # An alert out of attempts waits for its thread's next turn
-            # instead of going dead. One an older build dead-lettered is
-            # made due again, at most twice, while its notice is owed, as is
-            # a command's report, a type an older build cannot run; one no
-            # turn will take in (not owed, or its thread archived or its
-            # workspace deleted) is closed rather than left pending for good.
-            if time.monotonic() >= self._next_alert_revive:
-                self._next_alert_revive = time.monotonic() + ALERT_REVIVE_INTERVAL
-                try:
-                    for revived in await outbox_db.revive_dead_alerts():
-                        logger.warning(
-                            f"[HookOutbox] revived dead alert job="
-                            f"{revived.get('hook_outbox_id')} "
-                            f"key={revived.get('ordering_key')} for another "
-                            f"wake"
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.error(
-                        "[HookOutbox] alert revive sweep failed",
-                        exc_info=True,
-                    )
-            if time.monotonic() >= self._next_alert_close:
-                self._next_alert_close = time.monotonic() + ALERT_CLOSE_INTERVAL
-                try:
-                    for closed in await outbox_db.close_unowed_waiting_alerts():
-                        logger.info(
-                            f"[HookOutbox] closed notice job="
-                            f"{closed.get('hook_outbox_id')} "
-                            f"key={closed.get('ordering_key')}: no turn will "
-                            f"take it in"
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.error(
-                        "[HookOutbox] alert close sweep failed",
-                        exc_info=True,
-                    )
-
-            # Retention: purge terminal rows past every read-back window so
-            # the table (and the sweeps above) stays flat on a long-lived
-            # deployment.
-            if time.monotonic() >= self._next_purge:
-                self._next_purge = time.monotonic() + PURGE_INTERVAL
-                try:
-                    purged = 0
-                    for _ in range(10):
-                        n = await outbox_db.purge_terminal_jobs(
-                            retention_seconds=RETENTION_SECONDS,
-                            batch_size=PURGE_BATCH,
-                        )
-                        purged += n
-                        if n < PURGE_BATCH:
-                            break
-                    if purged:
-                        logger.info(
-                            f"[HookOutbox] purged {purged} terminal jobs past "
-                            f"retention"
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.error(
-                        "[HookOutbox] retention purge failed", exc_info=True
-                    )
+            await self._run_due_sweeps()
 
             # Claim only what free slots can run: an over-claimed job would sit
             # here burning its lease while it waits for a task slot.
@@ -379,6 +398,45 @@ class HookOutboxDrainer:
                     continue  # claimed to capacity; more are likely due right now
 
             await self._wait_for_nudge()
+
+    async def _run_due_sweeps(self) -> None:
+        """Run each sweep that is due, in order. One that fails is logged and
+        waits out its interval like one that ran, and never stops the rest."""
+        for sweep in self._sweeps:
+            now = time.monotonic()
+            if now < self._due.get(sweep.name, 0.0):
+                continue
+            self._due[sweep.name] = now + sweep.interval
+            try:
+                for row in await sweep.run():
+                    await sweep.on_row(row)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error(f"[HookOutbox] {sweep.name} sweep failed", exc_info=True)
+
+    async def _parked_exhausted(self, parked: Dict[str, Any]) -> None:
+        if parked.get("status") != "dead":
+            await self._exhausted(parked)
+            return
+        logger.error(
+            f"[HookOutbox] parked exhausted job={parked.get('hook_outbox_id')} "
+            f"type={parked.get('hook_type')} as dead"
+        )
+        await self._close_followup(parked)
+
+    async def _gave_up_for_lost_computer(self, gave_up: Dict[str, Any]) -> None:
+        logger.info(
+            f"[HookOutbox] gave up job={gave_up.get('hook_outbox_id')} "
+            f"type={gave_up.get('hook_type')}: its computer has not connected "
+            f"for {AWAY_GIVE_UP_DAYS} days"
+        )
+        # Settled as a steer out of attempts is, or closed as a dead
+        # report-back is: the same followups.
+        if gave_up.get("hook_type") == "steer":
+            await self._exhaust_followup(gave_up)
+        elif gave_up.get("status") == "done":
+            await self._close_followup(gave_up)
 
     async def _wait_for_nudge(self) -> None:
         try:
@@ -450,6 +508,9 @@ class HookOutboxDrainer:
             f"type={job.get('hook_type')} out of attempts after "
             f"{job.get('attempts')}; settled by its type"
         )
+        await self._exhaust_followup(job)
+
+    async def _exhaust_followup(self, job: Dict[str, Any]) -> None:
         followup = _EXHAUST_FOLLOWUPS.get(job.get("hook_type") or "")
         if followup is None:
             return

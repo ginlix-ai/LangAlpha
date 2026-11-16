@@ -21,6 +21,18 @@ WAKE_QUERY_TYPE = "wakeup"
 
 ANNOUNCED_KEYS = ("report_source", "market_target", "wakeup")
 
+# The run metadata key every turn is stamped with at its admission, true when
+# nobody is there to see it, so a turn the server later posts to carry it on
+# (a restart's resume) knows whether a person was watching it.
+UNWATCHED_RUN_META = "unwatched"
+
+
+def run_unwatched(run: Mapping[str, Any]) -> Optional[bool]:
+    """Whether nobody was watching the run's turn, as its admission recorded;
+    None for a run admitted before the stamp, which says nothing either way."""
+    stamped = (run.get("metadata") or {}).get(UNWATCHED_RUN_META)
+    return stamped if isinstance(stamped, bool) else None
+
 
 def announced(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """What a turn's query metadata says it announces, in key order."""

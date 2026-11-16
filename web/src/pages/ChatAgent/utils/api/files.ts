@@ -8,6 +8,41 @@ import { withDownloadNotice, workspaceDownloadKey, type DownloadProgressReport }
 import type { FileRefResolution } from '../../components/filePanel/types';
 import type { BackupResponse, BackupStatusResponse } from '@/types/api';
 import type { SignedUploadPart } from '../partUpload';
+import { BACKUP_OK, LIVE, readFromBody, type ReadFrom } from './readFrom';
+
+/** Bytes carry no field for it, so the download says by header, and only for a computer that did not answer. */
+function readFromHeaders(headers: Record<string, string> | undefined): ReadFrom {
+  const code = headers?.['x-computer-unreachable'];
+  return typeof code === 'string' && code ? { kind: 'backup', unreachable: code } : LIVE;
+}
+
+export interface TextRead {
+  content: string;
+  mime?: string;
+  truncated?: boolean;
+  from: ReadFrom;
+}
+
+/**
+ * A whole file's text, for an edit. `version` names the bytes it came from,
+ * null where it names none; `rewriting` says a live read caught the file as
+ * it was rewritten, so it has no version a save could be held to. A server
+ * older than versions names none and is never `rewriting`.
+ */
+export interface FullRead {
+  content: string;
+  version: string | null;
+  rewriting: boolean;
+  from: ReadFrom;
+}
+
+export interface BytesRead {
+  buffer: ArrayBuffer;
+  from: ReadFrom;
+}
+
+/** A file opened from its first slice: whole bytes when it fit, else read on by range. */
+export type OpenedRead = BytesRead | { ranged: RangedFile; from: ReadFrom };
 
 /**
  * Resolve a file reference to one workspace path in a single server lookup.
@@ -22,7 +57,7 @@ export async function resolveWorkspaceFile(
   const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/files/resolve`, {
     candidates,
     recent_writes: recentWrites,
-  });
+  }, { params: BACKUP_OK });
   return data as FileRefResolution;
 }
 
@@ -31,11 +66,11 @@ export async function resolveWorkspaceFile(
  * @param {string} workspaceId
  * @param {string} filePath - e.g. "results/report.md"
  */
-export async function readWorkspaceFile(workspaceId: string, filePath: string) {
+export async function readWorkspaceFile(workspaceId: string, filePath: string): Promise<TextRead> {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
   });
-  return data; // { workspace_id, path, content, mime, truncated }
+  return { content: data?.content ?? '', mime: data?.mime, truncated: data?.truncated, from: readFromBody(data) };
 }
 
 /**
@@ -49,14 +84,22 @@ export async function downloadWorkspaceFile(
   filePath: string,
   onProgress?: DownloadProgressReport,
 ) {
+  return (await downloadWorkspaceBlob(workspaceId, filePath, onProgress)).href;
+}
+
+async function downloadWorkspaceBlob(
+  workspaceId: string,
+  filePath: string,
+  onProgress?: DownloadProgressReport,
+): Promise<{ href: string; from: ReadFrom }> {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
     responseType: 'blob',
     onDownloadProgress: onProgress
       ? (event) => { if (event.total) onProgress(event.loaded / event.total); }
       : undefined,
   });
-  return URL.createObjectURL(response.data as Blob);
+  return { href: URL.createObjectURL(response.data as Blob), from: readFromHeaders(response.headers) };
 }
 
 /**
@@ -65,12 +108,12 @@ export async function downloadWorkspaceFile(
  * @param {string} filePath
  * @returns {Promise<ArrayBuffer>}
  */
-export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, filePath: string) {
+export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, filePath: string): Promise<BytesRead> {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
     responseType: 'arraybuffer',
   });
-  return response.data as ArrayBuffer;
+  return { buffer: response.data as ArrayBuffer, from: readFromHeaders(response.headers) };
 }
 
 /** The opening request's size. A file that fits arrives whole, in the one request it always took. */
@@ -125,11 +168,11 @@ async function withRetry<T>(request: () => Promise<T>, signal?: AbortSignal): Pr
 export async function openWorkspaceFileRanged(
   workspaceId: string,
   filePath: string,
-): Promise<ArrayBuffer | RangedFile> {
+): Promise<OpenedRead> {
   const slice = (first: number, last: number, config: RequestConfig = {}) =>
     api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
       ...config,
-      params: { path: filePath },
+      params: { path: filePath, ...BACKUP_OK },
       headers: { Range: `bytes=${first}-${last}` },
       responseType: 'arraybuffer',
       // A browser holding the whole file from a plain download would make
@@ -151,14 +194,15 @@ export async function openWorkspaceFileRanged(
     if ((err instanceof ApiError && err.status === 416) || isFileChangedRefusal(err)) return whole();
     throw err;
   }
-  if (head.status !== 206) return head.data as ArrayBuffer;
+  const from = readFromHeaders(head.headers);
+  if (head.status !== 206) return { buffer: head.data as ArrayBuffer, from };
   const bytes = head.data as ArrayBuffer;
   const opened = parseContentRange(head.headers['content-range']);
   // Answered by range but not described (a header the deploy does not
   // expose), or described as other bytes than arrived, so there is no length
   // to read on from: read it again whole.
   if (!opened || opened.first !== 0 || bytes.byteLength !== opened.last + 1) return whole();
-  if (opened.last + 1 === opened.total) return bytes;
+  if (opened.last + 1 === opened.total) return { buffer: bytes, from };
   // With no version to hold the slices to, a change between two would go unseen.
   const etag = head.headers.etag;
   if (!etag) return whole();
@@ -200,7 +244,7 @@ export async function openWorkspaceFileRanged(
       throw err;
     }),
   };
-  return file;
+  return { ranged: file, from };
 }
 
 /**
@@ -225,18 +269,22 @@ async function saveWorkspaceFile(
   // A large file is handed out as a short-lived storage link the browser
   // streams to disk itself; buffering it as a blob would hold the whole file
   // in tab memory. A null url means the file is small enough to fetch here.
-  const { data } = await api.get<{ url: string | null }>(
+  const { data } = await api.get<{ url: string | null; source?: string; unreachable?: string }>(
     `/api/v1/workspaces/${workspaceId}/files/download-url`,
-    { params: { path: filePath } },
+    { params: { path: filePath, ...BACKUP_OK } },
   );
   // Without a bearer token the download route itself is a plain GET, so the
   // browser can stream it to disk too; with one, only a blob can carry it.
+  // A download the browser makes never shows its header here, so where it
+  // comes from is read off this answer; a blob says by its own header.
   const direct = data?.url ?? (isPlatformMode ? null : directDownloadUrl(workspaceId, filePath));
-  const href = direct ?? (await downloadWorkspaceFile(workspaceId, filePath, report));
+  const blob = direct ? null : await downloadWorkspaceBlob(workspaceId, filePath, report);
+  const href = direct ?? blob!.href;
+  const from = blob?.from ?? readFromBody(data);
   // Signed out while this was being prepared: the file is the last account's.
   if (!current()) {
     if (!direct) URL.revokeObjectURL(href);
-    return;
+    return LIVE;
   }
   const a = document.createElement('a');
   a.href = href;
@@ -245,12 +293,13 @@ async function saveWorkspaceFile(
   a.click();
   document.body.removeChild(a);
   if (!direct) URL.revokeObjectURL(href);
+  return from;
 }
 
 function directDownloadUrl(workspaceId: string, filePath: string): string {
   return api.getUri({
     url: `/api/v1/workspaces/${workspaceId}/files/download`,
-    params: { path: filePath, attachment: true },
+    params: { path: filePath, attachment: true, ...BACKUP_OK },
   });
 }
 
@@ -267,31 +316,44 @@ export async function getBackupStatus(workspaceId: string): Promise<BackupStatus
 }
 
 /**
- * Write full file content to a sandbox file
- * @param {string} workspaceId
- * @param {string} filePath - e.g. "results/report.py"
- * @param {string} content - File content to write
- * @returns {Promise<Object>} { workspace_id, path, size }
+ * Write full file content to a sandbox file. Given `baseVersion` (the
+ * `version` the edit's read returned), the server refuses with 409
+ * `file_changed` when the file no longer holds the text the edit began from.
+ * `baseSha256` (`textSha256` of that text) lets the save through a version
+ * that moved while the text did not. Answers with the version the file holds
+ * now, null where the server could not read one.
  */
-export async function writeWorkspaceFile(workspaceId: string, filePath: string, content: string) {
+export async function writeWorkspaceFile(
+  workspaceId: string,
+  filePath: string,
+  content: string,
+  baseVersion: string | null = null,
+  baseSha256: string | null = null,
+): Promise<{ version: string | null }> {
   const { data } = await api.put(`/api/v1/workspaces/${workspaceId}/files/write`,
-    { content },
+    {
+      content,
+      ...(baseVersion ? { base_version: baseVersion } : {}),
+      ...(baseSha256 ? { base_sha256: baseSha256 } : {}),
+    },
     { params: { path: filePath } }
   );
-  return data;
+  const version = (data as { version?: unknown } | null)?.version;
+  return { version: typeof version === 'string' ? version : null };
 }
 
-/**
- * Read a file without line-limit pagination (for edit mode)
- * @param {string} workspaceId
- * @param {string} filePath
- * @returns {Promise<Object>} { workspace_id, path, content, mime }
- */
-export async function readWorkspaceFileFull(workspaceId: string, filePath: string) {
+/** A file's whole text, without the paged read's line limit, for an edit. */
+export async function readWorkspaceFileFull(workspaceId: string, filePath: string): Promise<FullRead> {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
-    params: { path: filePath, unlimited: true },
+    params: { path: filePath, unlimited: true, ...BACKUP_OK },
   });
-  return data;
+  const version = typeof data?.version === 'string' && data.version ? data.version : null;
+  return {
+    content: data?.content ?? '',
+    version,
+    rewriting: !!data && 'version' in data && !version,
+    from: readFromBody(data),
+  };
 }
 
 export async function deleteWorkspaceFiles(workspaceId: string, paths: string[]) {

@@ -23,6 +23,7 @@ export * from './api/computers';
 export * from './api/threads';
 export * from './api/messages';
 export * from './api/files';
+export * from './api/readFrom';
 export * from './api/sandbox';
 export * from './api/metadata';
 export * from './api/feedback';

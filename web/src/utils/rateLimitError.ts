@@ -9,6 +9,7 @@
 
 import type { PlanRefusal } from '@/api/model';
 import type { PlanLimit, UpstreamErrorHint, UpstreamPayer } from '@/lib/upstreamFailure';
+import type { ErrorKind } from '@/types/sse';
 
 /** A 429's `detail`, as it comes off the wire. Only the two fields this module
  *  acts on are named: the counts the quota service also sends are already folded
@@ -58,8 +59,13 @@ export interface StructuredError {
   links?: ErrorLinkSpec[];
   /** ``upstream`` = LLM provider's fault (their 5xx/401/429). ``internal`` =
    *  our pipeline. Undefined for rate-limit errors built on the client.
-   *  ``notice`` = nothing failed, so it reads as information, not an error. */
-  kind?: 'upstream' | 'internal' | 'notice';
+   *  ``notice`` = nothing failed, so it reads as information, not an error.
+   *  ``computer_unreachable`` = the turn's own machine did not answer. */
+  kind?: ErrorKind | 'notice';
+  /** On ``computer_unreachable``: the connect code, which words its card, and
+   *  the computer that did not answer with its name, when the server knows
+   *  which: a Chief of Staff reaches computers other than its page's. */
+  unreachable?: { code?: string; computerId?: string; computerName?: string };
   /** A turn a Claude plan's limit ended, worded where it is drawn, in the
    *  reader's zone and language, under its own headline. */
   planRefusal?: PlanRefusal;

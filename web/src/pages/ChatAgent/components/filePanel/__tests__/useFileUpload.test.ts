@@ -10,6 +10,7 @@ vi.mock('../../../utils/workspaceUpload', async (importOriginal) => {
 import { ApiError } from '@/api/client';
 import { UploadSendError } from '../../../utils/partUpload';
 import { uploadToWorkspace, type WorkspaceUploadOptions } from '../../../utils/workspaceUpload';
+import { NOT_AWAY } from '../useComputerAway';
 import { useFileUpload } from '../useFileUpload';
 
 const upload = uploadToWorkspace as Mock;
@@ -37,7 +38,7 @@ describe('useFileUpload', () => {
   it('shows the percentage while sending, then the saving state, then refreshes the listing', async () => {
     const held = heldUpload();
     const onRefreshFiles = vi.fn();
-    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', onRefreshFiles }));
+    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', onRefreshFiles, away: NOT_AWAY }));
 
     let done!: Promise<void>;
     act(() => { done = result.current.handleUpload(file); });
@@ -53,7 +54,7 @@ describe('useFileUpload', () => {
 
   it('shows the parts sent again after saving as sending, cancellable again', () => {
     const held = heldUpload();
-    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1' }));
+    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', away: NOT_AWAY }));
     act(() => { void result.current.handleUpload(file); });
     act(() => held.options.onProgress?.({ phase: 'saving' }));
     act(() => held.options.onProgress?.({ phase: 'sending', percent: 97 }));
@@ -62,7 +63,7 @@ describe('useFileUpload', () => {
 
   it('takes no second upload while one is running', () => {
     heldUpload();
-    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1' }));
+    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', away: NOT_AWAY }));
     act(() => { void result.current.handleUpload(file); });
     act(() => { void result.current.handleUpload(file); });
     expect(upload).toHaveBeenCalledTimes(1);
@@ -70,7 +71,7 @@ describe('useFileUpload', () => {
 
   it('cancelling aborts the upload and shows no error', async () => {
     const held = heldUpload();
-    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1' }));
+    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', away: NOT_AWAY }));
     let done!: Promise<void>;
     act(() => { done = result.current.handleUpload(file); });
 
@@ -94,7 +95,7 @@ describe('useFileUpload', () => {
   ])('shows the reason for %s', async (_label, error, shown) => {
     const held = heldUpload();
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1' }));
+    const { result } = renderHook(() => useFileUpload({ workspaceId: 'ws-1', away: NOT_AWAY }));
     let done!: Promise<void>;
     act(() => { done = result.current.handleUpload(file); });
     await act(async () => { held.settle.reject(error); await done; });

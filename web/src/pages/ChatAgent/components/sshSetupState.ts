@@ -79,6 +79,12 @@ export function failureText(failure: SshFailure, t: Translate): string {
         : failure.os === 'Darwin'
           ? t('computer.ssh.error.unreachableMac', 'We could not reach your Mac over SSH. Turn on Remote Login in System Settings, General, Sharing, then run the command again.')
           : t('computer.ssh.error.unreachableMachine', 'We could not reach your machine over SSH. It must accept SSH from the internet.');
+    case 'refused':
+      // Its tunnel is up and its own SSH server turned the login away.
+      if (failure.os === 'Darwin') {
+        return t('computer.ssh.error.unreachableMac', 'We could not reach your Mac over SSH. Turn on Remote Login in System Settings, General, Sharing, then run the command again.');
+      }
+      break;
     case 'timeout':
       return t('computer.ssh.error.timeout', 'The connection timed out. Check that SSH is running and its port is open.');
     case 'host_key_mismatch':

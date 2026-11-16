@@ -207,7 +207,14 @@ describe('describeRun', () => {
 
   it('notes why a run waits or was skipped, unless the reader skipped it', () => {
     expect(describeRun(run('waiting')).noteKey).toBe('automation.waitingNote');
+    expect(describeRun(run('waiting', { wait_reason: 'thread_busy' })).noteKey).toBe('automation.waitingNote');
+    expect(describeRun(run('waiting', { wait_reason: 'computer_unreachable' })).noteKey).toBe(
+      'automation.waitingForComputerNote',
+    );
     expect(describeRun(run('skipped', { skip_reason: 'thread_busy' })).noteKey).toBe('automation.skippedThreadBusy');
+    expect(describeRun(run('skipped', { skip_reason: 'computer_unreachable' })).noteKey).toBe(
+      'automation.skippedComputerUnreachable',
+    );
     expect(describeRun(run('skipped', { skip_reason: 'user' })).noteKey).toBeNull();
     expect(describeRun(run('completed')).noteKey).toBeNull();
   });

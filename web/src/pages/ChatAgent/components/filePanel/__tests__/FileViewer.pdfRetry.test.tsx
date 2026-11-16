@@ -37,7 +37,7 @@ describe('FileViewer PDF that failed', () => {
   });
 
   it('offers Try again on a large PDF, which opens it again', async () => {
-    render(<FileViewer {...props({ mode: 'buffer', content: null, mime: 'pdf', buffer: null, ranged: RANGED, truncated: false })} />);
+    render(<FileViewer {...props({ mode: 'buffer', content: null, mime: 'pdf', buffer: null, ranged: RANGED, truncated: false, from: { kind: 'live' } })} />);
     const retry = await screen.findByRole('button', { name: 'Try again' });
     slices.failing = false;
     fireEvent.click(retry);
@@ -45,7 +45,7 @@ describe('FileViewer PDF that failed', () => {
   });
 
   it('offers no Try again where the whole file failed, which would fail again', async () => {
-    render(<FileViewer {...props({ mode: 'buffer', content: null, mime: 'pdf', buffer: new ArrayBuffer(8), truncated: false })} />);
+    render(<FileViewer {...props({ mode: 'buffer', content: null, mime: 'pdf', buffer: new ArrayBuffer(8), truncated: false, from: { kind: 'live' } })} />);
     expect(await screen.findByText('Unable to preview this file')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
@@ -55,7 +55,7 @@ describe('FileViewer PDF that failed', () => {
     // so a slice of the file just left can still fail after the next opens.
     slices.failing = false;
     const onFileChanged = vi.fn();
-    const body: FileViewerProps['body'] = { mode: 'buffer', content: null, mime: 'pdf', buffer: null, ranged: RANGED, truncated: false };
+    const body: FileViewerProps['body'] = { mode: 'buffer', content: null, mime: 'pdf', buffer: null, ranged: RANGED, truncated: false, from: { kind: 'live' } };
     const { rerender } = render(<FileViewer {...props(body)} path="a.pdf" onFileChanged={onFileChanged} />);
     await screen.findByTestId('pdf');
     const left = slices.reloads[slices.reloads.length - 1];

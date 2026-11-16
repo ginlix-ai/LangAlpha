@@ -27,6 +27,7 @@ from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from tests.unit.ptc_agent.agent.job_fakes import COMMAND_ID, LOG, LOST, outcome, tool_call
 
 _RECORD = "src.server.database.runs.command_runs.record_handoff"
+_GET_COMPUTER = "src.server.database.computer.get_computer"
 _GET = "src.server.database.runs.command_runs.get_thread_command"
 THREAD = "6a7c8021-0000-4000-8000-000000000001"
 WORKSPACE = "00000000-0000-4000-8000-00000000aaaa"
@@ -514,6 +515,26 @@ class TestHandOff:
                 tool_call("Bash", command="python backtest.py"), _CONFIG
             )
         assert msg.content.split("\n\n")[1] == "It is stopped an hour after your turn ends."
+
+    @pytest.mark.parametrize(
+        "computer",
+        [{"kind": "ssh", "is_always_on": False}, {"kind": "daytona", "is_always_on": True}],
+    )
+    @pytest.mark.asyncio
+    async def test_on_a_computer_nothing_stops_no_hour_is_promised(self, computer):
+        """The watcher's hour binds only a computer the idle sweep stops."""
+        backend = _backend(outcome(done=False, duration_s=300))
+        with (
+            patch(_RECORD, new=AsyncMock()),
+            patch(_GET_COMPUTER, new=AsyncMock(return_value=computer)),
+        ):
+            msg = await _main(backend).ainvoke(
+                tool_call("Bash", command="npm run dev"), _CONFIG
+            )
+        assert msg.content.split("\n\n")[1] == (
+            "It is not stopped when your turn ends: it runs until it finishes or is "
+            "stopped, so stop a server or watcher once it is no longer needed."
+        )
 
     @pytest.mark.asyncio
     async def test_run_in_background_launches_and_records_at_once(self):

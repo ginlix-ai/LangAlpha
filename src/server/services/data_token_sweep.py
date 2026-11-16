@@ -4,7 +4,8 @@ A turn's start writes a fresh token when the current one runs low, but a
 sandbox can go on working with no turn starting: a long turn, a background
 task, an always-on computer. This sweep writes one into each running computer
 whose token runs low and that the idle reaper would keep running: always-on,
-used lately, or with work in flight. An idle one is left alone, since writing
+used lately, with work in flight, or a machine of the user's own, which is
+never stopped for being idle. An idle one is left alone, since writing
 into a sandbox counts as activity at its provider (Daytona's auto-stop, E2B's
 pause deadline) and would hold off that stop for good; its next turn's start
 writes the token before any of that turn's code runs. Every worker runs the
@@ -88,16 +89,27 @@ async def keeps_running(row: dict[str, Any]) -> bool:
     """Whether the idle reaper would leave the computer running: always-on,
     used within the idle limit of its own provider, or with work in
     flight, failing toward active as the reaper does. Settings no
-    provider can be built from rule out a write as well."""
-    if row.get("is_always_on"):
-        return True
+    provider can be built from rule out a write as well.
+
+    A machine of the user's own is never stopped for being idle, so it always
+    is: a server or an app the agent left running there calls the data
+    servers hours after the last turn, with nothing stamping the machine
+    active, and a write there holds off no provider's stop. One whose tunnel
+    is down is passed over at the write (``computer_unreachable``)."""
     from src.server.services.computer_manager import ComputerManager
+    from src.server.services.idle_policy import spared_by_idle_sweep
     from src.server.services.runs.executor import LocalRunExecutor
 
     try:
+        if spared_by_idle_sweep(row):
+            return True
+    except ValueError:
+        return False
+    manager = ComputerManager.get_instance()
+    try:
         # The reaper's own limit, so a computer it is about to stop for
         # being idle is not the one thing keeping it awake at the provider.
-        idle_timeout = ComputerManager.get_instance()._idle_timeout_for(row)
+        idle_timeout = manager._idle_timeout_for(row)
     except ValueError:
         return False
     last_activity = row.get("last_activity")
@@ -286,12 +298,18 @@ class DataTokenSweeper:
         from ptc_agent.core.paths import SandboxLayout
         from src.server.database import computer_data_tokens as db
         from src.server.services import data_tokens
+        from src.server.services.ssh_computers import computer_unreachable
 
         sandbox_id = str(row["provider_ref"])
         # Read again under the lock: a turn's start or a sibling's pass since
         # the listing may have written one already.
         current = await db.load(computer_id)
         if not data_tokens.due(current, sandbox_id):
+            return False
+        if await computer_unreachable(row):
+            # A machine of the user's own that is asleep or offline has
+            # nothing that could use a token until it is back, and dialing it
+            # only fails. Its claim brings it round again next pass.
             return False
 
         async with running_sandbox(row) as runtime:

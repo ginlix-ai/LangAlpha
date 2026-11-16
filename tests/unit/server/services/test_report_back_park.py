@@ -187,3 +187,55 @@ async def test_no_ending_since_the_claim_releases_nothing(since, now):
         assert await release_if_a_turn_ended("t-1", run_marker(since)) is False
     release.assert_not_awaited()
     drainer.nudge.assert_not_called()
+
+
+# park_while_computer_away: a wake or report-back held while the computer its
+# turn would run on cannot be reached, rather than posted into a turn that
+# fails at its connect.
+
+
+async def _park_for_computer(away, *, workspace_id="ws-1", parked=True):
+    from src.server.services.report_back.notify_turn import park_while_computer_away
+
+    look = AsyncMock(return_value=away)
+    park = AsyncMock(return_value=parked)
+    with (
+        patch("src.server.services.ssh_computers.computer_away", new=look),
+        patch("src.server.database.runs.outbox.park_for_computer", new=park),
+        patch(
+            "src.server.database.conversation.get_thread_by_id",
+            new=AsyncMock(return_value={"workspace_id": "ws-from-thread"}),
+        ),
+    ):
+        stop = await park_while_computer_away(
+            "job-1", 2, "t-1", workspace_id=workspace_id,
+            log_prefix="[TEST]", subject="task Task-1",
+        )
+    return stop, look, park
+
+
+@pytest.mark.asyncio
+async def test_a_reachable_computer_lets_the_caller_post():
+    stop, look, park = await _park_for_computer(None)
+    assert stop is False
+    look.assert_awaited_once_with("ws-1")
+    park.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_computer_away_parks_the_job_for_that_computer():
+    stop, _, park = await _park_for_computer({"computer_id": "mac-1"})
+    assert stop is True
+    park.assert_awaited_once_with("job-1", attempts=2, computer_id="mac-1")
+
+
+@pytest.mark.asyncio
+async def test_a_lost_fence_still_stops_the_caller():
+    stop, _, _ = await _park_for_computer({"computer_id": "mac-1"}, parked=False)
+    assert stop is True
+
+
+@pytest.mark.asyncio
+async def test_a_report_naming_no_workspace_looks_at_its_threads():
+    _, look, _ = await _park_for_computer(None, workspace_id=None)
+    look.assert_awaited_once_with("ws-from-thread")

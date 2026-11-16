@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from src.server.contracts.run_times import run_completed_at
-from src.server.contracts.status import TERMINAL_STATUSES
+from src.server.contracts.status import TERMINAL_STATUSES, unreachable_facts
 from src.server.contracts.turn_kinds import NOTIFICATION_QUERY_TYPES
 from src.server.database.provenance import provenance_row_to_event
 from src.server.services.history.replay import facts as replay_facts
@@ -271,10 +271,11 @@ def _error_item(
     exception had no message (or a row from before errors were stored) is as
     failed as any other. The client words an empty one.
 
-    The row's ``error_kind`` rides along, as the live frame carried it. A
-    fault of this service's own (``internal``) replays with no text: the
-    stored error is a diagnostic, naming the run and its stream, and the
-    client words that failure by its kind.
+    The row's ``error_kind`` rides along, as the live frame carried it, with
+    the connect code of a machine that did not answer. A fault of this
+    service's own (``internal``) replays with no text: the stored error is a
+    diagnostic, naming the run and its stream, and the client words that
+    failure by its kind.
     """
     if not response or response.get("status") != "error":
         return None
@@ -294,6 +295,9 @@ def _error_item(
     for key in ("error_type", "error_class"):
         if metadata.get(key):
             data[key] = metadata[key]
+    if kind == "computer_unreachable":
+        data["error_kind"] = kind
+        data.update(unreachable_facts(metadata))
     if kind in ("upstream", "internal"):
         data["error_kind"] = kind
         status = metadata.get("error_status_code")
@@ -345,13 +349,15 @@ def _stored_error(turn_items: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _stamp_row_kind(frame: dict[str, Any], row: dict[str, Any]) -> None:
-    """The row's kind and status over the frame's own, as finalize read them
-    off the same exception. An ``internal`` frame then drops its text by
-    ``_error_item``'s rule, also one whose row predates kinds: its own kind
-    names the same fault, and its text is the same diagnostic."""
+    """The row's kind, status and connect code over the frame's own, as
+    finalize read them off the same exception. An ``internal`` frame then
+    drops its text by ``_error_item``'s rule, also one whose row predates
+    kinds: its own kind names the same fault, and its text is the same
+    diagnostic."""
     for key in ("error_kind", "status_code"):
         if key in row:
             frame[key] = row[key]
+    frame.update(unreachable_facts(row))
     if frame.get("error_kind") == "internal":
         frame["error"] = ""
     elif isinstance(frame.get("error"), str):

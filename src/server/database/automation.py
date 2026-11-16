@@ -46,7 +46,7 @@ EXECUTION_COLUMNS = """
     e.status, e.conversation_thread_id,
     e.scheduled_at, e.started_at, e.completed_at,
     e.error_message, e.skip_reason, e.failure_reason, e.server_id,
-    e.delivery_result, e.created_at, e.dismissed_at,
+    e.delivery_result, e.created_at, e.dismissed_at, e.wait_reason,
     e.result_excerpt AS excerpt
 """
 

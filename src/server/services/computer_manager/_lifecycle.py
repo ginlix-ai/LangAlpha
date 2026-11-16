@@ -185,6 +185,16 @@ class SessionLifecycleMixin:
         ):
             session = await self._take_valid_cached_session(binding, _mark)
             if session is not None:
+                # A session this worker holds does not change when the machine
+                # goes away, so it passes every check above and each call on it
+                # then fails "not connected", after the turn has paid for its
+                # model calls. A cold acquire dials and gets the gateway's own
+                # answer, which this matches.
+                from src.server.services.ssh_computers import refuse_if_tunnel_down
+
+                await refuse_if_tunnel_down(
+                    binding.computer_id, binding.kind, binding.provider_config
+                )
                 if not session.sandbox.is_ready():
                     if session.sandbox.has_failed():
                         init_err = session.sandbox.init_error
@@ -919,7 +929,6 @@ class SessionLifecycleMixin:
                                 computer_id,
                                 claimed_sandbox_id,
                                 failure=recovery_error,
-                                kind=binding.kind,
                             )
                         )
                         try:
@@ -1017,7 +1026,7 @@ class SessionLifecycleMixin:
         machine.pending_lazy_sync = False
         workspace_id = binding.workspace_id
         if failure is not None:
-            await record_start_failure(binding.computer_id, failure, kind=binding.kind)
+            await record_start_failure(binding.computer_id, failure)
         try:
             reverted = await update_workspace_status(
                 workspace_id=workspace_id, status="stopped"
@@ -1039,7 +1048,6 @@ class SessionLifecycleMixin:
         sandbox_id: str | None,
         *,
         failure: BaseException | None = None,
-        kind: str = "",
     ) -> None:
         """Only while the row is still this start's. A recovery on another
         worker may have bound its own sandbox meanwhile, and that start's
@@ -1047,7 +1055,7 @@ class SessionLifecycleMixin:
         client reading the row on the stopped frame finds the reason; a
         recovery that won clears it as it reaches running."""
         if failure is not None and not isinstance(failure, asyncio.CancelledError):
-            await record_start_failure(computer_id, failure, kind=kind)
+            await record_start_failure(computer_id, failure)
         try:
             released = await update_computer_status(
                 computer_id,
@@ -1399,9 +1407,7 @@ class SessionLifecycleMixin:
             # it, and both under one shield, so a cancel cannot skip the revert.
             async def _settle(error: BaseException) -> None:
                 if not isinstance(error, asyncio.CancelledError):
-                    await record_start_failure(
-                        claimed_computer_id, error, kind=binding.kind
-                    )
+                    await record_start_failure(claimed_computer_id, error)
                 await update_workspace_status(
                     workspace_id=workspace_id, status="stopped"
                 )

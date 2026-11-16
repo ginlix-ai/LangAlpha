@@ -59,15 +59,19 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** The machine's status as the list cache holds it right now. */
-function cachedComputerStatus(queryClient: QueryClient, computerId: string): string | undefined {
+/**
+ * The computer as the lists already read hold it, or null: for a decision
+ * made outside render, which reads what the app believes now without a fetch.
+ */
+export function cachedComputer(queryClient: QueryClient, computerId: string | null | undefined): Computer | null {
+  if (!computerId) return null;
   for (const [, data] of queryClient.getQueriesData<ComputersResponse | undefined>({
     queryKey: queryKeys.computers.lists(),
   })) {
     const row = data?.computers?.find((c) => c.computer_id === computerId);
-    if (row) return row.status;
+    if (row) return row;
   }
-  return undefined;
+  return null;
 }
 
 /**
@@ -452,7 +456,7 @@ export function useComputerStatusFanout(): void {
           if (isComputerStatusTerminal(lastStatus)) return;
           await reconcile();
           if (controller.signal.aborted) return;
-          if (!isComputerStatusTransitional(cachedComputerStatus(queryClient, computerId))) return;
+          if (!isComputerStatusTransitional(cachedComputer(queryClient, computerId)?.status)) return;
           if (attempt >= STATUS_RECONNECT.maxAttempts) return;
           await sleep(
             Math.min(STATUS_RECONNECT.baseMs * 2 ** attempt, STATUS_RECONNECT.capMs),

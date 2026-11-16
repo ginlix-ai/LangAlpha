@@ -6,8 +6,12 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { holdReload } from '@/lib/reloadHolds';
+import { apiErrorCoded, apiErrorReason } from '@/api/errors';
+import type { FullRead } from '../../utils/api/files';
+import { textSha256 } from '../../utils/textSha256';
 import { disposeEditorModel, newEditorModelPath } from '../viewers/editorModels';
 import type { AskConfirm } from './usePanelConfirm';
+import type { ComputerAway } from './useComputerAway';
 
 /** One tab's editor, parked while another tab is on screen. */
 interface EditDraft {
@@ -15,6 +19,18 @@ interface EditDraft {
   editContent: string | null;
   originalContent: string | null;
   modelPath: string | null;
+  /** What the file held when the edit started, which a save names so a file
+   *  changed since is not written over; null before an edit. */
+  base: SaveBase | null;
+}
+
+/** The file a save names as the one its edit began from: its version, and the
+ *  SHA-256 of its text, which lets a save through a version that moved with
+ *  no byte changed (a touch, a rewrite of the same text). Either may be null:
+ *  a write whose version the server could not read, a page with no WebCrypto. */
+export interface SaveBase {
+  version: string | null;
+  sha256: string | null;
 }
 
 /** Whether a draft differs from the text its edit started from. The one
@@ -32,20 +48,38 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
-export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled }: {
+/**
+ * The base a draft's next save names once a write landed. A write that gave no
+ * version, on a page that cannot hash, leaves nothing to check a save against,
+ * and a save naming nothing lands unchecked. The base the write replaced is
+ * kept instead: the next save is then refused as a file changed, and the
+ * draft stays, rather than landing over whatever changed meanwhile.
+ */
+export function baseAfterWrite(next: SaveBase, previous: SaveBase | null): SaveBase {
+  return next.version || next.sha256 || !previous ? next : previous;
+}
+
+export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, invalidate, away }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
   workspaceId: string;
   selectedFile: string | null;
   setFileContent: Dispatch<SetStateAction<string | null>>;
-  readFileFullFn: (workspaceId: string, path: string) => Promise<{ content?: string }>;
-  writeFileFn: (workspaceId: string, path: string, content: string) => Promise<unknown>;
+  readFileFullFn: (workspaceId: string, path: string) => Promise<FullRead>;
+  writeFileFn: (
+    workspaceId: string, path: string, content: string, baseVersion?: string | null, baseSha256?: string | null,
+  ) => Promise<{ version: string | null }>;
   /** The panel's confirmation, asked before a save or a discard. */
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
   onSaveSettled: (path: string) => void;
+  /** Drops the panel's copy of `path`, so it is read again. */
+  invalidate: (path: string) => void;
+  /** The workspace's computer, while it may be away. */
+  away: ComputerAway;
 }) {
   const { t } = useTranslation();
+  const { blockedReason, describe: describeAway } = away;
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
@@ -58,6 +92,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
+  const [base, setBase] = useState<SaveBase | null>(null);
   // The Monaco model this edit session types into, one per session.
   const [modelPath, setModelPath] = useState<string | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -79,13 +114,14 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   const [ownerTab, setOwnerTab] = useState(tabId);
   if (ownerTab !== tabId) {
     if (dropped.current === ownerTab) dropped.current = null;
-    else drafts.current.set(ownerTab, { isEditing, editContent, originalContent, modelPath });
+    else drafts.current.set(ownerTab, { isEditing, editContent, originalContent, modelPath, base });
     const parked = drafts.current.get(tabId);
     setOwnerTab(tabId);
     setIsEditing(parked?.isEditing ?? false);
     setEditContent(parked?.editContent ?? null);
     setOriginalContent(parked?.originalContent ?? null);
     setModelPath(parked?.modelPath ?? null);
+    setBase(parked?.base ?? null);
     setShowDiff(false);
     setSaveError(null);
   }
@@ -169,16 +205,44 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       const data = await readFileFullFn(workspaceId, selectedFile);
       // Another file opened while the full read was in flight.
       if (selectedFileRef.current !== selectedFile) return;
+      // The backup may be older than the file on the machine, so an edit
+      // started from it would write that older text over the newer one. It
+      // gives no version either, and a save naming none is not checked: a
+      // stopped workspace's draft would land unchecked once it starts.
+      if (data.from.kind === 'backup') {
+        // Edit mode, where the header shows a save error, never opened, so
+        // this is said where the reader is looking.
+        // The body on screen is read again, so it carries the same notice
+        // and edit block.
+        const code = data.from.unreachable;
+        const description = code
+          ? describeAway(code) ?? t('filePanel.loadEditFailed')
+          : t('filePanel.error.sandboxUnavailableHint');
+        toast({ description, variant: 'destructive' });
+        if (code) invalidate(selectedFile);
+        return;
+      }
+      // A save naming no version goes unchecked, so the edit waits for a read
+      // that has one.
+      if (data.rewriting) {
+        toast({ description: t('filePanel.fileChangingTryAgain'), variant: 'destructive' });
+        return;
+      }
       const fullContent = data.content || '';
       if (fullContent.length > 500 * 1024) {
         setSaveError(t('filePanel.fileTooLarge'));
         return;
       }
+      // Hashed before anything is set, so a file switched away from meanwhile
+      // leaves no half-opened edit behind.
+      const sha256 = await textSha256(fullContent);
+      if (selectedFileRef.current !== selectedFile) return;
       const path = newEditorModelPath(selectedFile);
       models.current.add(path);
       setModelPath(path);
       setEditContent(fullContent);
       setOriginalContent(fullContent);
+      setBase({ version: data.version, sha256 });
       setFileContent(fullContent);
       setIsEditing(true);
     } catch (err: unknown) {
@@ -189,7 +253,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (selectedFileRef.current !== selectedFile) return;
       setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.loadEditFailed'));
     }
-  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, t]);
+  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, describeAway, invalidate, t]);
 
   const handleEditorChange = useCallback((value: string) => {
     typedRef.current = { session: sessionRef.current, text: value };
@@ -198,7 +262,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
 
   // Takes the file and text as they were when the question was asked: the
   // answer arrives on a later render.
-  const save = useCallback(async (tab: string, file: string, content: string) => {
+  const save = useCallback(async (tab: string, file: string, content: string, from: SaveBase | null) => {
     const seq = ++saveSeqRef.current;
     setSavingFile(file);
     setSaveError(null);
@@ -206,7 +270,9 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     // reload a section switch takes waits for it.
     const release = holdReload();
     try {
-      await writeFileFn(workspaceId, file, content);
+      const { version } = await writeFileFn(workspaceId, file, content, from?.version ?? null, from?.sha256 ?? null);
+      // What the file holds now, which the next save from this draft names.
+      const nextBase = baseAfterWrite({ version, sha256: await textSha256(content) }, from);
       // Another file opened while the write was in flight, the same guard the
       // full read takes above. Without it this file's text lands in the panel
       // under the other one's name, and feeds its line and heading lookup.
@@ -216,7 +282,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         // file already holds. Keystrokes typed after the save are kept.
         const parked = drafts.current.get(tab);
         if (parked?.editContent === content) drafts.current.delete(tab);
-        else if (parked) drafts.current.set(tab, { ...parked, originalContent: content });
+        else if (parked) drafts.current.set(tab, { ...parked, originalContent: content, base: nextBase });
         return;
       }
       setFileContent(content);
@@ -225,14 +291,15 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       const typed = typedRef.current;
       if (typed && typed.session === sessionRef.current && typed.text !== content) {
         setOriginalContent(content);
+        setBase(nextBase);
         return;
       }
       setIsEditing(false);
       setEditContent(null);
       setShowDiff(false);
       setOriginalContent(null);
+      setBase(null);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error('[FilePanel] Save failed:', err);
       if (selectedFileRef.current !== file) {
         // The panel has moved on, so there is no header left to hang an inline
@@ -245,7 +312,13 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         });
         return;
       }
-      setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.saveFailed'));
+      if (apiErrorCoded(err, 'file_changed')) {
+        // The draft stays, so nothing typed is lost; Cancel and Edit again
+        // read the file as it now is.
+        setSaveError(t('filePanel.fileChangedSinceEdit'));
+        return;
+      }
+      setSaveError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.saveFailed'));
     } finally {
       release();
       // A save that is no longer the current one must not report the panel idle:
@@ -253,7 +326,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (seq === saveSeqRef.current) setSavingFile(null);
       onSaveSettled(file);
     }
-  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, t]);
+  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, describeAway, t]);
 
   const handleSave = useCallback(() => {
     const draft = typedDraft();
@@ -261,17 +334,23 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     // The button carries the only other re-entry guard and the key handler
     // below does not read it, so this one belongs where every caller passes.
     if (savingFile === selectedFile) return;
+    // The draft stays in the editor, to be saved once the computer is back.
+    if (blockedReason) {
+      setSaveError(blockedReason);
+      return;
+    }
     ask(
       { title: t('filePanel.saveTitle'), message: t('filePanel.confirmSave'), confirmLabel: t('common.save') },
-      () => { void save(tabId, selectedFile, draft); },
+      () => { void save(tabId, selectedFile, draft, base); },
     );
-  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, t]);
+  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, blockedReason, base, t]);
 
   const discardEdit = useCallback(() => {
     setIsEditing(false);
     setEditContent(null);
     setShowDiff(false);
     setOriginalContent(null);
+    setBase(null);
     setSaveError(null);
   }, []);
 

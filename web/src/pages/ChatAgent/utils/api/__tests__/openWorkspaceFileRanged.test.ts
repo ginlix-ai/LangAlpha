@@ -20,7 +20,7 @@ vi.mock('@/lib/authToken', () => ({
 }));
 
 import { api, ApiError, type RequestConfig } from '@/api/client';
-import { FileChangedError, isRangedFile, isStale, type RangedFile } from '@/lib/rangedFile';
+import { FileChangedError, isStale, type RangedFile } from '@/lib/rangedFile';
 import { openWorkspaceFileRanged } from '../files';
 
 const mockGet = api.get as unknown as Mock;
@@ -121,8 +121,14 @@ function same(actual: ArrayBuffer | Uint8Array, expected: Uint8Array) {
 
 async function openRanged(): Promise<RangedFile> {
   const opened = await openWorkspaceFileRanged('ws-1', 'reports/big.pdf');
-  if (!isRangedFile(opened)) throw new Error('expected a ranged file');
-  return opened;
+  if (!('ranged' in opened)) throw new Error('expected a ranged file');
+  return opened.ranged;
+}
+
+async function openWhole(): Promise<ArrayBuffer> {
+  const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
+  if (!('buffer' in opened)) throw new Error('expected the whole file');
+  return opened.buffer;
 }
 
 beforeEach(() => {
@@ -136,49 +142,43 @@ afterEach(() => {
 describe('openWorkspaceFileRanged', () => {
   it('returns a file that fits in the opening slice as bytes, from the one request', async () => {
     const server = serve(300_000);
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    same(opened as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toEqual(['bytes=0-4194303']);
   });
 
   it('returns the whole body when the server ignores the range', async () => {
     const server = serve(6 * MIB, { honor: false });
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    same(opened as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toHaveLength(1);
   });
 
   it('reads an empty file whole, since a range has no first byte to start at', async () => {
     const server = serve(0);
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    expect((opened as ArrayBuffer).byteLength).toBe(0);
+    expect((await openWhole()).byteLength).toBe(0);
     expect(server.ranges).toEqual(['bytes=0-4194303', undefined]);
   });
 
   it('reads the file whole when a partial answer does not say where it sits', async () => {
     const server = serve(6 * MIB, { exposeRange: false });
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    same(opened as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toEqual(['bytes=0-4194303', undefined]);
   });
 
   it('reads the file whole when a partial answer names no version to hold the slices to', async () => {
     const server = serve(6 * MIB, { etag: null });
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    same(opened as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toEqual(['bytes=0-4194303', undefined]);
   });
 
   it('reads the file whole when the opening answer is not the bytes it says it is', async () => {
     const server = serve(6 * MIB, { short: 1 });
-    const opened = await openWorkspaceFileRanged('ws-1', 'a.pdf');
-    same(opened as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toEqual(['bytes=0-4194303', undefined]);
   });
 
   it('returns a file of exactly the opening slice as bytes, and one byte more as a ranged file', async () => {
     const fits = serve(4 * MIB);
-    same(await openWorkspaceFileRanged('ws-1', 'a.pdf') as ArrayBuffer, fits.bytes);
+    same(await openWhole(), fits.bytes);
     serve(4 * MIB + 1);
     expect((await openRanged()).length).toBe(4 * MIB + 1);
   });
@@ -328,7 +328,7 @@ describe('openWorkspaceFileRanged', () => {
   it('reads the file whole when the opening slice finds it changing, without asking again', async () => {
     const server = serve(6 * MIB);
     server.failures.push(await refusal(503, FILE_CHANGED));
-    same(await openWorkspaceFileRanged('ws-1', 'a.pdf') as ArrayBuffer, server.bytes);
+    same(await openWhole(), server.bytes);
     expect(server.ranges).toEqual(['bytes=0-4194303', undefined]);
   });
 

@@ -90,6 +90,11 @@ LATE = {"handed_off_at": NOW - timedelta(hours=2)}
 STOPPED = {"vanished": True, "stopped": True}
 
 
+# Its computer is no longer up.
+_AWAY = {"machine_runs": False, "reports_now": False}
+_MISSED_STOP = {"machine_runs": True, "reports_now": False}
+
+
 @pytest.mark.parametrize(
     "row_over, state, kw, expected",
     [
@@ -101,13 +106,13 @@ STOPPED = {"vanished": True, "stopped": True}
         # exited first ends as it did, never as stopped.
         ({"stopped_by": "user"}, _state(exit_code=0), {}, Outcome("completed", exit_code=0)),
         ({"stopped_by": "after_turn_limit"}, _state(exit_code=0), {}, Outcome("completed", exit_code=0)),
-        ({"stopped_by": "after_turn_limit"}, _state(exit_code=2), {"up": False}, Outcome("failed", "exit", 2, up=False)),
+        ({"stopped_by": "after_turn_limit"}, _state(exit_code=2), _AWAY, Outcome("failed", "exit", 2, up=False)),
         ({"stopped_by": "after_turn_limit"}, _state(**STOPPED), {}, Outcome("failed", "after_turn_limit")),
         ({"stopped_by": "after_turn_limit"}, s.GONE, {}, Outcome("failed", "after_turn_limit")),
         ({}, _state(exit_code=0), {}, Outcome("completed", exit_code=0)),
         ({}, _state(exit_code=2), {}, Outcome("failed", "exit", 2)),
         # An end read on a computer a stop took since reports at the next turn.
-        ({}, _state(exit_code=143), {"up": False}, Outcome("failed", "exit", 143, up=False)),
+        ({}, _state(exit_code=143), _AWAY, Outcome("failed", "exit", 143, up=False)),
         # Gone with no exit while its computer runs: killed from outside,
         # unless a stop since it started took it, or its record went with a
         # rebuilt computer.
@@ -118,7 +123,15 @@ STOPPED = {"vanished": True, "stopped": True}
         ({"started_at": NOW - timedelta(minutes=10)}, _state(vanished=True),
          {"computer_stopped_at": NOW - timedelta(hours=1)}, Outcome("failed", "vanished")),
         # Lost from a computer no longer up: judged as the computer's, later.
-        ({}, _state(vanished=True), {"up": False}, s.WATCH),
+        ({}, _state(vanished=True), _AWAY, s.WATCH),
+        # A stopped computer whose machine missed the stop: its jobs are read
+        # as on a running machine, report at the next turn, and the stop it
+        # missed ended none of them.
+        ({}, _state(exit_code=0), _MISSED_STOP, Outcome("completed", exit_code=0, up=False)),
+        ({"started_at": NOW - timedelta(minutes=10)}, _state(vanished=True),
+         {**_MISSED_STOP, "computer_stopped_at": NOW - timedelta(minutes=5)},
+         Outcome("failed", "vanished", up=False)),
+        ({}, _state(found=False), _MISSED_STOP, Outcome("failed", "lost", up=False)),
         # A stop reached it and nothing on the row says who: it simply stopped.
         ({}, _state(**STOPPED), {}, Outcome("stopped")),
         (LATE, _state(), {"hour_applies": True}, s.STOP_AFTER_TURN),
@@ -142,7 +155,7 @@ STOPPED = {"vanished": True, "stopped": True}
     ],
 )
 def test_decide(row_over, state, kw, expected):
-    kw = {"up": True, "now": NOW, **kw}
+    kw = {"machine_runs": True, "reports_now": True, "now": NOW, **kw}
     assert s.decide(_row(**row_over), state, **kw) == expected
 
 

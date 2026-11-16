@@ -76,4 +76,13 @@ describe('FileErrorDisplay', () => {
     expect(screen.getByText('The machine did not accept our key.')).toBeInTheDocument();
     expect(screen.queryByText('filePanel.error.unknownHint')).not.toBeInTheDocument();
   });
+
+  it("words a computer that did not answer in the panel's words, and offers a retry", () => {
+    const onRetry = vi.fn();
+    render(<FileErrorDisplay error={{ category: 'computer_unreachable', code: 'not_connected', message: 'Worded for the machine.' }} onRetry={onRetry} />);
+    expect(screen.getByText('filePanel.error.computerUnreachable')).toBeInTheDocument();
+    expect(screen.getByText('Worded for the machine.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('filePanel.error.retry'));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
 });

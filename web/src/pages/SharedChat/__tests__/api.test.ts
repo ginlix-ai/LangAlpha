@@ -59,7 +59,7 @@ describe('shared byte-access goes through the serve endpoint (allow_files)', () 
     fetchMock.mockResolvedValue({ ok: true, text: () => Promise.resolve('# Notes') });
     const readers = servedReaders('/api/v1/wsfiles/s/abc/');
 
-    await expect(readers.readFile('', 'notes/my notes.md')).resolves.toEqual({ content: '# Notes' });
+    await expect(readers.readFile('', 'notes/my notes.md')).resolves.toEqual({ content: '# Notes', from: { kind: 'live' } });
     expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/api\/v1\/wsfiles\/s\/abc\/notes\/my%20notes\.md$/);
 
     fetchMock.mockResolvedValue({ ok: false, status: 404 });
