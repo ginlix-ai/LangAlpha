@@ -65,7 +65,7 @@ async def test_the_kind_logged_installed_is_the_one_that_ran(monkeypatch, caplog
     """A deploy since the arm makes a summary keeping the tail a rebuild."""
     caplog.set_level("INFO")
     monkeypatch.setattr(handler, "_precheck", AsyncMock())
-    monkeypatch.setattr(handler, "_summarize_and_install", AsyncMock(return_value=SimpleNamespace(preserved=[])))
+    monkeypatch.setattr(handler, "_summarize_and_install", AsyncMock(return_value="I1"))
 
     await fire({**ROW, "kind": "I2"})
 
@@ -210,7 +210,6 @@ def fence():
         yield SimpleNamespace(saver=state.saver)
 
     with (
-        patch("src.server.handlers.thread_maintenance.compaction_write", AsyncMock(return_value={"messages": []})),
         patch("src.server.handlers.thread_maintenance._hold_thread_mutation", hold),
         patch(
             "src.server.database.conversation.threads_read.get_thread_branch_read",
@@ -236,7 +235,7 @@ def _agent(written: bool = True) -> SimpleNamespace:
 async def test_the_install_writes_through_the_fence_on_the_checkpoint_it_summarized(fence):
     agent = _agent()
 
-    await _install(agent, object(), ROW, THREAD)
+    await _install(agent, {"messages": []}, ROW, THREAD)
 
     agent.write.assert_awaited_once_with({"messages": []}, "idle_compact", saver=fence.saver)
 
@@ -260,7 +259,7 @@ async def test_a_thread_that_changed_under_the_summary_keeps_its_context(fence, 
     agent = _agent()
 
     with pytest.raises(_Skip) as skip:
-        await _install(agent, object(), ROW, THREAD)
+        await _install(agent, {"messages": []}, ROW, THREAD)
 
     assert (skip.value.event, skip.value.reason) == ("discard", reason)
     agent.write.assert_not_awaited()
@@ -270,6 +269,6 @@ async def test_a_thread_that_changed_under_the_summary_keeps_its_context(fence, 
 async def test_a_write_whose_pointer_did_not_advance_is_discarded(fence):
     """Left beside the pointer, it would still be read by the next turn."""
     with pytest.raises(_Skip) as skip:
-        await _install(_agent(written=False), object(), ROW, THREAD)
+        await _install(_agent(written=False), {"messages": []}, ROW, THREAD)
 
     assert skip.value.reason == "moved"

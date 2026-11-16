@@ -12,6 +12,7 @@ from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import STATE_SYSTEM_PIN
 from ptc_agent.agent.prompts import release
 from src.server.services import thread_status
+from src.server.utils import checkpoint_helpers
 
 COLD = 7_000
 THRESHOLD = 10_000
@@ -177,10 +178,10 @@ async def test_a_claude_code_thread_is_told_from_its_session_and_the_rules_its_l
     which read Claude's session rather than the main agent's last answer."""
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(thread_status, "_claude_session", AsyncMock(return_value=_claude_session(COLD)))
+    monkeypatch.setattr(thread_status, "read_claude_session", AsyncMock(return_value=_claude_session(COLD)))
     assert await thread_status.read_next_summary("t-1", latest={}, values=_claude_code_values()) == {
         "reason": "cold", "at": 1_300_000, "now": 1_250_000}
-    monkeypatch.setattr(thread_status, "_claude_session", AsyncMock(return_value=_claude_session(COLD - 1)))
+    monkeypatch.setattr(thread_status, "read_claude_session", AsyncMock(return_value=_claude_session(COLD - 1)))
     assert await thread_status.read_next_summary("t-1", latest={}, values=_claude_code_values()) is None
 
 
@@ -188,7 +189,7 @@ async def test_a_claude_code_thread_is_told_from_its_session_and_the_rules_its_l
 async def test_a_thread_another_model_answered_since_is_told_by_the_main_agents_rules(monkeypatch):
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(thread_status, "_claude_session", AsyncMock(return_value=_claude_session(COLD)))
+    monkeypatch.setattr(thread_status, "read_claude_session", AsyncMock(return_value=_claude_session(COLD)))
     values = {**_values(COLD, cold=0), **_claude_code_values(at=900.0)}
     assert await thread_status.read_next_summary("t-1", latest={}, values=values) is None
 
@@ -206,7 +207,7 @@ async def test_a_claude_code_threads_session_is_replayed_from_its_checkpoints(mo
     config = {"configurable": {"thread_id": "t-cc"}}
     for uuid in ("a", "b"):
         await graph.aupdate_state(config, {"claude_session": [{"session_id": "s", "entries": [{"uuid": uuid}]}]}, as_node="model")
-    monkeypatch.setattr(thread_status, "get_checkpointer", lambda: saver)
+    monkeypatch.setattr(checkpoint_helpers, "get_checkpointer", lambda: saver)
     assert "claude_session" not in thread_status.extract_state_values(await saver.aget_tuple(config))
-    assert [e["uuid"] for e in (await thread_status._claude_session("t-cc", None))["entries"]] == ["a", "b"]
+    assert [e["uuid"] for e in (await checkpoint_helpers.read_claude_session("t-cc", None))["entries"]] == ["a", "b"]
 

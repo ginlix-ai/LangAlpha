@@ -1299,6 +1299,7 @@ async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_be
 
     from ptc_agent.agent.claude_code.session import RULES_KEY
     from src.server.services import thread_status
+    from src.server.utils import checkpoint_helpers
 
     rules = CompactionRules(0, threshold=100_000, cold_tokens=100)
     graph = new_graph()
@@ -1308,6 +1309,7 @@ async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_be
     assert {k: values[RULES_KEY][k] for k in ("threshold", "cold_tokens", "floor_tokens")} == {
         "threshold": 100_000, "cold_tokens": 100, "floor_tokens": 0}
     monkeypatch.setattr(thread_status, "get_checkpointer", lambda: graph.checkpointer)
+    monkeypatch.setattr(checkpoint_helpers, "get_checkpointer", lambda: graph.checkpointer)
     monkeypatch.setattr(thread_status, "turn_base_checkpoint_id", AsyncMock(return_value=None))
     told = await thread_status.read_next_summary("t-rules", latest={})
     assert told["reason"] == "cold" and told["at"] > told["now"]
