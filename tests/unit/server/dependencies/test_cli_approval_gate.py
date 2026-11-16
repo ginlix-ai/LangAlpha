@@ -507,7 +507,9 @@ def rows(monkeypatch) -> SimpleNamespace:
     async def workspace(workspace_id):
         return {"workspace_id": workspace_id, "name": "Scratch"}
 
-    async def live(computer_id):
+    async def live(computer_id, *, exclude_stand_in=False):
+        # The card never offers Home's stand-in as a workspace to delete.
+        assert exclude_stand_in
         return list(world.on_computer.get(computer_id, []))
 
     async def prefs(user_id, *, cached=True):

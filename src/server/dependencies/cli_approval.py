@@ -468,7 +468,10 @@ async def computer_remove(
     computer_id = str(computer["computer_id"])
 
     async def build(call: CliCall | None) -> Ask:
-        on_it = [str(w) for w in await get_live_workspace_ids_for_computer(computer_id)]
+        on_it = [
+            str(w)
+            for w in await get_live_workspace_ids_for_computer(computer_id, exclude_stand_in=True)
+        ]
         names = [(await get_workspace(w) or {}).get("name") for w in on_it]
         # Both act only on an ssh machine, so the user is told of them only there.
         ssh = computer.get("kind") == "ssh"
