@@ -895,7 +895,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       //     don't pollute the conversation history)
       // Either way what the turn streamed stays its reply: the failure rides
       // apart from the content, so the reply never renders as the error.
-      const kind = event.error_kind as 'upstream' | 'internal' | 'computer_unreachable' | undefined;
+      const kind = event.error_kind;
       const structured: StructuredError | undefined = busyCode !== null
         ? { message: errorMessage as string, kind: 'notice' }
         : readStreamFailure(event, errorMessage as string, rt.workspaceId, rt.t);

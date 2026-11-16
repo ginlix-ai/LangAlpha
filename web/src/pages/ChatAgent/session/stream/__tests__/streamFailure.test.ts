@@ -105,7 +105,7 @@ describe('readStreamFailure: a machine that did not answer', () => {
   it('carries the connect code for the card to word, live or replayed', () => {
     const frame = { event: 'error', error: 'mini is not connected.', error_kind: 'computer_unreachable', error_code: 'not_connected', response_id: 'run-1' };
     expect(readStreamFailure(frame, 'mini is not connected.', 'ws-1', t)).toEqual({
-      message: 'mini is not connected.', kind: 'computer_unreachable', errorCode: 'not_connected', runId: 'run-1',
+      message: 'mini is not connected.', kind: 'computer_unreachable', unreachable: { code: 'not_connected' }, runId: 'run-1',
     });
   });
 
@@ -115,7 +115,7 @@ describe('readStreamFailure: a machine that did not answer', () => {
       computer_id: 'comp-mac', computer_name: 'mini', run_id: 'run-2',
     };
     expect(readStreamFailure(frame, '', 'ws-1', t)).toMatchObject({
-      kind: 'computer_unreachable', errorCode: 'timeout', computerId: 'comp-mac', computerName: 'mini', runId: 'run-2',
+      kind: 'computer_unreachable', unreachable: { code: 'timeout', computerId: 'comp-mac', computerName: 'mini' }, runId: 'run-2',
     });
   });
 });

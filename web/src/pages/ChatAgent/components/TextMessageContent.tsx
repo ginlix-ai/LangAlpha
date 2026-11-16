@@ -117,14 +117,15 @@ function ComputerUnreachableCard({ err }: { err: StructuredError }): React.React
   const { t } = useTranslation();
   const workspaceId = useWorkspaceId();
   const { data: workspace } = useWorkspace(workspaceId);
-  const computerId = workspaceId ? err.computerId ?? workspace?.computer_id ?? null : null;
+  const named = err.unreachable;
+  const computerId = workspaceId ? named?.computerId ?? workspace?.computer_id ?? null : null;
   const { data: computer } = useComputer(computerId);
   // One the list read does not hold (null, not still loading) is named as
   // the failure named it.
-  const machine = computer === null && err.computerName
-    ? { ...awayMachineOf(null), name: err.computerName }
+  const machine = computer === null && named?.computerName
+    ? { ...awayMachineOf(null), name: named.computerName }
     : awayMachineOf(computer);
-  const { title, detail } = unreachableTurnCopy(t, err.errorCode, machine);
+  const { title, detail } = unreachableTurnCopy(t, named?.code, machine);
   return <ErrorDisplay parsed={{ title, detail, model: null, statusCode: null }} />;
 }
 

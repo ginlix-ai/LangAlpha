@@ -35,9 +35,11 @@ export function readStreamFailure(
     return {
       message,
       kind,
-      errorCode: text(event.error_code),
-      computerId: text(event.computer_id),
-      computerName: text(event.computer_name),
+      unreachable: {
+        code: text(event.error_code),
+        computerId: text(event.computer_id),
+        computerName: text(event.computer_name),
+      },
       runId,
     };
   }

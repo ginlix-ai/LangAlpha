@@ -33,7 +33,7 @@ const ssh = (over: Record<string, unknown>) => ({
 function renderCard(code = 'not_connected') {
   return renderWithProviders(
     <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
-      <TurnErrorCard err={{ message: 'work-mac is not connected.', kind: 'computer_unreachable', errorCode: code }} />
+      <TurnErrorCard err={{ message: 'work-mac is not connected.', kind: 'computer_unreachable', unreachable: { code } }} />
     </WorkspaceProvider>,
   );
 }
@@ -79,7 +79,7 @@ describe('TurnErrorCard: a computer that did not answer', () => {
     };
     renderWithProviders(
       <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
-        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', errorCode: 'not_connected', computerId: 'comp-mac' }} />
+        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', unreachable: { code: 'not_connected', computerId: 'comp-mac' } }} />
       </WorkspaceProvider>,
     );
     expect(screen.getByText("Couldn't reach your Mac")).toBeInTheDocument();
@@ -89,14 +89,14 @@ describe('TurnErrorCard: a computer that did not answer', () => {
     computers = {};
     renderWithProviders(
       <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
-        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', errorCode: 'timeout', computerId: 'gone', computerName: 'lab-box' }} />
+        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', unreachable: { code: 'timeout', computerId: 'gone', computerName: 'lab-box' } }} />
       </WorkspaceProvider>,
     );
     expect(screen.getByText("Couldn't reach lab-box")).toBeInTheDocument();
   });
 
   it('names no machine where the view has no workspace', () => {
-    renderWithProviders(<TurnErrorCard err={{ message: '', kind: 'computer_unreachable', errorCode: 'not_connected' }} />);
+    renderWithProviders(<TurnErrorCard err={{ message: '', kind: 'computer_unreachable', unreachable: { code: 'not_connected' } }} />);
     expect(screen.getByText("Couldn't reach this workspace's computer")).toBeInTheDocument();
   });
 });
