@@ -70,6 +70,18 @@ from src.server.services.persistence.file import FilePersistenceService
 logger = logging.getLogger(__name__)
 
 
+def spared_by_idle_sweep(computer: Dict[str, Any]) -> bool:
+    """Whether the idle sweep never stops ``computer``: an always-on one, a
+    machine of the user's own, or one no provider knows the kind of. Nothing
+    there stops a command an hour after its turn either."""
+    if computer.get("is_always_on"):
+        return True
+    try:
+        return is_own_machine(computer["kind"])
+    except ValueError:
+        return True
+
+
 class IdleWindow(NamedTuple):
     """When the idle sweep stops a running computer if nothing more counts as
     activity, and the idle timeout that time is its last activity plus."""
@@ -759,11 +771,9 @@ class WorkspaceManager(ComputerManager):
         settings no provider can be built from is never stopped either, nor
         one of the user's own (``is_own_machine``).
         """
-        if computer.get("is_always_on"):
+        if spared_by_idle_sweep(computer):
             return None
         try:
-            if is_own_machine(computer["kind"]):
-                return None
             return self._idle_window(computer)
         except ValueError:
             return None
