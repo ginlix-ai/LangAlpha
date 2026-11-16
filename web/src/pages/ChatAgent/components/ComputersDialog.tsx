@@ -18,7 +18,6 @@
  */
 import { Suspense, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from '@/lib/framer';
 
@@ -29,12 +28,11 @@ import { toast } from '@/components/ui/use-toast';
 import { useHomeWorkspaceId } from '@/hooks/useHomeWorkspace';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 import { DURATION } from '@/lib/motion';
-import { queryKeys } from '@/lib/queryKeys';
-import { retryUnlessClientError } from '@/api/errors';
 import type { Computer, ComputerCreate, ComputerReinstall } from '@/types/api';
 import type { HomePlacement } from '../utils/api';
 
 import { useComputerProviders, useComputers } from '../hooks/useComputers';
+import { useHomePlacement } from '../hooks/useHomePlacement';
 import { useReleaseRefusedRemoteControl, useThisMac, useThisMacAvailability } from '../hooks/useRemoteControl';
 import { openComputerSpec, type ComputersPanelView } from '../hooks/computerPanelStore';
 import {
@@ -68,12 +66,12 @@ import {
   rowsShowProvider,
   THIS_MAC_OPTION,
 } from './providerUi';
-import { apiErrorObject, apiErrorReason, apiErrorStatus, getHomePlacement, moveRefusal } from '../utils/api';
+import { apiErrorObject, apiErrorReason, apiErrorStatus, moveRefusal } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
 import { entitlementErrorMessage } from '../utils/entitlementErrors';
 import { folderMarkedOwner, sshLimitMessage } from '../utils/sshLimit';
 import { computerNameTakenMessage } from '../utils/computerName';
-import { liveComputers } from '../utils/computerStatus';
+import { liveComputers, tunnelDown } from '../utils/computerStatus';
 import { pairedElsewhere } from './startFailure';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -243,11 +241,7 @@ function ComputersPanel({
   const { data: homeMove } = useWorkspaceMove(homeId, { enabled: true });
   const homeMoving = isMoveActive(homeMove) ? homeMove : null;
   // Where Home stands, for what making a computer primary does to it.
-  const { data: placement } = useQuery({
-    queryKey: queryKeys.workspaces.homePlacement(),
-    queryFn: getHomePlacement,
-    retry: retryUnlessClientError,
-  });
+  const { data: placement } = useHomePlacement();
   // A refused start relays the quota service's own sentence (denialMessage).
   const error = power.error ? denialMessage(power.error, t) : null;
   // A taken name is said under the name field; anything else under the form.
@@ -268,7 +262,7 @@ function ComputersPanel({
   // from its last backup. Home's placement says so as of its last read; the
   // row's tunnel flag is only as fresh as the list.
   const homeFromBackup = !!removeTarget && (
-    placement?.computer_id === removeTarget.computer_id ? placement.unreachable : removeTarget.ssh?.tunnel_connected === false
+    placement?.computer_id === removeTarget.computer_id ? placement.unreachable : tunnelDown(removeTarget)
   );
 
   const actionsFor = (computer: Computer): MachineActions => {

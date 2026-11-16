@@ -13,7 +13,8 @@ import type { Computer, Workspace } from '@/types/api';
 import { apiErrorCoded } from '@/api/errors';
 import { startWorkspace, uploadWorkspaceFile } from '../utils/api';
 import { needsBackupOf, type NeedsBackup } from '../utils/needsComputer';
-import { addsThisMac, useOpenComputers } from '../hooks/useOpenComputers';
+import { canAddThisMac } from '@/lib/desktop';
+import { useOpenComputers } from '../hooks/useOpenComputers';
 import { createWorkspaceDenialMessage, denialMessage } from '../utils/denialMessage';
 import { clampWorkspaceName } from '../utils/workspaceName';
 import type { NewWorkspace } from '../hooks/useCreateWorkspace';
@@ -66,7 +67,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const [needsComputer, setNeedsComputer] = useState(false);
   const [needsBackup, setNeedsBackup] = useState<NeedsBackup | null>(null);
   const openComputers = useOpenComputers();
-  const thisMac = addsThisMac();
+  const thisMac = canAddThisMac();
   const [pickedComputerId, setPickedComputerId] = useState<string | null>(null);
   const computerFieldId = useId();
 

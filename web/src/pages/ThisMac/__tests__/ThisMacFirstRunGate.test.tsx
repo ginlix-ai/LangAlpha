@@ -23,7 +23,7 @@ const shell = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/desktop', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  isMacDesktop: () => shell.mac,
+  canAddThisMac: () => shell.mac && shell.remote,
   canRemoteControl: () => shell.remote,
   getRemoteControl: async () => shell.status,
 }));

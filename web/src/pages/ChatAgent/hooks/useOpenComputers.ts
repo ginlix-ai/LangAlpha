@@ -4,14 +4,7 @@
  */
 import { useNavigate } from 'react-router';
 
-import { canRemoteControl, isMacDesktop } from '@/lib/desktop';
-
 import { computersHostMounted, openComputersPanel, type ComputersPanelView } from './computerPanelStore';
-
-/** Whether adding a computer here means this Mac: the desktop app on a Mac that can pair itself. */
-export function addsThisMac(): boolean {
-  return isMacDesktop() && canRemoteControl();
-}
 
 /**
  * Opens the Computers dialog onto `panel` now. A page without the dialogs'

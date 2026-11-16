@@ -12,7 +12,7 @@ import { renderWithProviders } from '@/test/utils';
 const desktop = vi.hoisted(() => ({ mac: false, remote: false }));
 vi.mock('@/lib/desktop', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  isMacDesktop: () => desktop.mac,
+  canAddThisMac: () => desktop.mac && desktop.remote,
   canRemoteControl: () => desktop.remote,
 }));
 

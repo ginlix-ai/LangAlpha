@@ -27,6 +27,7 @@ import { Loader } from '@/components/ui/loader';
 import { WizardFooter, WizardShell, WizardStepHeader, type WizardFooterProps } from '@/components/ui/wizard';
 import type { Computer, ComputerCreate } from '@/types/api';
 
+import { providerIsOwnMachine } from '@/pages/ChatAgent/components/providerUi';
 import { RemoteControlSetup } from '@/pages/ChatAgent/components/remoteControlSetup';
 import { useRemoteControlSetup } from '@/pages/ChatAgent/components/remoteControlSetupState';
 import { useComputerActions } from '@/pages/ChatAgent/hooks/useComputerActions';
@@ -104,7 +105,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   // Home is on the primary, so a user with one has a Home that moves here.
   const homeNow: HomeNow = !primary
     ? { kind: 'none' }
-    : primary.kind === 'ssh' ? { kind: 'machine', name: primary.name } : { kind: 'cloud' };
+    : providerIsOwnMachine(primary.kind) ? { kind: 'machine', name: primary.name } : { kind: 'cloud' };
 
   const [step, setStep] = useState<Step>('ask');
   const mac = useRemoteControlSetup(step === 'setup');

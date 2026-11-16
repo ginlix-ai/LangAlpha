@@ -9,14 +9,15 @@
  */
 import { useTranslation } from 'react-i18next';
 
-import { addsThisMac, useOpenComputers } from '../hooks/useOpenComputers';
+import { canAddThisMac } from '@/lib/desktop';
+import { useOpenComputers } from '../hooks/useOpenComputers';
 
 const LINK_STYLE = { textDecoration: 'underline', fontWeight: 500 } as const;
 
 export function AddComputerLink() {
   const { t } = useTranslation();
   const openComputers = useOpenComputers();
-  const thisMac = addsThisMac();
+  const thisMac = canAddThisMac();
   return (
     <button
       type="button"

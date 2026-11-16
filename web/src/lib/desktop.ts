@@ -418,9 +418,13 @@ export function isDesktopShell(): boolean {
   return desktop !== undefined;
 }
 
-/** Whether this page runs in the desktop shell on a Mac. */
-export function isMacDesktop(): boolean {
-  return desktop?.platform === 'darwin';
+/**
+ * Whether this page runs in the desktop app on a Mac that can pair itself,
+ * so adding a computer here means this Mac. Read where the first run decides
+ * to ask, and where a way out offers to set this Mac up.
+ */
+export function canAddThisMac(): boolean {
+  return desktop?.platform === 'darwin' && canRemoteControl();
 }
 
 /**

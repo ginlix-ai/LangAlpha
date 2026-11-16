@@ -11,7 +11,7 @@
  * account's computers is the first run's own first read, which marks it
  * asked when it is, so this module stays light on first load.
  */
-import { canRemoteControl, isMacDesktop } from '@/lib/desktop';
+import { canAddThisMac } from '@/lib/desktop';
 import { useStorageUser, userLocalStorage } from '@/lib/userStorage';
 
 const ASKED_HERE_KEY = 'thisMacFirstRun.asked';
@@ -29,5 +29,5 @@ export function markAskedOnThisMac(): void {
 /** Whether the first run is still to be shown to the signed-in user on this Mac. */
 export function useComputerChoiceUnasked(): boolean {
   const asked = askedOnThisMac(useStorageUser());
-  return isMacDesktop() && canRemoteControl() && !asked;
+  return canAddThisMac() && !asked;
 }

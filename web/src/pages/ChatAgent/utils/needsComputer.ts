@@ -9,6 +9,7 @@
  */
 import type { useTranslation } from 'react-i18next';
 
+import { apiErrorCoded } from '@/api/errors';
 import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -23,15 +24,18 @@ export const ADD_COMPUTER_LINK: ErrorLinkSpec = {
   addComputer: true,
 };
 
-/** Whether a refusal is `needs_computer`, as the stream transport or the API client carries it. */
+/**
+ * The detail of a refusal carrying `code`, as either carrier holds it: the
+ * stream transport puts it on `errorInfo`, the API client on the response.
+ */
+function refusalCoded(err: unknown, code: string): Record<string, unknown> | null {
+  const info = (err as { errorInfo?: Record<string, unknown> } | null)?.errorInfo;
+  return info?.code === code ? info : apiErrorCoded(err, code);
+}
+
+/** Whether a refusal is `needs_computer`. */
 export function isNeedsComputer(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const { errorInfo, response } = err as {
-    errorInfo?: { code?: unknown };
-    response?: { status?: number; data?: { detail?: { code?: unknown } } };
-  };
-  if (errorInfo?.code === NEEDS_COMPUTER) return true;
-  return response?.status === 409 && response.data?.detail?.code === NEEDS_COMPUTER;
+  return refusalCoded(err, NEEDS_COMPUTER) !== null;
 }
 
 export function needsComputerError(t: Translate): StructuredError {
@@ -52,17 +56,10 @@ export interface NeedsBackup {
  * and name, since turning its backup on is the way out. Null for any other error.
  */
 export function needsBackupOf(err: unknown): NeedsBackup | null {
-  if (!err || typeof err !== 'object') return null;
-  const { errorInfo, response } = err as {
-    errorInfo?: Record<string, unknown>;
-    response?: { status?: number; data?: { detail?: unknown } };
-  };
-  const detail = errorInfo?.code === NEEDS_BACKUP
-    ? errorInfo
-    : response?.status === 409 ? (response.data?.detail as Record<string, unknown> | undefined) : undefined;
-  if (!detail || typeof detail !== 'object' || detail.code !== NEEDS_BACKUP) return null;
-  const { computer_id: computerId, computer_name: name } = detail;
+  const detail = refusalCoded(err, NEEDS_BACKUP);
+  const computerId = detail?.computer_id;
   if (typeof computerId !== 'string' || !computerId) return null;
+  const name = detail?.computer_name;
   return { computerId, name: typeof name === 'string' ? name : '' };
 }
 

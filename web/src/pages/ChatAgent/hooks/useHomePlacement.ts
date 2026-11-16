@@ -14,7 +14,8 @@ import type { TFunction } from 'i18next';
 import { formatList } from '@/lib/format';
 import { queryKeys } from '@/lib/queryKeys';
 
-import { getHomePlacement, markHomeHandbackSeen, type HomeHandback, type HomePlacement } from '../utils/api/workspaces';
+import { providerIsOwnMachine } from '../components/providerUi';
+import { getHomePlacement, markHomeHandbackSeen, type HomeHandback, type HomePlacement } from '../utils/api';
 import { AWAY_REFETCH_MS } from '../utils/computerAway';
 import { isMoveActive } from './useWorkspaceMove';
 
@@ -36,7 +37,7 @@ export function namedFiles(t: TFunction, paths: readonly string[], locale: strin
 /** How often to read the placement again, or false to leave it. */
 export function homePlacementPollMs(placement: HomePlacement | undefined): number | false {
   if (!placement) return false;
-  const changes = placement.computer_kind === 'ssh'
+  const changes = providerIsOwnMachine(placement.computer_kind ?? '')
     || placement.unreachable
     || placement.handback_owed
     || isMoveActive(placement.move);
