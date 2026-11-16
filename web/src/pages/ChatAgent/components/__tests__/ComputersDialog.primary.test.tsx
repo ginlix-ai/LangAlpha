@@ -69,6 +69,7 @@ function placement(patch: Partial<HomePlacement> = {}): HomePlacement {
     stand_in: { computer_id: PRIMARY_ID, name: 'Alpha Research', status: 'running' },
     handback_owed: false,
     handback: null,
+    left_on_stand_in: null,
     move: null,
     ...patch,
   };

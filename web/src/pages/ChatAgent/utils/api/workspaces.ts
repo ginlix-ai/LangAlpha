@@ -87,12 +87,18 @@ export interface HomeHandback {
   /** Paths too large to copy, still only on the cloud computer. */
   left_on_cloud: string[];
   /** Paths that couldn't be read there, still only on the cloud computer. */
-  unreadable?: string[];
+  unreadable: string[];
   /** The copy kept failing and was given up: every file is still only on the cloud computer. */
-  failed?: boolean;
+  failed: boolean;
   computer_name: string;
   cloud_name: string;
   created_at: string;
+}
+
+/** What the last hand-back left on the stand-in's computer and Home lacks. */
+export interface HomeLeftOnStandIn {
+  failed: boolean;
+  paths: string[];
 }
 
 /**
@@ -114,7 +120,8 @@ export interface HomePlacement {
    * kept after its notice is dismissed: removing that computer deletes them.
    * `failed` when it gave up, so which files is not known.
    */
-  left_on_stand_in?: { failed: boolean; paths: string[] } | null;
+  left_on_stand_in: HomeLeftOnStandIn | null;
+  /** Home's latest move. */
   move: WorkspaceMove | null;
 }
 

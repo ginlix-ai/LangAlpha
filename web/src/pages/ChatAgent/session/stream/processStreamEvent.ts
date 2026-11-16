@@ -350,10 +350,13 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
 
     // turn_placement: a Home turn running on the user's cloud computer while
     // the machine Home lives on can't be reached. Put on the row the turn
-    // answers, where a replay puts it from the turn's metadata.
+    // answers, where a replay puts it from the turn's metadata. A retry back
+    // on Home sends null, which takes its first attempt's off.
     if (eventType === 'turn_placement') {
-      const fallback = readHomeFallback(event.home_fallback);
-      if (fallback) setMessagesForHandlers((prev) => stampHomeFallback(prev, assistantMessageId, fallback));
+      const fallback = event.home_fallback === null ? null : readHomeFallback(event.home_fallback);
+      if (fallback || event.home_fallback === null) {
+        setMessagesForHandlers((prev) => stampHomeFallback(prev, assistantMessageId, fallback));
+      }
       return;
     }
 

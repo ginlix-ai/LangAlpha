@@ -9,7 +9,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { queryKeys } from '@/lib/queryKeys';
 import { renderWithProviders } from '@/test/utils';
 
-import type { HomePlacement } from '../../../utils/api/workspaces';
+import type { HomeHandback, HomePlacement } from '../../../utils/api/workspaces';
 
 const api = vi.hoisted(() => ({
   getHomePlacement: vi.fn(),
@@ -35,16 +35,19 @@ function placement(over: Partial<HomePlacement> = {}): HomePlacement {
     stand_in: STAND_IN,
     handback_owed: false,
     handback: null,
+    left_on_stand_in: null,
     move: null,
     ...over,
   };
 }
 
-const HANDBACK = {
+const HANDBACK: HomeHandback = {
   handback_id: 'hb-1',
   folder: 'From the cloud/2026-11-15',
   files: 3,
-  left_on_cloud: [] as string[],
+  left_on_cloud: [],
+  unreadable: [],
+  failed: false,
   computer_name: 'Office Mac',
   cloud_name: 'Cloud One',
   created_at: '2026-11-15T10:00:00Z',

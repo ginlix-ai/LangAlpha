@@ -34,7 +34,7 @@ export function HomePlacementNotice() {
   if (handback && handback.left_on_cloud.length > 0) {
     left.push(t('homePlacement.leftOnCloud', { cloud: handback.cloud_name, files: namedFiles(t, handback.left_on_cloud, locale) }));
   }
-  if (handback?.unreadable?.length) {
+  if (handback?.unreadable.length) {
     left.push(t('homePlacement.unreadable', { cloud: handback.cloud_name, files: namedFiles(t, handback.unreadable, locale) }));
   }
   const handbackMac = machineName(t, handback?.computer_name);

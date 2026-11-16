@@ -52,7 +52,7 @@ function draw(messages: MessageRecord[]) {
 }
 
 /** The live stream as far as the frame: a sent message and its reply bubble. */
-function liveTurn(): MessageRecord[] {
+function liveTurn(...placements: Array<typeof FALLBACK | null>): MessageRecord[] {
   let messages: ChatMessage[] = [
     { id: 'u1', role: 'user', content: 'Summarize my notes', contentType: 'text', timestamp: new Date(), isStreaming: false, turnIndex: 0 },
     { id: 'a1', role: 'assistant', content: 'Done.', isStreaming: false, contentSegments: [], reasoningProcesses: {}, toolCallProcesses: {}, turnIndex: 0 },
@@ -77,7 +77,9 @@ function liveTurn(): MessageRecord[] {
     { contentOrderCounterRef: { current: 0 }, subagentStateRefs: {}, isReconnect: false } as unknown as Processor[3],
     () => null,
   );
-  process({ event: 'turn_placement', home_fallback: FALLBACK, workspace_id: 'home-1' } as unknown as SSEEvent);
+  for (const placement of placements.length ? placements : [FALLBACK]) {
+    process({ event: 'turn_placement', home_fallback: placement, workspace_id: 'home-1' } as unknown as SSEEvent);
+  }
   return messages as unknown as MessageRecord[];
 }
 
@@ -88,6 +90,13 @@ describe('the turn badge of a Home turn on the cloud', () => {
     expect(messages[1].homeFallback).toBeUndefined();
     draw(messages);
     expect(screen.getByTestId('home-turn-on-cloud')).toHaveTextContent('Ran on Cloud One');
+  });
+
+  it('leaves when a retry of the turn runs back on Home', () => {
+    const messages = liveTurn(FALLBACK, null);
+    expect(messages[0].homeFallback).toBeUndefined();
+    draw(messages);
+    expect(screen.queryByTestId('home-turn-on-cloud')).toBeNull();
   });
 
   it('comes from the turn metadata on replay', async () => {

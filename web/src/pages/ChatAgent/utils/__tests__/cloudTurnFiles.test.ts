@@ -17,6 +17,7 @@ const FALLBACK: HomeFallback = {
   cloud_computer_id: 'c-cloud',
   cloud_name: 'Cloud One',
   at: '2026-11-15T09:00:00Z',
+  reason: 'unreachable',
 };
 
 const HANDBACKS: HomeHandbacks = {

@@ -25,6 +25,7 @@ import { ModalShell } from '@/components/ui/ModalShell';
 import { useAllWorkspaces } from '@/hooks/useAllWorkspaces';
 import { useLocale } from '@/hooks/useLocale';
 import type { Computer } from '@/types/api';
+import type { HomeLeftOnStandIn } from '../utils/api';
 
 import { machineName, namedFiles } from '../hooks/useHomePlacement';
 import { PREPARING_UI, computerStatusUi, homeEligibility, isComputerPreparing } from '../utils/computerStatus';
@@ -59,7 +60,7 @@ interface RemoveComputerDialogProps {
    * Files Home's stand-in holds here that a hand-back left and Home lacks,
    * named by the computer Home lives on; null when there are none.
    */
-  homeFilesLeft?: { failed: boolean; paths: string[]; homeComputer: string | null } | null;
+  homeFilesLeft?: (HomeLeftOnStandIn & { homeComputer: string | null }) | null;
   /** Home is moving to the computer picked, ahead of the removal. */
   movingHome?: boolean;
   /** Opens New computer, for a user whose only computer this is. */

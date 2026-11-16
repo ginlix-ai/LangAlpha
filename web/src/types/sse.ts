@@ -515,14 +515,17 @@ export interface HomeFallback {
   cloud_computer_id: string;
   cloud_name: string;
   /** When the turn was admitted (ISO): the first hand-back after it holds its files. */
-  at?: string;
-  reason?: 'unreachable' | 'command';
+  at: string;
+  reason: 'unreachable' | 'command';
 }
 
-/** Sent once near the start of a Home turn that runs on the cloud stand-in. */
+/**
+ * Sent once near the start of a Home turn that runs on the cloud stand-in,
+ * and of a retry of a Home turn, where null says this attempt runs on Home.
+ */
 export interface TurnPlacementEvent extends BaseSSEEvent {
   event: 'turn_placement';
-  home_fallback: HomeFallback;
+  home_fallback: HomeFallback | null;
   workspace_id: string;
 }
 
