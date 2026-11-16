@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { AlertCircle, ChevronRight, StopCircle, type LucideIcon } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { RollingText } from '@/components/ui/rolling-text';
 import { useNow } from '@/hooks/useNow';
 import { formatClock } from '@/lib/elapsed';
 import { cn } from '@/lib/utils';
@@ -74,7 +75,7 @@ export const RUN_CLOCK = 'font-mono text-[0.71875rem] tabular-nums text-(--color
 export function ElapsedClock({ startedAt, className }: { startedAt?: number; className?: string }): React.ReactElement {
   const [seenAt] = useState(Date.now);
   const now = useNow(1000);
-  return <span aria-hidden className={cn(RUN_CLOCK, className)}>{formatClock(now - (startedAt ?? seenAt))}</span>;
+  return <RollingText aria-hidden className={cn(RUN_CLOCK, className)}>{formatClock(now - (startedAt ?? seenAt))}</RollingText>;
 }
 
 /** A group's one-line header: its icon in the avatars' column, how many, how

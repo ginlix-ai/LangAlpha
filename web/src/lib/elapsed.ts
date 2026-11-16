@@ -47,23 +47,30 @@ export function formatWorkedFor(ms: number, t: TFn): string {
   return t(SCALE_KEYS.hours, { hours: Math.floor(totalMinutes / 60), minutes: totalMinutes % 60 });
 }
 
-/**
- * `4s`, `47s`, `12m 58s`, `1h 3m` for how long the model thought. Whole
- * seconds from the first tick: the header ticks once a second while a thought
- * runs, and tenths there would read as jitter.
- */
-export function formatThoughtFor(ms: number, t: TFn): string {
-  const elapsed = Number.isFinite(ms) && ms > 0 ? ms : 0;
+function wholeSeconds(elapsed: number, t: TFn): string {
   const totalSeconds = Math.floor(elapsed / 1000);
-  if (totalSeconds < 1) return t(SCALE_KEYS.subSecond);
   if (totalSeconds < 60) return t(SCALE_KEYS.seconds, { value: totalSeconds });
   return formatWorkedFor(elapsed, t);
 }
 
 /**
- * How long something that has finished took: `formatThoughtFor`, without a
- * zero tail (`15m`, not `15m 0s`). The live headers keep the tail so their
- * width holds while they tick; a settled figure never ticks.
+ * `1s`, `47s`, `12m 58s`, `1h 3m` for how long the model thought. Whole
+ * seconds from the first tick: the header ticks once a second while a thought
+ * runs, and tenths there would read as jitter. Never under a second: "thought
+ * for less than a second" says nothing a reader can use, and a live clock that
+ * opened on it would change wording at its first tick.
+ */
+export function formatThoughtFor(ms: number, t: TFn): string {
+  const elapsed = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  return wholeSeconds(Math.max(elapsed, 1000), t);
+}
+
+/**
+ * How long something that has finished took, in whole seconds like
+ * `formatThoughtFor`, without a zero tail (`15m`, not `15m 0s`). The live
+ * headers keep the tail so their width holds while they tick; a settled figure
+ * never ticks. Under a second it says so: a run's length sits in a column of
+ * figures, where `1s` for a 100ms run would be a wrong number.
  */
 export function formatTook(ms: number, t: TFn): string {
   const elapsed = Number.isFinite(ms) && ms > 0 ? ms : 0;
@@ -74,7 +81,8 @@ export function formatTook(ms: number, t: TFn): string {
   if (totalMinutes >= 1 && totalMinutes < 60 && Math.floor(elapsed / 1000) % 60 === 0) {
     return t(SCALE_KEYS.wholeMinutes, { minutes: totalMinutes });
   }
-  return formatThoughtFor(elapsed, t);
+  if (elapsed < 1000) return t(SCALE_KEYS.subSecond);
+  return wholeSeconds(elapsed, t);
 }
 
 /**
