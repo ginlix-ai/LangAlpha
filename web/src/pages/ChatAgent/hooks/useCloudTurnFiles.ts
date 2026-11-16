@@ -2,26 +2,29 @@
  * The file cards of a Home turn that ran on the cloud stand-in, pointed at
  * where each file is now (`placeCloudTurns`): the copy a hand-back brought
  * into Home, else the stand-in's own. Asks the server only in a thread with
- * such a turn, and again while one of their files has not come back.
- *
- * The read lives in a reader element the list mounts only then, so a list
- * drawn with no query client (a transcript with no such turn) needs none.
+ * such a turn, and again while one of their files has not come back or the
+ * read failed. Until it answers, those turns show only the files that name
+ * their workspace: the rest would open as Home's file of the same name.
  */
-import { createElement, useMemo, useState, type ReactElement } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
+import { queryKeys } from '@/lib/queryKeys';
 import type { HomeFallback } from '@/types/sse';
 
-import { HandbacksReader } from '../components/messageList/HandbacksReader';
 import type { MessageRecord } from '../components/messageList/types';
-import type { HomeHandbacks } from '../utils/api/workspaces';
+import { getHomeHandbacks } from '../utils/api/workspaces';
 import { placeCloudTurns } from '../utils/cloudTurnFiles';
 import type { TurnFile } from '../utils/turnFiles';
+
+/** How often the hand-backs are read again while a cloud turn's file is still only on the cloud. */
+const UNPLACED_REFETCH_MS = 30_000;
 
 export function useCloudTurnFiles(
   turned: readonly { message: MessageRecord; turnIndex: number }[],
   files: Map<number, TurnFile[]>,
   { enabled }: { enabled: boolean },
-): { files: Map<number, TurnFile[]>; reader: ReactElement | null } {
+): Map<number, TurnFile[]> {
   const cloudTurns = useMemo(() => {
     const byTurn = new Map<number, HomeFallback>();
     for (const { message, turnIndex } of turned) {
@@ -30,14 +33,27 @@ export function useCloudTurnFiles(
     }
     return byTurn;
   }, [turned]);
-  const [handbacks, setHandbacks] = useState<HomeHandbacks | null>(null);
-  const placement = useMemo(
-    () => (handbacks && cloudTurns.size > 0 ? placeCloudTurns(files, cloudTurns, handbacks) : null),
-    [handbacks, cloudTurns, files],
-  );
   const reading = enabled && cloudTurns.size > 0;
-  return {
-    files: placement?.placed ?? files,
-    reader: reading ? createElement(HandbacksReader, { poll: placement?.unplaced ?? false, onData: setHandbacks }) : null,
-  };
+  const { data: handbacks } = useQuery({
+    queryKey: queryKeys.workspaces.homeHandbacks(),
+    queryFn: getHomeHandbacks,
+    enabled: reading,
+    staleTime: 15_000,
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.status === 'error'
+      || (query.state.data && placeCloudTurns(files, cloudTurns, query.state.data).unplaced)
+        ? UNPLACED_REFETCH_MS
+        : false,
+  });
+  return useMemo(() => {
+    if (!reading) return files;
+    if (handbacks) return placeCloudTurns(files, cloudTurns, handbacks).placed;
+    const known = new Map(files);
+    for (const turnIndex of cloudTurns.keys()) {
+      const turnFiles = files.get(turnIndex);
+      if (turnFiles) known.set(turnIndex, turnFiles.filter((file) => file.workspaceId));
+    }
+    return known;
+  }, [reading, handbacks, cloudTurns, files]);
 }

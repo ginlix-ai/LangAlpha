@@ -215,7 +215,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     [turned, folders],
   );
   // A Home turn that ran on the cloud names its files where they were then.
-  const { files: filesByTurn, reader: handbacksReader } = useCloudTurnFiles(turned, ownFilesByTurn, { enabled: !readOnly });
+  const filesByTurn = useCloudTurnFiles(turned, ownFilesByTurn, { enabled: !readOnly });
 
   // Only the newest turn can still be running. A bubble's own `isStreaming`
   // is per model call, not per turn: the text handler drops it on every
@@ -488,12 +488,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     </CollapseClockContext>
     </ProseTypingContext>
   );
-  return (
-    <HandoffPlacesContext value={places}>
-      {list}
-      {handbacksReader}
-    </HandoffPlacesContext>
-  );
+  return <HandoffPlacesContext value={places}>{list}</HandoffPlacesContext>;
 }
 
 /**
