@@ -115,6 +115,24 @@ def get_checkpointer():
     return checkpointer
 
 
+async def read_claude_session(thread_id: str, checkpoint_id: str | None) -> dict:
+    """Claude's session records at ``checkpoint_id`` (the newest when None),
+    replayed from the checkpoints' writes: the channel keeps no value of its
+    own in a checkpoint, so a raw read of one has none."""
+    from langgraph.graph import START, StateGraph
+
+    from ptc_agent.agent.claude_code.session import SessionState
+
+    graph = (
+        StateGraph(SessionState)
+        .add_node("noop", lambda state: {})
+        .add_edge(START, "noop")
+        .compile(checkpointer=get_checkpointer())
+    )
+    snapshot = await graph.aget_state(build_checkpoint_config(thread_id, checkpoint_id))
+    return snapshot.values.get("claude_session") or {}
+
+
 # The empty state a thread's first message forks from. LangGraph builds a
 # thread's first input on an empty checkpoint it never saves, so that input has
 # no parent to fork at; an edit of the first message forks here instead, which

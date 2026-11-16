@@ -100,8 +100,14 @@ class ThreadAgent:
     async def write(self, values: dict, verb: str, *, saver: Any = None) -> bool:
         """Write ``values`` where the state was read (``_update_graph_state``),
         through ``saver`` when given: a fence's, for a write that must die
-        with its lock while the agent was built and read without one."""
-        graph = self.graph if saver is None else self.graph.agent.copy(update={"checkpointer": saver})
+        with its lock while the agent was built and read without one. The
+        compiled graph copied is the agent's, or a Claude Code thread's turn
+        graph (``ClaudeCodeGraph.graph``), which has no agent of its own."""
+        if saver is None:
+            graph = self.graph
+        else:
+            compiled = self.graph.graph if self.claude_code else self.graph.agent
+            graph = compiled.copy(update={"checkpointer": saver})
         return await _update_graph_state(graph, self.state, values, self.thread_id, verb)
 
 
@@ -339,10 +345,23 @@ async def _summary_since_the_turn(thread_id: str, state):
     return message
 
 
-def _summary_props(*, original_count: int, new_count: int, summary_text: str, source: str) -> dict:
-    """What replay's marker and the client read of a summary installed
-    between turns. Action "summarize" is the wire protocol's."""
-    return {
+@dataclass(frozen=True)
+class SummaryWrite:
+    """A summary installed between turns: the ``values`` written, with the
+    marker replay shows it by, and what the client reads of it (``props``,
+    whose action "summarize" is the wire protocol's)."""
+
+    values: dict
+    props: dict
+    summary_text: str
+
+
+def _summary_write(
+    update: dict, *, original_count: int, new_count: int, summary_text: str, source: str, **marker: Any
+) -> SummaryWrite:
+    """``marker`` names the summary replay reads the "View summary" panel
+    from, when the thread's messages hold one."""
+    props = {
         "action": "summarize",
         "signal": "complete",
         "original_message_count": original_count,
@@ -350,25 +369,35 @@ def _summary_props(*, original_count: int, new_count: int, summary_text: str, so
         "summary_length": len(summary_text),
         "source": source,
     }
+    return SummaryWrite({**update, "ui": [context_window_record(props, **marker)]}, props, summary_text)
 
 
-async def compaction_write(agent: ThreadAgent, compaction) -> dict:
-    """The values installing ``compaction`` between turns with the marker
-    replay shows the summary by, the same a manual /compact writes
-    (``_installed``); replay reads the "View summary" panel's text from the
-    summary the marker names."""
-    props = _summary_props(
+async def compaction_write(agent: ThreadAgent, compaction) -> SummaryWrite:
+    """The write installing the agent's ``compaction``: the view that was
+    compacted, as automatic compaction counts it, not every message the
+    checkpoint has kept since the thread began."""
+    return _summary_write(
+        compaction.update(agent.state.values),
         original_count=compaction.original_count,
         new_count=len(compaction.messages),
         summary_text=compaction.summary.text,
         source=compaction.summary.source,
-    )
-    marker = context_window_record(
-        props,
         summary_message_id=compaction.event["summary_message"].id,
         replaced=await _summary_since_the_turn(agent.thread_id, agent.state),
     )
-    return {**compaction.update(agent.state.values), "ui": [marker]}
+
+
+def session_compaction_write(session) -> SummaryWrite:
+    """The write installing the CLI's compaction of a Claude Code session
+    (``SessionCompaction``): the thread's messages stay as they are, so the
+    marker names no summary message."""
+    return _summary_write(
+        session.update(),
+        original_count=session.original_count,
+        new_count=session.new_count,
+        summary_text=session.summary_text,
+        source="provider",
+    )
 
 
 @asynccontextmanager
@@ -465,7 +494,8 @@ async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
     under, and land on a row of their own: no run is open between turns to
     hold them. The row is the thread's, under the caller, with ``verb`` on
     its token usage to tell it from a turn's, and is written once the
-    operation has ended, so its status is the operation's.
+    operation has ended, so its status is the operation's. Yields the
+    tracker, whose records the caller may read as the calls end.
 
     The tracker runs inline: a call's end is reported in a callback shielded
     from cancellation, which on an executor thread could still be running
@@ -487,7 +517,7 @@ async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
     token = var_child_runnable_config.set({**ambient, "callbacks": callbacks})
     status = "error"
     try:
-        yield
+        yield tracker
         status = "completed"
     except asyncio.CancelledError:
         status = "cancelled"
@@ -618,29 +648,14 @@ async def _compaction_config(
     return agent_cfg, route.role
 
 
-async def _installed(
-    agent: ThreadAgent,
-    update: dict,
-    *,
-    original_count: int,
-    new_count: int,
-    summary_text: str,
-    source: str,
-    **marker: Any,
-) -> dict:
-    """Write a compaction's ``update`` with the marker replay shows for it,
-    and the response the client reads. Action "summarize" is the wire
-    protocol's; ``marker`` names the summary replay reads the "View summary"
-    panel from, when the thread's messages hold one."""
-    props = _summary_props(
-        original_count=original_count, new_count=new_count, summary_text=summary_text, source=source
-    )
-    await agent.write({**update, "ui": [context_window_record(props, **marker)]}, "compact")
+async def _installed(agent: ThreadAgent, write: SummaryWrite) -> dict:
+    """Write a manual /compact's summary, and the response the client reads."""
+    await agent.write(write.values, "compact")
     logger.info(
         f"Manual compaction completed for thread {agent.thread_id}: "
-        f"{original_count} -> {new_count} messages"
+        f"{write.props['original_message_count']} -> {write.props['new_message_count']} messages"
     )
-    return {"success": True, "thread_id": agent.thread_id, **props, "summary_text": summary_text}
+    return {"success": True, "thread_id": agent.thread_id, **write.props, "summary_text": write.summary_text}
 
 
 @cancellation_as_http("compact")
@@ -690,10 +705,7 @@ async def trigger_compaction(
                     raise _claude_code_failure(e, agent_cfg.llm_client.model) from e
                 if session is None:
                     raise HTTPException(status_code=400, detail=NOTHING_TO_COMPACT)
-                return await _installed(
-                    agent, session.update(), original_count=session.original_count,
-                    new_count=session.new_count, summary_text=session.summary_text, source="provider",
-                )
+                return await _installed(agent, session_compaction_write(session))
             try:
                 try:
                     compaction = await agent.ask(Compact())
@@ -702,18 +714,7 @@ async def trigger_compaction(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-            # The view that was compacted, as automatic compaction counts it,
-            # not every message the checkpoint has kept since the thread began.
-            return await _installed(
-                agent,
-                compaction.update(agent.state.values),
-                original_count=compaction.original_count,
-                new_count=len(compaction.messages),
-                summary_text=compaction.summary.text,
-                source=compaction.summary.source,
-                summary_message_id=compaction.event["summary_message"].id,
-                replaced=await _summary_since_the_turn(thread_id, agent.state),
-            )
+            return await _installed(agent, await compaction_write(agent, compaction))
 
     except HTTPException:
         raise

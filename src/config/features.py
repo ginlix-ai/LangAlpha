@@ -196,17 +196,18 @@ FEATURES: dict[str, FeatureSpec] = {
     # Each user opts in. For one who has, a completed turn arms its thread's
     # summary while the thread is idle on a warm cache
     # (``services.idle_compaction``), on routes whose cache entries live an
-    # hour only; "Summarize long threads after a break"
-    # (``Tuning.cold_compaction``) turned off still keeps it from summarizing.
+    # hour only, Claude Code's among them, whose CLI compacts the session;
+    # "Summarize long threads after a break" (``Tuning.cold_compaction``)
+    # turned off still keeps it from summarizing.
     "idle_compaction": FeatureSpec(
         key="idle_compaction",
         label="Idle compaction",
         description=(
             "Summarizes a long Claude thread while it sits idle, before its "
             "hour-long prompt cache expires, so the next message neither waits "
-            "for a summary nor sends the whole conversation again. Applies only "
-            "where the cache lasts an hour, such as the Claude sign-in (legacy); "
-            "threads in Claude Code mode are not summarized this way."
+            "for a summary nor sends the whole conversation again. Applies "
+            "where the cache lasts an hour: Claude Code mode, and the Claude "
+            "sign-in (legacy)."
         ),
         enabled=True,
         gate=FeatureGate.OPT_IN,

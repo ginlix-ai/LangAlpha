@@ -1,11 +1,14 @@
 """Idle compaction: the summary a thread idle after a completed turn gets
-while its prompt cache is still warm (``TurnStartRebuilds.idle``).
+while its prompt cache is still warm (``TurnStartRebuilds.idle``), or, on a
+thread whose turns Claude Code runs, the CLI's own compaction of its session
+(``CompactionRules.idle_plan``).
 
 A completed turn's outbox job arms one firing per thread in
 ``idle_compactions``, ``lead_seconds`` before the cache entry the summary
 would read expires, from what the turn's final answer left in the checkpoint
-(``IdleClock``). Every worker's sweeper claims the firings that come due by
-deleting their rows, so no two workers fire one, and none is retried. A
+(``IdleClock``) or a Claude Code turn's end (``ClaudeTurn.reading``). Every
+worker's sweeper claims the firings that come due by deleting their rows, so
+no two workers fire one, and none is retried. A
 worker runs at most ``MAX_FIRINGS`` at once: each holds a sandbox session
 and a model call for up to the compaction timeout, and a deploy makes many
 threads due together. A slot is claimed again as soon as its firing ends,
@@ -61,11 +64,16 @@ def log_idle(event: str, thread_id: str, reason: str, kind: str | None = None, *
     )
 
 
+Kind = Literal["I1", "I2", "CC"]
+
+
 @dataclass(frozen=True)
 class Firing:
     #: ``I1``, a rebuild keeping no turns, read off the last answer's entry;
-    #: ``I2``, a summary keeping the tail, read off the entry at its cut.
-    kind: Literal["I1", "I2"]
+    #: ``I2``, a summary keeping the tail, read off the entry at its cut;
+    #: ``CC``, the CLI's compaction of a Claude Code session, read off the
+    #: entry its last request wrote.
+    kind: Kind
     fire_at: datetime
     #: Past this the claim is dropped without a call: the entry would expire
     #: under the summary, which would write the history at the write rate.
@@ -101,13 +109,12 @@ def plan_firing(
     or a computer stopping soon after it. A summary keeping the tail is
     tried first; past that floor, a rebuild, whose entry is the newer one.
     """
-    ttl = IDLE_TTL_SECONDS
     threshold = answer.get("threshold") or 0
     if tokens >= threshold:
         return "over_threshold"
     floor = answer.get("floor_tokens") or 0
     cold = tokens >= cold_threshold(threshold, answer.get("cold_tokens") or 0)
-    entries: list[tuple[Literal["I1", "I2"], float]] = []
+    entries: list[tuple[Kind, float]] = []
     tail = clock.get("tail_requested_at")
     if tokens >= cold_threshold(threshold, answer.get("idle_tokens") or 0) and tail is not None:
         entries.append(("I2", float(tail)))
@@ -115,6 +122,17 @@ def plan_firing(
         entries.append(("I1", float(clock["requested_at"])))
     if not entries:
         return "under_floor"
+    return first_fitting(entries, answered_at=answered_at, stop_at=stop_at, lead=lead)
+
+
+def first_fitting(
+    entries: list[tuple[Kind, float]], *, answered_at: float, stop_at: datetime | None, lead: int
+) -> Firing | str:
+    """The firing of the first of ``entries`` (a kind and when the cache entry
+    it reads was written) that fits: ``lead`` seconds before the entry
+    expires and ``STOP_MARGIN_S`` before the computer's idle stop, while that
+    leaves the thread idle two thirds of the usual gap (``plan_firing``)."""
+    ttl = IDLE_TTL_SECONDS
     stop = stop_at.timestamp() - STOP_MARGIN_S if stop_at is not None else math.inf
     for kind, entry in entries:
         fire_at = min(entry + ttl - lead, stop)
@@ -148,6 +166,7 @@ async def arm_after_turn(job: dict[str, Any]) -> None:
 async def _arm(thread_id: str, payload: Mapping[str, Any], settings: CompactionConfig) -> tuple[str | None, int]:
     """Arm the firing and return no reason, else say why not; with the
     arming run's ``run_seq``, which bounds what a disarm may drop."""
+    from ptc_agent.agent.claude_code.session import claude_code_rules
     from src.server.database.computer import get_computer_for_workspace
     from src.server.database.conversation import threads_read
     from src.server.database.runs import lifecycle as tl_db
@@ -170,12 +189,20 @@ async def _arm(thread_id: str, payload: Mapping[str, Any], settings: CompactionC
     if interrupt_records(saved.pending_writes):
         return "waiting_on_user", run_seq
     values = saved.checkpoint.get("channel_values") or {}
-    clock = values.get("_idle_clock")
-    answer = values.get(LAST_ANSWER_KEY)
-    if not clock or not answer:
+    # A thread whose last answer was Claude Code's arms from its turn's end,
+    # any other from the clock its last answer left.
+    claude_code = claude_code_rules(values)
+    clock, answer = values.get("_idle_clock"), values.get(LAST_ANSWER_KEY)
+    if claude_code is not None:
+        requested_at = claude_code.get("requested_at")
+        if requested_at is None:
+            return "no_request", run_seq
+    elif not clock or not answer:
         return "no_clock", run_seq
+    else:
+        requested_at = clock["requested_at"]
     started = latest.get("created_at")
-    if isinstance(started, datetime) and clock["requested_at"] < started.timestamp():
+    if isinstance(started, datetime) and requested_at < started.timestamp():
         return "stale_clock", run_seq
     workspace_id = payload.get("workspace_id")
     if not workspace_id:
@@ -184,14 +211,19 @@ async def _arm(thread_id: str, payload: Mapping[str, Any], settings: CompactionC
     if computer is None or computer.get("status") != "running":
         return "computer_stopped", run_seq
     window = WorkspaceManager.get_instance().idle_stop_window(computer)
-    firing = plan_firing(
-        clock,
-        answer,
-        tokens=measured_tokens(values) or 0,
-        answered_at=values.get("_last_model_response_at") or clock["requested_at"],
-        stop_at=window.stop_at if window is not None else None,
-        lead=settings.idle_compact.lead_seconds,
-    )
+    stop_at = window.stop_at if window is not None else None
+    lead = settings.idle_compact.lead_seconds
+    if claude_code is not None:
+        firing = await _claude_code_firing(thread_id, pointer, claude_code, stop_at=stop_at, lead=lead)
+    else:
+        firing = plan_firing(
+            clock,
+            answer,
+            tokens=measured_tokens(values) or 0,
+            answered_at=values.get("_last_model_response_at") or requested_at,
+            stop_at=stop_at,
+            lead=lead,
+        )
     if isinstance(firing, str):
         return firing, run_seq
     await idle_db.arm(
@@ -206,6 +238,32 @@ async def _arm(thread_id: str, payload: Mapping[str, Any], settings: CompactionC
     )
     log_idle("arm", thread_id, "completed", firing.kind, fire_at=firing.fire_at.isoformat())
     return None, run_seq
+
+
+async def _claude_code_firing(
+    thread_id: str, pointer: str, rules: Mapping[str, Any], *, stop_at: datetime | None, lead: int
+) -> Firing | str:
+    """When a thread whose last answer was Claude Code's fires, or why it is
+    not armed: once its session's records show the next turn start would
+    compact it on a cold cache (``CompactionRules.idle_plan``), from the
+    request behind that answer, which wrote the session's newest cache entry
+    (``rules``, the turn's ``ClaudeTurn.reading``), as ``plan_firing`` times
+    its entries."""
+    from src.server.utils.checkpoint_helpers import read_claude_session
+
+    # Only a Claude Code thread loads the SDK (see ``read_next_summary``).
+    from ptc_agent.agent.claude_code.compaction import CompactionRules
+
+    due, reason = CompactionRules.from_reading(rules).idle_plan(await read_claude_session(thread_id, pointer))
+    if not due:
+        return reason
+    requested_at = float(rules["requested_at"])
+    return first_fitting(
+        [("CC", requested_at)],
+        answered_at=rules.get("at") or requested_at,
+        stop_at=stop_at,
+        lead=lead,
+    )
 
 
 def register_outbox_executors() -> None:
