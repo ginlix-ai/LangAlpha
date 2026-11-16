@@ -697,34 +697,51 @@ async def end_plan_hold(job_id: str, *, attempts: int) -> bool:
             return cur.rowcount == 1
 
 
+async def _park_uncounted(
+    job_id: str, *, attempts: int, due: str, payload_add: str, params: Dict[str, Any]
+) -> bool:
+    """Make a CLAIMED job pending again, fenced to the caller's lease, without
+    counting the claim (``waited``); False when the fence was lost. ``due``
+    is its ``next_retry_at`` and ``payload_add`` what joins its payload, both
+    SQL over ``params``."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE hook_outbox
+                SET status = 'pending',
+                    lease_expires_at = NULL,
+                    next_retry_at = {due},
+                    payload = (payload - 'steered_run_id' - 'due_at')
+                        || jsonb_build_object('waited', COALESCE((payload->>'waited')::int, 0) + 1)
+                        || {payload_add}
+                WHERE hook_outbox_id = %(job_id)s::uuid AND status = 'claimed'
+                  AND attempts = %(attempts)s
+                """,
+                {**params, "job_id": job_id, "attempts": attempts},
+            )
+            return cur.rowcount == 1
+
+
 async def wait_for_room(job_id: str, *, attempts: int, wait_s: int) -> bool:
     """Make a claimed job due again ``wait_s`` on, fenced to the caller's
     lease, when its turn was refused because the user runs as many Claude
     Code turns at once as they may (``too_many_turns``). Room opens as turns
     on other threads end, which release nothing on this one, so it asks again
-    by the clock, and the claim does not count (``waited``): it waits as
-    long as those turns run. A steer is due by its own clock (``due_at``).
-    False when the fence was lost."""
-    async with pool.get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE hook_outbox
-                SET status = 'pending',
-                    lease_expires_at = NULL,
-                    next_retry_at = CASE WHEN hook_type = 'steer' THEN 'infinity'::timestamptz
-                        ELSE NOW() + make_interval(secs => %(wait_s)s::int) END,
-                    payload = (payload - 'steered_run_id' - 'due_at')
-                        || jsonb_build_object('waited', COALESCE((payload->>'waited')::int, 0) + 1)
-                        || CASE WHEN hook_type = 'steer'
-                            THEN jsonb_build_object('due_at', NOW() + make_interval(secs => %(wait_s)s::int))
-                            ELSE '{}'::jsonb END
-                WHERE hook_outbox_id = %(job_id)s::uuid AND status = 'claimed'
-                  AND attempts = %(attempts)s
-                """,
-                {"job_id": job_id, "attempts": attempts, "wait_s": wait_s},
-            )
-            return cur.rowcount == 1
+    by the clock, and the claim does not count: it waits as long as those
+    turns run. A steer is due by its own clock (``due_at``). False when the
+    fence was lost."""
+    later = "NOW() + make_interval(secs => %(wait_s)s::int)"
+    return await _park_uncounted(
+        job_id,
+        attempts=attempts,
+        due=f"CASE WHEN hook_type = 'steer' THEN 'infinity'::timestamptz ELSE {later} END",
+        payload_add=(
+            f"CASE WHEN hook_type = 'steer' THEN jsonb_build_object('due_at', {later})"
+            " ELSE '{}'::jsonb END"
+        ),
+        params={"wait_s": wait_s},
+    )
 
 
 # How many times ``revive_dead_alerts`` brought the alert ``o`` back. Read
@@ -1325,27 +1342,15 @@ async def park_for_computer(job_id: str, *, attempts: int, computer_id: str) -> 
     the computer it waits for, which ``release_for_reachable_computers``
     makes it due again on once it connects. A turn's ending on the thread
     releases it as any parked notification, for its executor to look again.
-    The park does not count (``waited``): a night of looks must not run the
-    job dead.
+    The park does not count: a night of looks must not run the job dead.
     """
-    async with pool.get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                f"""
-                UPDATE hook_outbox
-                SET status = 'pending',
-                    lease_expires_at = NULL,
-                    next_retry_at = 'infinity'::timestamptz,
-                    payload = (payload - 'steered_run_id' - 'due_at')
-                        || jsonb_build_object(
-                            '{AWAITS_COMPUTER}', %(computer)s::text,
-                            'waited', COALESCE((payload->>'waited')::int, 0) + 1)
-                WHERE hook_outbox_id = %(job_id)s::uuid AND status = 'claimed'
-                  AND attempts = %(attempts)s
-                """,
-                {"job_id": job_id, "attempts": attempts, "computer": computer_id},
-            )
-            return cur.rowcount == 1
+    return await _park_uncounted(
+        job_id,
+        attempts=attempts,
+        due="'infinity'::timestamptz",
+        payload_add=f"jsonb_build_object('{AWAITS_COMPUTER}', %(computer)s::text)",
+        params={"computer": computer_id},
+    )
 
 
 # The workspace a notification's turn runs in: that of the thread it runs
@@ -1417,6 +1422,9 @@ async def close_for_lost_computers() -> List[Dict[str, Any]]:
         " AND NOT (o.payload ? 'exhausted')"
         " AND "
         + computer_tunnel_lost_sql(f"o.payload->>'{AWAITS_COMPUTER}'")
+        # A workspace moved to another computer since is the release's.
+        + " AND NOT "
+        + awaited_computer_back_sql(f"o.payload->>'{AWAITS_COMPUTER}'", _TURN_WORKSPACE_SQL)
     )
     clears = _watch_clear_insert_sql(
         "closed", suffix="lost_clear", error_wake=True, refuse_if_pointer=True
