@@ -76,7 +76,10 @@ def _execution_update(
         table="automation_executions",
         where_clause=where_clause,
         where_params=where_params,
-        returning_columns=["conversation_thread_id", "conversation_response_id"],
+        returning_columns=[
+            "conversation_thread_id", "conversation_response_id",
+            "scheduled_at", "wait_reason", "awaits_computer",
+        ],
         include_updated_at=False,  # no updated_at column on executions
     )
 
@@ -90,7 +93,8 @@ async def transition_execution(
     **fields: Any,
 ) -> Optional[Dict[str, Any]]:
     """Move an execution to ``to`` only while its status is one of
-    ``from_statuses``; the row's thread and run, or None when it was not.
+    ``from_statuses``; the row's thread and run, when it was due and what it
+    last waited for, or None when it was not.
 
     The guarded write every move of a live firing makes, so the executor, a
     skip and the sweep can race and exactly one of them wins. Ending a firing
@@ -542,13 +546,21 @@ _MOVED = """EXISTS (
 _REACHABLE = (
     f"(NOT {computer_tunnel_down_sql('e.awaits_computer::text')} OR {_MOVED})"
 )
+# Its automation runs this once (a one-time automation, a price alert that
+# fires once): nothing later stands in for a run that never happens, so it
+# waits the longer cap.
+_ONE_SHOT = (
+    "(a.trigger_type = 'once' OR (a.trigger_type = 'price'"
+    " AND COALESCE(a.trigger_config->'retrigger'->>'mode', 'one_shot') = 'one_shot'))"
+)
 _EXPIRED = (
-    "COALESCE(e.started_at, e.created_at) < NOW() - make_interval(secs => %(cap)s)"
+    "COALESCE(e.started_at, e.created_at) < NOW() - make_interval(secs =>"
+    f" CASE WHEN {_ONE_SHOT} THEN %(one_shot_cap)s ELSE %(cap)s END)"
 )
 
 
 async def list_parked_executions(
-    cap_seconds: int, limit: int = 50
+    cap_seconds: int, one_shot_cap_seconds: int, limit: int = 50
 ) -> List[Dict[str, Any]]:
     """Firings parked for a computer that the sweep has something to do with,
     oldest first, with their owner, the automation's status when each
@@ -556,7 +568,8 @@ async def list_parked_executions(
     the sweep's verdict on each: ``superseded`` by a later firing,
     ``reachable`` (its computer's tunnel is live, it names none, or its
     workspace is on another computer now) or ``expired`` (parked
-    ``cap_seconds``).
+    ``cap_seconds``, or ``one_shot_cap_seconds`` for an automation that
+    runs once).
 
     Rows with none of those are left out before the limit: a page of
     machines asleep for the night must not starve one that is back.
@@ -575,7 +588,10 @@ async def list_parked_executions(
                   AND ({_SUPERSEDED} OR {_REACHABLE} OR {_EXPIRED})
                 ORDER BY COALESCE(e.started_at, e.created_at)
                 LIMIT %(limit)s
-            """, {"cap": cap_seconds, "limit": limit, "live_within": LIVE_WITHIN})
+            """, {
+                "cap": cap_seconds, "one_shot_cap": one_shot_cap_seconds,
+                "limit": limit, "live_within": LIVE_WITHIN,
+            })
             return [dict(row) for row in await cur.fetchall()]
 
 

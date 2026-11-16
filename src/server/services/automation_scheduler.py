@@ -21,6 +21,7 @@ from src.server.database import automation_executions as exec_db
 from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
     COMPUTER_WAIT_CAP_SECONDS,
+    ONE_SHOT_WAIT_CAP_SECONDS,
     AutomationExecutor,
     stopped_meanwhile,
 )
@@ -190,7 +191,9 @@ class AutomationScheduler:
         workers whose sweeps reach a row exactly one starts it.
         """
         try:
-            rows = await exec_db.list_parked_executions(COMPUTER_WAIT_CAP_SECONDS)
+            rows = await exec_db.list_parked_executions(
+                COMPUTER_WAIT_CAP_SECONDS, ONE_SHOT_WAIT_CAP_SECONDS
+            )
         except Exception as e:
             logger.error(f"[SCHEDULER] Parked-firing sweep failed: {e}")
             return

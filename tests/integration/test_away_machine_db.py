@@ -380,14 +380,18 @@ async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(ma
     assert read["away_since"] is None
 
 
-async def _parked_firing(pool, machine, *, waited: timedelta = timedelta(minutes=10)) -> tuple[str, str]:
-    """An automation and a firing of it parked for the machine's computer, as
-    the executor leaves one; their ids."""
+async def _parked_firing(
+    pool, machine, *, waited: timedelta = timedelta(minutes=10), name: str = "Brief",
+    **trigger,
+) -> tuple[str, str]:
+    """An automation (a daily schedule unless ``trigger`` says otherwise) and
+    a firing of it parked for the machine's computer, as the executor leaves
+    one; their ids."""
     from src.server.database.automation import create_automation
 
     automation = await create_automation(
-        user_id=machine.user_id, name="Brief", trigger_type="cron",
-        instruction="Summarize", cron_expression="0 9 * * *",
+        user_id=machine.user_id, name=name, instruction="Summarize",
+        **(trigger or {"trigger_type": "cron", "cron_expression": "0 9 * * *"}),
     )
     automation_id = str(automation["automation_id"])
     async with pool.connection() as conn:
@@ -407,7 +411,7 @@ async def _parked_verdict(execution_id: str) -> dict | None:
     """The sweep's verdict on a parked firing; None when the sweep is not
     shown it, as nothing it could do would change it."""
     rows = [
-        r for r in await ex.list_parked_executions(24 * 60 * 60, limit=500)
+        r for r in await ex.list_parked_executions(24 * 60 * 60, 7 * 24 * 60 * 60, limit=500)
         if str(r["automation_execution_id"]) == execution_id
     ]
     if not rows:
@@ -566,3 +570,24 @@ async def test_a_firing_parked_for_its_machine_is_not_ahead_in_the_thread_line(
         )
     assert await ex.has_earlier_waiting_execution(automation_id, later_id) is False
     assert (await _parked_verdict(parked_id))["superseded"] is True
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "once", "next_run_at": datetime.now(timezone.utc)},
+        {"trigger_type": "price", "trigger_config": {"symbol": "NVDA"}},
+    ],
+    ids=["one-time", "one-shot price alert"],
+)
+async def test_an_automation_that_runs_once_waits_days_not_a_day(machine, test_db_pool, trigger):
+    """Nothing later stands in for it, so a late run beats none."""
+    _, day = await _parked_firing(
+        test_db_pool, machine, waited=timedelta(hours=25), name="Day", **trigger
+    )
+    _, week = await _parked_firing(
+        test_db_pool, machine, waited=timedelta(days=8), name="Week", **trigger
+    )
+
+    assert await _parked_verdict(day) is None
+    assert (await _parked_verdict(week))["expired"] is True

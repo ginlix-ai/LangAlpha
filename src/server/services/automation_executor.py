@@ -53,6 +53,13 @@ _WAIT_POLL_SECONDS = 5
 # night, which is not the automation failing: a firing waits for it, until
 # the automation's next firing comes along and at most this long.
 COMPUTER_WAIT_CAP_SECONDS = 24 * 60 * 60
+# An automation that runs once (one-time, or a price alert that fires once)
+# has no next firing to stand in for this one, so a late run beats none: it
+# waits as long as a notification does for its computer.
+ONE_SHOT_WAIT_CAP_SECONDS = 7 * 24 * 60 * 60
+# A run that waited for its computer and starts at least this long after it
+# was due tells its agent so.
+_LATE_AFTER = timedelta(minutes=15)
 
 # The process holding a firing touches its row this often, and the sweep
 # settles one quiet for ABANDONED_AFTER_SECONDS. The margin is for event-loop
@@ -142,6 +149,35 @@ def register_outbox_executors() -> None:
     register_hook_executor(AUTOMATION_HANDOFF_HOOK, start_handed_off)
 
 
+async def _late_note(automation: Dict[str, Any], row: Dict[str, Any]) -> Optional[str]:
+    """What a run released after waiting for its computer tells its agent,
+    when it starts well after it was due: when that was, and that work which
+    depends on the hour should say so. None for a run on time, or one that
+    never waited for its computer."""
+    due = row.get("scheduled_at")
+    if row.get("wait_reason") != "computer_unreachable" or due is None:
+        return None
+    if datetime.now(timezone.utc) - due < _LATE_AFTER:
+        return None
+    from ptc_agent.agent.prompts import format_current_time
+    from src.server.database.computer import get_computer
+
+    computer = None
+    if awaited := row.get("awaits_computer"):
+        try:
+            computer = await get_computer(str(awaited))
+        except Exception as e:  # noqa: BLE001 - the note reads without the name
+            logger.warning(f"[AUTOMATION_EXEC] Could not read the awaited computer: {e}")
+    name = (computer or {}).get("name")
+    waited_for = f'computer "{name}"' if name else "its computer"
+    return (
+        f"This run was due at {format_current_time(due, automation.get('timezone'))}. "
+        f"It waited for {waited_for}, which couldn't be reached until this run "
+        "started. If the instruction depends on when it runs, such as a morning "
+        "briefing or a price move, say the run is late and work from current data."
+    )
+
+
 @dataclass
 class _Firing:
     """How far a firing got, so it settles against the thread and run it
@@ -169,6 +205,9 @@ class _Firing:
     # The starts made, and the entries the last one was made for.
     delivery_starts: int = 0
     delivery_entries: Optional[list[str]] = None
+    # What the run tells its agent about starting late, once a wait for its
+    # computer held it past when it was due; None when it is on time.
+    late: Optional[str] = None
 
     @property
     def held(self) -> bool:
@@ -882,6 +921,11 @@ class AutomationExecutor:
                 # (``services/notices``).
                 run_metadata["automation_name"] = name
             extra_configurable = None
+            if firing.late:
+                additional_context = [
+                    *(additional_context or []),
+                    {"type": "directive", "content": firing.late},
+                ]
             if firing.held:
                 additional_context = [
                     *(additional_context or []),
@@ -1018,7 +1062,11 @@ class AutomationExecutor:
             name=f"automation_heartbeat_{execution_id[:8]}",
         )
 
-        firing = _Firing(automation=automation, checked_computer_id=checked_computer_id)
+        firing = _Firing(
+            automation=automation,
+            checked_computer_id=checked_computer_id,
+            late=await _late_note(automation, started),
+        )
         wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
         try:
             # ─── Wait out a running turn ──────────────────────────

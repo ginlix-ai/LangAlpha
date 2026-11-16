@@ -15,6 +15,7 @@ import pytest
 from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
     COMPUTER_WAIT_CAP_SECONDS,
+    ONE_SHOT_WAIT_CAP_SECONDS,
 )
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import INTERRUPTED_ERROR, Outcome
@@ -435,7 +436,7 @@ class TestSweep:
         await asyncio.gather(*scheduler._running_tasks)
 
         mock_exec_db.list_parked_executions.assert_awaited_once_with(
-            COMPUTER_WAIT_CAP_SECONDS
+            COMPUTER_WAIT_CAP_SECONDS, ONE_SHOT_WAIT_CAP_SECONDS
         )
         execution_id = parked["automation_execution_id"]
         mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)

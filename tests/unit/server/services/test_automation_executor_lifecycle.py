@@ -1084,3 +1084,48 @@ async def test_a_machine_that_answered_and_refused_is_the_automations_failure():
 
     assert _settled(fx)["to"] == "failed"
     assert _settled(fx)["strike"] == "count"
+
+
+class TestARunReleasedLate:
+    """A run that waited for its computer past when it was due tells its
+    agent when that was, so time-bound work can say it is late."""
+
+    @staticmethod
+    def _row(due_ago, wait_reason="computer_unreachable"):
+        from datetime import datetime, timezone
+
+        return {
+            "scheduled_at": datetime.now(timezone.utc) - due_ago,
+            "wait_reason": wait_reason,
+            "awaits_computer": "computer-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_it_says_when_it_was_due_and_what_it_waited_for(self):
+        from datetime import timedelta
+
+        with patch(
+            "src.server.database.computer.get_computer",
+            new=AsyncMock(return_value={"name": "MacBook Pro"}),
+        ):
+            note = await executor_mod._late_note(
+                {"timezone": "America/New_York"}, self._row(timedelta(hours=3))
+            )
+
+        assert note.startswith("This run was due at ")
+        assert 'It waited for computer "MacBook Pro"' in note
+        assert "say the run is late and work from current data" in note
+
+    @pytest.mark.parametrize(
+        ("due_ago_min", "wait_reason"),
+        [(5, "computer_unreachable"), (180, None), (180, "thread_busy")],
+        ids=["just late", "never waited", "waited for its thread"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_run_on_time_or_never_held_for_its_computer_says_nothing(
+        self, due_ago_min, wait_reason
+    ):
+        from datetime import timedelta
+
+        row = self._row(timedelta(minutes=due_ago_min), wait_reason)
+        assert await executor_mod._late_note({}, row) is None
