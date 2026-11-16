@@ -189,7 +189,9 @@
   margin-top: 4px;
   color: var(--color-term-text-secondary);
 }
-.dash-window-topic {
+/* Doubled so it outranks .term-tag's baseline whatever order the sheets load
+   in: the arrow leading the topic is a picture with no baseline of its own. */
+.term-tag.dash-window-topic {
   display: inline-flex;
   align-items: center;
   gap: 4px;
