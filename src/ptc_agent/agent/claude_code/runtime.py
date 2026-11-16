@@ -246,7 +246,8 @@ class _Run:
 
     def __init__(self, launcher: Launcher, prepared: Prepared, store: CheckpointSessionStore,
                  client: ClaudeSDKClient, results: ToolResults, spec: RuntimeSpec,
-                 before_tool: BeforeTool, after_tool: AfterTool, plan: PlanWatch, *, resumed: bool) -> None:
+                 before_tool: BeforeTool, after_tool: AfterTool, plan: PlanWatch, *, resumed: bool,
+                 sent_at: float | None = None) -> None:
         self.launcher = launcher
         self.prepared = prepared
         self.store = store
@@ -266,6 +267,16 @@ class _Run:
         #: The queries sent the CLI this run: the turn's own, then one for
         #: each time steers waited as the last ended.
         self.queries = 1
+        #: When the CLI was last handed something to send Claude (a query, or
+        #: the results of a batch) or reported itself started, on this
+        #: server's clock: the request it sends next starts after it.
+        self._input_at = time.time() if sent_at is None else sent_at
+        #: When the request behind the newest assistant message started, as
+        #: near as ``_input_at`` tells it: the input is stamped as this pump
+        #: reads it, so it errs late only by the read's delay, against
+        #: seconds to a minute of prompt processing that a stamp taken at the
+        #: response's start would err by.
+        self.last_request_at: float | None = None
         self._events: asyncio.Queue[Any] = asyncio.Queue()
         self._held: dict[str, Any] | None = None
         self._streamed: set[str] = set()
@@ -294,13 +305,14 @@ class _Run:
             results.resolve(answered)
         before_tool = BeforeTool(results, spec.waits)
         query = prompt if prompt is None or isinstance(prompt, str) else _user_message(prompt)
+        sent_at = time.time()
         prepared, client, after_tool = await launch(
             spec, pin, launcher, thread_key=thread_key, identity=identity, records=records, store=store,
             results=results, query=query, before_tool=before_tool, compact_at=compact_at, auto_compact=auto_compact,
             transcript_note=transcript_note, plan=plan,
         )
         return cls(launcher, prepared, store, client, results, spec, before_tool, after_tool, plan,
-                   resumed=bool((records or {}).get("session_id")))
+                   resumed=bool((records or {}).get("session_id")), sent_at=sent_at)
 
     @property
     def deferred(self) -> bool:
@@ -318,6 +330,7 @@ class _Run:
         self.plan.reopen()
         self.results.reopen()
         self.before_tool.reopen()
+        self._input_at = time.time()
         await self.client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
         self._pump = asyncio.create_task(self._read())
 
@@ -339,6 +352,9 @@ class _Run:
             async for m in received(self.client, init_seen=self._init_seen):
                 if isinstance(m, SystemMessage) and m.subtype == "init":
                     self._init_seen = True
+                    # Its first request starts after this, not the launch's
+                    # wait for a CLI slot and the CLI's start.
+                    self._input_at = time.time()
                     if m.data.get("model") != self.model:
                         logger.warning("[ClaudeCode] the CLI would run %s in place of %s", m.data.get("model"), self.model)
                         raise ClaudeTurnFailed("model_unavailable", self.model)
@@ -354,6 +370,7 @@ class _Run:
                         if kind == "message_start":
                             self._streamed.add((m.event.get("message") or {}).get("id", ""))
                             self._stop_reason = None
+                            self.last_request_at = self._input_at
                         elif kind == "message_delta":
                             self._stop_reason = (m.event.get("delta") or {}).get("stop_reason")
                         await self._events.put(m.event)
@@ -370,6 +387,9 @@ class _Run:
                 elif isinstance(m, UserMessage):
                     blocks = [b for b in (m.content if isinstance(m.content, list) else []) if isinstance(b, ToolResultBlock)]
                     self.results.answered(blocks)
+                    if blocks and m.parent_tool_use_id is None:
+                        # The CLI records a batch's results as it sends them on.
+                        self._input_at = time.time()
                 elif isinstance(m, ResultMessage):
                     self.result = m
                     break
@@ -758,6 +778,16 @@ class ClaudeTurn:
         if (state.get("claude_session") or {}).get("session_id"):
             update["claude_session"] = ENDED
         return update
+
+    def reading(self, run: _Run) -> dict[str, Any]:
+        """The turn's rules as its end keeps them (``RULES_KEY``), with when
+        the request behind its last answer started (``requested_at``, epoch
+        seconds, None when the run streamed none), and the model and effort
+        it ran on: the session's newest cache entry lives from then, and only
+        a request on that model and effort reads it, which an idle compaction
+        does before it expires."""
+        return {**self.compaction.reading(), "requested_at": run.last_request_at, "model": self.spec.model,
+                "effort": self.spec.effort}
 
     async def ended(self, state: ClaudeCodeState, run: _Run) -> dict[str, Any]:
         """What the turn's end adds: the reply it ended on, under Stop,
@@ -1150,7 +1180,7 @@ def build_claude_code_graph(
                 return Command(update={"messages": sent, **turn.commit(run.store.drain())},
                                goto="model" if turn.started else held[0])
             return Command(update={**turn.commit(run.store.drain()), **(await turn.ended(state, run)),
-                                   RULES_KEY: turn.compaction.reading()}, goto=END)
+                                   RULES_KEY: turn.reading(run)}, goto=END)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
         ai: AIMessage = await relay.ainvoke([], config)
         await run.complete(message)
@@ -1219,7 +1249,7 @@ def build_claude_code_graph(
             steered.append(message)
         session = turn.commit(run.store.drain() if stop else run.store.drain(through=uuids))
         updates = [_given_instead(u, run.results, c) for c, t in zip(calls, tasks, strict=True) for u in t.result()]
-        rules = {RULES_KEY: turn.compaction.reading()} if stop else {}
+        rules = {RULES_KEY: turn.reading(run)} if stop else {}
         return _step(updates, {"messages": steered, **session, **rules}, stop or "model")
 
     async def resume(state: ClaudeCodeState, config: RunnableConfig) -> Command:

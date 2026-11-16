@@ -30,7 +30,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec
-from ptc_agent.agent.claude_code.compaction import CompactionRules
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules
 from ptc_agent.agent.claude_code.launcher import Launcher
 from ptc_agent.agent.claude_code.mid_turn import TaskSteering
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, build_claude_code_graph
@@ -87,10 +87,13 @@ class ClaudeCodeGraph:
     included, which are the parent's own.
     """
 
-    def __init__(self, graph: Any, turn: Callable[..., ClaudeTurn], takes: frozenset[str] | None = None) -> None:
+    def __init__(self, graph: Any, turn: Callable[..., ClaudeTurn], takes: frozenset[str] | None = None, *,
+                 compaction: CompactionRules = NO_RULES) -> None:
         self.graph = graph
         self._turn = turn
         self._takes = takes
+        #: The rules its turns compact by, the user's settings as built.
+        self.compaction = compaction
 
     def _input(self, input: Any) -> Any:
         if self._takes is None or not isinstance(input, Mapping):
@@ -184,4 +187,4 @@ def claude_code_graph(
         on_reply=capture.capture if capture else None,
     ).with_config({"recursion_limit": agent.config["recursion_limit"]})
     builder = agent.builder
-    return ClaudeCodeGraph(graph, turn, frozenset(builder.schemas[builder.input_schema]))
+    return ClaudeCodeGraph(graph, turn, frozenset(builder.schemas[builder.input_schema]), compaction=compaction)

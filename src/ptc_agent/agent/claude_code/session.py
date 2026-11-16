@@ -39,6 +39,16 @@ SETTLE_TIMEOUT_S = 10.0
 #: the SDK, and the server reads the key on every thread to learn whether it
 #: needs the SDK at all.
 RULES_KEY = "_claude_code_rules"
+
+
+def claude_code_rules(values: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The rules the thread's last Claude Code turn ran under, read off the
+    checkpointed ``values``, when its last answer was Claude Code's; None
+    when it never ran one, or another model has answered since."""
+    rules = values.get(RULES_KEY)
+    if not rules or rules.get("at", 0) < (values.get("_last_model_response_at") or 0):
+        return None
+    return rules
 #: The record the CLI writes for a call a PreToolUse hook deferred.
 _DEFERRED = "hook_deferred_tool"
 #: What a record the CLI writes carries besides its own content, as a result

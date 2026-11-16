@@ -187,6 +187,8 @@ class CompactionRules:
             setting off.
         keep_full_context: The turn's send asked not to be compacted for a
             cold cache alone; a move to the build's pin still is.
+        idle_tokens: The least context a session idle after the turn is
+            compacted at while its cache is warm (``idle_plan``); 0 never.
     """
 
     floor_tokens: int
@@ -198,6 +200,7 @@ class CompactionRules:
     sent_at: float | None = None
     cold_tokens: int = 0
     keep_full_context: bool = False
+    idle_tokens: int = 0
 
     @classmethod
     def of(cls, settings: CompactionConfig, turn: TurnContext | None, *, backend: SandboxBackend | None = None,
@@ -216,6 +219,7 @@ class CompactionRules:
             sent_at=turn.sent_at if turn else None,
             cold_tokens=settings.cold_compact_tokens,
             keep_full_context=bool(turn and turn.keep_full_context),
+            idle_tokens=settings.idle_tokens,
         )
 
     @classmethod
@@ -232,11 +236,25 @@ class CompactionRules:
             enabled=settings.enabled,
         )
 
+    @classmethod
+    def from_reading(cls, reading: Mapping[str, Any], *, settled_at: datetime | None = None) -> CompactionRules:
+        """The rules a turn ran under, from what it kept of them between turns
+        (``reading``)."""
+        return cls(
+            reading.get("floor_tokens") or 0,
+            threshold=reading.get("threshold") or 0,
+            settled_at=settled_at,
+            cold_tokens=reading.get("cold_tokens") or 0,
+            keep_full_context=bool(reading.get("keep_full_context")),
+            idle_tokens=reading.get("idle_tokens") or 0,
+        )
+
     def reading(self) -> dict[str, Any]:
-        """What ``next_summary`` reads of this turn's rules between turns
-        (``RULES_KEY``), the user's settings included, and when it was read."""
+        """What ``next_summary`` and ``idle_plan`` read of this turn's rules
+        between turns (``RULES_KEY``), the user's settings and the send's
+        choice included, and when it was read."""
         return {"threshold": self.threshold, "floor_tokens": self.floor_tokens, "cold_tokens": self.cold_tokens,
-                "at": time.time()}
+                "idle_tokens": self.idle_tokens, "keep_full_context": self.keep_full_context, "at": time.time()}
 
     @property
     def cold_at(self) -> int:
@@ -342,6 +360,34 @@ class CompactionRules:
             return False, "warm"
         return True, "deploy_cold"
 
+    def idle_plan(self, records: SessionRecords) -> tuple[bool, str]:
+        """Whether a session idle after a turn is compacted while its prompt
+        cache is warm, and why: for what its next turn start would compact
+        once the cache expired, so the CLI's summary request reads the session
+        at the cached rate rather than write it again. That is a move the turn
+        start makes on a cold cache (``_move``), or a context of at least
+        ``idle_tokens`` (``cold_threshold``), unless the turn's send kept the
+        full context, a choice the next send could not make again once the
+        session is compacted. Only on a session whose newest cache entries
+        live an hour, under the threshold, where the CLI compacts at its next
+        request anyway."""
+        if not records.get("pinned") or not self.threshold:
+            return False, "off"
+        entries = records.get("entries") or []
+        if cache_ttl(entries) != ttl_seconds("1h"):
+            return False, "short_ttl"
+        tokens = context_tokens(entries)
+        if tokens >= self.threshold:
+            return False, "over_threshold"
+        moves, reason = self._move(records, tokens, expired=True)
+        if moves:
+            return True, reason
+        if not self.idle_tokens or tokens < cold_threshold(self.threshold, self.idle_tokens):
+            return False, "under_cold"
+        if self.keep_full_context:
+            return False, "kept_full_context"
+        return True, "cold"
+
     def moves_mid_turn(self, records: SessionRecords, current: SessionPin, pending: int) -> bool:
         """Whether a turn's next query, which adds ``pending`` to a session on
         another pin, reaches the threshold, where the CLI would compact it on
@@ -362,8 +408,7 @@ def next_summary(rules: Mapping[str, Any], records: SessionRecords, *, settled_a
     from another build's sources reads as one due a move. Only ``cold`` gives
     way to a send that keeps the full context."""
     kept = records.get("pinned")
-    judged = CompactionRules(rules.get("floor_tokens") or 0, threshold=rules.get("threshold") or 0, settled_at=settled_at,
-                             cold_tokens=rules.get("cold_tokens") or 0)
+    judged = CompactionRules.from_reading(rules, settled_at=settled_at)
     if not kept or not judged.threshold:
         return None
     entries = records.get("entries") or []
