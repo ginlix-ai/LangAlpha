@@ -326,9 +326,11 @@ class CommentAnchor(BaseModel):
     #: What a named spot's file says about it.
     detail: str | None = _anchor_text(1000)
     point: AnchorPoint | None = None
-    #: An area's first elements in document order, ``count`` of them in all,
-    #: and where it sat. The label names its parts.
-    elements: list[AreaElement] | None = Field(default=None, max_length=8)
+    #: An area's elements in document order, ``count`` of them in all, and
+    #: where it sat. The label names its parts. A drag lists its first 8;
+    #: parts picked one by one are each listed, so the agent reads every one
+    #: it is asked to change.
+    elements: list[AreaElement] | None = Field(default=None, max_length=64)
     count: int | None = Field(default=None, ge=1, le=500)
     rect: AreaRect | None = None
 
