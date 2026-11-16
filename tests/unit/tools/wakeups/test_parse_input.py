@@ -18,7 +18,7 @@ async def test_tool_node_hands_the_tool_the_arguments_unparsed(monkeypatch):
     seen = AsyncMock(
         return_value=(
             "Ended without a reply.",
-            WakeupArtifact(quiet=False, changed=False),
+            WakeupArtifact(quiet=False, changed=False, set=[], cancelled=[]),
             False,
         )
     )
@@ -56,4 +56,4 @@ async def test_tool_node_hands_the_tool_the_arguments_unparsed(monkeypatch):
         "schedule_wakeup",
         "success",
     )
-    assert message.artifact == {"quiet": False, "changed": False}
+    assert message.artifact == {"quiet": False, "changed": False, "set": [], "cancelled": []}

@@ -9,7 +9,7 @@ generic pydantic error. These models therefore exist to be rendered, and
 
 from __future__ import annotations
 
-from typing import Literal, Optional, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -89,7 +89,11 @@ class WakeupArtifact(TypedDict):
     """What a `schedule_wakeup` result carries beside its text: whether it
     ended the turn quietly, and whether any call this turn set or cancelled
     a wakeup, which tells a quiet check that is news apart from one that is
-    not."""
+    not. ``set`` and ``cancelled`` are what this call did, in the listing's
+    shape, so the transcript says what each call did and names a quiet
+    turn's changes as the Status panel does."""
 
     quiet: bool
     changed: bool
+    set: List[Dict[str, Any]]
+    cancelled: List[Dict[str, Any]]

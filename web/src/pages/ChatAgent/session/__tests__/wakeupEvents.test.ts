@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import {
-  callChangesWakeups, coerceWakeNotice, deliveredNoticeRow, quietTurnStatus, wakeTurnOpener,
+  callChangesWakeups, coerceWakeNotice, deliveredNoticeRow, quietTurnEnd, wakeTurnOpener,
 } from '../wakeupEvents';
 
 // Made-up ids, labels and levels only.
@@ -38,7 +38,13 @@ const wake = (args: unknown, over: Call = {}): Call => ({
   toolName: 'schedule_wakeup', toolCall: { name: 'schedule_wakeup', args }, toolCallResult: ended, ...over,
 });
 
-describe('quietTurnStatus', () => {
+// The status the quiet checks' fold lists: a quiet end that changed no wakeup.
+const quietTurnStatus = (bubbles: Parameters<typeof quietTurnEnd>[0]) => {
+  const end = quietTurnEnd(bubbles);
+  return end && !end.changed ? end.status : null;
+};
+
+describe('the quiet checks\' status', () => {
   it('reads the status a quiet end passed', () => {
     expect(quietTurnStatus([bubble({ toolName: 'get_quote', order: 1 }, wake({ quiet: ' nothing new ' }, { order: 2 }))]))
       .toBe('nothing new');
@@ -74,6 +80,50 @@ describe('quietTurnStatus', () => {
     expect(quietTurnStatus([quiet, withText(bubble(), said('The task finished: NVDA held.', 0))])).toBeNull();
     expect(quietTurnStatus([withText(quiet, said('The task finished.', 2))])).toBeNull();
     expect(quietTurnStatus([withText(quiet, said('Checking the tape.', 0), said('  ', 2))])).toBe('nothing new');
+  });
+});
+
+describe('quietTurnEnd', () => {
+  it('closes a changed quiet turn with its status and what its calls did', () => {
+    const smh = { wakeup_id: 'w1', kind: 'price' };
+    const old = { wakeup_id: 'w0', kind: 'at' };
+    const set = wake({ triggers: [{ price: { symbol: 'SMH', below: 455 } }], cancel: ['w0'] }, {
+      order: 1,
+      toolCallResult: { content: 'Set w1.', artifact: { quiet: false, changed: true, set: [smh], cancelled: [old] } },
+    });
+    expect(quietTurnEnd([bubble(set, wake({ quiet: 'nothing new' }, { order: 2 }))]))
+      .toEqual({ status: 'nothing new', changed: true, set: [smh], cancelled: [old] });
+  });
+
+  it('names no changes from a result that predates listing them', () => {
+    const set = wake({ triggers: [{ at: '2030-01-02T15:00' }] }, { order: 1, toolCallResult: { content: 'Set w1.' } });
+    expect(quietTurnEnd([bubble(set, wake({ quiet: 'nothing new' }, { order: 2 }))]))
+      .toEqual({ status: 'nothing new', changed: true, set: [], cancelled: [] });
+  });
+
+  // The server accepts quiet beside other schedule_wakeup calls in its round.
+  it('ends quietly whichever order a sibling wakeup call takes', () => {
+    const setOnly = wake({ triggers: [{ at: '2030-01-02T15:00' }] }, {
+      toolCallResult: { content: 'Set w1.', artifact: { quiet: false, changed: true, set: [], cancelled: [] } },
+    });
+    const quiet = wake({ quiet: 'Re-armed.' });
+    expect(quietTurnEnd([bubble({ ...quiet, order: 3 }, { ...setOnly, order: 3.01 })])?.status).toBe('Re-armed.');
+    expect(quietTurnEnd([bubble({ ...setOnly, order: 3 }, { ...quiet, order: 3.01 })])?.status).toBe('Re-armed.');
+    expect(quietTurnEnd([bubble({ ...quiet, order: 3 }, { toolName: 'get_quote', order: 4 })])).toBeNull();
+  });
+
+  it('names a wakeup once when its call is listed in two bubbles', () => {
+    const smh = { wakeup_id: 'w1', kind: 'price' };
+    const set = wake({ triggers: [{ price: { symbol: 'SMH', below: 455 } }] }, {
+      order: 1,
+      toolCallResult: { content: 'Set w1.', artifact: { quiet: false, changed: true, set: [smh], cancelled: [] } },
+    });
+    expect(quietTurnEnd([bubble(set), bubble(set, wake({ quiet: 'nothing new' }, { order: 2 }))])?.set).toEqual([smh]);
+  });
+
+  it('is null for a turn that did not end quietly', () => {
+    const set = wake({ triggers: [{ at: '2030-01-02T15:00' }] }, { order: 1, toolCallResult: { content: 'Set w1.' } });
+    expect(quietTurnEnd([bubble(set)])).toBeNull();
   });
 });
 

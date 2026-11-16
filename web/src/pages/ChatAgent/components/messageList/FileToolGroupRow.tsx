@@ -62,7 +62,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
     : category === 'memo' || category === 'memoWrite' ? 'memo' : 'files';
   const openLabel = t('toolArtifact.a11y.openInTab', { tab: t(`filePanel.tabs.${tab}`) });
   const singlePath = filePathOf(item);
-  const singleLabel = getCompletedSummary(toolName, item.toolCall, t, root)
+  const singleLabel = getCompletedSummary(toolName, item.toolCall, t, { root })
     || (singlePath && classifyAgentPath(singlePath, root).kind === 'file' ? singlePath.split('/').pop() : null);
   // A run keeps to one computer. On another one the path is that machine's,
   // and the file panel would read it here, so the pill opens the call.

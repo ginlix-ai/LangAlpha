@@ -109,7 +109,7 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
       };
     }
   }
-  const summary = getCompletedSummary(toolName, call, t, root);
+  const summary = getCompletedSummary(toolName, call, t, { artifact, root });
   const short = summary && summary.length > TOOL_SUMMARY_MAX ? `${summary.slice(0, TOOL_SUMMARY_MAX - 1)}…` : summary;
   return {
     name: short ? `${title} · ${short}` : title,

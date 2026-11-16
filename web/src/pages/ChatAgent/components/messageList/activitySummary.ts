@@ -183,5 +183,5 @@ export function completedToolTitle(item: ToolActivityItem, t: TFn): string {
 
 /** The object a settled row names, rendered as its pill; null when there is none. */
 export function completedToolSummary(item: ToolActivityItem, t: TFn): string | null {
-  return getCompletedSummary(item.toolName || '', item.toolCall, t, item.root);
+  return getCompletedSummary(item.toolName || '', item.toolCall, t, { artifact: item.toolCallResult?.artifact, root: item.root });
 }

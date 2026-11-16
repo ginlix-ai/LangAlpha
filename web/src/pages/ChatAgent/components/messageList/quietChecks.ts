@@ -2,11 +2,13 @@
  * The quiet checks' fold: wake turns that ended quietly and changed no
  * wakeup are drawn as one row per run of them, in place of the turns. A turn
  * still running shows as any turn does until it ends, and then joins the run
- * above it. Read from each turn's own tool calls, the same live and on replay.
+ * above it. A quiet turn that changed a wakeup stays a turn, closed by its
+ * quiet line. Read from each turn's own tool calls, the same live and on
+ * replay.
  */
 import type { WakeupArrival } from '@/types/chat';
 import type { WakeNotice } from '@/types/wakeups';
-import { quietTurnStatus } from '../../session/wakeupEvents';
+import { quietTurnEnd, type QuietEnd } from '../../session/wakeupEvents';
 import { messageTimeMs, type ProjectedMessage } from './turnProjection';
 import type { MessageRecord } from './types';
 
@@ -67,38 +69,58 @@ function quietSpan(
 }
 
 /**
- * The list's entries with each run of back-to-back quiet wake turns drawn as
- * one fold. `turned` is the raw projection, whose bubbles a turn's calls are
- * read from, hidden ones included; `live` the turns still working.
+ * One turn's quiet end, kept per bubble list so it keeps one identity while
+ * the list recomputes on every streamed frame. Keyed on the turn's last
+ * bubble, whose record is replaced whenever it changes; the others are
+ * compared too, since an earlier one can be replaced alone.
  */
-export function planQuietChecks(
-  visible: readonly ProjectedMessage[],
-  turned: readonly ProjectedMessage[],
-  live: ReadonlySet<number>,
-  isSubagentView: boolean | undefined,
-): QuietPlanItem[] {
-  const items: QuietPlanItem[] = [];
-  if (isSubagentView) {
-    for (let i = 0; i < visible.length; i++) items.push({ kind: 'entry', index: i });
-    return items;
-  }
+const cache = new WeakMap<MessageRecord, { bubbles: MessageRecord[]; end: QuietEnd | null }>();
+
+function cachedQuietEnd(bubbles: MessageRecord[]): QuietEnd | null {
+  const tail = bubbles[bubbles.length - 1];
+  const hit = cache.get(tail);
+  if (hit && hit.bubbles.length === bubbles.length && hit.bubbles.every((b, k) => b === bubbles[k])) return hit.end;
+  const end = quietTurnEnd(bubbles);
+  cache.set(tail, { bubbles, end });
+  return end;
+}
+
+/**
+ * How each settled turn ended quietly, by turn. `turned` is the raw
+ * projection, whose bubbles a turn's calls are read from, hidden ones
+ * included; `live` the turns still working, which have not ended yet.
+ */
+export function quietEndsByTurn(turned: readonly ProjectedMessage[], live: ReadonlySet<number>): Map<number, QuietEnd> {
   const bubbles = new Map<number, MessageRecord[]>();
   for (const { message, turnIndex } of turned) {
-    if ((message.role as string) !== 'assistant' || turnIndex === null) continue;
+    if ((message.role as string) !== 'assistant' || turnIndex === null || live.has(turnIndex)) continue;
     const list = bubbles.get(turnIndex);
     if (list) list.push(message);
     else bubbles.set(turnIndex, [message]);
   }
+  const ends = new Map<number, QuietEnd>();
+  for (const [turn, list] of bubbles) {
+    const end = cachedQuietEnd(list);
+    if (end) ends.set(turn, end);
+  }
+  return ends;
+}
 
+/** The list's entries with each run of back-to-back quiet wake turns that
+ *  changed no wakeup drawn as one fold. */
+export function planQuietChecks(
+  visible: readonly ProjectedMessage[],
+  quietEnds: ReadonlyMap<number, QuietEnd>,
+): QuietPlanItem[] {
+  const items: QuietPlanItem[] = [];
   let run: QuietCheck[] | null = null;
   for (let i = 0; i < visible.length; i++) {
     const { message } = visible[i];
     const arrival = arrivalOf(message);
     const turn = arrival?.source === 'wake' ? arrival.turnIndex : undefined;
-    const list = turn === undefined || live.has(turn) ? undefined : bubbles.get(turn);
-    const status = list ? quietTurnStatus(list) : null;
-    const span = status !== null && turn !== undefined ? quietSpan(visible, i, turn) : null;
-    if (!arrival || turn === undefined || status === null || !span) {
+    const end = turn === undefined ? undefined : quietEnds.get(turn);
+    const span = end && !end.changed && turn !== undefined ? quietSpan(visible, i, turn) : null;
+    if (!arrival || turn === undefined || !end || !span) {
       run = null;
       items.push({ kind: 'entry', index: i });
       continue;
@@ -107,7 +129,7 @@ export function planQuietChecks(
       turnIndex: turn,
       startedAt: messageTimeMs(message.timestamp),
       notices: [...arrival.notices, ...span.notices],
-      status,
+      status: end.status,
     };
     if (run) {
       run.push(check);

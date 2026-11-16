@@ -154,7 +154,7 @@ async def test_an_accepted_quiet_ends_the_turn_and_says_nothing_changed(db):
     )
     assert (text, artifact, error) == (
         "Ended without a reply.",
-        {"quiet": True, "changed": False},
+        {"quiet": True, "changed": False, "set": [], "cancelled": []},
         False,
     )
 
@@ -166,7 +166,10 @@ async def test_a_quiet_check_that_set_a_wakeup_reports_a_change(db):
         messages=[wake_input()],
         wake_turn=True,
     )
-    assert artifact == {"quiet": True, "changed": True}
+    assert (artifact["quiet"], artifact["changed"]) == (True, True)
+    # The closing line names what the check changed, as the listing shows it.
+    assert [(w["kind"], w["at"]) for w in artifact["set"]] == [("at", "2026-10-21T08:30:00+08:00")]
+    assert artifact["cancelled"] == []
     assert text.endswith("Ended without a reply.")
 
 

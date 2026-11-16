@@ -16,7 +16,8 @@ import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandof
 import {
   computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
 } from './messageList/turnProjection';
-import { planQuietChecks } from './messageList/quietChecks';
+import { planQuietChecks, quietEndsByTurn } from './messageList/quietChecks';
+import type { QuietEnd } from '../session/wakeupEvents';
 import { CollapseClock, CollapseClockContext } from './messageList/transcriptMotion';
 import { ProseTyping, ProseTypingContext } from './messageList/proseTyping';
 import { useLiveMessages, type LiveMessages } from '../session/stream/liveMessages';
@@ -24,6 +25,8 @@ import type { ChatMessage, WakeupArrival } from '@/types/chat';
 import { turnFilesByTurn } from '../utils/turnFiles';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import type { FeedbackResult, FoldState, MessageRecord } from './messageList/types';
+
+const NO_QUIET_ENDS: ReadonlyMap<number, QuietEnd> = new Map();
 
 /** What the fold row for one backend turn needs to know about it. */
 interface TurnFoldInfo {
@@ -35,6 +38,8 @@ interface TurnFoldInfo {
   isLive: boolean;
   /** Nothing stands for the turn once folded, so it settles to `process`. */
   noAnswer: boolean;
+  /** A wake turn that ended quietly: its closing line stands as its answer. */
+  quietEnd: QuietEnd | null;
   /** The turn has process or commentary to fold away. One that ran here with
    *  none keeps the row it worked under, as a label. */
   foldable: boolean;
@@ -234,6 +239,13 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   const { running, ranHere } = useTurnPresentation(live, turned, typing, rememberedRanHere);
   const [collapseClock] = React.useState(() => new CollapseClock());
 
+  // How each settled turn ended quietly. A subagent's transcript has no wake
+  // turns, so it reads none.
+  const quietEnds = React.useMemo(
+    () => (isSubagentView ? NO_QUIET_ENDS : quietEndsByTurn(turned, live)),
+    [turned, live, isSubagentView],
+  );
+
   // Both display preferences fold finished turns; only live reasoning differs.
   // The same pass times every settled turn, whose reply shows when it ended.
   const { turnFolds, turnEnds } = React.useMemo(() => {
@@ -313,8 +325,10 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       const foldable = contents.some((content) => content.hasProcess) || contents.reduce((sum, content) => sum + content.textCount, 0) >= 2;
       if (!foldable && !isLive && !ranHere.has(turnIndex)) continue;
       const hasFiles = !!onOpenFile && (!readOnly || allowFiles) && (filesByTurn.get(turnIndex)?.length ?? 0) > 0;
+      const quietEnd = isLive ? null : quietEnds.get(turnIndex) ?? null;
       folds.set(turnIndex, {
-        noAnswer: !(contents.at(-1)?.lastTextKey || contents.some((content) => content.hasRetained) || hasFiles),
+        noAnswer: !(contents.at(-1)?.lastTextKey || contents.some((content) => content.hasRetained) || hasFiles || quietEnd),
+        quietEnd,
         rowPos: pos,
         startedAt: start,
         completedAt,
@@ -324,12 +338,9 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       });
     }
     return { turnFolds: folds, turnEnds: ends };
-  }, [visible, turned, turnTails, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles]);
+  }, [visible, turned, turnTails, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
 
-  const items = React.useMemo(
-    () => planQuietChecks(visible, turned, live, isSubagentView),
-    [visible, turned, live, isSubagentView],
-  );
+  const items = React.useMemo(() => planQuietChecks(visible, quietEnds), [visible, quietEnds]);
 
   // Empty state - show when no messages exist (hidden in subagent view)
   if (messages.length === 0) {
@@ -439,6 +450,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
             : (turnIndex !== null && running.has(turnIndex)) || !!message.isStreaming,
           turnFiles: turnTails[i] && turnIndex !== null ? filesByTurn.get(turnIndex) : undefined,
           completedAt: turnTails[i] && turnIndex !== null ? turnEnds.get(turnIndex) : undefined,
+          quietEnd: turnTails[i] ? info?.quietEnd ?? null : null,
           feedback: turnIndex === null ? null : feedbackByTurn?.[turnIndex] ?? null,
           isLoading,
           fold,

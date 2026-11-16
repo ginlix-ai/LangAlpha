@@ -31,6 +31,8 @@ import { assistantText, userMessageText } from './messageText';
 import { EditMessageField } from './EditMessageField';
 import { sentMessageForCopy, sentMessageWords } from './sentMessage';
 import { TurnFileCards } from './TurnFileCards';
+import { QuietEndLine } from './QuietEndLine';
+import type { QuietEnd } from '../../session/wakeupEvents';
 import type { ArtifactCommentsShown } from '@/types/api';
 import { CommentSendBody } from '../artifactComments/CommentSendBody';
 import { InPlaceSwap } from '@/components/ui/crossfade';
@@ -118,6 +120,9 @@ interface MessageBubbleProps {
   turnFiles?: TurnFile[];
   /** When the turn ended, on its tail once it has; the time its reply shows. */
   completedAt?: number;
+  /** The line closing a wake turn that ended quietly, given to its tail
+   *  once the turn has settled. */
+  quietEnd?: QuietEnd | null;
   /** This turn's stored rating, or null. */
   feedback?: FeedbackResult | null;
   isLoading?: boolean;
@@ -137,7 +142,7 @@ interface MessageBubbleProps {
  * MessageActionsContext (one identity-stable object per host), so a streamed
  * chunk never re-renders settled bubbles through a handler identity.
  */
-export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
+export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
   const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
@@ -332,7 +337,10 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   }, [isEditing]);
 
   const handleCopy = useStableHandler(() => {
-    const text = isUser ? sentMessageForCopy(userMessageText(message)) : assistantText(message);
+    // A quiet turn's closing line stands as its answer, so it is copied too.
+    const text = isUser
+      ? sentMessageForCopy(userMessageText(message))
+      : [assistantText(message), quietEnd?.status].filter(Boolean).join('\n\n');
     // Confirm only after the write lands (it can reject when the document
     // loses focus); rapid re-copies reset the shared timer instead of
     // stacking timers that would cut the newer indicator short.
@@ -704,6 +712,8 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
             {bubbleContent}
           </div>
         )}
+
+        {quietEnd && <QuietEndLine end={quietEnd} entering={sawLive} />}
 
         {/* The turn's deliverables, on its last bubble, directly under the
             reply. A long turn names its files somewhere in the prose or only
