@@ -56,7 +56,7 @@ class LocalDirStore:
 
 class SectionsCache:
     def __init__(self, store: Store | None = None):
-        self.store = store or LocalDirStore()
+        self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
@@ -92,7 +92,7 @@ class SubmissionCache:
     """Raw full-text submissions, kept as bytes so a re-parse sees exactly what EDGAR served."""
 
     def __init__(self, store: Store | None = None):
-        self.store = store or LocalDirStore()
+        self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
@@ -109,6 +109,9 @@ class SubmissionCache:
 
     def put(self, accession: str, raw: bytes) -> None:
         self.store.put(self._key(accession), gzip.compress(raw, mtime=0))
+
+    def delete(self, accession: str) -> None:
+        self.store.delete(self._key(accession))
 
     def get_or_fetch(self, accession: str, fetch: Callable[[], bytes | str]) -> bytes:
         cached = self.get(accession)

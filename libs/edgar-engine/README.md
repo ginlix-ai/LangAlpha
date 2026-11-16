@@ -86,7 +86,9 @@ labels come from the filer's own XBRL facts where they exist
 and from the report date and fiscal year end otherwise. `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
 `~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
-Cached sections are keyed by `SECTIONS_VERSION`, so an engine change never serves stale results.
+Cached sections are keyed by `SECTIONS_VERSION`, so an engine change never serves stale results. Pass
+`submissions=SubmissionCache()` to `get_sections` or `sections_for_filing` to keep raw submissions too, so a
+re-parse reads exactly what EDGAR served; a submission that does not parse (a truncated download) is not kept.
 
 ## Tests
 

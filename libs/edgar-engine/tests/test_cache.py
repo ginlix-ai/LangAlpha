@@ -4,6 +4,7 @@ import json
 import pytest
 
 from edgar_engine.cache import LocalDirStore, SectionsCache, SubmissionCache
+from edgar_engine.sections import sections_for_filing
 from edgar_engine.sections.model import FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
 
@@ -87,6 +88,20 @@ def test_sections_cache_requires_accession(tmp_path):
         SectionsCache(LocalDirStore(tmp_path)).put(make_sections(accession=None))
 
 
+def test_an_empty_custom_store_is_kept():
+    class DictStore(dict):
+        def get(self, key):
+            return dict.get(self, key)
+
+        def put(self, key, data):
+            self[key] = data
+
+        def delete(self, key):
+            self.pop(key, None)
+    store = DictStore()
+    assert SectionsCache(store).store is store and SubmissionCache(store).store is store
+
+
 def test_sections_cache_refuses_an_as_amended_view(tmp_path):
     from dataclasses import replace
     with pytest.raises(ValueError):
@@ -138,3 +153,34 @@ def test_submission_cache_corrupt_entry_is_refetched(tmp_path):
     store.put("submissions/0001234567-24-000001.txt.gz", b"junk")
     assert SubmissionCache(store).get_or_fetch("0001234567-24-000001", lambda: "fresh") == b"fresh"
     assert SubmissionCache(store).get("0001234567-24-000001") == b"fresh"
+
+
+class _Filing:
+    form, filing_date, accession_no = "10-K", "2024-02-01", "0001234567-24-000001"
+
+    def __init__(self, raw):
+        self.raw, self.fetched = raw, 0
+
+    def full_text_submission(self):
+        self.fetched += 1
+        return self.raw
+
+
+SUBMISSION = ("<SEC-HEADER>ACCESSION NUMBER: 0001234567-24-000001\n</SEC-HEADER>\n<DOCUMENT>\n<TYPE>10-K\n<TEXT>\n"
+              "ITEM 1. BUSINESS\nWe make things.\n</TEXT>\n</DOCUMENT>\n")
+
+
+def test_sections_for_filing_reads_the_submission_through_its_cache(tmp_path):
+    submissions = SubmissionCache(LocalDirStore(tmp_path))
+    filing = _Filing(SUBMISSION)
+    first = sections_for_filing(filing, submissions=submissions)
+    second = sections_for_filing(filing, submissions=submissions)
+    assert filing.fetched == 1 and first == second and "1" in first.items
+    assert submissions.get(filing.accession_no) == SUBMISSION.encode()
+
+
+def test_a_truncated_submission_is_not_kept(tmp_path):
+    submissions = SubmissionCache(LocalDirStore(tmp_path))
+    with pytest.raises(ValueError):
+        sections_for_filing(_Filing(SUBMISSION.replace("</DOCUMENT>", "")), submissions=submissions)
+    assert submissions.get(_Filing.accession_no) is None

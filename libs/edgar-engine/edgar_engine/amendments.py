@@ -150,21 +150,21 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
                           amendments=[a.accession for a in amendments])
 
 
-def read(ref: FilingRef, cache=None) -> FilingSections:
+def read(ref: FilingRef, cache=None, submissions=None) -> FilingSections:
     """A filing's sections as filed, with amends from the filing list and, for an amendment, its scope."""
-    sections = sections_for_filing(get_filing(ref), cache)
+    sections = sections_for_filing(get_filing(ref), cache, submissions)
     return replace(sections, amends=ref.amends,
                    scope=amendment_scope(sections) if sections.filing_status == "amendment" else sections.scope)
 
 
-def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None) -> list[FilingSections]:
+def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None, submissions=None) -> list[FilingSections]:
     """The amendments of original as filed, in filing order: those the filing list links to it or cannot place,
     kept when their own text names it (or, when the text places them nowhere, the list does)."""
     candidates = [r for r in refs if r.filing_status == "amendment" and base_form(r.form) == base_form(original.form)
                   and (r.amends == original.accession or (r.amends is None and r.filing_date >= original.filing_date))]
     found = []
     for ref in sorted(candidates, key=_order):
-        sections = read(ref, cache)
+        sections = read(ref, cache, submissions)
         sections = replace(sections, amends=resolve_amends(sections, refs) or ref.amends)
         if sections.amends == original.accession:
             found.append(sections)

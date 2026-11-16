@@ -59,11 +59,19 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
                           items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
 
 
-def sections_for_filing(filing, cache=None) -> FilingSections:
+def sections_for_filing(filing, cache=None, submissions=None) -> FilingSections:
     """Items of an edgartools Filing as filed, each labeled with the filing's accession as its source, read
-    through cache (a SectionsCache) when one is given."""
+    through cache (a SectionsCache) when one is given. With submissions (a SubmissionCache), the raw submission is
+    kept by accession and read from there; one that does not parse (a truncated download) is not kept."""
     def compute():
-        return extract_sections(filing.full_text_submission(), form=filing.form, filing_date=str(filing.filing_date),
-                                accession=filing.accession_no)
+        acc = filing.accession_no
+        raw = filing.full_text_submission() if submissions is None else submissions.get_or_fetch(
+            acc, filing.full_text_submission)
+        try:
+            return extract_sections(raw, form=filing.form, filing_date=str(filing.filing_date), accession=acc)
+        except ValueError:
+            if submissions is not None:
+                submissions.delete(acc)
+            raise
     sections = compute() if cache is None else cache.get_or_compute(filing.accession_no, compute)
     return replace(sections, items={k: replace(s, source=s.source or sections.accession) for k, s in sections.items.items()})
