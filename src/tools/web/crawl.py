@@ -36,6 +36,7 @@ from src.tools.web.types import (
     WebError,
     WebErrorType,
     WebToolError,
+    billed_units,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,11 +253,12 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
                 # Meter the pages Firecrawl delivered (and billed us for) as they
                 # arrive, so a cancelled crawl still bills exactly what was
                 # delivered — and a failed local write never yields a free page.
-                delivered_ok = sum(1 for p in status.pages if p.ok)
-                if delivered_ok:
+                # A 404 or empty page is billed too, though it is not kept.
+                billed = billed_units(status.pages)
+                if billed:
                     tracker = get_tool_tracker()
                     if tracker:
-                        tracker.record_usage(crawl_tracking, count=delivered_ok)
+                        tracker.record_usage(crawl_tracking, count=billed)
 
                 if status.state.terminal:
                     state = status.state

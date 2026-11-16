@@ -235,7 +235,7 @@ def image_steps(
                 # uv writes no bytecode by default, so every new sandbox would
                 # compile pandas, yfinance and the rest on its first import.
                 "uv pip install --system --compile-bytecode "
-                + " ".join(dependencies)
+                + " ".join(shlex.quote(d) for d in dependencies)
                 + " && uv cache clean && rm -rf /root/.cache/pip",
                 # Scrapling browser setup (Camoufox for StealthyFetcher). Its
                 # Chromium is the one npx already placed in the shared

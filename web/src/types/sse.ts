@@ -162,11 +162,20 @@ export interface ProvenanceEvent extends BaseSSEEvent {
   result_sha256?: string;
   result_size?: number;
   result_snippet?: string;
+  /** What reading this source cost the user, in credits. Absent or null on most. */
+  cost_credits?: number | null;
+  /** The data provider's website domain (e.g. "fiscal.ai"), set on `mcp_tool`
+   *  sources from a paid data catalog; its favicon stands in for the typed icon. */
+  site?: string | null;
   /** Replay envelope: added by GET /threads/{id}/messages/replay so the
    *  frontend can re-attach records to the right turn after reload. */
   turn_index?: number;
   response_id?: string;
+  thread_id?: string;
 }
+
+/** The keys a `provenance` event carries for its transport, not its record. */
+export type ProvenanceEnvelopeKey = 'event' | '_eventId' | 'turn_index' | 'response_id' | 'thread_id';
 
 export interface TodoUpdatePayload {
   todos: TodoItem[];

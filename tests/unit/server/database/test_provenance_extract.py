@@ -95,6 +95,19 @@ class TestExtractProvenance:
         records = extract_provenance(events)
         assert len(records) == 1
 
+    def test_a_repeated_paid_call_adds_its_cost_to_the_kept_row(self):
+        # Regression: one code block making the same paid call twice kept
+        # the first call's cost only, while both were charged. One event
+        # seen twice still counts once.
+        events = [
+            _provenance_event(tool_call_id="call-1", record_id="r1", cost_credits=4),
+            _provenance_event(tool_call_id="call-1", record_id="r2", cost_credits=4),
+            _provenance_event(tool_call_id="call-1", record_id="r2", cost_credits=4),
+        ]
+        records = extract_provenance(events)
+        assert len(records) == 1
+        assert records[0]["cost_credits"] == 8
+
     def test_same_result_under_another_call_keeps_its_row(self):
         # Regression: the client lists sources per tool call, so a second
         # search returning the result an earlier one did showed the source

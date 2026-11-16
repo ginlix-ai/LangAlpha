@@ -9,7 +9,8 @@ an authorization overhang, depending on which way the two disagree.
 The kind is decided by what authenticates the server, never by what it is
 named. An OAuth connection means the relay spends its token; otherwise a
 remote row authenticates with its own headers, and the grant names the row so
-the relay can resolve them per request.
+the relay can resolve them per request. A relay-bound built-in authenticates
+with a key the host holds for the user, and earns the platform kind.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any
 from src.server.database.egress_grants import (
     GRANT_KIND_HEADER_MCP,
     GRANT_KIND_OAUTH_MCP,
+    GRANT_KIND_PLATFORM_MCP,
     GrantRef,
 )
 from src.server.database.mcp_tool_schemas import get_user_tool_schemas
@@ -86,9 +88,21 @@ async def grant_refs(
     plans = resolved.binding_plans_by_name
     refs: list[GrantRef] = []
     for entry in resolved.entries:
-        # The user tier only: a grant resolves its credential from the catalog
-        # row or the connection behind it, and a built-in has neither.
-        if entry.state is not State.ACTIVE or entry.origin is not Origin.USER:
+        if entry.state is not State.ACTIVE:
+            continue
+        if entry.origin is Origin.BUILTIN:
+            # A built-in has no catalog row or connection to resolve from, so
+            # only one whose credential the host holds per user earns a grant.
+            if entry.config.relay_bound:
+                refs.append(
+                    GrantRef(
+                        kind=GRANT_KIND_PLATFORM_MCP,
+                        server_name=entry.name,
+                        destination_url=entry.config.url,
+                    )
+                )
+            continue
+        if entry.origin is not Origin.USER:
             continue
         server = entry.config
         if server.oauth_connection_id:

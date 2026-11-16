@@ -191,6 +191,35 @@ async def test_a_failed_wakeup_read_still_delivers_the_notice():
     assert verdict.wakeups == []
 
 
+_PAID = "Paid data calls in this run: firecrawl_scrape x1 = 1 Firecrawl credits (2 credits charged)."
+_CHARGES = "src.server.services.metered_charges.command_charges"
+
+
+@pytest.mark.asyncio
+async def test_a_handed_off_commands_notice_names_what_its_paid_calls_cost():
+    """Its result was a placeholder, so the line a result that returned in
+    time carries never reached the agent."""
+    charges = AsyncMock(return_value=_PAID)
+    with _verdict_env(_row(job_ref={"call_id": "c0ffee00"})), patch(_CHARGES, new=charges):
+        verdict = await cmd.command_report_verdict(_job())
+
+    charges.assert_awaited_once_with("u-1", "c0ffee00")
+    assert verdict.message(steered=True) == APPROVED_COMPLETED_STEERED.replace(
+        "\n</system>", f"\n\n{_PAID}\n</system>"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_ref", [None, {"handle": "j"}, {"call_id": "c0ffee00"}])
+async def test_a_notice_with_no_paid_calls_has_no_line(job_ref):
+    charges = AsyncMock(return_value="")
+    with _verdict_env(_row(job_ref=job_ref)), patch(_CHARGES, new=charges):
+        verdict = await cmd.command_report_verdict(_job())
+
+    assert charges.await_count == (1 if job_ref and "call_id" in job_ref else 0)
+    assert verdict.message(steered=True) == APPROVED_COMPLETED_STEERED
+
+
 # --- the live-turn offer ---------------------------------------------------------
 
 

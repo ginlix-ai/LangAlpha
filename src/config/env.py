@@ -131,6 +131,18 @@ EGRESS_RELAY_LOOPBACK_URL: str = os.getenv("EGRESS_RELAY_LOOPBACK_URL", "http://
 # Credit conversion rate (USD → credits).  Override with USD_TO_CREDITS_RATE env var.
 USD_TO_CREDITS_RATE: int = int(os.getenv("USD_TO_CREDITS_RATE", "1000"))
 
+# Firecrawl for Platforms (Gateway). With the platform key set, each user gets
+# their own Firecrawl account, created on first use and billed to this
+# deployment; the alias email's domain must be one we own and that accepts
+# mail. Unset, every user shares FIRECRAWL_API_KEY.
+FIRECRAWL_PLATFORM_KEY: str | None = os.getenv("FIRECRAWL_PLATFORM_KEY") or None
+FIRECRAWL_ACCOUNT_EMAIL_DOMAIN: str | None = (
+    os.getenv("FIRECRAWL_ACCOUNT_EMAIL_DOMAIN", "").strip().lstrip("@").lower() or None
+)
+FIRECRAWL_PARTNER_BASE_URL: str = os.getenv(
+    "FIRECRAWL_PARTNER_BASE_URL", "https://integrations.firecrawl.dev"
+).rstrip("/")
+
 # Automation webhook delivery (channel gateway)
 AUTOMATION_WEBHOOK_URL: str = os.getenv("AUTOMATION_WEBHOOK_URL", "")
 AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")

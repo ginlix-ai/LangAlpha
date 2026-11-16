@@ -74,7 +74,8 @@ class FakeBackend(d.ServerBackend):
         with self._lock:
             return sorted(self._running)
 
-    def call(self, server, tool, args):
+    def call(self, server, tool, args, *, timeout, call_id=""):
+        self.timeouts.append((server, timeout))
         self.calls.append((server, tool))
         self.entered.release()
         gate = self.gates.get(server, self.gate)
@@ -88,10 +89,6 @@ class FakeBackend(d.ServerBackend):
             "jsonrpc": "2.0",
             "result": {"server": server, "tool": tool, "args": args},
         }
-
-    def call_with_timeout(self, server, tool, args, timeout):
-        self.timeouts.append((server, timeout))
-        return self.call(server, tool, args)
 
     def drop(self, server):
         with self._lock:

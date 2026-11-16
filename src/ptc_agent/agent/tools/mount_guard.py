@@ -1,4 +1,5 @@
-"""The store-backed path guard Bash and ExecuteCode share."""
+"""What Bash and ExecuteCode share around a command: the store-backed path
+guard, and the call id its mount saves and paid relay calls are filed under."""
 
 import re
 from collections.abc import Awaitable, Callable
@@ -7,6 +8,7 @@ from typing import Any
 import structlog
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.core.sandbox import livefs_mount
 
 logger = structlog.get_logger(__name__)
@@ -54,6 +56,26 @@ async def run_guarded(
         logger.info(blocked_event, tree=tree, **blocked_fields)
         error = memory_error if tree == "memory" else files_error.format(dir=tree)
         return error, {"mcp_trace": []}
+
+    async def run_as(call_id: str | None) -> tuple[str, dict[str, Any]]:
+        text, artifact = await run(call_id)
+        return await _with_paid_calls(backend, call_id, text, artifact)
+
     return await livefs_mount.through_mount(
-        mount, backend.sandbox.call_filer, call_context, run
+        mount, backend.sandbox.call_filer, call_context, run_as
     )
+
+
+async def _with_paid_calls(
+    backend: SandboxBackend, call_id: str | None, text: str, artifact: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Add what the command's paid relay calls cost to its output, and leave
+    its call id on the artifact, where provenance collects the sources the
+    relay held under it (``ProvenanceMiddleware``, which strips it)."""
+    if call_id is None:
+        return text, artifact
+    if isinstance(artifact, dict):
+        artifact[RELAY_CALL_KEY] = call_id
+    paid_calls = getattr(backend.sandbox, "paid_calls", None)
+    charged = await paid_calls(call_id) if paid_calls is not None else ""
+    return (f"{text}\n\n{charged}" if charged else text), artifact

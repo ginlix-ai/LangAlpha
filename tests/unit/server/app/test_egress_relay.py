@@ -31,7 +31,7 @@ import asyncio
 import json
 from contextlib import ExitStack, asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -2368,3 +2368,248 @@ class TestHeaderCredential:
 
         assert (await _post(client, token=_jwt())).status_code == 200
         assert env.kicks == []
+
+
+# ---------------------------------------------------------------------------
+# Platform grants: a built-in whose key the host holds for the user
+# ---------------------------------------------------------------------------
+
+PLATFORM_SERVER = "paid_builtin"
+PLATFORM_KEY = "platform-account-key-unit"
+
+
+class TestPlatformCredential:
+    """A user who switched the built-in off for the account was still sent
+    its key, and billed, until the next grant sync retired the grant: header
+    grants re-read their row per request, platform grants did not re-read the
+    user's switch."""
+
+    @pytest.fixture
+    def platform(self, env):
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.services.egress.platform_accounts import (
+            PLATFORM_ACCOUNTS,
+            PlatformAccount,
+        )
+
+        holder = {"disabled": frozenset(), "keys_asked": []}
+
+        async def _key_for(user_id: str) -> str:
+            holder["keys_asked"].append(user_id)
+            return PLATFORM_KEY
+
+        async def _disabled(user_id: str) -> frozenset[str]:
+            return holder["disabled"]
+
+        server = MCPServerConfig(
+            name=PLATFORM_SERVER,
+            transport="http",
+            url=DESTINATION,
+            auth="firecrawl_account",
+            tools=["list_positions"],
+        )
+        env.grant = _grant(
+            kind="platform_mcp",
+            connection_id=None,
+            server_name=PLATFORM_SERVER,
+            connection_status=None,
+        )
+        # Unpaid, so the calls that pass stop short of the credit gate.
+        meter = SimpleNamespace(vendor="unit", is_paid=lambda tool: False)
+        with (
+            patch(
+                "src.server.app.setup.agent_config",
+                SimpleNamespace(mcp=SimpleNamespace(servers=[server])),
+            ),
+            patch.dict(
+                PLATFORM_ACCOUNTS,
+                {"firecrawl_account": PlatformAccount(
+                    key_for=_key_for, provision=AsyncMock(), recheck_key=AsyncMock(),
+                    configured=lambda: True,
+                    meter=meter, vendor="firecrawl", name="Firecrawl",
+                    terms_url="https://www.firecrawl.dev/terms-of-service",
+                )},
+            ),
+            patch("src.server.services.mcp_config.account_disabled_builtins", _disabled),
+        ):
+            yield holder
+
+    @pytest.mark.asyncio
+    async def test_the_users_key_reaches_the_vendor(self, env, client, platform):
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 200
+        assert env.vendor.last.headers["authorization"] == f"Bearer {PLATFORM_KEY}"
+
+    @pytest.mark.asyncio
+    async def test_a_builtin_the_user_switched_off_is_refused_before_its_key(
+        self, env, client, platform
+    ):
+        platform["disabled"] = frozenset({PLATFORM_SERVER})
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert _error(response) == "needs_reauth"
+        assert platform["keys_asked"] == []
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("frame", "status", "code"),
+        [
+            # The meter prices exact names: a respelling the vendor still
+            # runs was priced as an unknown tool.
+            ({"id": 7, "method": "tools/call", "params": {"name": "LIST_POSITIONS"}}, 403,
+             "tool_blocked"),
+            # A notification is answered 202, which settled free.
+            ({"method": "tools/call", "params": {"name": "list_positions"}}, 400, "bad_request"),
+            ({"id": 7, "method": "resources/read", "params": {"uri": "x"}}, 403,
+             "method_blocked"),
+        ],
+    )
+    async def test_a_platform_grant_forwards_only_exact_tools_and_metered_methods(
+        self, env, client, platform, frame, status, code
+    ):
+        body = json.dumps({"jsonrpc": "2.0", **frame}).encode()
+
+        response = await _post(client, token=_jwt(), body=body)
+
+        assert (response.status_code, _error(response)) == (status, code)
+        assert env.vendor.sends == 0
+
+
+class TestPaidCallDispatch:
+    """A paid call whose request reached the vendor but whose reply never came
+    (a read timeout, the wall clock, the caller leaving) was released for
+    free, though the vendor bills a call it received."""
+
+    @pytest.fixture
+    def paid(self, env):
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.services.egress.firecrawl_meter import FirecrawlMeter
+        from src.server.services.egress.platform_accounts import (
+            PLATFORM_ACCOUNTS,
+            PlatformAccount,
+        )
+
+        async def _key_for(user_id: str) -> str:
+            return PLATFORM_KEY
+
+        async def _disabled(user_id: str) -> frozenset[str]:
+            return frozenset()
+
+        ledger = {"released": [], "settled": []}
+
+        async def _reserve(**kwargs):
+            kwargs["on_hold"](41)
+            return "ok", 41
+
+        async def _release(hold_id):
+            ledger["released"].append(hold_id)
+
+        async def _settle(user_id, hold_id, *, credits, job_ref):
+            ledger["settled"].append((hold_id, credits))
+
+        async def _spendable(user_id):
+            return None
+
+        server = MCPServerConfig(
+            name=PLATFORM_SERVER, transport="http", url=DESTINATION, auth="firecrawl_account"
+        )
+        env.grant = _grant(
+            kind="platform_mcp",
+            connection_id=None,
+            server_name=PLATFORM_SERVER,
+            connection_status=None,
+        )
+        metering = "src.server.services.egress.metering"
+        with (
+            patch(
+                "src.server.app.setup.agent_config",
+                SimpleNamespace(mcp=SimpleNamespace(servers=[server])),
+            ),
+            patch.dict(
+                PLATFORM_ACCOUNTS,
+                {"firecrawl_account": PlatformAccount(
+                    key_for=_key_for, provision=AsyncMock(), recheck_key=AsyncMock(),
+                    configured=lambda: True, meter=FirecrawlMeter(), vendor="firecrawl",
+                    name="Firecrawl", terms_url="https://www.firecrawl.dev/terms-of-service",
+                )},
+            ),
+            patch("src.server.services.mcp_config.account_disabled_builtins", _disabled),
+            patch(f"{metering}.spendable_credits", _spendable),
+            patch(f"{metering}.user_credits", lambda meter, n: float(n)),
+            patch(f"{metering}.reserve", _reserve),
+            patch(f"{metering}.release", _release),
+            patch(f"{metering}.settle_call", _settle),
+        ):
+            yield ledger
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "error", "outcome"),
+        [
+            (True, httpx.ReadTimeout("no reply"), {"released": [], "settled": [(41, None)]}),
+            (True, httpx.RemoteProtocolError("dropped"), {"released": [], "settled": [(41, None)]}),
+            (False, httpx.ConnectError("refused"), {"released": [41], "settled": []}),
+            (False, httpx.PoolTimeout("no slot"), {"released": [41], "settled": []}),
+        ],
+    )
+    async def test_a_call_lost_after_it_went_out_keeps_its_estimate(
+        self, env, client, paid, sent, error, outcome
+    ):
+        async def _vendor(request: httpx.Request) -> httpx.Response:
+            if sent:
+                await request.extensions["trace"]("http11.send_request_headers.started", {})
+            raise error
+
+        vendor = httpx.AsyncClient(transport=httpx.MockTransport(_vendor))
+        env.vendor = SimpleNamespace(client=vendor)
+        try:
+            # A tool the meter prices: one it cannot price is refused unsent.
+            response = await _post(client, token=_jwt(), body=_rpc(name="firecrawl_map"))
+        finally:
+            await vendor.aclose()
+
+        assert _error(response) == "upstream_unreachable"
+        assert paid == outcome
+
+
+@pytest.mark.parametrize(
+    ("secret", "platform_key", "domain", "shared_key", "on"),
+    [
+        ("", "pk", "example.com", "sk", False),
+        ("s" * 32, None, None, "", False),
+        ("s" * 32, "pk", "example.com", "", True),
+        # A platform key selects per-user accounts, which need the domain.
+        ("s" * 32, "pk", None, "sk", False),
+        ("s" * 32, None, None, "sk", True),
+    ],
+)
+def test_a_platform_account_server_is_turned_off_when_no_call_could_reach_it(
+    secret, platform_key, domain, shared_key, on, monkeypatch
+):
+    """A platform-account server was offered with no relay secret, or with no
+    key for its vendor: its tools were listed, and every sandbox call failed
+    for want of a grant the unset relay never makes, or of a key to send."""
+    from ptc_agent.config.core import MCPServerConfig
+    from src.server.services.egress import platform_accounts
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", shared_key)
+    monkeypatch.setattr("src.config.env.FIRECRAWL_PLATFORM_KEY", platform_key)
+    monkeypatch.setattr("src.config.env.FIRECRAWL_ACCOUNT_EMAIL_DOMAIN", domain)
+
+    def server(name, auth):
+        return MCPServerConfig(
+            name=name, source="builtin", transport="http",
+            url="https://vendor.example/mcp", auth=auth,
+        )
+
+    config = SimpleNamespace(mcp=SimpleNamespace(servers=[
+        server("firecrawl", "firecrawl_account"), server("prices", "data_token"),
+    ]))
+    with patch("src.config.env.EGRESS_RELAY_SECRET", secret):
+        platform_accounts.disable_unreachable_platform_servers(config)
+
+    assert [s.enabled for s in config.mcp.servers] == [on, True]

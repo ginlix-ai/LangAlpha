@@ -36,6 +36,9 @@ _TEXT_FIELDS = (
     "provider",
 )
 
+# Longest ``site`` kept: a DNS name is at most 253 characters.
+_SITE_MAX_CHARS = 253
+
 # The main agent's records, pinned to this name at emit time whatever graph
 # node produced them; a subagent's are ``task:{id}``.
 MAIN_PROVENANCE_LANE = "main"
@@ -49,8 +52,16 @@ _BIGINT_MAX = 2**63 - 1
 # delete-then-insert (and the SSE/render fan-out downstream) defensively.
 _MAX_RECORDS_PER_RESPONSE = 1000
 
-# Columns of one provenance_records row, in INSERT bind order. 16 columns; with
-# the _MAX_RECORDS_PER_RESPONSE cap that's 16 * 1000 = 16_000 binds per INSERT,
+# The columns a read returns: what ``provenance_row_to_event`` maps, plus the
+# turn, thread and arrival keys the REST and replay readers group and place by.
+PROVENANCE_READ_COLUMNS = """provenance_record_id, conversation_response_id,
+    conversation_thread_id, turn_index, tool_call_id, source_type, identifier,
+    title, detail, args_fingerprint, args, result_sha256, result_size,
+    result_snippet, agent, provider, cost_credits, site, source_timestamp,
+    emitted_at, created_at"""
+
+# Columns of one provenance_records row, in INSERT bind order. 19 columns; with
+# the _MAX_RECORDS_PER_RESPONSE cap that's 19 * 1000 = 19_000 binds per INSERT,
 # well under Postgres's 65_535-parameter ceiling (would only break above ~4_095
 # rows). Keep in sync with _row_binds' tuple order.
 _INSERT_COLUMNS = (
@@ -69,6 +80,8 @@ _INSERT_COLUMNS = (
     "result_snippet",
     "agent",
     "provider",
+    "cost_credits",
+    "site",
     "source_timestamp",
     "emitted_at",
 )
@@ -113,6 +126,27 @@ def _coerce_str(value: Any) -> str | None:
     if value is None or isinstance(value, str):
         return value
     return str(value)
+
+
+def _coerce_cost(value: Any) -> float | int | None:
+    """A finite, non-negative number for the cost column, else None.
+
+    ``cost_credits`` rides an event a producer builds, so anything but a plain
+    number (a bool, a string, NaN, a negative) is dropped instead of reaching
+    the bind, where it would abort the batch.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if value >= 0 else None
+
+
+def _coerce_site(value: Any) -> str | None:
+    """The provider domain clamped to the DNS name limit, or None for a non-str."""
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:_SITE_MAX_CHARS]
 
 
 def _coerce_timestamp(value: Any) -> datetime | None:
@@ -177,7 +211,9 @@ def extract_provenance(
         return []
 
     records: list[dict[str, Any]] = []
-    seen: set[tuple] = set()
+    # Each kept record with the event ids it stands for: a repeat that is
+    # another event is another paid call, whose cost the kept row carries.
+    seen: dict[tuple, tuple[dict[str, Any], set[str]]] = {}
     for entry in events:
         if not isinstance(entry, dict) or entry.get("event") != "provenance":
             continue
@@ -199,6 +235,8 @@ def extract_provenance(
         # redact_args before the event was emitted) — JSONB, like args_fingerprint.
         record["args"] = source.get("args")
         record["result_size"] = _coerce_int(source.get("result_size"))
+        record["cost_credits"] = _coerce_cost(source.get("cost_credits"))
+        record["site"] = _coerce_site(source.get("site"))
         record["source_timestamp"] = _coerce_timestamp(source.get("timestamp"))
         record["emitted_at"] = _coerce_emitted(entry.get("ts"))
 
@@ -216,9 +254,15 @@ def extract_provenance(
             record["agent"],
             _fingerprint_key(record["args_fingerprint"]),
         )
+        event_id = _coerce_str(source.get("record_id"))
         if dedup_key in seen:
+            kept, event_ids = seen[dedup_key]
+            cost = record["cost_credits"]
+            if event_id and event_id not in event_ids and cost is not None:
+                event_ids.add(event_id)
+                kept["cost_credits"] = (kept["cost_credits"] or 0) + cost
             continue
-        seen.add(dedup_key)
+        seen[dedup_key] = (record, {event_id} if event_id else set())
         records.append(record)
 
         if len(records) >= _MAX_RECORDS_PER_RESPONSE:
@@ -258,6 +302,8 @@ def _row_binds(
         strip_pg_nul_str(record.get("result_snippet")),
         strip_pg_nul_str(record.get("agent")),
         strip_pg_nul_str(record.get("provider")),
+        record.get("cost_credits"),
+        strip_pg_nul_str(record.get("site")),
         record.get("source_timestamp"),
         record.get("emitted_at"),
     )
@@ -293,6 +339,8 @@ def provenance_row_to_event(row: dict[str, Any]) -> dict[str, Any]:
             timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp
         ),
         "agent": row.get("agent"),
+        "cost_credits": row.get("cost_credits"),
+        "site": row.get("site"),
     }
 
 
@@ -412,13 +460,8 @@ async def get_provenance_for_thread(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                """
-                SELECT
-                    provenance_record_id, conversation_response_id,
-                    conversation_thread_id, turn_index, tool_call_id,
-                    source_type, identifier, title, detail, args_fingerprint,
-                    args, result_sha256, result_size, result_snippet, agent,
-                    provider, source_timestamp, created_at
+                f"""
+                SELECT {PROVENANCE_READ_COLUMNS}
                 FROM provenance_records
                 WHERE conversation_thread_id = %s
                 ORDER BY turn_index ASC,
@@ -475,13 +518,8 @@ async def get_provenance_record(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                """
-                SELECT
-                    provenance_record_id, conversation_response_id,
-                    conversation_thread_id, turn_index, tool_call_id,
-                    source_type, identifier, title, detail, args_fingerprint,
-                    args, result_sha256, result_size, result_snippet, agent,
-                    provider, source_timestamp, created_at
+                f"""
+                SELECT {PROVENANCE_READ_COLUMNS}
                 FROM provenance_records
                 WHERE conversation_thread_id = %s
                   AND provenance_record_id::text = %s

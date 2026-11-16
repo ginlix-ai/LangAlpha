@@ -1098,7 +1098,11 @@ class TestAlertSweeps:
             "claim_outbox_jobs": AsyncMock(return_value=[]),
             **overrides,
         }
-        return mocks, [patch.object(outbox_db, name, m) for name, m in mocks.items()]
+        purge_sources = AsyncMock(return_value=0)
+        return mocks, [
+            *(patch.object(outbox_db, name, m) for name, m in mocks.items()),
+            patch("src.server.database.relayed_sources.purge_expired", purge_sources),
+        ]
 
     @staticmethod
     async def _passes(drainer, n: int):

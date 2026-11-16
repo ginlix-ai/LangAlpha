@@ -13,7 +13,6 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -533,18 +532,20 @@ async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
 async def _record_usage(
     agent: ThreadAgent, user_id: str, verb: str, records: list, status: str
 ) -> None:
-    from src.server.services.persistence.usage import UsagePersistenceService
+    from src.server.services.persistence.usage import persist_between_turns
 
-    usage = UsagePersistenceService(
-        thread_id=agent.thread_id, workspace_id=agent.workspace_id, user_id=user_id
-    )
-    await usage.track_llm_usage(records)
-    if usage._token_usage is not None:
-        usage._token_usage["between_turns"] = verb
     # The calls' own billing types, for when pricing fails and the row
     # falls back to the hint, as a turn's falls back to its key's.
     is_byok = not any(r.get("billing_type", "platform") == "platform" for r in records)
-    if not await usage.persist_usage(response_id=str(uuid4()), status=status, is_byok=is_byok):
+    if not await persist_between_turns(
+        thread_id=agent.thread_id,
+        workspace_id=agent.workspace_id,
+        user_id=user_id,
+        verb=verb,
+        records=records,
+        status=status,
+        is_byok=is_byok,
+    ):
         logger.error(
             "[usage] %s row not written for thread_id=%s; %d record(s) are unrecoverable",
             verb,

@@ -443,7 +443,11 @@ async def start_bash_job(
     await sandbox._wait_ready()
     thread_id = context.thread_id
     ref = _jobs.job_paths(
-        sandbox.layout, sandbox.workspace(), thread_id, _jobs.new_command_id()
+        sandbox.layout,
+        sandbox.workspace(),
+        thread_id,
+        _jobs.new_command_id(),
+        call_id=context.call_id,
     )
     code_dir, log_dir = _job_dirs(sandbox, thread_id, ref)
     script_abs = f"{code_dir}/{ref.command_id}.sh"
@@ -605,7 +609,11 @@ async def _run_code(
     carried: tuple[dict, ...],
 ) -> _jobs.JobOutcome:
     ref = _jobs.job_paths(
-        sandbox.layout, sandbox.workspace(), context.thread_id, _jobs.new_command_id()
+        sandbox.layout,
+        sandbox.workspace(),
+        context.thread_id,
+        _jobs.new_command_id(),
+        call_id=context.call_id,
     )
     code_dir, log_dir = _job_dirs(sandbox, context.thread_id, ref)
     code_abs = f"{code_dir}/{ref.command_id}.py"

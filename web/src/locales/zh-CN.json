@@ -2818,6 +2818,7 @@
         "market_data": "市场数据",
         "mcp_tool": "金融数据工具"
       },
+      "cost": "费用：{{count}} 积分",
       "fingerprint": {
         "checksum": "校验值",
         "size": "大小",
@@ -7850,5 +7851,15 @@
     "decline": "拒绝",
     "alwaysApprove": "始终允许",
     "alwaysApproveHint": "这次及以后创建工作区都不再询问，可在设置中关闭。"
+  },
+  "vendorTerms": {
+    "title": "接受 {{name}} 的服务条款",
+    "body": "你的 Agent 想用 {{name}} 为你读取网页和它的数据目录。为此 LangAlpha 会为你开通一个 {{name}} 账户，而 {{name}} 要求你先接受它的服务条款。",
+    "link": "阅读 {{name}} 的服务条款",
+    "accept": "接受",
+    "notNow": "以后再说",
+    "accepted": "已接受，你的 Agent 现在可以使用 {{name}} 了。",
+    "failed": "未能为你开通 {{name}} 账户，请稍后再试。",
+    "notification": "你的 Agent 需要你接受 {{name}} 的服务条款"
   }
 }

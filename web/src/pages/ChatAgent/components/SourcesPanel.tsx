@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { provenanceDisplayKey, countDedupedSources, type ProvenanceRecord } from '@/types/chat';
 import type { ProvenanceSourceType } from '@/types/sse';
-import { formatBytes, formatTimestamp } from '@/lib/format';
+import { createFormatter, formatBytes, formatTimestamp } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import { workspaceRelativePath } from '@/pages/ChatAgent/utils/agentPaths';
@@ -73,6 +73,8 @@ const CARD_CHROME =
   'hover:border-[color:var(--color-shell-edge-hover,var(--color-border-default))] hover:bg-[color:var(--color-shell-float,var(--color-bg-elevated))] ' +
   'focus-visible:ring-2 focus-visible:ring-ring';
 
+const formatCredits = createFormatter({ maximumFractionDigits: 2 });
+
 const TERTIARY = { color: 'var(--color-text-tertiary)' as const };
 
 /** Lucide icon for non-URL source types. */
@@ -95,8 +97,9 @@ function NonUrlIcon({ type, size = 14 }: { type: ProvenanceSourceType; size?: nu
   }
 }
 
-/** The row/header thumbnail: a favicon for URL sources, else a typed icon, in a
- *  small rounded tile so every source reads as a card. */
+/** The row/header thumbnail: a favicon for URL sources and for a non-URL source
+ *  that names its provider's `site`, else a typed icon, in a small rounded tile
+ *  so every source reads as a card. */
 function SourceThumb({
   record,
   size = 28,
@@ -104,7 +107,7 @@ function SourceThumb({
   record: ProvenanceRecord;
   size?: number;
 }): React.ReactElement {
-  const isUrl = URL_SOURCE_TYPES.has(record.source_type);
+  const domain = URL_SOURCE_TYPES.has(record.source_type) ? domainFromUrl(record.identifier) : record.site;
   // Inner glyph tracks the tile so the larger dialog tile doesn't look hollow;
   // row/deck thumbs (≤28) keep their original 14px icon.
   const inner = size <= 28 ? 14 : Math.round(size * 0.5);
@@ -119,8 +122,8 @@ function SourceThumb({
         boxShadow: 'inset 0 0 0 1px var(--color-shell-rule, transparent)',
       }}
     >
-      {isUrl ? (
-        <Favicon domain={domainFromUrl(record.identifier)} size={inner} />
+      {domain ? (
+        <Favicon domain={domain} size={inner} />
       ) : (
         <NonUrlIcon type={record.source_type} size={inner} />
       )}
@@ -942,6 +945,7 @@ function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactE
     });
   if (record.result_size != null) meta.push({ label: t('chat.sources.fingerprint.size'), value: formatBytes(record.result_size, locale), mono: true });
 
+  const cost = record.cost_credits ?? 0;
   const argEntries = record.args ? Object.entries(record.args) : [];
 
   return (
@@ -971,6 +975,11 @@ function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactE
             </div>
           ))}
         </div>
+      )}
+      {cost > 0 && (
+        <p className="-mt-2 px-1 text-xs" style={TERTIARY}>
+          {t('chat.sources.cost', { count: formatCredits(cost, locale) })}
+        </p>
       )}
       {argEntries.length > 0 && (
         <section>

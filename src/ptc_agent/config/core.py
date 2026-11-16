@@ -308,6 +308,10 @@ class VaultBlueprint(BaseModel):
         return v
 
 
+#: What a built-in http server authenticates with (see ``MCPServerConfig.auth``).
+ServerAuth = Literal["data_token", "firecrawl_account"]
+
+
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server."""
 
@@ -333,25 +337,34 @@ class MCPServerConfig(BaseModel):
     # this server — the server is then bound through the egress relay and its
     # sandbox config carries a grant reference instead of the vendor URL.
     oauth_connection_id: str | None = None
-    # The credential the sandbox client presents to a built-in http server.
-    # ``data_token`` is the computer's own data token, read from the token file
-    # the server keeps current, so the server holds no key of its own. The
-    # client resends such a server's requests on a refused token, a rate limit
-    # or a gateway error, so it must be one whose tools only read.
-    auth: Literal["data_token"] | None = None
+    # The credential a built-in http server is reached with. ``data_token`` is
+    # the computer's own data token, read from the token file the server keeps
+    # current, so the server holds no key of its own; the client resends such a
+    # server's requests on a refused token, a rate limit or a gateway error, so
+    # it must be one whose tools only read. Any other value names a key the
+    # host holds for the user (``firecrawl_account``: the Firecrawl account
+    # provisioned for them), which the egress relay attaches, so the sandbox
+    # dials the relay and no key reaches it.
+    auth: ServerAuth | None = None
+    # The tools this server exposes, when it lists more than the agent should
+    # see. None exposes every tool the server lists.
+    tools: list[str] | None = None
+
+    @property
+    def relay_bound(self) -> bool:
+        """Whether the sandbox reaches this server only through the egress relay."""
+        return self.oauth_connection_id is not None or self.auth not in (None, "data_token")
 
     @model_validator(mode="after")
     def _auth_is_builtin_http_only(self) -> Self:
-        # The token authorizes the whole computer's data access, so only a
-        # server the operator configured may receive it, and only over the
-        # one transport whose requests the client stamps.
+        # Either credential reaches the vendor on the user's behalf, so only a
+        # server the operator configured may name one, and only over the one
+        # transport whose requests the client stamps and the relay dials.
         if self.auth is None:
             return self
-        if self.source != "builtin":
-            raise ValueError(f"MCP server {self.name!r}: auth is for built-in servers only")
-        if self.transport != "http":
+        if self.source != "builtin" or self.transport != "http" or not self.url:
             raise ValueError(
-                f"MCP server {self.name!r}: auth {self.auth!r} requires transport 'http'"
+                f"MCP server {self.name!r}: auth {self.auth!r} needs a built-in http server with a url"
             )
         return self
 

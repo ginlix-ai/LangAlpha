@@ -714,7 +714,7 @@ class TestLeanIndexWriterHasNoResultFull:
         from src.server.database.provenance import _INSERT_COLUMNS
 
         assert "result_full" not in _INSERT_COLUMNS
-        assert len(_INSERT_COLUMNS) == 17
+        assert len(_INSERT_COLUMNS) == 19
 
     def test_no_result_full_helpers_on_module(self):
         # The join helpers/const that populated result_full are gone too.

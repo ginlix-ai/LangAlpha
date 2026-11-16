@@ -35,7 +35,7 @@ async def _install_dependencies(sandbox: "PTCSandbox") -> None:
     """Install required Python packages in sandbox (no-snapshot fallback)."""
     logger.info("Installing dependencies (no snapshot)")
 
-    install_cmd = f"uv pip install -q {' '.join(DEFAULT_DEPENDENCIES)}"
+    install_cmd = "uv pip install -q " + " ".join(shlex.quote(d) for d in DEFAULT_DEPENDENCIES)
 
     try:
         assert sandbox.runtime is not None

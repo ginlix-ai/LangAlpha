@@ -708,6 +708,49 @@ class TestForcedInhouseRouting:
         assert inhouse.calls and inhouse.calls[0].urls == [VIDEO_URL]
         assert all(r.ok for r in resp.results)
 
+    @pytest.mark.parametrize("with_forced", [True, False], ids=["joins-forced", "own-stage"])
+    async def test_refused_urls_get_inhouse_even_when_chain_lacks_it(
+        self, monkeypatch, with_forced
+    ):
+        """Prod's chain is the primary alone: a site the primary refuses by
+        policy still reaches in-house, while its other failures stay put."""
+        primary = FakeAdapter(
+            "primary", {URL_A: WebErrorType.REFUSED, URL_B: WebErrorType.TIMEOUT}
+        )
+        inhouse = FakeAdapter("inhouse", {})
+        specs = {"primary": _spec("primary"), "inhouse": _spec("inhouse")}
+        monkeypatch.setattr(
+            router_module, "get_web_provider_spec", lambda name: specs.get(name)
+        )
+        monkeypatch.setattr(
+            router_module,
+            "_ADAPTER_BUILDERS",
+            {"primary": lambda: primary, "inhouse": lambda: inhouse},
+        )
+        router = FetchRouter(["primary"])
+
+        forced = [VIDEO_URL] if with_forced else []
+        resp = await router.fetch(FetchRequest(urls=[URL_A, URL_B, *forced]))
+
+        # With a forced URL the refused one joins its stage: one in-house call.
+        assert [sorted(c.urls) for c in inhouse.calls] == [sorted([URL_A, *forced])]
+        by_url = {r.url: r for r in resp.results}
+        assert all(by_url[u].ok for u in [URL_A, *forced])
+        assert by_url[URL_B].error.type == WebErrorType.TIMEOUT
+
+    async def test_a_url_refused_after_inhouse_is_not_fetched_twice(self, make_router):
+        """In-house listed first has had its try at every URL by the time the
+        primary refuses one."""
+        inhouse = FakeAdapter("inhouse", {URL_A: WebErrorType.TIMEOUT})
+        primary = FakeAdapter("primary", {URL_A: WebErrorType.REFUSED})
+        router = make_router([inhouse, primary])
+
+        resp = await router.fetch(FetchRequest(urls=[URL_A]))
+
+        assert [c.urls for c in inhouse.calls] == [[URL_A]]
+        assert [c.urls for c in primary.calls] == [[URL_A]]
+        assert resp.results[0].error.type == WebErrorType.REFUSED
+
     async def test_inhouse_only_chain_serves_forced_and_ordinary_together(
         self, make_router
     ):
@@ -718,3 +761,37 @@ class TestForcedInhouseRouting:
 
         assert inhouse.calls and inhouse.calls[0].urls == [VIDEO_URL, URL_A]
         assert all(r.ok for r in resp.results)
+
+
+@pytest.mark.asyncio
+async def test_a_provider_listed_twice_is_called_once(make_router):
+    """Stages are picked by name, so a repeated chain entry called and
+    billed the primary a second time after a retryable result."""
+    flaky = FakeAdapter("flaky", {URL_A: WebErrorType.TIMEOUT})
+    router = make_router([flaky, flaky])
+
+    await router.fetch(FetchRequest(urls=[URL_A]))
+
+    assert len(flaky.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_page_is_charged_what_its_provider_reported(make_router):
+    """Every page was charged one unit, so a 15-page PDF Firecrawl billed
+    15 credits was charged as a single page."""
+
+    class ReportingAdapter(FakeAdapter):
+        async def fetch(self, req, native_params):
+            costs = {URL_A: 15.0, URL_B: None}
+            return FetchResponse(
+                results=[FetchResult(url=u, markdown="x", vendor_credits=costs[u]) for u in req.urls],
+                provider=self.name,
+            )
+
+    router = make_router([ReportingAdapter("reporting", {})])
+
+    start_tool_tracking()
+    await router.fetch(FetchRequest(urls=[URL_A, URL_B]))
+    usage = stop_tool_tracking()
+
+    assert usage == {"ReportingFetchTool": 16}

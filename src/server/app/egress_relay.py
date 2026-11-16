@@ -29,6 +29,7 @@ from starlette.requests import ClientDisconnect
 from src.server.services.egress import RelayError, RelayRejection
 from src.server.services.egress.jsonrpc import MAX_BODY_BYTES
 from src.server.services.egress.limits import acquire_slot
+from src.server.services.egress.metering import MeteredCall, admit
 from src.server.services.egress.relay import (
     MAX_RESPONSE_BYTES,
     WALL_CLOCK_S,
@@ -107,6 +108,9 @@ async def relay(grant_id: str, request: Request) -> Response:
     deadline = loop.time() + WALL_CLOCK_S
 
     resources = AsyncExitStack()
+    # A paid call's hold, owned from admission: released if the call provably
+    # never left, else settled from whatever came back.
+    metered: MeteredCall | None = None
     try:
         # A malformed grant id answers the same uniform 404 as an unknown one
         # (the column is a uuid) — never a 500 with a stack trace. Canonicalize,
@@ -129,7 +133,15 @@ async def relay(grant_id: str, request: Request) -> Response:
                 prepared = await prepare_relay(
                     grant_id, claims=claims, raw_body=raw_body, headers=incoming
                 )
-                upstream = await open_upstream(prepared, incoming)
+                # Last before sending, after every check of the call itself.
+                # From here a failure (the pin, the connect, the wall clock, the
+                # caller going away) ends in ``finish(None)`` below, which frees
+                # the hold only if the request never started out, since the
+                # vendor bills a call it received whether or not it answered.
+                metered = await admit(prepared, incoming)
+                upstream = await open_upstream(
+                    prepared, incoming, metered.dispatch if metered else None
+                )
                 # After the vendor answered, so the one line an order writes
                 # carries the status rather than only the intent.
                 log_order_frame(prepared, upstream.status_code)
@@ -140,15 +152,22 @@ async def relay(grant_id: str, request: Request) -> Response:
     except RelayRejection as e:
         with anyio.CancelScope(shield=True):
             await resources.aclose()
+            if metered is not None:
+                await metered.finish(None, complete=False)
         return _reject(e)
     except BaseException:
         # Shield the release: a cancellation here (client gone during setup)
         # would otherwise skip aclose and leak the slot + connection.
         with anyio.CancelScope(shield=True):
             await resources.aclose()
+            if metered is not None:
+                await metered.finish(None, complete=False)
         raise
 
+    complete = False
+
     async def stream() -> AsyncIterator[bytes]:
+        nonlocal complete
         # The vendor stream lives INSIDE the generator: starlette runs this
         # (and the finally) whether the exchange completes, the wall clock
         # fires, or the sandbox disconnects mid-stream.
@@ -168,6 +187,7 @@ async def relay(grant_id: str, request: Request) -> Response:
                         aiter.__anext__(), timeout=remaining
                     )
                 except StopAsyncIteration:
+                    complete = True
                     break
                 except TimeoutError:
                     logger.warning(
@@ -190,6 +210,9 @@ async def relay(grant_id: str, request: Request) -> Response:
                         relayed,
                     )
                     break
+                if metered is not None:
+                    # The cap above bounds what is kept.
+                    metered.observe(chunk)
                 yield chunk
         finally:
             # Starlette runs this generator inside an anyio cancel scope that
@@ -200,7 +223,14 @@ async def relay(grant_id: str, request: Request) -> Response:
             # both closes run to completion.
             with anyio.CancelScope(shield=True):
                 await upstream.aclose()
+                # The slot first: settling is ledger writes, which need not
+                # hold up the grant's next call.
                 await resources.aclose()
+                # Shielded too, and after the bytes went out: the vendor has
+                # charged for the call whether or not the sandbox stayed to
+                # read all of it.
+                if metered is not None:
+                    await metered.finish(upstream.status_code, complete=complete)
 
     return StreamingResponse(
         stream(),

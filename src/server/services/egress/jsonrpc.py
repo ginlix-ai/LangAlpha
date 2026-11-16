@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
-__all__ = ["JsonRpcRejected", "CanonicalRequest", "canonicalize_request"]
+__all__ = [
+    "JsonRpcRejected",
+    "CanonicalRequest",
+    "canonicalize_request",
+    "is_tool_error",
+    "tool_result",
+]
 
 MAX_BODY_BYTES = 256 * 1024
 
@@ -93,3 +100,43 @@ def canonicalize_request(
         is_notification="id" not in parsed,
         arguments=arguments,
     )
+
+
+def _reply_result(body: bytes) -> Any:
+    """The last ``result`` in a reply, SSE-framed or not; None without one."""
+    text = body.decode("utf-8", errors="replace")
+    frames = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
+    for raw in reversed(frames or [text]):
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(message, dict) and "result" in message:
+            return message["result"]
+    return None
+
+
+def is_tool_error(body: bytes) -> bool:
+    """Whether a ``tools/call`` reply is the tool reporting it failed."""
+    result = _reply_result(body)
+    return isinstance(result, dict) and bool(result.get("isError"))
+
+
+def tool_result(body: bytes) -> dict | None:
+    """The tool's structured result from a ``tools/call`` reply, SSE-framed
+    or not; None for a JSON-RPC error or a tool error."""
+    result = _reply_result(body)
+    if not isinstance(result, dict) or result.get("isError"):
+        return None
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    for block in result.get("content") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            try:
+                parsed = json.loads(block.get("text") or "")
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return None

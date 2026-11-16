@@ -6,7 +6,8 @@ import type {
   ToolCallResultData,
   TodoItem,
   OrderProposal,
-  ProvenanceSourceType,
+  ProvenanceEnvelopeKey,
+  ProvenanceEvent,
 } from './sse';
 import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import type { PlanBilled } from '@/api/model';
@@ -235,27 +236,12 @@ export interface ToolCallProcess {
   _createdAt?: number;
 }
 
-export interface ProvenanceRecord {
-  record_id: string;
-  /** Originating agent: "main" or "task:{id}". */
-  agent?: string;
-  timestamp: string;
-  source_type: ProvenanceSourceType;
-  identifier: string;
-  title?: string;
-  /** Data-kind slug within this source type (e.g. "company_overview"); the
-   *  Sources panel i18n-maps it to label each access in the hover breakdown. */
-  detail?: string;
-  provider?: string;
-  tool_call_id?: string;
-  args_fingerprint?: Record<string, unknown>;
-  /** Tool-call arguments with secrets already redacted server-side. Redacted
-   *  values are the literal string "[redacted]". May be absent/empty. */
-  args?: Record<string, unknown>;
-  result_sha256?: string;
-  result_size?: number;
-  result_snippet?: string;
-}
+/** A provenance event without its stream and replay envelope. */
+export type ProvenanceRecord = Omit<ProvenanceEvent, ProvenanceEnvelopeKey> & {
+  /** The events whose costs `cost_credits` sums, when several paid calls
+   *  are listed as one access. */
+  cost_record_ids?: string[];
+};
 
 /**
  * Per-access discriminator appended to a provenance dedup key — `mcp_tool` only.

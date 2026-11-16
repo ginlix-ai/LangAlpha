@@ -106,7 +106,8 @@ DEFAULT_DEPENDENCIES = [
     # Web scraping. 0.5 removed the Playwright browser tier that
     # mcp_servers/_browser.py and the web-scraping skill drive.
     "scrapling[all]==0.4.15",
-    "html-to-markdown",
+    # 3.5 added the exclude_selectors that mcp_servers/_extract.py passes.
+    "html-to-markdown>=3.5,<4",
     "trafilatura",
     "youtube-transcript-api",
     # Browser automation

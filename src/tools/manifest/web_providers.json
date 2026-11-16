@@ -324,7 +324,7 @@
             {
               "name": "stealth",
               "display_name": "Stealth",
-              "credits": 20,
+              "credits": 4,
               "native_params": {
                 "proxy": "stealth"
               }
@@ -381,6 +381,10 @@
     "TavilySearchImages": {
       "credits_per_use": 16,
       "search_type": "advanced"
+    },
+    "FirecrawlCredits": {
+      "credits_per_use": 4,
+      "search_type": "per_firecrawl_credit"
     }
   }
 }

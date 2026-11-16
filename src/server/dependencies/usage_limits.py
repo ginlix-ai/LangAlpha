@@ -15,6 +15,7 @@ answer 503 rather than guess.
 
 import asyncio
 import logging
+import math
 import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -307,8 +308,47 @@ async def enforce_credit_limit(
     it is an unbounded spend by a user the service may well have been about to
     refuse, landing on them later as debt they never agreed to.
     """
+    await _admitted_quota(user_id, byok=byok, surface=surface)
+
+
+async def spendable_credits(user_id: str) -> float | None:
+    """Enforce the credit limit as ``enforce_credit_limit`` does, then return
+    what the user can still spend as the platform reports it; None for no
+    limit, and in OSS mode.
+
+    A platform too old to send the figure is read as no limit rather than
+    refused: the caller's own bound on uncharged spend still holds, and failing
+    closed would stop every paid call until the platform is upgraded. A figure
+    that is not a finite number is no verdict at all, refused as the 503 the
+    gate gives an outage: NaN fails every comparison, so read as a balance it
+    would bound nothing.
+    """
+    quota = await _admitted_quota(user_id)
+    if not quota:
+        return None
+    if "spendable_credits" not in quota:
+        logger.warning("auth/quota service sent no spendable_credits; treating it as unlimited")
+        return None
+    spendable = quota["spendable_credits"]
+    if spendable is None:
+        return None
+    try:
+        value = float(spendable)
+    except (TypeError, ValueError):
+        value = math.nan
+    if not math.isfinite(value):
+        logger.warning("auth/quota service sent spendable_credits %r; refusing", spendable)
+        raise quota_service_unavailable()
+    return value
+
+
+async def _admitted_quota(
+    user_id: str, *, byok: bool = False, surface: str | None = None
+) -> dict | None:
+    """The chat quota the platform allowed, raising 429 on a denial and 503
+    with no verdict; None when nothing was checked."""
     if not platform_gating_active():
-        return
+        return None
 
     try:
         result = await _call_validate_for_user(
@@ -319,11 +359,11 @@ async def enforce_credit_limit(
         raise quota_service_unavailable() from e
 
     if result is None:
-        return  # OSS mode reached this only via a race on HOST_MODE; nothing to check.
+        return None  # OSS mode reached this only via a race on HOST_MODE; nothing to check.
 
     quota = result.get("quota")
     if not quota or quota.get("allowed", True):
-        return
+        return quota
 
     # Forward platform's `message` and `limit_type` verbatim; no copy authored here.
     raise HTTPException(

@@ -12,6 +12,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_KEY
 from src.llms.claude_code import MESSAGE_ID_KEY
 from src.server.handlers import handoff_brief
+# Imported before any test patches ``thread_agent.thread_route``: a first
+# import under that patch binds the mock into the module for every later test.
+from src.server.handlers import thread_maintenance  # noqa: F401
 from src.server.handlers.handoff_brief import brief_kept_at_head
 from src.server.services.llm import thread_model
 

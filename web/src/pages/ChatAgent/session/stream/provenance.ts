@@ -43,25 +43,13 @@ export function provenanceRecordKey(record: {
 }
 
 /**
- * Maps a flat `provenance` SSE event to a `ProvenanceRecord`. Shared by the live
- * and replay paths — both go through `handleProvenance` — so a new field on the
- * event only has to be wired up in one place.
+ * Maps a flat `provenance` SSE event to a `ProvenanceRecord`: the event minus its
+ * envelope, so a new field on the event reaches the record with no wiring.
+ * Shared by the live and replay paths, which both go through `handleProvenance`.
  */
 export function provenanceEventToRecord(event: ProvenanceEvent): ProvenanceRecord {
-  return {
-    record_id: event.record_id,
-    agent: event.agent,
-    timestamp: event.timestamp,
-    source_type: event.source_type,
-    identifier: event.identifier,
-    title: event.title,
-    detail: event.detail,
-    provider: event.provider,
-    tool_call_id: event.tool_call_id,
-    args_fingerprint: event.args_fingerprint,
-    args: event.args,
-    result_sha256: event.result_sha256,
-    result_size: event.result_size,
-    result_snippet: event.result_snippet,
-  };
+  const {
+    event: _event, _eventId, turn_index: _turn, response_id: _response, thread_id: _thread, ...record
+  } = event;
+  return record;
 }

@@ -8,12 +8,17 @@ one worthwhile safety net). Extra third-party entries in ``fetch_chain``
 are inert unless the earlier ones lack a key.
 
 Semantics per URL (batches split/merge around it):
-1. Dedicated-extractor URLs (YouTube/X) are forced to in-house whatever
-   the chain — third-party fetchers return junk pages for them.
+1. Some URLs go only to in-house, whatever the chain: dedicated-extractor
+   URLs (YouTube/X), for which third-party fetchers return junk pages, and
+   a URL the primary refuses by its own policy (Firecrawl's unsupported
+   sites, Exa's unavailable sources), which no paid provider will take and
+   in-house usually can. A chain without in-house gets an in-house stage
+   last, for these URLs alone.
 2. Pick the primary = first chain entry with a key; skip other third
    parties. Skip any provider whose circuit breaker is open.
-3. Retryable errors (timeout, anti_bot, rate_limited, provider_error, ...)
-   move the URL to in-house.
+3. Retryable errors (timeout, anti_bot, refused, rate_limited,
+   provider_error, ...) move the URL to in-house, which tries each URL
+   once wherever it sits in the chain.
 4. Terminal errors (not_found, paywall, forbidden, unsupported_url,
    budget_exceeded) fail fast — no provider will do better.
 5. A URL that fails with anti_bot escalates to the "stealth" fetch level
@@ -22,8 +27,9 @@ Semantics per URL (batches split/merge around it):
 6. Only the portable request core (urls, objective, mode, freshness)
    crosses a fallback boundary.
 
-Successful per-URL fetches record usage under the capability's
-level-qualified tracking name (billing flows through the manifest).
+Every URL the provider billed for, fetched or not, records usage under the
+capability's level-qualified tracking name (billing flows through the
+manifest).
 """
 
 import asyncio
@@ -59,6 +65,7 @@ from src.tools.web.types import (
     FetchResult,
     WebError,
     WebErrorType,
+    billed_units,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,10 +189,12 @@ def build_chain(providers: List[str]) -> List["_ChainEntry"]:
     """Resolve provider names against the manifest + adapter registry.
 
     Unknown names or providers without a fetch capability are dropped with
-    a warning (deployment-edited config must not take fetch down).
+    a warning (deployment-edited config must not take fetch down), and so is
+    a repeat: routing picks stages by name, so a second entry would call and
+    bill its provider again.
     """
     entries: List[_ChainEntry] = []
-    for name in providers:
+    for name in dict.fromkeys(providers):
         spec = get_web_provider_spec(name)
         cap = spec.capability(CAPABILITY_FETCH) if spec else None
         builder = _ADAPTER_BUILDERS.get(name)
@@ -276,8 +285,9 @@ class FetchRouter:
         self, entry: _ChainEntry, urls: List[str], req: FetchRequest, anti_bot: set
     ) -> List[FetchResult]:
         """All attempts on one provider: default-level work plus stealth
-        re-queues. Returns the provider's final per-URL outcomes; successful
-        fetches record usage at the level they were billed at."""
+        re-queues. Returns the provider's final per-URL outcomes. Usage is
+        recorded at each attempt's level for every URL the provider charged
+        for: the ones it fetched, and the failures it still billed."""
         stealth = entry.capability.level(_STEALTH_LEVEL)
         default = entry.capability.default_level_spec
         # Work items are (urls, level) attempts on this provider. URLs an
@@ -297,12 +307,12 @@ class FetchRouter:
         while work:
             batch_urls, level = work.pop(0)
             batch = await self._call_adapter(entry, batch_urls, req, level)
-            ok_count = sum(1 for r in batch if r.ok)
-            if ok_count:
+            charged = billed_units(batch)
+            if charged:
                 tracker = get_tool_tracker()
                 if tracker and level.credits > 0:
                     tracker.record_usage(
-                        entry.capability.tracking_key(level), count=ok_count
+                        entry.capability.tracking_key(level), count=charged
                     )
             escalate: List[str] = []
             for result in batch:
@@ -328,12 +338,12 @@ class FetchRouter:
         anti_bot: set = set()
         attempts: List[FetchAttempt] = []
         first_ok_provider: Optional[str] = None
-        # Without a usable in-house entry, forced URLs degrade to ordinary
-        # routing rather than failing outright.
-        forced = (
-            {u for u in pending if _needs_inhouse(u)}
-            if self._inhouse_entry is not None
-            else set()
+        inhouse = self._inhouse_entry
+        # URLs only in-house should get: dedicated-extractor ones from the
+        # start, and any a provider refuses as it goes. Without a usable
+        # in-house entry they stay in ordinary routing rather than failing.
+        inhouse_only = (
+            {u for u in pending if _needs_inhouse(u)} if inhouse is not None else set()
         )
 
         # The primary is the first keyed third-party entry; fetch degrades only
@@ -344,26 +354,23 @@ class FetchRouter:
             None,
         )
 
-        # Stages make the routing policy explicit: the primary serves ordinary
-        # URLs, an in-house chain entry serves everything, and forced URLs get
-        # an in-house stage even when the chain has none (dedicated extractors
-        # are unconditional).
-        stages: List[Tuple[_ChainEntry, str]] = []
-        for entry in self._chain:
-            if entry.adapter.name == _INHOUSE:
-                stages.append((entry, "all"))
-            elif entry.adapter.name == primary:
-                stages.append((entry, "ordinary"))
-        if forced and all(entry is not self._inhouse_entry for entry, _ in stages):
-            stages.append((self._inhouse_entry, "forced"))
+        # Chain order, with an in-house stage last when the chain has none,
+        # for the URLs only it should get. One listed in the chain serves
+        # every pending URL; the primary never gets an in-house-only one.
+        stages = [
+            e for e in self._chain if e.adapter.name in (_INHOUSE, primary)
+        ]
+        inhouse_chained = inhouse in stages
+        if inhouse is not None and not inhouse_chained:
+            stages.append(inhouse)
 
-        for entry, scope in stages:
-            if scope == "ordinary":
-                urls_now = [u for u in pending if u not in forced]
-            elif scope == "forced":
-                urls_now = [u for u in pending if u in forced]
-            else:
+        for entry in stages:
+            if entry.adapter.name != _INHOUSE:
+                urls_now = [u for u in pending if u not in inhouse_only]
+            elif inhouse_chained:
                 urls_now = list(pending)
+            else:
+                urls_now = [u for u in pending if u in inhouse_only]
             if not urls_now:
                 continue
             if not entry.available():
@@ -418,6 +425,12 @@ class FetchRouter:
                 error=provider_failure,
                 error_class=failure_class,
             )
+
+            if inhouse is not None:
+                inhouse_only.update(
+                    r.url for r in results
+                    if r.error is not None and r.error.type is WebErrorType.REFUSED
+                )
 
             pending = [u for u in pending if u not in final]
             if not pending:

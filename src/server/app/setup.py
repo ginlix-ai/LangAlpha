@@ -380,6 +380,16 @@ async def lifespan(app: FastAPI):
         )
 
         await reconcile_platform_secrets_at_boot(agent_config)
+
+        from src.server.services.firecrawl_accounts import warn_if_discovery_keyless
+
+        warn_if_discovery_keyless(agent_config)
+
+        from src.server.services.egress.platform_accounts import (
+            disable_unreachable_platform_servers,
+        )
+
+        disable_unreachable_platform_servers(agent_config)
         logger.info("PTC Agent configuration loaded successfully")
 
         # Connect once, freeze, install as the process-global registry so every
@@ -899,6 +909,13 @@ async def lifespan(app: FastAPI):
         await close_relay_client()
     except Exception as e:
         logger.warning(f"Error closing egress relay client: {e}")
+
+    try:
+        from src.server.services.firecrawl_accounts import close_partner_client
+
+        await close_partner_client()
+    except Exception as e:
+        logger.warning(f"Error closing Firecrawl partner client: {e}")
 
     # 0.0b. Stop the turn-cancel nudge listener.
     try:
@@ -1476,6 +1493,7 @@ from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
 from src.server.app.user_events import router as user_events_router
 from src.server.app.cli_approvals import router as cli_approvals_router
+from src.server.app.vendor_terms import router as vendor_terms_router
 from src.server.app.users import router as users_router
 from src.server.app.reports import router as reports_router
 from src.server.app.trading_permission import router as trading_permission_router
@@ -1573,6 +1591,7 @@ app.include_router(
 )  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
 app.include_router(cli_approvals_router)  # /api/v1/cli/approvals - What la asks the user
+app.include_router(vendor_terms_router)  # /api/v1/vendor-terms - Terms the user accepts
 app.include_router(reports_router)  # /api/v1/reports - Reports forwarded to the platform
 app.include_router(
     trading_permission_router

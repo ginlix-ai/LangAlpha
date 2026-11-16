@@ -645,10 +645,11 @@ except ImportError:
         already has the resolved values in os.environ, injected at creation
         time). Untrusted servers embed their full env/header mappings, whose
         values are either non-secret literals or ``${vault:NAME}`` placeholders
-        resolved in-sandbox against the vault file only. OAuth-connected
-        servers are only marked relay-bound: the runtime dials the egress relay
-        and reads the grant id from the sandbox's credential file, so the
-        vendor URL, the grant and every token stay host-side.
+        resolved in-sandbox against the vault file only. Relay-bound servers
+        (an OAuth connection, or a built-in whose key the host holds per user)
+        are only marked so: the runtime dials the egress relay and reads the
+        grant id from the sandbox's credential file, so the vendor URL, the
+        grant and every token stay host-side.
 
         Trust ships as the ``untrusted`` bool computed here — never as a raw
         ``source`` tag the runtime would have to re-interpret.
@@ -661,7 +662,7 @@ except ImportError:
         for server in server_configs:
             untrusted = is_untrusted_server(server)
             entry: dict[str, Any]
-            if server.oauth_connection_id is not None:
+            if server.relay_bound:
                 entry = {
                     "transport": "http",
                     "untrusted": untrusted,
@@ -699,7 +700,7 @@ except ImportError:
             if untrusted:
                 entry["headers"] = dict(server.headers or {})
                 entry["discovery_uses_secrets"] = discovery_should_use_secrets(server)
-            elif server.auth:
+            elif server.auth == "data_token":
                 # A built-in's headers are host credentials for discovery and
                 # never ship; the client brings the sandbox's own token instead.
                 entry["auth"] = server.auth

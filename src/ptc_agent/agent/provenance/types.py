@@ -61,6 +61,8 @@ class ProvenanceSource:
     # ``build_provenance_event`` so it never rides the SSE event.
     result_body: str | None = None
     agent: str | None = None
+    cost_credits: float | None = None  # what this source cost the user, in LangAlpha credits
+    site: str | None = None  # the provider's website domain, for the UI icon
 
 
 def _canonicalize(value: object) -> str:
@@ -221,6 +223,8 @@ def build_provenance_event(
     result_size: int | None = None,
     result_snippet: str | None = None,
     agent: str | None = None,
+    cost_credits: float | None = None,
+    site: str | None = None,
 ) -> dict:
     """Build the internal ``{"type": "provenance", ...}`` custom stream event.
 
@@ -256,6 +260,10 @@ def build_provenance_event(
             else source.result_snippet
         )
         agent = agent if agent is not None else source.agent
+        cost_credits = (
+            cost_credits if cost_credits is not None else source.cost_credits
+        )
+        site = site if site is not None else source.site
 
     return {
         "type": "provenance",
@@ -277,4 +285,6 @@ def build_provenance_event(
             else datetime.now(timezone.utc).isoformat()
         ),
         "agent": agent,
+        "cost_credits": cost_credits,
+        "site": site,
     }

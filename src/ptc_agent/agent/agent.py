@@ -622,7 +622,9 @@ class PTCAgent:
         # never sees (provenance fingerprints the raw result/artifact).
         shared_middleware.append(
             ProvenanceMiddleware(
-                redactor=leak_detection.redact, sandbox_root=sandbox.working_dir
+                redactor=leak_detection.redact,
+                sandbox_root=sandbox.working_dir,
+                user_id=user_id,
             )
         )
         if todo_tools:

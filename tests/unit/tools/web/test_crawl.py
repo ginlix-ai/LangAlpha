@@ -126,6 +126,8 @@ class TestFirecrawlCrawlAdapter:
         assert ok.ok and ok.title == "Intro" and "useful content" in ok.markdown
         assert not err.ok and err.error.type == WebErrorType.PROVIDER_ERROR
         assert "render timeout" in err.error.message
+        # creditsUsed 2: Firecrawl bills the failed page too.
+        assert ok.billed and err.billed
 
     async def test_status_pagination_hop_capped(self, monkeypatch):
         """A `next` cursor that never clears stops after the hop cap instead

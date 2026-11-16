@@ -16,6 +16,7 @@ from src.server.database.provenance import (
     get_provenance_body_refs,
     get_provenance_for_thread,
     get_provenance_record,
+    provenance_row_to_event,
 )
 
 
@@ -54,21 +55,9 @@ async def get_provenance(thread_id: str, x_user_id: CurrentUserId):
 
             source_timestamp = row.get("source_timestamp")
             source = {
-                # `record_id` matches the SSE/replay provenance record field so a
-                # consumer can map streamed records to this REST shape directly.
-                "record_id": str(row["provenance_record_id"]),
-                "source_type": row["source_type"],
-                "identifier": row.get("identifier"),
-                "title": row.get("title"),
-                "detail": row.get("detail"),
-                "tool_call_id": row.get("tool_call_id"),
-                "args_fingerprint": row.get("args_fingerprint"),
-                "args": row.get("args"),
-                "result_sha256": row.get("result_sha256"),
-                "result_size": row.get("result_size"),
-                "result_snippet": row.get("result_snippet"),
-                "agent": row.get("agent"),
-                "provider": row.get("provider"),
+                # The streamed record's shape, but a row with no access time
+                # has none here, where the stream falls back to its insert.
+                **provenance_row_to_event(row),
                 "timestamp": (
                     source_timestamp.isoformat() if source_timestamp else None
                 ),

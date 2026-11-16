@@ -246,15 +246,23 @@ class TestOverrides:
 
 
 class TestDefects:
-    def test_an_unusable_meta_block_leaves_the_server_running(self, bundles_dir):
+    def test_an_unusable_meta_block_drops_only_its_server(self, bundles_dir):
+        # The block carries a server's credential and its tool allowlist, so a
+        # server read without it would run with neither: a relay-bound server
+        # would load as a plain built-in exposing every tool its vendor lists.
         _write(
             bundles_dir, "data",
-            manifest=_manifest("data", {"alpha": {"nonsense": True}}),
-            mcp={"mcpServers": {"alpha": _stdio("alpha.py")}},
+            manifest=_manifest("data", {
+                "alpha": {"auth": "firecrawl_acount", "tools": ["one"]},
+                "beta": {"description": "fine"},
+            }),
+            mcp={"mcpServers": {
+                "alpha": {"type": "streamable-http", "url": "https://a.example/mcp"},
+                "beta": _stdio("beta.py"),
+            }},
         )
         cfg = create_mcp_config(_section())
-        assert [s.name for s in cfg.servers] == ["alpha"]
-        assert cfg.servers[0].description == ""
+        assert [s.name for s in cfg.servers] == ["beta"]
 
     def test_unparseable_manifest_costs_only_its_metadata(self, bundles_dir):
         bundle = _write(

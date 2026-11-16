@@ -7,6 +7,7 @@ takes what every worker recorded at each turn's start (``_load_livefs``)."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -24,16 +25,25 @@ _T = TypeVar("_T")
 
 class LivefsMixin:
     @staticmethod
-    def _file_calls(computer_id: Any, sandbox: Any) -> None:
+    def _file_calls(computer_id: Any, user_id: str | None, sandbox: Any) -> None:
         """Hand ``sandbox`` the filing of who each command runs for, beside
         the mount or the history it is handed: a save through the mount
         reads it, and so does a call the ``la`` CLI makes, which names its
-        thread to the server only through it, whatever mounts the machine."""
+        thread to the server only through it, whatever mounts the machine.
+        With it, what each command's paid relay calls cost, where any are
+        metered, read for the computer's owner."""
+        from src.server.services.egress.platform_accounts import platform_accounts_configured
         from src.server.services.livefs import outcomes
+        from src.server.services.metered_charges import command_charges
 
         computer_id = str(computer_id)
         sandbox.call_filer = lambda call_id, context: outcomes.open_call(
             computer_id, call_id, context
+        )
+        sandbox.paid_calls = (
+            functools.partial(command_charges, str(user_id))
+            if user_id and platform_accounts_configured()
+            else None
         )
 
     def _livefs_provider(self, sandbox: Any) -> str:
@@ -132,7 +142,7 @@ class LivefsMixin:
         changes and the tracker goes on with what this worker saw."""
         from src.server.services.livefs import mount as livefs
 
-        self._file_calls(computer_id, sandbox)
+        self._file_calls(computer_id, user_id, sandbox)
         if not sandbox.mounts_livefs:
             sandbox.livefs = None
             await self._load_history(computer_id, sandbox)
@@ -217,7 +227,7 @@ class LivefsMixin:
         """
         if sandbox is None:
             return await sync
-        self._file_calls(computer_id, sandbox)
+        self._file_calls(computer_id, user_id, sandbox)
         if not user_id:
             return await sync
         tracker = self._machine(str(computer_id)).livefs
