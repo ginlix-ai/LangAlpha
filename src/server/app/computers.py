@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ValidationError
 
 from ptc_agent.core.sandbox.providers import provider_class
 from ptc_agent.core.sandbox.providers.ssh_errors import (
@@ -30,6 +31,7 @@ from src.server.app.status_stream import (
     status_event_stream,
 )
 from src.server.database.computer import (
+    REMOVAL_INTENT,
     computer_capacity_lock,
     get_computer,
     get_computers_for_user,
@@ -39,12 +41,11 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.computer_names import ComputerNameTaken, name_taken
-from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.workspace import (
     count_live_workspaces_by_computer,
     get_live_workspace_folders_for_computer,
 )
-from src.server.database.workspace_move import MoveRefused, set_primary_computer
+from src.server.database.workspace_move import MoveRefused
 from src.server.dependencies.usage_limits import (
     assert_provider_allowed,
     assert_spec_allowed,
@@ -60,6 +61,7 @@ from src.server.models.computer import (
     ComputerCreate,
     ComputerFilesBackupRequest,
     ComputerListResponse,
+    ComputerRemovalIntent,
     ComputerProviderOption,
     ComputerProvidersResponse,
     ComputerReconnectRequest,
@@ -114,7 +116,6 @@ from src.server.services.ssh_computers import (
     tunnels_for,
 )
 from src.server.services.ssh_dial_budget import SSHDialBudgetExceeded
-from src.server.services.ssh_removal import leave_machine
 from src.server.services.ssh_tunnel_sweep import release_tunnel
 from src.server.services.ssh_tunnels import tunnels_enabled
 from src.server.services.workspace_move import (
@@ -349,8 +350,19 @@ def computer_to_response(
         disk=disk_from_row(computer),
         spec_change=spec_change_from_row(computer),
         ssh=ssh_info(computer, tunnels),
+        removal=_intent(computer, REMOVAL_INTENT, ComputerRemovalIntent),
         start_failure=start_failure_from_row(computer),
     )
+
+
+def _intent(computer: Dict[str, Any], key: str, model: type[BaseModel]) -> Any:
+    """An intent the row's config keeps (``database.computer``), as its model."""
+    value = (computer.get("config") or {}).get(key)
+    try:
+        return model.model_validate(value) if value else None
+    except ValidationError:
+        logger.warning("Computer %s has an unreadable %s", computer.get("computer_id"), key)
+        return None
 
 
 async def _owned_computer(computer_id: str, user_id: str) -> Dict[str, Any]:
@@ -674,6 +686,14 @@ async def remove_computer(
     computer_id: str,
     principal: ComputerRemovePrincipal,
     request: Request,
+    response: Response,
+    home_to: Optional[str] = Query(
+        None,
+        description=(
+            "For the primary: the computer Home moves to first, as Make primary "
+            "would move it; the removal follows once the move commits"
+        ),
+    ),
     remove_key: bool = Query(
         True,
         description=(
@@ -700,7 +720,12 @@ async def remove_computer(
 ):
     """Remove a computer and its sandbox for good.
 
-    Any but the primary, which is where new workspaces go. One with workspaces
+    Any but the primary, which is where new workspaces go, unless ``home_to``
+    names where Home goes: the owner's checks run first, then Home moves there
+    as Make primary moves it, refused with Make primary's codes. When Home has
+    to move, the answer is 202 with its ``move_id``, and the computer is
+    removed when the move commits, here or by a later sweep; a move that fails
+    leaves it, with its ``removal`` saying so. One with workspaces
     is refused unless ``delete_workspaces`` names every one of them, the ones
     the owner was shown, so a removal never takes a workspace they did not
     see (one created meanwhile, in another tab). The body carries them, as
@@ -721,9 +746,10 @@ async def remove_computer(
     async with _computer_action_errors("remove", computer_id):
         computer = await _owned_computer(computer_id, x_user_id)
         manager = _computer_manager()
+        home_leaves = bool(home_to) and bool(computer.get("is_primary"))
         # Read before anyone is asked, so the user never approves a removal
         # the manager then refuses; the manager reads it again, decisively.
-        held = await manager.removal_refusal(computer, named)
+        held = await manager.removal_refusal(computer, named, home_leaves=home_leaves)
         if held is not None:
             raise ComputerRemovalRefused(held)
         await cli_approval.computer_remove(
@@ -735,28 +761,42 @@ async def remove_computer(
             delete_workspaces=delete_workspaces,
             body=body,
         )
-        deleted = await manager.remove_computer_with_workspaces(
-            computer_id, named, delete_files=delete_files
+        if home_leaves:
+            await _owned_computer(home_to, x_user_id)
+            with move_refusals():
+                move = await manager.move_home_then_remove(
+                    computer,
+                    home_to,
+                    named,
+                    delete_files=delete_files,
+                    remove_key=remove_key,
+                )
+            if move is not None:
+                response.status_code = 202
+                return ComputerRemoveResponse(move_id=str(move["move_id"]))
+        removed = await manager.remove_computer_for_owner(
+            computer, named, delete_files=delete_files, remove_key=remove_key
         )
-        logger.info("Removed computer %s for user %s", computer_id, x_user_id)
-        if computer.get("kind") != SSH_KIND:
-            return ComputerRemoveResponse(workspaces_deleted=deleted)
-        settings = _sandbox_config().settings_for(SSH_KIND)
-        left = await leave_machine(
-            x_user_id,
-            computer,
-            settings=settings,
-            remove_key=remove_key,
-            delete_files=delete_files,
-        )
-        if tunnel_of(computer) and not left.tunnel_released:
-            schedule_start(
-                f"tunnel-release:{computer_id}",
-                lambda: release_tunnel(x_user_id, computer, settings=settings),
-            )
-    return ComputerRemoveResponse(
-        key=left.key, files=left.files, token=left.token, workspaces_deleted=deleted
-    )
+    return removed.response()
+
+
+@router.get("/{computer_id}/removal", response_model=ComputerRemovalIntent)
+async def get_computer_removal(computer_id: str, x_user_id: ReadUserId):
+    """How a remove that waited on Home's move off the computer ended.
+
+    Read once that move has ended: a computer removed leaves the list, and
+    this is where what its removal left behind is told. One gone without
+    that recorded (removed by another request, or by a worker lost before
+    it recorded it) reads removed, with nothing said.
+    """
+    computer = await get_computer(computer_id, include_deleted=True)
+    require_computer_owner(computer, user_id=x_user_id)
+    removal = _intent(computer, REMOVAL_INTENT, ComputerRemovalIntent)
+    if removal is None:
+        raise HTTPException(status_code=404, detail="No removal waited on Home's move off this computer")
+    if computer["status"] == "deleted" and removal.state != "removed":
+        return ComputerRemovalIntent(state="removed", move_id=removal.move_id)
+    return removal
 
 
 @router.get("/{computer_id}/storage", response_model=ComputerStorageResponse)
@@ -1031,25 +1071,26 @@ async def make_primary_computer(
     when it commits, and both are read back from Home's move. ``from_backup``
     lays Home from its last backup, for a machine of the user's own that
     can't be reached. A computer whose files are not backed up is refused
-    (409 ``not_backed_up``): Home would live only on its disk.
+    (409 ``not_backed_up``): Home would live only on its disk, unless
+    ``turn_on_backup`` turns it on first, in this request.
     """
-    from_backup = bool(request and request.from_backup)
+    request = request or MakePrimaryRequest()
     async with _computer_action_errors("make primary", computer_id):
-        await _owned_computer(computer_id, x_user_id)
+        computer = await _owned_computer(computer_id, x_user_id)
+        if request.turn_on_backup and not computer.get("files_backup", True):
+            if await set_computer_files_backup(computer_id, True) is None:
+                raise HTTPException(status_code=404, detail="Computer not found")
+            logger.info("Turned on file backup of computer %s to make it primary", computer_id)
         with move_refusals():
-            flipped = await set_primary_computer(x_user_id, computer_id)
-        if flipped:
-            logger.info("Made computer %s primary for user %s", computer_id, x_user_id)
+            move = await _computer_manager().make_primary(
+                x_user_id, computer_id, from_backup=request.from_backup
+            )
+        if move is None:
             return MakePrimaryResponse(computer_id=computer_id, is_primary=True)
-        move = await accept_workspace_move(
-            x_user_id,
-            get_home_workspace_id(x_user_id),
-            computer_id,
-            make_primary=True,
-            from_backup=from_backup,
-        )
         response.status_code = 202
-        return MakePrimaryResponse(computer_id=computer_id, is_primary=False, move=move)
+        return MakePrimaryResponse(
+            computer_id=computer_id, is_primary=False, move=move_from_row(move)
+        )
 
 
 @router.post("/{computer_id}/files-backup", response_model=ComputerResponse)

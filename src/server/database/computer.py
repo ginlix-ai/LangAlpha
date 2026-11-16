@@ -258,18 +258,20 @@ async def get_computer_for_thread(thread_id: str, *, conn=None) -> Optional[Dict
 async def get_computer(
     computer_id: str,
     *,
+    include_deleted: bool = False,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
     computer_id = normalize_uuid(computer_id)
     if computer_id is None:
         return None
 
+    status_filter = "" if include_deleted else f"AND {FENCE_NOT_DELETED}"
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
             SELECT {_COMPUTER_COLS}
             FROM computers
-            WHERE computer_id = %s AND {FENCE_NOT_DELETED}
+            WHERE computer_id = %s {status_filter}
             """,
             (computer_id,),
         )
@@ -539,6 +541,58 @@ async def set_computer_setting(
               AND {FENCE_NOT_DELETED}
             """,
             ([key], Json(value), computer_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+# What a computer's owner asked of it that the server carries out later, in
+# its config, so every worker reads the same and it outlives a restart.
+# ``removal``: remove it once Home's move off it commits
+# (``{"state": "waiting_for_home", "move_id", ...}``, then
+# ``"home_did_not_move"`` or ``"not_removed"`` with an ``error``).
+REMOVAL_INTENT = "removal"
+
+
+async def list_removals_after_home_moves(
+    computer_id: Optional[str] = None, limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Computers waiting on Home's move off them whose move has ended, with
+    its ``move_phase`` and ``move_error``; only ``computer_id`` when named."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT {computer_cols("c")}, m.phase AS move_phase, m.error AS move_error
+            FROM computers c
+            JOIN workspace_moves m
+              ON m.move_id = (c.config->'{REMOVAL_INTENT}'->>'move_id')::uuid
+            WHERE c.{FENCE_NOT_DELETED}
+              AND c.config->'{REMOVAL_INTENT}'->>'state' = 'waiting_for_home'
+              AND m.phase IN ('done', 'failed', 'cancelled')
+              AND (%(computer_id)s::uuid IS NULL OR c.computer_id = %(computer_id)s::uuid)
+            ORDER BY m.finished_at
+            LIMIT %(limit)s
+            """,
+            {"computer_id": normalize_uuid(computer_id) if computer_id else None, "limit": limit},
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def end_removal_intent(
+    computer_id: str, move_id: str, ended: Dict[str, Any]
+) -> bool:
+    """Record how a removal waiting on Home's move ``move_id`` ended; False
+    when it no longer waits on that move. A removed computer's row is kept,
+    deleted, so its owner can still read what the removal left behind."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = jsonb_set(config, '{{{REMOVAL_INTENT}}}', %s::jsonb)
+            WHERE computer_id = %s
+              AND config->'{REMOVAL_INTENT}'->>'state' = 'waiting_for_home'
+              AND config->'{REMOVAL_INTENT}'->>'move_id' = %s
+            """,
+            (Json({**ended, "move_id": move_id}), computer_id, move_id),
         )
         return cur.rowcount > 0
 

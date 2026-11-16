@@ -338,7 +338,6 @@ class ComputerCreate(BaseModel):
             "without them"
         ),
     )
-
     @field_validator("name", mode="before")
     @classmethod
     def _trimmed_name(cls, value: Any) -> Any:
@@ -821,6 +820,33 @@ class StartFailure(BaseModel):
     at: datetime = Field(description="When the start failed")
 
 
+class ComputerIntentError(BaseModel):
+    code: str = Field(description="A move refusal code, or a removal refusal code")
+    message: str = Field(description="A sentence the user can be shown as is")
+
+
+class ComputerRemovalIntent(BaseModel):
+    """A remove that moves Home off this computer first (``home_to``)."""
+
+    state: Literal["waiting_for_home", "home_did_not_move", "not_removed", "removed"] = Field(
+        description=(
+            "waiting_for_home until Home's move ends; home_did_not_move when it "
+            "failed or was cancelled, and the computer stays primary; "
+            "not_removed when Home moved but the remove was then refused; "
+            "removed once the computer is gone"
+        )
+    )
+    move_id: str = Field(description="Home's move, read at GET /workspaces/{home}/move")
+    error: Optional[ComputerIntentError] = None
+    removed: Optional["ComputerRemoveResponse"] = Field(
+        None,
+        description=(
+            "What the removal left behind, as a removal answering at once "
+            "would have said. Null on a computer gone without it recorded"
+        ),
+    )
+
+
 class ComputerResponse(BaseModel):
     """Response model for computer details."""
 
@@ -902,6 +928,9 @@ class ComputerResponse(BaseModel):
     )
     ssh: Optional[ComputerSSHInfo] = Field(
         None, description="The machine an ssh computer runs on; null for other kinds"
+    )
+    removal: Optional[ComputerRemovalIntent] = Field(
+        None, description="A remove waiting on Home's move off it, or how one ended"
     )
     start_failure: Optional[StartFailure] = Field(
         None,
@@ -1076,6 +1105,18 @@ class ComputerRemoveResponse(BaseModel):
             "or deleted by another request, meanwhile is not among them"
         ),
     )
+    move_id: Optional[str] = Field(
+        None,
+        description=(
+            "Set on a 202: Home is moving to ``home_to`` first, and the computer "
+            "is removed once that move commits. Follow it at GET "
+            "/workspaces/{home}/move, then GET /computers/{id}/removal for how "
+            "it ended"
+        ),
+    )
+
+
+ComputerRemovalIntent.model_rebuild()
 
 
 class ComputerSessionResponse(BaseModel):

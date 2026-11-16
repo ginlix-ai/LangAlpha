@@ -89,6 +89,13 @@ class MakePrimaryRequest(BaseModel):
             "reached. The folder there is left as it is"
         ),
     )
+    turn_on_backup: bool = Field(
+        False,
+        description=(
+            "Turn on the computer's file backup first, in this request, so a "
+            "machine of the user's own with it off can be made primary"
+        ),
+    )
 
 
 class MakePrimaryResponse(BaseModel):

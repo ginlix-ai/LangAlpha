@@ -59,17 +59,21 @@ from src.server.database.workspace_move import (
     mark_leftovers_removed,
     mark_move_restored,
     set_left_folder_aside,
+    set_primary_computer,
     stage_workspace_move,
     take_over_stale_moves,
 )
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.computer_errors import ComputerBusyError
 from src.server.services.computer_manager._folders import _run_folder_script
 from src.server.services.persistence.transfer import SYNC_MARKER_NAME
+from src.server.services.background_starts import schedule_start
 from src.server.services.workspace_move import (
     MoveNoRoom,
     MoveSourceUnavailable,
+    claim_workspace_move,
     move_error,
     move_error_detail,
 )
@@ -220,6 +224,49 @@ class WorkspaceMoveMixin:
             return False
         task.result()
         return True
+
+    async def make_primary(
+        self,
+        user_id: str,
+        computer_id: str,
+        *,
+        from_backup: bool = False,
+        then: Optional[Callable[[], Awaitable[Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Make the computer the user's primary, where Home lives.
+
+        None when the flip landed now: Home on no computer yet, or already on
+        it. Otherwise Home's move onto it is claimed and run here in the
+        background, the flip landing as it commits, and its row is returned;
+        ``then`` runs once the run ends, however it ended.
+
+        Raises:
+            MoveRefused: as either would refuse, ``not_backed_up`` included.
+        """
+        if await set_primary_computer(user_id, computer_id):
+            logger.info("Made computer %s primary for user %s", computer_id, user_id)
+            return None
+        move = await claim_workspace_move(
+            user_id=user_id,
+            workspace_id=get_home_workspace_id(user_id),
+            target_computer_id=computer_id,
+            make_primary=True,
+            from_backup=from_backup,
+        )
+
+        async def run() -> None:
+            await self.run_accepted_move(move)
+            if then is not None:
+                await then()
+
+        schedule_start(f"workspace-move:{move['move_id']}", run)
+        logger.info(
+            "Accepted Home's move %s to computer %s for user %s",
+            move["move_id"],
+            computer_id,
+            user_id,
+        )
+        return move
 
     async def run_accepted_move(self, move: Mapping[str, Any]) -> None:
         """Run a move accepted behind a 202; the row is its only report."""
