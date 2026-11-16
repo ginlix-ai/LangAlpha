@@ -26,9 +26,8 @@ from src.server.database.computer import (
     get_computer,
     get_computer_for_workspace,
     get_computers_by_status,
-    get_home_computer,
     list_removals_after_home_moves,
-    set_computer_setting,
+    take_removal_intent,
     update_computer_status,
 )
 from src.server.database.conversation import forget_workspace_exists
@@ -712,43 +711,33 @@ class WorkspaceManager(ComputerManager):
         """Remove the user's primary once Home is off it, on ``home_to``.
 
         Home moves as Make primary moves it (``make_primary``), from its last
-        backup when the machine it lives on can't be reached, as Home's
-        placement judges it, since that machine cannot hand its files over.
-        None when the flip landed now, Home having nothing to move: the caller
-        removes the computer as any other. Otherwise the move's row, and the
-        removal is recorded on the computer for ``remove_after_home_move``,
-        which the move's runner calls as it ends and every worker's sweep
-        calls too.
+        backup when the machine it lives on can't be reached. None when the flip landed now, Home having nothing to move: the caller
+        removes the computer as any other. Otherwise the move's row, the
+        removal recorded on the computer in the move's claim, for
+        ``remove_after_home_move``, which the move's runner calls as it ends
+        and every worker's sweep calls too.
 
         Raises:
             MoveRefused: as Make primary would refuse.
         """
-        from src.server.services.ssh_computers import computer_unreachable
-
         computer_id = str(computer["computer_id"])
         user_id = str(computer["user_id"])
         move = await self.make_primary(
             user_id,
             home_to,
-            from_backup=await computer_unreachable(await get_home_computer(user_id)),
             then=lambda: self.remove_after_home_move(computer_id),
+            removal=(
+                computer_id,
+                {
+                    "state": "waiting_for_home",
+                    "delete_workspaces": list(named),
+                    "delete_files": delete_files,
+                    "remove_key": remove_key,
+                },
+            ),
         )
         if move is None:
             return None
-        # After the claim, so the move id is known; a runner that ends first
-        # finds nothing yet and leaves it to the sweep.
-        await set_computer_setting(
-            computer_id,
-            user_id,
-            REMOVAL_INTENT,
-            {
-                "state": "waiting_for_home",
-                "move_id": str(move["move_id"]),
-                "delete_workspaces": list(named),
-                "delete_files": delete_files,
-                "remove_key": remove_key,
-            },
-        )
         logger.info(
             "Computer %s is removed once Home's move %s to %s commits",
             computer_id, move["move_id"], home_to,
@@ -760,9 +749,10 @@ class WorkspaceManager(ComputerManager):
         that move has ended, or only ``computer_id``'s.
 
         Run when the move's runner ends and by every worker's sweep, so one
-        whose runner died is settled after a restart. Home moved: the computer
-        is removed as its owner asked, a busy one left for the next pass.
-        Home did not: it stays primary, and ``removal`` says why.
+        whose runner died is settled after a restart; each removal is taken
+        by one worker at a time (``take_removal_intent``). Home moved: the
+        computer is removed as its owner asked, a busy one left for the next
+        pass. Home did not: it stays primary, and ``removal`` says why.
         """
         from src.server.services.workspace_move import MOVE_MESSAGES
 
@@ -775,6 +765,9 @@ class WorkspaceManager(ComputerManager):
             removing = str(row["computer_id"])
             intent = row["config"][REMOVAL_INTENT]
             move_id = intent["move_id"]
+            taken_at = await take_removal_intent(removing, move_id)
+            if taken_at is None:
+                continue
             if row["move_phase"] != "done":
                 error = row.get("move_error") or {}
                 if row["move_phase"] == "cancelled":
@@ -790,7 +783,7 @@ class WorkspaceManager(ComputerManager):
                 )
                 await end_removal_intent(
                     removing,
-                    move_id,
+                    taken_at,
                     {"state": "home_did_not_move", "error": {"code": code, "message": message}},
                 )
                 continue
@@ -803,6 +796,7 @@ class WorkspaceManager(ComputerManager):
                 )
             except ComputerRemovalRefused as e:
                 if e.code is Retirement.BUSY:
+                    await end_removal_intent(removing, taken_at)
                     continue
                 logger.info(
                     "Home moved off computer %s, but its removal was refused: %s",
@@ -810,22 +804,23 @@ class WorkspaceManager(ComputerManager):
                 )
                 await end_removal_intent(
                     removing,
-                    move_id,
+                    taken_at,
                     {"state": "not_removed", "error": {"code": str(e.code), "message": str(e)}},
                 )
             except ValueError:
-                # Removed meanwhile, by its owner or another worker's pass.
+                # Removed meanwhile by its owner, which a read of it answers.
                 continue
             except Exception:
                 logger.exception(
                     "Could not remove computer %s after Home's move %s", removing, move_id
                 )
+                await end_removal_intent(removing, taken_at)
             else:
                 # What a removal answering at once would have said, for its
                 # owner to read off the row it leaves.
                 await end_removal_intent(
                     removing,
-                    move_id,
+                    taken_at,
                     {"state": "removed", "removed": removed.response().model_dump(mode="json")},
                 )
 
@@ -1187,12 +1182,12 @@ class WorkspaceManager(ComputerManager):
         return settled
 
     async def start_cleanup_task(self) -> None:
-        """Start the background cleanup task, and the left-folder, usage and
-        stuck-stop sweeps beside it.
+        """Start the background cleanup task, and the left-folder, usage,
+        stuck-stop and primary-intent sweeps beside it.
 
-        Both sweeps dial machines or providers, any of which may be dark or
+        Those sweeps dial machines or providers, any of which may be dark or
         slow, so each runs in a loop of its own rather than ahead of idle
-        reaping.
+        reaping: removing a computer after Home's move ends on its machine.
         """
         if self._cleanup_task is not None:
             return
@@ -1209,7 +1204,6 @@ class WorkspaceManager(ComputerManager):
                         # make the runtime unavailable.
                         await self.reap_pending_workspace_folder_cleanups()
                         await self.reap_workspace_moves()
-                        await self.remove_after_home_move()
                         await self.cleanup_idle_workspaces()
                         await self.reap_stuck_starting_workspaces()
                         await self.reap_retirement_pending_computers()
@@ -1240,6 +1234,18 @@ class WorkspaceManager(ComputerManager):
                 except Exception as e:
                     logger.error(f"Error in stuck-stop sweep loop: {e}")
 
+        async def primary_intents_loop():
+            while not self._shutdown:
+                try:
+                    await asyncio.sleep(self.cleanup_interval)
+                    if not self._shutdown:
+                        await self.remove_after_home_move()
+                        await self.apply_pending_make_primary()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in primary-intent sweep loop: {e}")
+
         async def usage_loop():
             # First at once, so a deploy opens runs for the computers already
             # running rather than a cycle later. A pass may take most of the
@@ -1262,6 +1268,7 @@ class WorkspaceManager(ComputerManager):
         self._left_folders_task = asyncio.create_task(left_folders_loop())
         self._usage_task = asyncio.create_task(usage_loop())
         self._stuck_stopping_task = asyncio.create_task(stuck_stopping_loop())
+        self._primary_intents_task = asyncio.create_task(primary_intents_loop())
         logger.info("Workspace cleanup task started")
 
 

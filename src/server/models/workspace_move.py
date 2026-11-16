@@ -22,12 +22,14 @@ MoveRefusalCode = Literal[
     "not_movable",
     "same_computer",
     "target_unavailable",
+    "target_unreachable",
     "not_backed_up",
     "turn_active",
     "command_running",
     "move_in_progress",
     "not_cancellable",
     "no_backup",
+    "superseded",
 ]
 
 MoveErrorCode = Literal[
@@ -81,12 +83,13 @@ class WorkspaceMoveOut(BaseModel):
 
 
 class MakePrimaryRequest(BaseModel):
-    from_backup: bool = Field(
-        False,
+    from_backup: Optional[bool] = Field(
+        None,
         description=(
             "Lay Home on the new primary from its last backup without reaching "
             "the computer it is on, a machine of the user's own that can't be "
-            "reached. The folder there is left as it is"
+            "reached. The folder there is left as it is. Left out, it is "
+            "whether that machine can be reached now"
         ),
     )
     turn_on_backup: bool = Field(

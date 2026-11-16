@@ -21,6 +21,7 @@ from ptc_agent.core.session import Session, SessionManager
 
 
 from src.server.database.computer import (
+    MAKE_PRIMARY_INTENT,
     computer_advisory_key,
     computer_capacity_lock,
     create_computer,
@@ -855,6 +856,15 @@ class MachineLifecycleMixin:
                 f"({'reconnected' if reconnected else 'built'})"
             )
             self._read_machine_facts_soon(computer_id, binding.kind, runtime)
+            if (published.get("config") or {}).get(MAKE_PRIMARY_INTENT):
+                # Its create asked for it to be primary once it is up; never
+                # a reason to fail the start it follows.
+                try:
+                    await self.apply_make_primary_intent(computer_id, str(user_id))
+                except Exception:
+                    logger.exception(
+                        "Could not make computer %s primary after its start", computer_id
+                    )
             return session
         except (Exception, asyncio.CancelledError):
             if reconnected:

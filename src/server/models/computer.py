@@ -338,6 +338,15 @@ class ComputerCreate(BaseModel):
             "without them"
         ),
     )
+    make_primary: bool = Field(
+        False,
+        description=(
+            "Make it primary, moving Home onto it, once its first start "
+            "completes, as Make primary would. Kept on the computer until then; "
+            "one that can't apply is dropped and shown in ``make_primary``"
+        ),
+    )
+
     @field_validator("name", mode="before")
     @classmethod
     def _trimmed_name(cls, value: Any) -> Any:
@@ -825,6 +834,15 @@ class ComputerIntentError(BaseModel):
     message: str = Field(description="A sentence the user can be shown as is")
 
 
+class ComputerMakePrimaryIntent(BaseModel):
+    """Make primary, asked with the create, applied once the first start completes."""
+
+    state: Literal["pending", "dropped"]
+    error: Optional[ComputerIntentError] = Field(
+        None, description="Why it was dropped, as Make primary would have refused"
+    )
+
+
 class ComputerRemovalIntent(BaseModel):
     """A remove that moves Home off this computer first (``home_to``)."""
 
@@ -928,6 +946,9 @@ class ComputerResponse(BaseModel):
     )
     ssh: Optional[ComputerSSHInfo] = Field(
         None, description="The machine an ssh computer runs on; null for other kinds"
+    )
+    make_primary: Optional[ComputerMakePrimaryIntent] = Field(
+        None, description="A make primary asked with the create; null when none"
     )
     removal: Optional[ComputerRemovalIntent] = Field(
         None, description="A remove waiting on Home's move off it, or how one ended"

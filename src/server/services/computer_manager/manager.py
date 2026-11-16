@@ -108,6 +108,7 @@ class ComputerManager(
         self._left_folders_task: Optional[asyncio.Task] = None
         self._usage_task: Optional[asyncio.Task] = None
         self._stuck_stopping_task: Optional[asyncio.Task] = None
+        self._primary_intents_task: Optional[asyncio.Task] = None
         self._shutdown = False
 
         logger.info(
@@ -153,6 +154,7 @@ class ComputerManager(
                 self._left_folders_task,
                 self._usage_task,
                 self._stuck_stopping_task,
+                self._primary_intents_task,
             )
             if t
         ]

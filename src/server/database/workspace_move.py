@@ -22,6 +22,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.database.computer import MAKE_PRIMARY_INTENT, REMOVAL_INTENT
 from src.server.database.egress_grants import (
     lock_user_egress_state,
     retire_workspace_grants,
@@ -72,6 +73,16 @@ _RECOVERABLE = list(MOVE_SET_ASIDE_PHASES)
 # wait out or race, as WorkspaceManager.create_workspace refuses too.
 _TAKES_A_WORKSPACE = takes_a_workspace_sql()
 _ENDED = ["done", "failed", "cancelled"]
+# The stamp of the make-primary intent a worker took on the computer, read on
+# its locked row (``database.computer.take_make_primary_intent``).
+_INTENT_TAKEN_AT = f"config->'{MAKE_PRIMARY_INTENT}'->>'taken_at' AS intent_taken_at"
+
+
+def _intent_superseded(row: Dict[str, Any], intent_taken_at: Optional[str]) -> bool:
+    """Whether a make-primary applied from an intent lost it while it ran:
+    a Make primary since, which ends any pending intent (``_flip_primary``),
+    must not be undone by the older request."""
+    return intent_taken_at is not None and row.get("intent_taken_at") != intent_taken_at
 _SETTABLE = frozenset({"leftovers_path", "source_folder", "target_folder"})
 # What a runner's write requires beyond its id: the fence lifted from a stale
 # row before staging, and a turn may have started since.
@@ -110,6 +121,9 @@ async def claim_workspace_move(
     make_primary: bool = False,
     from_backup: bool = False,
     may_be_left: Callable[[str], bool] = lambda kind: False,
+    removal: Optional[tuple[str, Dict[str, Any]]] = None,
+    expected_source: Optional[str] = None,
+    intent_taken_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a move, or raise ``MoveRefused`` with why it cannot start.
 
@@ -122,6 +136,15 @@ async def claim_workspace_move(
     ``from_backup`` never reaches it, and a machine the server rebuilds is
     never left behind for its backup. Home moves only onto a computer whose
     files are backed up, which the commit's flip holds to as well.
+
+    ``removal`` is a computer to remove once this move commits and the intent
+    to keep on it (``database.computer.REMOVAL_INTENT``), written with the
+    move so neither commits without the other.
+
+    ``expected_source`` is the computer the caller judged ``from_backup`` by:
+    a workspace that moved off it since is refused as ``move_in_progress``,
+    to be read again. ``intent_taken_at`` is a make-primary intent's stamp
+    (``_intent_superseded``).
     """
     workspace_id = normalize_uuid(workspace_id)
     if workspace_id is None:
@@ -137,6 +160,7 @@ async def claim_workspace_move(
         "target": target,
         "make_primary": make_primary,
         "from_backup": from_backup,
+        "removing": normalize_uuid(removal[0]) if removal else None,
         "early": _EARLY,
         "active": _ACTIVE,
     }
@@ -156,16 +180,25 @@ async def claim_workspace_move(
                 """,
                 {**params, "interrupted": Json({"code": "interrupted"})},
             )
+            # The computer a removal waits on is written below; it is locked
+            # here, with the target and in the commit's order, ahead of the
+            # workspace.
             await cur.execute(
                 f"""
-                SELECT computer_id, files_backup FROM computers
-                WHERE computer_id = %(target)s AND user_id = %(user_id)s
-                  AND {_TAKES_A_WORKSPACE}
-                FOR SHARE
+                SELECT computer_id, files_backup, {_INTENT_TAKEN_AT}
+                FROM computers
+                WHERE user_id = %(user_id)s AND (
+                    (computer_id = %(target)s AND {_TAKES_A_WORKSPACE})
+                    OR (computer_id = %(removing)s::uuid AND {FENCE_NOT_DELETED}))
+                ORDER BY computer_id
+                FOR {"UPDATE" if removal else "SHARE"}
                 """,
                 params,
             )
-            computer = await cur.fetchone()
+            locked = {str(r["computer_id"]): r for r in await cur.fetchall()}
+            computer = locked.get(target)
+            if removal and params["removing"] not in locked:
+                raise MoveRefused("not_found")
             await cur.execute(
                 """
                 SELECT workspace_id, user_id, computer_id, dir_name, status
@@ -191,10 +224,16 @@ async def claim_workspace_move(
             # and making a computer primary moves nothing but Home.
             if is_home_row(workspace) != make_primary:
                 raise MoveRefused("not_movable")
+            if expected_source is not None and str(workspace["computer_id"]) != str(
+                expected_source
+            ):
+                raise MoveRefused("move_in_progress")
             if str(workspace["computer_id"]) == target:
                 raise MoveRefused("same_computer")
             if computer is None:
                 raise MoveRefused("target_unavailable")
+            if _intent_superseded(computer, intent_taken_at):
+                raise MoveRefused("superseded")
             if make_primary and not computer["files_backup"]:
                 # Home would live only on that machine's disk.
                 raise MoveRefused("not_backed_up")
@@ -227,7 +266,20 @@ async def claim_workspace_move(
                     "source_folder": workspace["dir_name"],
                 },
             )
-            return dict(await cur.fetchone())
+            move = dict(await cur.fetchone())
+            if removal:
+                await cur.execute(
+                    f"""
+                    UPDATE computers
+                    SET config = jsonb_set(
+                            COALESCE(config, '{{}}'::jsonb), '{{{REMOVAL_INTENT}}}', %s::jsonb
+                        ),
+                        updated_at = NOW()
+                    WHERE computer_id = %s
+                    """,
+                    (Json({**removal[1], "move_id": str(move["move_id"])}), params["removing"]),
+                )
+            return move
     except UniqueViolation:
         raise MoveRefused("move_in_progress") from None
 
@@ -510,12 +562,21 @@ async def _flip_primary(cur, user_id: str, computer_id: str) -> None:
     writes land in one transaction. Home lives on the primary, so a computer
     whose files are not backed up is refused here, under the write: turning
     backup off refuses a primary in its own update, and whichever lands
-    second sees the other.
+    second sees the other. A make primary another computer's create asked
+    for and that is still pending is the older choice, so it goes.
     """
     await cur.execute(
         """
         UPDATE computers SET is_primary = FALSE
         WHERE user_id = %s AND is_primary AND computer_id <> %s
+        """,
+        (user_id, computer_id),
+    )
+    await cur.execute(
+        f"""
+        UPDATE computers SET config = config - '{MAKE_PRIMARY_INTENT}'
+        WHERE user_id = %s AND computer_id <> %s
+          AND config->'{MAKE_PRIMARY_INTENT}'->>'state' = 'pending'
         """,
         (user_id, computer_id),
     )
@@ -590,6 +651,10 @@ async def promote_primary_computer(user_id: str) -> Optional[Dict[str, Any]]:
                 UPDATE computers
                 SET is_primary = TRUE, updated_at = NOW()
                 WHERE computer_id = ({_PRIMARY_CANDIDATE}) AND files_backup
+                  -- Again on the row it locks: the candidate is chosen from
+                  -- the statement's snapshot, and a retirement may mark it
+                  -- while this waits for its lock.
+                  AND {_TAKES_A_WORKSPACE}
                   AND NOT EXISTS (
                       SELECT 1 FROM computers
                       WHERE user_id = %(user)s AND is_primary AND {FENCE_NOT_DELETED}
@@ -782,12 +847,15 @@ async def flag_rollback_restore(move_id: str, workspace_id: str) -> None:
         )
 
 
-async def set_primary_computer(user_id: str, computer_id: str) -> bool:
+async def set_primary_computer(
+    user_id: str, computer_id: str, *, intent_taken_at: Optional[str] = None
+) -> bool:
     """Flip the primary without moving Home; False when Home must move with it.
 
     The old primary is held before Home, as Home's first bind holds it: that
     bind takes only a computer still primary, so it either landed first and
     this refuses, or waits and then binds Home to the new primary.
+    ``intent_taken_at`` is a make-primary intent's stamp (``_intent_superseded``).
     """
     computer_id = normalize_uuid(computer_id)
     if computer_id is None:
@@ -797,7 +865,8 @@ async def set_primary_computer(user_id: str, computer_id: str) -> bool:
     ) as cur:
         await cur.execute(
             f"""
-            SELECT computer_id, ({_TAKES_A_WORKSPACE}) AS takes_workspaces
+            SELECT computer_id, ({_TAKES_A_WORKSPACE}) AS takes_workspaces,
+                   {_INTENT_TAKEN_AT}
             FROM computers
             WHERE user_id = %(user_id)s AND (computer_id = %(target)s OR is_primary)
             ORDER BY computer_id
@@ -812,6 +881,8 @@ async def set_primary_computer(user_id: str, computer_id: str) -> bool:
         )
         if target is None or not target["takes_workspaces"]:
             raise MoveRefused("target_unavailable")
+        if _intent_superseded(target, intent_taken_at):
+            raise MoveRefused("superseded")
         await cur.execute(
             "SELECT computer_id FROM workspaces WHERE workspace_id = %s FOR UPDATE",
             (get_home_workspace_id(user_id),),

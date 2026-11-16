@@ -31,11 +31,13 @@ from src.server.app.status_stream import (
     status_event_stream,
 )
 from src.server.database.computer import (
+    MAKE_PRIMARY_INTENT,
     REMOVAL_INTENT,
     computer_capacity_lock,
     get_computer,
     get_computers_for_user,
     observed_layout_version,
+    removal_held,
     rename_computer as db_rename_computer,
     set_computer_files_backup,
     update_computer_status,
@@ -61,6 +63,7 @@ from src.server.models.computer import (
     ComputerCreate,
     ComputerFilesBackupRequest,
     ComputerListResponse,
+    ComputerMakePrimaryIntent,
     ComputerRemovalIntent,
     ComputerProviderOption,
     ComputerProvidersResponse,
@@ -129,7 +132,8 @@ from src.server.services.workspace_status_pubsub import (
 )
 from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
-    ComputerAddUserId,
+    ComputerAddPrincipal,
+    ComputerWritePrincipal,
     ComputerEndUserId,
     ComputerRemovePrincipal,
     ComputerWriteUserId,
@@ -148,6 +152,7 @@ router = APIRouter(prefix="/api/v1/computers", tags=["Computers"])
 _FILES_BACKUP_REQUIRED = (
     "File backup can only be turned off on a computer you brought yourself."
 )
+_PRIMARY_IN_THE_APP = "Choosing your primary computer is done in the app."
 _PRIMARY_BACKUP_REQUIRED = (
     "File backup stays on for your primary computer, since Home lives on it. "
     "Make another computer primary first."
@@ -350,6 +355,7 @@ def computer_to_response(
         disk=disk_from_row(computer),
         spec_change=spec_change_from_row(computer),
         ssh=ssh_info(computer, tunnels),
+        make_primary=_intent(computer, MAKE_PRIMARY_INTENT, ComputerMakePrimaryIntent),
         removal=_intent(computer, REMOVAL_INTENT, ComputerRemovalIntent),
         start_failure=start_failure_from_row(computer),
     )
@@ -459,7 +465,7 @@ async def _schedule_claimed_start(computer_id: str) -> str:
 @router.post("", response_model=ComputerResponse, status_code=201)
 async def create_computer(
     request: ComputerCreate,
-    x_user_id: ComputerAddUserId,
+    principal: ComputerAddPrincipal,
 ):
     """Create a computer and prepare its sandbox in the background.
 
@@ -468,7 +474,11 @@ async def create_computer(
     Preparing holds a running slot from the insert, so the limit is asked here.
     A ``name`` another of the user's live computers has, compared trimmed and
     case-folded, is a 409 ``name_taken``; an unnamed one is numbered past them.
+    ``make_primary`` is the app's alone, as Make primary is (403 otherwise).
     """
+    x_user_id = principal.user_id
+    if request.make_primary and not principal.unlimited:
+        raise HTTPException(status_code=403, detail=_PRIMARY_IN_THE_APP)
     async with _computer_action_errors("create", "new"):
         sandbox = _sandbox_config()
         kind = request.kind or sandbox.provider
@@ -512,6 +522,14 @@ async def create_computer(
                 await enforce_computer_count(x_user_id)
                 await assert_spec_allowed(x_user_id, request.resource_tier)
                 await enforce_computer_limit(x_user_id)
+            create_kwargs = plan.create_kwargs() if plan is not None else {}
+            if request.make_primary:
+                # Kept on the row until its first start completes, which
+                # applies it (ComputerManager.apply_make_primary_intent).
+                create_kwargs["config"] = {
+                    **(create_kwargs.get("config") or {}),
+                    MAKE_PRIMARY_INTENT: {"state": "pending"},
+                }
             computer = await _computer_manager().create_computer_for_user(
                 x_user_id,
                 kind=kind,
@@ -526,7 +544,7 @@ async def create_computer(
                 is_primary=True,
                 prepare=True,
                 files_backup=request.files_backup,
-                **(plan.create_kwargs() if plan is not None else {}),
+                **create_kwargs,
             )
         computer_id = str(computer["computer_id"])
         with computer_cause("create"):
@@ -742,6 +760,9 @@ async def remove_computer(
     answer holds up nobody.
     """
     x_user_id = principal.user_id
+    if home_to and not principal.unlimited:
+        # Moving Home makes ``home_to`` primary, which only the app may ask.
+        raise HTTPException(status_code=403, detail=_PRIMARY_IN_THE_APP)
     named = list(dict.fromkeys([*delete_workspaces, *(body.delete_workspaces if body else ())]))
     async with _computer_action_errors("remove", computer_id):
         computer = await _owned_computer(computer_id, x_user_id)
@@ -787,14 +808,19 @@ async def get_computer_removal(computer_id: str, x_user_id: ReadUserId):
     Read once that move has ended: a computer removed leaves the list, and
     this is where what its removal left behind is told. One gone without
     that recorded (removed by another request, or by a worker lost before
-    it recorded it) reads removed, with nothing said.
+    it recorded it) reads removed, with nothing said. One a worker is still
+    leaving the machine of reads waiting, so the owner is told what it left.
     """
     computer = await get_computer(computer_id, include_deleted=True)
     require_computer_owner(computer, user_id=x_user_id)
     removal = _intent(computer, REMOVAL_INTENT, ComputerRemovalIntent)
     if removal is None:
         raise HTTPException(status_code=404, detail="No removal waited on Home's move off this computer")
-    if computer["status"] == "deleted" and removal.state != "removed":
+    if (
+        computer["status"] == "deleted"
+        and removal.state != "removed"
+        and not removal_held(computer["config"][REMOVAL_INTENT])
+    ):
         return ComputerRemovalIntent(state="removed", move_id=removal.move_id)
     return removal
 
@@ -1060,7 +1086,7 @@ async def set_computer_spec(
 async def make_primary_computer(
     computer_id: str,
     response: Response,
-    x_user_id: CurrentUserId,
+    principal: ComputerWritePrincipal,
     request: Optional[MakePrimaryRequest] = None,
 ):
     """Make this the computer new workspaces and Home land on.
@@ -1072,8 +1098,12 @@ async def make_primary_computer(
     lays Home from its last backup, for a machine of the user's own that
     can't be reached. A computer whose files are not backed up is refused
     (409 ``not_backed_up``): Home would live only on its disk, unless
-    ``turn_on_backup`` turns it on first, in this request.
+    ``turn_on_backup`` turns it on first, in this request. A machine whose
+    tunnel is down is refused (409 ``target_unreachable``).
     """
+    if not principal.unlimited:
+        raise HTTPException(status_code=403, detail=_PRIMARY_IN_THE_APP)
+    x_user_id = principal.user_id
     request = request or MakePrimaryRequest()
     async with _computer_action_errors("make primary", computer_id):
         computer = await _owned_computer(computer_id, x_user_id)

@@ -25,6 +25,7 @@ MOVE_MESSAGES: Dict[str, str] = {
     "not_movable": "This workspace can't be moved.",
     "same_computer": "This workspace is already on that computer.",
     "target_unavailable": "That computer can't take workspaces right now.",
+    "target_unreachable": "That computer isn't connected right now. Try again once it is.",
     "not_backed_up": (
         "Turn on file backup for that computer first. Home lives on the "
         "primary, and its backup is what restores Home if the computer is lost."
@@ -42,6 +43,7 @@ MOVE_MESSAGES: Dict[str, str] = {
     ),
     "not_cancellable": "This move is too far along to cancel.",
     "no_backup": "This workspace has no backup to restore from.",
+    "superseded": "Another computer was made primary since.",
     "source_unavailable": (
         "The computer this workspace is on couldn't start, so its files "
         "couldn't be copied. Try again once it is running."
@@ -105,6 +107,9 @@ async def claim_workspace_move(
     target_computer_id: str,
     make_primary: bool = False,
     from_backup: bool = False,
+    removal: Optional[tuple[str, Dict[str, Any]]] = None,
+    expected_source: Optional[str] = None,
+    intent_taken_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a move (``database.workspace_move.claim_workspace_move``), only
     one the server cannot rebuild left behind by a move from the backup."""
@@ -115,6 +120,9 @@ async def claim_workspace_move(
         make_primary=make_primary,
         from_backup=from_backup,
         may_be_left=lambda kind: not provider_class(kind).recreatable,
+        removal=removal,
+        expected_source=expected_source,
+        intent_taken_at=intent_taken_at,
     )
 
 

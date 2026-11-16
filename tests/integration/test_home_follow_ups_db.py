@@ -1,5 +1,6 @@
 """What the server carries out for a computer after the request that asked:
-removing the primary once Home's move off it commits. It is kept on the
+removing the primary once Home's move off it commits, and making a new
+computer primary once its first start completes. Both are kept on the
 computer's row, so these run on Postgres, a fresh manager standing in for a
 worker after a restart.
 """
@@ -158,7 +159,7 @@ async def test_removing_a_primary_that_is_away_restores_home_from_its_backup(
 
     with patch(_SCHEDULE, MagicMock()), patch(
         "src.server.services.ssh_computers.computer_unreachable",
-        AsyncMock(return_value=True),
+        AsyncMock(side_effect=lambda computer: str(computer["computer_id"]) == old),
     ):
         move = await _manager().move_home_then_remove(await get_computer(old), new)
 
@@ -244,3 +245,217 @@ async def test_the_owner_s_checks_run_with_home_leaving(seed_user):
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# Make primary, asked with the create
+# ---------------------------------------------------------------------------
+
+
+async def _new_mac(user_id, *, files_backup=True) -> str:
+    row = await create_computer(
+        user_id,
+        kind="ssh",
+        name="This Mac",
+        is_primary=True,
+        status="running",
+        provider_ref=f"follow-up-{uuid.uuid4()}",
+        config={"make_primary": {"state": "pending"}},
+        files_backup=files_backup,
+    )
+    return str(row["computer_id"])
+
+
+async def test_a_new_mac_becomes_primary_once_its_first_start_completes(seed_user):
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    home = await _home_on(user_id, cloud)
+    mac = await _new_mac(user_id)
+    assert (await get_computer(mac))["is_primary"] is False
+    manager = _manager()
+    manager.run_accepted_move = AsyncMock(side_effect=_commit)
+    scheduled = MagicMock()
+
+    with patch(_SCHEDULE, scheduled):
+        await manager.apply_make_primary_intent(mac, user_id)
+        _key, run = scheduled.call_args.args
+        await run()
+
+    row = await get_computer(mac)
+    assert row["is_primary"] is True
+    assert "make_primary" not in row["config"]
+    assert str((await workspaces.get_workspace(home))["computer_id"]) == mac
+
+
+async def test_make_primary_asked_with_the_create_survives_a_restart(seed_user):
+    """The worker the start completed on went before applying it: another
+    worker's sweep finds it pending on a running computer."""
+    user_id = seed_user["user_id"]
+    await _computer(user_id, "Cloud", primary=True)
+    await workspaces.get_or_create_home_workspace(user_id)
+    mac = await _new_mac(user_id)
+
+    await _manager().apply_pending_make_primary()
+
+    row = await get_computer(mac)
+    assert row["is_primary"] is True
+    assert "make_primary" not in row["config"]
+
+
+async def test_make_primary_that_cannot_apply_is_dropped_and_shown(seed_user):
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    await _home_on(user_id, cloud)
+    mac = await _new_mac(user_id, files_backup=False)
+
+    await _manager().apply_make_primary_intent(mac, user_id)
+
+    row = await get_computer(mac)
+    assert row["is_primary"] is False
+    assert row["config"]["make_primary"]["state"] == "dropped"
+    assert row["config"]["make_primary"]["error"]["code"] == "not_backed_up"
+    assert (await get_computer(cloud))["is_primary"] is True
+
+
+async def test_a_make_primary_that_must_wait_stays_pending(seed_user):
+    """Home's move refused for now (another move under way) is tried again."""
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    other = await _computer(user_id, "Other")
+    home = await _home_on(user_id, cloud)
+    mac = await _new_mac(user_id)
+    with patch(_SCHEDULE, MagicMock()):
+        assert await _manager().make_primary(user_id, other)
+
+        await _manager().apply_make_primary_intent(mac, user_id)
+
+    intent = (await get_computer(mac))["config"]["make_primary"]
+    assert intent["state"] == "pending" and "taken_at" not in intent
+    assert intent["tried_at"]
+    assert str((await workspaces.get_workspace(home))["computer_id"]) == cloud
+
+
+async def test_a_make_primary_whose_worker_went_midway_is_taken_again(seed_user, test_db_pool):
+    """Taken, it stays on the row; held past its lease it is pending again."""
+    from src.server.database.computer import list_pending_make_primary, take_make_primary_intent
+
+    user_id = seed_user["user_id"]
+    await _computer(user_id, "Cloud", primary=True)
+    mac = await _new_mac(user_id)
+
+    assert await take_make_primary_intent(mac) is not None
+    assert await take_make_primary_intent(mac) is None
+    assert mac not in {str(r["computer_id"]) for r in await list_pending_make_primary()}
+
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE computers SET config = jsonb_set(config, '{make_primary,taken_at}',"
+            " to_jsonb((NOW() - interval '1 hour')::text)) WHERE computer_id = %s",
+            (mac,),
+        )
+    assert mac in {str(r["computer_id"]) for r in await list_pending_make_primary()}
+    await _manager().apply_pending_make_primary()
+
+    row = await get_computer(mac)
+    assert row["is_primary"] is True
+    assert "make_primary" not in row["config"]
+
+
+async def test_making_another_computer_primary_ends_a_pending_make_primary(seed_user):
+    """The later choice stands: a new Mac still starting does not take Home
+    back once it does."""
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    other = await _computer(user_id, "Other")
+    await _home_on(user_id, cloud)
+    mac = await _new_mac(user_id)
+    manager = _manager()
+    manager.run_accepted_move = AsyncMock(side_effect=_commit)
+    scheduled = MagicMock()
+
+    with patch(_SCHEDULE, scheduled):
+        await manager.make_primary(user_id, other)
+        _key, run = scheduled.call_args.args
+        await run()
+
+    assert (await get_computer(other))["is_primary"] is True
+    assert "make_primary" not in (await get_computer(mac))["config"]
+
+
+async def test_a_removal_is_recorded_with_the_move_or_not_at_all(seed_user):
+    from src.server.database.workspace_move import MoveRefused
+
+    user_id = seed_user["user_id"]
+    old, new, _ = await _removing_primary(user_id)
+    third = await _computer(user_id, "Third")
+    manager = _manager()
+    with patch(_SCHEDULE, MagicMock()):
+        move = await manager.move_home_then_remove(await get_computer(old), new)
+        assert (await get_computer(old))["config"]["removal"]["move_id"] == str(move["move_id"])
+        # A second removal meets the first move and records nothing of its own.
+        with pytest.raises(MoveRefused):
+            await manager.move_home_then_remove(await get_computer(third), new)
+    assert "removal" not in (await get_computer(third))["config"]
+
+
+async def test_one_worker_at_a_time_settles_a_removal(seed_user):
+    """The move's runner and every worker's sweep reach the same row."""
+    from src.server.database.computer import take_removal_intent
+
+    user_id = seed_user["user_id"]
+    old, new, _ = await _removing_primary(user_id)
+    with patch(_SCHEDULE, MagicMock()):
+        move = await _manager().move_home_then_remove(await get_computer(old), new)
+    await _commit(move)
+
+    assert await take_removal_intent(old, str(move["move_id"])) is not None
+    other_worker = _manager()
+    await other_worker.remove_after_home_move()
+
+    assert await get_computer(old) is not None
+    other_worker._teardown_machine.assert_not_awaited()
+
+
+async def test_a_make_primary_taken_before_another_choice_does_not_undo_it(seed_user):
+    """Taken, then ended by a Make primary of another computer while its
+    worker checked the machine: applied late, it changes nothing."""
+    from src.server.database.computer import take_make_primary_intent
+    from src.server.database.workspace_move import MoveRefused, set_primary_computer
+
+    user_id = seed_user["user_id"]
+    await _computer(user_id, "Cloud", primary=True)
+    other = await _computer(user_id, "Other")
+    mac = await _new_mac(user_id)
+    stamp = await take_make_primary_intent(mac)
+
+    # Home is on no computer yet, so each flip lands at once.
+    assert await set_primary_computer(user_id, other)
+    with pytest.raises(MoveRefused) as refused:
+        await set_primary_computer(user_id, mac, intent_taken_at=stamp)
+
+    assert refused.value.code == "superseded"
+    assert (await get_computer(other))["is_primary"] is True
+    assert (await get_computer(mac))["is_primary"] is False
+
+
+async def test_a_move_claimed_from_a_machine_home_has_left_is_refused(seed_user):
+    """``from_backup`` was judged on the machine Home was on; Home on another
+    since, the claim is refused to be read again rather than skip its files."""
+    from src.server.database.workspace_move import MoveRefused, claim_workspace_move
+
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    target = await _computer(user_id, "Target")
+    home = await _home_on(user_id, cloud)
+
+    with pytest.raises(MoveRefused) as refused:
+        await claim_workspace_move(
+            user_id=user_id,
+            workspace_id=home,
+            target_computer_id=target,
+            make_primary=True,
+            from_backup=True,
+            expected_source=str(uuid.uuid4()),
+        )
+
+    assert refused.value.code == "move_in_progress"
