@@ -38,11 +38,8 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.computer_names import insert_under_free_name
+from src.server.database.user import get_user
 from src.server.database.home_workspace import get_home_workspace_id, is_home_row
-from src.server.database.computer_choice import (
-    COMPUTER_CHOICE_OWN_MACHINE,
-    get_computer_choice,
-)
 from src.server.database.workspace_folders import folder_allocation, takes_name_folders
 from src.server.database.workspace_names import HOME_FOLDER, candidate_dir_names
 from src.server.database.workspace import (
@@ -226,7 +223,7 @@ class MachineLifecycleMixin:
         if computer is not None:
             return computer
         if not builds_computers(self.config.sandbox) or (
-            await get_computer_choice(user_id) == COMPUTER_CHOICE_OWN_MACHINE
+            (await get_user(user_id) or {}).get("computer_choice") == "own_machine"
         ):
             if (held_back := await _backup_off_candidate(user_id)) is not None:
                 raise NeedsComputer.backup_off(held_back)

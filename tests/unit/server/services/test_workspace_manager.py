@@ -117,7 +117,7 @@ def _stub_computer_minting():
             new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
         ),
         patch(f"{_MACHINES}.promote_primary_computer", new=AsyncMock(return_value=None)),
-        patch(f"{_MACHINES}.get_computer_choice", new=AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}.get_user", new=AsyncMock(return_value=None)),
         patch(
             "src.server.services.computer_manager._sessions.get_computer_for_workspace",
             new=AsyncMock(return_value=dict(_STUB_COMPUTER)),

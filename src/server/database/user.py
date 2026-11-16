@@ -233,7 +233,7 @@ async def get_user(user_id: str) -> Optional[Dict[str, Any]]:
                     user_id, email, name, avatar_url, timezone, locale,
                     onboarding_completed,
                     COALESCE(personalization_completed, FALSE) AS personalization_completed,
-                    auth_provider,
+                    auth_provider, computer_choice,
                     created_at, updated_at, last_login_at,
                     """ + _HAS_API_KEY + """,
                     """ + _HAS_OAUTH + """
@@ -256,6 +256,7 @@ async def update_user(
     personalization_completed: Optional[bool] = None,
     last_login_at: Optional[datetime] = None,
     auth_provider: Optional[str] = None,
+    computer_choice: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Update user profile fields.
@@ -273,6 +274,7 @@ async def update_user(
         personalization_completed: New personalization status
         last_login_at: New last login timestamp
         auth_provider: Authentication provider (e.g. google, github, email)
+        computer_choice: Where the user works, ``own_machine`` or ``cloud``
 
     Returns:
         Updated user dict or None if user not found
@@ -287,6 +289,7 @@ async def update_user(
     builder.add_field("personalization_completed", personalization_completed)
     builder.add_field("last_login_at", last_login_at)
     builder.add_field("auth_provider", auth_provider)
+    builder.add_field("computer_choice", computer_choice)
 
     if not builder.has_updates():
         return await get_user(user_id)
@@ -295,7 +298,7 @@ async def update_user(
         "user_id", "email", "name", "avatar_url", "timezone", "locale",
         "onboarding_completed",
         "COALESCE(personalization_completed, FALSE) AS personalization_completed",
-        "auth_provider",
+        "auth_provider", "computer_choice",
         "created_at", "updated_at", "last_login_at",
         _HAS_API_KEY,
         _HAS_OAUTH,
@@ -741,7 +744,7 @@ async def get_user_with_preferences(user_id: str) -> Optional[Dict[str, Any]]:
                     u.user_id, u.email, u.name, u.avatar_url, u.timezone, u.locale,
                     u.onboarding_completed,
                     COALESCE(u.personalization_completed, FALSE) AS personalization_completed,
-                    u.auth_provider,
+                    u.auth_provider, u.computer_choice,
                     u.created_at, u.updated_at, u.last_login_at,
                     """ + _gate_cols("u") + """,
                     p.user_preference_id, p.risk_preference, p.investment_preference,
@@ -769,6 +772,7 @@ async def get_user_with_preferences(user_id: str) -> Optional[Dict[str, Any]]:
                 'has_api_key': result['has_api_key'],
                 'has_oauth_token': result['has_oauth_token'],
                 'auth_provider': result['auth_provider'],
+                'computer_choice': result['computer_choice'],
                 'created_at': result['created_at'],
                 'updated_at': result['updated_at'],
                 'last_login_at': result['last_login_at'],

@@ -17,7 +17,6 @@ from src.llms.preferences import (
 from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
-from src.server.database.computer_choice import get_computer_choice, set_computer_choice
 from src.server.database.pool import get_db_connection
 from src.server.dependencies.principal import CurrentPrincipal, ReadUserId
 from src.server.database.user import (
@@ -305,7 +304,10 @@ async def update_current_user(
         locale=request.locale,
         onboarding_completed=request.onboarding_completed,
         personalization_completed=request.personalization_completed,
+        computer_choice=request.computer_choice,
     )
+    if request.computer_choice is not None:
+        logger.info(f"User {user_id} chose to work on {request.computer_choice}")
 
     await invalidate_user_profile_cache(user_id)
 
@@ -741,32 +743,6 @@ async def list_my_models(user_id: ReadUserId):
     for everyone, and cannot say whose key or plan a model runs on. A row
     leaves out what it has no answer for (``plan``, ``signed_in``, ``needs``)."""
     return UserModelsResponse(models=await model_payers(user_id))
-
-
-class ComputerChoiceBody(BaseModel):
-    choice: Optional[Literal["own_machine", "cloud"]] = None
-
-
-@router.get("/users/me/computer-choice", response_model=ComputerChoiceBody)
-@handle_api_exceptions("get computer choice", logger)
-async def get_my_computer_choice(user_id: ReadUserId):
-    """Where the user chose to work, null when never asked (the desktop app's
-    first run asks once)."""
-    return ComputerChoiceBody(choice=await get_computer_choice(user_id))
-
-
-@router.put("/users/me/computer-choice", response_model=ComputerChoiceBody)
-@handle_api_exceptions("set computer choice", logger)
-async def put_my_computer_choice(request: ComputerChoiceBody, user_id: CurrentUserId):
-    """Record where the user works: ``own_machine`` keeps a cloud computer from
-    being built for them while they have no computer, ``cloud`` keeps the
-    default. It moves nothing; making a computer primary does."""
-    if request.choice is None:
-        raise HTTPException(status_code=422, detail="choice is required")
-    if not await set_computer_choice(user_id, request.choice):
-        raise_not_found("User")
-    logger.info(f"User {user_id} chose to work on {request.choice}")
-    return request
 
 
 @router.post("/users/me/avatar", response_model=dict)

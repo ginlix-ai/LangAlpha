@@ -610,7 +610,7 @@ class TestMintingAComputer(_Base):
         manager.config.sandbox.creatable_providers = lambda: kinds
         mock_primary.return_value = None
         with (
-            patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value=choice)),
+            patch(f"{_MACHINES}.get_user", AsyncMock(return_value={"computer_choice": choice})),
             pytest.raises(NeedsComputer) as refused,
         ):
             await manager.ensure_primary_computer("user-1")
@@ -637,7 +637,7 @@ class TestMintingAComputer(_Base):
             created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
         with (
-            patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value="own_machine")),
+            patch(f"{_MACHINES}.get_user", AsyncMock(return_value={"computer_choice": "own_machine"})),
             patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=mac)),
             pytest.raises(NeedsComputer) as refused,
         ):
@@ -4821,7 +4821,7 @@ def _no_computer_to_promote():
     no choice, so the deployment's machine is built as before."""
     with (
         patch(f"{_MACHINES}.promote_primary_computer", AsyncMock(return_value=None)),
-        patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}.get_user", AsyncMock(return_value=None)),
         patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=None)),
     ):
         yield
