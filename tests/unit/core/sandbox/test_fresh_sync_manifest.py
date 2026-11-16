@@ -107,7 +107,9 @@ class TestTheFirstSyncDiffs:
         sandbox._upload_mcp_server_files_impl.assert_not_awaited()
         sandbox._upload_internal_packages.assert_not_awaited()
         sandbox._install_tool_modules.assert_awaited_once()
-        sandbox._start_internal_mcp_servers.assert_awaited_once()
+        # Replacing: a daemon a reconnect started kept the old client it had
+        # imported, so a reinstalled client never reached its calls.
+        sandbox._start_internal_mcp_servers.assert_awaited_once_with(replace=True)
         sandbox._upload_skills.assert_awaited_once()
 
     @pytest.mark.asyncio
