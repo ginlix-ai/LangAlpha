@@ -315,13 +315,13 @@ def _row_target(resolver: Resolver, pages: Pagination, rendering: Rendering, iid
         for d in range(len(rendering.documents)):
             rng = pages.page_range(d, page.group(1), str(int(npage.group(1)) - 1))
             if rng and rng[0] > row:
-                t.kind, t.lines, t.via = "in_document", [rng], "index_pages"
+                t.kind, t.lines = "in_document", [rng]
                 return t
     title = re.sub(r"^(?:PART\s+[IV]+\W*)?ITEMS?\s*[\dA-Z.,\s]*?(?=[A-Z][a-z])|[\s|]*\d{1,3}\s*$", "", text).strip(" |.-")
     if len(title.split()) >= 2:
         rng = resolver.located(iid, f"\u201c{title}\u201d on page {page.group(1)}", (row, row + 1))
         if rng:
-            t.kind, t.lines, t.via = "in_document", rng, "index_caption"
+            t.kind, t.lines = "in_document", rng
     return t
 
 

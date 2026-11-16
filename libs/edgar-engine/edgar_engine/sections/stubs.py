@@ -44,13 +44,11 @@ _SENT = re.compile(r"[.;:]\s*$")
 class TargetSpan:
     kind: str
     description: str
-    doc: str | None = None
     lines: list[tuple[int, int]] = field(default_factory=list)
-    via: str | None = None
 
     def to_target(self, rendering: Rendering) -> Target:
         spans = [rendering.span(a, b) for a, b in self.lines]
-        return Target(kind=self.kind, description=self.description, doc=self.doc, spans=spans,
+        return Target(kind=self.kind, description=self.description, spans=spans,
                       text=rendering.text_of(spans) or None)
 
 
@@ -112,7 +110,7 @@ class Resolver:
         for finder in finders:
             rng = finder(iid, pointer, own)
             if rng:
-                t.kind, t.lines, t.via = "in_document", rng, finder.__name__.strip("_")
+                t.kind, t.lines = "in_document", rng
                 return t
         if kind == "in_document" and not re.search(r"\bpages?\b|\bnote\b|\bitem\b|caption|heading|exhibit 13|annual report", pointer, re.I):
             t.kind = "none_stated"

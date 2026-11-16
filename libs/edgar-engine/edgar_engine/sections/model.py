@@ -22,7 +22,6 @@ class Target:
     """Where a stub's content is. spans/text are filled only for in_document targets the engine resolved."""
     kind: TargetKind
     description: str = ""
-    doc: str | None = None
     spans: list[Span] = field(default_factory=list)
     text: str | None = None
 
@@ -37,7 +36,6 @@ class Section:
     heading: str = ""
     combined_with: list[str] = field(default_factory=list)
     target: Target | None = None
-    override: str | None = None
     source: str | None = None
 
 
