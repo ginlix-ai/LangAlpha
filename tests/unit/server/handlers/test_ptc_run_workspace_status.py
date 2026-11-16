@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.server.services.turn_runtime import TurnRoute
+from src.server.services.report_back.handoff.carry import PriorAttempt
 
 PTC = "src.server.handlers.chat.ptc_run"
 
@@ -133,6 +134,7 @@ async def _run_to_sentinel(
 
     with (
         patch(f"{PTC}.setup") as mock_setup,
+        patch(f"{PTC}.carry.prior_attempt", new=AsyncMock(return_value=PriorAttempt(latest=None, retried=None))),
         patch(f"{PTC}.ensure_thread", new_callable=AsyncMock),
         patch(
             f"{PTC}._resolve_fork",

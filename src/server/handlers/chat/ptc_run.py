@@ -406,6 +406,8 @@ async def astream_ptc_workflow(
             # /retry builds its attempt with no surface: it runs where the
             # attempt it retries did, under the same rules.
             request, inherits_rules = await retried_on_its_surface(request)
+            # The attempts this turn may continue, read once for all it carries.
+            prior = await carry.prior_attempt(request, thread_id)
             disk_free_mb, disk_known = await read_disk_notice(workspace_id)
             user_profile = (
                 await get_user_profile_for_prompt(user_id) if user_id else None
@@ -418,7 +420,7 @@ async def astream_ptc_workflow(
                 disk_known=disk_known,
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
-                carried_unwatched=await carry.carried_unwatched(request, thread_id),
+                carried_unwatched=carry.carried_unwatched(request, prior),
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
@@ -534,12 +536,12 @@ async def astream_ptc_workflow(
             if (run_metadata or {}).get("automation_execution_id") and restart_drain.draining():
                 raise restart_drain.Draining()
             origin_meta = await _resolve_origin_meta(request, thread_id)
-            carried = await carry.carried_pair(request, thread_id)
-            firing = await carry.carried_firing(request, thread_id)
+            carried = carry.carried_pair(request, prior)
+            firing = carry.carried_firing(request, prior)
             # A resume or a retry names no automation run of its own: it sends for
             # the one the turn it continues sent for.
             if automation_delivery.delivery_of_turn(extra_configurable or {}) is None:
-                sends_for = await carry.carried_delivery(request, thread_id)
+                sends_for = carry.carried_delivery(request, prior)
                 if sends_for:
                     extra_configurable = {**(extra_configurable or {}), **sends_for}
             run_handle = await begin_run(

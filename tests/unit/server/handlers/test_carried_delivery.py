@@ -18,7 +18,7 @@ from src.server.handlers.chat.request_prep import PriorThread
 from src.server.models.chat import ChatRequest
 from src.server.services import automation_delivery
 from src.server.services.automation_delivery import DELIVERY_KEY, Delivery, Target
-from src.server.services.report_back.handoff.carry import carried_delivery
+from src.server.services.report_back.handoff.carry import PriorAttempt, carried_delivery
 from src.server.services.turn_runtime import TurnRoute
 
 PTC = "src.server.handlers.chat.ptc_run"
@@ -59,30 +59,22 @@ def _message() -> ChatRequest:
     return ChatRequest(workspace_id="ws-1", messages=[{"role": "user", "content": "hi"}])
 
 
-@pytest.mark.asyncio
-async def test_a_resume_sends_for_the_run_its_interrupted_turn_sent_for():
-    latest = AsyncMock(return_value=_attempt("interrupted", _HELD))
-    with patch(_LATEST, latest):
-        assert await carried_delivery(_resume(), "t-1") == (
-            automation_delivery.turn_configurable(_HELD)
-        )
-    latest.assert_awaited_once_with("t-1")
+def _after(latest=None, retried=None) -> PriorAttempt:
+    return PriorAttempt(latest=latest, retried=retried)
 
 
-@pytest.mark.asyncio
-async def test_a_retry_sends_for_the_run_its_failed_attempt_sent_for():
-    get_run = AsyncMock(return_value=_attempt("error", _HELD))
-    latest = AsyncMock()
-    with patch(_GET_RUN, get_run), patch(_LATEST, latest):
-        assert await carried_delivery(_retry(), "t-1") == (
-            automation_delivery.turn_configurable(_HELD)
-        )
-    get_run.assert_awaited_once_with("run-0")
-    latest.assert_not_awaited()
+def test_a_resume_sends_for_the_run_its_interrupted_turn_sent_for():
+    prior = _after(_attempt("interrupted", _HELD))
+    assert carried_delivery(_resume(), prior) == automation_delivery.turn_configurable(_HELD)
 
 
-@pytest.mark.asyncio
-async def test_a_resumed_report_back_of_several_runs_sends_for_each():
+def test_a_retry_sends_for_the_run_its_failed_attempt_sent_for():
+    """From the run it retries, whatever the thread's latest attempt says."""
+    prior = _after(latest=_attempt("completed"), retried=_attempt("error", _HELD))
+    assert carried_delivery(_retry(), prior) == automation_delivery.turn_configurable(_HELD)
+
+
+def test_a_resumed_report_back_of_several_runs_sends_for_each():
     earlier = Delivery(
         id="exec-0",
         targets=[Target(entry="discord", address="discord:@me", name=None, ok=True)],
@@ -92,20 +84,13 @@ async def test_a_resumed_report_back_of_several_runs_sends_for_each():
         "status": "interrupted",
         "metadata": automation_delivery.turn_metadata(named),
     }
-    with patch(_LATEST, AsyncMock(return_value=interrupted)):
-        assert await carried_delivery(_resume(), "t-1") == named
+    assert carried_delivery(_resume(), _after(interrupted)) == named
 
 
-@pytest.mark.asyncio
-async def test_a_message_past_the_interrupt_sends_for_nothing_and_reads_nothing():
-    latest, get_run = AsyncMock(), AsyncMock()
-    with patch(_LATEST, latest), patch(_GET_RUN, get_run):
-        assert await carried_delivery(_message(), "t-1") is None
-    latest.assert_not_awaited()
-    get_run.assert_not_awaited()
+def test_a_message_past_the_interrupt_sends_for_nothing():
+    assert carried_delivery(_message(), _after(_attempt("interrupted", _HELD))) is None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "latest",
     [
@@ -116,22 +101,12 @@ async def test_a_message_past_the_interrupt_sends_for_nothing_and_reads_nothing(
     ],
     ids=["first_turn", "settled_turn", "no_run", "run_left_to_the_webhook"],
 )
-async def test_a_resume_carries_only_a_held_run_from_an_interrupted_turn(latest):
-    with patch(_LATEST, AsyncMock(return_value=latest)):
-        assert await carried_delivery(_resume(), "t-1") is None
+def test_a_resume_carries_only_a_held_run_from_an_interrupted_turn(latest):
+    assert carried_delivery(_resume(), _after(latest)) is None
 
 
-@pytest.mark.asyncio
-async def test_a_retry_carries_nothing_from_a_run_that_did_not_fail():
-    with patch(_GET_RUN, AsyncMock(return_value=_attempt("completed", _HELD))):
-        assert await carried_delivery(_retry(), "t-1") is None
-
-
-@pytest.mark.asyncio
-async def test_a_failed_read_fails_the_turn_start():
-    with patch(_LATEST, AsyncMock(side_effect=ConnectionError("db down"))):
-        with pytest.raises(ConnectionError):
-            await carried_delivery(_resume(), "t-1")
+def test_a_retry_carries_nothing_from_a_run_that_did_not_fail():
+    assert carried_delivery(_retry(), _after(retried=_attempt("completed", _HELD))) is None
 
 
 # -- through the turn start ---------------------------------------------------
@@ -163,7 +138,7 @@ async def _stamped(
         patch(f"{PTC}.get_user_profile_for_prompt", new=AsyncMock(return_value=None)),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}._resolve_origin_meta", new=AsyncMock(return_value={})),
-        patch(f"{PTC}.carry.carried_pair", new=AsyncMock(return_value={})),
+        patch(f"{PTC}.carry.carried_pair", new=MagicMock(return_value={})),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.begin_run", new=AsyncMock(side_effect=_Admitted())) as begin,
         patch(_LATEST, new=AsyncMock(return_value=latest)),

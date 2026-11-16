@@ -443,11 +443,7 @@ async def test_a_resume_is_as_watched_as_the_turn_it_carries_on(stamp, unwatched
     assert body["query_type"] == "system"
     resume = ChatRequest(**body)
     stopped_run = {**stopped, "cancel_requested_at": datetime.now(timezone.utc)}
-    with patch(
-        "src.server.database.runs.lifecycle.get_latest_attempt",
-        AsyncMock(return_value=stopped_run),
-    ):
-        carried = await carry.carried_unwatched(resume, "thread-1")
+    carried = carry.carried_unwatched(resume, carry.PriorAttempt(stopped_run, None))
     context = build_turn_context(
         resume, PriorThread(), user_profile=None, carried_unwatched=carried
     )

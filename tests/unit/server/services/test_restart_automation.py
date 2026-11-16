@@ -41,11 +41,9 @@ def test_a_firing_no_resume_can_reach_any_more_reads_as_interrupted():
     )
 
 
-@pytest.mark.asyncio
-async def test_the_turn_that_takes_over_finishes_the_firing():
+def test_the_turn_that_takes_over_finishes_the_firing():
     request = SimpleNamespace(query_type="system", retry_of_run_id=None)
-    with patch(_LATEST, AsyncMock(return_value=_stopped())):
-        firing = await carry.carried_firing(request, "thread-1")
+    firing = carry.carried_firing(request, carry.PriorAttempt(_stopped(), None))
     assert firing == _FIRING
     row = {
         "conversation_response_id": "run-2",
@@ -60,37 +58,27 @@ async def test_the_turn_that_takes_over_finishes_the_firing():
     assert job.payload["execution_id"] == "exec-1"
 
 
-@pytest.mark.asyncio
-async def test_a_users_message_after_the_stop_is_their_own_turn():
+def test_a_users_message_after_the_stop_is_their_own_turn():
     request = SimpleNamespace(query_type=None, retry_of_run_id=None)
-    latest = AsyncMock(return_value=_stopped())
-    with patch(_LATEST, latest):
-        assert await carry.carried_firing(request, "thread-1") == {}
-    latest.assert_not_awaited()
+    assert carry.carried_firing(request, carry.PriorAttempt(_stopped(), None)) == {}
 
 
-@pytest.mark.asyncio
-async def test_nothing_is_carried_past_an_ordinary_stop():
+def test_nothing_is_carried_past_an_ordinary_stop():
     request = SimpleNamespace(query_type="system", retry_of_run_id=None)
     stop = _stopped()
     stop["metadata"].pop(RESTART_INTERRUPTED_META)
-    with patch(_LATEST, AsyncMock(return_value=stop)):
-        assert await carry.carried_firing(request, "thread-1") == {}
+    assert carry.carried_firing(request, carry.PriorAttempt(stop, None)) == {}
 
 
-@pytest.mark.asyncio
-async def test_a_retry_of_the_stopped_input_takes_the_firing_over():
+def test_a_retry_of_the_stopped_input_takes_the_firing_over():
     """A turn cut before its input reached the graph runs again through
     /retry, and the firing ends as that attempt does."""
     request = SimpleNamespace(query_type=None, retry_of_run_id="run-1")
-    get_run = AsyncMock(return_value=_stopped())
-    with patch("src.server.database.runs.lifecycle.get_run", get_run):
-        assert await carry.carried_firing(request, "thread-1") == _FIRING
-    get_run.assert_awaited_once_with("run-1")
+    prior = carry.PriorAttempt(latest=None, retried=_stopped())
+    assert carry.carried_firing(request, prior) == _FIRING
 
 
-@pytest.mark.asyncio
-async def test_a_held_delivery_goes_with_the_firing():
+def test_a_held_delivery_goes_with_the_firing():
     from src.server.services import automation_delivery
 
     delivery = automation_delivery.Delivery(id="exec-1", targets=[])
@@ -98,11 +86,10 @@ async def test_a_held_delivery_goes_with_the_firing():
     request = SimpleNamespace(query_type="system", retry_of_run_id=None, hitl_response=None)
     held = SimpleNamespace(held=True)
     with (
-        patch(_LATEST, AsyncMock(return_value=stopped)),
         patch.object(automation_delivery, "read_stamp", return_value=held),
         patch.object(automation_delivery, "turn_configurable", return_value={"x": 1}) as conf,
     ):
-        assert await carry.carried_delivery(request, "thread-1") == {"x": 1}
+        assert carry.carried_delivery(request, carry.PriorAttempt(stopped, None)) == {"x": 1}
     conf.assert_called_once()
 
 
@@ -162,19 +149,16 @@ async def test_a_firing_a_turn_took_over_is_left_to_it():
     settle.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_a_retry_of_the_stopped_input_sends_for_its_held_run():
+def test_a_retry_of_the_stopped_input_sends_for_its_held_run():
     from src.server.services import automation_delivery
 
     request = SimpleNamespace(query_type=None, retry_of_run_id="run-1", hitl_response=None)
-    get_run = AsyncMock(return_value=_stopped())
+    prior = carry.PriorAttempt(latest=None, retried=_stopped())
     with (
-        patch("src.server.database.runs.lifecycle.get_run", get_run),
         patch.object(automation_delivery, "read_stamp", return_value=SimpleNamespace(held=True)),
         patch.object(automation_delivery, "turn_configurable", return_value={"x": 1}),
     ):
-        assert await carry.carried_delivery(request, "thread-1") == {"x": 1}
-    get_run.assert_awaited_once_with("run-1")
+        assert carry.carried_delivery(request, prior) == {"x": 1}
 
 
 _LATEST_ATTEMPT = "src.server.database.runs.lifecycle.get_latest_attempt"
