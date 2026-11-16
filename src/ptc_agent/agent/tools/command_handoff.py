@@ -510,11 +510,17 @@ async def _after_turn(computer_id: str | None, *, wakeups: bool) -> str:
     try:
         # Lazy: a build with no server behind it never hands off.
         from src.server.database.computer import get_computer
-        from src.server.services.workspace_manager import spared_by_idle_sweep
+        from src.server.services.idle_policy import spared_by_idle_sweep
 
         computer = await get_computer(computer_id) if computer_id else None
-        if computer is not None and spared_by_idle_sweep(computer):
-            return _RUNS_ON
+        if computer is not None:
+            try:
+                spared = spared_by_idle_sweep(computer)
+            except ValueError:
+                # No provider knows its kind, so the sweep never stops it.
+                spared = True
+            if spared:
+                return _RUNS_ON
     except Exception as e:  # noqa: BLE001 - the hour is the safe thing to say
         logger.warning("Could not read a handed-off command's computer", error=str(e))
     return _WAKEUP_CHECK if wakeups else _STOPPED_AFTER_THE_HOUR

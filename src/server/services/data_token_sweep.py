@@ -96,17 +96,17 @@ async def keeps_running(row: dict[str, Any]) -> bool:
     servers hours after the last turn, with nothing stamping the machine
     active, and a write there holds off no provider's stop. One whose tunnel
     is down is passed over at the write (``computer_unreachable``)."""
-    if row.get("is_always_on"):
-        return True
-    from ptc_agent.core.sandbox.providers import is_own_machine
-
     from src.server.services.computer_manager import ComputerManager
+    from src.server.services.idle_policy import spared_by_idle_sweep
     from src.server.services.runs.executor import LocalRunExecutor
 
+    try:
+        if spared_by_idle_sweep(row):
+            return True
+    except ValueError:
+        return False
     manager = ComputerManager.get_instance()
     try:
-        if is_own_machine(row["kind"]):
-            return True
         # The reaper's own limit, so a computer it is about to stop for
         # being idle is not the one thing keeping it awake at the provider.
         idle_timeout = manager._idle_timeout_for(row)
