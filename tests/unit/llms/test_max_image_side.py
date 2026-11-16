@@ -27,7 +27,7 @@ class TestImageRoute:
             ("glm-5.3-flash-cn", "z-ai"),
             ("gpt-6.1-sol", "openai"),
             ("gpt-6.1-sol-oauth", "openai"),
-            ("gemini-3.8-flash", "gemini"),
+            ("gemini-4-hydrogen", "gemini"),
             ("qwen3.8-max-intl", "dashscope"),
         ],
     )
