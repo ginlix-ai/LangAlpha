@@ -203,9 +203,34 @@ describe('the first-run gate', () => {
     expect(askedOnThisMac('local-dev-user')).toBe(true);
   });
 
-  it('lets the app open on a read that failed, and asks again next launch', async () => {
+  // Let through unasked, Home's warm-up would build a cloud computer for a
+  // user who never chose one.
+  it('holds on a server read that failed, and asks once it reads', async () => {
     api.getComputerProviders.mockRejectedValueOnce(new Error('offline'));
     draw();
+    expect(
+      await screen.findByText(
+        "Couldn't check this Mac with the server. Try again, or continue without setting it up.",
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    });
+
+    expect(await screen.findByRole('button', { name: 'Work on this Mac' }, WAIT)).toBeInTheDocument();
+  });
+
+  it('opens the app on Continue anyway, and asks again next launch', async () => {
+    api.getComputerProviders.mockRejectedValueOnce(new Error('offline'));
+    draw();
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue anyway' }, WAIT));
+    });
+
     expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
     expect(askedOnThisMac('local-dev-user')).toBe(false);
   });

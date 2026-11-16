@@ -4,7 +4,10 @@
  *
  * Asked once per account and Mac, and only while no computer of the account
  * is this Mac; with nothing to ask (this Mac is one already, or the server
- * cannot take it) the page lets the app through at once. "Use the cloud"
+ * cannot take it) the page lets the app through at once. A server read that
+ * failed is no such answer: the page offers to try again, or to go on
+ * without asking, since Home's warm-up would build a cloud computer for a
+ * user who never chose one. "Use the cloud"
  * saves the answer and changes nothing else; with Home on another machine of
  * the user's own, the way out keeps Home there instead. "Work on this Mac"
  * pairs it by remote control, through the same disclosure and consent as the
@@ -72,11 +75,13 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   const nothingToAsk = availability.settled && !askable && !asking;
   // A read that failed is no answer, and asks again next time.
   const answeredNothing = nothingToAsk && (availability.added === true || (availability.known && !availability.offered));
+  const [goOn, setGoOn] = useState(false);
+  const unchecked = nothingToAsk && availability.serverFailed && !goOn;
   useEffect(() => {
-    if (!nothingToAsk) return;
+    if (!nothingToAsk || unchecked) return;
     if (answeredNothing) markAskedOnThisMac();
     onDone();
-  }, [nothingToAsk, answeredNothing, onDone]);
+  }, [nothingToAsk, unchecked, answeredNothing, onDone]);
 
   const { data: list } = useComputers({ enabled: asking });
   const primary = list?.computers.find((c) => c.is_primary && c.status !== 'deleted') ?? null;
@@ -148,6 +153,24 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
     create.mutate(movesHome ? { ...body, make_primary: true } : body, { onSuccess: (row) => void finish(row) });
   };
 
+  if (unchecked) {
+    return (
+      <WizardShell
+        testId="this-mac-first-run"
+        stepKey="unchecked"
+        stepIndex={0}
+        progress={null}
+        footer={
+          <WizardFooter
+            skip={{ label: tRun('continueAnyway'), onClick: () => setGoOn(true) }}
+            primary={{ label: tRun('retry'), onClick: availability.retryServer, busy: availability.retrying }}
+          />
+        }
+      >
+        <WizardStepHeader titleId={headingId} title={tRun('title')} helper={tRun('checkFailed')} />
+      </WizardShell>
+    );
+  }
   if (!asking) return <PageLoading />;
 
   const busy = create.isPending;
