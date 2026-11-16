@@ -75,3 +75,20 @@ def test_a_machine_whose_own_end_refused_is_not_away():
 
     assert not exc.machine_silent
     assert unreachable_code(exc) is None
+
+
+def test_a_machine_that_answers_clears_the_silence_an_earlier_call_left():
+    """A tool call whose first sandbox call found the machine silent and whose
+    next found it answering and refusing ended on the earlier silence, so the
+    turn stopped as though the machine were gone. Its answer clears it."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+    from ptc_agent.core.sandbox.unreachable import note_call, watch_unreachable
+
+    sandbox = object()
+    with watch_unreachable(sandbox) as watch:
+        note_call(sandbox, SSHConnectError("not_connected", "asleep"))
+        assert watch.failure is not None
+        note_call(sandbox, SSHConnectError("auth_failed", "refused"))
+        assert watch.failure is None
+        note_call(sandbox, RuntimeError("a command failed"))
+        assert watch.failure is None

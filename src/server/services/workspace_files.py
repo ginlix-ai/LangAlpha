@@ -12,10 +12,8 @@ from typing import Any, TypeVar
 from fastapi import HTTPException
 
 from ptc_agent.core.paths import WorkspaceLayout
-from ptc_agent.core.sandbox.providers.ssh_errors import (
-    UNANSWERED_CODES,
-    connect_failure,
-)
+from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from ptc_agent.core.sandbox.unreachable import unanswered_code
 from src.observability import safe_record, workspace_fs_bytes
 from src.server.database.home_workspace import is_unbound
 from src.server.database.workspace import computer_backs_up_files
@@ -29,7 +27,7 @@ from src.server.database.workspace_folders import (
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.models.computer_cause import StartCause
 from src.server.models.workspace import served_from_mirror
-from src.server.services.ssh_computers import computer_unreachable, tunnel_down_error
+from src.server.services.ssh_computers import refuse_if_tunnel_down
 from src.server.services.workspace_file_containment import (
     contained_absolute_path,
     contained_sandbox_path,
@@ -42,7 +40,6 @@ from src.server.services.workspace_layout import (
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.utils.api import require_workspace_owner
 from src.server.utils.error_sanitization import (
-    COMPUTER_UNREACHABLE_HEADER,
     sandbox_failure_http,
     sandbox_unreachable_detail,
     single_line,
@@ -104,7 +101,8 @@ async def acquire_sandbox(
         logger.warning(
             f"Sandbox unreachable for workspace {workspace_id}: {single_line(str(e))}"
         )
-        raise sandbox_failure_http(e) from None
+        # Chained, so a read falling back to the backup finds the connect code.
+        raise sandbox_failure_http(e) from e
 
     sandbox = getattr(session, "sandbox", None)
     if sandbox is None:
@@ -134,18 +132,6 @@ async def acquire_sandbox_to_change(
         yield sandbox, workspace
 
 
-def unanswered_code(exc: BaseException) -> str | None:
-    """The connect code of an owner's machine that did not answer, from the
-    failure itself or from the 503 ``sandbox_failure_http`` made of it."""
-    if isinstance(exc, HTTPException):
-        code = (exc.headers or {}).get(COMPUTER_UNREACHABLE_HEADER)
-        return code if code in UNANSWERED_CODES else None
-    failure = connect_failure(exc)
-    return failure.code if failure is not None and not failure.answered else None
-
-
-# What the machine's own connect says of a tunnel that is down, the machine
-# unnamed.
 @dataclass(frozen=True)
 class FromBackup:
     """Files answered from the backup rather than the machine.
@@ -199,35 +185,29 @@ async def files_from(
     edit the older backed-up text and save it over the file once the machine
     is back; for it the machine's failure stands.
     """
-    source = await _backup_up_front(
-        workspace_id, workspace, stopped=stopped, away_ok=away_ok
-    )
-    if source is None:
-        try:
-            return await live()
-        except Exception as e:
-            source = await _backup_after(workspace_id, e) if away_ok else None
-            if source is None:
-                raise
+    if stopped and served_from_mirror(workspace.get("status")):
+        return await backup(FromBackup())
+    try:
+        if away_ok:
+            await _refuse_away(workspace)
+        return await live()
+    except Exception as e:
+        source = await _backup_after(workspace_id, e) if away_ok else None
+        if source is None:
+            raise
     return await backup(source)
 
 
-async def _backup_up_front(
-    workspace_id: str, workspace: Mapping[str, Any], *, stopped: bool, away_ok: bool
-) -> FromBackup | None:
-    if stopped and served_from_mirror(workspace.get("status")):
-        return FromBackup()
-    if not away_ok:
-        return None
-    machine = {
-        "computer_id": workspace.get("computer_id"),
-        "kind": workspace.get("computer_kind"),
-        "provider_config": workspace.get("computer_provider_config"),
-    }
-    if not await computer_unreachable(machine):
-        return None
-    failure = sandbox_failure_http(tunnel_down_error(workspace.get("computer_id")))
-    return await _backup_kept(workspace_id, "not_connected", failure)
+async def _refuse_away(workspace: Mapping[str, Any]) -> None:
+    """The failure a dial would get, for a machine whose tunnel is down."""
+    try:
+        await refuse_if_tunnel_down(
+            workspace.get("computer_id"),
+            workspace.get("computer_kind"),
+            workspace.get("computer_provider_config"),
+        )
+    except SSHConnectError as e:
+        raise sandbox_failure_http(e) from e
 
 
 async def _backup_after(workspace_id: str, exc: BaseException) -> FromBackup | None:

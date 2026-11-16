@@ -46,11 +46,15 @@ class SSHConnectError(RuntimeError):
 
     ``code`` is what a client words its copy from; ``str(exc)`` is a sentence
     the machine's owner can act on, so unlike other provider text it may be
-    shown to them.
+    shown to them. ``computer_id`` names the computer, where the raiser knows
+    it, for its ``computer_unreachable`` frame.
     """
 
-    def __init__(self, code: ConnectErrorCode, message: str) -> None:
+    def __init__(
+        self, code: ConnectErrorCode, message: str, *, computer_id: str | None = None
+    ) -> None:
         self.code: ConnectErrorCode = code
+        self.computer_id = computer_id
         super().__init__(message)
 
     @property

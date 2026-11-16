@@ -76,8 +76,9 @@ async def test_a_machine_gone_mid_run_is_stamped_with_which_one():
     not always its page's computer, so a reload has to name it too."""
     from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 
-    exc = SSHConnectError("not_connected", "The machine is not connected.")
-    exc.unreachable_computer_id = "c-mini"
+    exc = SSHConnectError(
+        "not_connected", "The machine is not connected.", computer_id="c-mini"
+    )
     computer = {"computer_id": "c-mini", "name": "Studio Mac"}
     with patch(
         "src.server.database.computer.get_computer", AsyncMock(return_value=computer)
@@ -282,9 +283,9 @@ async def test_a_machine_gone_mid_turn_names_which_computer_live_and_on_reload()
         new=AsyncMock(return_value={"computer_id": "c-mini", "name": "mini"}),
     ):
         frame = await _kept_frame(exc)
+        row = _failed_row([str(exc)], await _failed_metadata(exc), frame)
     assert {k: frame[k] for k in named} == named
 
-    row = _failed_row([str(exc)], await _failed_metadata(exc), frame)
     (item,) = replay_items.terminal_items(_KEY[0], row, [])
     assert {k: item["data"][k] for k in named} == named
 

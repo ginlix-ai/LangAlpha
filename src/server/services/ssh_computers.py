@@ -23,6 +23,7 @@ from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Mapping, 
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
 from ptc_agent.core.sandbox.providers._ssh_authorized_key import authorized_key_line
+from ptc_agent.core.sandbox.providers._ssh_connect import not_connected_error
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError, SSHFolderMarked
 from src.server.database.computer import (
     count_live_computers_of_kind,
@@ -757,20 +758,12 @@ def tunnel_of(computer: Dict[str, Any]) -> str:
     return (computer.get("provider_config") or {}).get("tunnel") or ""
 
 
-_TUNNEL_DOWN = (
-    "The machine is not connected. It connects by itself whenever it is on "
-    "and online, so check that it is awake and has internet."
-)
-
-
-def tunnel_down_error(computer_id: Optional[str]) -> SSHConnectError:
-    """The failure of a machine :func:`computer_unreachable` found away, known
-    without a dial: the connect code a dial through the gateway would get,
-    naming the computer for its ``computer_unreachable`` frame."""
-    exc = SSHConnectError("not_connected", _TUNNEL_DOWN)
-    if computer_id:
-        exc.unreachable_computer_id = str(computer_id)
-    return exc
+async def _tunnel_down(
+    computer_id: Any, kind: Any, provider_config: Any, *, conn=None
+) -> bool:
+    if not computer_id or kind != SSH_KIND or not (provider_config or {}).get("tunnel"):
+        return False
+    return await computer_tunnel_down(str(computer_id), conn=conn)
 
 
 async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=None) -> bool:
@@ -786,9 +779,24 @@ async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=No
     """
     if not computer or computer.get("status") == "deleted":
         return False
-    if not tunnel_of(dict(computer)):
-        return False
-    return await computer_tunnel_down(str(computer["computer_id"]), conn=conn)
+    return await _tunnel_down(
+        computer.get("computer_id"),
+        computer.get("kind"),
+        computer.get("provider_config"),
+        conn=conn,
+    )
+
+
+async def refuse_if_tunnel_down(
+    computer_id: Optional[str], kind: Optional[str], provider_config: Any
+) -> None:
+    """Raise what a dial through the gateway would for a machine whose tunnel
+    is down, known without the dial, naming the computer for its
+    ``computer_unreachable`` frame. One Postgres read, and none for a
+    computer without a tunnel.
+    """
+    if await _tunnel_down(computer_id, kind, provider_config):
+        raise not_connected_error("The machine", computer_id=str(computer_id))
 
 
 async def unreachable_machine(

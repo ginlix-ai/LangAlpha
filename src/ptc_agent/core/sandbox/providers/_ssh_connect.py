@@ -337,6 +337,16 @@ def _busy(target: SSHTarget) -> SSHMachineBusy:
     )
 
 
+def not_connected_error(name: str, *, computer_id: str | None = None) -> SSHConnectError:
+    """What a dial through the gateway gets for a machine whose tunnel is down."""
+    return SSHConnectError(
+        "not_connected",
+        f"{name} is not connected. It connects by itself whenever it is on "
+        "and online, so check that it is awake and has internet.",
+        computer_id=computer_id,
+    )
+
+
 def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConnectError:
     name = target.host or "The machine"
     if exc.reason == GATEWAY_PAIRED_ELSEWHERE:
@@ -346,11 +356,7 @@ def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConne
             "Reconnect it to use it here.",
         )
     if exc.reason == GATEWAY_NOT_CONNECTED:
-        return SSHConnectError(
-            "not_connected",
-            f"{name} is not connected. It connects by itself whenever it is on "
-            "and online, so check that it is awake and has internet.",
-        )
+        return not_connected_error(name)
     if exc.reason == GATEWAY_NO_ANSWER:
         return _busy(target)
     if exc.reason == GATEWAY_STARTING:
