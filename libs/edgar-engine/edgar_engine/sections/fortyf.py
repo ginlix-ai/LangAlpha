@@ -1,5 +1,6 @@
 """40-F boundaries: the general-instruction wrapper, its printed titles, and the documents it carries."""
 import re
+from dataclasses import dataclass
 
 from .boundaries import Heading, ItemSpan, Layout, toc_lines
 from .rendering import Rendering
@@ -149,24 +150,71 @@ def exhibit_documents(lines, line_doc, start):
     return out
 
 
-def fortyf(rendering: Rendering):
+@dataclass
+class _Lines:
+    """The main document's lines as the 40-F rules read them, classified once: each line's kind ("sig", "exindex",
+    "doclabel", "certdoc", "quicklinks", "title", "runin", "unlisted"), the ids a title names and its style, and
+    the lines a two-line title took into the one above."""
+    raw: list[str]
+    norm: list[str]
+    table: list[bool]
+    kind: list[str | None]
+    ids_at: dict[int, tuple[str, ...]]
+    style: dict[int, str]
+    consumed: set[int]
+
+    def next_nonblank(self, i: int, window: int, skip_consumed: bool = False) -> int | None:
+        """The first non-blank line among the window - 1 lines after i."""
+        return next((j for j in range(i + 1, min(len(self.norm), i + window))
+                     if self.norm[j] and not (skip_consumed and j in self.consumed)), None)
+
+
+def fortyf(rendering: Rendering) -> Layout:
+    """The 40-F's sections: the wrapper's titled sections in its main cluster, the principal documents it prints
+    or lists, and for a 40-F/A the documents its exhibits refile."""
     main_end = rendering.main_end
     if main_end < len(rendering.lines):
         main = Rendering(rendering.lines[:main_end], rendering.line_doc[:main_end], rendering.documents[:1])
         layout = fortyf(main)
         layout.spans.update(exhibit_documents(rendering.lines, rendering.line_doc, main_end))
         return layout
-    lines, line_doc, offs = rendering.lines, rendering.line_doc, rendering.offsets
+    L = _classify(rendering.lines)
+    heads = [Heading(i, "item", L.ids_at[i]) for i in L.ids_at]
+    toc = _toc(L, rendering, heads)
+    exrows = _exhibit_rows(L, toc)
+    titles = [i for i in sorted(L.ids_at) if i not in toc and i not in exrows and not (L.table[i] and not has_label(L.norm[i]))]
+    listed = _principal_list(L)
+    group = _group_headings(L, titles)
+    starts = [i for i in titles if i not in group]
+    wrapper = _wrapper_cluster(L, titles, starts, toc, rendering.offsets)
+    if wrapper is None:
+        return Layout({}, toc, heads)
+    main, wstart = wrapper
+    printed = _printed_documents(L, main, toc)
+    chosen = _assign(L, main, titles, printed, listed, toc)
+    st_list = [L.style[i] for i in main if i in L.style]
+    unlisted = _Unlisted(L, toc, main[0], max(main) + 400,
+                         max(set(st_list), key=lambda s: (st_list.count(s), s == "caps")) if st_list else "caps")
+    if "NYSE_GOV" not in chosen and (j := _governance_by_text(L, unlisted)) is not None:
+        chosen["NYSE_GOV"], L.ids_at[j] = j, ("NYSE_GOV",)
+    open_starts = sorted(set(chosen.values()))
+    out = {}
+    for sid, i in chosen.items():
+        end = _section_end(L, sid, i, next((x for x in open_starts if x > i), len(L.norm)), rendering.line_doc, toc,
+                           exrows, titles, group, main, wstart, printed, unlisted)
+        out[sid] = ItemSpan(sid, i, end, i, [o for o in L.ids_at.get(i, (sid,)) if o != sid and o in chosen and chosen[o] == i])
+    return Layout(out, toc, heads)
+
+
+def _classify(lines: list[str]) -> _Lines:
     n = len(lines)
-    raw = [strip_label_cell(l) if len(l) <= 4000 else "" for l in lines]
+    raw = [strip_label_cell(ln) if len(ln) <= 4000 else "" for ln in lines]
     norm = [normalize(r) for r in raw]
     table = [(" | " in r and not re.match(r"^\s*(?:[A-Z]|\d{1,2})\. ", r)) or r.lstrip()[:1] in BULLET for r in raw]
-    kind = [None] * n
-    ids_at = {}
-    style = {}
-    consumed = set()
+    L = _Lines(raw, norm, table, [None] * n, {}, {}, set())
+    kind = L.kind
     for i, s in enumerate(norm):
-        if i in consumed or not s:
+        if i in L.consumed or not s:
             continue
         if len(s) <= 40 and SIGNATURES.fullmatch(s) or (SIGNATURE_PARAGRAPH.match(s) and "duly caused" in s[:400].lower()):
             kind[i] = "sig"
@@ -188,19 +236,23 @@ def fortyf(rendering: Rendering):
             mj = match_title(s + " " + norm[i + 1], raw[i - 1] if i else "")
             if mj and mj[1] == "standalone":
                 m = mj
-                consumed.add(i + 1)
+                L.consumed.add(i + 1)
         if m and m[1] == "standalone" and len(s) > 100 and s.endswith(".") and set(m[0]) <= DOCS:
             m = None
         if m:
             kind[i] = "title" if m[1] == "standalone" else "runin"
-            ids_at[i] = m[0]
-            style[i] = "label" if has_label(s) else ("runin" if m[1] == "runin" else ("caps" if is_caps(s) else ("period" if s.endswith(".") else "title")))
+            L.ids_at[i] = m[0]
+            L.style[i] = "label" if has_label(s) else ("runin" if m[1] == "runin" else ("caps" if is_caps(s) else ("period" if s.endswith(".") else "title")))
             continue
         if len(s) <= 120 and UNLISTED.fullmatch(s):
             kind[i] = "unlisted"
-    # tables of contents: engine rule, a window after a contents title, and QuickLinks blocks
-    heads = [Heading(i, "item", ids_at[i]) for i in ids_at]
-    toc = set(toc_lines(heads, lines, [x for ids, _ in TITLES for x in ids]))
+    return L
+
+
+def _toc(L: _Lines, rendering: Rendering, heads: list[Heading]) -> set[int]:
+    """Tables of contents: the engine's rule over the titles, a window after a contents title, and QuickLinks blocks."""
+    norm, n = L.norm, len(L.norm)
+    toc = set(toc_lines(heads, rendering.lines, [x for ids, _ in TITLES for x in ids]))
     for i, s in enumerate(norm):
         if s and len(s) < 40 and CONTENTS.fullmatch(s.upper().replace("TABLE OF CONTENTS", "CONTENTS")) or (s and s.upper() == "TABLE OF CONTENTS"):
             seen, win = set(), []
@@ -208,52 +260,72 @@ def fortyf(rendering: Rendering):
                 t = norm[j]
                 if not t:
                     continue
-                nx = next((k for k in range(j + 1, min(n, j + 3)) if norm[k]), None)
-                if kind[j] == "doclabel" or (len(t) > 40 and SENTENCE.search(t)) or len(t) > 90 or t.upper() in seen or \
+                nx = L.next_nonblank(j, 3)
+                if L.kind[j] == "doclabel" or (len(t) > 40 and SENTENCE.search(t)) or len(t) > 90 or t.upper() in seen or \
                         (nx is not None and (len(norm[nx]) > 90 or (len(norm[nx]) > 40 and SENTENCE.search(norm[nx])))):
                     break
                 seen.add(t.upper())
                 win.append(j)
             if len(win) >= 3:
                 toc.update(win)
-        if kind[i] == "quicklinks":
+        if L.kind[i] == "quicklinks":
+            line_doc = rendering.line_doc
             toc.update(range(i, next((j for j in range(i + 1, n) if line_doc[j] != line_doc[i]), n)))
-    # rows of an exhibit index are not headings
+    return toc
+
+
+def _exhibit_rows(L: _Lines, toc: set[int]) -> set[int]:
+    """Rows of an exhibit index, which are not headings."""
     exrows = set()
     in_ex = False
-    for i in range(n):
-        if kind[i] == "exindex":
+    for i in range(len(L.norm)):
+        if L.kind[i] == "exindex":
             in_ex = True
             continue
-        if kind[i] in ("sig", "doclabel"):
+        if L.kind[i] in ("sig", "doclabel"):
             in_ex = False
-        if in_ex and kind[i] in ("title", "runin", "unlisted"):
-            if table[i] or re.match(r"\d{1,3}(?:\.\d+)?[A-Za-z()]*\.?\s", norm[i]) or i in toc:
+        if in_ex and L.kind[i] in ("title", "runin", "unlisted"):
+            if L.table[i] or re.match(r"\d{1,3}(?:\.\d+)?[A-Za-z()]*\.?\s", L.norm[i]) or i in toc:
                 exrows.add(i)
             else:
                 in_ex = False
-    titles = [i for i in sorted(ids_at) if i not in toc and i not in exrows and not (table[i] and not has_label(norm[i]))]
-    # principal-document lists: each entry naming the AIF, statements or MD&A is a stub heading for it
-    listed = {}
+    return exrows
+
+
+def _principal_list(L: _Lines) -> dict[str, int]:
+    """Principal-document lists: each entry naming the AIF, statements or MD&A is a stub heading for it."""
+    norm, kind, n = L.norm, L.kind, len(L.norm)
+    listed: dict[str, int] = {}
     for i, s in enumerate(norm):
         if s and (len(s) <= 80 and PRINCIPAL.fullmatch(s) or re.match(r"the following documents\b.*\b(?:filed|incorporated|included)\b", s, re.I) and len(s) <= 300):
             for j in range(i + 1, min(n, i + 12)):
-                if kind[j] in ("title", "unlisted", "sig", "exindex") and not (kind[j] == "title" and set(ids_at[j]) <= DOCS):
+                if kind[j] in ("title", "unlisted", "sig", "exindex") and not (kind[j] == "title" and set(L.ids_at[j]) <= DOCS):
                     break
                 d = first_doc(norm[j])
                 if d and not re.match(r"the following", norm[j], re.I):
                     listed.setdefault(d, j)
-    # group headings: a title whose next line is a title naming a subset of its ids only ends the previous section
+    return listed
+
+
+def _group_headings(L: _Lines, titles: list[int]) -> set[int]:
+    """A title whose next line is a title naming a subset of its ids only ends the previous section."""
     group = set()
+    n = len(L.norm)
     for i in titles:
-        nxt = next((j for j in range(i + 1, min(n, i + 3)) if norm[j] and j not in consumed and not PAGEISH.fullmatch(norm[j])), None)
-        if nxt in ids_at and nxt in titles and set(ids_at[nxt]) < set(ids_at[i]):
+        nxt = next((j for j in range(i + 1, min(n, i + 3)) if L.norm[j] and j not in L.consumed and not PAGEISH.fullmatch(L.norm[j])), None)
+        if nxt in L.ids_at and nxt in titles and set(L.ids_at[nxt]) < set(L.ids_at[i]):
             group.add(i)
-    starts = [i for i in titles if i not in group]
-    # main cluster of wrapper sections
-    # an annual information form printed whole (its title, then its date) holds its own governance headings,
-    # which are not the wrapper's when the wrapper prints sections outside it
-    aif_at = next((i for i in titles if ids_at[i] == ("AIF",) and kind[i] == "title" and not table[i] and len(norm[i]) <= 150
+    return group
+
+
+def _wrapper_cluster(L: _Lines, titles: list[int], starts: list[int], toc: set[int],
+                     offs: list[int]) -> tuple[list[int], int] | None:
+    """The wrapper's own section headings: the cluster of starts naming the most wrapper sections, the starts up to
+    its signatures, and the document titles just before it; with where the wrapper begins. An annual information
+    form printed whole (its title, then its date) holds its own governance headings, which are not the wrapper's
+    when the wrapper prints sections outside it."""
+    norm, kind, ids_at, n = L.norm, L.kind, L.ids_at, len(L.norm)
+    aif_at = next((i for i in titles if ids_at[i] == ("AIF",) and kind[i] == "title" and not L.table[i] and len(norm[i]) <= 150
                    and any(PERIOD_LINE.fullmatch(norm[j]) for j in range(i + 1, min(n, i + 4)) if norm[j])), None)
     wrapper = [x for x in starts if set(ids_at[x]) - DOCS]
     inside = set()
@@ -268,68 +340,86 @@ def fortyf(rendering: Rendering):
             clusters[-1].append(i)
         else:
             clusters.append([i])
-    out = {}
     if not clusters:
-        return Layout(out, toc, heads)
+        return None
     main = max(clusters, key=lambda cl: (len({x for i in cl for x in ids_at[i] if x not in DOCS}), len(cl)))
-    chosen = {}
     lo = offs[main[0]] - 3000
     near = [i for i in starts if lo <= offs[i] <= offs[main[-1]] and (i in main or not set(ids_at[i]) - DOCS)]
     sig_after = next((j for j in range(main[-1] + 1, n) if kind[j] == "sig" and j not in toc), n)
     main = sorted(set(main) | {i for i in starts if main[-1] < i < sig_after and set(ids_at[i]) - DOCS and i not in inside})
     wstart = main[0]
-    main = sorted(set(main) | set(near))
+    return sorted(set(main) | set(near)), wstart
+
+
+def _doc_ids(L: _Lines, i: int, toc: set[int]) -> list[str] | None:
+    """The principal documents a line titles when it opens one."""
+    if i in L.ids_at and L.kind[i] == "title" and (set(L.ids_at[i]) & DOCS) and not L.table[i] and i not in toc and len(L.norm[i]) <= 150:
+        return [x for x in L.ids_at[i] if x in DOCS]
+    if PACKAGE.fullmatch(L.norm[i] or "") and not L.table[i] and i not in toc:
+        return ["AFS"]
+    return None
+
+
+def _opening(L: _Lines, i: int) -> bool:
+    """A title followed by the period it covers, as a document printed whole opens."""
+    nx = L.next_nonblank(i, 4, skip_consumed=True)
+    return nx is not None and bool(PERIOD_LINE.fullmatch(L.norm[nx]))
+
+
+def _printed_documents(L: _Lines, main: list[int], toc: set[int]) -> dict[str, int]:
+    """Principal documents printed whole in the body: the title after each document label, else the AIF that
+    opens with its period and then the MD&A and statements after it, outside the wrapper's sections."""
+    norm, n = L.norm, len(L.norm)
+    printed: dict[str, int] = {}
+    labels = [i for i in range(n) if L.kind[i] == "doclabel"]
+    if labels:
+        for lb in labels:
+            st = next((j for j in range(lb + 1, min(n, lb + 9)) if _doc_ids(L, j, toc)), lb + 1)
+            d = _doc_ids(L, st, toc)
+            if d:
+                printed.setdefault(d[0], st)
+        return printed
+    aif = next((i for i in range(n) if _doc_ids(L, i, toc) == ["AIF"] and _opening(L, i)), None)
+    if aif is None:
+        return printed
+    printed["AIF"] = aif
+    cur = aif
+    while True:
+        nxt = None
+        for want in ("MDA", "AFS"):
+            if want in printed:
+                continue
+            c = next((i for i in range(cur + 1, n) if (d := _doc_ids(L, i, toc)) and d[0] == want
+                      and (is_caps(norm[i]) or _opening(L, i) or (want == "AFS" and PACKAGE.fullmatch(norm[i])))
+                      and (main[0] > i or i > main[-1]) and (want != "AFS" or i > printed.get("MDA", -1) or "MDA" in printed)), None)
+            if c is not None and (nxt is None or c < nxt[1]):
+                nxt = (want, c)
+        if not nxt:
+            break
+        printed[nxt[0]] = nxt[1]
+        cur = nxt[1]
+    return printed
+
+
+def _assign(L: _Lines, main: list[int], titles: list[int], printed: dict[str, int], listed: dict[str, int],
+            toc: set[int]) -> dict[str, int]:
+    """The heading line each section opens at: the wrapper's headings, then the documents printed or listed, a
+    combined heading's named ids moved to their own sub-headings, and a pre-approval heading right before the
+    fees title opening FEES."""
+    norm, kind, ids_at = L.norm, L.kind, L.ids_at
+    chosen: dict[str, int] = {}
     for i in main:
         for x in ids_at[i]:
             if x in DOCS and (kind[i] == "title" and len(norm[i]) > 60 and not has_label(norm[i])):
                 continue
             chosen.setdefault(x, i)
-    # documents printed whole in the body
-    printed = {}
-    labels = [i for i in range(n) if kind[i] == "doclabel"]
-
-    def doc_ids(i):
-        if i in ids_at and kind[i] == "title" and (set(ids_at[i]) & DOCS) and not table[i] and i not in toc and len(norm[i]) <= 150:
-            return [x for x in ids_at[i] if x in DOCS]
-        if PACKAGE.fullmatch(norm[i] or "") and not table[i] and i not in toc:
-            return ["AFS"]
-        return None
-
-    def opening(i):
-        nx = next((j for j in range(i + 1, min(n, i + 4)) if norm[j] and j not in consumed), None)
-        return nx is not None and bool(PERIOD_LINE.fullmatch(norm[nx]))
-    if labels:
-        for k, lb in enumerate(labels):
-            st = next((j for j in range(lb + 1, min(n, lb + 9)) if doc_ids(j)), lb + 1)
-            d = doc_ids(st)
-            if d:
-                printed.setdefault(d[0], st)
-    else:
-        aif = next((i for i in range(n) if doc_ids(i) == ["AIF"] and opening(i)), None)
-        if aif is not None:
-            printed["AIF"] = aif
-            cur = aif
-            while True:
-                nxt = None
-                for want in ("MDA", "AFS"):
-                    if want in printed:
-                        continue
-                    c = next((i for i in range(cur + 1, n) if doc_ids(i) and doc_ids(i)[0] == want and (is_caps(norm[i]) or opening(i) or (want == "AFS" and PACKAGE.fullmatch(norm[i])))
-                              and (main[0] > i or i > main[-1]) and (want != "AFS" or i > printed.get("MDA", -1) or "MDA" in printed)), None)
-                    if c is not None and (nxt is None or c < nxt[1]):
-                        nxt = (want, c)
-                if not nxt:
-                    break
-                printed[nxt[0]] = nxt[1]
-                cur = nxt[1]
     for d, i in printed.items():
         w = chosen.get(d)
-        if w is None or w == i or kind[w] != "title" or opening(w) or w in listed.values() or i < w:
+        if w is None or w == i or kind[w] != "title" or _opening(L, w) or w in listed.values() or i < w:
             chosen[d] = i
     for d, i in listed.items():
         if d not in chosen and not printed:
             chosen[d] = i
-    # a combined heading gives each named id with its own sub-heading to that sub-heading
     for i in sorted(set(chosen.values())):
         own = set(ids_at.get(i, ()))
         if len(own) < 2:
@@ -340,88 +430,92 @@ def fortyf(rendering: Rendering):
             for x in ids_at[j]:
                 if chosen.get(x) == i:
                     chosen[x] = j
-    # several headings under one id: a pre-approval heading right before the fees title opens FEES
     if "FEES" in chosen:
         i = chosen["FEES"]
         k = next((k for k in range(i - 1, max(-1, i - 60), -1) if kind[k] or k in ids_at or PREAPPROVAL.fullmatch(norm[k] or "")), None)
         if k is not None and PREAPPROVAL.fullmatch(norm[k]) and titled(norm[k]) and k > max([x for x in chosen.values() if x < i], default=-1):
             chosen["FEES"] = k
-    # dominant heading style of the wrapper sections
-    st_list = [style[i] for i in main if i in style]
-    dom = max(set(st_list), key=lambda s: (st_list.count(s), s == "caps")) if st_list else "caps"
-    region_end = max(main) + 400
-    ends = set(i for i in range(n) if kind[i] in ("sig", "exindex", "doclabel", "certdoc", "quicklinks"))
-    ends |= set(group) | set(i for i in titles)
-    open_starts = sorted(set(chosen.values()))
+    return chosen
 
-    def unlisted_end(j, sid, s0):
+
+@dataclass(frozen=True)
+class _Unlisted:
+    """A heading the 40-F's list does not name, in the wrapper's dominant heading style ("caps", "label", "period"
+    or "title"), which ends the section before it. Lines a section's own continuation pattern names do not."""
+    lines: _Lines
+    toc: set[int]
+    first: int
+    region_end: int
+    style: str
+
+    def ends(self, j: int, sid: str) -> bool:
+        L, norm = self.lines, self.lines.norm
         s = norm[j]
-        if not s or j in toc or j in consumed or table[j] or len(s) > 110 or PAGEISH.fullmatch(s):
+        if not s or j in self.toc or j in L.consumed or L.table[j] or len(s) > 110 or PAGEISH.fullmatch(s):
             return False
         cont = CONT.get(sid)
         if cont and cont.match(s):
             return False
-        if kind[j] == "unlisted":
+        if L.kind[j] == "unlisted":
             return True
-        if not (main[0] <= j <= region_end):
+        if not (self.first <= j <= self.region_end):
             return False
         body = s[:-1] if s.endswith(".") else s
         if SENTENCE.search(body) or s.endswith(":") or len(re.findall(r"[A-Za-z]{2,}", s)) < 1:
             return False
         if j > 0 and is_caps(norm[j - 1]) and CONNECT.search(norm[j - 1]):
             return False
-        nx = next((k for k in range(j + 1, min(n, j + 3)) if norm[k]), None)
+        nx = L.next_nonblank(j, 3)
         prose_next = nx is not None and len(norm[nx].split()) >= 8 and any(c.islower() for c in norm[nx])
-        if dom == "caps":
+        if self.style == "caps":
             return is_caps(s) and not has_label(s)
-        if dom == "label":
+        if self.style == "label":
             return has_label(s) and len(s) <= 90
-        if dom == "period":
+        if self.style == "period":
             return s.endswith(".") and len(s) <= 90 and s[0].isupper() and not has_label(s)
-        if dom == "title":
+        if self.style == "title":
             return prose_next and len(s) <= 70 and not s.endswith(".") and not has_label(s) and titled(s)
         return False
 
-    # exchange governance is decided by its text: when no heading names the exchange, the first unlisted
-    # heading whose own text is the listing-standards disclosure is NYSE_GOV
-    if "NYSE_GOV" not in chosen:
-        for j in range(main[0], min(n, region_end)):
-            if j in ids_at or j in toc or not unlisted_end(j, "", j):
-                continue
-            stop = next((k for k in range(j + 1, n) if k in ids_at or kind[k] or unlisted_end(k, "", k)), n)
-            body = " ".join(norm[j + 1:stop])[:3000]
-            if EXCHANGE.search(body) and LISTING_TEXT.search(body):
-                chosen["NYSE_GOV"], ids_at[j] = j, ("NYSE_GOV",)
-                open_starts = sorted(set(chosen.values()))
-                break
 
-    for sid, i in chosen.items():
-        nxt = next((x for x in open_starts if x > i), n)
-        is_doc = sid in DOCS and sid in printed and printed[sid] == i
-        end = nxt
-        for j in range(i + 1, nxt):
-            if line_doc[j] != line_doc[i]:
-                end = j
-                break
-            if j in consumed:
-                continue
-            if is_doc:
-                if kind[j] in ("sig", "doclabel", "certdoc", "quicklinks") or j == wstart or (j in group and j < wstart) or \
-                        (kind[j] == "unlisted" and re.fullmatch(r"ADDITIONAL DISCLOSURES?\.?", norm[j], re.I)):
-                    end = j
-                    break
-                continue
-            if kind[j] in ("sig", "exindex", "doclabel", "certdoc", "quicklinks") and j not in toc:
-                end = j
-                break
-            if j in group or (j in titles and j not in toc and j not in exrows and set(ids_at[j]) - {sid}):
-                if not (j in titles and set(ids_at[j]) & DOCS and sid in DOCS and j not in main):
-                    end = j
-                    break
-            if sid in ids_at.get(j, ()):
-                continue
-            if unlisted_end(j, sid, i):
-                end = j
-                break
-        out[sid] = ItemSpan(sid, i, end, i, [o for o in ids_at.get(i, (sid,)) if o != sid and o in chosen and chosen[o] == i])
-    return Layout(out, toc, heads)
+def _governance_by_text(L: _Lines, unlisted: _Unlisted) -> int | None:
+    """Exchange governance is decided by its text: when no heading names the exchange, the first unlisted heading
+    whose own text is the listing-standards disclosure opens NYSE_GOV."""
+    norm, n = L.norm, len(L.norm)
+    for j in range(unlisted.first, min(n, unlisted.region_end)):
+        if j in L.ids_at or j in unlisted.toc or not unlisted.ends(j, ""):
+            continue
+        stop = next((k for k in range(j + 1, n) if k in L.ids_at or L.kind[k] or unlisted.ends(k, "")), n)
+        body = " ".join(norm[j + 1:stop])[:3000]
+        if EXCHANGE.search(body) and LISTING_TEXT.search(body):
+            return j
+    return None
+
+
+def _section_end(L: _Lines, sid: str, i: int, nxt: int, line_doc: list[int], toc: set[int], exrows: set[int],
+                 titles: list[int], group: set[int], main: list[int], wstart: int, printed: dict[str, int],
+                 unlisted: _Unlisted) -> int:
+    """Where the section opening at line i ends, before the next section's opening (nxt). A document printed whole
+    runs to a structural end or the wrapper; a wrapper section also ends at another title or an unlisted heading."""
+    norm, kind, ids_at = L.norm, L.kind, L.ids_at
+    is_doc = sid in DOCS and sid in printed and printed[sid] == i
+    for j in range(i + 1, nxt):
+        if line_doc[j] != line_doc[i]:
+            return j
+        if j in L.consumed:
+            continue
+        if is_doc:
+            if kind[j] in ("sig", "doclabel", "certdoc", "quicklinks") or j == wstart or (j in group and j < wstart) or \
+                    (kind[j] == "unlisted" and re.fullmatch(r"ADDITIONAL DISCLOSURES?\.?", norm[j], re.I)):
+                return j
+            continue
+        if kind[j] in ("sig", "exindex", "doclabel", "certdoc", "quicklinks") and j not in toc:
+            return j
+        if j in group or (j in titles and j not in toc and j not in exrows and set(ids_at[j]) - {sid}):
+            if not (j in titles and set(ids_at[j]) & DOCS and sid in DOCS and j not in main):
+                return j
+        if sid in ids_at.get(j, ()):
+            continue
+        if unlisted.ends(j, sid):
+            return j
+    return nxt
