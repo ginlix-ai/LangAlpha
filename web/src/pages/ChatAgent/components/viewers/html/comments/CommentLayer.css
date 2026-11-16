@@ -212,12 +212,15 @@
   justify-content: center;
   pointer-events: none;
 }
+/* It carries its own way out: a quiet button at its end, held at 28 px by
+   the pill's padding. */
 .page-comments-hint {
+  display: flex;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 3px 10px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 2px 2px 12px;
+  pointer-events: auto;
   border-radius: 9999px;
   font-size: 0.75rem;
   color: var(--color-text-secondary);
@@ -225,9 +228,49 @@
   border: 1px solid var(--color-border-muted);
   box-shadow: var(--shadow-card);
 }
+.page-comments-hint-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-comments-hint-exit {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.page-comments-hint-exit:hover {
+  background-color: var(--color-bg-hover);
+}
+.page-comments-hint-exit kbd {
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.6875rem;
+  line-height: 16px;
+  color: var(--color-text-tertiary);
+  border: 1px solid var(--color-border-muted);
+}
 
 /* Too narrow for a strip of page beside it, the list takes the frame's width. */
 .page-comments[data-narrow] .page-comments-panel {
   left: 8px;
   width: auto;
+}
+
+/* A draft's ×, at a 28 px reach (the card's icon buttons are 26). Its touch
+   target stops short of the field below it. */
+.page-comment-draft-close {
+  width: 28px;
+  height: 28px;
+  --tap-target-h: 32px;
 }

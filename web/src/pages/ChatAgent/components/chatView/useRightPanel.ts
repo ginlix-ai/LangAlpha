@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { appendPathSuffix, getPreviewUrl } from '../../utils/api';
+import { appendPathSuffix, getPreviewUrl, previewFailure } from '../../utils/api';
 import { getShareLink, parseShareLinkHref } from '../../utils/api/shareLinks';
 import { desktop } from '@/lib/desktop';
 import { opensShareLinksInPanel } from '@/lib/shareLinkOpen';
@@ -106,7 +106,6 @@ export function useRightPanel({
   const panelExpanded = expanded && !isMobile;
   const handleTogglePanelExpanded = useCallback(() => setExpanded((v) => !v), []);
 
-  const [rightPanelWidth, setRightPanelWidth] = useState(750);
   // What the file panel has in front, reported by the panel as it changes. A
   // chart is the one tab with a width of its own: below the surface's floor
   // its toolbar collides, so while a chart is in front the divider stops
@@ -144,14 +143,29 @@ export function useRightPanel({
   // A tool call is held by id and read live below, like a tab holds it.
   const [detailToolCallId, setDetailToolCallId] = useState<string | null>(null);
 
-  // The cap the open content asked for. A running app opens past the default
-  // cap on purpose, and the divider has to hold that width instead of snapping
-  // it back on the first pixel, so the ask is recorded rather than inferred
-  // from the width.
-  const panelMaxRatioRef = useRef<number | undefined>(undefined);
-  const applyPanelWidth = useCallback((desired: number, maxRatio?: number) => {
-    panelMaxRatioRef.current = maxRatio;
-    setRightPanelWidth(clampPanelWidthUtil(desired, containerRef.current?.offsetWidth || window.innerWidth, maxRatio));
+  // The width chosen (by a landing, a chart's floor or the divider) and the
+  // cap the open content asked for. A running app opens past the default cap
+  // on purpose, and the divider has to hold that width instead of snapping it
+  // back on the first pixel, so the ask is recorded rather than inferred from
+  // the width. The width shown is the choice held to the container as it is
+  // now: a window made narrower squeezes it and one made wide again gives it
+  // back, or a width set while it was wide leaves the chat a sliver.
+  const [panelChoice, setPanelChoice] = useState<{ width: number; maxRatio?: number }>({ width: 750 });
+  const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
+  const rightPanelWidth = clampPanelWidthUtil(panelChoice.width, containerWidth, panelChoice.maxRatio);
+  const applyPanelWidth = useCallback((width: number, maxRatio?: number) => setPanelChoice({ width, maxRatio }), []);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      if (el.offsetWidth > 0) setContainerWidth(el.offsetWidth);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [containerRef]);
 
   // Read by the landing below, which is called from handlers whose identity
@@ -169,23 +183,28 @@ export function useRightPanel({
    */
   const growPanelWidth = useCallback((desired: number, maxRatio?: number) => {
     const open = rightPanelTypeRef.current === 'file';
-    const ratio = open ? (Math.max(panelMaxRatioRef.current ?? 0, maxRatio ?? 0) || undefined) : maxRatio;
-    panelMaxRatioRef.current = ratio;
-    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
-    setRightPanelWidth((prev) => clampPanelWidthUtil(open ? Math.max(prev, desired) : desired, containerW, ratio));
-  }, [containerRef, rightPanelTypeRef]);
+    setPanelChoice((prev) => open
+      ? { width: Math.max(prev.width, desired), maxRatio: Math.max(prev.maxRatio ?? 0, maxRatio ?? 0) || undefined }
+      : { width: desired, maxRatio });
+  }, [rightPanelTypeRef]);
 
   // A chart coming to the front, by landing, by a click on its tab or by a
   // strip restored with it in front, widens the panel to its floor and no
   // further. Mobile shows the panel full width and has no divider.
   // The cap rises with it, as a chart landing raises it, so the floor holds
-  // however the chart came to the front.
-  useEffect(() => {
-    if (isMobile || !panelMinWidth) return;
-    panelMaxRatioRef.current = Math.max(panelMaxRatioRef.current ?? 0, PREVIEW_MAX_RATIO);
-    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
-    setRightPanelWidth((prev) => clampPanelWidthUtil(Math.max(prev, panelMinWidth), containerW, panelMaxRatioRef.current));
-  }, [isMobile, panelMinWidth, containerRef]);
+  // however the chart came to the front. Applied as the floor arrives, in the
+  // render that brings it.
+  const floor = isMobile ? 0 : panelMinWidth;
+  const [floorSeen, setFloorSeen] = useState(0);
+  if (floor !== floorSeen) {
+    setFloorSeen(floor);
+    if (floor) {
+      setPanelChoice((prev) => ({
+        width: Math.max(prev.width, floor),
+        maxRatio: Math.max(prev.maxRatio ?? 0, PREVIEW_MAX_RATIO),
+      }));
+    }
+  }
 
   // Handle drag panel width: direct DOM manipulation for smooth, jank-free resize.
   // React state is only updated once on mouseup; during drag we bypass React/Framer.
@@ -195,8 +214,8 @@ export function useRightPanel({
     setIsDragging(true);
     const startX = e.clientX;
     const startWidth = rightPanelWidth;
-    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
-    const maxRatio = panelMaxRatioRef.current;
+    const containerW = containerWidth;
+    const { maxRatio } = panelChoice;
     const minWidth = panelMinWidth;
 
     // Immediately disable pointer events on iframes to prevent them from
@@ -208,9 +227,11 @@ export function useRightPanel({
     const wrapperEl = panelWrapperRef.current;
     const innerEl = wrapperEl?.querySelector<HTMLElement>('[data-panel-inner]');
     let currentWidth = startWidth;
+    let moved = false;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingRef.current) return;
+      moved = true;
       const delta = startX - moveEvent.clientX;
       // The floor goes in before the clamp so the container's cap still wins.
       currentWidth = clampPanelWidthUtil(Math.max(startWidth + delta, minWidth), containerW, maxRatio);
@@ -237,7 +258,11 @@ export function useRightPanel({
       // width committed and later changes animate again.
       requestAnimationFrame(() => setDragJustEnded(false));
       setIsDragging(false);
-      setRightPanelWidth(currentWidth);
+      // Only a drag changes the choice: the width shown is held to the
+      // container, so a click on the divider would set the squeezed width as
+      // the one a wider window gives back. Kept at least at the floor, for
+      // the same reason.
+      if (moved) setPanelChoice((prev) => ({ ...prev, width: Math.max(currentWidth, minWidth) }));
       teardown();
     }
 
@@ -246,7 +271,7 @@ export function useRightPanel({
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
     dragCleanupRef.current = teardown;
-  }, [rightPanelWidth, containerRef, panelMinWidth]);
+  }, [rightPanelWidth, panelChoice, containerWidth, containerRef, panelMinWidth]);
 
   // Push a sentinel history entry when a panel opens so that the browser back
   // gesture closes the panel instead of navigating away from ChatView.
@@ -416,10 +441,10 @@ export function useRightPanel({
         previewMapRef.current.set(port, updated);
         if (activePreviewPortRef.current === port) setPreviewData(updated);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         const entry = previewMapRef.current.get(port);
         if (entry?.workspaceId !== wid) return;
-        const updated = { ...entry, url: '', loading: false, error: true };
+        const updated = { ...entry, url: '', loading: false, error: previewFailure(err) };
         previewMapRef.current.set(port, updated);
         if (activePreviewPortRef.current === port) setPreviewData(updated);
       });
@@ -702,7 +727,7 @@ export function useRightPanel({
       console.error('Failed to refresh preview:', e);
       const entry = previewMapRef.current.get(port);
       if (entry && entry.workspaceId !== wid) return;
-      const updated = { ...(entry ?? previewData), loading: false, error: true };
+      const updated = { ...(entry ?? previewData), loading: false, error: previewFailure(e) };
       previewMapRef.current.set(port, updated);
       if (activePreviewPortRef.current === port) setPreviewData(updated);
     }

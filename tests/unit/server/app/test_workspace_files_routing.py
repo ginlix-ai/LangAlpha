@@ -146,6 +146,26 @@ async def test_backup_status_of_a_stopped_workspace_lists_files_only(mock_get_ws
 
 
 @pytest.mark.asyncio
+@patch("src.server.database.workspace_file.get_workspace_total_size", new_callable=AsyncMock, return_value=0)
+@patch("src.server.database.workspace_file.get_file_metadata_for_sync", new_callable=AsyncMock, return_value={})
+@patch("src.server.app.workspace_files.crud._computer_backs_up_files", new_callable=AsyncMock, return_value=False)
+@patch("src.server.app.workspace_files.crud.acquire_sandbox_to_change")
+@patch("src.server.app.workspace_files.crud.db_get_workspace")
+async def test_backup_status_with_backup_off_never_walks_the_folder(mock_get_ws, acquire, *_):
+    """The file panel asks after every list; with nothing to save, the walk
+    would only cross the owner's link."""
+    from src.server.app.workspace_files.crud import get_backup_status
+
+    mock_get_ws.return_value = _workspace("ws-off", "user-1", status="running")
+
+    result = await get_backup_status(workspace_id="ws-off", x_user_id="user-1")
+
+    assert result["files_backup"] is False
+    assert (result["backed_up"], result["modified"], result["untracked"]) == ([], [], [])
+    acquire.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_mutation_rejects_shared_agent_root_after_canonicalization():
     from types import SimpleNamespace
     from fastapi import HTTPException

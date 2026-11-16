@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 __all__ = [
     "PreviewBase",
     "PreviewProxyConfigurationError",
+    "artifact_base",
     "check_preview_proxy_config",
     "parse_preview_base",
     "preview_base",
@@ -211,6 +212,26 @@ def preview_base() -> PreviewBase | None:
     from src.config import env
 
     return _parsed(env.PREVIEW_PROXY_BASE_URL)
+
+
+def artifact_base() -> PreviewBase | None:
+    """Where published versions run on origins of their own; None serves them
+    sandboxed on the API origin (``app/artifact_frames.py``).
+
+    A local base (``*.localhost``) reaches only the server's own machine, so
+    while the app itself is served from a real host it is a placeholder no
+    visitor's browser can open: an ``artifact-<id>.preview.localhost`` frame
+    would load nothing for everyone. The API origin still keeps a version out
+    of the app, as an opaque origin under a CSP sandbox; it costs the version
+    only its own storage.
+    """
+    base = preview_base()
+    if base is None or not _is_local(base.host):
+        return base
+    from src.config import env
+
+    app_host = urlsplit(env.PUBLIC_APP_URL).hostname or ""
+    return base if _is_local(app_host.rstrip(".")) else None
 
 
 def preview_proxy_requirements(sandbox: SandboxConfig) -> tuple[str, ...]:

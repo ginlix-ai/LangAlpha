@@ -9,6 +9,10 @@ services:
   postgres:
     profiles: ["infra"]
     image: postgres:18
+    # Reap orphaned healthcheck processes. Without an init, a pg_isready the
+    # healthcheck abandons on timeout is reparented to the postmaster (PID 1);
+    # its exit code 2 reads as a crashed backend and restarts the database.
+    init: true
     restart: unless-stopped
     ports:
       - "127.0.0.1:${PG_HOST_PORT:-5432}:5432"

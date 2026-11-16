@@ -1410,6 +1410,11 @@ async def get_backup_status(
         get_workspace_total_size,
     )
 
+    # With the computer's backup off nothing is saved, so no file has a state
+    # to show, and the walk would only cross the owner's link for it.
+    if not choice["files_backup"]:
+        return {**empty, "total_backed_up_size": await get_workspace_total_size(workspace_id)}
+
     # The sync metadata carries directory and symlink rows too; this status
     # is about files, and the running branch below only ever sees files.
     db_meta = {

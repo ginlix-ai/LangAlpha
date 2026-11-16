@@ -9,6 +9,13 @@ import { shareLinkHref } from '../../utils/api/shareLinks';
 import { HostedFrame } from './HostedFrame';
 import './PreviewViewer.css';
 import type { PreviewData } from '../../hooks/utils/types';
+import type { PreviewFailure } from '../../utils/api/sandbox';
+
+/** What the card says for each failure; the hint takes the port. */
+const FAILURE_COPY: Record<PreviewFailure, { title: string; hint: string }> = {
+  offline: { title: 'filePanel.serverOffline', hint: 'filePanel.serverOfflineHint' },
+  portInUse: { title: 'filePanel.portInUse', hint: 'filePanel.portInUseHint' },
+};
 
 interface PreviewViewerProps extends Pick<PreviewData, 'url' | 'port' | 'title' | 'path' | 'loading' | 'error' | 'workspaceId'> {
   /** Omitted inside the file panel, where the tab's own X is the close. */
@@ -25,7 +32,7 @@ interface PreviewViewerProps extends Pick<PreviewData, 'url' | 'port' | 'title' 
   bridge?: Pick<BridgeOptions, 'grantKey' | 'active'>;
 }
 
-export default function PreviewViewer({ url, port, title, path, workspaceId, loading: externalLoading, error: externalError, onClose, onRefresh, isDragging, reloadToken, chrome = true, bridge }: PreviewViewerProps) {
+export default function PreviewViewer({ url, port, title, path, workspaceId, loading: externalLoading, error: failure, onClose, onRefresh, isDragging, reloadToken, chrome = true, bridge }: PreviewViewerProps) {
   const { t } = useTranslation();
   // The toolbar opens the app's private /a/ link, minted with the toolbar so
   // the tab opens inside the click.
@@ -106,17 +113,17 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
           </div>
         </div>
       )}
-      {externalError ? (
+      {failure ? (
         /* Nothing answered on the port. Checked first: a failed resolve
            leaves no URL, so the loading test below would answer for it. */
         <div className="preview-viewer-resize-overlay" style={{ cursor: 'default' }}>
           <div className="preview-viewer-resize-card" style={{ flexDirection: 'column', alignItems: 'center', gap: 16, padding: '28px 36px' }}>
             <AlertCircle size={28} style={{ color: 'var(--color-text-tertiary)' }} />
             <div className="preview-viewer-resize-info" style={{ alignItems: 'center' }}>
-              <span className="preview-viewer-resize-title">{t('filePanel.serverOffline')}</span>
+              <span className="preview-viewer-resize-title">{t(FAILURE_COPY[failure].title)}</span>
               <span className="preview-viewer-resize-url">{displayTitle} :{port}</span>
               <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-tertiary)', marginTop: 4 }}>
-                {t('filePanel.serverOfflineHint')}
+                {t(FAILURE_COPY[failure].hint, { port })}
               </span>
             </div>
           </div>

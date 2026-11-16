@@ -20,7 +20,7 @@ import httpx
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.preview_probe import head_preview
-from ptc_agent.core.sandbox.runtime import PreviewInfo
+from ptc_agent.core.sandbox.runtime import PreviewInfo, PreviewPortInUse
 from src.server.database.workspace import get_preview_command
 from src.server.services.preview_capabilities import publish
 from src.server.services.preview_upstreams import probe_target
@@ -296,10 +296,7 @@ async def resolve_preview(
                         or await _check_signed_url_healthy(cached_url)
                     )
                     if healthy and owner not in (None, workspace_id):
-                        raise RuntimeError(
-                            f"Port {port} is already in use on this computer. "
-                            "Choose another port."
-                        )
+                        raise PreviewPortInUse(port)
                     if healthy:
                         await _set_preview_live_confirmed(
                             sandbox.sandbox_id, port, ttl=10
@@ -325,10 +322,7 @@ async def resolve_preview(
                 )
             if owner not in (None, workspace_id):
                 if await sandbox._is_preview_reachable(port):
-                    raise RuntimeError(
-                        f"Port {port} is already in use on this computer. "
-                        "Choose another port."
-                    )
+                    raise PreviewPortInUse(port)
                 await delete_preview_owner(sandbox.sandbox_id, port)
 
             await set_preview_owner(sandbox.sandbox_id, port, workspace_id)
@@ -348,6 +342,18 @@ async def resolve_preview(
                     url_expires_at=url_expires_at,
                     cache_for=60,
                 )
+            except PreviewPortInUse as e:
+                # `owner` is the claim read before this try made its own.
+                if owner == workspace_id:
+                    # This workspace's own claim: what holds the port is most
+                    # likely its own app, still starting or listening only on
+                    # loopback, which a worker that did not start it cannot
+                    # tell from another program's. It stays a failure, not
+                    # a port another program holds, and the claim stays, so
+                    # the next try reads the port the same way.
+                    raise RuntimeError(str(e)) from e
+                await delete_preview_owner(sandbox.sandbox_id, port)
+                raise
             except BaseException:
                 await delete_preview_owner(sandbox.sandbox_id, port)
                 raise
@@ -359,10 +365,7 @@ async def resolve_preview(
         owner = await get_preview_owner(sandbox.sandbox_id, port)
         if owner not in (None, workspace_id):
             if await sandbox._is_preview_reachable(port):
-                raise RuntimeError(
-                    f"Port {port} is already in use on this computer. "
-                    "Choose another port."
-                )
+                raise PreviewPortInUse(port)
             await delete_preview_owner(sandbox.sandbox_id, port)
 
         # No command known — try signed-URL cache, then generate fresh.

@@ -55,7 +55,7 @@ from src.server.services.artifacts.snapshot import (
     SnapshotUnavailable,
     legacy_snapshot,
 )
-from src.server.services.preview_base import preview_base
+from src.server.services.preview_base import artifact_base
 from src.server.services.preview_links import signed_url_expires_at
 from src.server.utils.api import PageViewer, Viewer, database_unavailable
 from src.server.utils.error_sanitization import single_line
@@ -137,7 +137,7 @@ async def _file_metadata(access: LinkAccess) -> dict[str, Any]:
     visitor = await artifact_grants.mint_artifact_share_grant(
         link.code, artifact.artifact_id, revision=artifact.revision, seq=seq
     )
-    base = preview_base()
+    base = artifact_base()
     entry = latest.entry_path
     return {
         "kind": "file",

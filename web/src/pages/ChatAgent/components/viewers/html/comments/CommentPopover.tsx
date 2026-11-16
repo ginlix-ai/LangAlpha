@@ -1,6 +1,7 @@
-import React, { useEffect, useEffectEvent } from 'react';
+import React, { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { HeldChildren } from '@/components/ui/Disclosure';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
+import { isImeComposing } from '@/lib/ime';
 import { DURATION } from '@/lib/motion';
 import { PIN_SIZE } from './pinPlaces';
 import { useKeptWhileFading } from './useKeptWhileFading';
@@ -67,12 +68,13 @@ export interface CommentPopoverProps {
   /** Another box took this one's place, so focus is not handed back when it goes. */
   replaced: boolean;
   /**
-   * The current box is a new comment being written: Esc leaves it as its
-   * own close does, and words written in it are not let go for a press or
-   * focus elsewhere (`onAskDiscard` asks instead).
+   * The current box is a new comment being written: words written in it are
+   * not let go for a press or focus elsewhere (`onAskDiscard` asks instead).
    */
-  draft?: { words: boolean; onLeave: () => void; onAskDiscard: () => void } | null;
+  draft?: { words: boolean; onAskDiscard: () => void } | null;
   onDismiss: () => void;
+  /** Esc, which steps the layer back one layer (`CommentLayer`'s `escapeOneLayer`). */
+  onEscape: () => void;
   /** Its exit has played; whoever holds it can let it go. */
   onGone: () => void;
   children: React.ReactNode;
@@ -90,9 +92,13 @@ export interface CommentPopoverProps {
  * the corner Radix places beside the anchor.
  */
 export function CommentPopover({
-  open, point, narrow, boundary, width, label, focusSelf, arrival, replaced, draft, onDismiss, onGone, children,
+  open, point, narrow, boundary, width, label, focusSelf, arrival, replaced, draft, onDismiss, onEscape, onGone, children,
 }: CommentPopoverProps): React.ReactElement | null {
   const at = useKeptWhileFading(open ? point : null, samePoint);
+  // The box has no trigger to hand the focus back to: it goes back to where
+  // it was when the box opened, unless a press or focus elsewhere moved it on.
+  const [returnTo] = useState(() => (typeof document === 'undefined' ? null : document.activeElement));
+  const leftFor = useRef(false);
 
   const gone = useEffectEvent(onGone);
   useEffect(() => {
@@ -130,11 +136,18 @@ export function CommentPopover({
           e.preventDefault();
           if (e.target instanceof HTMLElement) e.target.focus({ preventScroll: true });
         } : undefined}
-        onCloseAutoFocus={(e) => { if (replaced) e.preventDefault(); }}
-        onEscapeKeyDown={draft ? (e) => {
+        onCloseAutoFocus={(e) => {
           e.preventDefault();
-          draft.onLeave();
-        } : undefined}
+          if (replaced || leftFor.current) return;
+          if (returnTo instanceof HTMLElement && returnTo !== document.body && returnTo.isConnected) returnTo.focus({ preventScroll: true });
+        }}
+        onEscapeKeyDown={(e) => {
+          // Taken either way and closed here rather than by Radix, so one Esc
+          // steps back one layer through `onEscape`. Esc ending an input
+          // method's composition is the writer's, not a close.
+          e.preventDefault();
+          if (!isImeComposing(e)) onEscape();
+        }}
         onPointerDownOutside={(e) => {
           if (onVersionPicker(e)) e.preventDefault();
           else if (draft?.words) {
@@ -149,7 +162,10 @@ export function CommentPopover({
         onFocusOutside={(e) => {
           if (onVersionPicker(e) || draft?.words) e.preventDefault();
         }}
-        onInteractOutside={(e) => { if (onPin(e)) e.preventDefault(); }}
+        onInteractOutside={(e) => {
+          if (onPin(e)) e.preventDefault();
+          else if (!e.defaultPrevented) leftFor.current = true;
+        }}
       >
         <HeldChildren held={!open}>{children}</HeldChildren>
       </PopoverContent>

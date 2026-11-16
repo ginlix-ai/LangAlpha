@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CheckboxChoice } from '@/components/ui/choice';
 import { InPlaceSwap, SwapCell } from '@/components/ui/crossfade';
@@ -29,6 +30,8 @@ interface NewComment {
   confirmDiscard: boolean;
   onKeepWriting: () => void;
   onDiscard: () => void;
+  /** The box's ×: an empty draft goes at once, words ask first (`confirmDiscard`). */
+  onClose: () => void;
 }
 
 /**
@@ -72,6 +75,7 @@ export function CommentComposer({
   value, onChange, placeholder, canQueue, canSend, onSubmit, mode,
 }: CommentComposerProps): React.ReactElement {
   const { t } = useTranslation();
+  const rootRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = useState<CommentIntent | null>(null);
   const [failed, setFailed] = useState(false);
@@ -100,6 +104,19 @@ export function CommentComposer({
     if (!autoFocus || !field || document.activeElement !== field) return;
     field.setSelectionRange(field.value.length, field.value.length);
   }, [autoFocus]);
+
+  // The question going (Esc, or writing on) takes its buttons with it: the
+  // focus they held, or the ×'s, comes back to the words rather than the page.
+  const asked = useRef(confirmDiscard);
+  useEffect(() => {
+    const was = asked.current;
+    asked.current = confirmDiscard;
+    if (!was || confirmDiscard) return;
+    const active = document.activeElement;
+    if (active === document.body || (active && active !== fieldRef.current && rootRef.current?.contains(active))) {
+      fieldRef.current?.focus({ preventScroll: true });
+    }
+  }, [confirmDiscard]);
 
   // The field grows with the words, up to a few lines, so the box never
   // hides what is being written behind a scrollbar it does not need yet.
@@ -138,6 +155,7 @@ export function CommentComposer({
 
   return (
     <div
+      ref={rootRef}
       className={cn(
         'flex min-w-0 flex-col',
         embedded
@@ -146,9 +164,22 @@ export function CommentComposer({
       )}
       style={embedded ? { backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-input)' } : undefined}
     >
-      {head && (
-        <div className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }} title={head}>
-          {head}
+      {over && (
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }} title={over.head}>
+            {over.head}
+          </div>
+          {/* Its 28 px reach the box's padding, so the row stays the line's height. */}
+          <button
+            type="button"
+            className="page-comment-icon-btn page-comment-draft-close tap-target -my-1.5 -mr-1.5 shrink-0"
+            onClick={over.onClose}
+            aria-label={t('pageViewer.comments.cancelDraft')}
+            aria-keyshortcuts="Escape"
+            title={t('pageViewer.comments.cancelDraftTitle')}
+          >
+            <X className="h-[15px] w-[15px]" aria-hidden />
+          </button>
         </div>
       )}
       {over?.quote && <p className={cn('page-comment-quote text-xs', over.fullQuote ? 'page-comment-quote-full' : 'line-clamp-2')}>{over.quote}</p>}

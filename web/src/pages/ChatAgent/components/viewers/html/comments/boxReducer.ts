@@ -92,8 +92,13 @@ export type BoxAction =
   | { type: 'endDraft'; keepHover: boolean }
   /** A press on the page, as a click away does in a design tool. */
   | { type: 'pressAway' }
-  /** Esc in a draft, or its card's close in the list. */
+  /** A draft's close (its ×, its card's in the list): an empty one goes, words ask first. */
   | { type: 'leave' }
+  /**
+   * Esc in a draft: the top layer goes. The question over words written is
+   * the top one, so Esc keeps writing; else it closes as the draft's × does.
+   */
+  | { type: 'escape' }
   | { type: 'askDiscard' }
   | { type: 'keepWriting' }
   | { type: 'write'; text: string }
@@ -255,8 +260,12 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       if (state.open?.kind === 'card') return closeBox(state, state.open, true);
       return state;
     case 'leave':
-      // Words already written are not thrown away without asking.
-      return !state.text.trim() || state.confirmDiscard ? endDraft(state, false) : { ...state, confirmDiscard: true };
+      // Words already written go only by the question's own Discard: a second
+      // close does not answer it for the writer.
+      return !state.text.trim() ? endDraft(state, false) : { ...state, confirmDiscard: true };
+    case 'escape':
+      if (!state.text.trim()) return endDraft(state, false);
+      return { ...state, confirmDiscard: !state.confirmDiscard };
     case 'askDiscard':
       return { ...state, confirmDiscard: true };
     case 'keepWriting':

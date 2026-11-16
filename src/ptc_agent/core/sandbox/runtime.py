@@ -167,6 +167,18 @@ class PreviewInfo:
     process_local: bool = False
 
 
+class PreviewPortInUse(RuntimeError):
+    """The port asked for is held by something else on the computer. One
+    message for every place that finds it, since the agent reads it as the
+    preview tool's result and the routes answer it as their 409."""
+
+    def __init__(self, port: int) -> None:
+        super().__init__(
+            f"Port {port} is already in use on this computer. Choose another port."
+        )
+        self.port = port
+
+
 @dataclass
 class SessionCommandResult:
     """Result of a command executed in a background session."""

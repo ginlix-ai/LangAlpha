@@ -50,6 +50,7 @@ from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.preview_probe import head_preview
 from ptc_agent.core.sandbox.runtime import (
+    PreviewPortInUse,
     RuntimeState,
     SandboxTransientError,
 )
@@ -594,6 +595,14 @@ def _preview_layout(workspace: dict[str, Any]) -> WorkspaceLayout:
         ) from e
 
 
+def _port_in_use(e: PreviewPortInUse) -> HTTPException:
+    """The 409 for a port something else holds, coded so the preview panel
+    tells it from an app that stopped; ``message`` is what a reader shows."""
+    return HTTPException(
+        status_code=409, detail={"code": "port_in_use", "message": str(e)}
+    )
+
+
 @dataclass(frozen=True)
 class OwnerPreview:
     url: str
@@ -642,6 +651,8 @@ async def owner_preview(
             status_code=501,
             detail="Preview URLs are not supported by the current sandbox provider",
         ) from None
+    except PreviewPortInUse as e:
+        raise _port_in_use(e) from None
     except PreviewProxyNotConfigured:
         raise HTTPException(
             status_code=501,
@@ -816,10 +827,7 @@ async def restart_preview_server(
                 owner = await get_preview_owner(sandbox.sandbox_id, body.port)
                 if owner not in (None, workspace_id):
                     if await sandbox._is_preview_reachable(body.port):
-                        raise RuntimeError(
-                            f"Port {body.port} is already in use on this computer. "
-                            "Choose another port."
-                        )
+                        raise PreviewPortInUse(body.port)
                     await delete_preview_owner(sandbox.sandbox_id, body.port)
                 await set_preview_owner(sandbox.sandbox_id, body.port, workspace_id)
                 try:
@@ -832,6 +840,8 @@ async def restart_preview_server(
                     await delete_preview_owner(sandbox.sandbox_id, body.port)
                     raise
             return PreviewRestartResponse(success=True)
+        except PreviewPortInUse as e:
+            raise _port_in_use(e) from None
         except Exception:
             logger.exception(
                 "Failed to restart preview server for workspace %s", workspace_id,

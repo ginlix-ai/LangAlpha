@@ -2,6 +2,7 @@
  * Sandbox stats, packages and preview endpoints.
  */
 import { api } from '@/api/client';
+import { apiErrorCoded } from '@/api/errors';
 
 export async function getSandboxStats(workspaceId: string) {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/sandbox/stats`);
@@ -16,6 +17,18 @@ export async function installSandboxPackages(workspaceId: string, packages: stri
 export async function refreshWorkspace(workspaceId: string) {
   const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/refresh`);
   return data;
+}
+
+/**
+ * Why a preview could not be shown. `portInUse` is another program holding
+ * the port, which starting the app again cannot fix; anything else reads as
+ * an app that is not answering.
+ */
+export type PreviewFailure = 'offline' | 'portInUse';
+
+/** The failure a preview route's error stands for, by the code the server gives it. */
+export function previewFailure(err: unknown): PreviewFailure {
+  return apiErrorCoded(err, 'port_in_use') ? 'portInUse' : 'offline';
 }
 
 export async function getPreviewUrl(workspaceId: string, port: number, command?: string, force?: boolean) {

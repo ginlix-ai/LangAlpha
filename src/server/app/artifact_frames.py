@@ -1,10 +1,10 @@
-"""An artifact version's files on the API origin, for a deployment with no
-preview base.
+"""An artifact version's files on the API origin, for a deployment whose
+artifacts have no hosts of their own (``artifact_base``).
 
 The grant in the path is the credential (``services/artifacts/grants``), and
 the same loader serves an artifact's own host (``preview_proxy/artifacts.py``).
-With a preview base set, versions run on their own hosts and this route
-serves nothing, so a grant opens a version on its artifact's origin alone.
+With an artifact base, versions run on their own hosts and this route serves
+nothing, so a grant opens a version on its artifact's origin alone.
 
 Endpoint:
 - GET|HEAD /api/v1/artifacts/g/{grant}/v/{seq}/{path}
@@ -24,7 +24,7 @@ from src.server.preview_proxy.artifacts import (
     error_page,
     load_artifact_file,
 )
-from src.server.services.preview_base import preview_base
+from src.server.services.preview_base import artifact_base
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def serve_artifact_file(
     """A version's file, sandboxed to an opaque origin. Uniform 404 for a bad
     or expired grant, an unshared link, a version that is no longer the
     shared one for a visitor, a missing version and a missing file."""
-    if preview_base() is not None:
+    if artifact_base() is not None:
         raise HTTPException(status_code=404, detail="Not found")
     try:
         served = await load_artifact_file(
