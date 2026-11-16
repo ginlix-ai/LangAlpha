@@ -64,6 +64,14 @@ def test_unlabelled_filing_falls_back_to_period_rule():
     assert (old.fiscal_year, old.fiscal_period, old.fiscal_source) == (2022, "FY", "period_rule")
 
 
+def test_annual_report_without_report_date_covers_the_last_fiscal_year_end_before_it():
+    got = refs_from_rows([row("0001234567-09-000001", "40-F", "2009-03-30", ""),
+                          row("0001234567-09-000002", "40-F/A", "2009-04-15", "2008-12-31")],
+                         CIK, ["40-F"], amendments=True, fiscal_year_end="1231")
+    assert [(r.report_date, r.fiscal_year, r.amends) for r in got] == [
+        ("2008-12-31", 2008, "0001234567-09-000001"), ("2008-12-31", 2008, None)]
+
+
 def test_filing_without_report_date_has_no_label():
     got = refs_from_rows([row("0001234567-24-000099", "8-K", "2024-11-02", "")], CIK, ["8-K"])
     assert got[0].report_date is None

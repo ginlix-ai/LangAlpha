@@ -14,10 +14,8 @@ the only item it prints is its exhibit list, and "cover" when it prints no item 
 an explanatory note and signatures, or exhibits with no item around them).
 
 Merge. The as-amended view starts from the original and applies each amendment in filing order. A
-complete amendment replaces the item set. A partial one replaces the items it prints and keeps the
-rest, except the exhibit list: a partial amendment's exhibit list names only the exhibits filed with
-it, so the report's own list stays. An exhibits or cover amendment changes no item. Every item names
-its source accession.
+complete amendment replaces the item set. Any other replaces the items it prints, its exhibit list
+included, and keeps the rest; a cover amendment changes no item. Every item names its source accession.
 """
 from __future__ import annotations
 
@@ -159,8 +157,8 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
         scope = a.scope or amendment_scope(a)
         if scope == "complete":
             items = printed
-        elif scope == "partial":
-            items.update({k: s for k, s in printed.items() if not is_exhibit_item(family, s)})
+        else:
+            items.update(printed)
     rank = {k: i for i, k in enumerate(order_for(family, original.filing_date))} if family != "40-F" else {}
     keys = sorted(items, key=lambda k: rank.get(k, len(rank)))
     return FilingSections(accession=original.accession, form=original.form, filing_date=original.filing_date,

@@ -245,13 +245,13 @@ def test_old_ten_k_exhibit_item_is_known_by_its_heading():
     assert old.scope == "exhibits"
 
 
-def test_partial_amendment_replaces_the_items_it_prints_but_not_the_exhibit_list():
+def test_partial_amendment_replaces_the_items_it_prints_its_exhibit_list_included():
     m = merge(ORIGINAL, [PART_III])
     assert (m.view, m.filing_status, m.accession, m.amendments) == ("as_amended", "original", "O", ["P"])
     assert {k: s.source for k, s in m.items.items()} == {"1": "O", "1A": "O", "7": "O", "8": "O", "10": "P", "11": "P",
-                                                          "15": "O"}
+                                                          "15": "P"}
     assert m["10"].text.endswith("the board")
-    assert m["15"].text.endswith("3.1 4.1 21 23")
+    assert not m["15"].text.endswith("3.1 4.1 21 23")
 
 
 def test_complete_amendment_replaces_the_item_set_and_later_amendments_apply_on_top():
@@ -259,16 +259,16 @@ def test_complete_amendment_replaces_the_item_set_and_later_amendments_apply_on_
     m = merge(ORIGINAL, [later_part_iii, FULL])
     assert m.amendments == ["F", "P2"]
     assert list(m.items) == ["1", "7", "8", "10", "11", "15"]
-    assert {k: s.source for k, s in m.items.items()} == {"1": "F", "7": "F", "8": "F", "10": "P2", "11": "P2", "15": "F"}
+    assert {k: s.source for k, s in m.items.items()} == {"1": "F", "7": "F", "8": "F", "10": "P2", "11": "P2", "15": "P2"}
     assert "1A" not in m.items
 
 
-def test_exhibits_and_cover_amendments_change_no_item():
+def test_an_exhibits_amendment_replaces_the_exhibit_list_and_a_cover_amendment_changes_no_item():
     exhibits = filing("E", "10-K/A", "2024-05-01", {"15": "Item 15. Exhibits\n10.1"})
     cover = filing("C", "10-K/A", "2024-05-02", {})
     m = merge(ORIGINAL, [exhibits, cover])
     assert m.amendments == ["E", "C"]
-    assert {s.source for s in m.items.values()} == {"O"}
+    assert {k: s.source for k, s in m.items.items() if s.source != "O"} == {"15": "E"}
 
 
 def test_merged_offsets_and_target_spans_index_the_merged_text():
@@ -415,7 +415,7 @@ def test_as_amended_merges_every_amendment_in_filing_order(engine):
     fs = get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended")
     assert fs.amendments == ["0001234567-24-000020", "0001234567-25-000030"]
     assert {k: s.source[-6:] for k, s in fs.items.items()} == {
-        "1": "000010", "1A": "000010", "7": "000010", "8": "000010", "10": "000020", "11": "000030", "15": "000010"}
+        "1": "000010", "1A": "000010", "7": "000010", "8": "000010", "10": "000020", "11": "000030", "15": "000020"}
     through_first = get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended", amendment=1)
     assert through_first.amendments == ["0001234567-24-000020"]
     assert through_first["11"].source == "0001234567-24-000020"

@@ -103,6 +103,13 @@ def period_rule(form: str, report_date: str, fiscal_year_end: str | None) -> tup
     return _fiscal_year(anniversary), f"Q{quarter}" if 1 <= quarter <= 3 else None
 
 
+def _last_year_end(filing_date: str, fiscal_year_end: str) -> str:
+    """The fiscal year end an annual report filed on filing_date covers: the last one before it."""
+    filed = date.fromisoformat(filing_date)
+    end = _on(filed.year, int(fiscal_year_end[:2]), int(fiscal_year_end[2:]))
+    return (end if end < filed else _on(filed.year - 1, end.month, int(fiscal_year_end[2:]))).isoformat()
+
+
 def refs_from_rows(
     rows: Iterable[dict[str, Any]],
     cik: int,
@@ -113,7 +120,8 @@ def refs_from_rows(
     fiscal_labels: Mapping[tuple[str, str], tuple[int, str]] | None = None,
     fiscal_year_end: str | None = None,
 ) -> list[FilingRef]:
-    """Newest-first refs for the rows of a filings table (accession_number, form, filing_date, reportDate)."""
+    """Newest-first refs for the rows of a filings table (accession_number, form, filing_date, reportDate). An annual
+    report the table gives no period of report covers the last fiscal year end before it was filed."""
     wanted = set(forms)
     if amendments:
         wanted |= {f"{f}/A" for f in wanted}
@@ -125,6 +133,8 @@ def refs_from_rows(
         if form not in wanted or (filed_on_or_before and filing_date > filed_on_or_before):
             continue
         report_date = str(row.get("reportDate") or "") or None
+        if report_date is None and base_form(form) in ("10-K", "20-F", "40-F") and fiscal_year_end:
+            report_date = _last_year_end(filing_date, fiscal_year_end)
         label = fiscal_labels.get((accession, form))
         source = "xbrl" if label else None
         if label is None and report_date:
