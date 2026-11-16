@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .rendering import Rendering
 from .vocab import PART_NUMERAL, ROMAN, FormSpec
 
 _DASH = re.compile(r"[\u2010-\u2015\u2212]")
@@ -212,7 +213,7 @@ def _titled_sub16(heads: list[Heading], lines: list[str]) -> list[Heading]:
     return sorted(heads + added, key=lambda o: o.line)
 
 
-def toc_lines(heads: list[Heading], lines: list[str], offs: list[int], order: list[str]) -> set[int]:
+def toc_lines(heads: list[Heading], lines: list[str], order: list[str]) -> set[int]:
     """Lines of headings that sit in a table of contents: a dense run of headings in form order that
     carries page numbers or follows a contents title. Body runs of short items ("Item 3. None.") have
     neither, and a run ends where the order goes back (the body's PART I right after the contents)."""
@@ -266,9 +267,10 @@ def _paged(lines: list[str], i: int, strict: bool = False) -> bool:
 
 
 class _Doc:
-    def __init__(self, lines, line_doc, offs, heads, spec: FormSpec):
-        self.lines, self.line_doc, self.offs, self.heads, self.spec = lines, line_doc, offs, heads, spec
-        self.toc = toc_lines(heads, lines, offs, spec.headings)
+    def __init__(self, rendering: Rendering, heads: list[Heading], spec: FormSpec):
+        self.lines, self.line_doc, self.offs = rendering.lines, rendering.line_doc, rendering.offsets
+        self.heads, self.spec, self.main_end = heads, spec, rendering.main_end
+        self.toc = toc_lines(heads, self.lines, spec.headings)
         self.markers = {h.line: h for h in heads if h.kind != "item"}
 
     def by_id(self) -> dict[str, list[Heading]]:
@@ -394,13 +396,13 @@ class Layout:
     heads: list[Heading]
 
 
-def find_items(lines: list[str], line_doc: list[int], offs: list[int], spec: FormSpec) -> Layout:
+def find_items(rendering: Rendering, spec: FormSpec) -> Layout:
     if spec.titled:
         from .fortyf import fortyf
-        return fortyf(lines, line_doc, offs)
-    heads = find_headings(lines, spec)
-    doc = _Doc(lines, line_doc, offs, heads, spec)
-    return Layout(_spans(doc, lines, line_doc, spec), doc.toc, heads)
+        return fortyf(rendering)
+    heads = find_headings(rendering.lines, spec)
+    doc = _Doc(rendering, heads, spec)
+    return Layout(_spans(doc, spec), doc.toc, heads)
 
 
 _ADDRESS = re.compile(r"(?:The )?(?:information|disclosures?|responses?) (?:required|called for|requested) (?:by|under|in|pursuant to) "
@@ -430,8 +432,8 @@ def _addressed(lines: list[str], doc: _Doc, spans: dict[str, ItemSpan], order: l
             spans[i] = ItemSpan(i, ln, end, ln, [o for o in missing if o != i])
 
 
-def _spans(doc: _Doc, lines: list[str], line_doc: list[int], spec: FormSpec) -> dict[str, ItemSpan]:
-    main_end = next((i for i, d in enumerate(line_doc) if d != 0), len(lines))
+def _spans(doc: _Doc, spec: FormSpec) -> dict[str, ItemSpan]:
+    lines, main_end = doc.lines, doc.main_end
     if spec.parts_split:
         (a0, a1), two = _tenq_split(doc, 0, main_end)
         by_id = doc.by_id()

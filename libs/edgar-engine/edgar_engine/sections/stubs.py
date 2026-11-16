@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 
 from .boundaries import ItemSpan, normalize
+from .pages import Pagination
+from .rendering import Rendering
 from .vocab import FormSpec
 
 _POINTER = re.compile(
@@ -79,20 +81,16 @@ def is_stub(body: str) -> bool:
 
 
 class Resolver:
-    def __init__(self, lines: list[str], line_doc: list[int], documents: list[dict], spans: dict[str, ItemSpan],
-                 spec: FormSpec, toc: set[int]):
-        self.lines, self.line_doc, self.documents, self.spans, self.spec, self.toc = lines, line_doc, documents, spans, spec, toc
-        self.ex13 = [i for i, d in enumerate(documents) if d["type"].upper().startswith("EX-13")]
-        self._running: dict[int, set[str]] = {}
-        self._footer_cache: dict[int, dict[str, int]] = {}
+    def __init__(self, rendering: Rendering, pages: Pagination, spans: dict[str, ItemSpan], spec: FormSpec,
+                 toc: set[int]):
+        self.rendering, self.pages, self.spans, self.spec, self.toc = rendering, pages, spans, spec, toc
+        self.lines = rendering.lines
+        self.ex13 = [i for i, d in enumerate(rendering.documents) if d["type"].upper().startswith("EX-13")]
 
     def _docs_for(self, pointer: str) -> list[int]:
         if self.ex13 and _ANNUAL.search(pointer):
             return self.ex13 + [0]
         return [0] + self.ex13
-
-    def _doc_range(self, d: int) -> tuple[int, int]:
-        return self.documents[d]["line_start"], self.documents[d]["line_end"]
 
     def _outside(self, ln: int, own: tuple[int, int]) -> bool:
         return not (own[0] <= ln < own[1]) and ln not in self.toc
@@ -129,8 +127,8 @@ class Resolver:
         nxt = next((h for h in rows if h.line > row and iid not in h.ids), None)
         npage = re.search(r"(?:^|[\s|])(\d{1,3})\s*$", normalize(self.lines[nxt.line])) if nxt else None
         if npage and int(npage.group(1)) > int(page.group(1)):
-            for d in range(len(self.documents)):
-                rng = self._page_range(d, page.group(1), str(int(npage.group(1)) - 1))
+            for d in range(len(self.rendering.documents)):
+                rng = self.pages.page_range(d, page.group(1), str(int(npage.group(1)) - 1))
                 if rng and rng[0] > row:
                     t.kind, t.lines, t.via = "in_document", [rng], "index_pages"
                     return t
@@ -171,7 +169,7 @@ class Resolver:
         head = re.compile(rf"(?:NOTE\s*{n}\b|\(\s*{n}\s*\)\s*[A-Z]|{n}\s*[.:\-\u2013\u2014)]\s*[A-Z])", re.I)
         any_note = re.compile(r"(?:NOTE\s*(\d{1,2}|[A-Z])\b|\(\s*\d{1,2}\s*\)\s*[A-Z]|(\d{1,2})\s*[.:\-\u2013\u2014)]\s*[A-Z][A-Za-z ,&'\u2019\-]{3,90}$)", re.I)
         for d in self._docs_for(pointer):
-            a, b = self._doc_range(d)
+            a, b = self.rendering.doc_range(d)
             strong = [ln for ln in range(a, b) if self._outside(ln, own) and re.match(rf"NOTE\s*{n}\s*[.:\-\u2013\u2014)]?\s*[A-Z]", normalize(self.lines[ln]), re.I)]
             hits = strong or [ln for ln in range(a, b) if self._outside(ln, own) and len(self.lines[ln]) <= 150
                               and head.match(normalize(self.lines[ln])) and _heading_like(re.sub(r"^\W*\d+\W*", "", normalize(self.lines[ln])))]
@@ -188,7 +186,7 @@ class Resolver:
         if not _EXHIBIT_INDEX_REF.search(pointer):
             return None
         for d in [0] + self.ex13:
-            a, b = self._doc_range(d)
+            a, b = self.rendering.doc_range(d)
             for ln in range(a, b):
                 if self._outside(ln, own) and _EXHIBIT_INDEX.fullmatch(normalize(self.lines[ln])):
                     return [(ln, b)]
@@ -202,68 +200,15 @@ class Resolver:
         back = max(sp.end for sp in self.spans.values())
         docs = self.ex13 if self.ex13 and _ANNUAL.search(pointer) else [0] + self.ex13
         for d in docs:
-            a, b = self._doc_range(d)
+            a, b = self.rendering.doc_range(d)
             for ln in range(max(a, back) if d == 0 else a, b):
                 s = normalize(self.lines[ln])
                 if self._outside(ln, own) and len(s) <= 120 and _FS_OPENER.fullmatch(s) and not re.search(r"\d\s*$", s):
                     end = next((x for x in range(ln + 1, b) if _EXHIBIT_INDEX.fullmatch(normalize(self.lines[x]))
                                 or re.fullmatch(r"SIGNATURES?", normalize(self.lines[x]))), b)
-                    fpages = [x for p, x in self._footers(d).items() if p.startswith("F") and ln < x < end]
+                    fpages = [x for p, x in self.pages.footers(d).items() if p.startswith("F") and ln < x < end]
                     return [(ln, max(fpages) + 1 if fpages else end)]
         return None
-
-    def _footers(self, d: int) -> dict[str, int]:
-        """Printed page number -> its footer line. A footer is a short line that is a page number alone or a
-        number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37")."""
-        if d in self._footer_cache:
-            return self._footer_cache[d]
-        a, b = self._doc_range(d)
-        cands = []
-        for ln in range(a, b):
-            s = normalize(self.lines[ln])
-            if len(s) > 80:
-                continue
-            m = re.fullmatch(r"(?P<pre>.*?)[\s|]*(?:page\s+)?-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?", s, re.I) or \
-                re.fullmatch(r"-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?[\s|]+(?P<pre>\D.*)", s, re.I)
-            if m:
-                cands.append((m.group("pre").strip(" |-").lower(), m.group("p").replace(" ", "").upper(), ln))
-        stems: dict[str, set] = {}
-        for stem, p, _ in cands:
-            stems.setdefault(stem, set()).add(p)
-        out: dict[str, int] = {}
-        for prefix in ("", "F-"):
-            seq = [(int(p[len(prefix):]), ln) for stem, p, ln in cands
-                   if (stem == "" or len(stems[stem]) >= 3) and p.startswith(prefix) and p[len(prefix):].isdigit()]
-            chain: list[tuple[int, int]] = []
-            for v, ln in seq:
-                if not chain or 0 < v - chain[-1][0] <= 3:
-                    chain.append((v, ln))
-                elif v == 1 or (len(chain) < 3 and v > chain[-1][0]):
-                    chain = [(v, ln)] if len(chain) < 3 else chain
-            if len(chain) >= 3:
-                for v, ln in chain:
-                    out.setdefault(f"{prefix}{v}", ln)
-        self._footer_cache[d] = out
-        return out
-
-    def _page_range(self, d: int, lo: str, hi: str) -> tuple[int, int] | None:
-        """Lines of printed pages lo..hi, without the running header that opens the first page."""
-        f = self._footers(d)
-        if lo not in f or hi not in f or f[hi] < f[lo]:
-            return None
-        prev = [ln for ln in f.values() if ln < f[lo]]
-        a, b = self._doc_range(d)
-        start = max(prev) + 1 if prev else a
-        if d not in self._running:
-            counts: dict[str, int] = {}
-            for ln in range(a, b):
-                k = normalize(self.lines[ln])
-                if len(k) <= 100:
-                    counts[k] = counts.get(k, 0) + 1
-            self._running[d] = {k for k, n in counts.items() if n >= 5 and k}
-        while start < f[hi] and normalize(self.lines[start]) in self._running[d]:
-            start += 1
-        return (start, f[hi] + 1)
 
     def _located(self, iid, pointer, own):
         """Captioned sections and printed page ranges. A caption found inside the cited pages starts there;
@@ -276,12 +221,12 @@ class Resolver:
             out = []
             confirmed = not (caps and pages)
             for lo, hi in pages:
-                rng = self._page_range(d, lo, hi)
+                rng = self.pages.page_range(d, lo, hi)
                 if rng:
                     out.append(rng)
             for cap in caps:
                 w = _words(cap)
-                a, b = self._doc_range(d)
+                a, b = self.rendering.doc_range(d)
                 hits = [ln for ln in range(a, b) if self._outside(ln, own) and _heading_like(self.lines[ln])
                         and _words(self.lines[ln]).startswith(w) and len(_words(self.lines[ln])) <= len(w) + 40]
                 inside = [ln for ln in hits for r0, r1 in out if r0 <= ln < r1]

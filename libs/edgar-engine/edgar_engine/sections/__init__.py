@@ -14,6 +14,7 @@ import re
 from .boundaries import find_items
 from .documents import decode, header, main_documents, split
 from .model import FilingSections, Section, Span, Target
+from .pages import Pagination
 from .rendering import render_documents
 from .stubs import Resolver, is_stub
 from . import xref
@@ -45,37 +46,36 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
         raise ValueError("form is not given and the submission header does not name it")
     filing_date = filing_date or head.get("filing_date")
     spec = spec_for(form, filing_date)
-    docs = main_documents(split(text), form)
-    rendering = render_documents(docs)
-    full, offs = rendering.text_and_offsets()
-    layout = find_items(rendering.lines, rendering.line_doc, offs, spec)
-    lines = rendering.lines
+    rendering = render_documents(main_documents(split(text), form))
+    lines, full = rendering.lines, rendering.text
+    layout = find_items(rendering, spec)
     for sp in layout.spans.values():
         nxt = next((o for o in layout.spans.values() if o is not sp and o.heading_line == sp.end), None)
         if nxt is not None:
             sp.end = _lead_in(lines, nxt.item, sp.start, sp.end)
-    resolver = Resolver(lines, rendering.line_doc, rendering.documents, layout.spans, spec, layout.toc)
+    pages = Pagination(rendering)
+    resolver = Resolver(rendering, pages, layout.spans, spec, layout.toc)
 
     def target_of(t):
-        spans = [Span(offs[a], offs[b]) for a, b in t.lines]
-        text = "\n".join(full[s.start:s.end].rstrip("\n") for s in spans) or None
-        return Target(kind=t.kind, description=t.description, doc=t.doc, spans=spans, text=text)
+        spans = [rendering.span(a, b) for a, b in t.lines]
+        return Target(kind=t.kind, description=t.description, doc=t.doc, spans=spans,
+                      text=rendering.text_of(spans) or None)
 
     items = {}
     for iid, sp in layout.spans.items():
-        start, end = offs[sp.start], offs[sp.end]
-        text = full[start:end].rstrip("\n")
+        span = rendering.span(sp.start, sp.end)
+        text = full[span.start:span.end].rstrip("\n")
         status, target = sp.status, None
         body = "\n".join(lines[sp.start + 1:sp.end]) or lines[sp.start]
         if status == "present" and spec.stubs and is_stub(body):
             status, target = "stub", target_of(resolver.resolve(iid, text, (sp.start, sp.end)))
-        items[iid] = Section(item=iid, status=status, text=text, start=start, end=end,
+        items[iid] = Section(item=iid, status=status, text=text, start=span.start, end=span.end,
                              heading=lines[sp.heading_line] if sp.heading_line >= 0 else "",
                              combined_with=sp.combined_with, target=target)
     vocab = list(spec.order) if spec.xref_index else []
     index = xref.find_index(lines, vocab) if vocab else None
     if index:
-        _cross_referenced(index, resolver, items, lines, full, offs)
+        _cross_referenced(index, rendering, pages, items)
     for iid in vocab:
         if iid in items or any(k[:-1] == iid and k[-1].isalpha() for k in items):
             continue
@@ -91,22 +91,23 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
                           items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
 
 
-def _cross_referenced(index, resolver, items, lines, full, offs) -> None:
+def _cross_referenced(index, rendering, pages, items) -> None:
     """Items a cross-reference index maps to pages and the body prints no heading for: xref sections of
     their page ranges, or stubs pointing at the index row when the pages cannot be found. An item printed
     with a heading ends where a later item's mapped pages begin, unless that item is its own lettered
     sub-item (market risk inside MD&A); the pages it prints itself are cut out of the mapped ranges."""
+    lines, full, offs, line_at = rendering.lines, rendering.text, rendering.offsets, rendering.line_at
     rows = {row.line for row in index.rows if row.pages or row.na}
-    for iid in [iid for iid, s in items.items() if s.status == "present" and lines_at(offs, s.start) in rows]:
+    for iid in [iid for iid, s in items.items() if s.status == "present" and line_at(s.start) in rows]:
         del items[iid]
-    mapped = xref.item_ranges(index, resolver)
+    mapped = xref.item_ranges(index, pages)
     ranges = {iid: r for iid, r in mapped.items() if iid not in items}
-    starts = sorted(lines_at(offs, s.start) for s in items.values() if s.status == "present")
-    breaks = sorted(ln for d in range(len(resolver.documents)) for ln in resolver._footers(d).values())
+    starts = sorted(line_at(s.start) for s in items.values() if s.status == "present")
+    breaks = pages.breaks()
     for iid, sec in items.items():
         if sec.status != "present":
             continue
-        line = lines_at(offs, sec.start)
+        line = line_at(sec.start)
         cut = min((r[0][0] for x, r in ranges.items() if not xref.is_sub_item(x, iid) and r[0][0] > line
                    and not _shared(r[0][0], starts, breaks)), default=None)
         own = next((b for a, b in mapped.get(iid, []) if a <= line < b), None)
@@ -115,7 +116,7 @@ def _cross_referenced(index, resolver, items, lines, full, offs) -> None:
         if cut is not None and offs[cut] < sec.end:
             sec.end = offs[cut]
             sec.text = full[sec.start:sec.end].rstrip("\n")
-    present = {iid: (lines_at(offs, s.start), lines_at(offs, s.end)) for iid, s in items.items() if s.status == "present"}
+    present = {iid: (line_at(s.start), line_at(s.end)) for iid, s in items.items() if s.status == "present"}
     for row in index.rows:
         for iid in row.items:
             if iid in items or not (iid in ranges or row.pages and mapped):
@@ -126,8 +127,8 @@ def _cross_referenced(index, resolver, items, lines, full, offs) -> None:
                 items[iid] = Section(item=iid, status="stub", text=lines[row.line], start=offs[row.line],
                                      end=offs[row.line + 1], target=Target(kind="in_document", description=desc))
                 continue
-            spans = [Span(offs[a], offs[b]) for a, b in rngs]
-            text = "\n".join(full[s.start:s.end].rstrip("\n") for s in spans)
+            spans = [rendering.span(a, b) for a, b in rngs]
+            text = rendering.text_of(spans)
             items[iid] = Section(item=iid, status="xref", text=text, start=spans[0].start, end=spans[-1].end,
                                  target=Target(kind="in_document", description=desc, spans=spans, text=text))
 
@@ -153,10 +154,6 @@ def _shared(line: int, starts: list[int], breaks: list[int]) -> bool:
     end = breaks[bisect.bisect_left(breaks, line)] if line <= (breaks or [-1])[-1] else line
     k = bisect.bisect_left(starts, line)
     return k < len(starts) and starts[k] <= end
-
-
-def lines_at(offs: list[int], pos: int) -> int:
-    return bisect.bisect_right(offs, pos) - 1
 
 
 def sections_for_filing(filing, cache=None) -> FilingSections:

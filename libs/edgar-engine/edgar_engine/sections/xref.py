@@ -3,7 +3,7 @@ item to the printed pages that answer it ("Item 7 ... 23-45, 67"). Rows are read
 table whose rows list page ranges or several pages is literal: each item is exactly its pages. A table
 whose rows each give one page in rising order is a contents table: an item runs from its page to the
 page before the next item's row. Printed pages are found through the page-number chain the rendering
-keeps (the resolver's footers), so an item whose pages cannot be located is left to the caller, never
+keeps (pages.Pagination), so an item whose pages cannot be located is left to the caller, never
 given a guessed span.
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from .boundaries import normalize
+from .pages import Pagination
 
 TITLE = re.compile(r"cross[- ]?reference|\b(?:form\s+)?(?:10-K|20-F)\s+(?:items?|index|reference|cross)|\bsec\s+items?\b|"
                    r"\bitem\s+(?:item\s+)?caption\b|location\s+in\s+(?:this|the)\s+(?:document|report)", re.I)
@@ -189,20 +190,20 @@ def merge(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
-def item_ranges(index: Index, resolver) -> dict[str, list[tuple[int, int]]]:
+def item_ranges(index: Index, pages: Pagination) -> dict[str, list[tuple[int, int]]]:
     """Line ranges per item in the one document whose printed pages the index cites (the main document or
     an Exhibit 13), merged in document order. An item with pages none of which can be located is left out."""
-    pages = item_pages(index)
-    if not pages:
+    printed = item_pages(index)
+    if not printed:
         return {}
-    cited = {p for v in pages.values() for a, b in v for p in (a, b)}
-    docs = range(len(resolver.documents))
-    d = max(docs, key=lambda d: (len(cited & set(resolver._footers(d))), -d), default=None)
+    cited = {p for v in printed.values() for a, b in v for p in (a, b)}
+    docs = range(len(pages.rendering.documents))
+    d = max(docs, key=lambda d: (len(cited & set(pages.footers(d))), -d), default=None)
     out: dict[str, list[tuple[int, int]]] = {}
     if d is None:
         return out
-    for iid, prs in pages.items():
-        rngs = [r for a, b in prs if (r := resolver._page_range(d, a, b))]
+    for iid, prs in printed.items():
+        rngs = [r for a, b in prs if (r := pages.page_range(d, a, b))]
         rngs = merge([r for r in rngs if not any(index.lines[0] <= ln < index.lines[1] for ln in r[:1])])
         if rngs:
             out[iid] = rngs

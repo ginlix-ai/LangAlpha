@@ -3,6 +3,7 @@ import re
 
 from .boundaries import (Heading, ItemSpan, Layout, normalize, toc_lines, _SIG, _SIG_PARA,
                                               _SENTENCE, _CONTENTS)
+from .rendering import Rendering
 from .vocab import spec_for
 
 LABEL = r"(?:(?:[A-Z]|\d{1,2}|[IVX]{1,4})\.\s*|\([a-z0-9]{1,3}\)\s*)?"
@@ -149,12 +150,14 @@ def exhibit_documents(lines, line_doc, start):
     return out
 
 
-def fortyf(lines, line_doc, offs):
-    main_end = next((i for i, d in enumerate(line_doc) if d != line_doc[0]), len(lines))
-    if main_end < len(lines):
-        layout = fortyf(lines[:main_end], line_doc[:main_end], offs[:main_end + 1])
-        layout.spans.update(exhibit_documents(lines, line_doc, main_end))
+def fortyf(rendering: Rendering):
+    main_end = rendering.main_end
+    if main_end < len(rendering.lines):
+        main = Rendering(rendering.lines[:main_end], rendering.line_doc[:main_end], rendering.documents[:1])
+        layout = fortyf(main)
+        layout.spans.update(exhibit_documents(rendering.lines, rendering.line_doc, main_end))
         return layout
+    lines, line_doc, offs = rendering.lines, rendering.line_doc, rendering.offsets
     n = len(lines)
     raw = [strip_label_cell(l) if len(l) <= 4000 else "" for l in lines]
     norm = [normalize(r) for r in raw]
@@ -198,7 +201,7 @@ def fortyf(lines, line_doc, offs):
             kind[i] = "unlisted"
     # tables of contents: engine rule, a window after a contents title, and QuickLinks blocks
     heads = [Heading(i, "item", ids_at[i]) for i in ids_at]
-    toc = set(toc_lines(heads, lines, offs, [x for ids, _ in TITLES for x in ids]))
+    toc = set(toc_lines(heads, lines, [x for ids, _ in TITLES for x in ids]))
     for i, s in enumerate(norm):
         if s and len(s) < 40 and _CONTENTS.fullmatch(s.upper().replace("TABLE OF CONTENTS", "CONTENTS")) or (s and s.upper() == "TABLE OF CONTENTS"):
             seen, win = set(), []

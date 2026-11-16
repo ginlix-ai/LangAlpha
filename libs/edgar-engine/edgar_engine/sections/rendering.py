@@ -9,6 +9,7 @@ reads "$ 1,234" or "(56)" rather than "$ | 1,234".
 """
 from __future__ import annotations
 
+import bisect
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ import lxml.html
 from lxml import etree
 
 from .documents import Document
+from .model import Span
 
 _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "hr", "center",
           "blockquote", "dt", "dd", "title", "ul", "ol", "dl", "section", "article", "body", "pre", "caption"}
@@ -30,17 +32,39 @@ _CLOSES = re.compile(r"\)?%?\)?")
 
 @dataclass
 class Rendering:
+    """The rendered documents: their lines, the document each line comes from, and the text the lines join
+    into, with offsets[i] where line i starts in it (offsets[len(lines)] is its end). Document 0 is the main one."""
     lines: list[str] = field(default_factory=list)
     line_doc: list[int] = field(default_factory=list)
     documents: list[dict] = field(default_factory=list)
+    text: str = field(init=False)
+    offsets: list[int] = field(init=False)
 
-    def text_and_offsets(self) -> tuple[str, list[int]]:
-        offs, pos = [], 0
+    def __post_init__(self):
+        self.offsets, pos = [], 0
         for ln in self.lines:
-            offs.append(pos)
+            self.offsets.append(pos)
             pos += len(ln) + 1
-        offs.append(pos)
-        return "\n".join(self.lines) + ("\n" if self.lines else ""), offs
+        self.offsets.append(pos)
+        self.text = "\n".join(self.lines) + ("\n" if self.lines else "")
+
+    @property
+    def main_end(self) -> int:
+        """The line after the main document's last."""
+        return self.documents[0]["line_end"] if self.documents else 0
+
+    def doc_range(self, d: int) -> tuple[int, int]:
+        return self.documents[d]["line_start"], self.documents[d]["line_end"]
+
+    def span(self, a: int, b: int) -> Span:
+        """The text of lines a..b-1."""
+        return Span(self.offsets[a], self.offsets[b])
+
+    def text_of(self, spans: list[Span]) -> str:
+        return "\n".join(self.text[s.start:s.end].rstrip("\n") for s in spans)
+
+    def line_at(self, pos: int) -> int:
+        return bisect.bisect_right(self.offsets, pos) - 1
 
 
 def _clean(s: str) -> str:
@@ -181,12 +205,14 @@ def is_html(doc: Document) -> bool:
 
 
 def render_documents(docs: list[Document]) -> Rendering:
-    r = Rendering()
+    lines: list[str] = []
+    line_doc: list[int] = []
+    documents: list[dict] = []
     for i, d in enumerate(docs):
-        start = len(r.lines)
-        lines = [] if d.is_binary else (html_lines(d.body) if is_html(d) else text_lines(d.body))
-        r.lines.extend(lines)
-        r.line_doc.extend([i] * len(lines))
-        r.documents.append({"seq": d.seq, "type": d.type, "filename": d.filename, "line_start": start,
-                            "line_end": len(r.lines)})
-    return r
+        start = len(lines)
+        doc_lines = [] if d.is_binary else (html_lines(d.body) if is_html(d) else text_lines(d.body))
+        lines.extend(doc_lines)
+        line_doc.extend([i] * len(doc_lines))
+        documents.append({"seq": d.seq, "type": d.type, "filename": d.filename, "line_start": start,
+                          "line_end": len(lines)})
+    return Rendering(lines, line_doc, documents)
