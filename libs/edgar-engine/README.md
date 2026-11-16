@@ -14,7 +14,7 @@ era of EDGAR, from 1993 plain-text filings to inline XBRL.
 ```python
 from edgar import set_identity
 from edgar_engine.cache import SectionsCache
-from edgar_engine.sections import get_sections
+from edgar_engine import get_sections
 
 set_identity("Your Name you@example.com")
 sections = get_sections("AAPL", "10-K", fiscal_year=2019, cache=SectionsCache())

@@ -21,11 +21,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from typing import Any
 
-from .filings import FilingRef, base_form, get_filing, list_filings, nth_amendment, pick_ref, select_filing
+from .filings import FilingRef, base_form, get_filing
 from .sections import sections_for_filing
-from .sections.model import FilingSections, Scope, Section, Span, View
+from .sections.model import FilingSections, Scope, Section, Span
 from .sections.vocab import spec_for
 
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
@@ -152,10 +151,8 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
 def read(ref: FilingRef, cache=None) -> FilingSections:
     """A filing's sections as filed, with amends from the filing list and, for an amendment, its scope."""
     sections = sections_for_filing(get_filing(ref), cache)
-    sections.amends = ref.amends
-    if sections.filing_status == "amendment":
-        sections.scope = amendment_scope(sections)
-    return sections
+    return replace(sections, amends=ref.amends,
+                   scope=amendment_scope(sections) if sections.filing_status == "amendment" else sections.scope)
 
 
 def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None) -> list[FilingSections]:
@@ -166,30 +163,7 @@ def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None) -> 
     found = []
     for ref in sorted(candidates, key=_order):
         sections = read(ref, cache)
-        sections.amends = resolve_amends(sections, refs) or ref.amends
+        sections = replace(sections, amends=resolve_amends(sections, refs) or ref.amends)
         if sections.amends == original.accession:
             found.append(sections)
     return found
-
-
-def get_sections(company: Any, form: str, *, fiscal_year: int | None = None, fiscal_period: str | None = None,
-                 period_end: str | None = None, filed_on_or_before: str | None = None, view: View = "as_filed",
-                 amendment: int | None = None, cache=None) -> FilingSections | None:
-    """See edgar_engine.sections.get_sections."""
-    if view not in ("as_filed", "as_amended"):
-        raise ValueError(f"view must be 'as_filed' or 'as_amended', not {view!r}")
-    period = dict(fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
-    if view == "as_filed" and amendment is None:
-        ref = select_filing(company, form, filed_on_or_before=filed_on_or_before, **period)
-        return read(ref, cache) if ref else None
-    refs = list_filings(company, form, amendments=True, filed_on_or_before=filed_on_or_before)
-    original = pick_ref([r for r in refs if r.filing_status == "original"], **period)
-    if original is None:
-        return None
-    amendments = amended_sections(original, refs, cache)
-    if amendment is not None:
-        picked = nth_amendment(amendments, amendment)
-        if picked is None or view == "as_filed":
-            return picked
-        amendments = amendments[:next(i for i, a in enumerate(amendments) if a is picked) + 1]
-    return merge(read(original, cache), amendments)

@@ -5,12 +5,15 @@ from datetime import date
 import pytest
 
 import edgar_engine.amendments as amendments_mod
+import edgar_engine.api as api_mod
 import edgar_engine.filings as filings_mod
+import edgar_engine.sections.extract as extract_mod
+from edgar_engine import get_sections
 from edgar_engine.amendments import (amendment_scope, cover_period, merge, original_filed_on, resolve_amends)
 from edgar_engine.cache import LocalDirStore, SectionsCache
 from edgar_engine.filings import (FilingRef, amendments_of, base_form, link_amendments, nth_amendment, refs_from_rows,
                                   select_filing)
-from edgar_engine.sections import extract_sections, get_sections
+from edgar_engine.sections import extract_sections
 from edgar_engine.sections.model import FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
 
@@ -115,7 +118,7 @@ def filer(monkeypatch):
         return refs_from_rows(ROWS, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(filings_mod, "list_filings", fake)
-    monkeypatch.setattr(amendments_mod, "list_filings", fake)
+    monkeypatch.setattr(api_mod, "list_filings", fake)
     return fake
 
 
@@ -382,8 +385,6 @@ FETCHED: list[str] = []
 @pytest.fixture
 def engine(monkeypatch, filer):
     """get_filing and extract_sections replaced by the synthetic filings above."""
-    import edgar_engine.sections as sections_pkg
-
     def extract(submission, *, form, filing_date, accession):
         fs = TEXTS[accession][2]
         return replace(fs, accession=accession, form=form, filing_date=filing_date,
@@ -391,7 +392,7 @@ def engine(monkeypatch, filer):
 
     FETCHED.clear()
     monkeypatch.setattr(amendments_mod, "get_filing", FakeFiling)
-    monkeypatch.setattr(sections_pkg, "extract_sections", extract)
+    monkeypatch.setattr(extract_mod, "extract_sections", extract)
 
 
 def test_default_is_the_original_as_filed(engine):
@@ -450,7 +451,7 @@ def test_amendment_the_list_cannot_place_is_placed_by_its_cover(engine, monkeypa
     def fake(company, form, *, amendments=False, filed_on_or_before=None):
         return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
-    monkeypatch.setattr(amendments_mod, "list_filings", fake)
+    monkeypatch.setattr(api_mod, "list_filings", fake)
     fs = get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended")
     assert fs.amendments == ["0001234567-24-000020", orphan, "0001234567-25-000030"]
     assert fs["12"].source == orphan
@@ -467,7 +468,7 @@ def test_amendment_whose_cover_names_another_year_is_not_merged_into_this_one(en
     def fake(company, form, *, amendments=False, filed_on_or_before=None):
         return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
-    monkeypatch.setattr(amendments_mod, "list_filings", fake)
+    monkeypatch.setattr(api_mod, "list_filings", fake)
     assert stray not in get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended").amendments
 
 # Live: an original with a Part III amendment and a second, narrower one, pinned by accession.
