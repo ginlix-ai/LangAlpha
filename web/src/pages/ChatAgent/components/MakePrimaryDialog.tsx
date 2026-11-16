@@ -21,6 +21,7 @@ import { useWorkspace } from '@/hooks/useWorkspace';
 import type { Computer } from '@/types/api';
 
 import { apiErrorReason, moveRefusal, type HomePlacement } from '../utils/api';
+import { homeEligibility } from '../utils/computerStatus';
 import { providerIsOwnMachine } from './providerUi';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -33,7 +34,7 @@ export interface MakePrimaryChoice {
 }
 
 interface MakePrimaryDialogProps {
-  computer: Pick<Computer, 'computer_id' | 'name' | 'kind' | 'files_backup'>;
+  computer: Pick<Computer, 'computer_id' | 'name' | 'kind' | 'files_backup' | 'status' | 'provider_ref' | 'ssh'>;
   /** Where Home stands; undefined while unread, or where it can't be read. */
   placement: HomePlacement | undefined;
   onClose: () => void;
@@ -80,7 +81,7 @@ function MakePrimaryDialog({ computer, placement, onClose, onConfirm, busy, erro
   // Asked up front when the row says backup is off, and again if the server
   // refuses for it, the row having been read before someone turned it off.
   const refusal = moveRefusal(error);
-  const asksBackup = computer.files_backup === false || refusal?.code === 'not_backed_up';
+  const asksBackup = homeEligibility(computer).backupOff || refusal?.code === 'not_backed_up';
 
   const footer = (
     <div className="flex items-center justify-end gap-2">

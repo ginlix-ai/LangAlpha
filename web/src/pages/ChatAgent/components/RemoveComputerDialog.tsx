@@ -27,8 +27,8 @@ import { useLocale } from '@/hooks/useLocale';
 import type { Computer } from '@/types/api';
 
 import { machineName, namedFiles } from '../hooks/useHomePlacement';
-import { PREPARING_UI, computerStatusUi, isComputerPreparing, takesWorkspaces } from '../utils/computerStatus';
-import { providerIsOwnMachine, providerLabel } from './providerUi';
+import { PREPARING_UI, computerStatusUi, homeEligibility, isComputerPreparing } from '../utils/computerStatus';
+import { providerLabel } from './providerUi';
 import { RadioCardGroup, type RadioCardOption } from './radioCardGroup';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -308,24 +308,18 @@ function RemoveComputerDialog({
   );
 }
 
-/**
- * A computer Home could move to. Held where it can't take workspaces now,
- * where it is a machine the user brings that can't be reached (Home's files
- * would have nowhere to land), or one with its file backup off, which can't
- * hold Home.
- */
+/** A computer Home could move to, held where it can't hold Home now (`homeEligibility`). */
 function homeTargetOption(t: Translate, computer: Computer): RadioCardOption<string> {
   const status = isComputerPreparing(computer) ? PREPARING_UI : computerStatusUi(computer.status);
-  const unreachable = computer.ssh?.tunnel_connected === false;
-  const backupOff = providerIsOwnMachine(computer.kind) && computer.files_backup === false;
+  const home = homeEligibility(computer);
   return {
     value: computer.computer_id,
     title: computer.name,
     facts: [t(status.labelKey, status.fallback), providerLabel(computer.kind, t)],
-    note: unreachable
+    note: home.held === 'unreachable'
       ? t('computer.removeHome.unreachable', "Can't be reached")
-      : backupOff ? t('computer.removeHome.backupOff', 'Backup off') : null,
-    disabled: !takesWorkspaces(computer) || unreachable || backupOff,
+      : home.backupOff ? t('computer.removeHome.backupOff', 'Backup off') : null,
+    disabled: !home.ok,
   };
 }
 

@@ -22,7 +22,7 @@ import type { Computer } from '@/types/api';
 
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
-import { isComputerPreparing, isComputerStatusTransitional, takesWorkspaces, tunnelDown } from '../utils/computerStatus';
+import { homeEligibility, isComputerPreparing, isComputerStatusTransitional } from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
@@ -73,8 +73,9 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   const removable = !computer.is_primary || providerRemovableWhilePrimary(computer.kind);
   const removeHeld = removable ? removeBlock(computer, actions.powerBusy) : null;
   const removeHint = removeHeld ? removeBlockHint(t, removeHeld) : null;
-  // Home's files would have nowhere to land on a machine that can't be reached.
-  const primaryUnreachable = !computer.is_primary && tunnelDown(computer);
+  // Backup off is not held here: the confirmation offers to turn it on.
+  const home = homeEligibility(computer);
+  const primaryUnreachable = !computer.is_primary && home.held === 'unreachable';
   const primaryHintId = useId();
   const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
 
@@ -109,7 +110,7 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
                 {!computer.is_primary && (
                   <MakePrimaryButton
                     movingHome={actions.movingHome}
-                    disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer) || primaryUnreachable}
+                    disabled={actions.makePrimaryHeld || !!specChange || home.held !== null}
                     onClick={actions.makePrimary}
                     describedBy={primaryUnreachable && !actions.movingHome ? primaryHintId : undefined}
                   />
