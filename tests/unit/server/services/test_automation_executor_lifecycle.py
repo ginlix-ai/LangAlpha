@@ -27,7 +27,11 @@ from src.server.handlers.chat.admission_gate import (
 from src.server.services import automation_delivery
 from src.server.services import automation_executor as executor_mod
 from src.server.services.automation_delivery import Delivery, Target
-from src.server.services.automation_executor import AutomationExecutor
+from src.server.services.automation_executor import (
+    COMPUTER_WAIT_CAP_SECONDS,
+    ONE_SHOT_WAIT_CAP_SECONDS,
+    AutomationExecutor,
+)
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     Outcome,
@@ -103,6 +107,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,), away=())
     db.stamp_delivery = AsyncMock(return_value=True)
     db.update_automation = AsyncMock()
     db.get_execution_status = AsyncMock(return_value="waiting")
+    db.park_execution = AsyncMock(return_value=True)
     db.has_earlier_waiting_execution = AsyncMock(return_value=False)
     db.get_automation = AsyncMock(return_value=fresh)
     run_ids: list[str] = []
@@ -264,11 +269,14 @@ async def test_a_wait_for_the_thread_says_what_it_waits_for():
 
 
 def _wait_reasons(fx):
-    return [
-        c.kwargs.get("wait_reason")
-        for c in fx.db.transition_execution.await_args_list
-        if c.kwargs["to"] == "waiting"
-    ]
+    """What the firing waited for, in order: a park is a wait for the computer."""
+    reasons = []
+    for name, _, kwargs in fx.db.mock_calls:
+        if name == "park_execution":
+            reasons.append("computer_unreachable")
+        elif name == "transition_execution" and kwargs["to"] == "waiting":
+            reasons.append(kwargs.get("wait_reason"))
+    return reasons
 
 
 @pytest.mark.asyncio
@@ -946,6 +954,7 @@ async def test_a_run_now_starts_its_turn_held_to_the_computer_it_was_checked_on(
 
 
 _MAC = {"computer_id": "mac-1", "name": "MacBook"}
+_PRICE = {"symbol": "NVDA", "conditions": [{"type": "price_above", "value": 200}]}
 
 
 def _parked(automation_id="auto-1", **verdict):
@@ -979,15 +988,49 @@ async def test_a_firing_parks_for_its_computer_without_running():
         await AutomationExecutor().execute(_automation(), _EXEC)
 
     moves = fx.db.transition_execution.call_args_list
-    assert [c.kwargs["to"] for c in moves] == ["running", "waiting"]
+    assert [c.kwargs["to"] for c in moves] == ["running"]
     assert _wait_reasons(fx) == ["computer_unreachable"]
-    assert moves[1].kwargs["awaits_computer"] == "mac-1"
-    assert moves[1].kwargs["parked_status"] == "active"
+    parked = fx.db.park_execution.await_args.kwargs
+    assert parked["awaits_computer"] == "mac-1"
+    assert parked["parked_status"] == "active"
+    assert parked["wait_seconds"] == COMPUTER_WAIT_CAP_SECONDS
     # The credit gate is asked once the firing runs, whose verdict a night's
     # wait must not outlive.
     fx.credit.assert_not_awaited()
     fx.astream.assert_not_called()
     fx.db.settle_execution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "once"},
+        {"trigger_type": "price", "trigger_config": _PRICE},
+    ],
+    ids=["one-time", "one-shot price alert"],
+)
+async def test_an_automation_that_runs_once_waits_days_for_its_computer(trigger):
+    """Nothing later stands in for it, so a late run beats none."""
+    automation = _automation(**trigger)
+    with _firing([_streams], fresh=automation, away=(_MAC,)) as fx:
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    assert fx.db.park_execution.await_args.kwargs["wait_seconds"] == ONE_SHOT_WAIT_CAP_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_price_alert_that_re_arms_waits_a_day_for_its_computer():
+    """Its next crossing stands in for this one, as the settle's own rule
+    says (``runs_once``)."""
+    automation = _automation(
+        trigger_type="price",
+        trigger_config={**_PRICE, "retrigger": {"mode": "recurring"}},
+    )
+    with _firing([_streams], fresh=automation, away=(_MAC,)) as fx:
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    assert fx.db.park_execution.await_args.kwargs["wait_seconds"] == COMPUTER_WAIT_CAP_SECONDS
 
 
 @pytest.mark.asyncio

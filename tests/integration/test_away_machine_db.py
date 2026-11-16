@@ -380,29 +380,33 @@ async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(ma
     assert read["away_since"] is None
 
 
-async def _parked_firing(
-    pool, machine, *, waited: timedelta = timedelta(minutes=10), name: str = "Brief",
-    **trigger,
-) -> tuple[str, str]:
-    """An automation (a daily schedule unless ``trigger`` says otherwise) and
-    a firing of it parked for the machine's computer, as the executor leaves
-    one; their ids."""
+async def _automation(machine, name: str = "Brief") -> str:
+    """A daily automation of the machine's user; its id."""
     from src.server.database.automation import create_automation
 
     automation = await create_automation(
         user_id=machine.user_id, name=name, instruction="Summarize",
-        **(trigger or {"trigger_type": "cron", "cron_expression": "0 9 * * *"}),
+        trigger_type="cron", cron_expression="0 9 * * *",
     )
-    automation_id = str(automation["automation_id"])
+    return str(automation["automation_id"])
+
+
+async def _parked_firing(
+    pool, machine, *, gives_up_in: timedelta = timedelta(hours=23)
+) -> tuple[str, str]:
+    """A daily automation and a firing of it parked for the machine's
+    computer, as the executor leaves one, its wait up ``gives_up_in`` from
+    now; their ids."""
+    automation_id = await _automation(machine)
     async with pool.connection() as conn:
         cur = await conn.execute(
             "INSERT INTO automation_executions (automation_id, status, scheduled_at,"
             " started_at, heartbeat_at, wait_reason, awaits_computer, parked_status,"
-            " conversation_thread_id)"
-            " VALUES (%s, 'waiting', NOW(), NOW() - %s, NOW() - interval '1 hour',"
-            " 'computer_unreachable', %s, 'active', %s)"
+            " awaits_until, conversation_thread_id)"
+            " VALUES (%s, 'waiting', NOW(), NOW(), NOW() + %s,"
+            " 'computer_unreachable', %s, 'active', NOW() + %s, %s)"
             " RETURNING automation_execution_id::text AS id",
-            (automation_id, waited, machine.computer_id, machine.thread_id),
+            (automation_id, gives_up_in, machine.computer_id, gives_up_in, machine.thread_id),
         )
         return automation_id, (await cur.fetchone())["id"]
 
@@ -411,7 +415,7 @@ async def _parked_verdict(execution_id: str) -> dict | None:
     """The sweep's verdict on a parked firing; None when the sweep is not
     shown it, as nothing it could do would change it."""
     rows = [
-        r for r in await ex.list_parked_executions(24 * 60 * 60, 7 * 24 * 60 * 60, limit=500)
+        r for r in await ex.list_parked_executions(limit=500)
         if str(r["automation_execution_id"]) == execution_id
     ]
     if not rows:
@@ -457,7 +461,7 @@ async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_i
 
 async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, test_db_pool):
     automation_id, execution_id = await _parked_firing(
-        test_db_pool, machine, waited=timedelta(hours=25)
+        test_db_pool, machine, gives_up_in=-timedelta(hours=1)
     )
     async with test_db_pool.connection() as conn:
         await conn.execute(
@@ -572,22 +576,110 @@ async def test_a_firing_parked_for_its_machine_is_not_ahead_in_the_thread_line(
     assert (await _parked_verdict(parked_id))["superseded"] is True
 
 
-@pytest.mark.parametrize(
-    "trigger",
-    [
-        {"trigger_type": "once", "next_run_at": datetime.now(timezone.utc)},
-        {"trigger_type": "price", "trigger_config": {"symbol": "NVDA"}},
-    ],
-    ids=["one-time", "one-shot price alert"],
-)
-async def test_an_automation_that_runs_once_waits_days_not_a_day(machine, test_db_pool, trigger):
-    """Nothing later stands in for it, so a late run beats none."""
-    _, day = await _parked_firing(
-        test_db_pool, machine, waited=timedelta(hours=25), name="Day", **trigger
-    )
-    _, week = await _parked_firing(
-        test_db_pool, machine, waited=timedelta(days=8), name="Week", **trigger
+async def test_a_firing_parked_again_keeps_the_deadline_its_first_park_set(
+    machine, test_db_pool
+):
+    """A machine that comes back only to drop again does not start the wait
+    over: the deadline is the first park's, and so is the heartbeat."""
+    automation_id = await _automation(machine)
+    execution_id = await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
     )
 
-    assert await _parked_verdict(day) is None
-    assert (await _parked_verdict(week))["expired"] is True
+    async def park(wait_seconds: int) -> dict:
+        assert await ex.park_execution(
+            execution_id, awaits_computer=machine.computer_id, parked_status="active",
+            wait_seconds=wait_seconds,
+        )
+        async with test_db_pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT awaits_until, heartbeat_at, status, wait_reason"
+                " FROM automation_executions WHERE automation_execution_id = %s",
+                (execution_id,),
+            )
+            return dict(await cur.fetchone())
+
+    first = await park(60 * 60)
+    assert first["heartbeat_at"] == first["awaits_until"]
+    assert (first["status"], first["wait_reason"]) == ("waiting", "computer_unreachable")
+    assert first["awaits_until"] - datetime.now(timezone.utc) > timedelta(minutes=55)
+
+    # Back for a moment: released, started, and parked again on the drop.
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+    assert await ex.release_parked_execution(execution_id) is True
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+    again = await park(7 * 24 * 60 * 60)
+    assert again["awaits_until"] == first["awaits_until"]
+    assert again["heartbeat_at"] == first["awaits_until"]
+    # A firing still parked is not shown to the sweep until its deadline passes.
+    assert await _parked_verdict(execution_id) is None
+
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET awaits_until = NOW() - interval '1 minute'"
+            " WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+    assert (await _parked_verdict(execution_id))["expired"] is True
+
+
+async def test_a_firing_that_moved_on_is_not_parked(machine, test_db_pool):
+    automation_id = await _automation(machine)
+    execution_id = await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET status = 'skipped'"
+            " WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+    assert not await ex.park_execution(
+        execution_id, awaits_computer=machine.computer_id, parked_status="active",
+        wait_seconds=60,
+    )
+
+
+async def test_a_rollback_hands_parked_firings_to_the_previous_builds_sweep(
+    machine, test_db_pool
+):
+    """A parked firing's heartbeat is dated to the end of its wait, which the
+    previous build's sweep of abandoned firings would wait out for up to a
+    week. Migration 129's rollback release dates it to now, and leaves any
+    other firing as it was."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[2] / "migrations/versions/129_automation_execution_awaits_computer.py"
+    spec = importlib.util.spec_from_file_location("migration_129", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    _, parked_id = await _parked_firing(test_db_pool, machine, gives_up_in=timedelta(days=7))
+    other_id = await ex.create_execution(
+        automation_id=await _automation(machine, "Other"),
+        scheduled_at=datetime.now(timezone.utc), server_id="test",
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET status = 'waiting', wait_reason = 'thread_busy',"
+            " heartbeat_at = NOW() + INTERVAL '1 hour' WHERE automation_execution_id = %s",
+            (other_id,),
+        )
+        await conn.execute(migration._RELEASE_PARKED)
+        cur = await conn.execute(
+            "SELECT automation_execution_id::text AS id, heartbeat_at <= NOW() AS due"
+            " FROM automation_executions WHERE automation_execution_id = ANY(%s::uuid[])",
+            ([parked_id, other_id],),
+        )
+        due = {row["id"]: row["due"] for row in await cur.fetchall()}
+
+    assert due == {parked_id: True, other_id: False}

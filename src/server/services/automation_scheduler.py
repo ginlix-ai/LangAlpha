@@ -20,8 +20,6 @@ from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
-    COMPUTER_WAIT_CAP_SECONDS,
-    ONE_SHOT_WAIT_CAP_SECONDS,
     AutomationExecutor,
     stopped_meanwhile,
 )
@@ -184,16 +182,14 @@ class AutomationScheduler:
     async def _sweep_parked_firings(self) -> None:
         """Start the firings parked for a computer that is back, through the
         ordinary start, and skip those a later firing took the wait over from
-        or that waited the cap with the computer still away.
+        or that waited out their deadline with the computer still away.
 
         A machine asleep for the night is not the automation failing: no
         strike either way. A release is one guarded statement, so of the
         workers whose sweeps reach a row exactly one starts it.
         """
         try:
-            rows = await exec_db.list_parked_executions(
-                COMPUTER_WAIT_CAP_SECONDS, ONE_SHOT_WAIT_CAP_SECONDS
-            )
+            rows = await exec_db.list_parked_executions()
         except Exception as e:
             logger.error(f"[SCHEDULER] Parked-firing sweep failed: {e}")
             return

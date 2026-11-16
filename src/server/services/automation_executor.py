@@ -32,6 +32,7 @@ from src.server.services.automation_settlement import (
     Outcome,
     clean_error_text,
     plan_message,
+    runs_once,
     settle,
 )
 from src.server.database.runs.hook_jobs import AUTOMATION_HANDOFF_HOOK, automation_handoff_job
@@ -642,7 +643,8 @@ class AutomationExecutor:
         The wait lives in Postgres, not in this coroutine: the row names the
         computer, and the scheduler's sweep starts the firing again once that
         computer is back, or skips it (``computer_unreachable``) once a later
-        firing of the automation comes along or at the cap. A computer that
+        firing of the automation comes along or at the deadline its first
+        park set. A computer that
         answers costs one read and no wait. ``checked_computer_id`` is kept on
         the row, so the started turn is held to it as this one would be.
         """
@@ -660,19 +662,15 @@ class AutomationExecutor:
             return False
         if away is None:
             return False
-        now = datetime.now(timezone.utc)
-        parked = await exec_db.transition_execution(
+        parked = await exec_db.park_execution(
             execution_id,
-            from_statuses=("pending", "running"),
-            to="waiting",
-            started_at=now,
-            # Nothing touches it while parked. Dated past the cap, so a build
-            # that predates parking (the other color through a cutover) does
-            # not take the quiet heartbeat for a dead process and fail it.
-            heartbeat_at=now + timedelta(seconds=COMPUTER_WAIT_CAP_SECONDS),
-            wait_reason="computer_unreachable",
             awaits_computer=str(away["computer_id"]),
             parked_status=automation["status"],
+            wait_seconds=(
+                ONE_SHOT_WAIT_CAP_SECONDS
+                if runs_once(automation)
+                else COMPUTER_WAIT_CAP_SECONDS
+            ),
             checked_computer_id=checked_computer_id,
         )
         if parked:

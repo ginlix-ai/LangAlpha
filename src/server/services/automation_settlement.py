@@ -387,14 +387,20 @@ async def plan_message(
         return None
 
 
-def _one_shot_price(automation: Dict[str, Any]) -> bool:
+def runs_once(automation: Dict[str, Any]) -> bool:
+    """Whether the automation fires once: a one-time automation, or a price
+    alert that does not re-arm. Nothing later stands in for a firing of one
+    that never happens."""
+    trigger = automation.get("trigger_type")
+    if trigger != "price":
+        return trigger == "once"
     try:
         config = PriceTriggerConfig(**(automation.get("trigger_config") or {}))
     except Exception as e:
         # Re-arming is the move that loses nothing if the config is wrong.
         logger.warning(
             f"[AUTOMATION_SETTLE] Unreadable price trigger on "
-            f"automation_id={automation['automation_id']}, re-arming: {e}"
+            f"automation_id={automation['automation_id']}, read as re-arming: {e}"
         )
         return False
     return config.retrigger.mode == RetriggerMode.ONE_SHOT
@@ -407,7 +413,7 @@ def _schedule_action(
     done, and a price alert is either done or watching again."""
     trigger = automation.get("trigger_type")
     if trigger == "price" and policy.schedule is not None:
-        if policy.schedule != "rearm_price" and _one_shot_price(automation):
+        if policy.schedule != "rearm_price" and runs_once(automation):
             return "close_price"
         return "rearm_price"
     if trigger == "once" and policy.schedule == "close":

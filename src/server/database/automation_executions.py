@@ -440,12 +440,16 @@ async def get_execution_status(
 
 
 async def touch_execution(execution_id: str) -> None:
+    """Beat a firing's heartbeat, never a parked one's: a touch already queued
+    behind the park would otherwise commit after it and undo the heartbeat
+    the park dated to its deadline."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(f"""
                 UPDATE automation_executions SET heartbeat_at = NOW()
                 WHERE automation_execution_id = %s
                   AND status IN {UNSETTLED_STATUSES}
+                  AND NOT {_PARKED.format(e="automation_executions")}
             """, (execution_id,))
 
 
@@ -538,30 +542,56 @@ _REACHABLE = awaited_computer_back_sql(
     "e.awaits_computer::text",
     "(SELECT m.workspace_id FROM automations m WHERE m.automation_id = e.automation_id)",
 )
-# Its automation runs this once (a one-time automation, a price alert that
-# fires once): nothing later stands in for a run that never happens, so it
-# waits the longer cap.
-_ONE_SHOT = (
-    "(a.trigger_type = 'once' OR (a.trigger_type = 'price'"
-    " AND COALESCE(a.trigger_config->'retrigger'->>'mode', 'one_shot') = 'one_shot'))"
-)
-_EXPIRED = (
-    "COALESCE(e.started_at, e.created_at) < NOW() - make_interval(secs =>"
-    f" CASE WHEN {_ONE_SHOT} THEN %(one_shot_cap)s ELSE %(cap)s END)"
-)
+_EXPIRED = "e.awaits_until < NOW()"
 
 
-async def list_parked_executions(
-    cap_seconds: int, one_shot_cap_seconds: int, limit: int = 50
-) -> List[Dict[str, Any]]:
+async def park_execution(
+    execution_id: str,
+    *,
+    awaits_computer: str,
+    parked_status: str,
+    wait_seconds: int,
+    checked_computer_id: Optional[str] = None,
+) -> bool:
+    """Park a pending or running firing as ``waiting`` for ``awaits_computer``;
+    False when it had moved on.
+
+    The wait's deadline is set by the first park and kept by every later
+    one, so a machine that comes back only to drop again does not start the
+    wait over. The heartbeat is dated to that deadline: nothing touches the
+    row while it waits, and a build that predates parking (the other color
+    through a cutover) must not take the quiet heartbeat for a dead process.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                UPDATE automation_executions
+                SET status = 'waiting', started_at = NOW(),
+                    wait_reason = 'computer_unreachable',
+                    awaits_computer = %(computer)s, parked_status = %(parked_status)s,
+                    checked_computer_id = COALESCE(%(checked)s, checked_computer_id),
+                    awaits_until = COALESCE(
+                        awaits_until, NOW() + make_interval(secs => %(wait_s)s)),
+                    heartbeat_at = COALESCE(
+                        awaits_until, NOW() + make_interval(secs => %(wait_s)s))
+                WHERE automation_execution_id = %(execution_id)s
+                  AND status IN ('pending', 'running')
+            """, {
+                "execution_id": execution_id, "computer": awaits_computer,
+                "parked_status": parked_status, "checked": checked_computer_id,
+                "wait_s": wait_seconds,
+            })
+            return cur.rowcount == 1
+
+
+async def list_parked_executions(limit: int = 50) -> List[Dict[str, Any]]:
     """Firings parked for a computer that the sweep has something to do with,
-    oldest first, with their owner, the automation's status when each
-    parked, the computer a computer token's run was checked to run on, and
-    the sweep's verdict on each: ``superseded`` by a later firing,
+    soonest deadline first, with their owner, the automation's status when
+    each parked, the computer a computer token's run was checked to run on,
+    and the sweep's verdict on each: ``superseded`` by a later firing,
     ``reachable`` (its computer's tunnel is live, it names none, or its
-    workspace is on another computer now) or ``expired`` (parked
-    ``cap_seconds``, or ``one_shot_cap_seconds`` for an automation that
-    runs once).
+    workspace is on another computer now) or ``expired`` (past its
+    ``awaits_until``).
 
     Rows with none of those are left out before the limit: a page of
     machines asleep for the night must not starve one that is back.
@@ -578,12 +608,9 @@ async def list_parked_executions(
                 JOIN automations a ON a.automation_id = e.automation_id
                 WHERE {_PARKED.format(e="e")}
                   AND ({_SUPERSEDED} OR {_REACHABLE} OR {_EXPIRED})
-                ORDER BY COALESCE(e.started_at, e.created_at)
+                ORDER BY e.awaits_until NULLS LAST
                 LIMIT %(limit)s
-            """, {
-                "cap": cap_seconds, "one_shot_cap": one_shot_cap_seconds,
-                "limit": limit,
-            })
+            """, {"limit": limit})
             return [dict(row) for row in await cur.fetchall()]
 
 
