@@ -140,7 +140,7 @@ export function usePortfolioData() {
   }, [refetchHoldings, refetchQuotes]);
 
   const handleAdd = useCallback(
-    async (payload: PortfolioHoldingPayload) => {
+    async (payload: PortfolioHoldingPayload): Promise<boolean> => {
       try {
         await addPortfolioHolding(payload);
         setModalOpen(false);
@@ -150,11 +150,14 @@ export function usePortfolioData() {
           title: 'Holding added',
           description: `${payload.symbol} has been added to your portfolio.`,
         });
+        return true;
       } catch (e: unknown) {
         const err = e as ApiError;
         console.error('Add portfolio holding failed:', err?.response?.status, err?.response?.data, err?.message);
 
-        const msg = err?.response?.data?.detail || err?.response?.data?.message || '';
+        // A 422's detail is a list, not text; only a string can be shown or matched.
+        const raw = err?.response?.data?.detail || err?.response?.data?.message;
+        const msg = typeof raw === 'string' ? raw : '';
 
         if (msg.includes('NumericValueOutOfRange') || msg.includes('numeric overflow')) {
           toast({
@@ -169,6 +172,7 @@ export function usePortfolioData() {
             description: msg || 'Failed to add holding. Please try again.',
           });
         }
+        return false;
       }
     },
     [queryClient, toast]

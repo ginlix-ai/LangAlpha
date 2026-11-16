@@ -4679,6 +4679,14 @@
         "today": "今日",
         "pl": "盈亏"
       },
+      "add": {
+        "placeholder": "代码或公司名",
+        "results": "搜索结果",
+        "add": "添加",
+        "watching": "已关注",
+        "back": "返回结果",
+        "close": "关闭搜索"
+      },
       "sorted": {
         "asc": "升序",
         "desc": "降序"

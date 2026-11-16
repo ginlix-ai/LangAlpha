@@ -1,9 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Sunrise, Sunset, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TickerLogo } from '@/components/TickerLogo';
-import AddWatchlistItemDialog from '@/pages/Dashboard/components/AddWatchlistItemDialog';
-import AddPortfolioHoldingDialog from '@/pages/Dashboard/components/AddPortfolioHoldingDialog';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import type { DeleteConfirmConfig } from '@/pages/Dashboard/hooks/usePortfolioData';
 import { formatMoney } from '@/lib/bars';
@@ -11,6 +9,7 @@ import { DASH, createFormatter, signedFixed2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { cn } from '@/lib/utils';
 import { useQuoteList } from './useQuoteList';
+import { QuoteListAdd } from './QuoteListAdd';
 import { sameListing, type Column, type QuoteListRow, type QuoteListTab } from './quoteRows';
 import './QuoteList.css';
 
@@ -49,6 +48,14 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
   const { watchlist, portfolio } = q;
   const isWatchlist = q.tab === 'watchlist';
   const [confirm, setConfirm] = useState<DeleteConfirmConfig | null>(null);
+  const [adding, setAdding] = useState(false);
+  // The symbol just added, marked once as its row arrives.
+  const [fresh, setFresh] = useState<string | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const stopAdding = () => {
+    setAdding(false);
+    addButton.current?.focus();
+  };
 
   const price = (v: number | null, places: number) => (v == null ? DASH : formatMoney(v, null, locale, { upTo: places }));
   const pct = (v: number | null) => (v == null ? DASH : percentFigure(v, locale));
@@ -84,10 +91,16 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
 
   const renderRow = (row: QuoteListRow) => {
     const active = activeSymbol != null && sameListing(row.symbol, activeSymbol);
+    const isFresh = fresh != null && sameListing(row.symbol, fresh);
     // An extended figure keeps the official close one hover away.
     const title = row.ext ? t('marketView.quoteList.closeTip', { price: price(row.close.price, row.places), pct: pct(row.close.pct) }) : undefined;
     return (
-      <li key={row.id} className={cn('quote-list-row', active && 'quote-list-row--active')}>
+      <li
+        key={row.id}
+        className={cn('quote-list-row', active && 'quote-list-row--active', isFresh && 'quote-list-row--fresh')}
+        ref={isFresh ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+        onAnimationEnd={isFresh ? () => setFresh(null) : undefined}
+      >
         <button
           type="button"
           className="quote-list-row-main"
@@ -124,7 +137,9 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
     </button>
   );
 
-  const addLabel = isWatchlist ? t('marketView.sidebar.addToWatchlist') : t('marketView.sidebar.addHolding');
+  const addLabel = adding
+    ? t('marketView.quoteList.add.close')
+    : isWatchlist ? t('marketView.sidebar.addToWatchlist') : t('marketView.sidebar.addHolding');
 
   return (
     <div className={cn('quote-list', !isWatchlist && 'quote-list--holdings')}>
@@ -135,82 +150,105 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
         </div>
         <span className="quote-list-spacer" />
         <button
+          ref={addButton}
           type="button"
-          className="quote-list-icon-btn tap-target"
-          onClick={() => (isWatchlist ? watchlist : portfolio).setModalOpen(true)}
+          className={cn('quote-list-icon-btn tap-target', adding && 'quote-list-icon-btn--on')}
+          onClick={() => (adding ? stopAdding() : setAdding(true))}
           title={addLabel}
           aria-label={addLabel}
+          aria-expanded={adding}
         >
-          <Plus size={14} />
+          {adding ? <X size={14} /> : <Plus size={14} />}
         </button>
       </div>
 
-      <div className="quote-list-meta">
-        {q.session && (
-          <span className={cn('quote-list-session', `quote-list-session--${q.session}`)}>
-            {q.session === 'pre' && <Sunrise size={12} aria-hidden="true" />}
-            {q.session === 'post' && <Sunset size={12} aria-hidden="true" />}
-            {t(`marketView.quoteList.session.${q.session}`)}
-          </span>
-        )}
-        {q.live && <span className="quote-list-live" title={t('marketView.sidebar.livePrices')} />}
-      </div>
-      {!isWatchlist && q.summaries.length > 0 && (
-        <div className="quote-list-summary">
-          {q.summaries.map((s) => (
-            <span key={s.currency} className="quote-list-summary-item">
-              <span className="quote-list-num">{money(s.totalValue, s.currency)}</span>
-              {s.totalCost > 0 && (
-                <>
-                  <span className="quote-list-summary-label">{t('marketView.quoteList.col.pl')}</span>
-                  <span className={cn('quote-list-num', tone(s.totalPlPct))}>{pct(s.totalPlPct)}</span>
-                </>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="quote-list-cols">
-        {q.columns.map((c) => {
-          const sorted = q.sort?.key === c.key ? q.sort.dir : null;
-          const label = t(c.label);
-          return (
-            <button
-              key={c.key}
-              type="button"
-              className={cn('quote-list-col', sorted && 'quote-list-col--sorted')}
-              onClick={() => q.toggleSort(c.key)}
-              // The rows are whole-row pick buttons, not table cells, so the
-              // sort is said in the heading's name rather than aria-sort.
-              aria-label={sorted ? `${label}, ${t(`marketView.quoteList.sorted.${sorted}`)}` : label}
-              title={t('marketView.quoteList.sortBy', { column: label })}
-            >
-              {label}
-              {sorted === 'asc' && <ArrowUp size={10} aria-hidden="true" />}
-              {sorted === 'desc' && <ArrowDown size={10} aria-hidden="true" />}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="quote-list-body">
-        {q.loading ? (
-          Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="quote-list-skeleton">
-              <span style={{ width: 52 }} />
-              <span style={{ width: 48, marginLeft: 'auto' }} />
-              <span style={{ width: 44 }} />
+      {adding ? (
+        <QuoteListAdd
+          // A tab's search is its own: a half-filled holding never carries to the watchlist.
+          key={q.tab}
+          tab={q.tab}
+          watching={watchlist.rows.map((r) => r.symbol)}
+          addToWatchlist={(hit) => watchlist.handleAdd(
+            { symbol: hit.symbol, instrument_type: 'stock', exchange: hit.exchangeShortName || '', name: hit.name || '' },
+            watchlist.currentWatchlistId,
+          )}
+          addHolding={portfolio.handleAdd}
+          onAdded={(symbol) => {
+            setFresh(symbol);
+            stopAdding();
+          }}
+          onCancel={stopAdding}
+        />
+      ) : (
+        <>
+          <div className="quote-list-meta">
+            {q.session && (
+              <span className={cn('quote-list-session', `quote-list-session--${q.session}`)}>
+                {q.session === 'pre' && <Sunrise size={12} aria-hidden="true" />}
+                {q.session === 'post' && <Sunset size={12} aria-hidden="true" />}
+                {t(`marketView.quoteList.session.${q.session}`)}
+              </span>
+            )}
+            {q.live && <span className="quote-list-live" title={t('marketView.sidebar.livePrices')} />}
+          </div>
+          {!isWatchlist && q.summaries.length > 0 && (
+            <div className="quote-list-summary">
+              {q.summaries.map((s) => (
+                <span key={s.currency} className="quote-list-summary-item">
+                  <span className="quote-list-num">{money(s.totalValue, s.currency)}</span>
+                  {s.totalCost > 0 && (
+                    <>
+                      <span className="quote-list-summary-label">{t('marketView.quoteList.col.pl')}</span>
+                      <span className={cn('quote-list-num', tone(s.totalPlPct))}>{pct(s.totalPlPct)}</span>
+                    </>
+                  )}
+                </span>
+              ))}
             </div>
-          ))
-        ) : q.rows.length === 0 ? (
-          <p className="quote-list-empty">
-            {isWatchlist ? t('marketView.sidebar.emptyWatchlist') : t('marketView.sidebar.emptyPortfolio')}
-          </p>
-        ) : (
-          <ul className="quote-list-rows">{q.rows.map(renderRow)}</ul>
-        )}
-      </div>
+          )}
+
+          <div className="quote-list-cols">
+            {q.columns.map((c) => {
+              const sorted = q.sort?.key === c.key ? q.sort.dir : null;
+              const label = t(c.label);
+              return (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={cn('quote-list-col', sorted && 'quote-list-col--sorted')}
+                  onClick={() => q.toggleSort(c.key)}
+                  // The rows are whole-row pick buttons, not table cells, so the
+                  // sort is said in the heading's name rather than aria-sort.
+                  aria-label={sorted ? `${label}, ${t(`marketView.quoteList.sorted.${sorted}`)}` : label}
+                  title={t('marketView.quoteList.sortBy', { column: label })}
+                >
+                  {label}
+                  {sorted === 'asc' && <ArrowUp size={10} aria-hidden="true" />}
+                  {sorted === 'desc' && <ArrowDown size={10} aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="quote-list-body">
+            {q.loading ? (
+              Array.from({ length: 5 }, (_, i) => (
+                <div key={i} className="quote-list-skeleton">
+                  <span style={{ width: 52 }} />
+                  <span style={{ width: 48, marginLeft: 'auto' }} />
+                  <span style={{ width: 44 }} />
+                </div>
+              ))
+            ) : q.rows.length === 0 ? (
+              <p className="quote-list-empty">
+                {isWatchlist ? t('marketView.sidebar.emptyWatchlist') : t('marketView.sidebar.emptyPortfolio')}
+              </p>
+            ) : (
+              <ul className="quote-list-rows">{q.rows.map(renderRow)}</ul>
+            )}
+          </div>
+        </>
+      )}
 
       <ConfirmDialog
         // Closing keeps the text, so the dialog does not empty as it leaves.
@@ -223,19 +261,6 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
           setConfirm((c) => c && { ...c, open: false });
         }}
         onOpenChange={(open: boolean) => !open && setConfirm((c) => c && { ...c, open: false })}
-      />
-      <AddWatchlistItemDialog
-        open={watchlist.modalOpen}
-        onClose={() => watchlist.setModalOpen(false)}
-        // The dialogs type their payloads apart from the hooks' (form strings
-        // against numbers); the Dashboard casts the same way.
-        onAdd={watchlist.handleAdd as unknown as React.ComponentProps<typeof AddWatchlistItemDialog>['onAdd']}
-        watchlistId={watchlist.currentWatchlistId ?? undefined}
-      />
-      <AddPortfolioHoldingDialog
-        open={portfolio.modalOpen}
-        onClose={() => portfolio.setModalOpen(false)}
-        onAdd={portfolio.handleAdd as unknown as React.ComponentProps<typeof AddPortfolioHoldingDialog>['onAdd']}
       />
     </div>
   );

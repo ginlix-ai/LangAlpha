@@ -366,3 +366,234 @@
     --tap-target-w: 100%;
   }
 }
+
+.quote-list-icon-btn--on {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+/* The row just added, said once as it arrives and then gone. */
+.quote-list-row--fresh .quote-list-row-main {
+  /* motion-exempt: a marker that holds long enough to be seen, not a transition */
+  animation: quote-list-fresh 1.6s var(--ease-out);
+}
+
+@keyframes quote-list-fresh {
+  0%, 40% { background: var(--color-bg-subtle); }
+  100% { background: transparent; }
+}
+
+/* Adding: a search where the rows were. */
+.quote-list-add {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.quote-list-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 var(--ql-pad) 6px;
+  padding: 0 9px;
+  height: 30px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius);
+  background: var(--color-bg-input);
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-search input,
+.quote-list-field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.quote-list-search input::placeholder,
+.quote-list-field input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-hit {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--ql-pad);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quote-list-hit--active {
+  background: var(--color-bg-hover);
+}
+
+.quote-list-hit:disabled {
+  cursor: default;
+}
+
+/* The last query's hits, held while the next one loads; they take no pick. */
+.quote-list-rows[aria-busy='true'] .quote-list-hit {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.quote-list-hit-symbol {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.quote-list-hit-name {
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.quote-list-hit-exchange {
+  margin-left: 6px;
+  font-size: 0.625rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-hit-add {
+  padding: 1px 7px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-hit--active .quote-list-hit-add {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+
+.quote-list-hit-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+/* A holding asks only what it cannot be valued without. */
+.quote-list-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 var(--ql-pad);
+  padding: 10px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+}
+
+.quote-list-form-head {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.quote-list-form-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.quote-list-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--color-bg-input);
+}
+
+.quote-list-field span {
+  font-size: 0.625rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-field input {
+  width: 100%;
+  padding: 0;
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.75rem;
+}
+
+.quote-list-form-error {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--color-loss);
+}
+
+.quote-list-form-submit {
+  height: 30px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-form-submit:hover {
+  opacity: 0.9;
+}
+
+.quote-list-form-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.quote-list-form-back {
+  align-self: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.6875rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.quote-list-form-back:hover {
+  color: var(--color-text-primary);
+}
+
+@media (pointer: coarse) {
+  .quote-list-hit,
+  .quote-list-search,
+  .quote-list-form-submit {
+    height: 44px;
+  }
+
+  .quote-list-field {
+    min-height: 44px;
+  }
+}

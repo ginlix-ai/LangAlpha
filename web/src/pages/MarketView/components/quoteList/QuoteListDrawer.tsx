@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils';
 import { ChartToolButton } from '../ChartToolButton';
 import { QuoteList } from './QuoteList';
+import { ADD_PANEL_ATTR } from './QuoteListAdd';
 import { sameListing } from './quoteRows';
 
 interface QuoteListDrawerProps {
@@ -46,6 +47,10 @@ export function QuoteListDrawer({ symbol, onPick }: QuoteListDrawerProps): React
           maxHeight: 'min(480px, var(--radix-popover-content-available-height))',
         }}
         aria-label={label}
+        // Escape inside the add search backs out of the search, not the list.
+        onEscapeKeyDown={(e) => {
+          if (e.target instanceof Element && e.target.closest(`[${ADD_PANEL_ATTR}]`)) e.preventDefault();
+        }}
       >
         <QuoteList
           activeSymbol={symbol}

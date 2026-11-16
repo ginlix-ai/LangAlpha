@@ -4690,6 +4690,14 @@
         "today": "Today",
         "pl": "P/L"
       },
+      "add": {
+        "placeholder": "Symbol or company",
+        "results": "Search results",
+        "add": "Add",
+        "watching": "Watching",
+        "back": "Back to results",
+        "close": "Close search"
+      },
       "sorted": {
         "asc": "sorted ascending",
         "desc": "sorted descending"
