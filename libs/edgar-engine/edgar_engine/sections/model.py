@@ -12,6 +12,9 @@ FilingStatus = Literal["original", "amendment"]
 View = Literal["as_filed", "as_amended"]
 Scope = Literal["complete", "partial", "exhibits", "cover"]
 
+__all__ = ["DocumentInfo", "FilingSections", "FilingStatus", "Scope", "Section", "Span", "Status", "Target", "TargetKind",
+           "View"]
+
 
 @dataclass(frozen=True)
 class Span:

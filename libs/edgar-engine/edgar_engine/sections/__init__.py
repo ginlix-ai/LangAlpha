@@ -5,6 +5,8 @@ from edgar_engine.sections import extract_sections
 sections = extract_sections(submission_text)
 sections["7"].text
 ```
+
+extract_sections, sections_for_filing and the model types are the package's API; its other modules are internal.
 """
 from .extract import extract_sections, sections_for_filing
 from .model import FilingSections, Section, Span, Target

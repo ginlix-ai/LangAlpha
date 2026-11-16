@@ -16,6 +16,9 @@ for amendments filed years later and for several amendments to one original. An 
 period matches no original gets amends=None here; edgar_engine.amendments reads the amendment's own
 cover page and explanatory note, which place it and correct a period of report typed wrong.
 
+refs_from_rows, link_amendments, period_rule, pick_ref and companyfacts_labels are the steps list_filings and
+select_filing are built from, exposed as test seams, not as API.
+
 Only APIs that edgartools 5.62 and 6.0 share are used. A company with no filings of the form
 yields an empty list on both; other errors propagate.
 """
@@ -33,6 +36,8 @@ from .sections.model import FilingStatus
 from .sections.vocab import base_form, filed_forms, is_amendment
 
 FiscalSource = Literal["xbrl", "period_rule"]
+
+__all__ = ["FilingRef", "base_form", "list_filings", "select_filing"]
 
 
 @dataclass(frozen=True)

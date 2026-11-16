@@ -29,6 +29,8 @@ from .sections import sections_for_filing
 from .sections.model import FilingSections, Scope, Section, Span
 from .sections.vocab import spec_for
 
+__all__ = ["amendment_scope", "merge"]
+
 T = TypeVar("T")
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
                                        "dec"], 1)}
