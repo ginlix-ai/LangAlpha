@@ -112,8 +112,10 @@ async def stand_in_held(user_id: str) -> AsyncIterator[bool]:
         yield held
 
 
-async def mark_away(user_id: str, *, conn=None) -> None:
-    """Record a Home turn admitted onto the stand-in, now.
+async def mark_away(
+    user_id: str, *, computer_id: Optional[str] = None, conn=None
+) -> None:
+    """Record a Home turn admitted onto the stand-in on ``computer_id``, now.
 
     Run in the turn's START transaction (``conn``), after it took Home's row
     FOR SHARE, so the mark is later than any hand-back's watermark read under
@@ -132,9 +134,14 @@ async def mark_away(user_id: str, *, conn=None) -> None:
         )
         if not (await cur.fetchone())["held"]:
             raise StandInGone()
+        # On the computer the turn was placed on, which its run row names for
+        # the idle sweep: one placed again since is refused, as one gone is.
+        # FOR SHARE to the transaction's end: a placement moving it waits for
+        # this turn to be admitted, and one that moved it first is seen.
         await cur.execute(
-            "SELECT 1 FROM workspaces WHERE workspace_id = %s AND status <> 'deleted'",
-            (get_home_stand_in_id(user_id),),
+            "SELECT 1 FROM workspaces WHERE workspace_id = %s AND status <> 'deleted'"
+            " AND (%s::uuid IS NULL OR computer_id = %s::uuid) FOR SHARE",
+            (get_home_stand_in_id(user_id), computer_id, computer_id),
         )
         if await cur.fetchone() is None:
             raise StandInGone()

@@ -80,20 +80,14 @@ async def place_home_turn(
     and reach Home only with the next hand-back.
     """
     home_computer = await get_home_computer(user_id)
-    try:
-        reachable = not await computer_unreachable(home_computer)
-        if reachable and not is_home_stand_in_id(user_id, follows):
-            return None
-        place = place_home_stand_in if make and not reachable else read_stand_in
-        stand_in = await place(user_id)
-        # None stands, or the one standing keeps owed files on a computer
-        # that takes no turn: the turn goes where Home is, as it was.
-        if stand_in is None or not stand_in.runs or home_computer is None:
-            return None
-    except Exception:  # noqa: BLE001 - no stand-in is the turn as it was
-        logger.warning(
-            "Could not place user %s's Home turn on its stand-in", user_id, exc_info=True
-        )
+    reachable = not await computer_unreachable(home_computer)
+    if reachable and not is_home_stand_in_id(user_id, follows):
+        return None
+    place = place_home_stand_in if make and not reachable else read_stand_in
+    stand_in = await place(user_id)
+    # None stands, or the one standing keeps owed files on a computer that
+    # takes no turn: the turn goes where Home is, as it was.
+    if stand_in is None or not stand_in.runs or home_computer is None:
         return None
     away = HomeAway(
         workspace_id=get_home_stand_in_id(user_id),
@@ -136,14 +130,21 @@ class HomeTurnStart:
     #: On a Home turn back on Home's own computer, what came back from the
     #: stand-in (``home_back_notice``).
     back: Optional[Dict[str, Any]] = None
+    #: A retry of a Home turn, which writes no query row of its own
+    #: (``begin_run``), so its START corrects where the turn's row says it ran.
+    retry: bool = False
 
     @classmethod
-    async def read(cls, user_id: str, route: TurnRoute) -> HomeTurnStart:
-        home_on_its_own = route.role == "chief_of_staff" and route.away is None
+    async def read(
+        cls, user_id: str, route: TurnRoute, *, retry: bool = False
+    ) -> HomeTurnStart:
+        home = route.role == "chief_of_staff"
+        home_on_its_own = home and route.away is None
         return cls(
             workspace_id=route.workspace_id,
             away=route.away,
             back=await home_back_notice(user_id) if home_on_its_own and user_id else None,
+            retry=retry and home,
         )
 
     def query_metadata(self) -> Dict[str, Any]:
@@ -160,41 +161,52 @@ class HomeTurnStart:
         token to (``admission.refuse_moved_off``); None for its thread's own."""
         return self.away.workspace_id if self.away else None
 
+    def _placement(self) -> Optional[Dict[str, Any]]:
+        return self.away.as_metadata() if self.away else None
+
     def frame(self) -> Optional[str]:
         """The stream's word on where the turn runs, said before the computer
-        it runs on starts. Id 0: it comes before any cursor counts."""
-        if self.away is None:
+        it runs on starts. Id 0: it comes before any cursor counts. A retry
+        back on Home says so too, clearing what its first attempt showed."""
+        if self.away is None and not self.retry:
             return None
-        data = {"home_fallback": self.away.as_metadata(), "workspace_id": self.workspace_id}
+        data = {"home_fallback": self._placement(), "workspace_id": self.workspace_id}
         return f"id: 0\nevent: turn_placement\ndata: {json.dumps(data)}\n\n"
 
     def in_start(
-        self, user_id: str, then: Optional[Callable[[Any], Awaitable[None]]]
+        self,
+        user_id: str,
+        run_id: str,
+        then: Optional[Callable[[Any], Awaitable[None]]],
     ) -> Optional[Callable[[Any], Awaitable[None]]]:
         """What the START transaction also writes. A turn in the stand-in
         marks its user away there, so the mark commits with its run row and
-        after Home's row lock, which the hand-back reads under."""
-        if self.away is None:
+        after Home's row lock, which the hand-back reads under. A retry
+        restates on its turn's query row where this attempt runs."""
+        if self.away is None and not self.retry:
             return then
 
         async def run(conn: Any) -> None:
-            from fastapi import HTTPException
-
+            from src.server.database.conversation.queries import (
+                set_run_query_metadata,
+            )
             from src.server.database.home_away import StandInGone, mark_away
+            from src.server.database.workspace import WorkspaceMovingError
 
-            try:
-                await mark_away(user_id, conn=conn)
-            except StandInGone:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "busy",
-                        "message": (
-                            "The computer this Home turn was to run on was just "
-                            "removed. Send it again."
-                        ),
-                    },
-                ) from None
+            if self.away is not None:
+                try:
+                    await mark_away(
+                        user_id, computer_id=self.away.cloud_computer_id, conn=conn
+                    )
+                except StandInGone:
+                    # Its folder is laid again by the next turn, so it is
+                    # refused as a move is, which chat and automations both
+                    # retry.
+                    raise WorkspaceMovingError(self.away.workspace_id) from None
+            if self.retry:
+                await set_run_query_metadata(
+                    conn, run_id, "home_fallback", self._placement()
+                )
             if then is not None:
                 await then(conn)
 

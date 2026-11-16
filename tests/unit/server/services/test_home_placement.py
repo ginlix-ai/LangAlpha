@@ -129,10 +129,12 @@ async def test_a_report_on_a_command_in_the_stand_in_runs_there_once_home_is_bac
 
 
 @pytest.mark.asyncio
-async def test_a_placement_that_fails_runs_the_turn_as_it_was(rows):
+async def test_a_placement_that_fails_reaches_the_turns_error_funnel(rows):
+    """A failed read is no evidence Home's turn belongs on Home's computer."""
     rows["placed"].side_effect = RuntimeError("database gone")
 
-    assert await home_placement.place_home_turn(USER) is None
+    with pytest.raises(RuntimeError, match="database gone"):
+        await home_placement.place_home_turn(USER)
 
 
 @pytest.mark.asyncio
@@ -168,10 +170,10 @@ async def test_a_gate_judges_a_home_turn_on_the_computer_it_would_run_on(
     rows["placed"].assert_not_called()
 
 
-def _start(away):
+def _start(away, *, retry=False):
     from src.server.services.home_placement import HomeTurnStart
 
-    return HomeTurnStart(workspace_id=HOME, away=away)
+    return HomeTurnStart(workspace_id=HOME, away=away, retry=retry)
 
 
 def _away():
@@ -204,21 +206,49 @@ async def test_a_turn_at_home_adds_nothing_to_its_start():
 
     assert start.query_metadata() == {} and start.run_metadata() == {}
     assert start.moved_off is None and start.frame() is None
-    assert start.in_start(USER, then) is then
-    assert start.in_start(USER, None) is None
+    assert start.in_start(USER, "run-1", then) is then
+    assert start.in_start(USER, "run-1", None) is None
 
 
 @pytest.mark.asyncio
-async def test_a_stand_in_whose_computer_goes_refuses_the_turn_as_busy():
-    from fastapi import HTTPException
-
+async def test_a_stand_in_whose_computer_goes_refuses_the_turn_as_a_move():
+    """Answered as the workspace_moving admission conflict, which an
+    automation firing retries without a strike."""
     from src.server.database.home_away import StandInGone
+    from src.server.database.workspace import WorkspaceMovingError
 
     then = AsyncMock()
-    with patch("src.server.database.home_away.mark_away", AsyncMock(side_effect=StandInGone())):
-        with pytest.raises(HTTPException) as refused:
-            await _start(_away()).in_start(USER, then)("conn")
+    with patch(
+        "src.server.database.home_away.mark_away", AsyncMock(side_effect=StandInGone())
+    ):
+        with pytest.raises(WorkspaceMovingError):
+            await _start(_away()).in_start(USER, "run-1", then)("conn")
 
-    assert refused.value.status_code == 409
-    assert refused.value.detail["code"] == "busy"
     then.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_stand_in", [True, False], ids=["stand-in", "home"])
+async def test_a_retry_restates_where_it_runs_on_its_turns_row(in_stand_in):
+    """A retry writes no query row of its own, so a replay reads the first
+    attempt's placement unless the retry's START corrects it, either way."""
+    import json
+
+    away = _away() if in_stand_in else None
+    start = _start(away, retry=True)
+    then = AsyncMock()
+    with (
+        patch("src.server.database.home_away.mark_away", AsyncMock()) as mark,
+        patch(
+            "src.server.database.conversation.queries.set_run_query_metadata",
+            AsyncMock(),
+        ) as restate,
+    ):
+        await start.in_start(USER, "run-1", then)("conn")
+
+    placement = away.as_metadata() if away else None
+    restate.assert_awaited_once_with("conn", "run-1", "home_fallback", placement)
+    assert mark.await_count == (1 if in_stand_in else 0)
+    then.assert_awaited_once_with("conn")
+    # Live, the frame says it too, clearing the first attempt's badge.
+    assert json.loads(start.frame().split("data: ", 1)[1])["home_fallback"] == placement

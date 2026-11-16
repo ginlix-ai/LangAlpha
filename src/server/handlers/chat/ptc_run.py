@@ -422,7 +422,9 @@ async def astream_ptc_workflow(
             user_profile = (
                 await get_user_profile_for_prompt(user_id) if user_id else None
             )
-            home = await HomeTurnStart.read(user_id, route)
+            home = await HomeTurnStart.read(
+                user_id, route, retry=bool(request.retry_of_run_id)
+            )
             turn_context = build_turn_context(
                 request,
                 prior_thread,
@@ -592,6 +594,7 @@ async def astream_ptc_workflow(
                 },
                 in_start=home.in_start(
                     user_id,
+                    run_id,
                     partial(
                         _admit_attachments,
                         turn_attachments,

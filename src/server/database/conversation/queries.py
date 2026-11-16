@@ -224,18 +224,24 @@ async def create_query(
 
 async def set_run_query_metadata(conn, run_id: str, key: str, value: Any) -> None:
     """Set one key of the metadata on the query row of ``run_id``'s turn, on
-    ``conn``, so a START transaction can correct what it inserted."""
+    ``conn``, so a START transaction can correct what it inserted; None
+    removes the key."""
+    if value is None:
+        update, params = "COALESCE(q.metadata, '{}'::jsonb) - %s", (key,)
+    else:
+        update = "jsonb_set(COALESCE(q.metadata, '{}'::jsonb), ARRAY[%s], %s::jsonb)"
+        params = (key, SafeJson(value))
     async with conn.cursor() as cur:
         await cur.execute(
-            """
+            f"""
             UPDATE conversation_queries q
-            SET metadata = jsonb_set(COALESCE(q.metadata, '{}'::jsonb), ARRAY[%s], %s::jsonb)
+            SET metadata = {update}
             FROM conversation_responses r
             WHERE r.conversation_response_id::text = %s
               AND q.conversation_thread_id = r.conversation_thread_id
               AND q.turn_index = r.turn_index
             """,
-            (key, SafeJson(value), run_id),
+            (*params, run_id),
         )
 
 

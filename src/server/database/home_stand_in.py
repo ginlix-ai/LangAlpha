@@ -219,6 +219,20 @@ async def place_home_stand_in(user_id: str) -> Optional[StandIn]:
         owned.cursor(row_factory=dict_row) as cur,
     ):
         await lock_user_writes(cur, user_id)
+        # A turn's START holds this row FOR SHARE until its away mark
+        # commits (``mark_away``): waiting here, the move below reads that
+        # mark in a snapshot of its own and keeps the stand-in for the turn.
+        # After the user's lock, which orders placements among themselves,
+        # and after the computer's row: a computer's status write takes it,
+        # then its workspaces' rows (``shadowed_write``), so taking them the
+        # other way round could deadlock with one.
+        await cur.execute(
+            "SELECT 1 FROM computers WHERE computer_id = %s FOR SHARE", (computer_id,)
+        )
+        await cur.execute(
+            "SELECT 1 FROM workspaces WHERE workspace_id = %s FOR UPDATE",
+            (workspace_id,),
+        )
         computer = await get_computer(computer_id, conn=owned)
         # No workspace's folder starts with a dot and no other user's stand-in
         # is on this computer, so the folder is free. On a computer not on the

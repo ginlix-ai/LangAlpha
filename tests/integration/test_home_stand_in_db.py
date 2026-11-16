@@ -230,6 +230,73 @@ async def test_a_removal_holding_the_stand_in_and_a_turn_starting_exclude_each_o
         await home_away.mark_away(user_id)
 
 
+async def test_a_turn_placed_on_a_stand_in_since_moved_is_refused(seed_user):
+    """The turn's run row names the computer it was placed on for the idle
+    sweep; a stand-in placed on another since would run it unseen there."""
+    from src.server.database import home_away
+
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud")
+    await home_stand_in.place_home_stand_in(user_id)
+
+    with pytest.raises(home_away.StandInGone):
+        await home_away.mark_away(user_id, computer_id=str(uuid.uuid4()))
+    await home_away.mark_away(user_id, computer_id=cloud)
+
+    assert await home_away.get_home_away(user_id) is not None
+
+
+async def test_a_stand_in_cannot_move_while_a_turn_placed_on_it_is_admitted(seed_user):
+    """The check that the stand-in is still where the turn was placed holds to
+    START's end, so a placement moving it in between waits rather than leave
+    the turn running on a computer its row no longer names."""
+    import psycopg
+
+    from src.server.database import home_away
+    from src.server.database.pool import get_db_connection
+
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud")
+    other = await _computer(user_id, "Other")
+    await home_stand_in.place_home_stand_in(user_id)
+
+    async with get_db_connection() as start, start.transaction():
+        await home_away.mark_away(user_id, computer_id=cloud, conn=start)
+        async with get_db_connection() as mover:
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                async with mover.transaction():
+                    await mover.execute("SET LOCAL lock_timeout = '300ms'")
+                    await mover.execute(
+                        "UPDATE workspaces SET computer_id = %s WHERE workspace_id = %s",
+                        (other, get_home_stand_in_id(user_id)),
+                    )
+
+
+async def test_a_placement_racing_a_turns_start_keeps_the_stand_in_for_it(seed_user):
+    """A placement that would move the stand-in off a computer that just
+    failed waits for a START marking a turn there, then sees the turn's mark
+    and keeps the stand-in where the turn runs."""
+    from src.server.database import home_away
+    from src.server.database.pool import get_db_connection
+
+    user_id = seed_user["user_id"]
+    cloud = await _computer(user_id, "Cloud")
+    await _computer(user_id, "Other")
+    await home_stand_in.place_home_stand_in(user_id)
+
+    # Failed after the turn was placed on it, before its START marks it.
+    await update_computer_status(cloud, "error")
+    async with get_db_connection() as start, start.transaction():
+        await home_away.mark_away(user_id, computer_id=cloud, conn=start)
+        placing = asyncio.create_task(home_stand_in.place_home_stand_in(user_id))
+        await asyncio.sleep(0.5)
+        assert not placing.done()
+    placed = await asyncio.wait_for(placing, timeout=10)
+
+    assert str(placed.computer["computer_id"]) == cloud
+    assert placed.owed and not placed.runs
+
+
 async def test_a_home_turn_in_the_stand_in_keeps_the_stand_in_computer_busy(seed_user):
     """The thread is Home's, on the machine Home lives on, so the idle sweep
     finds the turn and the task runs it starts on the stand-in's computer only
