@@ -233,20 +233,6 @@
           "input_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
         }
-      },
-      {
-        "id": "claude-fable-5-1",
-        "name": "Claude Fable 5.1",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-09, superseded by claude-fable-5-2. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 10.0,
-          "cached_input": 0.25,
-          "cache_5m": 12.5,
-          "cache_1h": 20.0,
-          "output": 50.0,
-          "unit": "per_1m_tokens"
-        }
       }
     ],
     "gemini": [
@@ -264,23 +250,14 @@
         }
       },
       {
-        "id": "gemini-3.8-flash",
-        "name": "Gemini 3.8 Flash",
+        "id": "gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
         "is_reasoning": true,
-        "description": "Google's most intelligent Flash model, for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+        "description": "Google's everyday Gemini 4 model, bringing frontier intelligence with speed and efficiency to coding and agentic workflows",
         "pricing": {
-          "input": 0.75,
-          "cached_input": 0.075,
-          "output": 3.75,
-          "cache_storage": 0.5,
-          "unit": "per_1m_tokens"
-        },
-        "scheduled_pricing": {
-          "effective_from": "2027-01-01",
           "input": 1.5,
-          "cached_input": 0.15,
+          "cached_input": 0.075,
           "output": 7.5,
-          "cache_storage": 1.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -300,6 +277,46 @@
           "input": 4.0,
           "cached_input": 0.2,
           "output": 20.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "is_reasoning": true,
+        "description": "Google's most capable reasoning model, above Gemini 4 Argon, for the hardest multi-step agentic, coding and scientific work",
+        "pricing": {
+          "input": 2.0,
+          "cached_input": 0.1,
+          "output": 10.0,
+          "unit": "per_1m_tokens"
+        },
+        "scheduled_pricing": {
+          "effective_from": "2026-12-01",
+          "input": 4.0,
+          "cached_input": 0.2,
+          "output": 20.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
+        "is_reasoning": true,
+        "description": "Retired 2026-11-16, superseded by gemini-4-hydrogen. Kept until the next retirement so a custom model on this id still bills.",
+        "pricing": {
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 3.75,
+          "cache_storage": 0.5,
+          "unit": "per_1m_tokens"
+        },
+        "scheduled_pricing": {
+          "effective_from": "2027-01-01",
+          "input": 1.5,
+          "cached_input": 0.15,
+          "output": 7.5,
+          "cache_storage": 1.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -709,17 +726,18 @@
     ],
     "dashscope": [
       {
-        "id": "qwen3.8-max",
-        "name": "Qwen3.8 Max",
+        "id": "qwen4-max",
+        "name": "Qwen4 Max",
         "is_reasoning": true,
-        "description": "Alibaba's 2.4T-parameter MoE flagship — native vision across planning, execution and verification, with autonomous long-horizon coding and closed-loop iteration",
+        "description": "Alibaba's Qwen4 flagship, a 2.4T-parameter MoE with 71B active and a 1M context, built for long-horizon agentic work and coding",
         "context_window": 1000000,
-        "max_output": 65536,
+        "max_output": 131072,
         "pricing": {
-          "input": 1.714,
-          "cached_input": 0.214,
-          "cache_5m": 2.143,
-          "output": 5.143,
+          "input": 1.429,
+          "cached_input": 0.071,
+          "cache_5m": 1.786,
+          "cache_1h": 2.857,
+          "output": 4.286,
           "unit": "per_1m_tokens"
         }
       },
@@ -771,21 +789,37 @@
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
         }
+      },
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "is_reasoning": true,
+        "description": "Retired 2026-11-16, superseded by qwen4-max. Kept until the next retirement so a custom model on this id still bills.",
+        "context_window": 1000000,
+        "max_output": 65536,
+        "pricing": {
+          "input": 1.714,
+          "cached_input": 0.214,
+          "cache_5m": 2.143,
+          "output": 5.143,
+          "unit": "per_1m_tokens"
+        }
       }
     ],
     "dashscope-intl": [
       {
-        "id": "qwen3.8-max",
-        "name": "Qwen3.8 Max (SG)",
+        "id": "qwen4-max",
+        "name": "Qwen4 Max (SG)",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.8 Max — Singapore international region",
+        "description": "Alibaba's Qwen4 Max, Singapore international region",
         "context_window": 1000000,
-        "max_output": 65536,
+        "max_output": 131072,
         "pricing": {
-          "input": 2.141,
-          "cached_input": 0.268,
-          "cache_5m": 2.677,
-          "output": 6.424,
+          "input": 1.5,
+          "cached_input": 0.075,
+          "cache_5m": 1.875,
+          "cache_1h": 3.0,
+          "output": 4.5,
           "unit": "per_1m_tokens"
         }
       },
@@ -835,6 +869,21 @@
             }
           ],
           "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max (SG)",
+        "is_reasoning": true,
+        "description": "Retired 2026-11-16, superseded by qwen4-max. Kept until the next retirement so a custom model on this id still bills.",
+        "context_window": 1000000,
+        "max_output": 65536,
+        "pricing": {
+          "input": 2.141,
+          "cached_input": 0.268,
+          "cache_5m": 2.677,
+          "output": 6.424,
           "unit": "per_1m_tokens"
         }
       }

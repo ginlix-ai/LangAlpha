@@ -128,7 +128,7 @@ async def test_an_image_pillow_decodes_is_a_block_for_a_vision_model(fmt):
 
 @pytest.mark.asyncio
 async def test_heic_is_a_block_where_the_route_takes_it_and_a_file_elsewhere():
-    content, sandbox = await _attach(_HEIC, "gemini-3.8-flash")
+    content, sandbox = await _attach(_HEIC, "gemini-4-hydrogen")
     assert content == _as_block(sandbox, _HEIC)
 
     content, _ = await _attach(_HEIC, "deepseek-flash")

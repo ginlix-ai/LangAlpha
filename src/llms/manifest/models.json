@@ -307,6 +307,34 @@
       "write": "parameters.output_config.effort"
     }
   },
+  "gemini-4-carbon": {
+    "prompt_guidance": "lean",
+    "model_id": "gemini-4-carbon",
+    "provider": "gemini",
+    "display_name": "Gemini 4 Carbon",
+    "visible": true,
+    "speed": 2,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf",
+      "video"
+    ],
+    "parameters": {
+      "include_thoughts": true
+    },
+    "reasoning": {
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "default": "medium",
+      "write": "parameters.thinking_level"
+    }
+  },
   "gemini-4-argon": {
     "prompt_guidance": "lean",
     "model_id": "gemini-4-argon",
@@ -335,13 +363,14 @@
       "write": "parameters.thinking_level"
     }
   },
-  "gemini-3.8-flash": {
-    "model_id": "gemini-3.8-flash",
+  "gemini-4-hydrogen": {
+    "prompt_guidance": "lean",
+    "model_id": "gemini-4-hydrogen",
     "provider": "gemini",
-    "display_name": "Gemini 3.8 Flash",
+    "display_name": "Gemini 4 Hydrogen",
     "visible": true,
-    "speed": 5,
-    "intelligence": 3,
+    "speed": 4,
+    "intelligence": 4,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -672,14 +701,14 @@
       }
     }
   },
-  "qwen3.8-max": {
+  "qwen4-max": {
     "prompt_guidance": "lean",
-    "model_id": "qwen3.8-max",
+    "model_id": "qwen4-max",
     "provider": "dashscope",
-    "display_name": "Qwen3.8 Max",
+    "display_name": "Qwen4 Max",
     "visible": true,
     "speed": 1,
-    "intelligence": 4,
+    "intelligence": 5,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -688,14 +717,11 @@
     "reasoning": {
       "efforts": [
         "none",
-        "minimal",
         "low",
-        "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
-      "default": "medium",
+      "default": "high",
       "write": "parameters.reasoning.effort"
     }
   },
@@ -751,14 +777,14 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "qwen3.8-max-intl": {
+  "qwen4-max-intl": {
     "prompt_guidance": "lean",
-    "model_id": "qwen3.8-max",
+    "model_id": "qwen4-max",
     "provider": "dashscope-intl",
-    "display_name": "Qwen3.8 Max (Intl)",
+    "display_name": "Qwen4 Max (Intl)",
     "visible": true,
     "speed": 1,
-    "intelligence": 4,
+    "intelligence": 5,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -767,14 +793,11 @@
     "reasoning": {
       "efforts": [
         "none",
-        "minimal",
         "low",
-        "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
-      "default": "medium",
+      "default": "high",
       "write": "parameters.reasoning.effort"
     }
   },

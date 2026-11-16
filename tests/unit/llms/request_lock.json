@@ -1687,143 +1687,6 @@
    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
   }
  },
- "gemini-3.8-flash": {
-  "client": "ChatGoogleGenerativeAI",
-  "graph_build": {
-   "middleware": [
-    "FrozenPromptMiddleware",
-    "TimeUpToolStopMiddleware",
-    "LargeResultEvictionMiddleware",
-    "SubAgentMiddleware",
-    "WakeupQuietGuardMiddleware",
-    "CreditGateMiddleware",
-    "RepeatCallGuardMiddleware",
-    "ToolArgumentParsingMiddleware",
-    "ComputerArgumentGuardMiddleware",
-    "ProtectedPathMiddleware",
-    "CodeValidationMiddleware",
-    "ToolErrorHandlingMiddleware",
-    "LeakDetectionMiddleware",
-    "ToolResultNormalizationMiddleware",
-    "FileOperationMiddleware",
-    "ProvenanceMiddleware",
-    "SkillsMiddleware",
-    "SteeringMiddleware",
-    "BackgroundSubagentMiddleware",
-    "AskUserMiddleware",
-    "StreamHeartbeatMiddleware",
-    "CompactionMiddleware",
-    "ModelResilienceMiddleware",
-    "MultimodalStripMiddleware",
-    "MultimodalMiddleware",
-    "AnthropicPromptCachingMiddleware",
-    "SystemPromptCacheMiddleware",
-    "ToolSurfaceMiddleware",
-    "EmptyToolCallRetryMiddleware",
-    "PatchToolCallsMiddleware",
-    "TurnContextMiddleware",
-    "BaselineContextMiddleware",
-    "NotesDueMiddleware",
-    "RowCarrierMiddleware",
-    "SystemPinMiddleware",
-    "ReasoningCompatibilityMiddleware"
-   ],
-   "model_is_the_client": true,
-   "state_schema": "MainAgentState",
-   "system_prompt_sha256": "1e548d3f75f646f1e819369156f7b850ad83e019be23c7526dffcebf6a4ad033",
-   "tools": [
-    "AskUserQuestion",
-    "Bash",
-    "Edit",
-    "ExecuteCode",
-    "GetPreviewUrl",
-    "Glob",
-    "Grep",
-    "Read",
-    "RunWorkflow",
-    "ShowWidget",
-    "TaskOutput",
-    "ThreadStatus",
-    "WebFetch",
-    "WebSearch",
-    "Write",
-    "get_company_overview",
-    "get_daily_prices",
-    "get_market_overview",
-    "get_options_chain",
-    "get_quote",
-    "get_sec_filing",
-    "manage_chart_layers",
-    "reply_to_comment",
-    "schedule_wakeup",
-    "screen_stocks"
-   ]
-  },
-  "metadata": {
-   "billing_type": "byok",
-   "manifest_model": "gemini-3.8-flash",
-   "pricing_model_id": "gemini-3.8-flash",
-   "pricing_provider": "gemini",
-   "provider_route": "gemini",
-   "reasoning_effort": "medium"
-  },
-  "request": {
-   "body": {
-    "contents": [
-     {
-      "parts": [
-       {
-        "text": "Look up AAPL."
-       }
-      ],
-      "role": "user"
-     }
-    ],
-    "generationConfig": {
-     "candidateCount": 1,
-     "thinkingConfig": {
-      "include_thoughts": true,
-      "thinking_level": "MEDIUM"
-     }
-    },
-    "safetySettings": [],
-    "systemInstruction": {
-     "parts": [
-      {
-       "text": "You are a lock probe."
-      }
-     ]
-    },
-    "tools": [
-     {
-      "functionDeclarations": [
-       {
-        "description": "Look up a symbol.",
-        "name": "lock_probe",
-        "parameters": {
-         "properties": {
-          "symbol": {
-           "type": "STRING"
-          }
-         },
-         "required": [
-          "symbol"
-         ],
-         "type": "OBJECT"
-        }
-       }
-      ]
-     }
-    ]
-   },
-   "headers": {
-    "content-type": "application/json",
-    "x-server-timeout": "600"
-   },
-   "method": "POST",
-   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
-  }
- },
  "gemini-4-argon": {
   "client": "ChatGoogleGenerativeAI",
   "graph_build": {
@@ -1959,6 +1822,280 @@
    },
    "method": "POST",
    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent"
+  }
+ },
+ "gemini-4-carbon": {
+  "client": "ChatGoogleGenerativeAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "f3df8a94f4d48d77f9357b413192a2f11e27c4e5755ac3c43982de5b76ddcd4e",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_layers",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gemini-4-carbon",
+   "pricing_model_id": "gemini-4-carbon",
+   "pricing_provider": "gemini",
+   "provider_route": "gemini",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Look up AAPL."
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "candidateCount": 1,
+     "thinkingConfig": {
+      "include_thoughts": true,
+      "thinking_level": "MEDIUM"
+     }
+    },
+    "safetySettings": [],
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "You are a lock probe."
+      }
+     ]
+    },
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "description": "Look up a symbol.",
+        "name": "lock_probe",
+        "parameters": {
+         "properties": {
+          "symbol": {
+           "type": "STRING"
+          }
+         },
+         "required": [
+          "symbol"
+         ],
+         "type": "OBJECT"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "headers": {
+    "content-type": "application/json",
+    "x-server-timeout": "600"
+   },
+   "method": "POST",
+   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-carbon:generateContent"
+  }
+ },
+ "gemini-4-hydrogen": {
+  "client": "ChatGoogleGenerativeAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "f3df8a94f4d48d77f9357b413192a2f11e27c4e5755ac3c43982de5b76ddcd4e",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_layers",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gemini-4-hydrogen",
+   "pricing_model_id": "gemini-4-hydrogen",
+   "pricing_provider": "gemini",
+   "provider_route": "gemini",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Look up AAPL."
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "candidateCount": 1,
+     "thinkingConfig": {
+      "include_thoughts": true,
+      "thinking_level": "MEDIUM"
+     }
+    },
+    "safetySettings": [],
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "You are a lock probe."
+      }
+     ]
+    },
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "description": "Look up a symbol.",
+        "name": "lock_probe",
+        "parameters": {
+         "properties": {
+          "symbol": {
+           "type": "STRING"
+          }
+         },
+         "required": [
+          "symbol"
+         ],
+         "type": "OBJECT"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "headers": {
+    "content-type": "application/json",
+    "x-server-timeout": "600"
+   },
+   "method": "POST",
+   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent"
   }
  },
  "glm-5.2": {
@@ -6650,7 +6787,7 @@
    "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses"
   }
  },
- "qwen3.8-max": {
+ "qwen4-max": {
   "client": "ChatDashScope",
   "graph_build": {
    "middleware": [
@@ -6724,11 +6861,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "qwen3.8-max",
-   "pricing_model_id": "qwen3.8-max",
+   "manifest_model": "qwen4-max",
+   "pricing_model_id": "qwen4-max",
    "pricing_provider": "dashscope",
    "provider_route": "dashscope",
-   "reasoning_effort": "medium"
+   "reasoning_effort": "high"
   },
   "request": {
    "body": {
@@ -6744,9 +6881,9 @@
       "type": "message"
      }
     ],
-    "model": "qwen3.8-max",
+    "model": "qwen4-max",
     "reasoning": {
-     "effort": "medium"
+     "effort": "high"
     },
     "stream": false,
     "tools": [
@@ -6779,7 +6916,7 @@
    "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
   }
  },
- "qwen3.8-max-intl": {
+ "qwen4-max-intl": {
   "client": "ChatDashScope",
   "graph_build": {
    "middleware": [
@@ -6853,11 +6990,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "qwen3.8-max-intl",
-   "pricing_model_id": "qwen3.8-max",
+   "manifest_model": "qwen4-max-intl",
+   "pricing_model_id": "qwen4-max",
    "pricing_provider": "dashscope-intl",
    "provider_route": "dashscope-intl",
-   "reasoning_effort": "medium"
+   "reasoning_effort": "high"
   },
   "request": {
    "body": {
@@ -6873,9 +7010,9 @@
       "type": "message"
      }
     ],
-    "model": "qwen3.8-max",
+    "model": "qwen4-max",
     "reasoning": {
-     "effort": "medium"
+     "effort": "high"
     },
     "stream": false,
     "tools": [

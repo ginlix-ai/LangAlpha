@@ -32,7 +32,7 @@ class TestModelPricingResolution:
         assert pricing == direct
 
     def test_qwen_cn_pricing(self):
-        pricing = find_model_pricing("qwen3.8-max", provider="dashscope")
+        pricing = find_model_pricing("qwen4-max", provider="dashscope")
         assert pricing is not None
         assert pricing["input"] > 0
         assert pricing["output"] > 0
@@ -40,8 +40,8 @@ class TestModelPricingResolution:
     def test_intl_variant_keeps_own_pricing_not_parent(self):
         """dashscope-intl has its own pricing list, so it must NOT inherit the
         cheaper CN rates from the parent dashscope provider."""
-        cn = find_model_pricing("qwen3.8-max", provider="dashscope")
-        intl = find_model_pricing("qwen3.8-max", provider="dashscope-intl")
+        cn = find_model_pricing("qwen4-max", provider="dashscope")
+        intl = find_model_pricing("qwen4-max", provider="dashscope-intl")
         assert cn is not None and intl is not None
         assert cn["input"] != intl["input"]
         assert cn["output"] != intl["output"]

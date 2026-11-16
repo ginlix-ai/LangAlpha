@@ -23,6 +23,12 @@
       "url": "https://artificialanalysis.ai/models/claude-fable-5-2",
       "metric": "v5.0.1 cost per task (low 3.10, high 9.08, xhigh 14.83, max 26.54 USD; medium not measured) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
       "retrieved": "2026-11-09"
+    },
+    "qwen4-max": {
+      "name": "Artificial Analysis, Intelligence Index v5.0.1",
+      "url": "https://artificialanalysis.ai/models/qwen4-max",
+      "metric": "v5.0.1 cost per task (3.27 USD, at Alibaba's default effort) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
+      "retrieved": "2026-11-16"
     }
   },
   "baseline": {
@@ -104,12 +110,8 @@
       "low": 1.14631,
       "max": 2.00013
     },
-    "gemini-3.8-flash": {
-      "medium": 0.931038,
-      "high": 1.242795
-    },
-    "qwen3.8-max": {
-      "any": 5.408509
+    "qwen4-max": {
+      "any": 1.920642
     },
     "gemini-3.1-flash-lite": {
       "any": 0.060181
