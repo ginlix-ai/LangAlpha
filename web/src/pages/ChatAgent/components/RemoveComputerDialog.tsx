@@ -28,6 +28,7 @@ import type { Computer } from '@/types/api';
 
 import { machineName, namedFiles } from '../hooks/useHomePlacement';
 import { PREPARING_UI, computerStatusUi, homeEligibility, isComputerPreparing } from '../utils/computerStatus';
+import { ComputerRefusal } from './ComputerRefusal';
 import { providerLabel } from './providerUi';
 import { RadioCardGroup, type RadioCardOption } from './radioCardGroup';
 
@@ -203,16 +204,13 @@ function RemoveComputerDialog({
         </div>
       )}
       {isOnly && (
-        <div
-          role={onlyComputer ? 'alert' : undefined}
-          className="flex flex-col items-start gap-2 rounded-md px-3 py-2.5 text-sm"
-          style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)' }}
-        >
-          <p>{t('computer.removeRefused.onlyComputer', "This is your only computer, so it can't be removed. Add another computer first.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={onAddComputer} disabled={busy}>
-            {t('computer.card.add', 'Add a computer')}
-          </Button>
-        </div>
+        <ComputerRefusal
+          refusal={{ kind: 'onlyComputer' }}
+          message={t('computer.removeRefused.onlyComputer', "This is your only computer, so it can't be removed. Add another computer first.")}
+          onOpen={onAddComputer}
+          alert={onlyComputer}
+          disabled={busy}
+        />
       )}
       {listWaiting && (
         <p className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-tertiary)' }}>

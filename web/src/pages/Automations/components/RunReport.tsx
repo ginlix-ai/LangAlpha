@@ -4,7 +4,7 @@ import { ArrowUpRight } from 'lucide-react';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { ErrorLink } from '@/components/ui/error-banner';
 import type { AutomationExecution } from '@/types/automation';
-import type { ErrorLinkSpec } from '@/utils/rateLimitError';
+import type { PageLinkSpec } from '@/utils/rateLimitError';
 import type { RunView } from '../utils/status';
 import { StatusGlyph } from './StatusMark';
 import './RunReport.css';
@@ -30,7 +30,7 @@ interface RunReportProps {
   onResume?: () => void;
   /** Where the reader acts on the failure's cause, such as the plan a usage
    *  limit sends them to. */
-  links?: ErrorLinkSpec[];
+  links?: PageLinkSpec[];
 }
 
 /** What one run left behind: the answer's start, the error, a note on why it

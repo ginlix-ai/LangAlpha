@@ -9,7 +9,7 @@ import type {
   ProvenanceEnvelopeKey,
   ProvenanceEvent,
 } from './sse';
-import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
+import type { PageLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import type { PlanBilled } from '@/api/model';
 import type { DispatchingAgent, ReportOutcome } from './api';
 import type { CommandFailureReason, CommandTool } from './commands';
@@ -455,7 +455,7 @@ export interface CreditPauseState {
   message?: string;
   /** Where the user resolves the denial, built by ``buildRateLimitError`` so a
    *  pause and a 429 banner offer the same destinations. */
-  links?: ErrorLinkSpec[];
+  links?: PageLinkSpec[];
   interruptId: string;
 }
 

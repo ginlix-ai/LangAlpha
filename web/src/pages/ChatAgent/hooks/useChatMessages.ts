@@ -27,7 +27,7 @@ import { reportOwedForStatus, shouldArmForStatus } from '../utils/reportBackSign
 import { useReportBackWatch } from './useReportBackWatch';
 import { useChatFeedback } from './useChatFeedback';
 import { toast } from '@/components/ui/use-toast';
-import { buildRateLimitError, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
+import { buildRateLimitError, type PageLinkSpec, type StructuredError } from '@/utils/rateLimitError';
 import { isNeedsComputer, needsBackupError, needsBackupOf, needsComputerError } from '../utils/needsComputer';
 import { isClientError } from '@/api/errors';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
@@ -2057,7 +2057,7 @@ export function useChatMessages(
       if (errorInfo.type === 'model_removed') {
         queryClient.invalidateQueries({ queryKey: queryKeys.user.preferences() });
       }
-      const link = errorInfo.link as ErrorLinkSpec;
+      const link = errorInfo.link as PageLinkSpec;
       return {
         banner: {
           message: (errorInfo.message as string) || (err as Error).message || 'An error occurred.',

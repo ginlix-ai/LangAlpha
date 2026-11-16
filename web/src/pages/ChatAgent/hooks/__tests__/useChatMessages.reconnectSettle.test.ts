@@ -992,7 +992,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
 
     const banner = hook.result.current.messageError as StructuredError;
     expect(banner.message).toBe(message);
-    expect(banner.links?.map((l) => l.label)).toEqual(['Manage plan', 'View usage']);
+    expect(banner.links?.map((l) => (l.kind === undefined ? l.label : l.kind))).toEqual(['Manage plan', 'View usage']);
   });
 
   it('a steer refused in the server\'s words shows them, as a send does', async () => {

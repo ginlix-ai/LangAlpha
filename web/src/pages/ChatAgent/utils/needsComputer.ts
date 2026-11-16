@@ -10,19 +10,11 @@
 import type { useTranslation } from 'react-i18next';
 
 import { apiErrorCoded } from '@/api/errors';
-import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
+import type { StructuredError } from '@/utils/rateLimitError';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 export const NEEDS_COMPUTER = 'needs_computer';
-
-/** The link that opens the way to add one (`AddComputerLink` words it for the device). */
-export const ADD_COMPUTER_LINK: ErrorLinkSpec = {
-  url: '/chat',
-  label: 'Add a computer',
-  labelKey: 'homePlacement.addComputer',
-  addComputer: true,
-};
 
 /**
  * The detail of a refusal carrying `code`, as either carrier holds it: the
@@ -39,7 +31,7 @@ export function isNeedsComputer(err: unknown): boolean {
 }
 
 export function needsComputerError(t: Translate): StructuredError {
-  return { message: t('homePlacement.needsComputer'), links: [ADD_COMPUTER_LINK] };
+  return { message: t('homePlacement.needsComputer'), links: [{ kind: 'needsComputer' }] };
 }
 
 export const NEEDS_BACKUP = 'needs_backup';
@@ -66,6 +58,6 @@ export function needsBackupOf(err: unknown): NeedsBackup | null {
 export function needsBackupError(t: Translate, { computerId, name }: NeedsBackup): StructuredError {
   return {
     message: t('homePlacement.needsBackup', { name }),
-    links: [{ url: '/chat', label: name, computerDetails: { computerId, name } }],
+    links: [{ kind: 'needsBackup', computerId, name }],
   };
 }
