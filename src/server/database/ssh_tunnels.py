@@ -41,10 +41,18 @@ TAKE_OFF_WINDOW = timedelta(seconds=30)
 # mint tunnels in a loop reaches it.
 MAX_TUNNELS_PER_USER = 50
 
+# Literals rather than parameters, so every statement that judges a tunnel
+# can include them as they are.
+_WITHIN_LIVE = f"make_interval(secs => {LIVE_WITHIN.total_seconds()})"
+
+# How long a machine may go unseen before work waiting on it gives up: a
+# notification parked for it, and a command left running there.
+AWAY_GIVE_UP_DAYS = 7
+
 _LIVE = (
     "(connected_at IS NOT NULL "
     " AND (disconnected_at IS NULL OR connected_at > disconnected_at) "
-    " AND seen_at > NOW() - %(live_within)s)"
+    f" AND seen_at > NOW() - {_WITHIN_LIVE})"
 )
 # Down since a newer pairing of its machine superseded it (migration 124). A
 # connect after that stamp, as from a folder restored with the old keys, is
@@ -56,12 +64,11 @@ _PAIRED_ELSEWHERE = (
 )
 # The gateway has beaten within ``LIVE_WITHIN`` and has run that long, the
 # time its machines' keepalives take to give up on a connection the previous
-# gateway held and connect again. A literal rather than a parameter, so every
-# statement that judges a tunnel can include it as is.
+# gateway held and connect again.
 _GATEWAY_SETTLED = (
     "EXISTS (SELECT 1 FROM ssh_gateway_state g"
-    f" WHERE g.seen_at > NOW() - make_interval(secs => {LIVE_WITHIN.total_seconds()})"
-    f" AND g.started_at <= NOW() - make_interval(secs => {LIVE_WITHIN.total_seconds()}))"
+    f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
+    f" AND g.started_at <= NOW() - {_WITHIN_LIVE})"
 )
 _COLUMNS = (
     "tunnel_id::text AS tunnel_id, user_id, public_key, fingerprint, hostname, "
@@ -84,18 +91,12 @@ _NOT_TAKING_OFF = (
 )
 
 
-def _params(**kw: Any) -> Dict[str, Any]:
-    return {"live_within": LIVE_WITHIN, **kw}
-
-
-def computer_tunnel_down_sql(computer_id: str) -> str:
-    """SQL true while the computer ``computer_id`` (an SQL text expression)
-    connects out through a tunnel that is not live, for a statement every
-    worker may run, and the one judgment of it (:func:`computer_tunnel_down`
-    evaluates it alone). A computer reached directly or deleted is never
-    down, nor is any while the gateway is not settled (``_GATEWAY_SETTLED``):
-    its dials then fail as the gateway's outage. Needs the ``live_within``
-    parameter."""
+def _tunnel_judged_sql(computer_id: str, tunnel_ok: str) -> str:
+    """SQL true while the gateway is settled and the computer ``computer_id``
+    (an SQL text expression) connects out through a tunnel with no row that
+    ``tunnel_ok`` holds for. A computer reached directly or deleted never
+    matches, nor does any while the gateway is not settled
+    (``_GATEWAY_SETTLED``): its dials then fail as the gateway's outage."""
     return f"""({_GATEWAY_SETTLED} AND EXISTS (
         SELECT 1 FROM computers c
         WHERE c.computer_id = ({computer_id})::uuid
@@ -104,7 +105,15 @@ def computer_tunnel_down_sql(computer_id: str) -> str:
           AND NOT EXISTS (
               SELECT 1 FROM ssh_tunnels
               WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
-                AND {_LIVE})))"""
+                AND {tunnel_ok})))"""
+
+
+def computer_tunnel_down_sql(computer_id: str) -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    connects out through a tunnel that is not live, for a statement every
+    worker may run, and the one judgment of it (:func:`computer_tunnel_down`
+    evaluates it alone)."""
+    return _tunnel_judged_sql(computer_id, _LIVE)
 
 
 async def computer_tunnel_down(computer_id: str, *, conn=None) -> bool:
@@ -114,29 +123,36 @@ async def computer_tunnel_down(computer_id: str, *, conn=None) -> bool:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"SELECT {computer_tunnel_down_sql('%(computer_id)s')} AS down",
-                _params(computer_id=str(computer_id)),
+                {"computer_id": str(computer_id)},
             )
             row = await cur.fetchone()
             return bool(row and row["down"])
 
 
-def computer_tunnel_lost_sql(computer_id: str, days: int) -> str:
+def computer_tunnel_lost_sql(computer_id: str) -> str:
     """SQL true while the computer ``computer_id`` (an SQL text expression)
-    connects out through a tunnel the gateway has not seen for ``days`` days,
-    or that is gone: a machine that has not come back in that long, which
-    work waiting on it gives up on. A computer reached directly or deleted is
-    never lost, nor is any while the gateway is not settled, which may be
-    what kept it from being seen."""
-    return f"""({_GATEWAY_SETTLED} AND EXISTS (
-        SELECT 1 FROM computers c
-        WHERE c.computer_id = ({computer_id})::uuid
-          AND c.kind = 'ssh' AND c.{FENCE_NOT_DELETED}
-          AND COALESCE(c.provider_config->>'tunnel', '') <> ''
-          AND NOT EXISTS (
-              SELECT 1 FROM ssh_tunnels
-              WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
-                AND COALESCE(ssh_tunnels.seen_at, ssh_tunnels.created_at)
-                    > NOW() - make_interval(days => {int(days)}))))"""
+    connects out through a tunnel the gateway has not seen for
+    ``AWAY_GIVE_UP_DAYS``, or that is gone: a machine that has not come back
+    in that long, which work waiting on it gives up on."""
+    return _tunnel_judged_sql(
+        computer_id,
+        "COALESCE(ssh_tunnels.seen_at, ssh_tunnels.created_at)"
+        f" > NOW() - make_interval(days => {AWAY_GIVE_UP_DAYS})",
+    )
+
+
+def awaited_computer_back_sql(awaits: str, workspace_id: str) -> str:
+    """SQL true once work waiting for the computer ``awaits`` (an SQL text
+    expression) may look again: its tunnel is not down, or the workspace
+    ``workspace_id`` (an SQL expression) its turn runs in is on another
+    computer now (moved, or its computer removed). Its start then looks at
+    the computer it is on now, and waits again naming that one if it is away
+    too."""
+    return f"""(NOT {computer_tunnel_down_sql(awaits)} OR EXISTS (
+        SELECT 1 FROM workspaces ws
+        WHERE ws.workspace_id = ({workspace_id})
+          AND ws.computer_id IS NOT NULL
+          AND ws.computer_id::text IS DISTINCT FROM ({awaits})))"""
 
 
 class TunnelKeyTaken(Exception):
@@ -162,7 +178,7 @@ async def upsert_tunnel(
             from the first account's computers.
         TooManyTunnels: The user holds ``MAX_TUNNELS_PER_USER`` already.
     """
-    params = _params(
+    params = dict(
         user_id=user_id,
         public_key=public_key,
         fingerprint=fingerprint,
@@ -259,7 +275,7 @@ async def get_tunnel(tunnel_id: str) -> Optional[Dict[str, Any]]:
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = %(tunnel_id)s::uuid",
-                _params(tunnel_id=tunnel_id),
+                dict(tunnel_id=tunnel_id),
             )
             return await cur.fetchone()
 
@@ -271,7 +287,7 @@ async def get_user_tunnel(user_id: str, tunnel_id: str) -> Optional[Dict[str, An
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = %(tunnel_id)s::uuid AND user_id = %(user_id)s",
-                _params(tunnel_id=tunnel_id, user_id=user_id),
+                dict(tunnel_id=tunnel_id, user_id=user_id),
             )
             return await cur.fetchone()
 
@@ -284,7 +300,7 @@ async def get_tunnels(tunnel_ids: Iterable[str], *, conn=None) -> Dict[str, Dict
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "
                 "WHERE tunnel_id = ANY(%(tunnel_ids)s::uuid[])",
-                _params(tunnel_ids=list(tunnel_ids)),
+                dict(tunnel_ids=list(tunnel_ids)),
             )
             return {row["tunnel_id"]: row for row in await cur.fetchall()}
 
@@ -339,7 +355,7 @@ async def claim_unused_tunnels(
                 FROM unused WHERE tunnel_id = unused.id
                 RETURNING {_COLUMNS}
                 """,
-                _params(
+                dict(
                     paired_before=paired_before,
                     retry_after=retry_after,
                     give_up_after=give_up_after,
@@ -378,7 +394,7 @@ async def claim_released_tunnel(
                                AND t.paired_at > NOW() - %(paired_within)s))
                 RETURNING {_COLUMNS}
                 """,
-                _params(
+                dict(
                     tunnel_id=tunnel_id,
                     retry_after=retry_after,
                     made_at=made_at,

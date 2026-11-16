@@ -51,7 +51,7 @@ from ptc_agent.core.sandbox import jobs
 
 from src.server.database.runs import command_runs as cr_db
 from src.server.database.runs.command_runs import Outcome
-from src.server.database.runs.outbox import COMMAND_NOTICE_TTL_DAYS
+from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 from src.server.services.commands.control import (
     ComputerAway,
     computer_jobs_runtime,
@@ -89,10 +89,9 @@ AWAY_RECHECK_S = 60.0
 #: How often the commands of a machine dialed directly that did not answer
 #: are looked at again: each look is a dial, so it is spaced further apart.
 DIAL_RECHECK_S = 300.0
-#: How long a machine may stay away before its commands settle as lost: as
-#: long as a command's notice is kept (``COMMAND_NOTICE_TTL_DAYS``), so one
-#: that never comes back stops being looked at.
-AWAY_LIMIT = timedelta(days=COMMAND_NOTICE_TTL_DAYS)
+#: How long a machine may stay away before its commands settle as lost, so
+#: one that never comes back stops being looked at.
+AWAY_LIMIT = timedelta(days=AWAY_GIVE_UP_DAYS)
 #: As ``AWAY_LIMIT``, for a stopped computer on a machine dialed directly: its
 #: owner stopped it, and only a stop the machine missed could have left a job
 #: there, which a day of unanswered dials gives up on.

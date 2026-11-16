@@ -15,7 +15,7 @@ from src.server.database.automation import (
 )
 from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
 from src.server.database.pool import get_db_connection
-from src.server.database.ssh_tunnels import LIVE_WITHIN, computer_tunnel_down_sql
+from src.server.database.ssh_tunnels import awaited_computer_back_sql
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -533,18 +533,10 @@ _SUPERSEDED = """EXISTS (
       AND (w.created_at, w.automation_execution_id)
           > (e.created_at, e.automation_execution_id))"""
 
-# The automation's workspace is on another computer now than the one ``e``
-# waits for (moved, or its computer removed): the ordinary start looks at the
-# computer it is on now, and parks it again naming that one if it is away too.
-_MOVED = """EXISTS (
-    SELECT 1 FROM automations m
-    JOIN workspaces ws ON ws.workspace_id = m.workspace_id
-    WHERE m.automation_id = e.automation_id
-      AND ws.computer_id IS NOT NULL
-      AND ws.computer_id IS DISTINCT FROM e.awaits_computer)"""
-
-_REACHABLE = (
-    f"(NOT {computer_tunnel_down_sql('e.awaits_computer::text')} OR {_MOVED})"
+# Its computer is back, or its automation's workspace is on another one now.
+_REACHABLE = awaited_computer_back_sql(
+    "e.awaits_computer::text",
+    "(SELECT m.workspace_id FROM automations m WHERE m.automation_id = e.automation_id)",
 )
 # Its automation runs this once (a one-time automation, a price alert that
 # fires once): nothing later stands in for a run that never happens, so it
@@ -590,7 +582,7 @@ async def list_parked_executions(
                 LIMIT %(limit)s
             """, {
                 "cap": cap_seconds, "one_shot_cap": one_shot_cap_seconds,
-                "limit": limit, "live_within": LIVE_WITHIN,
+                "limit": limit,
             })
             return [dict(row) for row in await cur.fetchall()]
 
@@ -618,7 +610,7 @@ async def release_parked_execution(execution_id: str) -> bool:
                   AND NOT {_SUPERSEDED}
                   AND NOT COALESCE({_EXPIRED}, false)
                   AND {_REACHABLE}
-            """, {"execution_id": execution_id, "live_within": LIVE_WITHIN})
+            """, {"execution_id": execution_id})
             return cur.rowcount == 1
 
 

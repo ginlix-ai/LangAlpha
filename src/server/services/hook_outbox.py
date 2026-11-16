@@ -22,6 +22,7 @@ import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from src.server.database.runs import outbox as outbox_db
+from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -322,8 +323,7 @@ class HookOutboxDrainer:
                             f"[HookOutbox] gave up job="
                             f"{gave_up.get('hook_outbox_id')} "
                             f"type={gave_up.get('hook_type')}: its computer has "
-                            f"not connected for "
-                            f"{outbox_db.COMMAND_NOTICE_TTL_DAYS} days"
+                            f"not connected for {AWAY_GIVE_UP_DAYS} days"
                         )
                         # Settled as a steer out of attempts is, or closed
                         # as a dead report-back is: the same followups.

@@ -47,8 +47,7 @@ from src.server.database.runs.command_runs import (
 )
 from src.server.database.market_targets import ordering_key as market_target_key
 from src.server.database.ssh_tunnels import (
-    LIVE_WITHIN,
-    computer_tunnel_down_sql,
+    awaited_computer_back_sql,
     computer_tunnel_lost_sql,
 )
 from src.server.database.wakeups.contract import WAKEUP_OWED_SQL
@@ -1349,23 +1348,13 @@ async def park_for_computer(job_id: str, *, attempts: int, computer_id: str) -> 
             return cur.rowcount == 1
 
 
-# The thread a notification's turn runs on: an analyst's report-back
-# (``report_back``) is keyed on the thread it reports to, every other type is
-# its own thread's.
-_TURN_THREAD_SQL = (
-    "(CASE WHEN o.hook_type = 'report_back' THEN o.ordering_key"
-    " ELSE o.conversation_thread_id::text END)"
-)
-
-# The turn's workspace is on another computer now than the one ``o`` waits
-# for (moved, or its computer removed): its executor looks at the computer it
-# is on now, and parks it again naming that one if it is away too.
-_MOVED_SQL = f"""EXISTS (
-    SELECT 1 FROM conversation_threads t
-    JOIN workspaces ws ON ws.workspace_id = t.workspace_id
-    WHERE t.conversation_thread_id::text = {_TURN_THREAD_SQL}
-      AND ws.computer_id IS NOT NULL
-      AND ws.computer_id::text IS DISTINCT FROM o.payload->>'{AWAITS_COMPUTER}')"""
+# The workspace a notification's turn runs in: that of the thread it runs
+# on, which for an analyst's report-back (``report_back``) is the thread it
+# reports to, keyed on it, and for every other type its own thread.
+_TURN_WORKSPACE_SQL = """(SELECT t.workspace_id FROM conversation_threads t
+    WHERE t.conversation_thread_id::text =
+          CASE WHEN o.hook_type = 'report_back' THEN o.ordering_key
+               ELSE o.conversation_thread_id::text END)"""
 
 
 async def release_for_reachable_computers() -> List[Dict[str, Any]]:
@@ -1394,19 +1383,18 @@ async def release_for_reachable_computers() -> List[Dict[str, Any]]:
                   AND o.next_retry_at = 'infinity'::timestamptz
                   AND o.payload ? '{AWAITS_COMPUTER}'
                   AND NOT (o.payload ? 'steered_run_id')
-                  AND (NOT {computer_tunnel_down_sql(f"o.payload->>'{AWAITS_COMPUTER}'")}
-                       OR {_MOVED_SQL})
+                  AND {awaited_computer_back_sql(
+                      f"o.payload->>'{AWAITS_COMPUTER}'", _TURN_WORKSPACE_SQL)}
                 RETURNING o.hook_outbox_id, o.hook_type, o.conversation_thread_id,
                           o.ordering_key
-                """,
-                {"live_within": LIVE_WITHIN},
+                """
             )
             return [dict(r) for r in await cur.fetchall()]
 
 
 async def close_for_lost_computers() -> List[Dict[str, Any]]:
     """Give up the notifications parked for a computer whose machine has not
-    connected for ``COMMAND_NOTICE_TTL_DAYS`` (``park_for_computer``); the
+    connected for ``AWAY_GIVE_UP_DAYS`` (``park_for_computer``); the
     rows closed or held, with the status each was left in.
 
     A machine that never comes back would hold them pending for good, each
@@ -1428,9 +1416,7 @@ async def close_for_lost_computers() -> List[Dict[str, Any]]:
         " AND NOT (o.payload ? 'steered_run_id')"
         " AND NOT (o.payload ? 'exhausted')"
         " AND "
-        + computer_tunnel_lost_sql(
-            f"o.payload->>'{AWAITS_COMPUTER}'", COMMAND_NOTICE_TTL_DAYS
-        )
+        + computer_tunnel_lost_sql(f"o.payload->>'{AWAITS_COMPUTER}'")
     )
     clears = _watch_clear_insert_sql(
         "closed", suffix="lost_clear", error_wake=True, refuse_if_pointer=True
