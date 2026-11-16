@@ -251,6 +251,8 @@ export interface Computer {
   /** How many workspaces live on the machine, counted by the server: a list
    *  page a caller happens to hold is not that number. */
   workspace_count?: number;
+  /** Home's turns run here while an own-machine primary is away, so it stays with no workspaces. */
+  stands_in_for_home?: boolean;
   root_dir: string;
   /** The user's own machine, for an `ssh` computer; null for every other kind. */
   ssh: ComputerSsh | null;

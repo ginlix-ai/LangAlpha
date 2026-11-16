@@ -905,6 +905,14 @@ class ComputerResponse(BaseModel):
         0,
         description="Live projects on this computer, which its stop takes down together",
     )
+    stands_in_for_home: bool = Field(
+        False,
+        description=(
+            "Home's turns run here while the primary, a machine of the user's "
+            "own, can't be reached, so the computer is kept even with no "
+            "workspaces; its owner can still remove it"
+        ),
+    )
     layout_version: Optional[int] = Field(
         None,
         description=(

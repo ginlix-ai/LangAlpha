@@ -43,6 +43,7 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.computer_names import ComputerNameTaken, name_taken
+from src.server.database.home_stand_in import read_stand_in, stand_in_needed
 from src.server.database.workspace import (
     count_live_workspaces_by_computer,
     get_live_workspace_folders_for_computer,
@@ -331,6 +332,7 @@ def computer_to_response(
     owner: bool = True,
     workspace_count: int = 0,
     tunnels: Optional[Dict[str, Dict[str, Any]]] = None,
+    stand_in_host: Optional[str] = None,
 ) -> ComputerResponse:
     """Withhold provider_ref from non-owners because it addresses a real billed machine."""
     return ComputerResponse(
@@ -345,6 +347,7 @@ def computer_to_response(
         is_primary=bool(computer.get("is_primary")),
         root_dir=computer.get("root_dir") or "",
         workspace_count=workspace_count,
+        stands_in_for_home=str(computer["computer_id"]) == stand_in_host,
         layout_version=observed_layout_version(computer),
         provider_ref=computer.get("provider_ref") if owner else None,
         created_at=computer["created_at"],
@@ -596,12 +599,14 @@ async def list_computers(principal: ReadPrincipal):
         [str(row["computer_id"]) for row in rows]
     )
     tunnels = await tunnels_for(x_user_id, rows)
+    stand_in_host = await _stand_in_host(x_user_id)
     return ComputerListResponse(
         computers=[
             computer_to_response(
                 row,
                 workspace_count=counts.get(str(row["computer_id"]), 0),
                 tunnels=tunnels,
+                stand_in_host=stand_in_host,
             )
             for row in rows
         ],
@@ -657,6 +662,15 @@ def _tier_specs(sandbox: Any, kind: str) -> list[ComputerTierSpec]:
     ]
 
 
+async def _stand_in_host(user_id: str) -> Optional[str]:
+    """The computer kept for Home's stand-in (``stand_in_needed``), which its
+    card says, as a retirement would keep it."""
+    stand_in = await read_stand_in(user_id)
+    if stand_in is None or not await stand_in_needed(user_id):
+        return None
+    return str(stand_in.computer["computer_id"])
+
+
 async def _counted_response(computer: Dict[str, Any]) -> ComputerResponse:
     """A single machine's response with its live project count.
 
@@ -671,6 +685,7 @@ async def _counted_response(computer: Dict[str, Any]) -> ComputerResponse:
         computer,
         workspace_count=counts.get(computer_id, 0),
         tunnels=await tunnels_for(computer["user_id"], [computer]),
+        stand_in_host=await _stand_in_host(str(computer["user_id"])),
     )
 
 

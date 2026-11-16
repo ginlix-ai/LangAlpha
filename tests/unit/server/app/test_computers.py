@@ -54,6 +54,15 @@ def sandbox_config():
 
 
 @pytest.fixture(autouse=True)
+def stand_in_host():
+    """No computer is kept for Home's stand-in unless a test says one is."""
+    with patch(
+        "src.server.app.computers._stand_in_host", AsyncMock(return_value=None)
+    ) as host:
+        yield host
+
+
+@pytest.fixture(autouse=True)
 def capacity_lock():
     """Every create and rename holds the user's capacity lock; a test that
     asks about it patches its own over this one."""
@@ -1268,6 +1277,28 @@ async def test_list_computers_returns_the_callers_own(client, computer):
     assert body["computers"][0]["workspace_count"] == 3
     counted.assert_awaited_once_with([COMPUTER_ID])
     get_all.assert_awaited_once_with(USER)
+
+
+@pytest.mark.asyncio
+async def test_the_list_says_which_computer_is_kept_for_homes_stand_in(
+    client, computer, stand_in_host
+):
+    """Its card says why an empty cloud computer stays."""
+    stand_in_host.return_value = COMPUTER_ID
+    with (
+        patch(
+            "src.server.app.computers.get_computers_for_user",
+            AsyncMock(return_value=[computer]),
+        ),
+        patch(
+            "src.server.app.computers.count_live_workspaces_by_computer",
+            AsyncMock(return_value={}),
+        ),
+    ):
+        resp = await client.get("/api/v1/computers")
+
+    assert resp.json()["computers"][0]["stands_in_for_home"] is True
+    stand_in_host.assert_awaited_once_with(USER)
 
 
 @pytest.mark.asyncio

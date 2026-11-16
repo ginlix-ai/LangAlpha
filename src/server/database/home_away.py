@@ -71,13 +71,24 @@ def is_owed(row: Optional[Dict[str, Any]]) -> bool:
     return through is None or row["last_away_at"] > through
 
 
+# Whether a row's last hand-back left files in the stand-in, as SQL over
+# home_away: ``left_on_stand_in`` not None.
+LEFT_SQL = (
+    "last_handback IS NOT NULL AND ("
+    "COALESCE((last_handback->>'failed')::boolean, false)"
+    " OR jsonb_array_length(COALESCE(last_handback->'left_on_cloud', '[]'::jsonb)) > 0"
+    " OR jsonb_array_length(COALESCE(last_handback->'unreadable', '[]'::jsonb)) > 0)"
+)
+
+
 def left_on_stand_in(last: Optional[HandbackNotice]) -> Optional[Dict[str, Any]]:
     """What the last hand-back left in the stand-in and Home does not have:
     ``failed`` when it gave up, else the paths too large or unreadable to
     carry. None when it left nothing."""
     if last is None:
         return None
-    paths = [*last["left_on_cloud"], *last["unreadable"]]
+    # As ``LEFT_SQL`` reads it: a key a notice lacks is an empty list.
+    paths = [*(last.get("left_on_cloud") or []), *(last.get("unreadable") or [])]
     failed = last.get("failed", False)
     if not failed and not paths:
         return None

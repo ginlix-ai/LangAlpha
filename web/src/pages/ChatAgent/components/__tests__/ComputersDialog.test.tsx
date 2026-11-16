@@ -141,6 +141,23 @@ describe('ComputersDialog', () => {
     expect(screen.getAllByText('Primary')).toHaveLength(1);
   });
 
+  it("badges the computer kept for Home's stand-in, and says why it stays", async () => {
+    mockGetComputers.mockResolvedValue({
+      ...LIVE_LIST,
+      computers: LIVE_LIST.computers.map((computer) =>
+        computer.computer_id === SECOND_ID ? { ...computer, stands_in_for_home: true } : computer),
+    });
+    open();
+
+    const [primary, second] = await screen.findAllByTestId('computer-card');
+    const badge = within(second).getByText('Stands in for Home');
+    expect(badge.closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('even with no workspaces'),
+    );
+    expect(within(primary).queryByText('Stands in for Home')).not.toBeInTheDocument();
+  });
+
   it("says how many workspaces a machine holds, from the machine's own count", async () => {
     open();
     const cards = await screen.findAllByTestId('computer-card');

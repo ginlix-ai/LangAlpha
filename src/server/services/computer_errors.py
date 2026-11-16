@@ -20,9 +20,9 @@ class Retirement(StrEnum):
     transition another owner holds, or one that moved the row under the
     claim; ``DEFERRED`` is the decision key not taken, which leaves a
     delete's marker for the cleanup sweep; ``WITHDRAWN`` is a marker the
-    sweep found taken off by the time it held the key. ``HANDBACK_LEFT``
-    keeps a computer only from a retirement nobody asked for, never from its
-    owner's remove, so it is no refusal code.
+    sweep found taken off by the time it held the key. ``HANDBACK_LEFT`` and
+    ``STAND_IN`` keep a computer only from a retirement nobody asked for,
+    never from its owner's remove, so they are no refusal codes.
     """
 
     RETIRED = "retired"
@@ -33,6 +33,7 @@ class Retirement(StrEnum):
     HAS_WORKSPACES = "has_workspaces"
     HANDBACK_OWED = "handback_owed"
     HANDBACK_LEFT = "handback_left"
+    STAND_IN = "stand_in"
     BUSY = "busy"
     DEFERRED = "deferred"
     WITHDRAWN = "withdrawn"
@@ -59,6 +60,7 @@ _KEEPS_MACHINE = frozenset(
         Retirement.HAS_WORKSPACES,
         Retirement.HANDBACK_OWED,
         Retirement.HANDBACK_LEFT,
+        Retirement.STAND_IN,
     }
 )
 _STAYS_PENDING = frozenset(

@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
-from src.server.database.home_away import OWED_SQL, left_on_stand_in
+from src.server.database.home_away import LEFT_SQL, OWED_SQL, left_on_stand_in
 from src.server.database.home_workspace import (
     HOME_STAND_IN_KEY,
     get_home_stand_in_id,
@@ -56,15 +56,24 @@ def _owed_sql(user_id_sql: str) -> str:
     )
 
 
+def _left_sql(user_id_sql: str) -> str:
+    return (
+        "EXISTS (SELECT 1 FROM home_away"
+        f" WHERE home_away.user_id = {user_id_sql} AND {LEFT_SQL})"
+    )
+
+
 def kept_sql(stand_in: str, computer: str) -> str:
     """Whether stand-in row ``stand_in`` stays on computer row ``computer``,
     its own: while it takes a workspace, so the stand-in's files are where
-    the next turn on the cloud looks, and while files Home is owed are there,
-    however that computer fares, since they are nowhere else."""
+    the next turn on the cloud looks, and while files Home is owed, or files
+    the last hand-back left, are there, however that computer fares, since
+    they are nowhere else and a folder no row names would go unwatched."""
+    user_id = f"{stand_in}.user_id"
     return (
         f"({stand_in}.status <> 'deleted' AND {computer}.status <> 'deleted'"
         f" AND ({takes_a_workspace_sql(computer)}"
-        f" OR {_owed_sql(f'{stand_in}.user_id')}))"
+        f" OR {_owed_sql(user_id)} OR {_left_sql(user_id)}))"
     )
 
 
@@ -72,9 +81,10 @@ def _turn_host_sql(host: str) -> str:
     """Whether computer row ``host`` is where a Home turn in the stand-in runs
     now: the computer the stand-in stays on (``kept_sql``) if it takes a
     workspace, else, with none kept, any of its user's of the kinds built that
-    takes one. Kept on a computer that takes none (failed, with owed files on
-    it), no computer is: Home's turns and parked work wait for Home's machine,
-    and the hand-back's own retries see to the files."""
+    takes one. Kept on a computer that takes none (failed, with owed or left
+    files on it), no computer is: Home's turns and parked work wait for Home's
+    machine, or for the user to start or remove that computer, and the
+    hand-back's own retries see to owed files."""
     return (
         f"({host}.kind IN ({_KINDS}) AND {takes_a_workspace_sql(host)}"
         " AND NOT EXISTS (SELECT 1 FROM workspaces kept_s"
@@ -117,6 +127,22 @@ async def stand_in_computer(user_id: str, *, conn=None) -> Optional[Dict[str, An
         )
         row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def stand_in_needed(user_id: str, *, conn=None) -> bool:
+    """Whether the primary is a machine of the user's own, which can be away,
+    so the cloud computer Home's stand-in stands on is kept for it when its
+    last workspace goes, rather than retired with nowhere left to stand."""
+    async with get_db_connection(conn) as c, c.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT 1 FROM computers
+            WHERE user_id = %s AND is_primary AND status <> 'deleted'
+              AND kind NOT IN ({_KINDS})
+            """,
+            (user_id,),
+        )
+        return await cur.fetchone() is not None
 
 
 @dataclass(frozen=True, slots=True)

@@ -658,8 +658,8 @@ async def test_home_work_waits_while_owed_files_keep_the_stand_in_on_a_failed_co
     """A turn keeps the stand-in on its computer while files Home is owed are
     there, however that computer fares, and runs nowhere while it has failed.
     Parked Home work is released onto the same computer a turn would run on,
-    so it stays parked rather than failing every sweep, until the hand-back
-    gives up and the stand-in may be placed again."""
+    so it stays parked rather than failing every sweep. A hand-back that gives
+    up leaves the files there, so it stays until that computer runs again."""
     from src.server.database import home_away
     from src.server.database.computer import create_computer
     from src.server.database.conversation import create_thread
@@ -705,11 +705,20 @@ async def test_home_work_waits_while_owed_files_keep_the_stand_in_on_a_failed_co
             str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()
         }
 
-        # Given up, the files are no longer owed: the stand-in may move.
+        # Given up, the files are no longer owed but are still only there.
         await home_away.fail_handback(
             machine.user_id, max_attempts=1, given_up={"failed": True}
         )
-        assert str((await stand_in_computer(machine.user_id))["computer_id"]) == str(
+        assert await stand_in_computer(machine.user_id) is None
+        assert await _parked_verdict(execution_id) is None
+
+        # Its computer running again, work goes there, not to the other.
+        async with test_db_pool.connection() as conn:
+            await conn.execute(
+                "UPDATE computers SET status = 'running' WHERE computer_id = %s", (first_id,)
+            )
+        assert str((await stand_in_computer(machine.user_id))["computer_id"]) == first_id
+        assert str((await place_home_stand_in(machine.user_id)).computer["computer_id"]) != str(
             second["computer_id"]
         )
         assert (await _parked_verdict(execution_id))["stand_in"] is True

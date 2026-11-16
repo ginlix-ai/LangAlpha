@@ -103,6 +103,32 @@ async def _owed(db_conn, user_id):
     )
 
 
+async def _left(db_conn, user_id):
+    """Handed back, with one file too large to carry left in the stand-in."""
+    import json
+
+    await db_conn.execute(
+        "INSERT INTO home_away (user_id, home_id, last_away_at, handed_back_through,"
+        " last_handback) VALUES (%s, %s, NOW(), NOW(), %s::jsonb)",
+        (
+            user_id,
+            get_home_workspace_id(user_id),
+            json.dumps(
+                {
+                    "handback_id": str(uuid.uuid4()),
+                    "folder": None,
+                    "files": 0,
+                    "left_on_cloud": ["huge.bin"],
+                    "unreadable": [],
+                    "computer_name": "Mac",
+                    "cloud_name": "Broken",
+                    "created_at": "2026-11-16T00:00:00+00:00",
+                }
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "breaks",
     [
@@ -111,9 +137,9 @@ async def _owed(db_conn, user_id):
     ],
     ids=["failed", "retiring"],
 )
-@pytest.mark.parametrize("owed", [False, True], ids=["handed-back", "owed"])
-async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_owed(
-    seed_user, db_conn, breaks, owed
+@pytest.mark.parametrize("held", [None, "owed", "left"], ids=["handed-back", "owed", "left"])
+async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_files_hold_it(
+    seed_user, db_conn, breaks, held
 ):
     user_id = seed_user["user_id"]
     broken = await _computer(user_id, "Broken")
@@ -121,15 +147,22 @@ async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_owed(
     await _touch(db_conn, broken)
     await home_stand_in.place_home_stand_in(user_id)
     await db_conn.execute(breaks, (broken,))
-    if owed:
+    if held == "owed":
         await _owed(db_conn, user_id)
+    elif held == "left":
+        await _left(db_conn, user_id)
 
     placed = await home_stand_in.place_home_stand_in(user_id)
 
-    # Owed files are only where it is, so it stays with them; no turn runs on
-    # a computer that takes no workspace, though.
-    assert str(placed.computer["computer_id"]) == (broken if owed else healthy)
-    assert (placed.kept, placed.runs, placed.owed) == (True, not owed, owed)
+    # Files owed, or left by the last hand-back, are only where it is, so it
+    # stays with them; no turn runs on a computer that takes no workspace.
+    assert str(placed.computer["computer_id"]) == (broken if held else healthy)
+    assert (placed.kept, placed.runs, placed.owed, placed.left) == (
+        True,
+        not held,
+        held == "owed",
+        held == "left",
+    )
     assert placed.row["status"] != "deleted"
 
 
@@ -374,3 +407,16 @@ async def test_a_turn_checked_for_the_stand_ins_computer_starts_only_there(seed_
     with pytest.raises(workspaces.WorkspaceMovingError):
         await checked_on(mac)
     assert await checked_on(cloud)
+
+
+async def test_the_stand_in_is_needed_only_while_the_primary_is_the_users_own(seed_user):
+    """A cloud primary is never away, so nothing need stand in for it."""
+    user_id = seed_user["user_id"]
+    assert await home_stand_in.stand_in_needed(user_id) is False
+
+    cloud = await _computer(user_id, "Cloud", primary=True)
+    assert await home_stand_in.stand_in_needed(user_id) is False
+
+    await update_computer_status(cloud, "deleted")
+    await _computer(user_id, "Mac", primary=True, kind="ssh")
+    assert await home_stand_in.stand_in_needed(user_id) is True

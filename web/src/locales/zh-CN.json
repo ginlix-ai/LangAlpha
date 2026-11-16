@@ -1637,6 +1637,8 @@
     "stop": "停止",
     "primaryBadge": "默认",
     "primaryBadgeTitle": "新工作区会创建在这台计算机上",
+    "standInBadge": "Home 备用",
+    "standInBadgeTitle": "默认计算机无法连接时，Chief of Staff Agent 会在这里工作，所以即使没有工作区，这台计算机也会保留。你仍然可以移除它。",
     "badge": {
       "mac": "Mac",
       "ssh": "SSH"

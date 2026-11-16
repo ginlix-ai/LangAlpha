@@ -1595,6 +1595,8 @@
     "stop": "Stop",
     "primaryBadge": "Primary",
     "primaryBadgeTitle": "New workspaces are created on this computer",
+    "standInBadge": "Stands in for Home",
+    "standInBadgeTitle": "The Chief of Staff works here while your primary computer can't be reached, so this computer stays even with no workspaces. You can still remove it.",
     "badge": {
       "mac": "Mac",
       "ssh": "SSH"

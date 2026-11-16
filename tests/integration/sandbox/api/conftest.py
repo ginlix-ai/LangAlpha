@@ -206,6 +206,9 @@ async def computers_client():
         patch(
             "src.server.app.computers._computer_manager", return_value=manager
         ),
+        patch(
+            "src.server.app.computers._stand_in_host", AsyncMock(return_value=None)
+        ),
     ):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

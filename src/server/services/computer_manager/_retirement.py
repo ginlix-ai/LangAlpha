@@ -17,7 +17,7 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.home_away import stand_in_held
-from src.server.database.home_stand_in import StandIn, stand_in_on
+from src.server.database.home_stand_in import StandIn, stand_in_needed, stand_in_on
 from src.server.database.workspace import get_live_workspace_ids_for_computer
 from src.server.database.workspace_move import primary_candidate
 from src.server.models.computer import ComputerStatus
@@ -236,6 +236,18 @@ class RetirementMixin:
                         "hand-back left; leaving it in place"
                     )
                     kept = Retirement.HANDBACK_LEFT
+                elif (
+                    kept is None
+                    and stand_in is not None
+                    and await stand_in_needed(str(computer["user_id"]))
+                ):
+                    # Where Home's turns run while the user's own machine is
+                    # away; its owner's remove still takes it.
+                    logger.info(
+                        f"Computer {computer_id} holds Home's stand-in for a "
+                        "primary of the user's own; leaving it in place"
+                    )
+                    kept = Retirement.STAND_IN
             if kept is not None:
                 if not kept.stays_pending or marked_here:
                     await clear_computer_retirement_pending(computer_id)

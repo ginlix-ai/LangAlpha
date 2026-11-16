@@ -559,7 +559,7 @@ def retiring():
     on it as each read of it (``stand_in_on``) finds it in turn."""
     from src.server.services.computer_manager._retirement import RetirementMixin
 
-    state = {"reads": [], "held": True, "holding": [], "torn_down": []}
+    state = {"reads": [], "held": True, "holding": [], "torn_down": [], "needed": False}
 
     class Manager(RetirementMixin):
         @asynccontextmanager
@@ -591,6 +591,7 @@ def retiring():
         patch(f"{_R}.get_live_workspace_ids_for_computer", AsyncMock(return_value=[])),
         patch(f"{_R}.stand_in_on", AsyncMock(side_effect=lambda c: state["reads"].pop(0))),
         patch(f"{_R}.stand_in_held", stand_in_held),
+        patch(f"{_R}.stand_in_needed", AsyncMock(side_effect=lambda _: state["needed"])),
     ):
         state.update(manager=Manager(), cleared=cleared)
         yield state
@@ -658,6 +659,27 @@ async def test_files_a_hand_back_left_keep_their_computer_from_retiring_itself(
 ):
     """Not in Home, so only their owner's remove, told so, takes them."""
     retiring["reads"] = [_stand_in(left=True), _stand_in(left=True)]
+
+    assert await _decide(retiring, **ask) == outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("needed", "ask", "outcome"),
+    [
+        (True, {"sweep": True}, "stand_in"),
+        (True, {"owner_request": True}, "retired"),
+        (False, {"sweep": True}, "retired"),
+    ],
+    ids=["own-primary-sweep", "own-primary-owner", "cloud-primary-sweep"],
+)
+async def test_the_stand_ins_computer_stays_for_a_primary_that_can_be_away(
+    retiring, needed, ask, outcome
+):
+    """With the primary a machine of the user's own, it is where Home's turns
+    run while that machine is away, so only its owner's remove takes it."""
+    retiring["reads"] = [_stand_in(), _stand_in()]
+    retiring["needed"] = needed
 
     assert await _decide(retiring, **ask) == outcome
 
