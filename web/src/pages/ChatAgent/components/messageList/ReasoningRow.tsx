@@ -3,6 +3,7 @@ import { motion } from '@/lib/framer';
 import { Brain, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TextShimmer } from '@/components/ui/text-shimmer';
+import { RollingText } from '@/components/ui/rolling-text';
 import { useAnimatedText } from '@/components/ui/animated-text';
 import Markdown from '../Markdown';
 import { announceAnchoredToggle } from '../../utils/anchoredToggle';
@@ -116,11 +117,11 @@ export const ReasoningRow = memo(function ReasoningRow({ item, defaultExpanded =
   // the baseline it sat over the line's descender space and a thinking row
   // stood 3.4px taller than the thought it settled into.
   const titleNode = (
-    <span className="titem-title inline-flex min-w-0" style={{ flexShrink: 1 }}>
+    <span className="titem-title inline-flex min-w-0 tabular-nums" style={{ flexShrink: 1 }}>
       <SwapCell swapKey={titleKey} layerClassName="truncate">
         {isStreaming ? (
           <TextShimmer
-            as="span"
+            as={RollingText}
             className="truncate align-top [--base-color:var(--color-text-primary)] [--base-gradient-color:var(--Labels-Tertiary)]"
             duration={1.5}
           >

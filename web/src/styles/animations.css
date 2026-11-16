@@ -337,3 +337,44 @@
 .shimmer-sweep {
   animation: shimmer-sweep var(--shimmer-period, 2s) linear infinite;
 }
+
+/* A rolling digit's slot inside the shimmer: the shimmer paints its label
+   through `background-clip: text`, which a transformed digit falls outside, so
+   for the length of the roll the digit takes the shimmer's base color. */
+.shimmer-sweep .digit-roll {
+  color: var(--base-color);
+}
+
+/* === Rolling digit (lib/rollingDigits.ts) ===
+
+   One digit of a ticking label changing: the incoming digit sits in flow and
+   sets the slot's width and baseline, the outgoing one lies over it. The slot
+   bleeds past the line by padding that a matching negative margin takes back,
+   so the line box is unchanged, and its fade lives in that bleed: a digit
+   thins out as it leaves the line, while one in place keeps full ink and does
+   not brighten when the roll ends. Exists only for the length of a roll. */
+.digit-roll {
+  --digit-roll-bleed: 0.3em;
+  display: inline-block;
+  position: relative;
+  padding-block: var(--digit-roll-bleed);
+  margin-block: calc(-1 * var(--digit-roll-bleed));
+  -webkit-mask-image: linear-gradient(transparent, #000 var(--digit-roll-bleed) calc(100% - var(--digit-roll-bleed)), transparent);
+  mask-image: linear-gradient(transparent, #000 var(--digit-roll-bleed) calc(100% - var(--digit-roll-bleed)), transparent);
+}
+
+.digit-roll > span {
+  display: inline-block;
+}
+
+/* The outgoing digit: an empty, aria-hidden span drawing it as generated
+   content, so it is never part of the label's text or accessible name. */
+.digit-roll > [data-from] {
+  position: absolute;
+  top: var(--digit-roll-bleed);
+  left: 0;
+}
+
+.digit-roll > [data-from]::after {
+  content: attr(data-from);
+}

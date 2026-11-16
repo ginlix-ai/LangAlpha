@@ -5,6 +5,7 @@ import { SwapCell } from '@/components/ui/crossfade';
 import { motion } from '@/lib/framer';
 import { SPRING_FOLD } from '@/lib/motion';
 import { formatWorkedFor } from '@/lib/elapsed';
+import { writeRolling } from '@/lib/rollingDigits';
 import { announceAnchoredToggle } from '../../utils/anchoredToggle';
 import { TURN_END_DELAY, isFreshSend, playEntrance } from './transcriptMotion';
 import type { FoldState } from './types';
@@ -108,7 +109,7 @@ export const TurnFold = memo(function TurnFold({ state, startedAt, completedAt, 
  * clock through React state would add a commit per second to that, for one
  * word that no other part of the tree reads. The first write is a layout
  * effect, so the first painted frame already carries the text while render
- * stays free of the clock.
+ * stays free of the clock. Each tick rolls the digits that changed.
  */
 export function WorkingLabel({ startedAt }: { startedAt: number }): React.ReactElement {
   const { t } = useTranslation();
@@ -117,7 +118,7 @@ export function WorkingLabel({ startedAt }: { startedAt: number }): React.ReactE
   useLayoutEffect(() => {
     const write = () => {
       const el = ref.current;
-      if (el) el.textContent = t('chat.workingFor', { duration: formatWorkedFor(Date.now() - startedAt, t) });
+      if (el) writeRolling(el, t('chat.workingFor', { duration: formatWorkedFor(Date.now() - startedAt, t) }));
     };
     write();
     const id = setInterval(write, 1000);
