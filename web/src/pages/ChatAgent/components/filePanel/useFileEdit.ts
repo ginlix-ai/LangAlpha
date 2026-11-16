@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { holdReload } from '@/lib/reloadHolds';
-import { apiErrorCoded, apiErrorDetailMessage } from '@/api/errors';
+import { apiErrorCoded, apiErrorReason } from '@/api/errors';
 import type { FullRead } from '../../utils/api/files';
 import { textSha256 } from '../../utils/textSha256';
 import { disposeEditorModel, newEditorModelPath } from '../viewers/editorModels';
@@ -48,7 +48,7 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
-export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, away }: {
+export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, invalidate, away }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
   workspaceId: string;
@@ -62,14 +62,13 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
   onSaveSettled: (path: string) => void;
+  /** Drops the panel's copy of `path`, so it is read again. */
+  invalidate: (path: string) => void;
   /** The workspace's computer, while it may be away. */
-  away?: ComputerAway;
+  away: ComputerAway;
 }) {
   const { t } = useTranslation();
-  const blockedReason = away?.blockedReason ?? null;
-  const awayMessage = away?.message;
-  const awayText = away?.text;
-  const onBackupRead = away?.onBackupRead;
+  const { blockedReason, describe: describeAway } = away;
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
@@ -202,12 +201,14 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (data.from.kind === 'backup') {
         // Edit mode, where the header shows a save error, never opened, so
         // this is said where the reader is looking.
-        const away = data.from.unreachable;
-        const description = away
-          ? awayText?.(away) ?? t('filePanel.loadEditFailed')
+        // The body on screen is read again, so it carries the same notice
+        // and edit block.
+        const code = data.from.unreachable;
+        const description = code
+          ? describeAway(code) ?? t('filePanel.loadEditFailed')
           : t('filePanel.error.sandboxUnavailableHint');
         toast({ description, variant: 'destructive' });
-        if (away) onBackupRead?.(selectedFile);
+        if (code) invalidate(selectedFile);
         return;
       }
       // A save naming no version goes unchecked, so the edit waits for a read
@@ -239,7 +240,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (selectedFileRef.current !== selectedFile) return;
       setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.loadEditFailed'));
     }
-  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, awayText, onBackupRead, t]);
+  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, describeAway, invalidate, t]);
 
   const handleEditorChange = useCallback((value: string) => {
     typedRef.current = { session: sessionRef.current, text: value };
@@ -287,7 +288,6 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       setOriginalContent(null);
       setBase(null);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { detail?: unknown } }; message?: string };
       console.error('[FilePanel] Save failed:', err);
       if (selectedFileRef.current !== file) {
         // The panel has moved on, so there is no header left to hang an inline
@@ -306,11 +306,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         setSaveError(t('filePanel.fileChangedSinceEdit'));
         return;
       }
-      // A refusal's detail may be an object (`invalid_base_version`), which
-      // shows by its message.
-      const detail = e?.response?.data?.detail;
-      setSaveError(awayMessage?.(err) || (typeof detail === 'string' ? detail : apiErrorDetailMessage(err))
-        || e?.message || t('filePanel.saveFailed'));
+      setSaveError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.saveFailed'));
     } finally {
       release();
       // A save that is no longer the current one must not report the panel idle:
@@ -318,7 +314,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (seq === saveSeqRef.current) setSavingFile(null);
       onSaveSettled(file);
     }
-  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, awayMessage, t]);
+  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, describeAway, t]);
 
   const handleSave = useCallback(() => {
     const draft = typedDraft();

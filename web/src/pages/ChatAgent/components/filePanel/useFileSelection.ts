@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { apiErrorReason } from '@/api/errors';
 import { deleteWorkspaceFiles } from '../../utils/api';
 import type { ComputerAway } from './useComputerAway';
 
@@ -13,9 +14,9 @@ export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirec
   /** The paths the server confirmed gone, so open state on them can follow. */
   onDeleted?: (paths: string[]) => void;
   /** The workspace's computer, while it may be away. */
-  away?: ComputerAway;
+  away: ComputerAway;
 }) {
-  const awayMessage = away?.message;
+  const describeAway = away.describe;
   const { t } = useTranslation();
   // Selection / delete state
   const [selectMode, setSelectMode] = useState(false);
@@ -102,14 +103,13 @@ export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirec
         }
       })
       .catch((err: unknown) => {
-        const e = err as { response?: { data?: { detail?: string } }; message?: string };
-        setDeleteError(awayMessage?.(err) || e?.response?.data?.detail || e?.message || t('filePanel.deleteFailed'));
+        setDeleteError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.deleteFailed'));
       })
       .finally(() => {
         setDeleteLoading(false);
         onRefreshFiles?.();
       });
-  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, awayMessage, t]);
+  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, describeAway, t]);
 
   useEffect(() => {
     if (!deleteConfirm) return;

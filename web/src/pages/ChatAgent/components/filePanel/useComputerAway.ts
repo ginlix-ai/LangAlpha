@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
 import { useComputer } from '../../hooks/useComputers';
 import type { FilesAway } from '../../hooks/useWorkspaceFiles';
 import {
-  awayMachineOf, awayRetryMessage, awayRetryText, backupCode, backupShownText, cachedComputer,
+  awayMachineOf, awayRetryMessage, awayRetryText, backupCode, backupShownText,
 } from '../../utils/computerAway';
 import type { ReadFrom } from '../../utils/api/readFrom';
 import type { FileError } from './fileErrors';
@@ -13,14 +12,13 @@ import type { FileError } from './fileErrors';
 export interface ComputerAway {
   /** Why no change can be made now; null while the computer answers. */
   blockedReason: string | null;
-  /** Words a refusal from a computer that did not answer; null for any other failure. */
-  message: (err: unknown) => string | null;
-  /** Words for a computer that did not answer, by its connect code. */
-  text: (code: string) => string;
-  /** A read of `path` was answered from the backup: the body on screen is
-   *  read again, so it carries the same notice and edit block. */
-  onBackupRead: (path: string) => void;
+  /** Words for a computer that did not answer, from a request it refused or
+   *  the connect code a backup read carries; null for anything else. */
+  describe: (cause: unknown) => string | null;
 }
+
+/** A computer that always answers, for a hook used where none can be away. */
+export const NOT_AWAY: ComputerAway = { blockedReason: null, describe: () => null };
 
 /** The panel's view of its computer being away, worded for that machine. */
 export interface PanelAway extends ComputerAway {
@@ -48,17 +46,13 @@ export function useComputerAway({ filesAway, bodyFrom, fileError, filesError, co
   invalidate: (path?: string) => void;
 }): PanelAway {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const bodyBackup = backupCode(bodyFrom);
   const away = useMemo<FilesAway | null>(
     () => filesAway ?? (bodyBackup ? { code: bodyBackup, backup: true } : null),
     [filesAway, bodyBackup],
   );
-  // The machine is looked up only once it is what is down, so a panel that
-  // never meets that pays no read of the computer list for it.
-  const machineDown = !!away || fileError?.category === 'computer_unreachable';
-  const { data: downComputer } = useComputer(machineDown ? computerId : null);
-  const machine = useMemo(() => awayMachineOf(downComputer), [downComputer]);
+  const { data: computer } = useComputer(computerId);
+  const machine = useMemo(() => awayMachineOf(computer), [computer]);
   const shownFileError = useMemo(
     () => (fileError?.category === 'computer_unreachable' && fileError.code
       ? { ...fileError, message: awayRetryText(t, fileError.code, machine) }
@@ -67,15 +61,10 @@ export function useComputerAway({ filesAway, bodyFrom, fileError, filesError, co
   );
   // The backup stands in for reading only: a change made to it would be lost.
   const blockedReason = away ? awayRetryText(t, away.code, machine) : null;
-  // A change the machine refused as it went away names it from the lists
-  // already read: no fetch for a failure.
-  const machineNow = useCallback(
-    () => (downComputer ? machine : awayMachineOf(cachedComputer(queryClient, computerId))),
-    [downComputer, machine, queryClient, computerId],
+  const describe = useCallback(
+    (cause: unknown) => (typeof cause === 'string' ? awayRetryText(t, cause, machine) : awayRetryMessage(cause, t, machine)),
+    [t, machine],
   );
-  const message = useCallback((err: unknown) => awayRetryMessage(err, t, machineNow()), [t, machineNow]);
-  const text = useCallback((code: string) => awayRetryText(t, code, machineNow()), [t, machineNow]);
-  const onBackupRead = useCallback((path: string) => invalidate(path), [invalidate]);
   // What was read from the backup is read again live once the machine answers.
   const shownCode = away?.backup ? away.code : null;
   const shownBackup = useRef(shownCode);
@@ -86,11 +75,9 @@ export function useComputerAway({ filesAway, bodyFrom, fileError, filesError, co
 
   return useMemo(() => ({
     blockedReason,
-    message,
-    text,
-    onBackupRead,
+    describe,
     fileError: shownFileError,
     filesError: filesAway && !filesAway.backup ? blockedReason : filesError,
     backupNotice: away?.backup ? backupShownText(t, away.code, machine) : null,
-  }), [blockedReason, message, text, onBackupRead, shownFileError, filesAway, filesError, away, machine, t]);
+  }), [blockedReason, describe, shownFileError, filesAway, filesError, away, machine, t]);
 }

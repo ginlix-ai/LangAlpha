@@ -328,7 +328,8 @@ function FilePanel({
   }, [cache, onRefreshFiles]);
 
   const edit = useFileEdit({
-    tabId: activeTab.id, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, away,
+    tabId: activeTab.id, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled,
+    invalidate: cache.invalidate, away,
   });
   // Taken apart here: the hook hands back a new object every render, so a
   // callback that closed over `edit` would be new every render too.

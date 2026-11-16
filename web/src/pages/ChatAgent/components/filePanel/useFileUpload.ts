@@ -28,10 +28,9 @@ export function useFileUpload({ workspaceId, onRefreshFiles, away }: {
   workspaceId: string;
   onRefreshFiles?: () => void;
   /** The workspace's computer, while it may be away. */
-  away?: ComputerAway;
+  away: ComputerAway;
 }) {
-  const blockedReason = away?.blockedReason ?? null;
-  const awayMessage = away?.message;
+  const { blockedReason, describe: describeAway } = away;
   const { t } = useTranslation();
   // Upload state: a percentage while the bytes go up, then `uploadSaving`
   // while the workspace takes the file.
@@ -76,7 +75,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles, away }: {
     } catch (err: unknown) {
       if (!ctrl.signal.aborted) {
         console.error('[FilePanel] Upload failed:', err);
-        setUploadError(awayMessage?.(err) || uploadErrorMessage(err, file, t));
+        setUploadError(describeAway(err) ?? uploadErrorMessage(err, file, t));
       }
     } finally {
       release();
@@ -84,7 +83,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles, away }: {
       setUploadProgress(null);
       setUploadSaving(false);
     }
-  }, [workspaceId, onRefreshFiles, blockedReason, awayMessage, t]);
+  }, [workspaceId, onRefreshFiles, blockedReason, describeAway, t]);
 
   /** Ends an upload still sending; once the workspace is taking the file it runs to the end. */
   const cancelUpload = useCallback(() => uploadRef.current?.abort(), []);
