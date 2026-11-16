@@ -24,12 +24,20 @@ TITLE = re.compile(r"cross[- ]?reference|\b(?:form\s+)?(?:10-K|20-F)\s+(?:items?
 _PAGE = r"(?:F-\s?)?\d{1,3}(?:\s*[-\u2013\u2014]\s*(?:F-\s?)?\d{1,3})?"
 _PAGES = re.compile(rf"(?:^|(?<=[\s|*,]))(?P<pages>{_PAGE}(?:\s*[,;]\s*{_PAGE})*)\s*[,;*]?\s*$")
 _ONLY_PAGES = re.compile(rf"\s*(?:pages?\s+)?{_PAGE}(?:\s*[,;]\s*{_PAGE})*\s*[,;]?\s*")
+_PROSE_PAGE = r"(?:F-\s?)?\d{1,3}(?:\s*(?:[-\u2013\u2014]|to|through|thru)\s*(?:F-\s?)?\d{1,3})?"
+_PROSE_PAGES = re.compile(rf"\bpages?\s+(?P<pages>{_PROSE_PAGE}(?:\s*(?:,|and|&)\s*{_PROSE_PAGE})*)(?![\d-])", re.I)
+_CLAUSE_END = re.compile(r"[.;](?:\s+|$)")
+_PROXY = re.compile(r"\bproxy\b", re.I)
+_ANNUAL_REPORT = re.compile(r"\bannual report to (?:share|stock)holders\b", re.I)
+_NOTE_MARK = re.compile(r"(?:\*{1,3}|\u2020|(?:\([a-z\d]{1,2}\))+|[a-z\d]\))(?:\s|[|\-\u2013\u2014]|$)")
 _NA = re.compile(r"\b(?:not\s+applicable|omitted)\b|\b(?:none|n/a|not\s+required)\b[\s.*]*$", re.I)
 _ROW = re.compile(r"(?:PART\s+(?:IV|I{1,3})\W*)?(?P<kw>ITEMS?\s*)?(?P<ids>\d{1,2}[A-K]?(?:\s*(?:,|and|&)\s*\d{1,2}[A-K]?)*)"
                   r"(?![\d.,]\d)\.?(?P<rest>(?:\s+\S.*)?)$", re.I)
+_F_RANGE = re.compile(r"(F-\s?\d{1,3})\s*[-\u2013\u2014]\s*((?:F-\s?)?\d{1,3})", re.I)
 _ROW_PAGE = re.compile(r"(?:^|[\s|])(\d{1,3})\s*$")
 WINDOW = 200
 GAP = 40
+LAST_F = "F-*"
 
 
 @dataclass
@@ -39,6 +47,8 @@ class IndexRow:
     pages: list[tuple[str, str]] = field(default_factory=list)
     na: bool = False
     listed: bool = False
+    pointer: bool = False
+    annual: bool = False
 
 
 @dataclass
@@ -51,10 +61,12 @@ class Index:
 def _split(pages: str) -> list[tuple[str, str]]:
     out = []
     for tok in re.split(r"\s*[,;]\s*", pages.strip(" ,;*")):
-        a, _, b = (x.strip().replace(" ", "").upper() for x in re.split(r"(\s*[-\u2013\u2014]\s*)", tok, maxsplit=1)) \
+        f_range = _F_RANGE.fullmatch(tok.strip())
+        a, _, b = (f_range[1].replace(" ", "").upper(), "", f_range[2].replace(" ", "").upper()) if f_range else \
+            (x.strip().replace(" ", "").upper() for x in re.split(r"(\s*[-\u2013\u2014]\s*)", tok, maxsplit=1)) \
             if re.search(r"\d\s*[-\u2013\u2014]\s*(?:F-)?\d", tok) else (tok.replace(" ", "").upper(), "", "")
         b = b or a
-        if b.startswith("F-") or not a.startswith("F-"):
+        if a.startswith("F-") or not b.startswith("F-"):
             if a.startswith("F-") and not b.startswith("F-"):
                 b = "F-" + b
             out.append((a, b))
@@ -71,24 +83,28 @@ def find_index(lines: list[str], order: list[str]) -> Index | None:
         s = _flat(lines[i])
         if s and len(s) <= 120 and TITLE.search(s):
             title_at = i
-        m = _ROW.fullmatch(s) if s and len(s) <= 220 else None
+        m = _ROW.fullmatch(s) if s and _row_length_ok(lines[i], s) else None
         ids = _ids(m, order) if m else ()
         if not ids or not (m.group("kw") or 0 <= i - title_at <= WINDOW):
             i += 1
             continue
-        rows, j, cur, quiet = [], i, None, 0
+        rows, j, cur, quiet, closed = [], i, None, 0, False
         while j < n and quiet <= 3:
             t = _flat(lines[j])
             if not t:
                 j += 1
                 continue
-            mm = _ROW.fullmatch(t) if len(t) <= 220 else None
+            mm = _ROW.fullmatch(t) if _row_length_ok(lines[j], t) else None
             nid = _ids(mm, order) if mm else ()
             if nid and (mm.group("kw") or 0 <= j - title_at <= WINDOW):
                 cur = IndexRow(nid, j)
                 rows.append(cur)
-                _read(cur, mm.group("rest"))
-                quiet = 0
+                _read(cur, mm.group("rest"), lines[j])
+                closed, quiet = cur.na and not cur.pages, 0
+            elif cur is not None and closed and len(t) <= 160:
+                probe = IndexRow(cur.items, j)
+                _read(probe, t)
+                quiet = 0 if probe.pages or _ONLY_PAGES.fullmatch(t) else quiet + 1
             elif cur is not None and len(t) <= 160 and not re.search(r"[a-z]{3,}[.;:]\s+[A-Z]", t) \
                     and not re.fullmatch(r"\d{1,3}", t):
                 before = (len(cur.pages), cur.na)
@@ -125,7 +141,7 @@ def _flat(line: str) -> str:
 
 
 def _ids(m, order: list[str]) -> tuple[str, ...]:
-    ids = tuple(x.upper() for x in re.findall(r"\d{1,2}[A-K]?", m.group("ids")))
+    ids = tuple(x.upper() for x in re.findall(r"\d{1,2}[A-K]?", m.group("ids"), re.I))
     rest = m.group("rest").strip()
     if not ids or any(x not in order for x in ids) or not (rest or m.group("kw")):
         return ()
@@ -134,15 +150,50 @@ def _ids(m, order: list[str]) -> tuple[str, ...]:
     return ids
 
 
-def _read(row: IndexRow, text: str) -> None:
+def _row_length_ok(raw: str, flat: str) -> bool:
+    """A row is short, or a table row whose location cell is a sentence ("“Properties” on pages 94 and 95.")."""
+    return len(flat) <= 220 or ("|" in raw and len(flat) <= 600)
+
+
+def _read(row: IndexRow, text: str, raw: str = "") -> None:
+    """The pages a row's text gives: a page list at its end, else the pages the sentence in its own location cell
+    names (raw is the item row as rendered, its cells joined by " | "); a row whose only answer is None, Not
+    applicable, or pages of the proxy statement is answered with no item. An item row whose caption runs on into
+    a sentence is the item's own heading and text, not a location."""
     text = text.strip()
+    location = raw.rsplit("|", 1)[1] if raw.count("|") >= 2 else ""
+    proxy = bool(raw) and bool(_PROXY.search(raw.split("|", 1)[1] if location else text))
+    row.annual = bool(_ANNUAL_REPORT.search(raw.split("|", 1)[1] if location else text))
+    if not raw and _PROXY.search(text):
+        return
     m = _PAGES.search(text)
-    if m and not re.search(r"\b(?:19|20)\d\d\s*$|\b0\d", m.group("pages")):
+    if m and not proxy and not re.search(r"\b(?:19|20)\d\d\s*$|\b0\d", m.group("pages")):
         got = _split(m.group("pages"))
         row.listed = row.listed or len(got) > 1 or any(a != b for a, b in got)
         row.pages += got
-    elif _NA.search(text):
+        return
+    named, own = _prose_pages(location or (text if proxy else ""))
+    if own:
+        row.listed = row.listed or len(own) > 1 or any(a != b for a, b in own)
+        row.pages += own
+    elif named or proxy or _NA.search(text):
         row.na = True
+    elif len(location.split()) >= 4:
+        row.pointer = True
+
+
+def _prose_pages(text: str) -> tuple[bool, list[tuple[str, str]]]:
+    """Whether a location sentence names pages, and the ones in clauses that do not name the proxy statement."""
+    named, own, start = False, [], 0
+    for clause_end in [m.end() for m in _CLAUSE_END.finditer(text)] + [len(text)]:
+        clause = text[start:clause_end]
+        start = clause_end
+        refs = [p for m in _PROSE_PAGES.finditer(clause) for p in _split(re.sub(
+            r"\s*(?:to|through|thru)\s*", "-", re.sub(r"\s+(?:and|&)\s+", ", ", m.group("pages")), flags=re.I))]
+        named = named or bool(refs)
+        if refs and not _PROXY.search(clause):
+            own += [r for r in refs if r not in own]
+    return named, own
 
 
 def _accept(rows: list[IndexRow], order: list[str], titled: bool) -> Index | None:
@@ -155,7 +206,7 @@ def _accept(rows: list[IndexRow], order: list[str], titled: bool) -> Index | Non
         return None
     if not titled:
         return None
-    literal = any(r.listed for r in rows)
+    literal = sum(r.listed for r in rows) >= 2
     return Index(rows, (rows[0].line, rows[-1].line + 1), literal)
 
 
@@ -168,21 +219,27 @@ def item_pages(index: Index) -> dict[str, list[tuple[str, str]]]:
                 out.setdefault(iid, [])
                 out[iid] += [p for p in r.pages if p not in out[iid]]
         return out
-    rows = [(r, [int(a) for a, _ in r.pages if a.isdigit()]) for r in index.rows]
-    rows = [(r, ps) for r, ps in rows if ps]
-    high = 0
-    for k, (r, ps) in enumerate(rows):
-        last = max(ps)
-        if ps[0] < high:
-            span = [(str(p), str(p)) for p in ps]
-        else:
-            nxt = next((min(q for q in qs if q > last) for o, qs in rows[k + 1:] if not set(o.items) & set(r.items)
-                        and any(q > last for q in qs)), None)
-            span = [(str(ps[0]), str(nxt - 1 if nxt else last))]
-        high = max(high, last)
-        for iid in r.items:
-            out.setdefault(iid, span)
-    return out
+    for prefix in ("", "F-"):
+        first: dict[str, list[tuple[str, str]]] = {}
+        rows = [(r, [int(a[len(prefix):]) for a, _ in r.pages if a.startswith(prefix) and a[len(prefix):].isdigit()])
+                for r in index.rows]
+        rows = [(r, ps) for r, ps in rows if ps]
+        high = 0
+        for k, (r, ps) in enumerate(rows):
+            ranged = [(a, b) for a, b in r.pages if a != b and a.startswith(prefix) and a[len(prefix):].isdigit()]
+            last = max(ps + [int(b[len(prefix):]) for _, b in ranged])
+            if ranged or ps[0] < high:
+                span = ranged + [(f"{prefix}{p}", f"{prefix}{p}") for p in ps if not any(a == f"{prefix}{p}" for a, _ in ranged)]
+            else:
+                nxt = next((min(q for q in qs if q > last) for o, qs in rows[k + 1:] if not set(o.items) & set(r.items)
+                            and any(q > last for q in qs)), None)
+                span = [(f"{prefix}{ps[0]}", f"{prefix}{nxt - 1}" if nxt else LAST_F if prefix else str(last))]
+            high = max(high, last)
+            for iid in r.items:
+                first.setdefault(iid, span)
+        for iid, span in first.items():
+            out[iid] = out.get(iid, []) + span
+    return {iid: out[iid] for r in index.rows for iid in r.items if iid in out}
 
 
 def merge(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -197,19 +254,31 @@ def merge(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def item_ranges(index: Index, pages: Pagination) -> dict[str, list[tuple[int, int]]]:
-    """Line ranges per item in the one document whose printed pages the index cites (the main document or
-    an Exhibit 13), merged in document order. An item with pages none of which can be located is left out."""
+    """Line ranges per item in the document whose printed pages its row cites, merged in document order: rows
+    citing the annual report to shareholders read the Exhibit 13 that carries most of their pages, and the other
+    rows the document that carries most of theirs, which is not an Exhibit 13 when the index marks its annual
+    report rows. An item with pages none of which can be located is left out, and so is an annual report row when
+    the filing loads no Exhibit 13."""
     printed = item_pages(index)
     if not printed:
         return {}
-    cited = {p for v in printed.values() for a, b in v for p in (a, b)}
-    docs = range(len(pages.rendering.documents))
-    d = max(docs, key=lambda d: (len(cited & set(pages.footers(d))), -d), default=None)
+    ex13 = [d for d, doc in enumerate(pages.rendering.documents) if doc.type.upper().startswith("EX-13")]
+    annual = {iid for r in index.rows if r.annual for iid in r.items} & printed.keys()
+
+    def best(docs, iids):
+        cited = {p for iid in iids for a, b in printed[iid] for p in (a, b)}
+        return max(docs, key=lambda d: (len(cited & set(pages.footers(d))), -d), default=None)
+
+    rest = printed.keys() - annual
+    own = [d for d in range(len(pages.rendering.documents)) if not annual or d not in ex13]
+    doc = dict.fromkeys(annual, best(ex13, annual)) | dict.fromkeys(rest, best(own, rest))
     out: dict[str, list[tuple[int, int]]] = {}
-    if d is None:
-        return out
     for iid, prs in printed.items():
-        rngs = [r for a, b in prs if (r := pages.page_range(d, a, b))]
+        d = doc[iid]
+        if d is None:
+            continue
+        last_f = max((p for p in pages.footers(d) if p.startswith("F-")), key=lambda p: int(p[2:]), default=None)
+        rngs = [r for a, b in prs if (r := pages.page_range(d, a, last_f if b == LAST_F else b))]
         rngs = merge([r for r in rngs if not any(index.lines[0] <= ln < index.lines[1] for ln in r[:1])])
         if rngs:
             out[iid] = rngs
@@ -237,14 +306,33 @@ def apply(items: dict[str, Section], rendering: Rendering, pages: Pagination, re
     apply_contents_rows(items, rendering, pages, resolver, layout, order)
 
 
+def _footnotes(lines: list[str], end: int) -> int:
+    """The line after the index's footnotes ("* Information called for by Part III is incorporated ..."), which
+    open with a marker right after its last row and run to the next heading."""
+    if end >= len(lines) or not _NOTE_MARK.match(lines[end].strip()):
+        return end
+    k = end + 1
+    while k < len(lines) and k - end < 15:
+        s = normalize(lines[k])
+        if not _NOTE_MARK.match(lines[k].strip()) and not re.match(r"items?\s+\d", s, re.I) and (
+                len(s) <= 80 and not re.search(r"[.;:,]\s*$", s) or s.lower() == "table of contents"):
+            break
+        k += 1
+    return k
+
+
 def apply_index(index: Index, rendering: Rendering, pages: Pagination, items: dict[str, Section]) -> None:
     """Items a cross-reference index maps to pages and the body prints no heading for: xref sections of
     their page ranges, or stubs pointing at the index row when the pages cannot be found. An item printed
     with a heading ends where a later item's mapped pages begin, unless that item is its own lettered
     sub-item (market risk inside MD&A); the pages it prints itself are cut out of the mapped ranges."""
     lines, full, offs, line_at = rendering.lines, rendering.text, rendering.offsets, rendering.line_at
-    rows = {row.line for row in index.rows if row.pages or row.na}
-    for iid in [iid for iid, s in items.items() if s.status == "present" and line_at(s.start) in rows]:
+    nxt = dict(zip([r.line for r in index.rows], [r.line for r in index.rows[1:]] + [index.lines[1]]))
+    rows = {row.line for row in index.rows if row.pages or row.na or row.pointer}
+    notes = _footnotes(lines, index.lines[1])
+    for iid in [iid for iid, s in items.items() if s.status in ("present", "stub") and (
+            index.lines[1] <= line_at(s.start) < notes or line_at(s.start) in nxt
+            and (line_at(s.start) in rows or line_at(s.end - 1) < nxt[line_at(s.start)]))]:
         del items[iid]
     mapped = item_ranges(index, pages)
     ranges = {iid: r for iid, r in mapped.items() if iid not in items}
@@ -303,7 +391,7 @@ def _row_target(resolver: Resolver, pages: Pagination, rendering: Rendering, iid
     pages from its row's page to the page before the next item's row."""
     lines = rendering.lines
     t = resolver.resolve(iid, lines[row], (row, row + 1), index_row=True)
-    if t.lines:
+    if t.lines or t.kind in ("proxy", "annual_report", "other_filing"):
         return t
     text = normalize(lines[row])
     page = _ROW_PAGE.search(text)

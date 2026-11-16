@@ -58,9 +58,26 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
                              heading=lines[sp.heading_line] if sp.heading_line >= 0 else "",
                              combined_with=sp.combined_with, target=target)
     if spec.xref_index:
+        resolved = [iid for iid, s in items.items() if s.target is not None]
         xref.apply(items, rendering, pages, resolver, layout, list(spec.order))
+        _retarget(items, resolved, rendering, layout, resolver)
     return FilingSections(accession=accession or head.get("accession"), form=form, filing_date=filing_date,
                           items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
+
+
+def _retarget(items: dict[str, Section], resolved: list[str], rendering, layout, resolver: Resolver) -> None:
+    """Stub targets resolved before a cross-reference index cut short the items they point at, resolved again
+    over the items as cut, so a target never carries the next item's pages."""
+    cut = {iid: rendering.line_at(s.end) for iid, s in items.items() if iid in layout.spans and s.status == "present"
+           and s.end < rendering.offsets[layout.spans[iid].end]}
+    if not cut:
+        return
+    for iid, line in cut.items():
+        layout.spans[iid].end = line
+    for iid in resolved:
+        s, sp = items.get(iid), layout.spans[iid]
+        if s is not None and s.status == "stub":
+            s.target = resolver.resolve(iid, s.text, (sp.start, sp.end)).to_target(rendering)
 
 
 def sections_for_filing(filing, cache: SectionsCache | None = None,
