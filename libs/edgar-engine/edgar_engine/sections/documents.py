@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .vocab import spec_for
+
 _DOC = re.compile(r"<DOCUMENT>(.*?)</DOCUMENT>", re.S | re.I)
 _TEXT = re.compile(r"<TEXT>(.*)</TEXT>", re.S | re.I)
 _TAGS = {k: re.compile(rf"^\s*<{k}>([^\n<]*)", re.M | re.I) for k in ("TYPE", "SEQUENCE", "FILENAME", "DESCRIPTION")}
@@ -69,18 +71,6 @@ def split(submission: str) -> list[Document]:
     return docs
 
 
-def form_family(form: str) -> str:
-    f = form.upper().replace("/A", "")
-    if f.startswith("10-K"):
-        return "10-K"
-    if f.startswith("10-Q"):
-        return "10-Q"
-    for fam in ("8-K", "20-F", "40-F"):
-        if f.startswith(fam):
-            return fam
-    raise ValueError(f"unsupported form {form!r}")
-
-
 def main_documents(docs: list[Document], form: str) -> list[Document]:
     """The main document and, for annual reports, the Exhibit 13 documents items may point into; for a 40-F
     amendment, the EX-99 exhibits that refile its principal documents.
@@ -91,12 +81,9 @@ def main_documents(docs: list[Document], form: str) -> list[Document]:
     """
     if not docs:
         return []
-    fam = form_family(form)
+    spec = spec_for(form)
     ordered = sorted(docs, key=lambda d: d.seq)
-    main = next((d for d in ordered if d.type.upper().startswith(fam) and not d.is_binary), ordered[0])
-    keep = [main]
-    if fam == "10-K":
-        keep += [d for d in ordered if d is not main and d.type.upper().startswith("EX-13") and not d.is_binary]
-    if fam == "40-F" and form.upper().endswith("/A"):
-        keep += [d for d in ordered if d is not main and d.type.upper().startswith("EX-99") and not d.is_binary]
+    main = next((d for d in ordered if d.type.upper().startswith(spec.family) and not d.is_binary), ordered[0])
+    extra = spec.exhibit_documents + (spec.amendment_documents if form.upper().endswith("/A") else ())
+    keep = [main] + [d for d in ordered if d is not main and d.type.upper().startswith(extra) and not d.is_binary]
     return sorted(keep, key=lambda d: d.seq)

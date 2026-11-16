@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from .boundaries import ItemSpan, normalize
+from .vocab import FormSpec
 
 _POINTER = re.compile(
     r"incorporated (?:herein |in this \w+ )?by reference|(?:is|are|will be|has been|have been|appears?|is being)\s+"
@@ -28,8 +29,6 @@ _EXHIBIT = re.compile(r"\bexhibits? (?:99|13|1\d|\d)[\d.]*\b|filed (?:herewith )
 _ITEM_REF = re.compile(r"\b(?:Part\s+(?P<part>IV|I{1,3})\s*,?\s*)?Items?\s+(?P<num>\d{1,2}(?:\.\d{2})?[A-K]?)\b", re.I)
 _NOTE_REF = re.compile(r"\b(?:Notes?|Footnotes?)\s+(?P<n>\d{1,2})\b", re.I)
 _SUB_REF = re.compile(r"\bItems?\s+\d{1,2}[A-K]?\s*\.\s*[A-Z]\b|\bItems?\s+\d{1,2}\([a-z]\)", re.I)
-_STATEMENT_ITEMS = {"10-K": {"8"}, "20-F": {"17", "18"}, "10-Q": {"I-1"}}
-_LIST_ITEMS = {"10-K": {"14", "15"}, "20-F": {"19"}}
 _CAPTION = re.compile(r"[\"\u201c\u201d](?P<c>[^\"\u201c\u201d]{3,120})[\"\u201c\u201d]|(?:caption|captioned|heading|headings|section|entitled)\s+(?P<d>[A-Z][\w,&'\u2019\- ]{3,100}?)(?=\s+(?:on|in|of|at|beginning)\b|[.;,]|$)")
 _PAGES = re.compile(r"\bpages?\s+(?P<a>F-\s?\d{1,3}|\d{1,3})(?:\s*(?:-|\u2013|\u2014|to|through|and)\s*(?P<b>F-\s?\d{1,3}|\d{1,3}))?", re.I)
 _EXHIBIT_INDEX_REF = re.compile(r"exhibit index|index to exhibits|exhibits index", re.I)
@@ -81,8 +80,8 @@ def is_stub(body: str) -> bool:
 
 class Resolver:
     def __init__(self, lines: list[str], line_doc: list[int], documents: list[dict], spans: dict[str, ItemSpan],
-                 family: str, toc: set[int]):
-        self.lines, self.line_doc, self.documents, self.spans, self.family, self.toc = lines, line_doc, documents, spans, family, toc
+                 spec: FormSpec, toc: set[int]):
+        self.lines, self.line_doc, self.documents, self.spans, self.spec, self.toc = lines, line_doc, documents, spans, spec, toc
         self.ex13 = [i for i, d in enumerate(documents) if d["type"].upper().startswith("EX-13")]
         self._running: dict[int, set[str]] = {}
         self._footer_cache: dict[int, dict[str, int]] = {}
@@ -152,13 +151,14 @@ class Resolver:
                 continue
             num = m.group("num").upper()
             key = num
-            if self.family == "10-Q":
+            if self.spec.parts_split:
                 key = f"{m.group('part').upper()}-{num}" if m.group("part") else next(
                     (k for k in (f"I-{num}", f"II-{num}") if k in self.spans and k != iid), None)
             sp = self.spans.get(key)
             if not sp or key == iid or sp.start == own[0]:
                 continue
-            if iid in _STATEMENT_ITEMS.get(self.family, ()) and key in _LIST_ITEMS.get(self.family, ()):
+            if iid in self.spec.statement_items and self.spec.lists_exhibits(
+                    key, self.lines[sp.heading_line] if sp.heading_line >= 0 else ""):
                 return None
             return [(sp.start, sp.end)]
         return None
@@ -197,7 +197,7 @@ class Resolver:
     def _statements(self, iid, pointer, own):
         """The financial-statement pages: from their opener to the last F-page footer, else to the exhibit
         index, SIGNATURES or the end of the document."""
-        if iid not in _STATEMENT_ITEMS.get(self.family, ()) or (_PAGES.search(pointer) and not _FS_REF.search(pointer)):
+        if iid not in self.spec.statement_items or (_PAGES.search(pointer) and not _FS_REF.search(pointer)):
             return None
         back = max(sp.end for sp in self.spans.values())
         docs = self.ex13 if self.ex13 and _ANNUAL.search(pointer) else [0] + self.ex13

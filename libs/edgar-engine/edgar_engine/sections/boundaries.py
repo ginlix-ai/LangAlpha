@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .vocab import EIGHTK_NEW_FROM, PART_NUMERAL, ROMAN, TENQ_PARTS, order_for, part_of
+from .vocab import PART_NUMERAL, ROMAN, FormSpec
 
 _DASH = re.compile(r"[\u2010-\u2015\u2212]")
 _LEAD = re.compile(r"^[\s|*\u2022\u00b7\u25cf\u25aa>]+")
@@ -132,20 +132,21 @@ def _item_list(s: str, pos: int, first: str, order: list[str]) -> tuple[list[str
     return ids, ranges, pos
 
 
-def classify(line: str, family: str, order: list[str], eightk_new: bool) -> Heading | None:
+def classify(line: str, spec: FormSpec) -> Heading | None:
     """The structural role of one line, or None for body text."""
     s = normalize(line)
     if not s:
         return None
     if _REG_AB.match(s):
         return Heading(0, "other_item")
-    if family == "20-F" and (m := _SUB16.match(s)):
+    if spec.lettered_16 and (m := _SUB16.match(s)):
         return Heading(0, "item", ("16" + m.group("let"),), upper=s.isupper(), bare=True)
-    m = (_ITEM_8K if family == "8-K" and eightk_new else _ITEM).match(s)
-    if m and not (family == "8-K" and not eightk_new and re.match(r"\s*\.\s*\d", s[m.end():])):
-        if family == "8-K" and eightk_new:
+    order = list(spec.order)
+    m = (_ITEM_8K if spec.dotted_items else _ITEM).match(s)
+    if m and not (spec.undotted_items and re.match(r"\s*\.\s*\d", s[m.end():])):
+        if spec.dotted_items:
             first = f"{int(m.group('a'))}.{m.group('b')}"
-        elif not m.group("num").isdigit() and family not in ("10-K", "10-Q"):
+        elif not m.group("num").isdigit() and not spec.roman_items:
             first = None
         else:
             first = _item_id(m.group("num"), m.group("sp"), m.group("let"), order)
@@ -153,7 +154,7 @@ def classify(line: str, family: str, order: list[str], eightk_new: bool) -> Head
             ids, ranges, pos = _item_list(s, m.end(), first, order)
             if _rest_ok(s[pos:]) and not (len(ids) > 1 and _OMITTED.match(s[pos:])):
                 upper = m.group("kw").isupper()
-                known = _expand(TENQ_PARTS["II"] if family == "10-Q" else order, ids, ranges)
+                known = _expand(spec.headings, ids, ranges)
                 if known:
                     return Heading(0, "item", known, upper=upper)
                 return Heading(0, "other_item", tuple(ids), upper=upper)
@@ -162,30 +163,28 @@ def classify(line: str, family: str, order: list[str], eightk_new: bool) -> Head
         return Heading(0, "part", part=PART_NUMERAL[m.group("p").upper()], upper=s[:4].isupper())
     if len(s) <= 40 and _SIG.fullmatch(s):
         return Heading(0, "sig", upper=s[:9].isupper())
-    if family == "8-K" and len(s) <= 160 and _SECTION_8K.match(s):
+    if spec.section_dividers and len(s) <= 160 and _SECTION_8K.match(s):
         return Heading(0, "section")
-    if family in ("10-K", "20-F") and len(s) <= 90 and _FPAGES.fullmatch(s) and not _paged([s], 0, strict=True):
+    if spec.statement_pages and len(s) <= 90 and _FPAGES.fullmatch(s) and not _paged([s], 0, strict=True):
         return Heading(0, "fpages", upper=s.isupper())
     return None
 
 
-def find_headings(lines: list[str], family: str, filing_date: str | None) -> list[Heading]:
-    order = order_for(family, filing_date)
-    eightk_new = (filing_date or "9999") >= EIGHTK_NEW_FROM
+def find_headings(lines: list[str], spec: FormSpec) -> list[Heading]:
     out = []
     for i, ln in enumerate(lines):
         if len(ln) > 3000:
             continue
-        h = classify(ln, family, order, eightk_new)
+        h = classify(ln, spec)
         if h is None and _SIG_PARA.match(normalize(ln)) and "duly caused" in normalize(" ".join(lines[i:i + 3]))[:500].lower():
             h = Heading(i, "sig")
         if h:
             h.line = i
             out.append(h)
-    if family == "20-F":
+    if spec.lettered_16:
         out = _titled_sub16(out, lines)
     for a, b in zip(out, out[1:]):
-        if (family == "20-F" and a.ids == ("16",) and b.ids == ("16A",) and b.bare and b.line - a.line <= 2
+        if (spec.lettered_16 and a.ids == ("16",) and b.ids == ("16A",) and b.bare and b.line - a.line <= 2
                 and _BARE16.fullmatch(normalize(lines[a.line]))):
             a.ids = ("16A",)
     return out
@@ -267,9 +266,9 @@ def _paged(lines: list[str], i: int, strict: bool = False) -> bool:
 
 
 class _Doc:
-    def __init__(self, lines, line_doc, offs, heads, family, filing_date):
-        self.lines, self.line_doc, self.offs, self.heads, self.family = lines, line_doc, offs, heads, family
-        self.toc = toc_lines(heads, lines, offs, TENQ_PARTS["II"] if family == "10-Q" else order_for(family, filing_date))
+    def __init__(self, lines, line_doc, offs, heads, spec: FormSpec):
+        self.lines, self.line_doc, self.offs, self.heads, self.spec = lines, line_doc, offs, heads, spec
+        self.toc = toc_lines(heads, lines, offs, spec.headings)
         self.markers = {h.line: h for h in heads if h.kind != "item"}
 
     def by_id(self) -> dict[str, list[Heading]]:
@@ -283,7 +282,7 @@ class _Doc:
     def cut(self, item: str, s: int, e: int, last: bool = False) -> int:
         """End of the stretch s..e at the first structural line inside it. The financial-statement pages
         end only the last item, and a 10-K's last item keeps them when its own text says they are included."""
-        part = part_of(self.family, item)
+        part = self.spec.part(item)
         for ln in range(s + 1, e):
             if self.line_doc[ln] != self.line_doc[s]:
                 return ln
@@ -295,9 +294,9 @@ class _Doc:
             if h.kind == "other_item":
                 return self._title_block_start(s, ln)
             if h.kind == "fpages" and last and h.upper and not (
-                    self.family == "10-K" and _INCLUDED_HERE.search(" ".join(self.lines[s:ln]))):
+                    self.spec.included_statements and _INCLUDED_HERE.search(" ".join(self.lines[s:ln]))):
                 return self._title_block_start(s, ln)
-            if h.kind == "part" and self.family != "10-Q" and part and _PART_ORDER[h.part] > _PART_ORDER[part]:
+            if h.kind == "part" and not self.spec.parts_split and part and _PART_ORDER[h.part] > _PART_ORDER[part]:
                 return ln
         return e
 
@@ -344,7 +343,7 @@ class _Doc:
             for g in group:
                 spans[key(g)] = ItemSpan(key(g), s.line, e, s.line, [key(o) for o in group if o != g])
             pos = e
-        return self._stack(spans) if self.family == "8-K" else spans
+        return self._stack(spans) if self.spec.stacked_headings else spans
 
     def _stack(self, spans: dict[str, ItemSpan]) -> dict[str, ItemSpan]:
         """8-K headings stacked with nothing between them share the body that follows ("Item 2.02 ..." on
@@ -395,14 +394,13 @@ class Layout:
     heads: list[Heading]
 
 
-def find_items(lines: list[str], line_doc: list[int], offs: list[int], family: str,
-               filing_date: str | None) -> Layout:
-    if family == "40-F":
+def find_items(lines: list[str], line_doc: list[int], offs: list[int], spec: FormSpec) -> Layout:
+    if spec.titled:
         from .fortyf import fortyf
         return fortyf(lines, line_doc, offs)
-    heads = find_headings(lines, family, filing_date)
-    doc = _Doc(lines, line_doc, offs, heads, family, filing_date)
-    return Layout(_spans(doc, lines, line_doc, family, filing_date), doc.toc, heads)
+    heads = find_headings(lines, spec)
+    doc = _Doc(lines, line_doc, offs, heads, spec)
+    return Layout(_spans(doc, lines, line_doc, spec), doc.toc, heads)
 
 
 _ADDRESS = re.compile(r"(?:The )?(?:information|disclosures?|responses?) (?:required|called for|requested) (?:by|under|in|pursuant to) "
@@ -432,12 +430,12 @@ def _addressed(lines: list[str], doc: _Doc, spans: dict[str, ItemSpan], order: l
             spans[i] = ItemSpan(i, ln, end, ln, [o for o in missing if o != i])
 
 
-def _spans(doc: _Doc, lines: list[str], line_doc: list[int], family: str, filing_date: str | None) -> dict[str, ItemSpan]:
+def _spans(doc: _Doc, lines: list[str], line_doc: list[int], spec: FormSpec) -> dict[str, ItemSpan]:
     main_end = next((i for i, d in enumerate(line_doc) if d != 0), len(lines))
-    if family == "10-Q":
+    if spec.parts_split:
         (a0, a1), two = _tenq_split(doc, 0, main_end)
         by_id = doc.by_id()
-        spans = doc.select(TENQ_PARTS["I"], by_id, a0, a1, key=lambda i: f"I-{i}")
+        spans = doc.select(spec.part_items("I"), by_id, a0, a1, key=lambda i: f"I-{i}")
         if "I-1" not in spans and "I-2" in spans:
             start = max([a0] + [ln + 1 for ln in doc.toc if a0 <= ln < spans["I-2"].start])
             start = next((ln for ln in range(start, spans["I-2"].start) if not _paged(lines, ln, strict=True)
@@ -445,10 +443,10 @@ def _spans(doc: _Doc, lines: list[str], line_doc: list[int], family: str, filing
             if start < spans["I-2"].start:
                 spans["I-1"] = ItemSpan("I-1", start, spans["I-2"].start, -1, [], "xref")
         if two:
-            spans.update(doc.select(TENQ_PARTS["II"], by_id, two[0], two[1], key=lambda i: f"II-{i}"))
+            spans.update(doc.select(spec.part_items("II"), by_id, two[0], two[1], key=lambda i: f"II-{i}"))
         return spans
-    spans = doc.select(order_for(family, filing_date), doc.by_id(), 0, main_end)
-    if family == "10-K":
-        _addressed(lines, doc, spans, order_for(family, filing_date), main_end)
+    spans = doc.select(list(spec.order), doc.by_id(), 0, main_end)
+    if spec.addressed_sentences:
+        _addressed(lines, doc, spans, list(spec.order), main_end)
     return spans
 

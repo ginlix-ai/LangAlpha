@@ -1,6 +1,6 @@
 """Cross-reference indexes: items mapped to printed pages instead of headed in the body."""
 from edgar_engine.sections import extract_sections, xref
-from edgar_engine.sections.vocab import order_for
+from edgar_engine.sections.vocab import spec_for
 
 from test_sections import BODY, html, p, row, submission
 
@@ -60,7 +60,7 @@ def test_contents_index_runs_items_to_the_next_row_and_cuts_out_headed_items():
 def test_item_headings_with_numbers_are_not_an_index_without_a_title():
     lines = ["ITEM 16C. Principal Accountant Fees 77, 864", "Audit fees were paid.", "ITEM 16D. Exemptions 3, 4",
              "None.", "ITEM 16E. Purchases 5-6", "None.", "ITEM 16F. Change in accountant 7, 9", "None."]
-    assert xref.find_index(lines, order_for("20-F", "2016-04-01")) is None
+    assert xref.find_index(lines, list(spec_for("20-F", "2016-04-01").order)) is None
 
 
 def test_a_row_answering_an_earlier_page_is_only_that_page():

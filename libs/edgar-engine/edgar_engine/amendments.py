@@ -25,9 +25,8 @@ from typing import Any
 
 from .filings import FilingRef, base_form, get_filing, list_filings, nth_amendment, pick_ref, select_filing
 from .sections import sections_for_filing
-from .sections.documents import form_family
 from .sections.model import FilingSections, Scope, Section, Span, View
-from .sections.vocab import order_for, part_of
+from .sections.vocab import spec_for
 
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
                                        "dec"], 1)}
@@ -41,10 +40,6 @@ _FILED_ON = re.compile(rf"\bfiled\b[^\n;]{{0,160}}?\bon\s+{_DATE}", re.I)
 _ORIGINAL = re.compile(r"\boriginal|\bannual\s+report|\bquarterly\s+report|\bform\s+(?:10-K|10-Q|20-F|40-F)(?![\w-]*/A)", re.I)
 _REPORT = re.compile(r"\boriginal|\b(?:annual|quarterly|current)\s+report|\bform\s+[\w-]+(?:/A)?", re.I)
 _SENTENCE_END = re.compile(r"[.!?]\s+(?=[A-Z(\u201c\"])")
-_EXHIBIT_HEADING = re.compile(r"\bexhibits?\b", re.I)
-_EXHIBIT_ITEMS = {"10-K": {"15"}, "10-Q": {"II-6"}, "20-F": {"19"}}
-_ANNUAL_DOCUMENTS = {"AIF", "AFS", "MDA"}
-_PARTS = {"10-K": {"I", "II", "III"}, "10-Q": {"I", "II"}, "20-F": {"I", "II", "III"}, "40-F": {"documents", "form"}}
 COVER_HEAD = 6_000
 NOTE_HEAD = 40_000
 
@@ -111,28 +106,16 @@ def resolve_amends(amendment: FilingSections, refs: list[FilingRef]) -> str | No
     return None
 
 
-def is_exhibit_item(family: str, section: Section) -> bool:
-    """The item listing the report's exhibits: Item 15 of a 10-K (Item 14 before 2003), Part II Item 6 of a 10-Q,
-    Item 19 of a 20-F. Its heading names exhibits; a section with no heading goes by its number."""
-    return section.item in _EXHIBIT_ITEMS.get(family, ()) or bool(_EXHIBIT_HEADING.search(section.heading))
-
-
-def _part(family: str, item: str) -> str | None:
-    if family == "40-F":
-        return "documents" if item in _ANNUAL_DOCUMENTS else "form"
-    return part_of(family, item)
-
-
 def amendment_scope(sections: FilingSections) -> Scope:
     """What an amendment restates: "complete", "partial", "exhibits" or "cover" (see the module docstring)."""
     if not sections.items:
         return "cover"
-    family = form_family(sections.form)
-    printed = [s for s in sections.items.values() if not is_exhibit_item(family, s)]
+    spec = spec_for(sections.form, sections.filing_date)
+    printed = [s for s in sections.items.values() if not spec.lists_exhibits(s.item, s.heading)]
     if not printed:
         return "exhibits"
-    required = _PARTS.get(family)
-    return "complete" if required and required <= {_part(family, s.item) for s in printed} else "partial"
+    required = spec.required_parts
+    return "complete" if required and required <= {spec.part(s.item) for s in printed} else "partial"
 
 
 def _shifted(s: Section, chars: int, source: str | None) -> Section:
@@ -142,7 +125,6 @@ def _shifted(s: Section, chars: int, source: str | None) -> Section:
 
 def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingSections:
     """The original as amended by amendments, applied in filing order (see the module docstring)."""
-    family = form_family(original.form)
     amendments = sorted(amendments, key=_order)
     items = {k: _shifted(s, 0, original.accession) for k, s in original.items.items()}
     text = original.text
@@ -159,7 +141,7 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
             items = printed
         else:
             items.update(printed)
-    rank = {k: i for i, k in enumerate(order_for(family, original.filing_date))} if family != "40-F" else {}
+    rank = {k: i for i, k in enumerate(spec_for(original.form, original.filing_date).order)}
     keys = sorted(items, key=lambda k: rank.get(k, len(rank)))
     return FilingSections(accession=original.accession, form=original.form, filing_date=original.filing_date,
                           items={k: items[k] for k in keys}, text=text, engine_version=original.engine_version,

@@ -12,12 +12,12 @@ import bisect
 import re
 
 from .boundaries import find_items
-from .documents import decode, form_family, header, main_documents, split
+from .documents import decode, header, main_documents, split
 from .model import FilingSections, Section, Span, Target
 from .rendering import render_documents
 from .stubs import Resolver, is_stub
 from . import xref
-from .vocab import order_for
+from .vocab import spec_for
 from .version import SECTIONS_VERSION
 
 __all__ = ["FilingSections", "SECTIONS_VERSION", "Section", "Span", "Target", "extract_sections", "get_sections",
@@ -43,18 +43,18 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
     form = form or head.get("form")
     if not form:
         raise ValueError("form is not given and the submission header does not name it")
-    family = form_family(form)
     filing_date = filing_date or head.get("filing_date")
+    spec = spec_for(form, filing_date)
     docs = main_documents(split(text), form)
     rendering = render_documents(docs)
     full, offs = rendering.text_and_offsets()
-    layout = find_items(rendering.lines, rendering.line_doc, offs, family, filing_date)
+    layout = find_items(rendering.lines, rendering.line_doc, offs, spec)
     lines = rendering.lines
     for sp in layout.spans.values():
         nxt = next((o for o in layout.spans.values() if o is not sp and o.heading_line == sp.end), None)
         if nxt is not None:
             sp.end = _lead_in(lines, nxt.item, sp.start, sp.end)
-    resolver = Resolver(lines, rendering.line_doc, rendering.documents, layout.spans, family, layout.toc)
+    resolver = Resolver(lines, rendering.line_doc, rendering.documents, layout.spans, spec, layout.toc)
 
     def target_of(t):
         spans = [Span(offs[a], offs[b]) for a, b in t.lines]
@@ -67,12 +67,12 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
         text = full[start:end].rstrip("\n")
         status, target = sp.status, None
         body = "\n".join(lines[sp.start + 1:sp.end]) or lines[sp.start]
-        if status == "present" and family != "8-K" and is_stub(body):
+        if status == "present" and spec.stubs and is_stub(body):
             status, target = "stub", target_of(resolver.resolve(iid, text, (sp.start, sp.end)))
         items[iid] = Section(item=iid, status=status, text=text, start=start, end=end,
                              heading=lines[sp.heading_line] if sp.heading_line >= 0 else "",
                              combined_with=sp.combined_with, target=target)
-    vocab = order_for(family, filing_date) if family in ("10-K", "20-F") else []
+    vocab = list(spec.order) if spec.xref_index else []
     index = xref.find_index(lines, vocab) if vocab else None
     if index:
         _cross_referenced(index, resolver, items, lines, full, offs)

@@ -3,10 +3,11 @@ import re
 
 from .boundaries import (Heading, ItemSpan, Layout, normalize, toc_lines, _SIG, _SIG_PARA,
                                               _SENTENCE, _CONTENTS)
+from .vocab import spec_for
 
 LABEL = r"(?:(?:[A-Z]|\d{1,2}|[IVX]{1,4})\.\s*|\([a-z0-9]{1,3}\)\s*)?"
 COMMITTEE = r"AUDIT(?: AND [A-Z][A-Z ]{0,40}?)? COMMITTEE"
-DOCS = {"AIF", "AFS", "MDA"}
+DOCS = spec_for("40-F").principal_documents
 MDA_RX = r"MANAGEMENT'?S?'? DISCUSSION (?:AND|&) ANALYSIS"
 AFS_RX = r"(?:AUDITED )?(?:ANNUAL )?(?:AUDITED )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS"
 TITLES = [

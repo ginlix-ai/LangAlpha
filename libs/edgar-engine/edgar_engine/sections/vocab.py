@@ -1,4 +1,11 @@
-"""Ordered item lists per form, and the part each item belongs to."""
+"""What each form is: its items in order, the part each item belongs to, and the structural features the
+engine reads it by. Every module asks a FormSpec instead of testing the form's name, so a new form or era is
+one entry here."""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field, replace
+from typing import Mapping
 
 TENK = ["1", "1A", "1B", "1C", "2", "3", "4", "5", "6", "7", "7A", "8", "9", "9A", "9B", "9C",
         "10", "11", "12", "13", "14", "15", "16"]
@@ -25,24 +32,91 @@ ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 
 PART_NUMERAL = {"I": "I", "II": "II", "III": "III", "IV": "IV", "1": "I", "2": "II", "3": "III", "4": "IV",
                 "ONE": "I", "TWO": "II", "THREE": "III", "FOUR": "IV"}
 
+_EXHIBIT_HEADING = re.compile(r"\bexhibits?\b", re.I)
 
-def order_for(family: str, filing_date: str | None) -> list[str]:
-    if family == "10-K":
-        return TENK
-    if family == "10-Q":
-        return TENQ
-    if family == "20-F":
-        return TWENTYF
+
+@dataclass(frozen=True)
+class FormSpec:
+    """One form in one era. order is empty for a form found by titles (40-F), whose sections come in no fixed order."""
+    family: str
+    order: tuple[str, ...] = ()
+    part_of: Mapping[str, str] = field(default_factory=dict)
+    default_part: str | None = None
+    required_parts: frozenset[str] = frozenset()
+    parts_split: bool = False
+    heading_order: tuple[str, ...] | None = None
+    dotted_items: bool = False
+    undotted_items: bool = False
+    roman_items: bool = False
+    lettered_16: bool = False
+    section_dividers: bool = False
+    statement_pages: bool = False
+    included_statements: bool = False
+    stacked_headings: bool = False
+    stubs: bool = True
+    xref_index: bool = False
+    addressed_sentences: bool = False
+    statement_items: frozenset[str] = frozenset()
+    exhibit_items: frozenset[str] = frozenset()
+    principal_documents: frozenset[str] = frozenset()
+    exhibit_documents: tuple[str, ...] = ()
+    amendment_documents: tuple[str, ...] = ()
+    titled: bool = False
+
+    @property
+    def headings(self) -> list[str]:
+        """The items a heading can name: a 10-Q heading names an item of its part ("Item 2"), not "II-2"."""
+        return list(self.heading_order if self.heading_order is not None else self.order)
+
+    def part_items(self, part: str) -> list[str]:
+        """The items of one part as its headings number them ("2" for a 10-Q's "II-2")."""
+        return [i.split("-", 1)[1] for i in self.order if i.split("-")[0] == part]
+
+    def part(self, item: str) -> str | None:
+        if self.parts_split:
+            return item.split("-")[0]
+        return self.part_of.get(item, self.default_part)
+
+    def lists_exhibits(self, item: str, heading: str) -> bool:
+        """The item listing the report's exhibits: its heading names exhibits (a 10-K's Item 14 in the numbering
+        before 2003, Item 15 since), or with no such heading its number (10-K Item 15, 10-Q Part II Item 6,
+        20-F Item 19)."""
+        return item in self.exhibit_items or bool(_EXHIBIT_HEADING.search(heading))
+
+
+_TENK = FormSpec("10-K", tuple(TENK), PART_OF_10K, required_parts=frozenset({"I", "II", "III"}), roman_items=True,
+                 statement_pages=True, included_statements=True, xref_index=True, addressed_sentences=True,
+                 statement_items=frozenset({"8"}), exhibit_items=frozenset({"15"}), exhibit_documents=("EX-13",))
+_TENQ = FormSpec("10-Q", tuple(TENQ), required_parts=frozenset({"I", "II"}), parts_split=True,
+                 heading_order=tuple(TENQ_PARTS["II"]), roman_items=True, statement_items=frozenset({"I-1"}),
+                 exhibit_items=frozenset({"II-6"}))
+_TWENTYF = FormSpec("20-F", tuple(TWENTYF), PART_OF_20F, required_parts=frozenset({"I", "II", "III"}), lettered_16=True,
+                    statement_pages=True, xref_index=True, statement_items=frozenset({"17", "18"}),
+                    exhibit_items=frozenset({"19"}))
+_EIGHTK = FormSpec("8-K", tuple(EIGHTK), dotted_items=True, section_dividers=True, stacked_headings=True, stubs=False)
+_EIGHTK_OLD = replace(_EIGHTK, order=tuple(EIGHTK_OLD), dotted_items=False, undotted_items=True)
+_FORTYF_DOCUMENTS = frozenset({"AIF", "AFS", "MDA"})
+_FORTYF = FormSpec("40-F", part_of={d: "documents" for d in _FORTYF_DOCUMENTS}, default_part="form",
+                   required_parts=frozenset({"documents", "form"}), principal_documents=_FORTYF_DOCUMENTS,
+                   amendment_documents=("EX-99",), titled=True)
+
+
+def form_family(form: str) -> str:
+    f = form.upper().replace("/A", "")
+    if f.startswith("10-K"):
+        return "10-K"
+    if f.startswith("10-Q"):
+        return "10-Q"
+    for fam in ("8-K", "20-F", "40-F"):
+        if f.startswith(fam):
+            return fam
+    raise ValueError(f"unsupported form {form!r}")
+
+
+def spec_for(form: str, filing_date: str | None = None) -> FormSpec:
+    """The spec of a form (any variant: 10-K405, 10-Q/A) as filed on filing_date; the 8-K's items were renumbered
+    in August 2004, and a filing with no date is read as current."""
+    family = form_family(form)
     if family == "8-K":
-        return EIGHTK if (filing_date or "9999") >= EIGHTK_NEW_FROM else EIGHTK_OLD
-    raise ValueError(family)
-
-
-def part_of(family: str, item: str) -> str | None:
-    if family == "10-K":
-        return PART_OF_10K.get(item)
-    if family == "20-F":
-        return PART_OF_20F.get(item)
-    if family == "10-Q":
-        return item.split("-")[0]
-    return None
+        return _EIGHTK if (filing_date or "9999") >= EIGHTK_NEW_FROM else _EIGHTK_OLD
+    return {"10-K": _TENK, "10-Q": _TENQ, "20-F": _TWENTYF, "40-F": _FORTYF}[family]
