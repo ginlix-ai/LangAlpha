@@ -206,7 +206,7 @@ async def stop_marked(
     settled = []
     for row in rows:
         command_id = str(row["command_id"])
-        outcome = decide(row, states[command_id], up=up)
+        outcome = decide(row, states[command_id], machine_runs=up, reports_now=up)
         if not isinstance(outcome, Outcome):
             continue
         try:

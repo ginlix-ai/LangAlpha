@@ -115,7 +115,8 @@ def decide(
     row: Mapping[str, Any],
     state: JobRead,
     *,
-    up: bool,
+    machine_runs: bool,
+    reports_now: bool,
     hour_applies: bool = False,
     cov: Coverage = Coverage(),
     now: Optional[datetime] = None,
@@ -123,11 +124,16 @@ def decide(
 ) -> Union[Outcome, Verdict]:
     """What became of one command, from one read of its job.
 
-    ``up``: its computer still runs the sandbox the read reached.
-    ``computer_stopped_at``: when it last stopped. A job gone with no exit
-    while its computer runs was ended by that stop if it came after the job
-    started, or went with its record when the computer was rebuilt (both
-    ``lost``), and otherwise was killed from outside (``vanished``).
+    ``machine_runs``: the machine still runs the sandbox the read reached.
+    ``reports_now``: an end read now is told at once, its computer still up;
+    otherwise at the thread's next turn, since a turn of its own would start
+    the computer again (one stopped since, or one its owner stopped that the
+    machine missed). ``computer_stopped_at``: when it last stopped. A job
+    gone with no exit while its computer runs was ended by that stop if it
+    came after the job started, or went with its record when the computer
+    was rebuilt (both ``lost``), and otherwise was killed from outside
+    (``vanished``). A stop the machine missed (it runs while the end does not
+    report now) ended nothing.
     ``hour_applies``, ``cov`` and ``now`` judge the after-turn hour, which
     only an unmarked row needs (for a computer that is gone, ``now`` is when
     it stopped, so a watcher that was down does not turn a stop inside the
@@ -144,7 +150,7 @@ def decide(
     mark = row.get("stopped_by")
     exit_code = None if state is GONE else state.exit_code
     if mark in (AFTER_TURN_LIMIT, "user") and exit_code is not None:
-        return Outcome.exited(exit_code, up=up)
+        return Outcome.exited(exit_code, up=reports_now)
     if mark == AFTER_TURN_LIMIT:
         return Outcome("failed", "after_turn_limit")
     if mark:
@@ -154,17 +160,23 @@ def decide(
         late = hour_applies and not is_covered(row, cov, at)
         return Outcome("failed", "after_turn_limit" if late else "lost", up=False)
     if exit_code is not None:
-        return Outcome.exited(exit_code, up=up)
+        return Outcome.exited(exit_code, up=reports_now)
     if not state.running:
         if state.stopped:
             # A stop reached it and left no mark on the row: none is under way
             # (a stopper marks the row before it kills, and the finalize
             # yields to a mark written since), so it simply stopped.
             return Outcome("stopped")
-        if not up:
+        if not machine_runs:
             return WATCH
-        stopped_since = computer_stopped_at is not None and computer_stopped_at >= row["started_at"]
-        return Outcome("failed", "lost" if stopped_since or not state.found else "vanished")
+        stopped_since = (
+            reports_now
+            and computer_stopped_at is not None
+            and computer_stopped_at >= row["started_at"]
+        )
+        return Outcome(
+            "failed", "lost" if stopped_since or not state.found else "vanished", up=reports_now
+        )
     if hour_applies and not is_covered(row, cov, now or datetime.now(UTC)):
         return STOP_AFTER_TURN
     return WATCH

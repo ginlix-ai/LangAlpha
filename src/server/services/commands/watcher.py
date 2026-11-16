@@ -43,14 +43,13 @@ import asyncio
 import logging
 import random
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ptc_agent.core.sandbox import jobs
 
 from src.server.database.runs import command_runs as cr_db
-from src.server.database.runs.command_runs import Outcome
 from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 from src.server.services.commands.control import (
     ComputerAway,
@@ -420,10 +419,10 @@ class CommandWatcher:
             # taken since reports at the thread's next turn.
             up = await still_up(computer)
             # A stopped computer whose machine still runs it: the stop never
-            # reached the machine, so its jobs are judged as on a computer
-            # that is up, and their ends report at the thread's next turn
-            # rather than starting the computer its owner stopped.
-            left = reach == "own_stopped"
+            # reached the machine, so its jobs are judged as on a running
+            # machine, and their ends report at the thread's next turn rather
+            # than starting the computer its owner stopped.
+            machine_runs = up or reach == "own_stopped"
             ended = 0
             stops: List[Mapping[str, Any]] = []
             watched: List[Mapping[str, Any]] = []
@@ -438,14 +437,13 @@ class CommandWatcher:
                 verdict = decide(
                     row,
                     state,
-                    up=up or left,
+                    machine_runs=machine_runs,
+                    reports_now=up,
                     hour_applies=hour_applies,
                     cov=coverage[str(row["conversation_thread_id"])],
                     now=now,
-                    computer_stopped_at=None if left else computer.get("stopped_at"),
+                    computer_stopped_at=computer.get("stopped_at"),
                 )
-                if left and isinstance(verdict, Outcome):
-                    verdict = replace(verdict, up=False)
                 if verdict is WATCH:
                     watched.append(row)
                     continue
@@ -496,7 +494,8 @@ class CommandWatcher:
             outcome = decide(
                 row,
                 GONE,
-                up=False,
+                machine_runs=False,
+                reports_now=False,
                 hour_applies=hour_applies,
                 cov=coverage[str(row["conversation_thread_id"])],
                 now=at,
