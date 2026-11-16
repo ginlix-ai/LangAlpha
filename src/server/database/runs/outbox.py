@@ -38,7 +38,7 @@ from src.server.database.runs.hook_jobs import (  # noqa: F401
     build_finalize_jobs,
     build_finalize_jobs_from_run_row,
 )
-from src.server.database.computer import home_stand_in_could_run_sql
+from src.server.database.home_stand_in import home_stand_in_could_run_sql
 from src.server.database.market_targets import MARKET_TARGET_OWED_SQL
 from src.server.database.runs.command_runs import COMMAND_OWED_SQL
 from src.server.database.runs.command_runs import HOOK_TYPE as COMMAND_REPORT_HOOK
@@ -1364,20 +1364,17 @@ _TURN_WORKSPACE_SQL = """(SELECT t.workspace_id FROM conversation_threads t
 
 # The turn's thread is in the user's Home, which a turn in Home's stand-in can
 # run now though the machine Home lives on is still away: its executor posts
-# it there. Binds ``stand_in_kinds``.
+# it there.
 _STAND_IN_SQL = f"""EXISTS (
     SELECT 1 FROM workspaces ws
     WHERE ws.workspace_id = {_TURN_WORKSPACE_SQL}
       AND {home_stand_in_could_run_sql("ws")})"""
 
 
-async def release_for_reachable_computers(
-    *, stand_in_kinds: Sequence[str]
-) -> List[Dict[str, Any]]:
+async def release_for_reachable_computers() -> List[Dict[str, Any]]:
     """Make due the notifications parked for a computer that can be reached
     again (``park_for_computer``), or that their turn no longer runs on, or
-    that are Home's while Home's stand-in can run them on a computer of
-    ``stand_in_kinds``; the rows released.
+    that are Home's while Home's stand-in can run them; the rows released.
 
     The tunnel's liveness, which the gateway writes, is read in the same
     statement, so every worker may run it at once and a row is released
@@ -1405,8 +1402,7 @@ async def release_for_reachable_computers(
                        OR {_STAND_IN_SQL})
                 RETURNING o.hook_outbox_id, o.hook_type, o.conversation_thread_id,
                           o.ordering_key
-                """,
-                {"stand_in_kinds": list(stand_in_kinds)},
+                """
             )
             return [dict(r) for r in await cur.fetchall()]
 

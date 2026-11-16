@@ -823,6 +823,74 @@ class TestSessionCachesMcp:
             "fresh_host_side"
         ]
 
+    @pytest.mark.asyncio
+    async def test_homes_stand_in_reads_and_writes_homes_tool_snapshots(self):
+        """A stdio server of Home's, seen first in a turn on Home's stand-in,
+        is served from the snapshot Home's turns already wrote, and what the
+        stand-in discovers is written where Home's turns read it."""
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.database.home_workspace import (
+            get_home_stand_in_id,
+            get_home_workspace_id,
+        )
+        from src.server.services.mcp_discovery import mcp_discovery_fingerprint
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=1, summary="old")
+        server = MCPServerConfig(
+            name="notes", transport="stdio", command="notes-mcp", source="user"
+        )
+        home, stand_in = get_home_workspace_id("user-1"), get_home_stand_in_id("user-1")
+        rows = {
+            home: [
+                {
+                    "server_name": "notes",
+                    "status": "ok",
+                    "config_hash": mcp_discovery_fingerprint(server),
+                    "tools": [{"name": "find_note"}],
+                }
+            ]
+        }
+        captured = {}
+
+        def fake_build(reg, servers, schemas, disabled=frozenset()):
+            captured["schemas"] = schemas
+            return MagicMock()
+
+        with (
+            patch(
+                "src.server.database.mcp_tool_schemas.get_tool_schemas",
+                new=AsyncMock(side_effect=lambda ws: rows.get(ws, [])),
+            ),
+            # Only a server whose OAuth runs host-side has a user-tier snapshot.
+            patch(
+                "src.server.database.mcp_tool_schemas.get_user_tool_schemas",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("ptc_agent.core.mcp_registry.build_composite_registry", side_effect=fake_build),
+            patch(
+                "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+                return_value="S",
+            ),
+        ):
+            await wm._install_session_composite(
+                session,
+                resolved_mcp(version=2, inherited=[server]),
+                user_id="user-1",
+                workspace_id=stand_in,
+            )
+        assert [t["name"] for t in captured["schemas"]["notes"]] == ["find_note"]
+
+        computer_id = str(uuid.uuid4())
+        wm._machine(computer_id).session = session
+        discover = AsyncMock(return_value=[])
+        with patch("src.server.services.mcp_discovery.discover_and_cache", new=discover):
+            wm._kick_mcp_discovery(
+                _make_binding(stand_in, computer_id), "user-1", session, [server], 2
+            )
+            await next(iter(wm._mcp_discovery_tasks))
+        assert discover.await_args.args[0] == home
+
 
 # ---------------------------------------------------------------------------
 # Version-delta on the post-cooldown read → re-resolve + background discovery

@@ -424,6 +424,7 @@ class McpSecretsMixin:
         tool_schemas: dict[str, list[dict]] = {}
         settled: set[str] = set()
         if untrusted_servers:
+            from src.server.database.home_workspace import acting_for
             from src.server.database.mcp_tool_schemas import (
                 get_tool_schemas,
                 get_user_tool_schemas,
@@ -434,7 +435,10 @@ class McpSecretsMixin:
             if user_id and any(s.source == "user" for s in untrusted_servers):
                 user_rows = await get_user_tool_schemas(user_id)
             snapshots = ToolSnapshotIndex(
-                workspace_rows=await get_tool_schemas(workspace_id),
+                # Home's stand-in serves Home's servers, so their snapshots
+                # are Home's too: read and written under one id, and dropped
+                # with Home's when a server goes.
+                workspace_rows=await get_tool_schemas(acting_for(user_id, workspace_id)),
                 user_rows=user_rows,
             )
             # Filter consent here: shared discovery snapshots must describe all vendor
@@ -562,10 +566,13 @@ class McpSecretsMixin:
             try:
                 if not _session_live():
                     return
+                from src.server.database.home_workspace import acting_for
                 from src.server.services.mcp_discovery import discover_and_cache
 
                 _t_disc = time.time()
-                await discover_and_cache(workspace_id, session.sandbox, servers)
+                await discover_and_cache(
+                    acting_for(user_id, workspace_id), session.sandbox, servers
+                )
                 logger.info(
                     "[ASSET_SYNC] workspace_id=%s mcp_discovery=%.0fms servers=%d",
                     workspace_id,

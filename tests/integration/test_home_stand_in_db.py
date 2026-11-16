@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 
+from src.server.database import home_stand_in
 from src.server.database import workspace as workspaces
 from src.server.database.computer import create_computer, update_computer_status
 from src.server.database.home_workspace import (
@@ -36,48 +37,70 @@ async def _computer(user_id, name, *, primary=False, kind="docker") -> str:
     return str(row["computer_id"])
 
 
-async def test_the_stand_in_is_placed_once_at_its_fixed_id(seed_user):
+async def _touch(db_conn, computer_id):
+    """Make ``computer_id`` the one a new placement picks first."""
+    await db_conn.execute(
+        "UPDATE computers SET last_activity_at = NOW() + interval '1 hour'"
+        " WHERE computer_id = %s",
+        (computer_id,),
+    )
+
+
+async def test_the_stand_in_is_placed_once_at_its_fixed_id(seed_user, db_conn):
     user_id = seed_user["user_id"]
     cloud = await _computer(user_id, "Cloud", primary=True)
     other = await _computer(user_id, "Other")
+    await _touch(db_conn, cloud)
 
-    placed = await workspaces.place_home_stand_in(user_id, cloud)
-    again = await workspaces.place_home_stand_in(user_id, other)
+    placed = await home_stand_in.place_home_stand_in(user_id)
+    await _touch(db_conn, other)
+    again = await home_stand_in.place_home_stand_in(user_id)
 
-    assert str(placed["workspace_id"]) == get_home_stand_in_id(user_id)
-    assert str(placed["computer_id"]) == cloud
-    assert is_home_stand_in_row(placed)
+    assert str(placed.row["workspace_id"]) == get_home_stand_in_id(user_id)
+    assert str(placed.computer["computer_id"]) == cloud
+    assert placed.kept and placed.runs and not placed.owed
+    assert is_home_stand_in_row(placed.row)
     # Never Home's folder, which Home takes should this computer be primary.
-    assert placed["dir_name"].startswith(".home-stand-in")
-    # Placed once, it stays where its files are.
-    assert str(again["computer_id"]) == cloud
+    assert placed.row["dir_name"].startswith(".home-stand-in")
+    # Placed once, it stays where its files are, and a turn runs there.
+    assert str(again.computer["computer_id"]) == cloud
+    assert str((await home_stand_in.stand_in_computer(user_id))["computer_id"]) == cloud
 
 
 async def test_workers_placing_it_at_once_converge(seed_user):
     user_id = seed_user["user_id"]
-    first = await _computer(user_id, "First", primary=True)
-    second = await _computer(user_id, "Second")
+    await _computer(user_id, "First", primary=True)
+    await _computer(user_id, "Second")
 
-    rows = await asyncio.gather(
-        workspaces.place_home_stand_in(user_id, first),
-        workspaces.place_home_stand_in(user_id, second),
+    placed = await asyncio.gather(
+        *(home_stand_in.place_home_stand_in(user_id) for _ in range(4))
     )
 
-    assert len({str(r["computer_id"]) for r in rows}) == 1
-    assert {str(r["workspace_id"]) for r in rows} == {get_home_stand_in_id(user_id)}
+    assert len({str(p.computer["computer_id"]) for p in placed}) == 1
+    assert {str(p.row["workspace_id"]) for p in placed} == {get_home_stand_in_id(user_id)}
 
 
-async def test_a_stand_in_whose_computer_is_gone_is_placed_again(seed_user):
+async def test_a_stand_in_whose_computer_is_gone_is_placed_again(seed_user, db_conn):
     user_id = seed_user["user_id"]
     gone = await _computer(user_id, "Gone")
     cloud = await _computer(user_id, "Cloud", primary=True)
-    await workspaces.place_home_stand_in(user_id, gone)
+    await _touch(db_conn, gone)
+    await home_stand_in.place_home_stand_in(user_id)
     await update_computer_status(gone, "deleted")
+    assert await home_stand_in.read_stand_in(user_id) is None
 
-    placed = await workspaces.place_home_stand_in(user_id, cloud)
+    placed = await home_stand_in.place_home_stand_in(user_id)
 
-    assert str(placed["computer_id"]) == cloud
-    assert placed["status"] != "deleted"
+    assert str(placed.computer["computer_id"]) == cloud
+    assert placed.row["status"] != "deleted"
+
+
+async def _owed(db_conn, user_id):
+    await db_conn.execute(
+        "INSERT INTO home_away (user_id, home_id, away_since, last_away_at) "
+        "VALUES (%s, %s, NOW(), NOW())",
+        (user_id, get_home_workspace_id(user_id)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -95,20 +118,18 @@ async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_owed(
     user_id = seed_user["user_id"]
     broken = await _computer(user_id, "Broken")
     healthy = await _computer(user_id, "Healthy")
-    await workspaces.place_home_stand_in(user_id, broken)
+    await _touch(db_conn, broken)
+    await home_stand_in.place_home_stand_in(user_id)
     await db_conn.execute(breaks, (broken,))
     if owed:
-        await db_conn.execute(
-            "INSERT INTO home_away (user_id, home_id, away_since, last_away_at) "
-            "VALUES (%s, %s, NOW(), NOW())",
-            (user_id, get_home_workspace_id(user_id)),
-        )
+        await _owed(db_conn, user_id)
 
-    placed = await workspaces.place_home_stand_in(user_id, healthy)
+    placed = await home_stand_in.place_home_stand_in(user_id)
 
     # Owed files are only where it is, so it stays with them.
-    assert str(placed["computer_id"]) == (broken if owed else healthy)
-    assert placed["status"] != "deleted"
+    assert str(placed.computer["computer_id"]) == (broken if owed else healthy)
+    assert (placed.kept, placed.owed) == (True, owed)
+    assert placed.row["status"] != "deleted"
 
 
 async def test_a_computer_being_retired_takes_no_stand_in(seed_user, db_conn):
@@ -120,7 +141,15 @@ async def test_a_computer_being_retired_takes_no_stand_in(seed_user, db_conn):
         (retiring,),
     )
 
-    assert await workspaces.place_home_stand_in(user_id, retiring) is None
+    assert await home_stand_in.stand_in_computer(user_id) is None
+    assert await home_stand_in.place_home_stand_in(user_id) is None
+
+
+async def test_a_machine_of_the_users_own_takes_no_stand_in(seed_user):
+    user_id = seed_user["user_id"]
+    await _computer(user_id, "Mac", kind="ssh")
+
+    assert await home_stand_in.place_home_stand_in(user_id) is None
 
 
 async def test_listings_and_counts_leave_the_stand_in_out(seed_user):
@@ -128,7 +157,7 @@ async def test_listings_and_counts_leave_the_stand_in_out(seed_user):
     cloud = await _computer(user_id, "Cloud", primary=True)
     await workspaces.create_workspace_on_computer(user_id, "Research", cloud)
     await workspaces.get_or_create_home_workspace(user_id)
-    await workspaces.place_home_stand_in(user_id, cloud)
+    await home_stand_in.place_home_stand_in(user_id)
 
     listed, total = await workspaces.get_workspaces_for_user(user_id)
     with_home, _ = await workspaces.get_workspaces_for_user(user_id, include_home=True)
@@ -145,9 +174,9 @@ async def test_listings_and_counts_leave_the_stand_in_out(seed_user):
 
 async def test_the_stand_in_never_moves(seed_user):
     user_id = seed_user["user_id"]
-    cloud = await _computer(user_id, "Cloud", primary=True)
+    await _computer(user_id, "Cloud", primary=True)
+    await home_stand_in.place_home_stand_in(user_id)
     other = await _computer(user_id, "Other")
-    await workspaces.place_home_stand_in(user_id, cloud)
 
     with pytest.raises(MoveRefused) as refused:
         await claim_workspace_move(
@@ -168,19 +197,19 @@ async def test_a_removal_holding_the_stand_in_and_a_turn_starting_exclude_each_o
 
     from src.server.database import home_away
     from src.server.database.pool import get_db_connection
-    from src.server.services import home_placement
 
     user_id = seed_user["user_id"]
-    await workspaces.place_home_stand_in(user_id, await _computer(user_id, "Cloud"))
+    await _computer(user_id, "Cloud")
+    await home_stand_in.place_home_stand_in(user_id)
 
     # A turn's START holding its mark keeps a removal out.
     async with get_db_connection() as conn, conn.transaction():
         await home_away.mark_away(user_id, conn=conn)
-        async with home_placement.stand_in_held(user_id) as held:
+        async with home_away.stand_in_held(user_id) as held:
             assert not held
 
     # A removal holding it makes a START wait for it.
-    async with home_placement.stand_in_held(user_id) as held:
+    async with home_away.stand_in_held(user_id) as held:
         assert held
         async with get_db_connection() as conn:
             await conn.execute("SET lock_timeout = '200ms'")
@@ -251,7 +280,7 @@ async def test_a_turn_checked_for_the_stand_ins_computer_starts_only_there(seed_
     mac = await _computer(user_id, "Mac", kind="ssh")
     cloud = await _computer(user_id, "Cloud")
     notes = await workspaces.create_workspace_on_computer(user_id, computer_id=mac, name="Notes")
-    stand_in = str((await workspaces.place_home_stand_in(user_id, cloud))["workspace_id"])
+    stand_in = str((await home_stand_in.place_home_stand_in(user_id)).row["workspace_id"])
     thread_id = str(uuid.uuid4())
     await create_thread(
         conversation_thread_id=thread_id,

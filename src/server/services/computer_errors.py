@@ -19,7 +19,9 @@ class Retirement(StrEnum):
     transition another owner holds, or one that moved the row under the
     claim; ``DEFERRED`` is the decision key not taken, which leaves a
     delete's marker for the cleanup sweep; ``WITHDRAWN`` is a marker the
-    sweep found taken off by the time it held the key.
+    sweep found taken off by the time it held the key. ``HANDBACK_LEFT``
+    keeps a computer only from a retirement nobody asked for, never from its
+    owner's remove, so it is no refusal code.
     """
 
     RETIRED = "retired"
@@ -29,9 +31,38 @@ class Retirement(StrEnum):
     OWNERS_MACHINE = "owners_machine"
     HAS_WORKSPACES = "has_workspaces"
     HANDBACK_OWED = "handback_owed"
+    HANDBACK_LEFT = "handback_left"
     BUSY = "busy"
     DEFERRED = "deferred"
     WITHDRAWN = "withdrawn"
+
+    @property
+    def keeps_machine(self) -> bool:
+        """The computer stays for a reason of its own, not a race: a delete
+        that asked still removes its workspace's folder from it."""
+        return self in _KEEPS_MACHINE
+
+    @property
+    def stays_pending(self) -> bool:
+        """The decision is owed again later, so a delete's marker stays for
+        the sweep: a lost key or claim, or files Home is owed, which the
+        sweep retires the computer after once they are in Home."""
+        return self in _STAYS_PENDING
+
+
+_KEEPS_MACHINE = frozenset(
+    {
+        Retirement.PRIMARY,
+        Retirement.ONLY_COMPUTER,
+        Retirement.OWNERS_MACHINE,
+        Retirement.HAS_WORKSPACES,
+        Retirement.HANDBACK_OWED,
+        Retirement.HANDBACK_LEFT,
+    }
+)
+_STAYS_PENDING = frozenset(
+    {Retirement.BUSY, Retirement.DEFERRED, Retirement.HANDBACK_OWED}
+)
 
 
 _REMOVAL_REFUSALS: dict[Retirement, str] = {

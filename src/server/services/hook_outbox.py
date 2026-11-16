@@ -22,7 +22,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
 
-from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.database.runs import outbox as outbox_db
 from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 
@@ -308,9 +307,7 @@ class HookOutboxDrainer:
             # claim after the sweeps takes what it releases on the same pass.
             _Sweep(
                 "computer release", COMPUTER_RELEASE_INTERVAL,
-                lambda: outbox_db.release_for_reachable_computers(
-                    stand_in_kinds=RECREATABLE_KINDS
-                ),
+                lambda: outbox_db.release_for_reachable_computers(),
                 _log_released_for_computer,
             ),
             # Retention: purge terminal rows past every read-back window so

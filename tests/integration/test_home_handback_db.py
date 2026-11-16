@@ -19,16 +19,16 @@ async def _stand_in(seed_user):
     import uuid
 
     from src.server.database.computer import create_computer
-    from src.server.database.workspace import place_home_stand_in
+    from src.server.database.home_stand_in import place_home_stand_in
 
-    computer = await create_computer(
+    await create_computer(
         seed_user["user_id"],
         kind="docker",
         name="Cloud",
         status="running",
         provider_ref=f"handback-test-{uuid.uuid4()}",
     )
-    await place_home_stand_in(seed_user["user_id"], str(computer["computer_id"]))
+    await place_home_stand_in(seed_user["user_id"])
 
 
 async def test_a_turn_on_the_cloud_owes_a_hand_back(seed_user):

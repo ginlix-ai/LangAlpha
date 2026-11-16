@@ -20,45 +20,42 @@ CLOUD = {"computer_id": "cloud-1", "name": "Cloud computer", "kind": "daytona", 
 _P = "src.server.services.home_placement"
 
 
+def _stand_in(*, runs=True):
+    from src.server.database.home_stand_in import StandIn
+
+    return StandIn(
+        row={"workspace_id": STAND_IN, "status": "running"},
+        computer=CLOUD,
+        kept=True,
+        runs=runs,
+        owed=False,
+        left=False,
+    )
+
+
 @pytest.fixture
 def rows():
-    """The rows placement reads, by workspace id, and what it writes."""
-    state = {
-        "bound": {HOME: MAC},
-        "unreachable": True,
-        "picked": CLOUD,
-        "stand_in_row": None,
-    }
+    """What placement reads, and the stand-in it places."""
+    state = {"unreachable": True, "picked": CLOUD, "stand_in": None}
+
+    async def place(user_id):
+        if state["stand_in"] is None and state["picked"] is not None:
+            state["stand_in"] = _stand_in()
+        return state["stand_in"]
 
     async def computer_for(workspace_id, conn=None):
-        return state["bound"].get(workspace_id)
-
-    async def place(user_id, computer_id):
-        computer = {CLOUD["computer_id"]: CLOUD}.get(computer_id)
-        if computer is None:
-            return None
-        state["bound"][STAND_IN] = computer
-        row = {"workspace_id": STAND_IN, "status": "running"}
-        state["stand_in_row"] = row
-        return row
-
-    async def get_workspace(workspace_id):
-        return state["stand_in_row"] if workspace_id == STAND_IN else None
+        return MAC if workspace_id == HOME else None
 
     with (
         patch(f"{_P}.get_computer_for_workspace", side_effect=computer_for),
         patch(f"{_P}.computer_unreachable", AsyncMock(side_effect=lambda c, **_: state["unreachable"] and c is MAC)),
-        patch(f"{_P}.pick_stand_in_computer", AsyncMock(side_effect=lambda *a, **k: state["picked"])),
-        patch("src.server.database.workspace.place_home_stand_in", side_effect=place) as placed,
-        patch("src.server.database.workspace.get_workspace", side_effect=get_workspace),
+        patch(f"{_P}.stand_in_computer", AsyncMock(side_effect=lambda *a, **k: state["picked"])),
+        patch(f"{_P}.place_home_stand_in", side_effect=place) as placed,
+        patch(f"{_P}.read_stand_in", AsyncMock(side_effect=lambda *a, **k: state["stand_in"])),
         # A turn marks its user away in its START transaction, never here.
         patch(
             "src.server.database.home_away.mark_away",
             AsyncMock(side_effect=AssertionError("placement marked the user away")),
-        ),
-        patch(
-            "src.server.database.home_away.handback_owed",
-            AsyncMock(side_effect=lambda *a, **k: state.get("owed", False)),
         ),
         # Nothing here may build a computer: a stand-in only ever uses one the
         # user already has.
@@ -103,7 +100,17 @@ async def test_with_no_cloud_computer_the_turn_stays_on_home_and_nothing_is_buil
     placement = await home_placement.place_home_turn(USER)
 
     assert placement.runs_in == HOME and placement.away is None
-    rows["placed"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_stand_in_whose_computer_takes_no_turn_leaves_the_turn_at_home(rows):
+    """Kept where owed files are though that computer failed: no turn runs
+    there, so Home's turn goes where Home is, as it was."""
+    rows["stand_in"] = _stand_in(runs=False)
+
+    placement = await home_placement.place_home_turn(USER)
+
+    assert placement.runs_in == HOME and placement.away is None
 
 
 @pytest.mark.asyncio
@@ -153,19 +160,3 @@ async def test_unattended_home_work_waits_only_without_a_cloud_computer(rows, pi
     assert (away is not None) is waits
     # A workspace's own turn runs only on its own computer.
     assert workspace_away is not None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("broken", [{"status": "error"}, {"config": {"retire_when_empty": True}}])
-@pytest.mark.parametrize("owed", [False, True])
-async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_files_are_owed(
-    rows, broken, owed
-):
-    stuck = {"computer_id": "cloud-0", "name": "Old cloud", "kind": "daytona", **broken}
-    rows["bound"][STAND_IN] = stuck
-    rows["owed"] = owed
-
-    chosen = await home_placement.stand_in_computer(USER)
-
-    # Owed files are only there, so it stays; otherwise a healthy one is used.
-    assert chosen is (stuck if owed else CLOUD)

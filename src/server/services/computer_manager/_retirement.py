@@ -17,6 +17,8 @@ from src.server.database.computer import (
     mark_computer_retirement_pending,
     update_computer_status,
 )
+from src.server.database.home_away import stand_in_held
+from src.server.database.home_stand_in import StandIn, stand_in_on
 from src.server.database.workspace import get_live_workspace_ids_for_computer
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_errors import ComputerRemovalRefused, Retirement
@@ -56,58 +58,6 @@ def _owners_machine(computer: Dict[str, Any]) -> bool:
     return not provider_class(computer["kind"]).recreatable
 
 
-async def handback_owed_on(computer: Dict[str, Any]) -> bool:
-    """Whether Home's stand-in is on this computer with files Home is still owed.
-
-    Those files are nowhere else, so the computer outlives its workspaces
-    until they are handed back (``services.home_handback``)."""
-    from src.server.database.computer import get_computer_for_workspace
-    from src.server.database.home_away import handback_owed
-    from src.server.database.home_workspace import get_home_stand_in_id
-
-    user_id = str(computer.get("user_id") or "")
-    if not user_id:
-        return False
-    holder = await get_computer_for_workspace(get_home_stand_in_id(user_id))
-    if holder is None or str(holder["computer_id"]) != str(computer["computer_id"]):
-        return False
-    return await handback_owed(user_id)
-
-
-async def handback_left_on(computer: Dict[str, Any]) -> bool:
-    """Whether Home's stand-in is on this computer holding files the last
-    hand-back left there: too large, unreadable, or all of them when it gave
-    up. No longer owed, so they refuse no removal of their owner's, but
-    nothing else retires the computer under them."""
-    from src.server.database.computer import get_computer_for_workspace
-    from src.server.database.home_away import get_home_away, left_on_stand_in
-    from src.server.database.home_workspace import get_home_stand_in_id
-
-    user_id = str(computer.get("user_id") or "")
-    if not user_id:
-        return False
-    holder = await get_computer_for_workspace(get_home_stand_in_id(user_id))
-    if holder is None or str(holder["computer_id"]) != str(computer["computer_id"]):
-        return False
-    return left_on_stand_in(await get_home_away(user_id)) is not None
-
-
-async def _stand_in_on(computer: Dict[str, Any]) -> bool:
-    """Whether the owner's Home stand-in is a live row on this computer."""
-    from src.server.database.home_workspace import get_home_stand_in_id
-    from src.server.database.workspace import get_workspace
-
-    user_id = str(computer.get("user_id") or "")
-    if not user_id:
-        return False
-    row = await get_workspace(get_home_stand_in_id(user_id))
-    return (
-        row is not None
-        and row.get("status") != "deleted"
-        and str(row.get("computer_id")) == str(computer["computer_id"])
-    )
-
-
 class RetirementMixin:
     async def _retire_machine_if_empty(
         self,
@@ -133,12 +83,8 @@ class RetirementMixin:
             ) as (outcome, computer):
                 if outcome is Retirement.DEFERRED:
                     computer = await get_computer(computer_id)
-                if computer is None or outcome not in (
-                    Retirement.PRIMARY,
-                    Retirement.OWNERS_MACHINE,
-                    Retirement.HAS_WORKSPACES,
-                    Retirement.HANDBACK_OWED,
-                    Retirement.DEFERRED,
+                if computer is None or not (
+                    outcome.keeps_machine or outcome is Retirement.DEFERRED
                 ):
                     return outcome is Retirement.RETIRED
                 # The shared machine survives; remove only the departing
@@ -199,7 +145,9 @@ class RetirementMixin:
         computer = await get_computer(computer_id)
         if computer is None:
             raise ValueError(f"Computer {computer_id} not found")
-        refusal = await self._removal_refusal(computer_id, computer)
+        refusal = await self._removal_refusal(
+            computer_id, computer, await stand_in_on(computer)
+        )
         if refusal is not None:
             raise ComputerRemovalRefused(refusal)
         async with self._observed_lock(computer_id, "computer.remove"):
@@ -265,33 +213,32 @@ class RetirementMixin:
                 return
             # Home's stand-in on it: no Home turn is admitted onto it from the
             # read of what Home is owed to the teardown, or its files would go
-            # with the computer. One placed later meets the marker.
-            if await _stand_in_on(computer):
-                from src.server.services.home_placement import stand_in_held
-
+            # with the computer. One placed later meets the marker. Read again
+            # under the hold, which a turn admitted before has marked.
+            stand_in = await stand_in_on(computer)
+            if stand_in is not None:
                 if not await held.enter_async_context(stand_in_held(str(computer["user_id"]))):
                     if marked_here:
                         await clear_computer_retirement_pending(computer_id)
                     yield Retirement.BUSY, computer
                     return
+                stand_in = await stand_in_on(computer)
             if owner_request:
-                kept = await self._removal_refusal(computer_id, computer)
+                kept = await self._removal_refusal(computer_id, computer, stand_in)
             elif _owners_machine(computer):
                 kept = Retirement.OWNERS_MACHINE
             else:
-                kept = await self._why_machine_is_kept(computer_id, computer)
-                if kept is None and await handback_left_on(computer):
+                kept = await self._why_machine_is_kept(computer_id, computer, stand_in)
+                if kept is None and stand_in is not None and stand_in.left:
                     # Files a hand-back left there are not in Home; only
                     # their owner's remove, told so, takes them.
                     logger.info(
                         f"Computer {computer_id} holds Home stand-in files a "
                         "hand-back left; leaving it in place"
                     )
-                    kept = Retirement.HAS_WORKSPACES
+                    kept = Retirement.HANDBACK_LEFT
             if kept is not None:
-                # Owed files keep the marker too: the sweep retires the
-                # machine once they are in Home.
-                if kept not in (Retirement.BUSY, Retirement.HANDBACK_OWED) or marked_here:
+                if not kept.stays_pending or marked_here:
                     await clear_computer_retirement_pending(computer_id)
                 yield kept, computer
                 return
@@ -328,12 +275,7 @@ class RetirementMixin:
                     outcome,
                     _,
                 ):
-                    # A lost key or claim is the one answer that leaves it owed.
-                    settled = outcome not in (
-                        Retirement.BUSY,
-                        Retirement.DEFERRED,
-                        Retirement.HANDBACK_OWED,
-                    )
+                    settled = not outcome.stays_pending
                     if outcome is Retirement.RETIRED:
                         retired += 1
             except Exception as e:
@@ -358,14 +300,17 @@ class RetirementMixin:
         return retired
 
     async def _removal_refusal(
-        self, computer_id: str, computer: Dict[str, Any]
+        self,
+        computer_id: str,
+        computer: Dict[str, Any],
+        stand_in: Optional[StandIn],
     ) -> Optional[Retirement]:
         """None when the owner's remove may go ahead; decisive only under the key.
 
-        ``removal_refused``, then the workspaces still on it."""
+        ``removal_refused``, then what is still on it."""
         held = await self.removal_refused(computer)
         if held is None:
-            return await self._why_machine_is_kept(computer_id, computer)
+            return await self._why_machine_is_kept(computer_id, computer, stand_in)
         if held is Retirement.BUSY:
             logger.info(
                 f"Computer {computer_id} is {computer['status']!r} or "
@@ -375,14 +320,17 @@ class RetirementMixin:
 
     @staticmethod
     async def _why_machine_is_kept(
-        computer_id: str, computer: Dict[str, Any]
+        computer_id: str, computer: Dict[str, Any], stand_in: Optional[StandIn]
     ) -> Optional[Retirement]:
         """None when nothing keeps the machine; decisive only under its key.
 
         The primary is asked first: it stays however empty it gets, so a user
         told to empty it first would empty it for nothing. A bound Home counts
         as a workspace, since it takes its computer's status and the
-        tombstone's shadow write would end it too."""
+        tombstone's shadow write would end it too. Home's stand-in
+        (``stand_in_on``) does not: the shadow write ends it with the
+        computer, and it is placed again on the next need, unless Home is
+        owed files it holds."""
         if computer.get("is_primary"):
             logger.info(
                 f"Computer {computer_id} is the user's primary and is kept; "
@@ -400,7 +348,7 @@ class RetirementMixin:
                 "live workspace(s); leaving it in place"
             )
             return Retirement.HAS_WORKSPACES
-        if await handback_owed_on(computer):
+        if stand_in is not None and stand_in.owed:
             logger.info(
                 f"Computer {computer_id} holds Home stand-in files not yet "
                 "handed back; leaving it in place"

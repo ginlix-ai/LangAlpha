@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.services.automation_executor import ABANDONED_AFTER_SECONDS
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import INTERRUPTED_ERROR, Outcome
@@ -431,13 +430,9 @@ class TestSweep:
         await scheduler._sweep_parked_firings()
         await asyncio.gather(*scheduler._running_tasks)
 
-        mock_exec_db.list_parked_executions.assert_awaited_once_with(
-            stand_in_kinds=RECREATABLE_KINDS
-        )
+        mock_exec_db.list_parked_executions.assert_awaited_once_with()
         execution_id = parked["automation_execution_id"]
-        mock_exec_db.release_parked_execution.assert_awaited_once_with(
-            execution_id, stand_in_kinds=RECREATABLE_KINDS
-        )
+        mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)
         executor.execute.assert_awaited_once_with(automation, execution_id)
 
     @pytest.mark.asyncio
@@ -472,9 +467,7 @@ class TestSweep:
 
         execution_id = parked["automation_execution_id"]
         if released:
-            mock_exec_db.release_parked_execution.assert_awaited_once_with(
-                execution_id, stand_in_kinds=RECREATABLE_KINDS
-            )
+            mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)
             executor.execute.assert_awaited_once_with(automation, execution_id)
         else:
             mock_exec_db.release_parked_execution.assert_not_awaited()

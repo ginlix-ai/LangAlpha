@@ -10,6 +10,8 @@ with a guarded update under its advisory lock (``services.home_handback``).
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -60,13 +62,29 @@ def left_on_stand_in(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 def stand_in_lock_key(user_id: str) -> str:
     """The advisory lock a Home turn's mark shares and a removal or retirement
-    of the stand-in's computer holds alone (``home_placement.stand_in_held``)."""
+    of the stand-in's computer holds alone (``stand_in_held``)."""
     return f"HOME_STAND_IN:{user_id}"
 
 
 class StandInGone(Exception):
     """The stand-in a Home turn was placed in was removed before the turn
     started: refused, so nothing is written into a folder already deleted."""
+
+
+@contextlib.asynccontextmanager
+async def stand_in_held(user_id: str) -> AsyncIterator[bool]:
+    """Hold the user's stand-in against new Home turns, or yield False while
+    one is being admitted. Never waits.
+
+    A turn placed in the stand-in takes the shared side in its START
+    transaction, where it marks that Home is owed files (``mark_away``). So
+    a removal or retirement that reads nothing owed under this hold deletes
+    the stand-in before any turn's mark, and that turn then finds it gone and
+    is refused rather than writing into it."""
+    from src.server.database.session_lock import try_own_session_lock
+
+    async with try_own_session_lock(stand_in_lock_key(user_id)) as held:
+        yield held
 
 
 async def mark_away(user_id: str, *, conn=None) -> None:

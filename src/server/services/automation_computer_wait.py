@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
-from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.services.automation_settlement import Outcome, runs_once, settle
@@ -122,7 +121,7 @@ async def sweep_parked(dispatch: Dispatch, *, stopping: Callable[[], bool]) -> N
     reach a row exactly one starts it. Nothing is started once ``stopping``
     holds."""
     try:
-        rows = await exec_db.list_parked_executions(stand_in_kinds=RECREATABLE_KINDS)
+        rows = await exec_db.list_parked_executions()
     except Exception as e:
         logger.error(f"[AUTOMATION_WAIT] Parked-firing sweep failed: {e}")
         return
@@ -161,10 +160,7 @@ async def sweep_one(
             automation, execution_id, Outcome.SKIPPED, skip_reason="user", parked=True
         )
         return
-    released = await exec_db.release_parked_execution(
-        execution_id, stand_in_kinds=RECREATABLE_KINDS
-    )
-    if not released:
+    if not await exec_db.release_parked_execution(execution_id):
         return
     logger.info(
         f"[AUTOMATION_WAIT] Starting a firing whose computer is back: "

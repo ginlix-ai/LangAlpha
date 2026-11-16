@@ -13,18 +13,16 @@ process memory.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
-from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
-from src.server.database.computer import (
-    get_computer_for_workspace,
-    holds_stand_in,
-    pick_stand_in_computer,
+from src.server.database.computer import get_computer_for_workspace
+from src.server.database.home_stand_in import (
+    place_home_stand_in,
+    read_stand_in,
+    stand_in_computer,
 )
 from src.server.database.home_workspace import (
     get_home_stand_in_id,
@@ -34,22 +32,6 @@ from src.server.database.home_workspace import (
 from src.server.services.ssh_computers import computer_unreachable
 
 logger = logging.getLogger(__name__)
-
-@contextlib.asynccontextmanager
-async def stand_in_held(user_id: str) -> AsyncIterator[bool]:
-    """Hold the user's stand-in against new Home turns, or yield False while
-    one is being admitted. Never waits.
-
-    A turn placed in the stand-in takes the shared side in its START
-    transaction, where it marks that Home is owed files
-    (``home_away.mark_away``). So a removal or retirement that reads nothing
-    owed under this hold deletes the stand-in before any turn's mark, and that
-    turn then finds it gone and is refused rather than writing into it."""
-    from src.server.database.home_away import stand_in_lock_key
-    from src.server.database.session_lock import try_own_session_lock
-
-    async with try_own_session_lock(stand_in_lock_key(user_id)) as held:
-        yield held
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,24 +70,6 @@ class HomePlacement:
     away: Optional[HomeAway] = None
 
 
-async def stand_in_computer(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
-    """The cloud computer Home's stand-in is on, else the one it would be
-    placed on now (``pick_stand_in_computer``); None when the user has no
-    cloud computer. A read: nothing is placed, built or started. A stand-in
-    already placed stays on its computer while that computer can keep it
-    (``holds_stand_in``), so its files are where the next turn on the cloud
-    looks, and while files Home is owed are there, since they are nowhere
-    else; a turn on a computer that failed then fails as it would anyway."""
-    from src.server.database.home_away import handback_owed
-
-    placed = await get_computer_for_workspace(get_home_stand_in_id(user_id), conn=conn)
-    if placed is not None and (
-        holds_stand_in(placed) or await handback_owed(user_id, conn=conn)
-    ):
-        return placed
-    return await pick_stand_in_computer(user_id, RECREATABLE_KINDS, conn=conn)
-
-
 def _away(
     home_computer: Mapping[str, Any], cloud: Mapping[str, Any], reason: str
 ) -> HomeAway:
@@ -141,26 +105,19 @@ async def place_home_turn(
     Home's computer is back, since its log and the files it wrote are there
     and reach Home only with the next hand-back.
     """
-    from src.server.database.workspace import get_workspace, place_home_stand_in
-
     home_id = get_home_workspace_id(user_id)
-    stand_in_id = get_home_stand_in_id(user_id)
     home_computer = await get_computer_for_workspace(home_id)
     try:
         reachable = not await computer_unreachable(home_computer)
         if reachable and (follows is None or not is_home_stand_in_id(user_id, follows)):
             return HomePlacement(home_id)
         if not reachable and make:
-            cloud = await stand_in_computer(user_id)
-            if cloud is None:
-                return HomePlacement(home_id)
-            if await place_home_stand_in(user_id, str(cloud["computer_id"])) is None:
-                return HomePlacement(home_id)
-        # Another worker may have placed it first, on another computer,
-        # and a removal of its computer deletes its row.
-        cloud = await get_computer_for_workspace(stand_in_id)
-        row = await get_workspace(stand_in_id) if cloud is not None else None
-        if row is None or row.get("status") == "deleted" or home_computer is None:
+            stand_in = await place_home_stand_in(user_id)
+        else:
+            stand_in = await read_stand_in(user_id)
+        # Another worker may have placed it first, on another computer, and a
+        # removal of its computer deletes its row.
+        if stand_in is None or not stand_in.runs or home_computer is None:
             return HomePlacement(home_id)
         reason = "command" if reachable else "unreachable"
     except Exception:  # noqa: BLE001 - no stand-in is the turn as it was
@@ -168,14 +125,14 @@ async def place_home_turn(
             "Could not place user %s's Home turn on its stand-in", user_id, exc_info=True
         )
         return HomePlacement(home_id)
-    away = _away(home_computer, cloud, reason)
+    away = _away(home_computer, stand_in.computer, reason)
     logger.info(
         "Home work of user %s runs in its stand-in on computer %s (%s)",
         user_id,
         away.cloud_computer_id,
         reason,
     )
-    return HomePlacement(stand_in_id, away)
+    return HomePlacement(get_home_stand_in_id(user_id), away)
 
 
 async def home_back_notice(user_id: str) -> Optional[Dict[str, Any]]:

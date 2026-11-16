@@ -83,25 +83,17 @@ _STUB_COMPUTER = {
 
 
 @pytest.fixture(autouse=True)
-def _no_handback_owed():
-    """No stand-in files are owed to Home or left by a hand-back here; the
-    cases that keep a computer for them are pinned in test_home_handback."""
+def _no_stand_in():
+    """Home's stand-in is on no computer here; the cases it keeps a computer
+    for are pinned in test_home_handback and the removals below."""
     with (
         patch(
-            "src.server.services.computer_manager._retirement.handback_owed_on",
-            AsyncMock(return_value=False),
+            "src.server.services.computer_manager._retirement.stand_in_on",
+            AsyncMock(return_value=None),
         ),
         patch(
-            "src.server.services.computer_manager._retirement.handback_left_on",
-            AsyncMock(return_value=False),
-        ),
-        patch(
-            "src.server.services.workspace_manager.handback_owed_on",
-            AsyncMock(return_value=False),
-        ),
-        patch(
-            "src.server.services.computer_manager._retirement._stand_in_on",
-            AsyncMock(return_value=False),
+            "src.server.services.workspace_manager.stand_in_on",
+            AsyncMock(return_value=None),
         ),
     ):
         yield
@@ -2093,8 +2085,8 @@ class TestDeleteKeepsTheFolderOnTheOwnersMachine:
 
     @pytest.mark.asyncio
     async def test_homes_stand_in_goes_only_with_its_computer(self):
-        """An agent's tool and the routes delete through here too; only the
-        removal of the stand-in's computer, holding it, says ``stand_in``."""
+        """An agent's tool and the routes delete through here too; the
+        stand-in goes only with its computer's teardown."""
         computer = _make_computer(computer_id=_STUB_COMPUTER_ID, kind="daytona")
         ws_id = str(uuid.uuid4())
         wm = WorkspaceManager(_make_config())
@@ -2198,7 +2190,7 @@ class TestRemoveComputerWithWorkspaces:
             patch(
                 f"{_WORKSPACE_MANAGER}.get_live_workspace_ids_for_computer",
                 AsyncMock(return_value=list(on)),
-            ),
+            ) as self.listed,
             patch(
                 f"{_WORKSPACE_MANAGER}.workspace_is_moving",
                 AsyncMock(side_effect=lambda ws_id: ws_id in moving),
@@ -2303,60 +2295,33 @@ class TestRemoveComputerWithWorkspaces:
         self.wm.remove_computer.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("owed", "held", "code"),
-        [
-            ([False, False], True, None),
-            ([True], True, "handback_owed"),
-            # A Home turn admitted onto it after the first read owes Home its
-            # files, so the second read, against new turns, refuses.
-            ([False, True], True, "handback_owed"),
-            # A turn being admitted holds it: never deleted under the turn.
-            ([False], False, "busy"),
-        ],
-        ids=["handed-back", "owed", "owed-since", "turn-admitting"],
-    )
+    @pytest.mark.parametrize(("owed", "code"), [(False, None), (True, "handback_owed")])
     async def test_homes_stand_in_goes_with_it_unless_home_is_owed_its_files(
-        self, owed, held, code
+        self, owed, code
     ):
-        """Never shown to the owner, so never named; what it wrote while
-        their own computer was away is nowhere else until handed back."""
-        from contextlib import asynccontextmanager as acm
-
-        from src.server.database.home_workspace import get_home_stand_in_id
+        """Never shown to the owner, so never named or deleted on its own: it
+        goes with its computer (pinned in test_home_handback). What it wrote
+        while their own computer was away is nowhere else until handed back,
+        so that refuses before anything is deleted."""
+        from src.server.database.home_stand_in import StandIn
         from src.server.services.computer_errors import ComputerRemovalRefused
 
-        stand_in = get_home_stand_in_id("user-1")
-        self.wm.workspace_row = AsyncMock(
-            side_effect=lambda ws_id: {
-                "workspace_id": ws_id,
-                "is_home": False,
-                "config": {"home_stand_in": ws_id == stand_in},
-            }
+        stand_in = StandIn(
+            row={}, computer={}, kept=True, runs=True, owed=owed, left=False
         )
-
-        @acm
-        async def stand_in_held(user_id):
-            yield held
-
-        with (
-            patch(f"{_WORKSPACE_MANAGER}.handback_owed_on", AsyncMock(side_effect=owed)),
-            patch(
-                "src.server.services.home_placement.stand_in_held",
-                side_effect=stand_in_held,
-            ),
-        ):
+        with patch(f"{_WORKSPACE_MANAGER}.stand_in_on", AsyncMock(return_value=stand_in)):
             if code:
                 with pytest.raises(ComputerRemovalRefused) as refused:
-                    await self._remove(["ws-a"], on=(stand_in, "ws-a"))
+                    await self._remove(["ws-a"], on=("ws-a",))
                 assert refused.value.code == code
                 self.wm.delete_workspace.assert_not_awaited()
             else:
-                await self._remove(["ws-a"], on=(stand_in, "ws-a"))
-                assert [
-                    (c.args, c.kwargs.get("stand_in", False))
-                    for c in self.wm.delete_workspace.await_args_list
-                ] == [((stand_in,), True), (("ws-a",), False)]
+                await self._remove(["ws-a"], on=("ws-a",))
+                assert [c.args for c in self.wm.delete_workspace.await_args_list] == [
+                    ("ws-a",)
+                ]
+                self.wm.remove_computer.assert_awaited_once()
+        assert self.listed.await_args.kwargs == {"exclude_stand_in": True}
 
 
 # ---------------------------------------------------------------------------

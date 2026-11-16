@@ -173,6 +173,7 @@ def _ctx(sandbox, base: str) -> R._Pass:
         sandbox=sandbox,
         user_id="user-1",
         workspace_id=WS,
+        scope_id=WS,
         report={},
         ws_rows={},
         user_rows={},
@@ -305,3 +306,158 @@ class TestLinkShared:
 
         assert ctx.stats.failures == 1
         assert ctx.stats.linked == 0
+
+
+class TestHomeStandIn:
+    """While Home's machine is away its turns run in a hidden stand-in folder.
+    The rows and the row lock follow Home, so a skill made there is not lost;
+    the folder's own state (restore flag, lock) stays on the stand-in's id."""
+
+    USER = "user-1"
+
+    @pytest.fixture
+    def ids(self):
+        from src.server.database.home_workspace import (
+            get_home_stand_in_id,
+            get_home_workspace_id,
+        )
+
+        return get_home_stand_in_id(self.USER), get_home_workspace_id(self.USER)
+
+    @pytest.fixture
+    def locks(self, monkeypatch):
+        taken: list[str] = []
+
+        class _Lock:
+            def __init__(self, ws):
+                self.ws = ws
+
+            async def __aenter__(self):
+                taken.append(self.ws)
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(R, "workspace_skill_sync_lock", _Lock)
+        return taken
+
+    @pytest.mark.asyncio
+    async def test_both_ids_are_locked_in_sorted_order(
+        self, sandbox, no_project, locks, ids, monkeypatch
+    ):
+        stand_in, home = ids
+        monkeypatch.setattr(R, "_resolve_layout", AsyncMock(return_value=object()))
+        monkeypatch.setattr(R, "_run_pass", AsyncMock(return_value="stats"))
+        sandbox.runtime = SimpleNamespace()
+
+        got = await R.reconcile_workspace_skills(
+            sandbox, user_id=self.USER, workspace_id=stand_in, source="test"
+        )
+
+        assert got == "stats"
+        assert locks == sorted({stand_in, home})
+        assert len(locks) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_normal_workspace_takes_one_lock(
+        self, sandbox, no_project, locks, monkeypatch
+    ):
+        monkeypatch.setattr(R, "_resolve_layout", AsyncMock(return_value=object()))
+        monkeypatch.setattr(R, "_run_pass", AsyncMock(return_value="stats"))
+        sandbox.runtime = SimpleNamespace()
+
+        await R.reconcile_workspace_skills(
+            sandbox, user_id=self.USER, workspace_id=WS, source="test"
+        )
+
+        assert locks == [WS]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stand_in", [True, False])
+    async def test_rows_follow_home_and_the_folder_stays_put(
+        self, monkeypatch, ids, stand_in
+    ):
+        folder = ids[0] if stand_in else WS
+        scope = ids[1] if stand_in else WS
+        listed: list = []
+        created: list = []
+        restore: list = []
+        linked: list = []
+
+        async def _rows(user_id, *, workspace_id=None):
+            listed.append(workspace_id)
+            return []
+
+        async def _create(user_id, name, **kw):
+            created.append(kw["workspace_id"])
+            return {"user_skill_id": "sk-new", "name": name}
+
+        async def _flag(workspace_id):
+            restore.append(workspace_id)
+            return False
+
+        async def _link(ctx):
+            linked.append((ctx.scope_id, ctx.workspace_id, sorted(ctx.ws_rows)))
+
+        async def _download(ctx, name):
+            return (
+                SimpleNamespace(
+                    command=None,
+                    description="d",
+                    license=None,
+                    frontmatter={},
+                    allowed_tools=[],
+                    content_hash="h",
+                    canonical_zip=b"z",
+                    file_count=1,
+                    skill_md="",
+                ),
+                "tree",
+            )
+
+        report = {
+            "fresh": {
+                "present": True,
+                "syncable": True,
+                "wellFormed": True,
+                "treeHash": "t",
+                "entry": None,
+            }
+        }
+        monkeypatch.setattr(
+            R.skill_sync, "report", AsyncMock(return_value=report)
+        )
+        monkeypatch.setattr(R.skill_sync, "apply_actions", AsyncMock(return_value=[]))
+        monkeypatch.setattr(R, "list_user_skills", _rows)
+        monkeypatch.setattr(R, "create_user_skill", _create)
+        monkeypatch.setattr(R, "files_restore_incomplete", _flag)
+        monkeypatch.setattr(R, "_link_shared", _link)
+        monkeypatch.setattr(R, "_download_validated", _download)
+        monkeypatch.setattr(R, "_store", AsyncMock(return_value=(None, b"z")))
+
+        await R._run_pass(
+            object(),
+            self.USER,
+            folder,
+            "test",
+            SimpleNamespace(skills=f"{ROOT}/acme-ab12/.agents/skills"),
+        )
+
+        assert listed == [scope, None]
+        assert created == [scope]
+        assert restore == [folder]
+        assert linked == [(scope, folder, ["fresh"])]
+
+    @pytest.mark.asyncio
+    async def test_disables_are_read_for_the_scope(
+        self, sandbox, linker, ids, monkeypatch
+    ):
+        stand_in, home = ids
+        read = AsyncMock(return_value=[])
+        monkeypatch.setattr(R, "list_workspace_skill_disables", read)
+        ctx = _ctx(sandbox, f"{ROOT}/acme-ab12/.agents/skills")
+        ctx.workspace_id, ctx.scope_id = stand_in, home
+
+        await R._link_shared(ctx)
+
+        read.assert_awaited_once_with(home)

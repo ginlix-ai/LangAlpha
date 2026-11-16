@@ -43,6 +43,7 @@ from ptc_agent.core.sandbox.livefs_runtime.protocol import (
 )
 from src.observability.private_errors import failure
 from src.server.database import workspace as workspace_db
+from src.server.database.home_workspace import acting_for
 from src.server.database.workspace_folders import is_top_level
 from src.server.services import transcripts
 from src.server.services.livefs.history import IndexRoute, TranscriptRoute
@@ -319,7 +320,11 @@ class LivefsTree:
     def _at(self, point: MountPoint, scope: _Scope, rest: tuple[str, ...]) -> _Dir | _Routed:
         path = scope.layout.join(point.target, *rest)
         if point.history is not None:
-            route = point.history(self._identity.computer_id, scope.workspace_id, scope.layout)
+            route = point.history(
+                self._identity.computer_id,
+                acting_for(self._identity.user_id, scope.workspace_id),
+                scope.layout,
+            )
             return _Routed(route, path)
         if point.tiers and not rest:
             tiers = tuple(

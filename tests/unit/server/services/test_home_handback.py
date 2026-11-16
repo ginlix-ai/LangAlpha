@@ -343,51 +343,132 @@ async def test_files_left_on_the_cloud_are_named_once():
     assert again is None and nothing is None
 
 
-@pytest.mark.asyncio
-async def test_a_computer_holding_owed_stand_in_files_is_kept():
-    from src.server.services.computer_errors import Retirement
+def _stand_in(*, owed=False, left=False):
+    from src.server.database.home_stand_in import StandIn
+
+    return StandIn(
+        row={}, computer=_RETIRING, kept=True, runs=True, owed=owed, left=left
+    )
+
+
+_RETIRING = {
+    **CLOUD,
+    "user_id": USER,
+    "is_primary": False,
+    "status": "running",
+    "spec_change": None,
+    "config": {"retire_when_empty": True},
+}
+_R = "src.server.services.computer_manager._retirement"
+
+
+@pytest.fixture
+def retiring():
+    """A cloud computer with no workspace of the user's on it, Home's stand-in
+    on it as each read of it (``stand_in_on``) finds it in turn."""
     from src.server.services.computer_manager._retirement import RetirementMixin
 
-    cloud = {**CLOUD, "user_id": USER, "is_primary": False}
-    with (
-        patch(
-            "src.server.services.computer_manager._retirement.get_live_workspace_ids_for_computer",
-            AsyncMock(return_value=[]),
-        ),
-        patch(
-            "src.server.database.computer.get_computer_for_workspace",
-            AsyncMock(return_value=cloud),
-        ),
-        patch(
-            "src.server.database.home_away.handback_owed",
-            AsyncMock(side_effect=[True, False]),
-        ),
-    ):
-        owed = await RetirementMixin._why_machine_is_kept("cloud-1", cloud)
-        handed_back = await RetirementMixin._why_machine_is_kept("cloud-1", cloud)
+    state = {"reads": [], "held": True, "holding": [], "torn_down": []}
 
-    assert owed is Retirement.HANDBACK_OWED
-    assert handed_back is None
+    class Manager(RetirementMixin):
+        @asynccontextmanager
+        async def _machine_decision_lock(self, computer_id):
+            yield True
+
+        def _binding_from_computer(self, workspace_id, claimed):
+            return claimed
+
+        async def _teardown_machine(self, binding):
+            state["torn_down"].append(list(state["holding"]))
+
+    @asynccontextmanager
+    async def stand_in_held(user_id):
+        state["holding"].append(user_id)
+        try:
+            yield state["held"]
+        finally:
+            state["holding"].remove(user_id)
+
+    async def update_status(computer_id, status, **_):
+        return {**_RETIRING, "status": status}
+
+    with (
+        patch(f"{_R}.get_computer", AsyncMock(return_value=_RETIRING)),
+        patch(f"{_R}.mark_computer_retirement_pending", AsyncMock(return_value=True)),
+        patch(f"{_R}.clear_computer_retirement_pending", AsyncMock()) as cleared,
+        patch(f"{_R}.update_computer_status", side_effect=update_status),
+        patch(f"{_R}.get_live_workspace_ids_for_computer", AsyncMock(return_value=[])),
+        patch(f"{_R}.stand_in_on", AsyncMock(side_effect=lambda c: state["reads"].pop(0))),
+        patch(f"{_R}.stand_in_held", stand_in_held),
+    ):
+        state.update(manager=Manager(), cleared=cleared)
+        yield state
+
+
+async def _decide(state, **kwargs):
+    async with state["manager"]._retirement_decision("cloud-1", **kwargs) as (outcome, _):
+        return outcome
 
 
 @pytest.mark.asyncio
-async def test_files_a_hand_back_left_keep_their_computer_from_retiring_itself():
-    from src.server.services.computer_manager._retirement import handback_left_on
+async def test_owed_stand_in_files_keep_their_computer_and_its_marker(retiring):
+    from src.server.services.computer_errors import Retirement
 
-    cloud = {**CLOUD, "user_id": USER}
-    gave_up = {"last_handback": {"failed": True}}
-    with (
-        patch(
-            "src.server.database.computer.get_computer_for_workspace",
-            AsyncMock(return_value=cloud),
-        ),
-        patch(
-            "src.server.database.home_away.get_home_away",
-            AsyncMock(side_effect=[gave_up, {"last_handback": {"folder": "x"}}]),
-        ),
-    ):
-        assert await handback_left_on(cloud) is True
-        assert await handback_left_on(cloud) is False
+    retiring["reads"] = [_stand_in(), _stand_in(owed=True)]
+
+    assert await _decide(retiring, sweep=True) is Retirement.HANDBACK_OWED
+    assert retiring["torn_down"] == []
+    # The sweep retires it once they are in Home.
+    retiring["cleared"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_admitted_before_the_hold_keeps_the_owners_remove_off(retiring):
+    """Read again under the hold: a Home turn admitted after the first read
+    marked Home owed, so the remove is refused rather than taking the files."""
+    from src.server.services.computer_errors import Retirement
+
+    retiring["reads"] = [_stand_in(), _stand_in(owed=True)]
+
+    assert await _decide(retiring, owner_request=True) is Retirement.HANDBACK_OWED
+    assert retiring["torn_down"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_turn_being_admitted_keeps_the_stand_ins_computer(retiring):
+    from src.server.services.computer_errors import Retirement
+
+    retiring["reads"] = [_stand_in()]
+    retiring["held"] = False
+
+    assert await _decide(retiring, owner_request=True) is Retirement.BUSY
+    assert retiring["torn_down"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_stand_in_alone_goes_with_its_computer_under_the_hold(retiring):
+    from src.server.services.computer_errors import Retirement
+
+    retiring["reads"] = [_stand_in(), _stand_in()]
+
+    assert await _decide(retiring, owner_request=True) is Retirement.RETIRED
+    # No Home turn could be admitted onto it through the teardown.
+    assert retiring["torn_down"] == [[USER]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ask", "outcome"),
+    [({"sweep": True}, "handback_left"), ({"owner_request": True}, "retired")],
+    ids=["sweep", "owner"],
+)
+async def test_files_a_hand_back_left_keep_their_computer_from_retiring_itself(
+    retiring, ask, outcome
+):
+    """Not in Home, so only their owner's remove, told so, takes them."""
+    retiring["reads"] = [_stand_in(left=True), _stand_in(left=True)]
+
+    assert await _decide(retiring, **ask) == outcome
 
 
 @pytest.mark.asyncio

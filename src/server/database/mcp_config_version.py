@@ -14,7 +14,7 @@ async def bump_workspace_version(cur, workspace_id: str) -> None:
     """Atomically increment a workspace's mcp_config_version (same txn).
 
     A change to Home's selection bumps Home's stand-in too, which runs with
-    Home's selection (``home_workspace.selection_scope``)."""
+    Home's selection (``home_workspace.acting_for``)."""
     from src.server.database.home_workspace import (
         get_home_stand_in_id,
         get_home_workspace_id,

@@ -303,15 +303,27 @@ class ComputerHistory:
     """``HistoryFiles`` for a computer the mount never serves, over the
     workspace folders it held when the turn started."""
 
-    def __init__(self, computer_id: str, folders: Sequence[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        computer_id: str,
+        folders: Sequence[tuple[str, str]],
+        *,
+        user_id: str | None = None,
+    ) -> None:
         self._computer_id = computer_id
         self._folders = tuple(folders)
+        self._user_id = user_id
 
     def routes(self, sandbox: Any) -> list[Any]:
+        from src.server.database.home_workspace import acting_for
+
         root = sandbox.computer_root.rstrip("/")
         machine = SandboxLayout.for_root(root)
+        # Home's stand-in serves Home's transcripts, as the mount's tree does.
         routes: list[Any] = [
-            TranscriptFiles(workspace_id, machine.for_workspace(folder))
+            TranscriptFiles(
+                acting_for(self._user_id, workspace_id), machine.for_workspace(folder)
+            )
             for workspace_id, folder in self._folders
         ]
         routes.append(IndexFile(self._computer_id, root))
@@ -339,4 +351,6 @@ async def computer_history(computer_id: str) -> ComputerHistory:
             for row in rows
             if row.get("dir_name") and "/" not in row["dir_name"]
         ],
+        # One user's computer; any row names them.
+        user_id=next((str(row["user_id"]) for row in rows), None),
     )

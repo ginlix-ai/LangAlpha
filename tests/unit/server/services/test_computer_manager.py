@@ -4805,22 +4805,12 @@ async def test_overlay_repair_does_not_hide_a_layout_failure():
 
 
 @pytest.fixture(autouse=True)
-def _no_handback_owed():
-    """No stand-in files are owed to Home or left by a hand-back here; the
-    cases that keep a computer for them are pinned in test_home_handback."""
-    with (
-        patch(
-            "src.server.services.computer_manager._retirement.handback_owed_on",
-            AsyncMock(return_value=False),
-        ),
-        patch(
-            "src.server.services.computer_manager._retirement.handback_left_on",
-            AsyncMock(return_value=False),
-        ),
-        patch(
-            "src.server.services.computer_manager._retirement._stand_in_on",
-            AsyncMock(return_value=False),
-        ),
+def _no_stand_in():
+    """Home's stand-in is on no computer here; the cases it keeps a computer
+    for are pinned in test_home_handback."""
+    with patch(
+        "src.server.services.computer_manager._retirement.stand_in_on",
+        AsyncMock(return_value=None),
     ):
         yield
 

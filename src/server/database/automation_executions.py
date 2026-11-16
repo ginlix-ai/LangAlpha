@@ -14,7 +14,7 @@ from src.server.database.automation import (
     not_a_server_skip,
 )
 from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
-from src.server.database.computer import home_stand_in_could_run_sql
+from src.server.database.home_stand_in import home_stand_in_could_run_sql
 from src.server.database.pool import get_db_connection
 from src.server.database.ssh_tunnels import awaited_computer_back_sql
 from src.server.models.automation import WaitReason
@@ -559,7 +559,7 @@ _REACHABLE = awaited_computer_back_sql(
     "(SELECT m.workspace_id FROM automations m WHERE m.automation_id = e.automation_id)",
 )
 # A firing of the user's Home, which a turn in Home's stand-in can run now
-# though the machine Home lives on is still away. Binds ``stand_in_kinds``.
+# though the machine Home lives on is still away.
 _STAND_IN = f"""EXISTS (
     SELECT 1 FROM automations m
     JOIN workspaces ws ON ws.workspace_id = m.workspace_id
@@ -604,16 +604,14 @@ async def park_execution(
             return cur.rowcount == 1
 
 
-async def list_parked_executions(
-    *, stand_in_kinds: Sequence[str], limit: int = 50
-) -> List[Dict[str, Any]]:
+async def list_parked_executions(limit: int = 50) -> List[Dict[str, Any]]:
     """Firings parked for a computer that the sweep has something to do with,
     soonest deadline first, with their owner, the automation's status when
     each parked, and the sweep's verdict on each: ``superseded`` by a later firing,
     ``reachable`` (its computer's tunnel is live, it names none, or its
     workspace is on another computer now), ``stand_in`` (a firing of Home,
-    which Home's stand-in can run now on a computer of ``stand_in_kinds``)
-    or ``expired`` (past its ``awaits_until``).
+    which Home's stand-in can run now) or ``expired`` (past its
+    ``awaits_until``).
 
     Rows with none of those are left out before the limit: a page of
     machines asleep for the night must not starve one that is back.
@@ -633,19 +631,17 @@ async def list_parked_executions(
                   AND ({_SUPERSEDED} OR {_REACHABLE} OR {_STAND_IN} OR {_EXPIRED})
                 ORDER BY e.awaits_until NULLS LAST
                 LIMIT %(limit)s
-            """, {"limit": limit, "stand_in_kinds": list(stand_in_kinds)})
+            """, {"limit": limit})
             return [dict(row) for row in await cur.fetchall()]
 
 
-async def release_parked_execution(
-    execution_id: str, *, stand_in_kinds: Sequence[str]
-) -> bool:
+async def release_parked_execution(execution_id: str) -> bool:
     """Put a parked firing back in line as ``pending`` for the ordinary start,
     once its computer is reachable, its workspace is on another one now, or
-    it is Home's and Home's stand-in can run it on a computer of
-    ``stand_in_kinds``; False when another worker took it, it moved on, a
-    later firing took its wait over, its deadline passed since the sweep read
-    it (the next sweep skips it), or none of those holds any more.
+    it is Home's and Home's stand-in can run it; False when another worker
+    took it, it moved on, a later firing took its wait over, its deadline
+    passed since the sweep read it (the next sweep skips it), or none of
+    those holds any more.
 
     One guarded statement, so of the workers whose sweeps reach the row
     exactly one starts it. The heartbeat starts again with it, and the thread
@@ -663,10 +659,7 @@ async def release_parked_execution(
                   AND NOT {_SUPERSEDED}
                   AND NOT COALESCE({_EXPIRED}, false)
                   AND ({_REACHABLE} OR {_STAND_IN})
-            """, {
-                "execution_id": execution_id,
-                "stand_in_kinds": list(stand_in_kinds),
-            })
+            """, {"execution_id": execution_id})
             return cur.rowcount == 1
 
 

@@ -60,7 +60,7 @@ def test_the_stand_in_has_a_fixed_id_of_its_own():
         get_home_workspace_id,
         is_home_id,
         is_home_stand_in_id,
-        selection_scope,
+        acting_for,
     )
 
     stand_in = get_home_stand_in_id("user-1")
@@ -69,5 +69,5 @@ def test_the_stand_in_has_a_fixed_id_of_its_own():
     assert is_home_stand_in_id("user-1", stand_in.upper())
     # Never Home itself: callers that mean it name it.
     assert not is_home_id("user-1", stand_in)
-    assert selection_scope("user-1", stand_in) == get_home_workspace_id("user-1")
-    assert selection_scope("user-1", "ws-a") == "ws-a"
+    assert acting_for("user-1", stand_in) == get_home_workspace_id("user-1")
+    assert acting_for("user-1", "ws-a") == "ws-a"
