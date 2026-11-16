@@ -30,8 +30,6 @@ from typing import (
     Optional,
 )
 
-from psycopg.rows import dict_row
-
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
 from ptc_agent.core.sandbox.providers._ssh_authorized_key import authorized_key_line
@@ -48,10 +46,9 @@ from src.server.database.ssh_keys import (
     get_user_ssh_public_key,
     insert_user_ssh_key,
 )
-from src.server.database.pool import get_db_connection
 from src.server.database.ssh_tunnels import (
-    _GATEWAY_SETTLED,
     computer_tunnel_down,
+    gateway_settled,
     get_tunnels,
     get_user_tunnel,
     renew_tunnel,
@@ -864,10 +861,7 @@ async def _tunnels_with_gone(
     tunnels = await get_tunnels(tunnel_ids, conn=conn)
     gone = tunnel_ids - tunnels.keys()
     if gone:
-        async with get_db_connection(conn) as db:
-            async with db.cursor(row_factory=dict_row) as cur:
-                await cur.execute(f"SELECT {_GATEWAY_SETTLED} AS settled")
-                settled = (await cur.fetchone())["settled"]
+        settled = await gateway_settled(conn=conn)
         state: TunnelState = "down" if settled else "unsettled"
         tunnels.update({tunnel_id: {"state": state} for tunnel_id in gone})
     return tunnels
@@ -914,9 +908,14 @@ def ssh_info(
     connected = None
     paired_elsewhere = False
     if tunnel_id and tunnels is not None:
-        state: TunnelState = (tunnels.get(tunnel_id) or {}).get("state", "down")
-        # Not known while the gateway is not settled, as it is not down then.
-        connected = None if state == "unsettled" else state == "live"
+        row = tunnels.get(tunnel_id) or {}
+        state: TunnelState = row.get("state", "down")
+        # A machine last seen connected shows so; one not seen is not known
+        # while the gateway is not settled, as it is not down then.
+        if state == "live" or row.get("live"):
+            connected = True
+        elif state != "unsettled":
+            connected = False
         paired_elsewhere = state == "paired_elsewhere"
     return ComputerSSHInfo(
         host=config.get("host") or "",

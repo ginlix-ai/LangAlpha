@@ -309,11 +309,13 @@ async def list_executions(
     automation_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     status: Optional[str] = None,
+    wait_reason: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[List[Dict[str, Any]], bool]:
     """A page of a user's executions newest first, narrowed to one
-    automation, thread or status when given, and whether more follow it.
+    automation, thread, status or wait reason when given, and whether more
+    follow it.
 
     Every row is scoped by its automation's owner, which is the ownership
     check: another user's automation lists nothing. ``workspace_id`` prefers
@@ -328,6 +330,9 @@ async def list_executions(
         ("e.automation_id", automation_id),
         ("e.conversation_thread_id", thread_id),
         ("e.status", status),
+        # A wait from before reasons were kept has none, and was for a thread.
+        ("COALESCE(e.wait_reason, CASE WHEN e.status = 'waiting'"
+         " THEN 'thread_busy' END)", wait_reason),
     ):
         if value:
             where_parts.append(f"{column} = %s")

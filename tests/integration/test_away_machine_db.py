@@ -272,6 +272,27 @@ async def test_the_steer_safety_net_leaves_a_steer_parked_for_its_computer(
     assert job in {str(r["hook_outbox_id"]) for r in claimed}
 
 
+async def test_a_machine_gone_a_week_leaves_a_job_whose_workspace_moved_to_the_release(
+    machine, test_db_pool
+):
+    """A workspace moved to a computer that can be reached between the
+    release sweep and the close: its report-back is still owed there, so the
+    close leaves it for the release rather than closing it undelivered."""
+    from src.server.database.computer import create_computer
+
+    await machine.seen(timedelta(days=8))
+    report = await _parked(test_db_pool, machine, "task_report_back")
+    other = await create_computer(machine.user_id, name="cloud", status="running")
+    await _bind(test_db_pool, machine.workspace_id, str(other["computer_id"]))
+    try:
+        closed = await ob.close_for_lost_computers()
+
+        assert report not in {str(r["hook_outbox_id"]) for r in closed}
+        assert (await _job(test_db_pool, report))["status"] == "pending"
+    finally:
+        await _bind(test_db_pool, machine.workspace_id, None)
+
+
 async def test_a_job_whose_workspace_moved_off_its_computer_is_released(
     machine, test_db_pool
 ):
@@ -345,7 +366,8 @@ async def test_an_analysts_report_back_waits_on_the_thread_it_reports_to(
             await conn.execute("DELETE FROM workspaces WHERE workspace_id = %s", (analyst_id,))
 
 
-async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(machine):
+async def _handed_off(machine) -> str:
+    """A command handed off on the machine's computer; its id."""
     command_id = "bg-" + uuid.uuid4().hex[:12]
     await cr.record_handoff(
         command_id=command_id,
@@ -365,6 +387,34 @@ async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(ma
         },
         started_at=datetime.now(timezone.utc),
     )
+    return command_id
+
+
+async def test_a_command_handed_off_clears_the_away_its_computers_others_kept(
+    machine, test_db_pool
+):
+    """The machine came back long enough to launch a command, unseen by the
+    watcher: its older command's week-old away mark would make the next
+    outage give up on both at once. The launch is a read of the machine."""
+    older = await _handed_off(machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE command_runs SET away_since = NOW() - INTERVAL '8 days'"
+            " WHERE command_id = %s",
+            (older,),
+        )
+
+    await _handed_off(machine)
+
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT away_since FROM command_runs WHERE command_id = %s", (older,)
+        )
+        assert (await cur.fetchone())["away_since"] is None
+
+
+async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(machine):
+    command_id = await _handed_off(machine)
 
     async def look(schedule) -> dict:
         (row,) = [r for r in await cr.claim_due(limit=500, interval_s=0) if r["command_id"] == command_id]
@@ -378,6 +428,54 @@ async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(ma
     assert again["away_since"] == first["away_since"]
     read = await look(cr.schedule_next_check)
     assert read["away_since"] is None
+
+
+async def test_a_read_clears_the_away_of_its_computers_commands_not_due(machine, test_db_pool):
+    """A command not claimed on the pass whose read answered still had its
+    stamp, and the machine's next absence counted from the old one."""
+    read_id = await _handed_off(machine)
+    idle_id = await _handed_off(machine)
+    due = {r["command_id"]: r for r in await cr.claim_due(limit=500, interval_s=0)}
+    await cr.schedule_away_check(
+        [(c, due[c]["next_check_at"]) for c in (read_id, idle_id)], 3600
+    )
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE command_runs SET next_check_at = NOW() - interval '1 second'"
+            " WHERE command_id = %s RETURNING next_check_at",
+            (read_id,),
+        )
+        lease = (await cur.fetchone())["next_check_at"]
+    await cr.schedule_next_check([(read_id, lease)], 0)
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT command_id, away_since FROM command_runs WHERE command_id = ANY(%s)",
+            ([read_id, idle_id],),
+        )
+        stamps = {r["command_id"]: r["away_since"] for r in await cur.fetchall()}
+    assert stamps == {read_id: None, idle_id: None}
+
+
+async def test_a_read_whose_lease_was_taken_over_leaves_its_takers_away(
+    machine, test_db_pool
+):
+    """A worker that read the machine, then lost its lease to one that found
+    the machine away, cleared the newer stamp with its older read."""
+    read_id = await _handed_off(machine)
+    idle_id = await _handed_off(machine)
+    due = {r["command_id"]: r for r in await cr.claim_due(limit=500, interval_s=0)}
+    stale = due[read_id]["next_check_at"]
+    await cr.schedule_away_check(
+        [(c, due[c]["next_check_at"]) for c in (read_id, idle_id)], 3600
+    )
+    await cr.schedule_next_check([(read_id, stale)], 0)
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT command_id, away_since FROM command_runs WHERE command_id = ANY(%s)",
+            ([read_id, idle_id],),
+        )
+        stamps = {r["command_id"]: r["away_since"] for r in await cur.fetchall()}
+    assert stamps[read_id] is not None and stamps[idle_id] is not None
 
 
 async def _automation(machine, name: str = "Brief") -> str:
@@ -632,6 +730,55 @@ async def test_a_firing_parked_again_keeps_the_deadline_its_first_park_set(
     assert (await _parked_verdict(execution_id))["expired"] is True
 
 
+async def test_a_parked_firing_past_its_deadline_is_not_released(machine, test_db_pool):
+    """A deadline that passed after the sweep read the row: the release
+    misses, and the firing stays parked for the next sweep to skip."""
+    automation_id = await _automation(machine)
+    execution_id = await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
+    )
+    assert await ex.park_execution(
+        execution_id, awaits_computer=machine.computer_id, parked_status="active",
+        wait_seconds=60 * 60,
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+        await conn.execute(
+            "UPDATE automation_executions SET awaits_until = NOW() - interval '1 second'"
+            " WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+    assert await ex.release_parked_execution(execution_id) is False
+    verdict = await _parked_verdict(execution_id)
+    assert (verdict["expired"], verdict["reachable"]) == (True, True)
+
+
+async def test_a_keep_alive_touch_leaves_a_parked_firings_heartbeat(machine, test_db_pool):
+    """A touch the firing's keep-alive sent as it parked lands after the park
+    and must not date the heartbeat back to now, where a build that predates
+    parking would take the row for abandoned."""
+    automation_id = await _automation(machine)
+    execution_id = await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
+    )
+    assert await ex.park_execution(
+        execution_id, awaits_computer=machine.computer_id, parked_status="active",
+        wait_seconds=60 * 60,
+    )
+    await ex.touch_execution(execution_id)
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT heartbeat_at, awaits_until FROM automation_executions"
+            " WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+        row = await cur.fetchone()
+    assert row["heartbeat_at"] == row["awaits_until"]
+
+
 async def test_a_firing_that_moved_on_is_not_parked(machine, test_db_pool):
     automation_id = await _automation(machine)
     execution_id = await ex.create_execution(
@@ -647,6 +794,22 @@ async def test_a_firing_that_moved_on_is_not_parked(machine, test_db_pool):
         execution_id, awaits_computer=machine.computer_id, parked_status="active",
         wait_seconds=60,
     )
+
+
+async def test_a_tunnel_seen_live_reads_unsettled_while_a_new_gateway_settles(machine, test_db_pool):
+    """A dial this gateway cannot open while it settles is its own start, even
+    to a machine the row still shows connected, never the machine away."""
+    tunnel_id = await _tunnel_id(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE tunnel_id = %s",
+            (tunnel_id,),
+        )
+    await _gateway(test_db_pool, started=timedelta(minutes=1), seen=timedelta(seconds=1))
+
+    tunnel = await tunnels_db.get_tunnel(tunnel_id)
+    assert (tunnel["live"], tunnel["state"]) == (True, "unsettled")
+    assert await tunnels_db.gateway_settled() is False
 
 
 async def test_a_rollback_hands_parked_firings_to_the_previous_builds_sweep(
@@ -684,3 +847,89 @@ async def test_a_rollback_hands_parked_firings_to_the_previous_builds_sweep(
         due = {row["id"]: row["due"] for row in await cur.fetchall()}
 
     assert due == {parked_id: True, other_id: False}
+
+
+async def test_the_parked_sweeps_skip_spares_a_firing_released_and_waiting_since(
+    machine, test_db_pool
+):
+    """The sweep reads a firing as expired, then another worker releases it
+    and its start waits for a busy thread. The sweep's skip, settled from
+    its earlier read, finds it no longer parked and leaves it."""
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET wait_reason = 'thread_busy'"
+            " WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+
+    def skip(parked: bool):
+        return ex.settle_execution(
+            execution_id, automation_id=automation_id, from_statuses=("waiting",),
+            to="skipped", parked=parked, skip_reason="computer_unreachable",
+        )
+
+    assert await skip(parked=True) is None
+    assert await skip(parked=False) is not None
+
+
+async def test_a_wait_from_before_reasons_were_kept_lists_as_a_thread_wait(
+    machine, test_db_pool
+):
+    """A firing already waiting for its thread when the reason column came
+    has none, and still shows among the thread's waits, apart from one
+    waiting for its computer."""
+    _, computer_wait = await _parked_firing(test_db_pool, machine)
+    legacy = await ex.create_execution(
+        automation_id=await _automation(machine, "Legacy"),
+        scheduled_at=datetime.now(timezone.utc), server_id="test",
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET status = 'waiting', wait_reason = NULL,"
+            " conversation_thread_id = %s WHERE automation_execution_id = %s",
+            (machine.thread_id, legacy),
+        )
+
+    rows, _ = await ex.list_executions(
+        machine.user_id, thread_id=machine.thread_id, status="waiting",
+        wait_reason="thread_busy",
+    )
+
+    listed = {str(r["automation_execution_id"]) for r in rows}
+    assert legacy in listed
+    assert computer_wait not in listed
+
+
+async def test_a_tunnel_its_machine_was_paired_again_past_is_not_down(machine, test_db_pool):
+    """The machine answers on its new pairing, not this tunnel: nothing waits
+    for it, and a dial says to reconnect rather than that it is asleep."""
+    tunnel_id = await _tunnel_id(test_db_pool, machine)
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is True
+
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET superseded_at = NOW() WHERE tunnel_id = %s", (tunnel_id,)
+        )
+
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+
+
+async def test_a_parked_firing_stays_parked_while_a_new_gateway_settles(
+    machine, test_db_pool
+):
+    """A tunnel a previous gateway saw live is not known to be up on a new
+    one: a firing let go then would dial a machine that may still be asleep
+    and be skipped for it."""
+    _, execution_id = await _parked_firing(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+    await _gateway(test_db_pool, started=timedelta(minutes=1), seen=timedelta(seconds=1))
+
+    assert await ex.release_parked_execution(execution_id) is False
+
+    await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(seconds=1))
+    assert await ex.release_parked_execution(execution_id) is True

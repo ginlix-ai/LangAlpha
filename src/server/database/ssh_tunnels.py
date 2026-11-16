@@ -70,16 +70,25 @@ _GATEWAY_SETTLED = (
     f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
     f" AND g.started_at <= NOW() - {_WITHIN_LIVE})"
 )
-# A row's ``state``: live, superseded, not judged while the gateway is not
-# settled, else down. ``live`` stays a column of its own for the take-off
-# sweep.
+# A gateway beating but not settled: it has just started, and its machines
+# are still connecting back to it.
+_GATEWAY_STARTING = (
+    "EXISTS (SELECT 1 FROM ssh_gateway_state g"
+    f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
+    f" AND g.started_at > NOW() - {_WITHIN_LIVE})"
+)
+# A row's ``state``: superseded, then not judged while the gateway is not
+# settled (a row a previous gateway saw live is not live on this one yet, so a
+# dial to it fails as this gateway's start), then live, else down. ``live``
+# stays a column of its own: whether the machine was last seen connected,
+# settled or not.
 _COLUMNS = (
     "tunnel_id::text AS tunnel_id, user_id, public_key, fingerprint, hostname, "
     "username, host_key, port, created_at, paired_at, "
     f"connected_at, disconnected_at, seen_at, {_LIVE} AS live, "
-    f"CASE WHEN {_LIVE} THEN 'live' "
-    f"WHEN {_PAIRED_ELSEWHERE} THEN 'paired_elsewhere' "
-    f"WHEN NOT {_GATEWAY_SETTLED} THEN 'unsettled' ELSE 'down' END AS state"
+    f"CASE WHEN {_PAIRED_ELSEWHERE} THEN 'paired_elsewhere' "
+    f"WHEN NOT {_GATEWAY_SETTLED} THEN 'unsettled' "
+    f"WHEN {_LIVE} THEN 'live' ELSE 'down' END AS state"
 )
 
 # No computer that is not deleted names the tunnel ``t``, whoever owns it: a
@@ -96,29 +105,59 @@ _NOT_TAKING_OFF = (
 )
 
 
-def _tunnel_judged_sql(computer_id: str, tunnel_ok: str) -> str:
-    """SQL true while the gateway is settled and the computer ``computer_id``
-    (an SQL text expression) connects out through a tunnel with no row that
-    ``tunnel_ok`` holds for. A computer reached directly or deleted never
-    matches, nor does any while the gateway is not settled
-    (``_GATEWAY_SETTLED``): its dials then fail as the gateway's outage."""
-    return f"""({_GATEWAY_SETTLED} AND EXISTS (
+def _tunneled_sql(computer_id: str, tunnel_rows: str = "TRUE") -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    is not deleted and connects out through a tunnel, and ``tunnel_rows``
+    (SQL over its ``computers c`` row) holds. A computer reached directly or
+    deleted never matches."""
+    return f"""EXISTS (
         SELECT 1 FROM computers c
         WHERE c.computer_id = ({computer_id})::uuid
           AND c.kind = 'ssh' AND c.{FENCE_NOT_DELETED}
           AND COALESCE(c.provider_config->>'tunnel', '') <> ''
-          AND NOT EXISTS (
+          AND {tunnel_rows})"""
+
+
+def _no_tunnel_row_sql(tunnel_ok: str) -> str:
+    """SQL over a ``computers c`` row: no row of its tunnel that ``tunnel_ok``
+    holds for."""
+    return f"""NOT EXISTS (
               SELECT 1 FROM ssh_tunnels
               WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
-                AND {tunnel_ok})))"""
+                AND {tunnel_ok})"""
+
+
+def _tunnel_judged_sql(computer_id: str, tunnel_ok: str) -> str:
+    """SQL true while the gateway is settled and the computer ``computer_id``
+    (an SQL text expression) connects out through a tunnel with no row that
+    ``tunnel_ok`` holds for. None matches while the gateway is not settled
+    (``_GATEWAY_SETTLED``): its dials then fail as the gateway's outage."""
+    return f"({_GATEWAY_SETTLED} AND {_tunneled_sql(computer_id, _no_tunnel_row_sql(tunnel_ok))})"
+
+
+# Not down: live, or superseded by a newer pairing of its machine, which is
+# not a machine that will answer later but one its owner must reconnect, so
+# a dial says that rather than work waiting for it.
+_NOT_DOWN = f"({_LIVE} OR {_PAIRED_ELSEWHERE})"
 
 
 def computer_tunnel_down_sql(computer_id: str) -> str:
     """SQL true while the computer ``computer_id`` (an SQL text expression)
     connects out through a tunnel that is not live, for a statement every
     worker may run, and the one judgment of it (:func:`computer_tunnel_down`
-    evaluates it alone)."""
-    return _tunnel_judged_sql(computer_id, _LIVE)
+    evaluates it alone). A tunnel its machine was paired again past is not
+    down (``_NOT_DOWN``)."""
+    return _tunnel_judged_sql(computer_id, _NOT_DOWN)
+
+
+async def gateway_settled(*, conn=None) -> bool:
+    """Whether the gateway has run long enough to judge its tunnels
+    (``_GATEWAY_SETTLED``), on ``conn`` where a caller passes one."""
+    async with get_db_connection(conn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"SELECT {_GATEWAY_SETTLED} AS settled")
+            row = await cur.fetchone()
+            return bool(row and row["settled"])
 
 
 async def computer_tunnel_down(computer_id: str, *, conn=None) -> bool:
@@ -148,12 +187,18 @@ def computer_tunnel_lost_sql(computer_id: str) -> str:
 
 def awaited_computer_back_sql(awaits: str, workspace_id: str) -> str:
     """SQL true once work waiting for the computer ``awaits`` (an SQL text
-    expression) may look again: its tunnel is not down, or the workspace
-    ``workspace_id`` (an SQL expression) its turn runs in is on another
-    computer now (moved, or its computer removed). Its start then looks at
-    the computer it is on now, and waits again naming that one if it is away
-    too."""
-    return f"""(NOT {computer_tunnel_down_sql(awaits)} OR EXISTS (
+    expression) may look again: it no longer connects through a tunnel, its
+    tunnel is not down, or the workspace ``workspace_id`` (an SQL
+    expression) its turn runs in is on another computer now (moved, or its
+    computer removed). Its start then looks at the computer it is on now,
+    and waits again naming that one if it is away too. Not while a gateway
+    that just started settles: its machines are still connecting back, and
+    work let go would dial one that may be asleep and be skipped for it. A
+    gateway that stopped beating judges no tunnel down, so work is let go
+    and fails as the service's outage."""
+    return f"""(NOT {_tunneled_sql(awaits)}
+        OR (NOT {_GATEWAY_STARTING} AND NOT {computer_tunnel_down_sql(awaits)})
+        OR EXISTS (
         SELECT 1 FROM workspaces ws
         WHERE ws.workspace_id = ({workspace_id})
           AND ws.computer_id IS NOT NULL

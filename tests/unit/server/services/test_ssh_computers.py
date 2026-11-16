@@ -365,32 +365,15 @@ async def test_a_tunnel_no_longer_there_is_down_only_once_the_gateway_settled(
 ):
     """As the shared down predicate judges it: a gateway still taking its
     machines back has not found any of them gone."""
-    from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
 
     import src.server.services.ssh_computers as module
-
-    class _Cursor:
-        async def execute(self, sql):
-            assert "ssh_gateway_state" in sql
-
-        async def fetchone(self):
-            return {"settled": settled}
-
-    class _Conn:
-        @asynccontextmanager
-        async def cursor(self, row_factory=None):
-            yield _Cursor()
-
-    @asynccontextmanager
-    async def connection(conn=None):
-        yield _Conn()
 
     tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
     computer = _ssh("/Users/alex/langalpha", host="mac")
     computer["provider_config"]["tunnel"] = tunnel_id
     monkeypatch.setattr(module, "get_tunnels", AsyncMock(return_value={}))
-    monkeypatch.setattr(module, "get_db_connection", connection)
+    monkeypatch.setattr(module, "gateway_settled", AsyncMock(return_value=settled))
 
     tunnels = await module.tunnels_for("user-1", [computer])
 
