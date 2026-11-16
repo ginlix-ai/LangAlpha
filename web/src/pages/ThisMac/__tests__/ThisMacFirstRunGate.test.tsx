@@ -2,7 +2,8 @@
  * The desktop app's first run: asked only in the desktop app on a Mac that
  * can pair itself, once per account and Mac, while no computer is this Mac,
  * and nothing under it (Home's warm-up among it) runs until it has its
- * answer. "Work on this Mac" adds the Mac, says plainly that refusing backup
+ * answer. Whether this Mac was asked is all the gate reads, so a launch after
+ * that holds on nothing. "Work on this Mac" adds the Mac, says plainly that refusing backup
  * keeps it from being primary, and moves Home to it from a cloud computer or
  * another machine once the Mac's first start is through.
  */
@@ -28,7 +29,6 @@ vi.mock('@/lib/desktop', async (importOriginal) => ({
 }));
 
 const choice = vi.hoisted(() => ({
-  getComputerChoice: vi.fn(async () => ({ choice: null as string | null })),
   setComputerChoice: vi.fn(async (value: string) => ({ choice: value })),
 }));
 vi.mock('@/api/computerChoice', () => choice);
@@ -149,7 +149,6 @@ beforeEach(() => {
   shell.status.fingerprint = null;
   pairing.filesBackup = true;
   api.computers = [];
-  choice.getComputerChoice.mockImplementation(async () => ({ choice: null }));
   api.createComputer.mockImplementation(async () => {
     const row = macRow(pairing.filesBackup);
     api.computers = [...api.computers, row];
@@ -169,12 +168,12 @@ describe('the first-run gate', () => {
     shell.mac = false;
     draw();
     expect(screen.getByTestId('app')).toBeInTheDocument();
-    expect(choice.getComputerChoice).not.toHaveBeenCalled();
+    expect(api.getComputers).not.toHaveBeenCalled();
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalled();
   });
 
-  it('asks in the desktop app while the account never answered, and holds Home until it does', async () => {
+  it('asks in the desktop app on a Mac not yet asked, and holds Home until it answers', async () => {
     draw();
     expect(await screen.findByText('Where should your agents work?', {}, WAIT)).toBeInTheDocument();
     expect(screen.queryByTestId('app')).toBeNull();
@@ -190,23 +189,20 @@ describe('the first-run gate', () => {
     expect(warm.warmWorkspace).toHaveBeenCalled();
   });
 
-  it('does not ask an account that already answered on this Mac', async () => {
-    choice.getComputerChoice.mockImplementation(async () => ({ choice: 'cloud' }));
+  it('does not hold a Mac already asked, nor read anything first', () => {
     markAskedOnThisMac();
     draw();
-    expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
+    expect(screen.getByTestId('app')).toBeInTheDocument();
     expect(api.getComputers).not.toHaveBeenCalled();
   });
 
   it('asks on another Mac although the account answered on one', async () => {
-    choice.getComputerChoice.mockImplementation(async () => ({ choice: 'own_machine' }));
     draw();
     expect(await screen.findByText('Where should your agents work?', {}, WAIT)).toBeInTheDocument();
     expect(screen.queryByTestId('app')).toBeNull();
   });
 
   it('does not ask when this Mac is already one of the computers, nor again', async () => {
-    choice.getComputerChoice.mockImplementation(async () => ({ choice: 'cloud' }));
     shell.status.fingerprint = 'SHA256:mac';
     api.computers = [macRow(true)];
     draw();
@@ -215,8 +211,30 @@ describe('the first-run gate', () => {
     expect(askedOnThisMac('local-dev-user')).toBe(true);
   });
 
+  it('lets the app open on a read that failed, and asks again next launch', async () => {
+    api.getComputerProviders.mockRejectedValueOnce(new Error('offline'));
+    draw();
+    expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
+    expect(askedOnThisMac('local-dev-user')).toBe(false);
+  });
+
+  // An account from before the first run, whose Mac is already a computer,
+  // never saved a choice: the next launch must not hold on that.
+  it('does not hold the next launch of a user with no saved choice whose Mac is already added', async () => {
+    shell.status.fingerprint = 'SHA256:mac';
+    api.computers = [macRow(true)];
+    const first = draw();
+    expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
+    expect(choice.setComputerChoice).not.toHaveBeenCalled();
+    first.unmount();
+    api.getComputers.mockClear();
+
+    draw();
+    expect(screen.getByTestId('app')).toBeInTheDocument();
+    expect(api.getComputers).not.toHaveBeenCalled();
+  });
+
   it('offers to keep Home on the machine it is on, which saves no cloud answer', async () => {
-    choice.getComputerChoice.mockImplementation(async () => ({ choice: 'own_machine' }));
     api.computers = [OFFICE_HOME];
     draw();
     expect(

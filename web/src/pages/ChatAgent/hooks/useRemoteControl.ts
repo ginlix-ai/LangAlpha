@@ -130,7 +130,9 @@ export function useThisMacAvailability(options: RemoteControlReader) {
   // answer would close with each one.
   const statusRetrying = status === null && remoteControl.isFetching && !remoteControl.isFetchedAfterMount;
   const settled = !statusLoading && !statusRetrying && !providersLoading && !listLoading;
-  return { offered, added, status, settled };
+  // Whether `offered` is an answer: a read that failed leaves it false too.
+  const known = !!status && (!status.supported || !!providers);
+  return { offered, added, status, settled, known };
 }
 
 /**

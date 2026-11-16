@@ -21,8 +21,6 @@ export const queryKeys = {
     // Its own entry, not part of preferences: the server keeps it apart so the
     // agent, which can write preferences, cannot raise it.
     tradingPermission: () => [...queryKeys.user.all, 'trading-permission'],
-    // Where the user chose to work, asked once by the desktop app's first run.
-    computerChoice: () => [...queryKeys.user.all, 'computer-choice'],
   },
   models: {
     all: ['models'],

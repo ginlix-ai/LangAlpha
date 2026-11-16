@@ -25,7 +25,6 @@ import PageLoading from '@/components/PageLoading/PageLoading';
 import { Button } from '@/components/ui/button';
 import { Loader } from '@/components/ui/loader';
 import { WizardFooter, WizardShell, WizardStepHeader, type WizardFooterProps } from '@/components/ui/wizard';
-import { queryKeys } from '@/lib/queryKeys';
 import type { Computer, ComputerCreate } from '@/types/api';
 
 import { RemoteControlSetup } from '@/pages/ChatAgent/components/remoteControlSetup';
@@ -93,7 +92,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   if (askable && !asking) setAsking(true);
   const nothingToAsk = availability.settled && !askable && !asking;
   // A read that failed is no answer, and asks again next time.
-  const answeredNothing = nothingToAsk && (availability.added === true || !availability.offered);
+  const answeredNothing = nothingToAsk && (availability.added === true || (availability.known && !availability.offered));
   useEffect(() => {
     if (!nothingToAsk) return;
     if (answeredNothing) markAskedOnThisMac();
@@ -118,8 +117,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
   const saveChoice = async (choice: ComputerChoice) => {
-    const saved = await setComputerChoice(choice);
-    queryClient.setQueryData(queryKeys.user.computerChoice(), saved);
+    await setComputerChoice(choice);
   };
 
   // Home on another machine of the user's own stays there, so the answer

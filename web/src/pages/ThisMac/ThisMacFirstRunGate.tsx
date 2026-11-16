@@ -10,19 +10,19 @@ import PageLoading from '@/components/PageLoading/PageLoading';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 
-import { useComputerChoiceGate } from './computerChoiceGate';
+import { useComputerChoiceUnasked } from './computerChoiceGate';
 
 const ThisMacFirstRun = lazyWithMotion(() => import('./ThisMacFirstRun'));
 
 export function ThisMacFirstRunGate({ children }: { children: ReactNode }) {
-  const gate = useComputerChoiceGate();
+  const unasked = useComputerChoiceUnasked();
   // Once shown, the first run stays until it says it is over, answered or
   // with nothing to ask (this Mac is already a computer, or this server
-  // cannot take it): its own answer lands midway, and the page still has
+  // cannot take it): it marks this Mac asked midway, and the page still has
   // its last step to show. Over is for the rest of the session.
   const [run, setRun] = useState<'idle' | 'showing' | 'over'>('idle');
-  if (gate === 'unasked' && run === 'idle') setRun('showing');
-  if (run === 'showing' || (gate === 'unasked' && run === 'idle')) {
+  if (unasked && run === 'idle') setRun('showing');
+  if (run === 'showing' || (unasked && run === 'idle')) {
     return (
       <Suspense fallback={<PageLoading />}>
         <StaleBuildBoundary>
@@ -31,6 +31,5 @@ export function ThisMacFirstRunGate({ children }: { children: ReactNode }) {
       </Suspense>
     );
   }
-  if (gate === 'pending') return <PageLoading />;
   return children;
 }
