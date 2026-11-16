@@ -58,15 +58,6 @@
   padding-top: calc(var(--page-top) - 7px);
 }
 
-/* The watchlist / portfolio tab strip and the collapsed strip's toggle. */
-.market-content-wrapper > .market-sidebar {
-  padding-top: calc(var(--page-top) - 6px);
-}
-
-.market-content-wrapper > .market-sidebar--collapsed {
-  padding-top: calc(var(--page-top) - 3px);
-}
-
 .market-right-panel {
   flex-shrink: 0;
   display: flex;

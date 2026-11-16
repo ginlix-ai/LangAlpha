@@ -4656,15 +4656,33 @@
     },
     "sidebar": {
       "remove": "移除",
-      "show": "显示自选股和持仓",
-      "collapse": "收起",
-      "portfolio": "持仓",
       "livePrices": "实时价格",
       "addToWatchlist": "添加到自选股",
       "addHolding": "添加持仓",
       "emptyWatchlist": "自选股里还没有股票，点击 + 添加。",
-      "emptyPortfolio": "持仓里还没有标的，点击 + 添加。",
-      "viewAll": "查看全部"
+      "emptyPortfolio": "持仓里还没有标的，点击 + 添加。"
+    },
+    "quoteList": {
+      "holdings": "持仓",
+      "openList": "自选股和持仓",
+      "sortBy": "按{{column}}排序",
+      "closeTip": "收盘 {{price}} {{pct}}",
+      "session": {
+        "pre": "盘前",
+        "post": "盘后"
+      },
+      "col": {
+        "symbol": "代码",
+        "last": "最新价",
+        "chg": "涨跌幅",
+        "value": "市值",
+        "today": "今日",
+        "pl": "盈亏"
+      },
+      "sorted": {
+        "asc": "升序",
+        "desc": "降序"
+      }
     },
     "quickQuery": {
       "q1": "分析 {{symbol}} 的技术形态",

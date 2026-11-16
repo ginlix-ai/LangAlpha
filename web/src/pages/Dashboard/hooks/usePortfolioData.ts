@@ -24,6 +24,9 @@ export interface PortfolioRow {
   costCurrency: string;
   notes?: string;
   price: number;
+  /** The day's move against the previous close, for the session's headline. */
+  change?: number;
+  changePercent?: number;
   marketValue?: number | null;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
@@ -40,7 +43,7 @@ interface PortfolioEditForm {
   notes: string;
 }
 
-interface DeleteConfirmConfig {
+export interface DeleteConfirmConfig {
   open: boolean;
   title: string;
   message: string;
@@ -117,6 +120,8 @@ export function usePortfolioData() {
         costCurrency,
         notes: h.notes ?? '',
         price,
+        change: quoteAvailable ? p.change ?? 0 : 0,
+        changePercent: quoteAvailable ? p.changePercent ?? 0 : 0,
         marketValue,
         quoteAvailable,
         unrealizedPlPercent: plPct,
