@@ -8,7 +8,7 @@
  */
 import type { ChatMessage, NotificationMessage } from '@/types/chat';
 import type { DeliveredNotice } from '@/types/sse';
-import type { OrderOutcome, WakeNotice, WakeupKind, WakeupOrder, WakeupPrice } from '@/types/wakeups';
+import type { OrderOutcome, WakeNotice, Wakeup, WakeupKind, WakeupOrder, WakeupPrice } from '@/types/wakeups';
 import { createWakeupMessage } from '../hooks/utils/messageHelpers';
 import { quietArg, wakeupArgListed } from './wakeupArgs';
 
@@ -285,35 +285,72 @@ function spokeAfter(bubble: BubbleLike, order: number): boolean {
     && (typeof s.order === 'number' ? s.order : Infinity) > order);
 }
 
-/**
- * What a wake turn's agent said it checked, when the turn ended quietly and
- * changed no wakeup; null otherwise. Quiet is the turn's last tool call being
- * a `schedule_wakeup` whose result accepted `quiet`, with nothing said after
- * it: a model call after it (a background task's report re-invoking the
- * agent) means the turn spoke after all, as the server reads it. A turn that
- * set or cancelled a wakeup on the way is changed, and shows as any turn
- * does. The bubbles are the turn's own, in transcript order.
- */
-export function quietTurnStatus(bubbles: readonly BubbleLike[]): string | null {
-  let last: CallLike | null = null;
-  let lastAt = -1;
-  for (let at = 0; at < bubbles.length; at++) {
-    let lastHere: CallLike | null = null;
-    for (const call of callsOf(bubbles[at])) {
-      if (callName(call) === SCHEDULE_WAKEUP && callChangesWakeups(call.toolCall?.args)) return null;
-      const order = typeof call.order === 'number' ? call.order : -Infinity;
-      const best = typeof lastHere?.order === 'number' ? lastHere.order : -Infinity;
-      if (!lastHere || order >= best) lastHere = call;
-    }
-    if (lastHere) {
-      last = lastHere;
-      lastAt = at;
-    }
-  }
-  if (!last || callName(last) !== SCHEDULE_WAKEUP || !quietAccepted(last)) return null;
-  const order = typeof last.order === 'number' ? last.order : Infinity;
-  for (let at = lastAt; at < bubbles.length; at++) {
-    if (spokeAfter(bubbles[at], at === lastAt ? order : -Infinity)) return null;
-  }
-  return quietArg(last.toolCall?.args) || null;
+/** A wake turn that ended quietly: the agent's line on what it checked, and
+ *  the wakeups it set and cancelled on the way. */
+export interface QuietEnd {
+  status: string;
+  /** A `schedule_wakeup` call this turn asked to set or cancel one, refused
+   *  or not, which is what keeps the turn out of the quiet checks' fold. */
+  changed: boolean;
+  /** What those calls did, as their results list it; empty on a turn from
+   *  before the results named them. */
+  set: Wakeup[];
+  cancelled: Wakeup[];
 }
+
+function orderOf(call: CallLike): number {
+  return typeof call.order === 'number' ? call.order : -Infinity;
+}
+
+/** The wakeups a call's result lists under `key`, in the server's listing
+ *  shape (`WakeupArtifact`). */
+function resultWakeups(call: CallLike, key: 'set' | 'cancelled'): Wakeup[] {
+  const result = call.toolCallResult;
+  const listed = isRecord(result) && isRecord(result.artifact) ? result.artifact[key] : undefined;
+  return Array.isArray(listed) ? listed as Wakeup[] : [];
+}
+
+/**
+ * How a wake turn ended quietly, or null when it did not. Quiet is a
+ * `schedule_wakeup` whose result accepted `quiet`, with nothing said after it
+ * and no call after it but other `schedule_wakeup` calls: the server accepts
+ * quiet beside those alone, in the same round, and ends the turn after that
+ * round. A model call after it (a background task's report re-invoking the
+ * agent) means the turn spoke after all, as the server reads it. The bubbles
+ * are the turn's own, in transcript order.
+ */
+export function quietTurnEnd(bubbles: readonly BubbleLike[]): QuietEnd | null {
+  let quiet: CallLike | null = null;
+  let quietAt = -1;
+  let callAfterQuiet = false;
+  let changed = false;
+  // By id: a call replayed into a second bubble of the turn lists its rows again.
+  const set = new Map<string, Wakeup>();
+  const cancelled = new Map<string, Wakeup>();
+  for (let at = 0; at < bubbles.length; at++) {
+    // Stable, so of two calls on one order the later listed stays last.
+    const calls = callsOf(bubbles[at]).sort((a, b) => orderOf(a) - orderOf(b));
+    for (const call of calls) {
+      if (callName(call) !== SCHEDULE_WAKEUP) {
+        if (quiet) callAfterQuiet = true;
+        continue;
+      }
+      if (callChangesWakeups(call.toolCall?.args)) changed = true;
+      for (const w of resultWakeups(call, 'set')) set.set(w.wakeup_id, w);
+      for (const w of resultWakeups(call, 'cancelled')) cancelled.set(w.wakeup_id, w);
+      if (quietAccepted(call)) {
+        quiet = call;
+        quietAt = at;
+        callAfterQuiet = false;
+      }
+    }
+  }
+  if (!quiet || callAfterQuiet) return null;
+  const order = typeof quiet.order === 'number' ? quiet.order : Infinity;
+  for (let at = quietAt; at < bubbles.length; at++) {
+    if (spokeAfter(bubbles[at], at === quietAt ? order : -Infinity)) return null;
+  }
+  const status = quietArg(quiet.toolCall?.args);
+  return status ? { status, changed, set: [...set.values()], cancelled: [...cancelled.values()] } : null;
+}
+
