@@ -731,7 +731,7 @@ class TestDials:
         """A busy uplink holds a machine's answer back behind its data: the
         worker's dial fails, the tunnel stays up, and the channel that opens
         late is closed rather than left with nothing on its other end."""
-        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(relay, "GATEWAY_CHANNEL_OPEN_TIMEOUT_S", 0.01)
         gateway = Gateway(object())  # type: ignore[arg-type]
         conn = _LateConn()
         fwd = _Forward(gateway, conn, TUNNEL, "langalpha", 22)  # type: ignore[arg-type]
@@ -744,12 +744,12 @@ class TestDials:
             assert raised.value.reason == relay.GATEWAY_NO_ANSWER
             assert not conn.closed
             assert gateway._forwards[TUNNEL] == [fwd]
-            assert gateway._abandoned[conn]
+            assert gateway._abandoned.pending_for(conn)
 
             conn.answer.set()
             await _turns()
             assert [p.closed for p in conn.peers] == [True]
-            assert conn not in gateway._abandoned
+            assert not gateway._abandoned.pending_for(conn)
             assert not conn.closed
             # And the next dial, answered in time, relays.
             assert await gateway.dial(_Conn(), TUNNEL, "127.0.0.1", 0)  # type: ignore[arg-type]
@@ -786,7 +786,7 @@ class TestDials:
         """Keepalives judge a machine by any bytes it sends; one that keeps
         sending but never answers an open is wedged, and closing it lets go
         of the opens SSH cannot withdraw."""
-        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(relay, "GATEWAY_CHANNEL_OPEN_TIMEOUT_S", 0.01)
         monkeypatch.setattr(relay, "_ABANDONED_OPEN_LIMIT_S", 0.05)
         gateway = Gateway(object())  # type: ignore[arg-type]
         fwd = _Forward(gateway, _SilentConn(), TUNNEL, "langalpha", 22)  # type: ignore[arg-type]
@@ -808,7 +808,7 @@ class TestDials:
     async def test_too_many_unanswered_opens_close_the_machine(
         self, tunnels, monkeypatch
     ):
-        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.001)
+        monkeypatch.setattr(relay, "GATEWAY_CHANNEL_OPEN_TIMEOUT_S", 0.001)
         monkeypatch.setattr(relay, "_MAX_ABANDONED_OPENS", 2)
         gateway = Gateway(object())  # type: ignore[arg-type]
         fwd = _Forward(gateway, _SilentConn(), TUNNEL, "langalpha", 22)  # type: ignore[arg-type]
@@ -877,7 +877,7 @@ class TestMachinesOverSSH:
     async def test_a_late_answer_keeps_the_tunnel_and_its_channel_is_closed(
         self, tunnels, machine_key, monkeypatch
     ):
-        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.1)
+        monkeypatch.setattr(relay, "GATEWAY_CHANNEL_OPEN_TIMEOUT_S", 0.1)
         answer, sessions = asyncio.Event(), []
 
         async def accept(orig_host: str, orig_port: int) -> _Session:
@@ -894,7 +894,7 @@ class TestMachinesOverSSH:
             await asyncio.wait_for(sessions_lost(sessions), 2)
             assert not conn.is_closed()
             assert TUNNEL in gateway._forwards
-            assert not gateway._abandoned
+            assert not gateway._abandoned.pending_for(gateway._forwards[TUNNEL][-1].conn)
 
     @pytest.mark.enable_socket
     @pytest.mark.asyncio
@@ -1136,7 +1136,7 @@ class TestARelayEndToEnd:
         """The worker's dial fails on the timeout, the machine's late answer
         opens a channel that is closed at once, and both connections stay up
         for the next dial."""
-        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.1)
+        monkeypatch.setattr(relay, "GATEWAY_CHANNEL_OPEN_TIMEOUT_S", 0.1)
         answer, sshds = asyncio.Event(), []
 
         async def accept(orig_host: str, orig_port: int) -> _Sshd:
@@ -1148,12 +1148,13 @@ class TestARelayEndToEnd:
             with pytest.raises(asyncssh.ChannelOpenError) as raised:
                 await worker.open_connection(TUNNEL, 22)
             assert raised.value.reason == relay.GATEWAY_NO_ANSWER
-            assert gateway._abandoned
+            machine_end = gateway._forwards[TUNNEL][-1].conn
+            assert gateway._abandoned.pending_for(machine_end)
 
             answer.set()
             await asyncio.wait_for(_until(lambda: sshds), 2)
             await asyncio.wait_for(sshds[0].lost.wait(), 2)
-            assert not gateway._abandoned
+            assert not gateway._abandoned.pending_for(machine_end)
             assert not machine.is_closed() and not worker.is_closed()
 
             reader, writer = await worker.open_connection(TUNNEL, 22)

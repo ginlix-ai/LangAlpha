@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable
 from typing import Protocol
 
 import asyncssh
@@ -24,12 +24,6 @@ from ptc_agent.core.sandbox.providers._ssh_connect import (
 
 logger = logging.getLogger(__name__)
 
-# A machine's client answers a channel open as soon as its own sshd takes the
-# connection, but the answer travels behind whatever the machine is already
-# sending: an uplink full of a backup or a large upload holds it back far
-# longer than a worker should wait. Past this the worker's dial fails and the
-# machine's connection stays up, its liveness the keepalives' to judge.
-_CHANNEL_OPEN_TIMEOUT_S = GATEWAY_CHANNEL_OPEN_TIMEOUT_S
 # SSH cannot withdraw an open, so one a worker gave up on is still waited for
 # and closed once it opens. A machine that leaves one unanswered this long, or
 # this many at once, is wedged rather than busy, and its connection is closed,
@@ -143,7 +137,7 @@ class _WorkerSide(asyncssh.SSHForwarder):
         self._machine.join(self)
 
 
-class AbandonedOpens(Mapping[asyncssh.SSHServerConnection, set[asyncio.Future]]):
+class AbandonedOpens:
     """Per machine connection, the channel opens a worker gave up on that are
     still unanswered."""
 
@@ -153,14 +147,9 @@ class AbandonedOpens(Mapping[asyncssh.SSHServerConnection, set[asyncio.Future]])
         self._close_login = close_login
         self._pending: dict[asyncssh.SSHServerConnection, set[asyncio.Future]] = {}
 
-    def __getitem__(self, conn: asyncssh.SSHServerConnection) -> set[asyncio.Future]:
-        return self._pending[conn]
-
-    def __iter__(self) -> Iterator[asyncssh.SSHServerConnection]:
-        return iter(self._pending)
-
-    def __len__(self) -> int:
-        return len(self._pending)
+    def pending_for(self, conn: asyncssh.SSHServerConnection) -> int:
+        """How many opens on ``conn`` are still unanswered."""
+        return len(self._pending.get(conn, ()))
 
     def add(self, fwd: Forward, opening: asyncio.Future, asked: float) -> None:
         """Wait out an open no worker waits for: close its channel if it
@@ -242,14 +231,20 @@ async def open_relay(
         )
     )
     try:
-        async with asyncio.timeout(_CHANNEL_OPEN_TIMEOUT_S):
+        # A machine's client answers a channel open as soon as its own sshd
+        # takes the connection, but the answer travels behind whatever the
+        # machine is already sending: an uplink full of a backup or a large
+        # upload holds it back far longer than a worker should wait. Past this
+        # the worker's dial fails and the machine's connection stays up, its
+        # liveness the keepalives' to judge.
+        async with asyncio.timeout(GATEWAY_CHANNEL_OPEN_TIMEOUT_S):
             _, peer = await asyncio.shield(opening)
     except TimeoutError:
         logger.warning(
             "Tunnel %s left a channel open unanswered for %ds; failing the "
             "dial and keeping the tunnel",
             fwd.tunnel_id,
-            _CHANNEL_OPEN_TIMEOUT_S,
+            GATEWAY_CHANNEL_OPEN_TIMEOUT_S,
         )
         abandoned.add(fwd, opening, asked)
         raise asyncssh.ChannelOpenError(
