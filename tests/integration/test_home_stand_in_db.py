@@ -126,9 +126,10 @@ async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_owed(
 
     placed = await home_stand_in.place_home_stand_in(user_id)
 
-    # Owed files are only where it is, so it stays with them.
+    # Owed files are only where it is, so it stays with them; no turn runs on
+    # a computer that takes no workspace, though.
     assert str(placed.computer["computer_id"]) == (broken if owed else healthy)
-    assert (placed.kept, placed.owed) == (True, owed)
+    assert (placed.kept, placed.runs, placed.owed) == (True, not owed, owed)
     assert placed.row["status"] != "deleted"
 
 

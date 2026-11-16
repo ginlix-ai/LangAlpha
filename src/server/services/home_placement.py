@@ -6,9 +6,10 @@ own. While that machine can't be reached (its tunnel is down, the signal the
 hidden workspace on a cloud computer the user already has, placed again on
 another only when its own fails or is retired with nothing owed to Home. None
 is ever built for it: a user with no cloud computer waits for their machine,
-the turn failing as any turn on it does. Two workers admitting at once read
-the same rows and converge on the stand-in's fixed id; nothing here is kept in
-process memory.
+as does one whose stand-in keeps owed files on a computer that failed, the
+turn failing as any turn on it does (``home_stand_in``). Two workers admitting
+at once read the same rows and converge on the stand-in's fixed id; nothing
+here is kept in process memory.
 """
 
 from __future__ import annotations
@@ -115,8 +116,8 @@ async def place_home_turn(
             stand_in = await place_home_stand_in(user_id)
         else:
             stand_in = await read_stand_in(user_id)
-        # Another worker may have placed it first, on another computer, and a
-        # removal of its computer deletes its row.
+        # None stands, or the one standing keeps owed files on a computer
+        # that takes no turn: the turn goes where Home is, as it was.
         if stand_in is None or not stand_in.runs or home_computer is None:
             return HomePlacement(home_id)
         reason = "command" if reachable else "unreachable"

@@ -652,6 +652,79 @@ async def test_home_and_its_stand_in_are_told_apart_by_their_ids_in_sql(test_db_
             assert row["stand_in_id"] == get_home_stand_in_id(user_id)
 
 
+async def test_home_work_waits_while_owed_files_keep_the_stand_in_on_a_failed_computer(
+    machine, test_db_pool
+):
+    """A turn keeps the stand-in on its computer while files Home is owed are
+    there, however that computer fares, and runs nowhere while it has failed.
+    Parked Home work is released onto the same computer a turn would run on,
+    so it stays parked rather than failing every sweep, until the hand-back
+    gives up and the stand-in may be placed again."""
+    from src.server.database import home_away
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+    from src.server.database.home_stand_in import (
+        place_home_stand_in,
+        read_stand_in,
+        stand_in_computer,
+    )
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    first = await create_computer(machine.user_id, kind="daytona", name="first",
+                                  status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    second = await create_computer(machine.user_id, kind="daytona", name="second",
+                                   status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    first_id = str(first["computer_id"])
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE computers SET last_activity_at = NOW() WHERE computer_id = %s", (first_id,)
+        )
+    assert str((await place_home_stand_in(machine.user_id)).computer["computer_id"]) == first_id
+    await home_away.mark_away(machine.user_id)
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    home_thread = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automations SET workspace_id = %s WHERE automation_id = %s",
+            (home_id, automation_id),
+        )
+        await conn.execute(
+            "UPDATE computers SET status = 'error' WHERE computer_id = %s", (first_id,)
+        )
+    home_wake = await _parked(test_db_pool, machine, "wakeup_fire", thread_id=home_thread)
+    try:
+        stand_in = await read_stand_in(machine.user_id)
+        assert (stand_in.kept, stand_in.runs) == (True, False)
+        assert await stand_in_computer(machine.user_id) is None
+        assert await _parked_verdict(execution_id) is None
+        assert await ex.release_parked_execution(execution_id) is False
+        assert home_wake not in {
+            str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()
+        }
+
+        # Given up, the files are no longer owed: the stand-in may move.
+        await home_away.fail_handback(
+            machine.user_id, max_attempts=1, given_up={"failed": True}
+        )
+        assert str((await stand_in_computer(machine.user_id))["computer_id"]) == str(
+            second["computer_id"]
+        )
+        assert (await _parked_verdict(execution_id))["stand_in"] is True
+        assert home_wake in {
+            str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()
+        }
+    finally:
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM hook_outbox WHERE conversation_thread_id = %s", (home_thread,))
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM home_away WHERE user_id = %s", (machine.user_id,))
+            await conn.execute("DELETE FROM automations WHERE user_id = %s", (machine.user_id,))
+            await conn.execute("DELETE FROM workspaces WHERE user_id = %s", (machine.user_id,))
+
+
 async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, test_db_pool):
     automation_id, execution_id = await _parked_firing(
         test_db_pool, machine, gives_up_in=-timedelta(hours=1)

@@ -70,13 +70,13 @@ def kept_sql(stand_in: str, computer: str) -> str:
 
 def _turn_host_sql(host: str) -> str:
     """Whether computer row ``host`` is where a Home turn in the stand-in runs
-    now: the computer the stand-in stays on (``kept_sql``), else, with none
-    kept, any of its user's of the kinds built that takes a workspace."""
+    now: the computer the stand-in stays on (``kept_sql``) if it takes a
+    workspace, else, with none kept, any of its user's of the kinds built that
+    takes one. Kept on a computer that takes none (failed, with owed files on
+    it), no computer is: Home's turns and parked work wait for Home's machine,
+    and the hand-back's own retries see to the files."""
     return (
-        f"({host}.kind IN ({_KINDS})"
-        f" AND ({takes_a_workspace_sql(host)} OR EXISTS (SELECT 1 FROM workspaces own_s"
-        f" WHERE own_s.workspace_id = {stand_in_id_sql(f'{host}.user_id')}"
-        f" AND own_s.computer_id = {host}.computer_id AND {kept_sql('own_s', host)}))"
+        f"({host}.kind IN ({_KINDS}) AND {takes_a_workspace_sql(host)}"
         " AND NOT EXISTS (SELECT 1 FROM workspaces kept_s"
         " JOIN computers kept_c ON kept_c.computer_id = kept_s.computer_id"
         f" WHERE kept_s.workspace_id = {stand_in_id_sql(f'{host}.user_id')}"
