@@ -70,7 +70,6 @@ form (10-K405 counts as 10-K) with the same period of report, filed on or before
 amendments filed years later and for several amendments to one original. Some filings carry a wrong period of
 report, so an amendment is also read: the period its cover page states, or else the date its explanatory note
 gives for the original filing, places it, and wins over the period of report when it does.
-`filings.amendments_of(ref, refs)` lists an original's amendments from the filing list alone.
 
 **What an amendment restates.** An amendment that prints an item from every part of the form (the exhibit list
 aside) is `complete` and replaces the whole item set. Otherwise it is `partial` (or `exhibits` when it prints
@@ -81,8 +80,8 @@ entries and is not cached itself.
 
 ## Filings and cache
 
-`edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks a
-filing for any period, not only the latest; `amendment=n` picks that filing's n-th amendment instead. Fiscal
+`edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks an
+original filing for any period, not only the latest; its amendments are read with `get_sections`. Fiscal
 labels come from the filer's own XBRL facts where they exist
 and from the report date and fiscal year end otherwise. `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or

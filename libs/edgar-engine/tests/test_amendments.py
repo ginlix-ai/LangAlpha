@@ -9,10 +9,10 @@ import edgar_engine.api as api_mod
 import edgar_engine.filings as filings_mod
 import edgar_engine.sections.extract as extract_mod
 from edgar_engine import get_sections
-from edgar_engine.amendments import (amendment_scope, cover_period, merge, original_filed_on, resolve_amends)
+from edgar_engine.amendments import (amendment_scope, cover_period, merge, nth_amendment, original_filed_on,
+                                     resolve_amends)
 from edgar_engine.cache import LocalDirStore, SectionsCache
-from edgar_engine.filings import (FilingRef, amendments_of, base_form, link_amendments, nth_amendment, refs_from_rows,
-                                  select_filing)
+from edgar_engine.filings import FilingRef, base_form, link_amendments, refs_from_rows, select_filing
 from edgar_engine.sections import extract_sections
 from edgar_engine.sections.model import FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
@@ -64,7 +64,8 @@ def test_two_amendments_and_one_filed_years_later_are_listed_in_filing_order():
     ]
     listed = refs(rows)
     original = by_accession(listed)["C-14"]
-    assert [r.accession for r in amendments_of(original, listed)] == ["C-14a", "C-19a"]
+    assert [r.accession for r in sorted(listed, key=lambda r: r.filing_date) if r.amends == original.accession] == [
+        "C-14a", "C-19a"]
 
 
 def test_amendment_whose_period_matches_no_original_is_left_unlinked():
@@ -122,14 +123,10 @@ def filer(monkeypatch):
     return fake
 
 
-def test_select_filing_picks_an_amendment_of_the_selected_original(filer):
+def test_select_filing_picks_originals_only(filer):
+    assert select_filing(CIK, "10-K").accession == "0001234567-25-000040"
     assert select_filing(CIK, "10-K", fiscal_year=2023).accession == "0001234567-24-000010"
-    assert select_filing(CIK, "10-K", fiscal_year=2023, amendment=1).accession == "0001234567-24-000020"
-    assert select_filing(CIK, "10-K", fiscal_year=2023, amendment=-1).accession == "0001234567-25-000030"
-    assert select_filing(CIK, "10-K", fiscal_year=2023, amendment=3) is None
-    assert select_filing(CIK, "10-K", fiscal_year=2024, amendment=1) is None
-    assert select_filing(CIK, "10-K", fiscal_year=2023, amendment=-1, filed_on_or_before="2025-01-01").accession == (
-        "0001234567-24-000020")
+    assert select_filing(CIK, "10-K", fiscal_year=2023, filed_on_or_before="2024-01-01") is None
 
 
 # Reading an amendment's own text.
@@ -403,6 +400,12 @@ def test_default_is_the_original_as_filed(engine):
     assert FETCHED == ["0001234567-24-000010"]
 
 
+def test_amendment_zero_is_refused_before_anything_is_read(engine):
+    with pytest.raises(ValueError):
+        get_sections(CIK, "10-K", fiscal_year=1999, amendment=0)
+    assert FETCHED == []
+
+
 def test_an_amendment_as_filed(engine):
     fs = get_sections(CIK, "10-K", fiscal_year=2023, amendment=1)
     assert (fs.accession, fs.filing_status, fs.amends, fs.scope) == (
@@ -487,7 +490,7 @@ def test_real_amendments_merge_by_source():
     cik = find(LIVE_ORIGINAL).cik
     listed = list_filings(cik, "10-K", amendments=True, filed_on_or_before="2024-12-31")
     original = by_accession(listed)[LIVE_ORIGINAL]
-    assert [r.accession for r in amendments_of(original, listed)] == LIVE_AMENDMENTS
+    assert sorted(r.accession for r in listed if r.amends == original.accession) == LIVE_AMENDMENTS
     fs = get_sections(cik, "10-K", period_end=original.report_date, filed_on_or_before="2024-12-31",
                       view="as_amended")
     assert fs.amendments == LIVE_AMENDMENTS

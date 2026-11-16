@@ -164,22 +164,6 @@ def pick_ref(
     return min(matches, key=_order, default=None)
 
 
-def amendments_of(original: FilingRef, refs: Iterable[FilingRef] | None = None) -> list[FilingRef]:
-    """The amendments of an original filing, in filing order. refs is a list_filings(..., amendments=True)
-    result to search; without it the filer's list is read."""
-    if refs is None:
-        refs = list_filings(original.cik, base_form(original.form), amendments=True)
-    return sorted((r for r in refs if r.amends == original.accession), key=_order)
-
-
-def nth_amendment(amendments: list, n: int):
-    """The n-th of amendments in filing order: 1 is the first, -1 the latest. None when there is no such one."""
-    if n == 0:
-        raise ValueError("amendment counts from 1 (the first) or from -1 (the latest)")
-    i = n - 1 if n > 0 else n
-    return amendments[i] if -len(amendments) <= i < len(amendments) else None
-
-
 def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:
     """(accession, form) -> (fiscal year, fiscal period), by majority vote over the companyfacts facts of that filing.
     Cached for the day, so a long-lived process sees later filings' labels, and read-only, because every caller
@@ -250,18 +234,12 @@ def select_filing(
     fiscal_period: str | None = None,
     period_end: str | None = None,
     filed_on_or_before: str | None = None,
-    amendments: bool = False,
-    amendment: int | None = None,
 ) -> FilingRef | None:
-    """One filing: the latest, or the original for a fiscal year/period or for a report period ending on period_end
-    (YYYY-MM-DD or YYYY-MM). With amendment=n, the n-th amendment of that original instead (1 the first, -1 the latest)."""
-    refs = list_filings(company, form, amendments=amendments or amendment is not None,
-                        filed_on_or_before=filed_on_or_before)
-    if amendment is None:
-        return pick_ref(refs, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
-    originals = [r for r in refs if r.filing_status == "original"]
-    original = pick_ref(originals, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
-    return nth_amendment(amendments_of(original, refs), amendment) if original else None
+    """One original filing: the latest, or the one for a fiscal year/period or for a report period ending on
+    period_end (YYYY-MM-DD or YYYY-MM). Its amendments are read with edgar_engine.get_sections, which checks each
+    one's own text."""
+    refs = list_filings(company, form, filed_on_or_before=filed_on_or_before)
+    return pick_ref(refs, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
 
 
 def get_filing(ref: FilingRef):

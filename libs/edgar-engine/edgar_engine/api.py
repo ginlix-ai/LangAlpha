@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .amendments import amended_sections, merge, read
+from .amendments import amended_sections, merge, nth_amendment, read
 from .cache import SectionsCache
-from .filings import list_filings, nth_amendment, pick_ref, select_filing
+from .filings import list_filings, pick_ref, select_filing
 from .sections.model import FilingSections, View
 
 
@@ -23,6 +23,8 @@ def get_sections(company: Any, form: str, *, fiscal_year: int | None = None, fis
     """
     if view not in ("as_filed", "as_amended"):
         raise ValueError(f"view must be 'as_filed' or 'as_amended', not {view!r}")
+    if amendment == 0:
+        raise ValueError("amendment counts from 1 (the first) or from -1 (the latest)")
     period = dict(fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
     if view == "as_filed" and amendment is None:
         ref = select_filing(company, form, filed_on_or_before=filed_on_or_before, **period)

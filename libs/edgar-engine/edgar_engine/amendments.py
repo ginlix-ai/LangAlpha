@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from typing import TypeVar
 
 from .filings import FilingRef, base_form, get_filing
 from .sections import sections_for_filing
 from .sections.model import FilingSections, Scope, Section, Span
 from .sections.vocab import spec_for
 
+T = TypeVar("T")
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
                                        "dec"], 1)}
 _MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
@@ -167,3 +169,11 @@ def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None) -> 
         if sections.amends == original.accession:
             found.append(sections)
     return found
+
+
+def nth_amendment(amendments: list[T], n: int) -> T | None:
+    """The n-th of amendments in filing order: 1 is the first, -1 the latest. None when there is no such one."""
+    if n == 0:
+        raise ValueError("amendment counts from 1 (the first) or from -1 (the latest)")
+    i = n - 1 if n > 0 else n
+    return amendments[i] if -len(amendments) <= i < len(amendments) else None
