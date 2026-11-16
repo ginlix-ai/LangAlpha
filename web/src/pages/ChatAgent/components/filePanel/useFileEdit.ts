@@ -28,7 +28,7 @@ interface EditDraft {
  *  SHA-256 of its text, which lets a save through a version that moved with
  *  no byte changed (a touch, a rewrite of the same text). Either may be null:
  *  a write whose version the server could not read, a page with no WebCrypto. */
-interface SaveBase {
+export interface SaveBase {
   version: string | null;
   sha256: string | null;
 }
@@ -48,6 +48,17 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
+/**
+ * The base a draft's next save names once a write landed. A write that gave no
+ * version, on a page that cannot hash, leaves nothing to check a save against,
+ * and a save naming nothing lands unchecked. The base the write replaced is
+ * kept instead: the next save is then refused as a file changed, and the
+ * draft stays, rather than landing over whatever changed meanwhile.
+ */
+export function baseAfterWrite(next: SaveBase, previous: SaveBase | null): SaveBase {
+  return next.version || next.sha256 || !previous ? next : previous;
+}
+
 export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, invalidate, away }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
@@ -57,7 +68,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   readFileFullFn: (workspaceId: string, path: string) => Promise<FullRead>;
   writeFileFn: (
     workspaceId: string, path: string, content: string, baseVersion?: string | null, baseSha256?: string | null,
-  ) => Promise<unknown>;
+  ) => Promise<{ version: string | null }>;
   /** The panel's confirmation, asked before a save or a discard. */
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
@@ -222,13 +233,15 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         setSaveError(t('filePanel.fileTooLarge'));
         return;
       }
+      // Hashed before anything is set, so a file switched away from meanwhile
+      // leaves no half-opened edit behind.
+      const sha256 = await textSha256(fullContent);
+      if (selectedFileRef.current !== selectedFile) return;
       const path = newEditorModelPath(selectedFile);
       models.current.add(path);
       setModelPath(path);
       setEditContent(fullContent);
       setOriginalContent(fullContent);
-      const sha256 = await textSha256(fullContent);
-      if (selectedFileRef.current !== selectedFile) return;
       setBase({ version: data.version, sha256 });
       setFileContent(fullContent);
       setIsEditing(true);
@@ -257,10 +270,9 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     // reload a section switch takes waits for it.
     const release = holdReload();
     try {
-      const written = await writeFileFn(workspaceId, file, content, from?.version ?? null, from?.sha256 ?? null);
+      const { version } = await writeFileFn(workspaceId, file, content, from?.version ?? null, from?.sha256 ?? null);
       // What the file holds now, which the next save from this draft names.
-      const landed = (written as { version?: unknown } | null)?.version;
-      const nextBase: SaveBase = { version: typeof landed === 'string' ? landed : null, sha256: await textSha256(content) };
+      const nextBase = baseAfterWrite({ version, sha256: await textSha256(content) }, from);
       // Another file opened while the write was in flight, the same guard the
       // full read takes above. Without it this file's text lands in the panel
       // under the other one's name, and feeds its line and heading lookup.

@@ -9,7 +9,7 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
     ...orig,
     readWorkspaceFile: vi.fn(async () => ({ content: '# Notes', mime: 'text/markdown', truncated: false, from: { kind: 'live' } })),
     readWorkspaceFileFull: vi.fn(async () => ({ content: '# Notes', version: null, rewriting: false, from: { kind: 'live' } })),
-    writeWorkspaceFile: vi.fn(async () => ({})),
+    writeWorkspaceFile: vi.fn(async () => ({ version: null })),
     downloadWorkspaceFileAsArrayBuffer: vi.fn(async () => ({ buffer: new ArrayBuffer(8), from: { kind: 'live' } })),
     triggerFileDownload: vi.fn(),
     resolveWorkspaceFile: vi.fn(),

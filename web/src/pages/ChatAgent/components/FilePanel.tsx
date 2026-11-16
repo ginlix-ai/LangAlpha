@@ -224,7 +224,9 @@ function FilePanel({
       // A share's route redacts each file whole, so it has no ranges to read.
       openRangedFn: apiAdapter ? undefined : openWorkspaceFileRanged,
       triggerDownloadFn: triggerDownload ? (_: string, p: string) => triggerDownload(p) : triggerFileDownload,
-      writeFileFn: writeFile ? (_: string, p: string, c: string) => writeFile(p, c) : writeWorkspaceFile,
+      writeFileFn: writeFile
+        ? async (_: string, p: string, c: string) => { await writeFile(p, c); return { version: null }; }
+        : writeWorkspaceFile,
       resolveFileFn: apiAdapter
         ? resolveFile ?? null
         : (candidates: string[], recentWrites: string[]) => resolveWorkspaceFile(workspaceId, candidates, recentWrites),

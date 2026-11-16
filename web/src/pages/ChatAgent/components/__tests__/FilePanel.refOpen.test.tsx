@@ -21,7 +21,7 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
     ...orig,
     readWorkspaceFile: vi.fn(),
     readWorkspaceFileFull: vi.fn(),
-    writeWorkspaceFile: vi.fn(async () => ({})),
+    writeWorkspaceFile: vi.fn(async () => ({ version: null })),
     downloadWorkspaceFile: vi.fn(),
     downloadWorkspaceFileAsArrayBuffer: vi.fn(),
     triggerFileDownload: vi.fn(),
