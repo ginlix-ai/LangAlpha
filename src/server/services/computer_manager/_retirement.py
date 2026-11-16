@@ -12,7 +12,6 @@ from src.server.database.computer import (
     clear_computer_retirement_pending,
     defer_computer_retirement,
     get_computer,
-    get_computers_for_user,
     get_retirement_pending_computers,
     mark_computer_retirement_pending,
     update_computer_status,
@@ -20,6 +19,7 @@ from src.server.database.computer import (
 from src.server.database.home_away import stand_in_held
 from src.server.database.home_stand_in import StandIn, stand_in_on
 from src.server.database.workspace import get_live_workspace_ids_for_computer
+from src.server.database.workspace_move import primary_candidate
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_errors import ComputerRemovalRefused, Retirement
 from src.server.services.spec_change import spec_change_from_row
@@ -118,17 +118,16 @@ class RetirementMixin:
     async def removal_refused(computer: Dict[str, Any]) -> Optional[Retirement]:
         """``removal_held``, with the primary told apart from the user's only
         computer: the first is removed once another is made primary, which
-        moves Home; the second only once another is added."""
+        moves Home; the second only once another that could be is added.
+        A computer that could not take Home now (failed, being retired, still
+        on its first build) is no other to make primary."""
         held = RetirementMixin.removal_held(computer)
         if held is not Retirement.PRIMARY:
             return held
-        computer_id = str(computer["computer_id"])
-        others = [
-            c
-            for c in await get_computers_for_user(str(computer["user_id"]))
-            if str(c["computer_id"]) != computer_id
-        ]
-        return Retirement.PRIMARY if others else Retirement.ONLY_COMPUTER
+        other = await primary_candidate(
+            str(computer["user_id"]), excluding=str(computer["computer_id"])
+        )
+        return Retirement.PRIMARY if other is not None else Retirement.ONLY_COMPUTER
 
     async def remove_computer(self, computer_id: str) -> None:
         """Retire an empty computer its owner no longer wants.

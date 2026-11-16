@@ -14,7 +14,6 @@ from uuid import uuid4
 from ptc_agent.core.sandbox.providers import (
     PROVIDER_KINDS,
     builds_computers,
-    is_own_machine,
     provider_class,
 )
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
@@ -30,7 +29,6 @@ from src.server.database.computer import (
     get_computer_for_workspace,
     get_computers_for_user,
     get_primary_computer,
-    promote_primary_computer,
     try_bind_computer_provider_ref,
     try_claim_computer_for_start,
     touch_computer_starting,
@@ -41,6 +39,10 @@ from src.server.database.computer_names import insert_under_free_name
 from src.server.database.user import get_user
 from src.server.database.home_workspace import get_home_workspace_id, is_home_row
 from src.server.database.workspace_folders import folder_allocation, takes_name_folders
+from src.server.database.workspace_move import (
+    primary_candidate,
+    promote_primary_computer,
+)
 from src.server.database.workspace_names import HOME_FOLDER, candidate_dir_names
 from src.server.database.workspace import (
     bind_workspace_to_computer,
@@ -78,28 +80,6 @@ _HOME_BIND_ATTEMPTS = 3
 
 def default_computer_name(kind: str) -> str:
     return provider_class(kind).default_computer_name
-
-
-async def _backup_off_candidate(user_id: str) -> Optional[Dict[str, Any]]:
-    """The computer ``promote_primary_computer`` would have made primary but
-    for its file backup being off, in its order: Home's first, then the
-    oldest. None when backup is not what kept every computer from it."""
-    home = await get_computer_for_workspace(get_home_workspace_id(user_id))
-    held_back = [
-        c
-        for c in await get_computers_for_user(user_id)
-        if c.get("status") != "error"
-        and not (c.get("config") or {}).get("retire_when_empty")
-        and c.get("files_backup") is False
-    ]
-    held_back.sort(
-        key=lambda c: (
-            home is None or str(c["computer_id"]) != str(home["computer_id"]),
-            c["created_at"],
-            str(c["computer_id"]),
-        )
-    )
-    return held_back[0] if held_back else None
 
 
 class MachineLifecycleMixin:
@@ -180,9 +160,7 @@ class MachineLifecycleMixin:
                 user_id,
                 kind=kind,
                 name=chosen,
-                # Home lives on the primary, so a machine whose files are not
-                # backed up never becomes it.
-                is_primary=is_primary and files_backup,
+                is_primary=is_primary,
                 status=ComputerStatus.CREATING if prepare else ComputerStatus.STOPPED,
                 resource_tier=resource_tier or "standard",
                 root_dir=root_dir or self.config.filesystem.working_directory,
@@ -225,8 +203,9 @@ class MachineLifecycleMixin:
         if not builds_computers(self.config.sandbox) or (
             (await get_user(user_id) or {}).get("computer_choice") == "own_machine"
         ):
-            if (held_back := await _backup_off_candidate(user_id)) is not None:
-                raise NeedsComputer.backup_off(held_back)
+            candidate = await primary_candidate(user_id)
+            if candidate is not None and not candidate["files_backup"]:
+                raise NeedsComputer.backup_off(candidate)
             raise NeedsComputer.no_computer()
 
         computer = await self.create_computer_for_user(
@@ -403,9 +382,9 @@ class MachineLifecycleMixin:
                     platform_secret_version=int(
                         workspace.get("platform_secret_version") or 0
                     ),
-                    # A machine the user brought is made primary only by
-                    # choice, its backup on; this adoption asks neither.
-                    is_primary=not is_own_machine(kind),
+                    # As a create's: taken only while the user has none,
+                    # and its files backed up.
+                    is_primary=True,
                     root_dir=root_dir,
                     computer_id=candidate_id,
                     origin_workspace_id=workspace_id if adopt_ref else None,

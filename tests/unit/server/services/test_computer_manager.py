@@ -25,7 +25,6 @@ from src.server.services.computer_errors import (
     ProviderNotOffered,
     UnknownResourceTier,
 )
-from src.server.services.computer_manager._machines import _backup_off_candidate
 from src.server.services.computer_manager import (
     ComputerBinding,
     ComputerManager,
@@ -379,24 +378,22 @@ class TestMintingAComputer(_Base):
         assert mock_create.await_args.kwargs["name"] == name
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "kind, files_backup, primary",
-        [("e2b", True, True), ("ssh", True, True), ("ssh", False, False)],
-    )
+    @pytest.mark.parametrize("files_backup", [True, False])
     @patch("src.server.services.computer_manager._machines.create_computer")
-    async def test_a_machine_becomes_primary_only_with_its_files_backed_up(
-        self, mock_create, kind, files_backup, primary
+    async def test_the_insert_decides_whether_a_new_machine_is_primary(
+        self, mock_create, files_backup
     ):
-        """Home lands on the primary, and a machine the user brought is
-        restored from its backup if lost, so one with backup off never takes it."""
+        """The insert takes the request only while the user has no primary and
+        the machine's files are backed up, the one rule adoption shares."""
         manager = _make_manager()
-        mock_create.return_value = _make_computer(kind=kind, status="stopped")
+        mock_create.return_value = _make_computer(kind="ssh", status="stopped")
 
         await manager.create_computer_for_user(
-            "user-1", kind=kind, is_primary=True, files_backup=files_backup
+            "user-1", kind="ssh", is_primary=True, files_backup=files_backup
         )
 
-        assert mock_create.await_args.kwargs["is_primary"] is primary
+        kwargs = mock_create.await_args.kwargs
+        assert (kwargs["is_primary"], kwargs["files_backup"]) == (True, files_backup)
 
     @pytest.mark.asyncio
     @patch("src.server.services.computer_manager._machines.create_computer")
@@ -638,7 +635,7 @@ class TestMintingAComputer(_Base):
         )
         with (
             patch(f"{_MACHINES}.get_user", AsyncMock(return_value={"computer_choice": "own_machine"})),
-            patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=mac)),
+            patch(f"{_MACHINES}.primary_candidate", AsyncMock(return_value=mac)),
             pytest.raises(NeedsComputer) as refused,
         ):
             await manager.ensure_primary_computer("user-1")
@@ -651,28 +648,6 @@ class TestMintingAComputer(_Base):
         }
         assert "MacBook Pro" in refused.value.detail["message"]
         mock_create.assert_not_awaited()
-
-        older = _make_computer(
-            computer_id="mac-0",
-            kind="ssh",
-            files_backup=False,
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
-        backed_up = _make_computer(computer_id="mac-2", kind="ssh", files_backup=True)
-        failed = _make_computer(
-            computer_id="mac-3", kind="ssh", status="error", files_backup=False
-        )
-        with (
-            patch(
-                f"{_MACHINES}.get_computers_for_user",
-                AsyncMock(return_value=[backed_up, failed, mac, older]),
-            ),
-        ):
-            # Home's computer first, as the promotion would take it, then the oldest.
-            with patch(f"{_MACHINES}.get_computer_for_workspace", AsyncMock(return_value=mac)):
-                assert await _backup_off_candidate("user-1") is mac
-            with patch(f"{_MACHINES}.get_computer_for_workspace", AsyncMock(return_value=None)):
-                assert await _backup_off_candidate("user-1") is older
 
     @pytest.mark.asyncio
     @patch("src.server.services.computer_manager._machines.update_computer_status")
@@ -1709,9 +1684,9 @@ class TestRemovingAComputer(_Base):
         manager = self._removing_manager()
         mock_get.return_value = self._spare(is_primary=True)
         mock_live.return_value = ["ws-a"]
-        others = [mock_get.return_value, _make_computer(computer_id="comp-other")]
+        other = _make_computer(computer_id="comp-other")
 
-        with patch(f"{_RETIREMENT}.get_computers_for_user", AsyncMock(return_value=others)):
+        with patch(f"{_RETIREMENT}.primary_candidate", AsyncMock(return_value=other)):
             await self._refused(manager, "primary")
 
         mock_mark.assert_not_awaited()
@@ -1727,15 +1702,19 @@ class TestRemovingAComputer(_Base):
     async def test_the_only_computer_is_refused_as_such(
         self, mock_mark, mock_live, mock_get, mock_status
     ):
-        """Making another primary cannot free it, so the client offers to add one."""
+        """Making another primary cannot free it when no other could take
+        Home, so the client offers to add one."""
         manager = self._removing_manager()
         mock_get.return_value = self._spare(is_primary=True)
 
-        with patch(
-            f"{_RETIREMENT}.get_computers_for_user",
-            AsyncMock(return_value=[mock_get.return_value]),
-        ):
+        candidate = AsyncMock(return_value=None)
+        with patch(f"{_RETIREMENT}.primary_candidate", candidate):
             await self._refused(manager, "only_computer")
+
+        candidate.assert_awaited_with(
+            str(mock_get.return_value["user_id"]),
+            excluding=str(mock_get.return_value["computer_id"]),
+        )
 
         mock_mark.assert_not_awaited()
         mock_status.assert_not_awaited()
@@ -4822,7 +4801,7 @@ def _no_computer_to_promote():
     with (
         patch(f"{_MACHINES}.promote_primary_computer", AsyncMock(return_value=None)),
         patch(f"{_MACHINES}.get_user", AsyncMock(return_value=None)),
-        patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}.primary_candidate", AsyncMock(return_value=None)),
     ):
         yield
 

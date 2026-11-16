@@ -68,21 +68,6 @@ def test_the_ledgers_kinds_load_no_provider_module():
     assert line == "LOADED=", line
 
 
-@pytest.mark.parametrize("kind", PROVIDER_KINDS)
-def test_every_kind_may_be_primary(kind):
-    """A machine the user brings holds Home as well as a cloud one."""
-    from ptc_agent.core.sandbox.providers import may_be_primary
-
-    assert may_be_primary(kind) is True
-
-
-def test_an_unknown_kind_may_not_be_asked_about():
-    from ptc_agent.core.sandbox.providers import may_be_primary
-
-    with pytest.raises(ValueError):
-        may_be_primary("nope")
-
-
 @pytest.mark.parametrize(
     ("kinds", "builds"),
     [(("daytona",), True), (("ssh",), False), (("ssh", "docker"), True), ((), False)],

@@ -22,7 +22,6 @@ MoveRefusalCode = Literal[
     "not_movable",
     "same_computer",
     "target_unavailable",
-    "not_primary",
     "not_backed_up",
     "turn_active",
     "command_running",

@@ -44,7 +44,7 @@ from src.server.database.workspace import (
     count_live_workspaces_by_computer,
     get_live_workspace_folders_for_computer,
 )
-from src.server.database.workspace_move import MoveRefused
+from src.server.database.workspace_move import MoveRefused, set_primary_computer
 from src.server.dependencies.usage_limits import (
     assert_provider_allowed,
     assert_spec_allowed,
@@ -121,7 +121,6 @@ from src.server.services.workspace_move import (
     claim_workspace_move,
     move_error_detail,
     move_from_row,
-    set_primary_computer,
 )
 from src.server.services.workspace_status_pubsub import (
     publish_computer_status_change,
@@ -510,7 +509,7 @@ async def create_computer(
                 # exists, so it reads as "primary if they have none". Without it a
                 # user's first, named machine is not primary and their first project
                 # mints a second one. A machine of the user's own is taken too,
-                # so one who works only on it gets no cloud computer; the manager
+                # so one who works only on it gets no cloud computer; the insert
                 # declines it for a machine whose files are not backed up.
                 is_primary=True,
                 prepare=True,
