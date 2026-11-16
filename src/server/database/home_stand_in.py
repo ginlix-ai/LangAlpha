@@ -173,8 +173,7 @@ async def read_stand_in(user_id: str, *, conn=None) -> Optional[StandIn]:
         kept=record["stand_in_kept"],
         runs=record["stand_in_runs"],
         owed=record["stand_in_owed"],
-        left=left_on_stand_in({"last_handback": record["stand_in_last_handback"]})
-        is not None,
+        left=left_on_stand_in(record["stand_in_last_handback"]) is not None,
     )
 
 

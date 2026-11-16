@@ -10,8 +10,8 @@ folder into place once all of it is there, so a failure leaves no folder
 behind and a copy is never merged into one already there.
 
 Which files go is a diff against what earlier hand-backs carried (their size
-and change time as listed), not their age: a file unpacked or copied keeps an
-old change time, and a sandbox clock may be behind.
+and mtime as listed), not their age: a file unpacked or copied keeps an
+old mtime, and a sandbox clock may be behind.
 """
 
 from __future__ import annotations
@@ -21,12 +21,22 @@ import logging
 import shlex
 import tarfile
 import tempfile
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from ptc_agent.core.paths import TRANSIENT_ROOT_PREFIX, WorkspaceLayout
 from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
+from src.server.services.persistence.transfer import (
+    EXCLUDE_BASENAMES,
+    EXCLUDE_DIR_NAMES,
+    EXCLUDE_ROOT_DIRS,
+    EXCLUDE_SUFFIXES,
+    SYNC_MARKER_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,22 +48,21 @@ MAX_FILE_BYTES = 200 * 1024 * 1024
 
 # The listing of the stand-in's folder is refused past this.
 _LISTING_CAP = 32 * 1024 * 1024
-# A tar member's header, a long name's extra header, and padding: the archive
-# packed on the cloud is refused past the caps plus this per file.
-_MEMBER_OVERHEAD = 3 * 512
+# A tar block, and the record GNU tar pads an archive to.
+_BLOCK, _RECORD = 512, 20 * 512
 # The notes file every folder is seeded with is no work of a turn's.
 _SEEDED = "agent.md"
 # Ends the unpack script's output, before the folder it filled: tar's warnings
 # share the output.
 _DEST_MARK = "HANDBACK_DEST="
 
-# (size, change time as ``find`` printed it), by path in the stand-in's folder.
+# (size, mtime as ``find`` printed it), by path in the stand-in's folder.
 Listing = Dict[str, Tuple[int, str]]
 
 
 @dataclass
 class Pick:
-    """What goes this time (path to its listed size and change time), what is
+    """What goes this time (path to its listed size and mtime), what is
     too large ever to go, and what waits for the next hand-back for room."""
 
     chosen: Listing = field(default_factory=dict)
@@ -65,13 +74,17 @@ class Pick:
 class Moved:
     """One hand-back's outcome. ``folder`` is where in Home the files went,
     relative to Home; None when nothing went. ``carried`` is each path copied
-    with its listed ``[size, change time]``."""
+    with its listed ``[size, mtime]``."""
 
     folder: Optional[str] = None
     carried: Dict[str, List[Any]] = field(default_factory=dict)
     too_large: List[str] = field(default_factory=list)
     unreadable: List[str] = field(default_factory=list)
     deferred: List[str] = field(default_factory=list)
+    #: When the stand-in's files were listed. A turn admitted while the copy
+    #: runs may write files the listing catches, so the record holds files
+    #: of turns placed up to here, not only up to the hand-back's watermark.
+    listed_at: Optional[datetime] = None
     # Removes what is left of the copy's staging once its outcome is recorded.
     stage: Optional[Tuple[Any, str]] = None
 
@@ -86,10 +99,23 @@ class Moved:
 
 
 def _carriable(path: str) -> bool:
-    """A path below the folder, none of its parts hidden: a hidden part is the
-    harness's own, and ``.``/``..`` are hidden too."""
-    return bool(path) and all(
-        part and not part.startswith(".") for part in path.split("/")
+    """A path below the folder that a backup of it keeps, less the agent's own
+    ``.agents`` tree, whose files mean nothing in a folder of Home's. A file
+    the user made hidden (``.gitignore``, ``.github/``) goes like any other."""
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    head, name = parts[0], parts[-1]
+    if head == WorkspaceLayout.AGENTS_DIR or head in EXCLUDE_ROOT_DIRS:
+        return False
+    if len(parts) == 1 and (
+        name == SYNC_MARKER_NAME or name.startswith(TRANSIENT_ROOT_PREFIX)
+    ):
+        return False
+    return (
+        EXCLUDE_DIR_NAMES.isdisjoint(parts[:-1])
+        and name not in EXCLUDE_BASENAMES
+        and not name.endswith(tuple(EXCLUDE_SUFFIXES))
     )
 
 
@@ -117,24 +143,61 @@ def parse_listing(data: bytes) -> Tuple[Listing, List[str]]:
     return listed, sorted(unreadable)
 
 
+def _folded(path: str) -> str:
+    """``path`` as a case-insensitive, normalizing volume (a Mac's) names it."""
+    return unicodedata.normalize("NFD", path).casefold()
+
+
 def pick_files(listed: Listing, handed_back: Mapping[str, Any]) -> Pick:
     """Every file that differs from, or is absent in, what was handed back
-    before, in path order, within the caps."""
+    before, in path order, within the caps.
+
+    Names one hand-back cannot both unpack on a Mac, which differ only in
+    case or Unicode form (``Report.csv`` and ``report.csv``, or a file and a
+    folder so spelled), go one per pass: the rest wait, so none is dropped
+    while counted as carried."""
     pick = Pick()
     total = 0
+    files: set[str] = set()
+    folders: set[str] = set()
     for path in sorted(listed):
         size, mtime = listed[path]
         before = handed_back.get(path)
         if before is not None and list(before) == [size, mtime]:
             continue
-        if size > MAX_FILE_BYTES:
+        folded = _folded(path)
+        parents = {folded.rsplit("/", n)[0] for n in range(1, folded.count("/") + 1)}
+        if folded in files or folded in folders or parents & files:
+            pick.deferred.append(path)
+        elif size > MAX_FILE_BYTES:
             pick.too_large.append(path)
         elif total + size > MAX_TOTAL_BYTES:
             pick.deferred.append(path)
         else:
             total += size
             pick.chosen[path] = (size, mtime)
+            files.add(folded)
+            folders |= parents
     return pick
+
+
+def _up(n: int, to: int = _BLOCK) -> int:
+    return -(-n // to) * to
+
+
+def packed_cap(chosen: Listing) -> int:
+    """The most the archive of ``chosen`` packed on the cloud may weigh, in
+    GNU format: each file's header and data padding, a long name's extra
+    header and payload, the end blocks and the record's padding. Data counts
+    at the whole cap, so a file grown since its listing waits rather than
+    failing the download."""
+    meta = 0
+    for path in chosen:
+        meta += _BLOCK + _BLOCK - 1
+        name = len(path.encode())
+        if name >= 100:
+            meta += _BLOCK + _up(name + 1)
+    return _up(MAX_TOTAL_BYTES + meta + 2 * _BLOCK, _RECORD) + (1 << 20)
 
 
 def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
@@ -144,12 +207,16 @@ def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
     Anything else in ``raw`` is dropped: links, devices, folders, a name not
     asked for or asked for twice, one that escapes the folder. A file asked
     for and not found as a regular file is named ``unreadable``; one whose
-    packed size broke a cap is too large or waits, as if listed so."""
+    packed size broke a cap is too large or waits, as if listed so. One packed
+    with another size or mtime than listed changed in between, so it waits
+    rather than be recorded as the listed file it is not."""
     moved = Moved()
     seen: set[str] = set()
     total = 0
     with (
-        tarfile.open(raw, mode="r|") as source,
+        # stream: a member read is not kept, so an archive of many headers
+        # costs no memory.
+        tarfile.open(raw, mode="r|", stream=True) as source,
         tarfile.open(
             out, mode="w:gz", format=tarfile.PAX_FORMAT, compresslevel=6
         ) as target,
@@ -163,6 +230,9 @@ def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
             except tarfile.FilterError:
                 continue
             seen.add(name)
+            if not _as_listed(member, chosen[name]):
+                moved.deferred.append(name)
+                continue
             if member.size > MAX_FILE_BYTES:
                 moved.too_large.append(name)
                 continue
@@ -183,24 +253,42 @@ def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
     return moved
 
 
+def _as_listed(member: tarfile.TarInfo, listed: Tuple[int, str]) -> bool:
+    """Whether ``member`` is the file the listing saw. The listing's mtime is
+    fractional and a tar header's may be whole seconds, so seconds compare."""
+    size, mtime = listed
+    try:
+        return member.size == size and int(member.mtime) == int(float(mtime))
+    except ValueError:
+        return False
+
+
 def unpack_script(home: str, stage: str, base: str, day: str) -> str:
-    """Unpack the parts under ``<stage>/parts`` into ``<stage>/files``, then
-    rename that to the first free ``<home>/<base>/<day>[ n]`` and print it.
+    """Unpack the parts under ``<stage>/parts`` into a folder named as the
+    stage is, then rename that to the first free ``<home>/<base>/<day>[ n]``
+    and print it.
 
     The folder appears whole or not at all, and a name something already
-    holds is never reused. Flags GNU tar and bsdtar (macOS) both take: the
+    holds is never reused: a folder made at that name just before the rename
+    takes the copy in under the stage's unique name, which is moved back out
+    and tried at the next. Flags GNU tar and bsdtar (macOS) both take: the
     files belong to whoever runs it, with the modes its umask gives."""
     return (
         "set -e; "
         f"stage={shlex.quote(stage)}; "
         f"base={shlex.quote(f'{home}/{base}/{day}')}; "
-        'mkdir -p "$stage/files"; '
+        'name=$(basename "$stage"); held="$stage/$name"; '
+        'mkdir -p "$held"; '
         'cat "$stage"/parts/* | tar -x -z -k --no-same-owner --no-same-permissions'
-        ' -f - -C "$stage/files"; '
+        ' -f - -C "$held"; '
+        'mkdir -p "$(dirname "$base")"; '
         "dest=$base; n=2; "
+        "while :; do "
         'while [ -e "$dest" ]; do dest="$base $n"; n=$((n+1)); done; '
-        'mkdir -p "$(dirname "$dest")"; '
-        'mv "$stage/files" "$dest"; '
+        'mv "$held" "$dest"; '
+        '[ -e "$dest/$name" ] || break; '
+        'mv "$dest/$name" "$held"; '
+        "done; "
         f"printf '\\n{_DEST_MARK}%s' \"$dest\""
     )
 
@@ -274,13 +362,16 @@ async def _pack_on_cloud(
     try:
         await _run(
             runtime,
-            f"tar cf {tar_path} -C {shlex.quote(folder)} --null --ignore-failed-read"
+            # GNU format, which ``packed_cap`` bounds; no recursion, so a
+            # name turned into a folder since its listing adds nothing; each
+            # hard-linked name as a file of its own, which the rebuild keeps.
+            f"tar cf {tar_path} --format=gnu -C {shlex.quote(folder)} --null"
+            f" --ignore-failed-read --no-recursion --hard-dereference"
             f" -T {list_path}",
             timeout=600,
             ok=(0, 1),
         )
-        cap = MAX_TOTAL_BYTES + _MEMBER_OVERHEAD * (len(chosen) + 2) + (1 << 20)
-        await _download(runtime, tar_path, raw, cap)
+        await _download(runtime, tar_path, raw, packed_cap(chosen))
     finally:
         try:
             await runtime.exec(f"rm -f {list_path} {tar_path}", timeout=30)
@@ -362,6 +453,8 @@ async def _copy(
             f"cd {shlex.quote(cloud_dir)} && find . -type f "
             f"-printf '%s\\t%T@\\t%P\\0' > {listing_path}",
         )
+        # On the clock a turn's placement is stamped with (``HomeAway.at``).
+        listed_at = datetime.now(timezone.utc)
         try:
             await _download(cloud_runtime, listing_path, listing_file, _LISTING_CAP)
         finally:
@@ -377,6 +470,7 @@ async def _copy(
         raw, clean = Path(tmp) / "raw.tar", Path(tmp) / "clean.tgz"
         await _pack_on_cloud(cloud_runtime, cloud_dir, pick.chosen, token, raw)
         moved = await asyncio.to_thread(rebuild_archive, raw, clean, pick.chosen)
+        moved.listed_at = listed_at
         moved.too_large = sorted([*pick.too_large, *moved.too_large])
         moved.deferred = sorted([*pick.deferred, *moved.deferred])
         moved.unreadable = sorted([*unreadable, *moved.unreadable])

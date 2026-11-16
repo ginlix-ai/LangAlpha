@@ -31,6 +31,18 @@ async def _stand_in(seed_user):
     await place_home_stand_in(seed_user["user_id"])
 
 
+def _record(folder, files):
+    from src.server.services.home_handback import _notice
+
+    return _notice(folder=folder, files=files, computer_name="Mac", cloud_name="Cloud")
+
+
+async def _through(user_id):
+    """The watermark a hand-back starting now copies up to."""
+    _, through = await home_away.begin_handback(user_id)
+    return through
+
+
 async def test_a_turn_on_the_cloud_owes_a_hand_back(seed_user):
     user_id = seed_user["user_id"]
     assert not await home_away.handback_owed(user_id)
@@ -44,12 +56,8 @@ async def test_a_turn_on_the_cloud_owes_a_hand_back(seed_user):
 async def test_the_watermark_moves_once_for_the_value_read(seed_user):
     user_id = seed_user["user_id"]
     await home_away.mark_away(user_id)
-    through = await home_away.database_now()
-    record = {
-        "handback_id": "7b0b8f0e-4a8e-4f0e-9a43-6f1a2b3c4d5e",
-        "folder": "From the cloud/2026-11-15",
-        "files": 1,
-    }
+    through = await _through(user_id)
+    record = _record("From the cloud/2026-11-15", 1)
 
     first = await home_away.finish_handback(
         user_id, previous=None, through=through, record=record, carried={"a.md": [3, "1.0"]}
@@ -68,10 +76,36 @@ async def test_the_watermark_moves_once_for_the_value_read(seed_user):
     assert await home_away.handed_back(user_id) == {"a.md": [3, "1.0"]}
 
 
+async def test_each_hand_back_keeps_what_it_carried_and_the_latest_listing_wins(seed_user):
+    """One row per hand-back is both where a turn's file went and what the
+    next hand-back diffs against: a file carried again is listed as it last
+    went."""
+    user_id = seed_user["user_id"]
+    for folder, carried in [
+        ("From the cloud/2026-11-15", {"b.md": [3, "1.0"], "a.md": [1, "1.0"]}),
+        ("From the cloud/2026-11-16", {"a.md": [4, "2.0"]}),
+    ]:
+        await home_away.mark_away(user_id)
+        row, through = await home_away.begin_handback(user_id)
+        assert await home_away.finish_handback(
+            user_id,
+            previous=row["handed_back_through"],
+            through=through,
+            record=_record(folder, len(carried)),
+            carried=carried,
+        )
+
+    assert [(h["folder"], h["files"]) for h in await home_away.list_handbacks(user_id)] == [
+        ("From the cloud/2026-11-15", ["a.md", "b.md"]),
+        ("From the cloud/2026-11-16", ["a.md"]),
+    ]
+    assert await home_away.handed_back(user_id) == {"a.md": [4, "2.0"], "b.md": [3, "1.0"]}
+
+
 async def test_a_turn_after_the_mark_is_owed_again(seed_user):
     user_id = seed_user["user_id"]
     await home_away.mark_away(user_id)
-    through = await home_away.database_now()
+    through = await _through(user_id)
     await home_away.finish_handback(
         user_id, previous=None, through=through, record=None
     )
@@ -83,18 +117,42 @@ async def test_a_turn_after_the_mark_is_owed_again(seed_user):
     assert row["handed_back_through"] == through and row["away_since"] is not None
 
 
-async def test_a_dismissed_notice_stays_dismissed_until_the_next_one(seed_user):
+async def test_a_hand_back_reaches_its_listing_and_leaves_later_turns_owed(seed_user):
+    """A turn admitted mid-copy may have files the listing caught: the row
+    reaches the listing, so its cards find them there, and the watermark
+    stays where the hand-back began, so the turn stays owed."""
+    from datetime import timedelta
+
     user_id = seed_user["user_id"]
     await home_away.mark_away(user_id)
-    record = {
-        "handback_id": "2c1d7a8e-0b7f-4c1e-8d0a-1f2e3d4c5b6a",
-        "folder": "From the cloud/2026-11-15",
-        "files": 2,
-    }
+    _, through = await home_away.begin_handback(user_id)
+    await home_away.mark_away(user_id)
+    listed_at = (await home_away.get_home_away(user_id))["last_away_at"] + timedelta(
+        seconds=1
+    )
+
     await home_away.finish_handback(
         user_id,
         previous=None,
-        through=await home_away.database_now(),
+        through=through,
+        listed_at=listed_at,
+        record=_record("From the cloud/2026-11-15", 1),
+        carried={"a.md": [1, "1.0"]},
+    )
+
+    [handback] = await home_away.list_handbacks(user_id)
+    assert handback["through"] == listed_at
+    assert await home_away.handback_owed(user_id)
+
+
+async def test_a_dismissed_notice_stays_dismissed_until_the_next_one(seed_user):
+    user_id = seed_user["user_id"]
+    await home_away.mark_away(user_id)
+    record = _record("From the cloud/2026-11-15", 2)
+    await home_away.finish_handback(
+        user_id,
+        previous=None,
+        through=await _through(user_id),
         record=record,
         carried={"a.md": [1, "1.0"], "b.md": [2, "2.0"]},
     )
@@ -117,7 +175,7 @@ async def test_a_pass_with_no_room_for_everything_stays_owed(seed_user):
         user_id,
         previous=None,
         through=through,
-        record=None,
+        record=_record("From the cloud/2026-11-15", 1),
         carried={"a.md": [1, "1.0"]},
         done=False,
     )
@@ -129,7 +187,7 @@ async def test_a_pass_with_no_room_for_everything_stays_owed(seed_user):
 async def test_a_failing_hand_back_waits_and_then_gives_up(seed_user):
     user_id = seed_user["user_id"]
     await home_away.mark_away(user_id)
-    given_up = {"handback_id": "5d3c2b1a-0f9e-4d8c-b7a6-1e2f3a4b5c6d", "failed": True}
+    given_up = {**_record(None, 0), "failed": True}
 
     first = await home_away.fail_handback(user_id, max_attempts=2, given_up=given_up)
     waiting = await home_away.get_home_away(user_id)
@@ -141,7 +199,7 @@ async def test_a_failing_hand_back_waits_and_then_gives_up(seed_user):
     assert waiting["handback_attempts"] == 1 and waiting["next_handback_at"] is not None
     assert user_id not in listed
     assert not home_away.is_owed(row) and row["last_handback"]["failed"] is True
-    assert home_away.left_on_stand_in(row) == {"failed": True, "paths": []}
+    assert home_away.left_on_stand_in(row["last_handback"]) == {"failed": True, "paths": []}
     # New work on the cloud owes a hand-back again, with its tries afresh.
     await home_away.mark_away(user_id)
     again = await home_away.get_home_away(user_id)

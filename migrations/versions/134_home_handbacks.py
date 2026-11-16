@@ -3,9 +3,10 @@
 A Home turn in Home's stand-in names its files by their path in the stand-in's
 folder. A hand-back copies them into a dated folder of their own in Home, so
 the path a file card holds no longer leads to them there. One row per
-hand-back keeps the folder and the paths it carried, which a card of such a
-turn reads to open the copy that came back with it (the first hand-back
-after the turn).
+hand-back keeps the folder and the files it carried, by path with the
+``[size, mtime]`` each was listed with. A card of such a turn reads it to open
+the copy that came back with it (the first hand-back after the turn), and the
+next hand-back carries only what differs from every earlier one.
 
 A new table, so nothing existing is locked. Rollback: the previous build never
 reads it, so ``alembic downgrade 133`` drops it once no process of this build

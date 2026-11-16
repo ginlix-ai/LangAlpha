@@ -25,14 +25,16 @@ import logging
 import random
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from src.server.database.computer import get_computer_for_workspace
+from src.server.database.home_away import HandbackNotice
 from src.server.database.home_workspace import (
     get_home_stand_in_id,
     get_home_workspace_id,
 )
 from src.server.database.sql_fences import advisory_key
+from src.server.services.commands.mirror import mirror_computer
 from src.server.services.ssh_computers import computer_unreachable
 
 logger = logging.getLogger(__name__)
@@ -97,32 +99,36 @@ async def _names(user_id: str) -> Dict[str, str]:
     }
 
 
-def _notice(**fields: Any) -> Dict[str, Any]:
-    return {
-        "handback_id": str(uuid.uuid4()),
-        "folder": None,
-        "files": 0,
-        "left_on_cloud": [],
-        "unreadable": [],
-        **fields,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+def _notice(**fields: Any) -> HandbackNotice:
+    return cast(
+        HandbackNotice,
+        {
+            "handback_id": str(uuid.uuid4()),
+            "folder": None,
+            "files": 0,
+            "left_on_cloud": [],
+            "unreadable": [],
+            **fields,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 async def _record(
-    user_id: str, moved: Any, last: Optional[Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
+    user_id: str, moved: Any, last: Optional[HandbackNotice]
+) -> Optional[HandbackNotice]:
     """The user's notice of a hand-back: what arrived and where, and what
     stays on the cloud, too large or unreadable. None when nothing arrived
     and what stays is what the last notice already named."""
     left, unreadable = sorted(moved.too_large), sorted(moved.unreadable)
     if moved.folder is None:
-        last = last or {}
         if not left and not unreadable:
             return None
-        if (last.get("left_on_cloud") or []) == left and (
-            last.get("unreadable") or []
-        ) == unreadable:
+        if (
+            last is not None
+            and last["left_on_cloud"] == left
+            and last["unreadable"] == unreadable
+        ):
             return None
     return _notice(
         folder=moved.folder,
@@ -141,7 +147,6 @@ async def hand_back_owed(user_id: str) -> bool:
         defer_handback,
         fail_handback,
         finish_handback,
-        get_home_away,
         handed_back,
         is_owed,
     )
@@ -150,19 +155,6 @@ async def hand_back_owed(user_id: str) -> bool:
 
     home_computer = await get_computer_for_workspace(get_home_workspace_id(user_id))
     if home_computer is not None and await computer_unreachable(home_computer):
-        return False
-    if await get_computer_for_workspace(get_home_stand_in_id(user_id)) is None:
-        # Nowhere left to read from: the stand-in's computer is gone. Its
-        # removal is refused while owed, so this is a retirement's leftover;
-        # the watermark moves so the user is not owed it forever.
-        row = await get_home_away(user_id)
-        if row is not None and is_owed(row):
-            await finish_handback(
-                user_id,
-                previous=row.get("handed_back_through"),
-                through=row["last_away_at"],
-                record=None,
-            )
         return False
     async with try_own_session_lock(handback_key(user_id)) as held:
         if not held:
@@ -177,6 +169,16 @@ async def hand_back_owed(user_id: str) -> bool:
         if not is_owed(row):
             return False
         previous = row.get("handed_back_through")
+        if await get_computer_for_workspace(get_home_stand_in_id(user_id)) is None:
+            # Nowhere left to read from: the stand-in's computer is gone. Its
+            # removal is refused while owed, so this is a retirement's
+            # leftover; the watermark moves so the user is not owed it
+            # forever. Read after the watermark: a turn that placed the
+            # stand-in again since marks the user away past it, still owed.
+            await finish_handback(
+                user_id, previous=previous, through=through, record=None
+            )
+            return False
         try:
             if home_computer is None:
                 raise RuntimeError("Home is on no computer")
@@ -199,17 +201,24 @@ async def hand_back_owed(user_id: str) -> bool:
                 exc_info=True,
             )
             return False
-        record = await _record(user_id, moved, row.get("last_handback"))
+        record = await _record(user_id, moved, row["last_handback"])
         finished = await finish_handback(
             user_id,
             previous=previous,
             through=through,
+            listed_at=moved.listed_at,
             record=record,
             carried=moved.carried,
             done=not moved.deferred,
         )
         # Recorded first: a cleanup that fails never repeats the copy.
-        await moved.clean_up()
+        try:
+            await moved.clean_up()
+        finally:
+            if finished and moved.folder:
+                # No turn of Home's backs up what landed, and a Home moved
+                # from its backup before one runs would come back without it.
+                await mirror_computer(str(home_computer["computer_id"]))
         logger.info(
             "Handed %d file(s) of user %s's Home back from its stand-in into %s"
             " (%d too large, %d unreadable, %d next time)",

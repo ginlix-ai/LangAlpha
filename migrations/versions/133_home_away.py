@@ -5,12 +5,11 @@ reached runs in Home's stand-in, a hidden workspace on one of the user's cloud
 computers, and marks the user away here. What it wrote there is owed to Home
 while ``last_away_at`` is newer than ``handed_back_through``; one worker at a
 time hands it back under an advisory lock. ``last_handback`` is the last
-hand-back, for the user's notice until ``handback_seen_at``. ``handed_back``
-is every file handed back, by its path in the stand-in's folder, with the size
-and change time it had: the next hand-back carries what differs. A failed
-hand-back waits until ``next_handback_at`` and counts ``handback_attempts``
-until it gives up. ``home_id`` is Home's workspace, whose computer the sweep
-asks after. One row per user, written only by an upsert or a guarded update.
+hand-back, for the user's notice until ``handback_seen_at``; which files each
+hand-back carried is in ``home_handbacks`` (134). A failed hand-back waits
+until ``next_handback_at`` and counts ``handback_attempts`` until it gives up.
+``home_id`` is Home's workspace, whose computer the sweep asks after. One row
+per user, written only by an upsert or a guarded update.
 
 A new table, so nothing existing is locked. Rollback: the previous build never
 reads it, so ``alembic downgrade 132`` drops it once no process of this build
@@ -36,7 +35,6 @@ def upgrade() -> None:
             handed_back_through TIMESTAMPTZ,
             last_handback JSONB,
             handback_seen_at TIMESTAMPTZ,
-            handed_back JSONB NOT NULL DEFAULT '{}'::jsonb,
             handback_attempts INTEGER NOT NULL DEFAULT 0,
             next_handback_at TIMESTAMPTZ,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

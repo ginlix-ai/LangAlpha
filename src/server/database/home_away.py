@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NotRequired, Optional, Tuple, TypedDict
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
@@ -28,6 +28,29 @@ _COLUMNS = (
     "user_id, away_since, last_away_at, handed_back_through, last_handback, "
     "handback_seen_at, handback_attempts, next_handback_at"
 )
+
+# A file the stand-in held, as its listing gave it: ``[size, mtime]``, the
+# mtime as ``find`` printed it.
+Listed = List[Any]
+
+
+class HandbackNotice(TypedDict):
+    """The user's notice of the last hand-back (``home_away.last_handback``)."""
+
+    handback_id: str
+    #: Where in Home the files went, relative to Home; None when none did.
+    folder: Optional[str]
+    files: int
+    #: Paths in the stand-in's folder left there: over the per-file cap, or
+    #: not readable as a name or a file.
+    left_on_cloud: List[str]
+    unreadable: List[str]
+    computer_name: str
+    cloud_name: str
+    created_at: str
+    #: The hand-back gave up; everything it owed stays on the cloud.
+    failed: NotRequired[bool]
+
 
 # Whether a row's cloud work is not on Home yet, as SQL over home_away.
 OWED_SQL = (
@@ -48,13 +71,14 @@ def is_owed(row: Optional[Dict[str, Any]]) -> bool:
     return through is None or row["last_away_at"] > through
 
 
-def left_on_stand_in(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def left_on_stand_in(last: Optional[HandbackNotice]) -> Optional[Dict[str, Any]]:
     """What the last hand-back left in the stand-in and Home does not have:
     ``failed`` when it gave up, else the paths too large or unreadable to
     carry. None when it left nothing."""
-    last = (row or {}).get("last_handback") or {}
-    paths = [*(last.get("left_on_cloud") or []), *(last.get("unreadable") or [])]
-    failed = bool(last.get("failed"))
+    if last is None:
+        return None
+    paths = [*last["left_on_cloud"], *last["unreadable"]]
+    failed = last.get("failed", False)
     if not failed and not paths:
         return None
     return {"failed": failed, "paths": paths}
@@ -131,15 +155,19 @@ async def get_home_away(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-async def handed_back(user_id: str) -> Dict[str, List[Any]]:
-    """Each file handed back so far, by its path in the stand-in's folder:
-    ``[size, change time]`` as it was listed when it went."""
+async def handed_back(user_id: str) -> Dict[str, Listed]:
+    """Each file handed back so far, by its path in the stand-in's folder, as
+    it was listed when it last went (``home_handbacks.files``)."""
     async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT handed_back FROM home_away WHERE user_id = %s", (user_id,)
+            "SELECT files FROM home_handbacks WHERE user_id = %s ORDER BY through",
+            (user_id,),
         )
-        row = await cur.fetchone()
-    return dict((row or {}).get("handed_back") or {})
+        rows = await cur.fetchall()
+    carried: Dict[str, Listed] = {}
+    for row in rows:
+        carried.update(row["files"])
+    return carried
 
 
 async def handback_owed(user_id: str, *, conn=None) -> bool:
@@ -159,8 +187,7 @@ async def list_owed(limit: int = 50) -> List[Dict[str, Any]]:
             f"""
             SELECT ha.user_id FROM home_away ha
             LEFT JOIN workspaces w ON w.workspace_id = ha.home_id
-            WHERE ha.last_away_at IS NOT NULL
-              AND ha.last_away_at > COALESCE(ha.handed_back_through, '-infinity'::timestamptz)
+            WHERE {OWED_SQL}
               AND (ha.next_handback_at IS NULL OR ha.next_handback_at <= NOW())
               AND NOT {computer_tunnel_down_sql("w.computer_id::text")}
             ORDER BY COALESCE(ha.next_handback_at, ha.last_away_at)
@@ -169,13 +196,6 @@ async def list_owed(limit: int = 50) -> List[Dict[str, Any]]:
             {"limit": limit},
         )
         return [dict(r) for r in await cur.fetchall()]
-
-
-async def database_now() -> datetime:
-    """Now on the database clock, which every watermark here is on."""
-    async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT NOW() AS now")
-        return (await cur.fetchone())["now"]
 
 
 async def begin_handback(user_id: str) -> Optional[Tuple[Dict[str, Any], datetime]]:
@@ -214,16 +234,22 @@ async def finish_handback(
     *,
     previous: Optional[datetime],
     through: datetime,
-    record: Optional[Dict[str, Any]],
-    carried: Optional[Dict[str, List[Any]]] = None,
+    record: Optional[HandbackNotice],
+    carried: Optional[Dict[str, Listed]] = None,
     done: bool = True,
+    listed_at: Optional[datetime] = None,
 ) -> bool:
     """A hand-back ended. ``record`` is what arrived, for the user's notice;
     None when nothing did, which leaves the last notice as it was. ``carried``
-    is each path copied into the record's folder with the ``[size, change
-    time]`` it was listed with, kept for the file cards of the turns that
-    wrote them and for the next hand-back (``handed_back``). ``done`` False
-    leaves the watermark, so files a pass had no room for stay owed.
+    is each path copied into the record's folder as it was listed, kept in
+    one row per hand-back for the file cards of the turns that wrote them and
+    for the next hand-back (``handed_back``). ``done`` False leaves the
+    watermark, so files a pass had no room for stay owed.
+
+    The hand-back's row reaches ``listed_at``, when the stand-in was listed,
+    rather than the watermark ``through``: a turn admitted between the two
+    may have files in it, and its cards look for them in hand-backs reaching
+    past its start. The watermark stays ``through``, so that turn stays owed.
 
     Guarded on the watermark the caller read (``previous``): a second writer
     that slipped past the lock changes nothing. False when it moved."""
@@ -238,7 +264,6 @@ async def finish_handback(
                 last_handback = COALESCE(%(record)s::jsonb, last_handback),
                 handback_seen_at = CASE WHEN %(record)s::jsonb IS NULL
                     THEN handback_seen_at ELSE NULL END,
-                handed_back = handed_back || %(carried)s::jsonb,
                 handback_attempts = 0,
                 next_handback_at = NULL,
                 updated_at = NOW()
@@ -250,7 +275,6 @@ async def finish_handback(
                 "through": through,
                 "previous": previous,
                 "record": Json(record) if record is not None else None,
-                "carried": Json(carried or {}),
                 "user_id": user_id,
             },
         )
@@ -265,16 +289,16 @@ async def finish_handback(
                 (
                     record["handback_id"],
                     user_id,
-                    through,
+                    listed_at or through,
                     record["folder"],
-                    Json(sorted(carried)),
+                    Json(carried),
                 ),
             )
         return True
 
 
 async def fail_handback(
-    user_id: str, *, max_attempts: int, given_up: Dict[str, Any]
+    user_id: str, *, max_attempts: int, given_up: HandbackNotice
 ) -> bool:
     """Count a failed hand-back and put the next one off, doubling the delay.
 
@@ -337,7 +361,7 @@ async def defer_handback(user_id: str, seconds: float) -> None:
 async def list_handbacks(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
     """The user's latest hand-backs, oldest first: how far each reached, the
     folder in Home it filled, and the paths (relative to the stand-in's
-    folder) it carried there."""
+    folder) it carried there, sorted."""
     async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -348,7 +372,7 @@ async def list_handbacks(user_id: str, limit: int = 100) -> List[Dict[str, Any]]
             """,
             (user_id, limit),
         )
-        return [dict(r) for r in await cur.fetchall()]
+        return [{**r, "files": sorted(r["files"])} for r in await cur.fetchall()]
 
 
 async def mark_handback_seen(user_id: str, handback_id: Optional[str] = None) -> None:

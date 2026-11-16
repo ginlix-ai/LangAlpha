@@ -152,12 +152,12 @@ async def home_back_notice(user_id: str) -> Optional[Dict[str, Any]]:
         notice: Dict[str, Any] = {
             "computer_name": str((home_computer or {}).get("name") or ""),
         }
-        last = row.get("last_handback") or {}
+        last = row["last_handback"]
         if is_owed(row):
             notice["pending"] = True
-        elif last.get("folder"):
+        elif last is not None and last["folder"]:
             notice["folder"] = last["folder"]
-            notice["files"] = int(last.get("files") or 0)
+            notice["files"] = last["files"]
         return notice
     except Exception:  # noqa: BLE001 - a line of context is not worth the turn
         logger.warning("Could not read where %s's Home ran", user_id, exc_info=True)
@@ -201,6 +201,6 @@ async def home_placement_view(user_id: str) -> Dict[str, Any]:
         "handback": last if last and row.get("handback_seen_at") is None else None,
         # Kept after the notice is dismissed: removing the stand-in's computer
         # takes these files with it.
-        "left_on_stand_in": left_on_stand_in(row),
+        "left_on_stand_in": left_on_stand_in(last),
         "move": move_from_row(await get_latest_workspace_move(home_id)),
     }
