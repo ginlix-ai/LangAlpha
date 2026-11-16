@@ -35,6 +35,8 @@ interface CommentToolsProps {
   variant?: 'crumb' | 'bar';
   /** Comment mode is not offered: a published version is read only. */
   modeDisabled?: boolean;
+  /** The mode button's tooltip; left out, a page's. */
+  modeTitle?: string;
 }
 
 const BAR_BUTTON = 'h-[30px] gap-1.5 px-2 text-xs sm:px-2.5';
@@ -319,7 +321,7 @@ function SendAll({ comments, artifactId, workspaceId, docPath, sends, bar }: {
  * layer over it shows: the one the tab opened, or another a link led to.
  */
 export function CommentTools({
-  tabId, workspaceId, path, ui, variant = 'crumb', modeDisabled = false,
+  tabId, workspaceId, path, ui, variant = 'crumb', modeDisabled = false, modeTitle,
 }: CommentToolsProps): React.ReactElement {
   const { t } = useTranslation();
   const rootDir = useWorkspaceFolders()?.rootDir;
@@ -363,7 +365,7 @@ export function CommentTools({
           aria-pressed={mode}
           aria-keyshortcuts="C"
           aria-label={t('pageViewer.comments.comment')}
-          title={t('pageViewer.comments.modeTitle')}
+          title={modeTitle ?? t('pageViewer.comments.modeTitle')}
         >
           <MessageSquarePlus className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">{t('pageViewer.comments.comment')}</span>
@@ -396,7 +398,7 @@ export function CommentTools({
         className={cn('page-comment-mode-btn press shrink-0', mode && 'is-on')}
         aria-pressed={mode}
         aria-keyshortcuts="C"
-        title={t('pageViewer.comments.modeTitle')}
+        title={modeTitle ?? t('pageViewer.comments.modeTitle')}
       >
         <MessageSquarePlus className="h-3.5 w-3.5" />
         <span>{t('pageViewer.comments.comment')}</span>

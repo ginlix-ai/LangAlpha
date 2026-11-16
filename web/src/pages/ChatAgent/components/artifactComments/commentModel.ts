@@ -1,5 +1,4 @@
-import type { TFunction } from 'i18next';
-import type { ArtifactComment, ArtifactCommentAnchor, ArtifactCommentMessage } from '@/types/api';
+import type { ArtifactComment, ArtifactCommentMessage } from '@/types/api';
 import type { SendLook } from './commentSendStore';
 
 /**
@@ -163,55 +162,4 @@ export function firstWords(comment: Pick<ArtifactComment, 'messages'>): string {
 export function oneLine(text: string | undefined, limit: number): string {
   const line = (text ?? '').split(/\s+/).filter(Boolean).join(' ');
   return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
-}
-
-/**
- * A new comment's spot as its box names it, and what it holds under the
- * name. Words are named by the place they are in (the tile's label, else the
- * nearest heading), as an element is by its own name. Selected words are
- * quoted, since they are what the owner means, and an area's parts say what
- * it took; an element's name already says what it is.
- */
-export function draftHeading(t: TFunction, anchor: ArtifactCommentAnchor): { label: string; quote: string | null } {
-  if (anchor.kind === 'area') return { label: areaTitle(t, anchor), quote: anchor.label ?? null };
-  const label = anchor.label
-    ? t('pageViewer.comments.onLabel', { label: anchor.label })
-    : anchor.kind === 'text'
-      ? t('pageViewer.comments.onText')
-      : t('pageViewer.comments.onElement');
-  const quote = anchor.kind === 'text' && anchor.quote ? t('chat.artifactComments.message.quote', { quote: anchor.quote }) : null;
-  return { label, quote };
-}
-
-/**
- * The parts a spot is a list of, by their labels, in the order the anchor
- * lists them: an element's comment is a list of one, an area that lists
- * every part it holds a list of those. A modifier click adds to such a list
- * or takes a part out. Null for words, and for a drag that lists only its
- * first few, which a modifier click starts afresh.
- */
-export function partLabels(anchor: ArtifactCommentAnchor): string[] | null {
-  if (anchor.kind === 'element') return [anchor.label ?? anchor.quote ?? anchor.path ?? ''];
-  if (anchor.kind === 'area' && anchor.count === anchor.elements.length) {
-    return anchor.elements.map((e) => e.label ?? e.quote ?? e.path ?? '');
-  }
-  return null;
-}
-
-/** An area by its size, the composer's header: "Selected area · 3 elements". */
-export function areaTitle(t: TFunction, anchor: Pick<ArtifactCommentAnchor, 'count' | 'elements'>): string {
-  return t('pageViewer.comments.areaTitle', { count: anchor.count ?? anchor.elements?.length ?? 0 });
-}
-
-/**
- * Where a comment is, as its card's spot line says it: the words it quotes
- * for a selection, else the anchor's label, which for an area names its parts.
- */
-export function spotPhrase(t: TFunction, anchor: ArtifactCommentAnchor): string {
-  if (anchor.kind === 'text') {
-    return anchor.quote ? t('pageViewer.comments.onQuote', { quote: oneLine(anchor.quote, 36) }) : t('pageViewer.comments.onText');
-  }
-  if (anchor.label) return t('pageViewer.comments.onLabel', { label: oneLine(anchor.label, 60) });
-  if (anchor.kind === 'area') return areaTitle(t, anchor);
-  return t('pageViewer.comments.onElement');
 }

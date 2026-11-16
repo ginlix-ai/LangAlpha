@@ -10,8 +10,8 @@ import {
   type MarkdownLineTarget,
 } from '../../utils/fileLocation';
 
-/** Which viewer is showing the selected file, as far as a location can reach into it. */
-export type FocusViewer = 'code' | 'markdown' | 'pdf' | 'html' | 'excel' | 'other';
+/** Which viewer is showing the selected file (`viewerFor`); a location reaches into some of them. */
+export type FocusViewer = 'code' | 'markdown' | 'pdf' | 'html' | 'excel' | 'csv' | 'image' | 'other';
 
 interface FileFocus {
   path: string;

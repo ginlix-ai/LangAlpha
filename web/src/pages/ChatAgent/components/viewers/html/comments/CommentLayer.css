@@ -194,9 +194,9 @@
     page-comment-arrival var(--motion-reveal) var(--ease-reveal) var(--motion-quick) backwards;
 }
 
-/* Cmd held over a draft that takes parts: the box fades and lets clicks
+/* The add key held over a draft that takes parts: the box fades and lets clicks
    through, so a part under it can be added or taken out. The fade waits a
-   beat, so a shortcut typed in the box (Cmd-V) does not flicker it. */
+   beat, so a shortcut typed in the box (Cmd-V, Ctrl-V) does not flicker it. */
 .page-comment-box {
   transition: opacity var(--motion-quick) var(--ease-out);
 }
@@ -220,9 +220,9 @@
   z-index: 3;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 2px;
   border-radius: 6px;
   transform-origin: 100% 0;
   font-size: 0.75rem;
@@ -232,15 +232,25 @@
   border: 1px solid var(--color-border-default);
   box-shadow: var(--shadow-card);
   pointer-events: auto;
-  cursor: pointer;
   animation: pop-in var(--motion-quick) var(--ease-out);
-  transition: background-color var(--motion-quick) var(--ease-out);
 }
 .page-comments-select[data-side='top'] {
   --pop-y: 0.25rem;
   transform-origin: 100% 100%;
 }
-.page-comments-select:hover {
+/* Each action holds its own hover, inside the chip's edge. */
+.page-comments-select-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.page-comments-select-action:hover {
   background: var(--color-bg-hover);
 }
 

@@ -50,7 +50,7 @@ export type ComposerMode =
     /**
      * The parts the comment is on, by their labels, each with a way out of
      * the selection, for an area that lists every part. Absent for one
-     * element, and for a drag that lists only its first few.
+     * element, and for an area too large to list.
      */
     parts?: { labels: string[]; onDrop?: (index: number) => void };
     /**

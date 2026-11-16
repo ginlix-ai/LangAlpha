@@ -63,11 +63,9 @@ var MAX_AROUND = 60;
 
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_POSITIONS} */
 var MAX_ANCHORS = 500;
-// An area dragged out lists its first few elements in full and counts the rest.
-/** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').DRAG_AREA_LISTED} */
-var DRAG_LISTED = 8;
-// Parts picked one by one are each listed, up to the API's limit: the agent
-// is asked to change every one.
+// An area lists each of its parts, picked or dragged around, up to the API's
+// limit: the agent is asked to change every one. A drag over more counts the
+// rest.
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_AREA_ELEMENTS} */
 var MAX_PARTS = 64;
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_AREA_COUNT} */

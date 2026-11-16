@@ -586,7 +586,7 @@ test.describe('quoting a selection', () => {
     const toolbar = page.getByRole('toolbar', { name: 'Selected text' });
     await expect(toolbar).toBeVisible();
 
-    await toolbar.getByRole('button', { name: 'Quote' }).click();
+    await toolbar.getByRole('button', { name: 'Ask in chat' }).click();
     const popover = page.getByRole('dialog', { name: 'Quote from notes.md:L3' });
     await expect(popover.getByRole('textbox')).toBeFocused();
     await popover.getByRole('textbox').fill('is this organic?');
@@ -603,7 +603,7 @@ test.describe('quoting a selection', () => {
     await word.dblclick();
     const toolbar = page.getByRole('toolbar', { name: 'Selected text' });
     await expect(toolbar).toBeVisible();
-    await toolbar.getByRole('button', { name: 'Quote' }).click();
+    await toolbar.getByRole('button', { name: 'Ask in chat' }).click();
     const popover = page.getByRole('dialog', { name: /Quote from notes\.md:L3/ });
     await popover.getByRole('textbox').fill('draft');
     await word.click();

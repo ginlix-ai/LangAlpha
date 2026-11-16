@@ -72,7 +72,7 @@ export interface CommentPopoverProps {
    * not let go for a press or focus elsewhere (`onAskDiscard` asks instead).
    */
   draft?: { words: boolean; onAskDiscard: () => void } | null;
-  /** Fades and lets clicks through to the page under it: Cmd is held to add a part the box may cover. */
+  /** Fades and lets clicks through to the page under it: the add key is held to add a part the box may cover. */
   seeThrough?: boolean;
   onDismiss: () => void;
   /** Esc, which steps the layer back one layer (`CommentLayer`'s `escapeOneLayer`). */

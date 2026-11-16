@@ -12,6 +12,7 @@ import type {
   ShownArtifactComment,
 } from '@/types/api';
 import { oneLine } from './commentModel';
+import { anchorLabel } from './anchorKinds';
 import { basename } from '../../utils/fileRefResolver';
 
 // The server's clip lengths, so the bubble a send draws before the server
@@ -75,7 +76,7 @@ export function shownFromQueued(
         number: c.number,
         text: clip(delivered.join('\n'), SHOWN_CHARS),
         follow_up: c.messages.length > delivered.length,
-        label: anchorText(c.anchor.label),
+        label: anchorText(anchorLabel(c.anchor)),
         quote: anchorText(c.anchor.quote),
       };
     }),

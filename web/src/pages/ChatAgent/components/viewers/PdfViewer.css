@@ -102,6 +102,16 @@
   display: flex;
 }
 
+/* The document's box beside the rail: positioned, and the scroller's size,
+   so the comment layer drawn in it covers the pages' viewport and no more. */
+.pdf-document {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
 /* Document area */
 .pdf-scroller {
   flex: 1;
@@ -231,6 +241,28 @@
 
 .pdf-thumb-paper canvas {
   display: block;
+}
+
+/* A page's open comments: their count on a pin's shape, its corner drawn to a
+   point as the pins on the page are, so the strip reads as where they are. */
+.pdf-thumb-comments {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px 9px 9px 0;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-on-accent);
+  background: var(--color-accent-primary);
+  box-shadow: 0 0 0 1.5px var(--color-sheet-paper);
 }
 
 .pdf-thumb:hover .pdf-thumb-paper {

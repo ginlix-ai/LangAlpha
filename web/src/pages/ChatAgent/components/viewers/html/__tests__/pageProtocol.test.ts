@@ -296,3 +296,15 @@ describe('page:ground', () => {
     }
   });
 });
+
+describe('lines and cells, as the API takes them', () => {
+  it('keeps lines that start at 1 and run forwards, and refuses the rest', () => {
+    expect(pick({ kind: 'block', lines: '7-9' })?.anchor).toMatchObject({ lines: '7-9' });
+    for (const lines of ['0', '0-3', '14-7']) expect(pick({ kind: 'block', lines })).toBeNull();
+  });
+
+  it('keeps a range within a sheet, and refuses one past its last column or row', () => {
+    expect(pick({ kind: 'cells', ranges: [{ range: 'XFD1048576' }] })?.anchor).toMatchObject({ ranges: [{ range: 'XFD1048576' }] });
+    for (const range of ['A0', 'XFE1', 'A1:A1048577']) expect(pick({ kind: 'cells', ranges: [{ range }] })).toBeNull();
+  });
+});

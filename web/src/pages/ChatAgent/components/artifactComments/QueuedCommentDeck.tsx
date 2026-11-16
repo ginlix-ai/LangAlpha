@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import type { QueuedArtifactComment } from '@/types/api';
 import { commentsByFile, latestOwnerWords } from './artifactCommentSend';
 import type { ArtifactCommentRef } from './artifactCommentReply';
-import { areaTitle } from './commentModel';
+import { anchorLabel, areaTitle, outlineOf } from './anchorKinds';
 import { PinBadge } from './PinBadge';
 import type { QueuedCommentDeck as Deck } from './useQueuedCommentDeck';
 
@@ -85,7 +85,8 @@ function Row({ comment, onOpen, onKeep }: {
   const { t } = useTranslation();
   // An area's parts would starve in this slot; its size says what it is.
   const area = comment.anchor.kind === 'area';
-  const label = area ? areaTitle(t, comment.anchor) : comment.anchor.label?.trim();
+  const place = anchorLabel(comment.anchor)?.trim();
+  const label = area ? areaTitle(t, comment.anchor) : place;
   const body = (
     <>
       <PinBadge number={comment.number} state="queued" className="justify-self-center" />
@@ -96,7 +97,8 @@ function Row({ comment, onOpen, onKeep }: {
       <span
         className="max-w-[120px] truncate text-xs @max-[420px]:hidden"
         style={{ color: 'var(--color-text-tertiary)' }}
-        title={area ? comment.anchor.label : undefined}
+        // A list's names starve here too: they show on hover.
+        title={outlineOf(comment.anchor) === 'list' ? place : undefined}
       >
         {label}
       </span>

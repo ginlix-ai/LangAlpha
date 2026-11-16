@@ -29,8 +29,9 @@ import { threadLabel } from '../../../artifactComments/destinations';
 import { CommentComposer } from './CommentComposer';
 import { useCommentLayer, useCommentLook } from './commentLayerContext';
 import {
-  cardActions, firstWords, laterMessages, newestUnread, oneLine, spotPhrase, type CardAction, type PinState,
+  cardActions, firstWords, laterMessages, newestUnread, oneLine, type CardAction, type PinState,
 } from '../../../artifactComments/commentModel';
+import { spotPhrase } from '../../../artifactComments/anchorKinds';
 import { PinBadge } from '../../../artifactComments/PinBadge';
 import { SendingGlyph } from './SendingGlyph';
 import { useKeptWhileFading } from './useKeptWhileFading';

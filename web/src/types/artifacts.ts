@@ -161,12 +161,23 @@ export interface ArtifactGrant {
   isolated: boolean;
 }
 
-/** One element of an area, named as an element anchor names it. */
+/** One element of an area, named as an element anchor names it, or a Markdown block as a block anchor names it. */
 export interface ArtifactCommentAreaElement {
+  /** A block's source lines, "7" or "14-15". */
+  lines?: string;
   path?: string;
   label?: string;
   quote?: string;
 }
+
+/** A range of a sheet's cells, "D3:D6", and the values it showed. */
+export interface ArtifactCommentCellRange {
+  range: string;
+  values?: string;
+}
+
+/** A part as its anchor lists it: an area's element, or a range of cells. */
+export type PartEntry = ArtifactCommentAreaElement | ArtifactCommentCellRange;
 
 /** Where on an anchored element, or area, the pin sits, as fractions of its box. */
 export interface AnchorPoint {
@@ -185,28 +196,35 @@ interface SpotAnchorFields {
   suffix?: string;
   detail?: string;
   point?: AnchorPoint;
-  elements?: never;
-  count?: never;
-  rect?: never;
 }
 
-/** A clicked element, found again by its path or its text. */
-export interface ElementAnchor extends SpotAnchorFields {
-  kind: 'element';
-}
-
-/** Selected words, found again by them and the words around them. */
-export interface TextAnchor extends SpotAnchorFields {
+interface TextAnchorFields extends SpotAnchorFields {
   kind: 'text';
+  /** The source lines they are on, in a Markdown or code file. */
+  lines?: string;
+  /** The page they are on, in a PDF. */
+  page?: number;
 }
 
-/** A spot the file names itself. */
-export interface NamedAnchor extends SpotAnchorFields {
-  kind: 'named';
+interface BlockAnchorFields {
+  kind: 'block';
+  /** Its source lines, "7" or "14-15". */
+  lines: string;
+  /** The nearest heading above it, or a table row's first cell. */
+  label?: string;
+  quote?: string;
+  point?: AnchorPoint;
 }
 
-/** An area dragged around several elements. */
-export interface AreaAnchor {
+interface CellsAnchorFields {
+  kind: 'cells';
+  /** Absent for a CSV. */
+  sheet?: string;
+  ranges: ArtifactCommentCellRange[];
+  point?: AnchorPoint;
+}
+
+interface AreaAnchorFields {
   kind: 'area';
   /** Its elements in document order: a drag's first 8, or every part picked one by one (up to 64). */
   elements: ArtifactCommentAreaElement[];
@@ -217,18 +235,39 @@ export interface AreaAnchor {
   point?: AnchorPoint;
   /** Where it sat, as fractions of the document's scroll size. */
   rect?: { x: number; y: number; w: number; h: number };
-  path?: never;
-  quote?: never;
-  prefix?: never;
-  suffix?: never;
-  detail?: never;
 }
+
+type AnchorKey = Exclude<
+  keyof TextAnchorFields | keyof BlockAnchorFields | keyof CellsAnchorFields | keyof AreaAnchorFields,
+  'kind'
+>;
+
+/** A kind's own fields, every other kind's as `never`: any field reads off the union without narrowing it first. */
+type Only<T> = T & { [K in Exclude<AnchorKey, keyof T>]?: never };
+
+/** A clicked element, found again by its path or its text. */
+export type ElementAnchor = Only<SpotAnchorFields & { kind: 'element' }>;
+
+/** Selected words, found again by them and the words around them. */
+export type TextAnchor = Only<TextAnchorFields>;
+
+/** A Markdown block, or a run of a code file's lines, found again by its text, its lines telling apart blocks that read the same. */
+export type BlockAnchor = Only<BlockAnchorFields>;
+
+/** Cells of a sheet, by their ranges. */
+export type CellsAnchor = Only<CellsAnchorFields>;
+
+/** A spot the file names itself. */
+export type NamedAnchor = Only<SpotAnchorFields & { kind: 'named' }>;
+
+/** An area dragged around several elements. */
+export type AreaAnchor = Only<AreaAnchorFields>;
 
 /**
  * What the owner pinned a comment to on the live file, read off it so it can
  * be found again after the file changes. The comment's `path` names the file.
  */
-export type ArtifactCommentAnchor = ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor;
+export type ArtifactCommentAnchor = ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor | BlockAnchor | CellsAnchor;
 
 export interface ArtifactCommentMessage {
   message_id: string;

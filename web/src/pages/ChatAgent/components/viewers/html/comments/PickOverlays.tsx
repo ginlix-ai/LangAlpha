@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { MessageSquarePlus } from 'lucide-react';
+import { MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { TWEEN } from '@/lib/motion';
@@ -65,6 +65,8 @@ interface PickOverlaysProps {
   /** A comment is being written: the chip that became it goes at once. */
   drafting: boolean;
   onComment: (selection: PagePick) => void;
+  /** Quotes the words into the chat; left out, the chip offers a comment alone. */
+  onAsk?: (selection: PagePick) => void;
 }
 
 /**
@@ -73,7 +75,7 @@ interface PickOverlaysProps {
  * and the chip that offers to comment on words selected outside the mode.
  */
 export function PickOverlays({
-  mode, boxOpen, hover, areaDrag, picked, area: settledArea, parts, scrolling, selection, size, drafting, onComment,
+  mode, boxOpen, hover, areaDrag, picked, area: settledArea, parts, scrolling, selection, size, drafting, onComment, onAsk,
 }: PickOverlaysProps): React.ReactElement {
   const { t } = useTranslation();
   const liveArea = mode ? areaDrag : null;
@@ -126,7 +128,7 @@ export function PickOverlays({
     const r = selection.rect;
     const below = r.y + r.height + 6;
     const above = below + 30 > size.height;
-    const left = Math.min(Math.max(r.x + r.width, 96), size.width - 8);
+    const left = Math.min(Math.max(r.x + r.width, onAsk ? 200 : 96), size.width - 8);
     chip = { right: size.width - left, top: above ? Math.max(4, r.y - 34) : below, above };
   }
 
@@ -195,20 +197,28 @@ export function PickOverlays({
 
       <AnimatePresence custom={drafting}>
         {chip && selection && (
-          <motion.button
+          <motion.div
             key="select"
-            type="button"
+            role="toolbar"
+            aria-label={t('context.quote.toolbar')}
             className="page-comments-select"
             data-side={chip.above ? 'top' : 'bottom'}
             style={{ right: chip.right, top: chip.top }}
             initial={false}
             exit="gone"
             variants={CHIP_VARIANTS}
-            onClick={() => onComment(selection)}
           >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-            {t('pageViewer.comments.comment')}
-          </motion.button>
+            <button type="button" className="page-comments-select-action tap-target" onClick={() => onComment(selection)}>
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              {t('pageViewer.comments.comment')}
+            </button>
+            {onAsk && (
+              <button type="button" className="page-comments-select-action tap-target" onClick={() => onAsk(selection)}>
+                <MessageCircle className="h-3.5 w-3.5" />
+                {t('context.quote.askInChat')}
+              </button>
+            )}
+          </motion.div>
         )}
       </AnimatePresence>
     </>

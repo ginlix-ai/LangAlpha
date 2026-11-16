@@ -4,7 +4,7 @@ import {
   artifactPathKey, useArtifactComments, useArtifactStatus, useMarkArtifactCommentsRead, useOwnedArtifact,
 } from '@/hooks/useArtifact';
 import { AnimatePresence, motion } from '@/lib/framer';
-import { clientOs } from '@/lib/clientOs';
+import { useStableHandler } from '@/hooks/useStableHandler';
 import { TWEEN } from '@/lib/motion';
 import type { ArtifactComment } from '@/types/api';
 import { basename } from '../../../../utils/fileRefResolver';
@@ -20,7 +20,8 @@ import { CommentLayerContext } from './commentLayerContext';
 import { CommentList, DraftCard } from './CommentList';
 import { CommentPins } from './CommentPin';
 import { CommentPopover } from './CommentPopover';
-import { draftHeading, partLabels } from '../../../artifactComments/commentModel';
+import { draftHeading, partEntries, partLabels } from '../../../artifactComments/anchorKinds';
+import { ADD_KEY_LABEL } from '../../comments/partModifier';
 import { PickOverlays } from './PickOverlays';
 import { DRAFT_ID, placePins } from './pinPlaces';
 import { spotOutlines } from './spotOutlines';
@@ -70,6 +71,16 @@ export interface CommentLayerProps {
   /** The tab is the one in front of an active panel: keys and asks are its. */
   active: boolean;
   ui: CommentUi;
+  /** What a click picks in this viewer, said while the mode is on; left out, a page's. */
+  modeHint?: string;
+  /**
+   * Words in a viewer drawn in the app as a pick, for the selection
+   * toolbar's Comment (`ui.commentOnWords`); left out where the viewer takes
+   * none. A framed page offers its own words, through the chip.
+   */
+  pickWords?: (range: Range) => PagePick | null;
+  /** Whether words are in the viewer, so the toolbar offers Comment only on them. */
+  holdsWords?: (range: Range) => boolean;
 }
 
 /**
@@ -88,7 +99,7 @@ export interface CommentLayerProps {
  * in the list moves through `boxReducer`.
  */
 export default function CommentLayer({
-  tabId, workspaceId, path, bridge, view, active, ui,
+  tabId, workspaceId, path, bridge, view, active, ui, modeHint, pickWords, holdsWords,
 }: CommentLayerProps): React.ReactElement {
   const { t } = useTranslation();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -183,9 +194,11 @@ export default function CommentLayer({
     else if (open?.kind === 'card') closeBox(open);
     else if (mode) exitMode();
   };
+  const shownId = open?.kind === 'card' ? open.id : listOpen ? box.expandedId : null;
   const reports = usePageReports(bridge, view, mode, {
     anchors,
     draftSerial: box.serial,
+    outlined: shownId,
     onHover: (hover) => dispatch({ type: 'hover', hover }),
     onPress: () => {
       const closes = pressCloses(box);
@@ -201,6 +214,32 @@ export default function CommentLayer({
     },
   });
   const { positions, fresh, settled } = reports;
+
+  // The selection toolbar's Comment on words in this viewer opens their box
+  // as the chip's does, the words marked as words picked in the mode are.
+  const takeWords = useStableHandler((range: Range) => {
+    const pick = pickWords?.(range);
+    if (pick) startDraft(pick, { selected: true, extend: false });
+  });
+  const { registerWordsTaker, askInChat: toChat } = ui;
+  useEffect(
+    () => (holdsWords ? registerWordsTaker(tabId, { holds: holdsWords, take: takeWords }) : undefined),
+    [holdsWords, registerWordsTaker, tabId, takeWords],
+  );
+
+  const askInChat = toChat ? (selection: PagePick) => {
+    const box = root?.getBoundingClientRect();
+    if (!box || selection.anchor.kind !== 'text' || !selection.anchor.quote) return;
+    const { x, y, height } = selection.rect;
+    toChat({
+      text: selection.anchor.quote,
+      rect: { left: box.left + x, top: box.top + y, bottom: box.top + y + height },
+      ...(docPath !== opened ? { path: docPath } : {}),
+    });
+    // The reply box takes over from the chip; the words stay selected, as
+    // the only mark of what it quotes.
+    reports.clearSelection();
+  } : undefined;
   useModeKeys(active, mode, (on) => ui.setMode(tabId, on), escapeOneLayer);
 
   // Words picked in comment mode stay selected in a page that cannot mark
@@ -212,7 +251,6 @@ export default function CommentLayer({
     heldSelection.current = draftSelected;
   }, [bridge, draftSelected]);
 
-  const shownId = open?.kind === 'card' ? open.id : listOpen ? box.expandedId : null;
   const places = placePins({
     comments,
     positions,
@@ -297,7 +335,7 @@ export default function CommentLayer({
   // A chip names its part by the entry it shows, so a press on a list the
   // page has since changed takes nothing out.
   const dropPart = (index: number) => {
-    const part = boxDraft?.anchor.kind === 'area' ? boxDraft.anchor.elements[index] : undefined;
+    const part = boxDraft && partEntries(boxDraft.anchor)?.[index];
     if (part) bridge.post({ type: 'page:drop-part', part });
   };
   const takesParts = parts !== null;
@@ -413,6 +451,7 @@ export default function CommentLayer({
           size={size}
           drafting={draft !== null}
           onComment={(selection) => startDraft(selection, { selected: false, extend: false })}
+          onAsk={askInChat}
         />
 
         {/* Gone while the list is open: the drawer's title sits where the hint
@@ -422,7 +461,7 @@ export default function CommentLayer({
             <motion.div key="hint" className="page-comments-hint-row" initial={HINT_HIDDEN} animate={HINT_SHOWN} exit={HINT_GONE}>
               <div className="page-comments-hint">
                 <span className="page-comments-hint-text" role="status">
-                  <ModeHint takesParts={takesParts} adding={adding} />
+                  <ModeHint takesParts={takesParts} adding={adding} hint={modeHint} />
                 </span>
                 <button
                   type="button"
@@ -509,16 +548,17 @@ export default function CommentLayer({
  * click adds one; a touch screen has no modifier, so its box offers "Add a
  * part" instead, and says so once pressed.
  */
-function ModeHint({ takesParts, adding }: { takesParts: boolean; adding: boolean }): React.ReactElement {
+function ModeHint({ takesParts, adding, hint }: { takesParts: boolean; adding: boolean; hint?: string }): React.ReactElement {
   const { t } = useTranslation();
-  if (!takesParts) return <>{t('pageViewer.comments.modeHint')}</>;
+  const plain = hint ?? t('pageViewer.comments.modeHint');
+  if (!takesParts) return <>{plain}</>;
   if (adding) return <>{t('pageViewer.comments.modeHintAdding')}</>;
   return (
     <>
       <span className="pointer-coarse:hidden">
-        {t('pageViewer.comments.modeHintParts', { key: clientOs() === 'mac' ? '⌘' : 'Ctrl' })}
+        {t('pageViewer.comments.modeHintParts', { key: ADD_KEY_LABEL })}
       </span>
-      <span className="hidden pointer-coarse:inline">{t('pageViewer.comments.modeHint')}</span>
+      <span className="hidden pointer-coarse:inline">{plain}</span>
     </>
   );
 }

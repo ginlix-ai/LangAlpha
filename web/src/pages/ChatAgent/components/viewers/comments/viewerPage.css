@@ -1,0 +1,22 @@
+/* Comment mode's cursor over a viewer's content, as a page's bridge sets it in
+   its frame: the crosshair, the I-beam over words a drag selects, and copy
+   while a click adds a part. Over everything inside, links and code included,
+   since a click there picks rather than follows. */
+[data-comment-cursor='crosshair'],
+[data-comment-cursor='crosshair'] * {
+  cursor: crosshair !important;
+}
+[data-comment-cursor='text'],
+[data-comment-cursor='text'] * {
+  cursor: text !important;
+}
+[data-comment-cursor='copy'],
+[data-comment-cursor='copy'] * {
+  cursor: copy !important;
+}
+/* An area being drawn selects no words. */
+[data-comment-hold],
+[data-comment-hold] * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}

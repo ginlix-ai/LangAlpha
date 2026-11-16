@@ -619,6 +619,8 @@ interface MarkdownBlockProps {
   /** The reveals still fading in over this block (`blockFreshKeys`), '' for none. */
   fresh: string;
   rehypeAfter: RehypePlugins | undefined;
+  /** This block's pass from `rehypeForBlock`, run last. */
+  blockPass: RehypePlugins[number] | null;
 }
 
 // One parsed block. Memoized on its source and its fresh key, so a streaming
@@ -633,9 +635,12 @@ interface MarkdownBlockProps {
 // rebuild every highlighted token on each new line. Closing the fence counts
 // its lines at once, one remount per fence. While the block is live, that
 // fence highlights only its typing line per tick (CodeBlock).
-const MarkdownBlock = React.memo(function MarkdownBlock({ source, components, live, fresh, rehypeAfter }: MarkdownBlockProps) {
+const MarkdownBlock = React.memo(function MarkdownBlock({ source, components, live, fresh, rehypeAfter, blockPass }: MarkdownBlockProps) {
   const { lineKey, openFence } = useMemo(() => scanStreamingBlock(source), [source]);
-  const rehypePlugins = useMemo(() => withPostSanitizePasses(fresh, rehypeAfter), [fresh, rehypeAfter]);
+  const rehypePlugins = useMemo(() => {
+    const passes = withPostSanitizePasses(fresh, rehypeAfter);
+    return blockPass ? [...passes, blockPass] : passes;
+  }, [fresh, rehypeAfter, blockPass]);
   return (
     <LiveFence.Provider value={live ? openFence : -1}>
       <ReactMarkdown key={lineKey} remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components}>
@@ -663,6 +668,13 @@ interface MarkdownProps {
    * memoize the array: it is part of every block's memo.
    */
   rehypeAfter?: RehypePlugins;
+  /**
+   * A rehype pass for each block, after the sanitizer, made from which line
+   * of `content` each line of the block's parsed text came from (both
+   * 1-based): the parse is of a prepared copy, block by block. Hoist it: it
+   * is part of every block's memo.
+   */
+  rehypeForBlock?: (fileLine: (line: number) => number) => RehypePlugins[number];
 }
 
 // An image the source embeds, by its destination as written: `<...>` or bare.
@@ -678,12 +690,13 @@ function embeddedImagesKey(source: string): string {
   return [...found].sort().join('\n');
 }
 
-function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false, rehypeAfter }: MarkdownProps): React.ReactElement {
+function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false, rehypeAfter, rehypeForBlock }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
   const folders = useWorkspaceFolders();
   const rootDir = folders?.rootDir;
   const otherRoots = folders?.otherRoots;
-  const processed = useMemo(() => prepareMarkdownSource(content, rootDir, otherRoots), [content, rootDir, otherRoots]);
+  const prepared = useMemo(() => prepareMarkdownSource(content, rootDir, otherRoots), [content, rootDir, otherRoots]);
+  const processed = prepared.text;
 
   const split = useMemo(() => splitMarkdownBlocks(processed), [processed]);
   const embeddedImages = useMemo(() => embeddedImagesKey(processed), [processed]);
@@ -701,6 +714,15 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
   const rootRef = useRef<HTMLDivElement>(null);
   const marks = useRevealFade(rootRef, processed.slice(0, shown), streaming);
   const freshKeys = useMemo(() => blockFreshKeys(blocks, marks), [blocks, marks]);
+  const blockPasses = useMemo(() => {
+    if (!rehypeForBlock) return null;
+    let first = 0;
+    return blocks.map((block) => {
+      const at = first;
+      first += block.split('\n').length - 1;
+      return rehypeForBlock((line) => prepared.lineOf(at + line - 1) + 1);
+    });
+  }, [blocks, prepared, rehypeForBlock]);
 
   const components = useMemo(() => {
     let result = config.components;
@@ -820,7 +842,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
           {/* mdast-to-hast puts a newline text node between top-level siblings;
               keep the DOM identical to a whole-document render. */}
           {i > 0 && '\n'}
-          <MarkdownBlock source={block} components={components} live={streaming && i === blocks.length - 1} fresh={freshKeys[i]} rehypeAfter={rehypeAfter} />
+          <MarkdownBlock source={block} components={components} live={streaming && i === blocks.length - 1} fresh={freshKeys[i]} rehypeAfter={rehypeAfter} blockPass={blockPasses?.[i] ?? null} />
         </React.Fragment>
       ))}
     </div>

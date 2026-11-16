@@ -132,17 +132,17 @@ export function dirSortKey(dir: string): number {
 }
 
 /**
- * Which viewer a path lands in, as far as a location can reach into it — the
- * same ladder `FileViewer` renders, named once so the focus machinery and the
- * viewer cannot disagree about what is on screen.
+ * Which viewer `FileViewer` shows a file's bytes in, named once so the focus
+ * machinery, the comments and the viewer cannot disagree about what is on
+ * screen. `other` is a large tool result, drawn as plain Markdown.
  */
-export function viewerFor(path: string, mime: string | null, editing: boolean): FocusViewer {
-  if (editing) return 'other';
+export function viewerFor(path: string, mime: string | null): FocusViewer {
   const ext = fileExtension(path);
   if (mime === 'pdf') return 'pdf';
   if (mime === 'excel') return 'excel';
-  if (mime === 'image' || ext === 'csv') return 'other';
+  if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
+  if (mime === 'image') return 'image';
   if (path.startsWith(LARGE_TOOL_RESULTS_PREFIX)) return 'other';
   if (mime?.includes('markdown') || ext === 'md') return 'markdown';
   return 'code';

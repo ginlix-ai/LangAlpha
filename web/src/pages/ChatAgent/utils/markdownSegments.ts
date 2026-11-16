@@ -138,6 +138,20 @@ function splitInlineCode(
 
 const crossesLines = (span: string): boolean => span.includes('\n');
 
+/** A prose span's rewrite, given where the span starts in the string the caller passed. */
+type Transform = (prose: string, at: number) => string;
+
+function mapProse(spans: Span[], at: number, transform: Transform): string {
+  let offset = at;
+  return spans
+    .map((span) => {
+      const out = span.code ? span.text : transform(span.text, offset);
+      offset += span.text.length;
+      return out;
+    })
+    .join('');
+}
+
 /**
  * Applies `transform` to everything outside fenced code blocks.
  *
@@ -146,14 +160,9 @@ const crossesLines = (span: string): boolean => span.includes('\n');
  * `mapOutsideCode` — reach for this only where inline code is the point, as
  * `normalizeFileRefs` does when it unwraps backticks around a file reference.
  */
-export function mapOutsideFences(
-  content: string,
-  transform: (prose: string) => string
-): string {
+export function mapOutsideFences(content: string, transform: Transform): string {
   if (!content || typeof content !== 'string') return content;
-  return splitFences(content)
-    .map((span) => (span.code ? span.text : transform(span.text)))
-    .join('');
+  return mapProse(splitFences(content), 0, transform);
 }
 
 /**
@@ -161,15 +170,8 @@ export function mapOutsideFences(
  * spans. Use for character-level rewrites that would be visible corruption
  * inside any code — escaping, tag injection, delimiter substitution.
  */
-export function mapOutsideCode(
-  content: string,
-  transform: (prose: string) => string
-): string {
-  return mapOutsideFences(content, (prose) =>
-    splitInlineCode(prose)
-      .map((span) => (span.code ? span.text : transform(span.text)))
-      .join('')
-  );
+export function mapOutsideCode(content: string, transform: Transform): string {
+  return mapOutsideFences(content, (prose, at) => mapProse(splitInlineCode(prose), at, transform));
 }
 
 /**
@@ -183,13 +185,6 @@ export function mapOutsideCode(
  * they sit inside the very lines it exists to repair: hiding `` `AAPL` ``
  * would take its table row with it.
  */
-export function mapOutsideMultilineCode(
-  content: string,
-  transform: (prose: string) => string
-): string {
-  return mapOutsideFences(content, (prose) =>
-    splitInlineCode(prose, crossesLines)
-      .map((span) => (span.code ? span.text : transform(span.text)))
-      .join('')
-  );
+export function mapOutsideMultilineCode(content: string, transform: Transform): string {
+  return mapOutsideFences(content, (prose, at) => mapProse(splitInlineCode(prose, crossesLines), at, transform));
 }

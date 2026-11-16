@@ -101,6 +101,12 @@ var tapping = false;
 // click adds too, whatever keys are down by then (`addingPress`): the
 // viewer has either heard the press or not, and the click must agree.
 var addingPress = -1;
+// The last press the viewer said opens nothing (`page:declined`).
+var declinedPress = -1;
+
+listen('page:declined', function (data) {
+  if (typeof data.press === 'number') declinedPress = data.press;
+});
 
 /** @param {boolean} [quiet] */
 function press(quiet) {
@@ -256,11 +262,12 @@ function reportArea(was) {
     if (found.els.length) sendParts(joined(draftParts(), found.els), release);
     return;
   }
-  var made = found.els.length > 1 ? areaAnchor(found.els, release, DRAG_LISTED) : null;
+  var made = found.els.length > 1 ? areaAnchor(found.els, release) : null;
   if (made) {
     sendSpot({ type: 'page:area', press: was.press, anchor: made.anchor, rect: made.rect });
-    // It lists its first few, but a Cmd-click adds to every part it found.
-    keepParts(made.els, made.anchor.elements);
+    // One too large to list is no list of parts, and one the viewer declined
+    // is not the draft's: a Cmd-click starts from the draft's own.
+    if (listsEvery(made.anchor) && was.press !== declinedPress) keepParts(made.els, made.anchor.elements);
     return;
   }
   var el = found.els.length === 1 ? found.els[0] : null;
@@ -313,7 +320,8 @@ function releaseHeld(continuation) {
 // Registered before the guards below, which stop everything after them.
 window.addEventListener('pointerdown', function (event) {
   pointerDown = true;
-  if (event.button !== 0) return;
+  // A Ctrl-press on a Mac opens the context menu, which keeps its release.
+  if (event.button !== 0 || (ADD_ON_META && event.ctrlKey)) return;
   if (event.pointerType === 'touch') {
     tapping = true;
     return;
@@ -334,6 +342,11 @@ window.addEventListener('mousedown', function (event) {
 }, true);
 window.addEventListener('pointermove', function (event) {
   if (!drag || event.pointerId !== drag.id || drag.dropped) return;
+  // Its release went elsewhere (a menu, another window): the drag is over.
+  if (event.pointerType === 'mouse' && !(event.buttons & 1)) {
+    endDrag();
+    return;
+  }
   drag.cx = event.clientX;
   drag.cy = event.clientY;
   if (drag.selecting) return;
@@ -483,7 +496,9 @@ window.addEventListener('pointerover', function (event) {
   if (!mode || event.pointerType === 'touch' || pressing()) return;
   // Glyphs first, so a move onto words never flashes the element's outline.
   pointer = { x: event.clientX, y: event.clientY };
-  readModifier(event);
+  // Not read for the add key: Chrome also sends this when what is under a
+  // still pointer changes, as the box fading over it, and off a Mac with no
+  // keys held. A real move's pointermove reads it.
   hoverAt(pointer.x, pointer.y);
   var under = commentable(event.target);
   var el = pickable(under);
@@ -610,6 +625,13 @@ listen('page:anchors', function (data) {
   // The viewer may first speak after the document settled, when the
   // page:settled it was sent went nowhere.
   if (settledSaid) send({ type: 'page:settled' });
+});
+
+listen('page:outlined', function (data) {
+  var id = typeof data.id === 'string' ? data.id : null;
+  if (id === outlined) return;
+  outlined = id;
+  if (tracked.length) reportPositions();
 });
 
 // A comment's spot, by its id; a section by its fragment is core.js's.

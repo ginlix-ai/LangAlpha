@@ -1,4 +1,5 @@
 import type { ArtifactCommentAnchor } from '@/types/api';
+import { outlineOf } from '../../../artifactComments/anchorKinds';
 import type { FrameRect, PageHover } from '../pageProtocol';
 
 /** A spot to outline: its anchor, where it shows, and where each of its parts shows when the page reports them. */
@@ -15,6 +16,11 @@ export interface SpotOutlines {
   area: FrameRect | null;
   /** Each part on its own: the draft's as picked, or the open comment's. Drawn instead of the area's outline. */
   parts: { rects: FrameRect[]; tone: 'picked' | 'marked' } | null;
+}
+
+/** A list of parts, outlined each on its own once the page reports them. */
+function listsParts(spot: OutlinedSpot | null): spot is OutlinedSpot {
+  return !!spot && outlineOf(spot.anchor) === 'list';
 }
 
 export function sameRect(a: FrameRect, b: FrameRect): boolean {
@@ -44,15 +50,15 @@ export function spotOutlines({ draft, draftPinned, overPage, shown, hover, addin
   addingParts: boolean;
   hidden: boolean;
 }): SpotOutlines {
-  const draftArea = draft?.anchor.kind === 'area' && draftPinned ? draft : null;
-  const shownArea = shown?.anchor.kind === 'area' ? shown : null;
-  const element = overPage && draft?.anchor.kind === 'element' ? draft.rect : null;
+  const draftArea = listsParts(draft) && draftPinned ? draft : null;
+  const shownArea = listsParts(shown) ? shown : null;
+  const element = overPage && draft && outlineOf(draft.anchor) === 'one' ? draft.rect : null;
   const hoverElsewhere = addingParts && hover !== null && !hover.word && !(element && sameRect(hover.rect, element));
 
   const parts: SpotOutlines['parts'] = hidden ? null
     : draftArea?.parts ? { rects: draftArea.parts, tone: 'picked' }
       : element && hoverElsewhere ? { rects: [element], tone: 'picked' }
-        : draft?.anchor.kind !== 'area' && shownArea?.parts ? { rects: shownArea.parts, tone: 'marked' }
+        : !listsParts(draft) && shownArea?.parts ? { rects: shownArea.parts, tone: 'marked' }
           : null;
   const area = hidden ? null
     : (draftArea && !draftArea.parts ? draftArea.rect : null)
