@@ -93,10 +93,10 @@ beforeEach(() => {
   localStorage.clear();
   wsStatus.value = 'running';
   (api.readWorkspaceFile as ReturnType<typeof vi.fn>).mockImplementation(async (_ws: string, p: string) => {
-    if (p in CONTENT) return { content: CONTENT[p], mime: p.endsWith('.md') ? 'text/markdown' : 'text/x-python', truncated: false };
+    if (p in CONTENT) return { content: CONTENT[p], mime: p.endsWith('.md') ? 'text/markdown' : 'text/x-python', truncated: false, from: { kind: 'live' } };
     throw { response: { status: 404, data: { detail: 'File not found' } } };
   });
-  (api.readWorkspaceFileFull as ReturnType<typeof vi.fn>).mockImplementation(async (_ws: string, p: string) => ({ content: CONTENT[p] }));
+  (api.readWorkspaceFileFull as ReturnType<typeof vi.fn>).mockImplementation(async (_ws: string, p: string) => ({ content: CONTENT[p], version: null, rewriting: false, from: { kind: 'live' } }));
 });
 
 describe('FilePanel reference opens', () => {
@@ -254,7 +254,7 @@ describe('FilePanel reference opens', () => {
     log.current = [{ id: 'w1', path: 'notes.md' }];
     writes.publish({ messages: [], collectWrites });
     (api.readWorkspaceFile as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      { content: 'Rewritten notes body.', mime: 'text/markdown', truncated: false },
+      { content: 'Rewritten notes body.', mime: 'text/markdown', truncated: false, from: { kind: 'live' } },
     );
     // No target: the strip comes back from storage with notes.md active.
     renderWithProviders(
@@ -658,7 +658,7 @@ describe('FilePanel reference opens', () => {
     resolveMock().mockResolvedValueOnce({ status: 'unavailable', reason: 'sandbox_starting', matches: [] });
     (api.readWorkspaceFile as ReturnType<typeof vi.fn>).mockImplementation(async (_ws: string, p: string) => {
       if (!(p in CONTENT)) throw { response: { status: 503, data: { detail: 'Sandbox is starting' } } };
-      return { content: CONTENT[p], mime: 'text/markdown', truncated: false };
+      return { content: CONTENT[p], mime: 'text/markdown', truncated: false, from: { kind: 'live' } };
     });
     const { rerender } = renderWithProviders(
       <FilePanel workspaceId="ws" onClose={() => {}} files={['notes.md']} target={{ kind: 'file', path: 'report.md', seq: 1 }} />,
@@ -687,7 +687,7 @@ describe('FilePanel reference opens', () => {
     // the fallback read of the path as written cannot land either.
     (api.readWorkspaceFile as ReturnType<typeof vi.fn>).mockImplementation(async (_ws: string, p: string) => {
       if (!(p in CONTENT)) throw { response: { status: 503, data: { detail: 'Sandbox is starting' } } };
-      return { content: CONTENT[p], mime: 'text/markdown', truncated: false };
+      return { content: CONTENT[p], mime: 'text/markdown', truncated: false, from: { kind: 'live' } };
     });
     renderWithProviders(<FilePanel workspaceId="ws" onClose={() => {}} files={[]} target={{ kind: 'file', path: 'report.md' }} />);
     await screen.findByText('Try again');

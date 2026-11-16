@@ -10,6 +10,7 @@ import { getAuthHeaders } from '@/lib/authToken';
 import type { SharedArtifactVisitorMetadata } from '@/types/api';
 import { buildServeUrl } from '../ChatAgent/components/viewers/html/wsfilesUrl';
 import type { BodyReaders } from '../ChatAgent/components/filePanel/fileBody';
+import { LIVE } from '../ChatAgent/utils/api/readFrom';
 import type { FileRefResolution } from '../ChatAgent/components/filePanel/types';
 
 const baseURL: string = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -197,11 +198,12 @@ export async function servedObjectUrl(prefix: string, path: string): Promise<str
 export function servedReaders(prefix: string): BodyReaders {
   const text = async (_workspaceId: string, path: string) => ({
     content: await (await served(buildServeUrl(prefix, path))).text(),
+    from: LIVE,
   });
   return {
     readFile: text,
     readFileFull: text,
-    downloadFileAsArrayBuffer: (_workspaceId, path) => servedBytes(prefix, path),
+    downloadFileAsArrayBuffer: async (_workspaceId, path) => ({ buffer: await servedBytes(prefix, path), from: LIVE }),
   };
 }
 

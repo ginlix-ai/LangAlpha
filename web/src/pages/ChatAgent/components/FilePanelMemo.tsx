@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { useToast } from '@/components/ui/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { useReadUserMemo, useUploadUserMemo, useUserMemoList } from '../hooks/useMemo';
-import type { MemoEntry } from '../utils/api';
+import type { BytesRead, MemoEntry } from '../utils/api';
 
 const CodeEditor = React.lazy(() => import('./viewers/CodeEditor'));
 
@@ -63,7 +63,7 @@ export function useWorkspaceMemoIndex(workspaceId: string): Map<string, MemoEntr
 
 interface UseAddToMemoArgs {
   workspaceId: string;
-  downloadFileAsArrayBufferFn: (workspaceId: string, path: string) => Promise<ArrayBuffer>;
+  downloadFileAsArrayBufferFn: (workspaceId: string, path: string) => Promise<BytesRead>;
   readFileFullFn: (workspaceId: string, path: string) => Promise<{ content: string }>;
   onSwitchToMemoTab: (() => void) | null | undefined;
 }
@@ -110,8 +110,8 @@ export function useAddToMemo({
       // hasn't changed.
       let file: File;
       if (mime === 'application/pdf') {
-        const buf = await downloadFileAsArrayBufferFn(workspaceId, filePath);
-        file = new globalThis.File([buf], fileName, { type: mime });
+        const { buffer } = await downloadFileAsArrayBufferFn(workspaceId, filePath);
+        file = new globalThis.File([buffer], fileName, { type: mime });
       } else {
         const data = await readFileFullFn(workspaceId, filePath);
         const text = (data?.content as string | undefined) ?? '';

@@ -7,8 +7,8 @@ import { toast } from '@/components/ui/use-toast';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { holdReload } from '@/lib/reloadHolds';
 import { apiErrorCoded, apiErrorDetailMessage } from '@/api/errors';
-import { backupUnreachable } from '../../utils/computerAway';
-import { textSha256 } from '../../utils/api/files';
+import type { FullRead } from '../../utils/api/files';
+import { textSha256 } from '../../utils/textSha256';
 import { disposeEditorModel, newEditorModelPath } from '../viewers/editorModels';
 import type { AskConfirm } from './usePanelConfirm';
 import type { ComputerAway } from './useComputerAway';
@@ -31,15 +31,6 @@ interface EditDraft {
 interface SaveBase {
   version: string | null;
   sha256: string | null;
-}
-
-/** What a full read answers: the text, the version of the bytes it came from,
- *  and, read from the backup while the computer was away, its connect code. */
-interface FullRead {
-  content?: string;
-  version?: string | null;
-  source?: string;
-  unreachable?: string;
 }
 
 /** Whether a draft differs from the text its edit started from. The one
@@ -208,10 +199,10 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       // started from it would write that older text over the newer one. It
       // gives no version either, and a save naming none is not checked: a
       // stopped workspace's draft would land unchecked once it starts.
-      const away = backupUnreachable(data);
-      if (away || data.source === 'database') {
+      if (data.from.kind === 'backup') {
         // Edit mode, where the header shows a save error, never opened, so
         // this is said where the reader is looking.
+        const away = data.from.unreachable;
         const description = away
           ? awayText?.(away) ?? t('filePanel.loadEditFailed')
           : t('filePanel.error.sandboxUnavailableHint');
@@ -219,10 +210,9 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         if (away) onBackupRead?.(selectedFile);
         return;
       }
-      // A live read always names its version, null when the file was being
-      // rewritten as it was read. A save naming none goes unchecked, so the
-      // edit waits for a read that has one.
-      if ('version' in data && !data.version) {
+      // A save naming no version goes unchecked, so the edit waits for a read
+      // that has one.
+      if (data.rewriting) {
         toast({ description: t('filePanel.fileChangingTryAgain'), variant: 'destructive' });
         return;
       }
@@ -238,7 +228,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       setOriginalContent(fullContent);
       const sha256 = await textSha256(fullContent);
       if (selectedFileRef.current !== selectedFile) return;
-      setBase({ version: data.version ?? null, sha256 });
+      setBase({ version: data.version, sha256 });
       setFileContent(fullContent);
       setIsEditing(true);
     } catch (err: unknown) {

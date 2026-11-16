@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
-import { listWorkspaceFiles } from '../utils/api';
+import { listWorkspaceFiles, type ReadFrom } from '../utils/api';
 import { apiErrorDetail, apiErrorStatus } from '@/api/errors';
-import { AWAY_REFETCH_MS, backupUnreachable, unreachableCode } from '../utils/computerAway';
+import { AWAY_REFETCH_MS, backupCode, unreachableCode } from '../utils/computerAway';
 
 interface UseWorkspaceFilesOptions {
   includeSystem?: boolean;
@@ -52,10 +52,12 @@ function filesErrorText(error: unknown): string {
   return 'Failed to load files';
 }
 
-function awayOf(data: unknown, error: unknown): FilesAway | null {
-  const refused = error ? unreachableCode(error) : null;
-  if (refused) return { code: refused, backup: false };
-  const backup = error ? null : backupUnreachable(data);
+function awayOf(from: ReadFrom | undefined, error: unknown): FilesAway | null {
+  if (error) {
+    const refused = unreachableCode(error);
+    return refused ? { code: refused, backup: false } : null;
+  }
+  const backup = backupCode(from);
   return backup ? { code: backup, backup: true } : null;
 }
 
@@ -77,10 +79,10 @@ export function useWorkspaceFiles(
     // A computer that went away comes back by itself, so its listing is asked
     // for again until it answers live. Never by `refresh`, which would start
     // a stopped one.
-    refetchInterval: (q) => (awayOf(q.state.data, q.state.error) ? AWAY_REFETCH_MS : false),
+    refetchInterval: (q) => (awayOf(q.state.data?.from, q.state.error) ? AWAY_REFETCH_MS : false),
   });
 
-  const away = useMemo(() => awayOf(data, error), [data, error]);
+  const away = useMemo(() => awayOf(data?.from, error), [data?.from, error]);
 
   // File pings arrive in bursts (attaching to a live subagent replays one per
   // write in a single tick), so a refresh asked for mid-fetch joins one

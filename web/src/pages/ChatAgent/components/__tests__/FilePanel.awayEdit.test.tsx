@@ -49,8 +49,12 @@ vi.mock('@/pages/ChatAgent/components/viewers/CodeEditor', () => ({
 
 import FilePanel from '@/pages/ChatAgent/components/FilePanel';
 
-const LIVE = { content: '# Notes', mime: 'text/markdown', truncated: false, version: 'v1' };
-const FROM_BACKUP = { ...LIVE, version: undefined, source: 'database', unreachable: 'not_connected' };
+const AWAY = { kind: 'backup', unreachable: 'not_connected' } as const;
+const STOPPED = { kind: 'backup', unreachable: null } as const;
+const LIVE = { content: '# Notes', mime: 'text/markdown', truncated: false, from: { kind: 'live' } } as const;
+const LIVE_FULL = { content: '# Notes', version: 'v1', rewriting: false, from: { kind: 'live' } } as const;
+const FROM_BACKUP = { ...LIVE, from: AWAY };
+const FULL_FROM_BACKUP = { ...LIVE_FULL, version: null, from: AWAY };
 const AWAY_RETRY = "Can't reach this workspace's computer right now. Try again once it's on and online.";
 const AWAY_BACKUP = "Can't reach this workspace's computer, so these are its backed-up files. They go live again once it's back.";
 
@@ -72,7 +76,7 @@ describe('FilePanel editing while the computer is away', () => {
 
   it('refuses to open the editor on a full read the backup answered', async () => {
     vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
-    vi.mocked(readWorkspaceFileFull).mockResolvedValue(FROM_BACKUP);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue(FULL_FROM_BACKUP);
     renderWithProviders(panel());
     fireEvent.click(await screen.findByTitle('Edit file'));
     // The machine went away before the edit's read: the body is read again,
@@ -86,9 +90,8 @@ describe('FilePanel editing while the computer is away', () => {
   });
 
   it('refuses to open the editor on a stopped workspace\'s backup, which gives no version to save against', async () => {
-    const stoppedBackup = { ...LIVE, version: undefined, source: 'database' };
-    vi.mocked(readWorkspaceFile).mockResolvedValue(stoppedBackup);
-    vi.mocked(readWorkspaceFileFull).mockResolvedValue(stoppedBackup);
+    vi.mocked(readWorkspaceFile).mockResolvedValue({ ...LIVE, from: STOPPED });
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue({ ...LIVE_FULL, version: null, from: STOPPED });
     renderWithProviders(panel());
     fireEvent.click(await screen.findByTitle('Edit file'));
 
@@ -102,7 +105,7 @@ describe('FilePanel editing while the computer is away', () => {
 
   it('saves against the version it read, and keeps the draft when the file changed since', async () => {
     vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
-    vi.mocked(readWorkspaceFileFull).mockResolvedValue(LIVE);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue(LIVE_FULL);
     vi.mocked(writeWorkspaceFile).mockRejectedValue({
       response: { status: 409, data: { detail: { code: 'file_changed', message: 'changed' } } },
     });
@@ -126,7 +129,7 @@ describe('FilePanel editing while the computer is away', () => {
     // Read while the agent rewrote it, the file has no version, and a save
     // naming none would land unchecked over whatever comes next.
     vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
-    vi.mocked(readWorkspaceFileFull).mockResolvedValue({ ...LIVE, version: null });
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue({ ...LIVE_FULL, version: null, rewriting: true });
     renderWithProviders(panel());
     fireEvent.click(await screen.findByTitle('Edit file'));
 

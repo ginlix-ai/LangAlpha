@@ -8,32 +8,41 @@ import { withDownloadNotice, workspaceDownloadKey, type DownloadProgressReport }
 import type { FileRefResolution } from '../../components/filePanel/types';
 import type { BackupResponse, BackupStatusResponse } from '@/types/api';
 import type { SignedUploadPart } from '../partUpload';
+import { BACKUP_OK, LIVE, readFromBody, type ReadFrom } from './readFrom';
 
-/**
- * Sent with every read, listing, resolve and download: this app shows a
- * backup answered for a computer that is away as one, and never edits it, so
- * the server may answer from it. A client without it gets the machine's 503.
- */
-export const BACKUP_OK = { backup_ok: true } as const;
-
-/** Bytes the server answered from the backup, by the computer's connect code. */
-const fromBackup = new WeakMap<object, string>();
-
-/** Bytes carry no field for it, so the download said by header that they are the backup's. */
-function markFromBackup<T extends object>(body: T, headers: Record<string, string> | undefined): T {
+/** Bytes carry no field for it, so the download says by header, and only for a computer that did not answer. */
+function readFromHeaders(headers: Record<string, string> | undefined): ReadFrom {
   const code = headers?.['x-computer-unreachable'];
-  if (typeof code === 'string' && code) fromBackup.set(body, code);
-  return body;
+  return typeof code === 'string' && code ? { kind: 'backup', unreachable: code } : LIVE;
+}
+
+export interface TextRead {
+  content: string;
+  mime?: string;
+  truncated?: boolean;
+  from: ReadFrom;
 }
 
 /**
- * The connect code when a binary file's bytes (an ArrayBuffer, or a ranged
- * file opened from its first slice) were answered from the backup because the
- * computer was away; null for live bytes.
+ * A whole file's text, for an edit. `version` names the bytes it came from,
+ * null where it names none; `rewriting` says a live read caught the file as
+ * it was rewritten, so it has no version a save could be held to. A server
+ * older than versions names none and is never `rewriting`.
  */
-export function backupCodeOf(body: object): string | null {
-  return fromBackup.get(body) ?? null;
+export interface FullRead {
+  content: string;
+  version: string | null;
+  rewriting: boolean;
+  from: ReadFrom;
 }
+
+export interface BytesRead {
+  buffer: ArrayBuffer;
+  from: ReadFrom;
+}
+
+/** A file opened from its first slice: whole bytes when it fit, else read on by range. */
+export type OpenedRead = BytesRead | { ranged: RangedFile; from: ReadFrom };
 
 /**
  * Resolve a file reference to one workspace path in a single server lookup.
@@ -57,11 +66,11 @@ export async function resolveWorkspaceFile(
  * @param {string} workspaceId
  * @param {string} filePath - e.g. "results/report.md"
  */
-export async function readWorkspaceFile(workspaceId: string, filePath: string) {
+export async function readWorkspaceFile(workspaceId: string, filePath: string): Promise<TextRead> {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
     params: { path: filePath, ...BACKUP_OK },
   });
-  return data; // { workspace_id, path, content, mime, truncated }
+  return { content: data?.content ?? '', mime: data?.mime, truncated: data?.truncated, from: readFromBody(data) };
 }
 
 /**
@@ -91,12 +100,12 @@ export async function downloadWorkspaceFile(
  * @param {string} filePath
  * @returns {Promise<ArrayBuffer>}
  */
-export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, filePath: string) {
+export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, filePath: string): Promise<BytesRead> {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
     params: { path: filePath, ...BACKUP_OK },
     responseType: 'arraybuffer',
   });
-  return markFromBackup(response.data as ArrayBuffer, response.headers);
+  return { buffer: response.data as ArrayBuffer, from: readFromHeaders(response.headers) };
 }
 
 /** The opening request's size. A file that fits arrives whole, in the one request it always took. */
@@ -151,7 +160,7 @@ async function withRetry<T>(request: () => Promise<T>, signal?: AbortSignal): Pr
 export async function openWorkspaceFileRanged(
   workspaceId: string,
   filePath: string,
-): Promise<ArrayBuffer | RangedFile> {
+): Promise<OpenedRead> {
   const slice = (first: number, last: number, config: RequestConfig = {}) =>
     api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
       ...config,
@@ -177,14 +186,15 @@ export async function openWorkspaceFileRanged(
     if ((err instanceof ApiError && err.status === 416) || isFileChangedRefusal(err)) return whole();
     throw err;
   }
-  if (head.status !== 206) return markFromBackup(head.data as ArrayBuffer, head.headers);
+  const from = readFromHeaders(head.headers);
+  if (head.status !== 206) return { buffer: head.data as ArrayBuffer, from };
   const bytes = head.data as ArrayBuffer;
   const opened = parseContentRange(head.headers['content-range']);
   // Answered by range but not described (a header the deploy does not
   // expose), or described as other bytes than arrived, so there is no length
   // to read on from: read it again whole.
   if (!opened || opened.first !== 0 || bytes.byteLength !== opened.last + 1) return whole();
-  if (opened.last + 1 === opened.total) return markFromBackup(bytes, head.headers);
+  if (opened.last + 1 === opened.total) return { buffer: bytes, from };
   // With no version to hold the slices to, a change between two would go unseen.
   const etag = head.headers.etag;
   if (!etag) return whole();
@@ -226,7 +236,7 @@ export async function openWorkspaceFileRanged(
       throw err;
     }),
   };
-  return markFromBackup(file, head.headers);
+  return { ranged: file, from };
 }
 
 /**
@@ -297,8 +307,8 @@ export async function getBackupStatus(workspaceId: string): Promise<BackupStatus
  * `version` the edit's read returned), the server refuses with 409
  * `file_changed` when the file no longer holds the text the edit began from.
  * `baseSha256` (`textSha256` of that text) lets the save through a version
- * that moved while the text did not.
- * @returns {Promise<Object>} { workspace_id, path, size, version }
+ * that moved while the text did not. Answers with the version the file holds
+ * now, null where the server could not read one.
  */
 export async function writeWorkspaceFile(
   workspaceId: string,
@@ -306,7 +316,7 @@ export async function writeWorkspaceFile(
   content: string,
   baseVersion: string | null = null,
   baseSha256: string | null = null,
-) {
+): Promise<{ version: string | null }> {
   const { data } = await api.put(`/api/v1/workspaces/${workspaceId}/files/write`,
     {
       content,
@@ -315,34 +325,22 @@ export async function writeWorkspaceFile(
     },
     { params: { path: filePath } }
   );
-  return data;
+  const version = (data as { version?: unknown } | null)?.version;
+  return { version: typeof version === 'string' ? version : null };
 }
 
-/**
- * The SHA-256 of `text` as UTF-8, lowercase hex, as a save names the text its
- * edit began from. Null where the page has no WebCrypto (a plain-HTTP origin
- * other than localhost); the save then stands on its version alone.
- */
-export async function textSha256(text: string): Promise<string | null> {
-  try {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read a file without line-limit pagination (for edit mode)
- * @param {string} workspaceId
- * @param {string} filePath
- * @returns {Promise<Object>} { workspace_id, path, content, mime }
- */
-export async function readWorkspaceFileFull(workspaceId: string, filePath: string) {
+/** A file's whole text, without the paged read's line limit, for an edit. */
+export async function readWorkspaceFileFull(workspaceId: string, filePath: string): Promise<FullRead> {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
     params: { path: filePath, unlimited: true, ...BACKUP_OK },
   });
-  return data;
+  const version = typeof data?.version === 'string' && data.version ? data.version : null;
+  return {
+    content: data?.content ?? '',
+    version,
+    rewriting: !!data && 'version' in data && !version,
+    from: readFromBody(data),
+  };
 }
 
 export async function deleteWorkspaceFiles(workspaceId: string, paths: string[]) {

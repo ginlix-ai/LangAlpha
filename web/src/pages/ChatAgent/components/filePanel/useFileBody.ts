@@ -4,7 +4,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { isStale } from '@/lib/rangedFile';
 import { bodyMode, readFileBody, type BodyReaders, type FileBody } from './fileBody';
 import { categorizeFileError, type FileError } from './fileErrors';
-import { AWAY_REFETCH_MS, isMachineCode, unreachableCode } from '../../utils/computerAway';
+import { AWAY_REFETCH_MS, backupCode, isMachineCode, unreachableCode } from '../../utils/computerAway';
 
 /** A body is worth re-reading after a minute; a tab switch inside that window is free. */
 const BODY_STALE_MS = 60_000;
@@ -107,7 +107,7 @@ export function useFileBody({ cache, path, workspaceStatus }: UseFileBodyArgs) {
     // by itself once the machine answers again; one shown from the backup is
     // read live again then, so the copy on screen is never the older one.
     refetchInterval: (q) => (
-      isMachineCode(unreachableCode(q.state.error)) || q.state.data?.unreachable ? AWAY_REFETCH_MS : false
+      isMachineCode(unreachableCode(q.state.error)) || backupCode(q.state.data?.from) ? AWAY_REFETCH_MS : false
     ),
   });
 

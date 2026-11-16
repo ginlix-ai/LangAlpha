@@ -4,8 +4,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useComputer } from '../../hooks/useComputers';
 import type { FilesAway } from '../../hooks/useWorkspaceFiles';
 import {
-  awayMachineOf, awayRetryMessage, awayRetryText, backupShownText, cachedComputer,
+  awayMachineOf, awayRetryMessage, awayRetryText, backupCode, backupShownText, cachedComputer,
 } from '../../utils/computerAway';
+import type { ReadFrom } from '../../utils/api/readFrom';
 import type { FileError } from './fileErrors';
 
 /** What the hooks that change files need to know of a computer that is away. */
@@ -36,10 +37,10 @@ export interface PanelAway extends ComputerAway {
  * listing's word (`filesAway`), or the open file's body read from the backup
  * since, which stands for it until the listing catches up.
  */
-export function useComputerAway({ filesAway, bodyBackup, fileError, filesError, computerId, invalidate }: {
+export function useComputerAway({ filesAway, bodyFrom, fileError, filesError, computerId, invalidate }: {
   filesAway: FilesAway | null;
-  /** The open file's connect code when its body is the backup's. */
-  bodyBackup: string | undefined;
+  /** Where the open file's body came from. */
+  bodyFrom: ReadFrom | undefined;
   fileError: FileError | null;
   filesError: string | null;
   computerId: string | null;
@@ -48,6 +49,7 @@ export function useComputerAway({ filesAway, bodyBackup, fileError, filesError, 
 }): PanelAway {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const bodyBackup = backupCode(bodyFrom);
   const away = useMemo<FilesAway | null>(
     () => filesAway ?? (bodyBackup ? { code: bodyBackup, backup: true } : null),
     [filesAway, bodyBackup],
@@ -75,12 +77,12 @@ export function useComputerAway({ filesAway, bodyBackup, fileError, filesError, 
   const text = useCallback((code: string) => awayRetryText(t, code, machineNow()), [t, machineNow]);
   const onBackupRead = useCallback((path: string) => invalidate(path), [invalidate]);
   // What was read from the backup is read again live once the machine answers.
-  const backupCode = away?.backup ? away.code : null;
-  const shownBackup = useRef(backupCode);
+  const shownCode = away?.backup ? away.code : null;
+  const shownBackup = useRef(shownCode);
   useEffect(() => {
-    if (shownBackup.current && !backupCode) invalidate();
-    shownBackup.current = backupCode;
-  }, [backupCode, invalidate]);
+    if (shownBackup.current && !shownCode) invalidate();
+    shownBackup.current = shownCode;
+  }, [shownCode, invalidate]);
 
   return useMemo(() => ({
     blockedReason,

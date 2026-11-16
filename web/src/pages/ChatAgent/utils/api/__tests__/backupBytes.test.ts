@@ -1,9 +1,8 @@
 // @vitest-environment node
 /**
- * An image or PDF answered from the backup while its computer is away. Bytes
- * have no field for the marks a text read carries, so the download says so by
- * header, and the file panel's body takes the code from there to show the
- * same backup notice a text file gets.
+ * A file answered from the backup in place of its computer. A text read says
+ * so in its body, and bytes, which have no field for it, by header; both come
+ * out of the API as the same `from`, which the file panel's notice reads.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -22,7 +21,7 @@ vi.mock('@/lib/authToken', () => ({
 
 import { api } from '@/api/client';
 import { readFileBody } from '../../../components/filePanel/fileBody';
-import { downloadWorkspaceFileAsArrayBuffer, openWorkspaceFileRanged } from '../files';
+import { downloadWorkspaceFileAsArrayBuffer, openWorkspaceFileRanged, readWorkspaceFileFull } from '../files';
 
 const mockGet = api.get as unknown as Mock;
 
@@ -48,7 +47,7 @@ describe('a binary file answered from the backup', () => {
 
     const body = await readFileBody(readers, 'ws', path);
 
-    expect(body.unreachable).toBe('not_connected');
+    expect(body.from).toEqual({ kind: 'backup', unreachable: 'not_connected' });
     expect(mockGet.mock.calls[0][1].params).toMatchObject({ path, backup_ok: true });
   });
 
@@ -57,6 +56,26 @@ describe('a binary file answered from the backup', () => {
 
     const body = await readFileBody(readers, 'ws', 'chart.png');
 
-    expect(body.unreachable).toBeUndefined();
+    expect(body.from).toEqual({ kind: 'live' });
+  });
+});
+
+describe('a text read answered from the backup', () => {
+  it.each([
+    ['an away computer\'s', { source: 'database', unreachable: 'timeout' }, { kind: 'backup', unreachable: 'timeout' }],
+    ['a stopped workspace\'s', { source: 'database' }, { kind: 'backup', unreachable: null }],
+    ['no', { source: 'sandbox', unreachable: 'timeout' }, { kind: 'live' }],
+  ])('reads as %s backup', async (_label, marks, from) => {
+    mockGet.mockResolvedValue({ status: 200, data: { content: 'x', version: null, ...marks }, headers: {} });
+
+    expect((await readWorkspaceFileFull('ws', 'a.md')).from).toEqual(from);
+  });
+
+  it('says a live read that names no version caught the file mid-rewrite, unless the server names none at all', async () => {
+    mockGet.mockResolvedValue({ status: 200, data: { content: 'x', version: null }, headers: {} });
+    expect(await readWorkspaceFileFull('ws', 'a.md')).toMatchObject({ version: null, rewriting: true });
+
+    mockGet.mockResolvedValue({ status: 200, data: { content: 'x' }, headers: {} });
+    expect(await readWorkspaceFileFull('ws', 'a.md')).toMatchObject({ version: null, rewriting: false });
   });
 });

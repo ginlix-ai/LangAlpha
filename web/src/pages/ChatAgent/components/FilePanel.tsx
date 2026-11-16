@@ -15,7 +15,7 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import {
   readWorkspaceFile, readWorkspaceFileFull, writeWorkspaceFile, downloadWorkspaceFileAsArrayBuffer,
-  openWorkspaceFileRanged, triggerFileDownload, resolveWorkspaceFile,
+  openWorkspaceFileRanged, triggerFileDownload, resolveWorkspaceFile, LIVE, type FullRead,
 } from '../utils/api';
 import { folderLinkTarget, linkCandidates } from '../utils/fileRefResolver';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
@@ -212,10 +212,14 @@ function FilePanel({
     const adapter: ApiAdapter = apiAdapter ?? {};
     const { readFile, readFileFull, downloadFileAsArrayBuffer, triggerDownload, writeFile, resolveFile } = adapter;
     return {
-      readFileFn: readFile ? (_: string, p: string) => readFile(p) : readWorkspaceFile,
-      readFileFullFn: readFileFull ? (_: string, p: string) => readFileFull(p) : readWorkspaceFileFull,
+      // A share serves its files as they stand, never from a backup.
+      readFileFn: readFile ? async (_: string, p: string) => ({ ...(await readFile(p)), from: LIVE }) : readWorkspaceFile,
+      readFileFullFn: readFileFull
+        ? async (_: string, p: string): Promise<FullRead> =>
+          ({ content: (await readFileFull(p)).content, version: null, rewriting: false, from: LIVE })
+        : readWorkspaceFileFull,
       downloadFileAsArrayBufferFn: downloadFileAsArrayBuffer
-        ? (_: string, p: string) => downloadFileAsArrayBuffer(p)
+        ? async (_: string, p: string) => ({ buffer: await downloadFileAsArrayBuffer(p), from: LIVE })
         : downloadWorkspaceFileAsArrayBuffer,
       // A share's route redacts each file whole, so it has no ranges to read.
       openRangedFn: apiAdapter ? undefined : openWorkspaceFileRanged,
@@ -297,7 +301,7 @@ function FilePanel({
 
   const downloads = useFileDownloads({ workspaceId, triggerDownloadFn, workspaceStatus: wsData?.status });
   const away = useComputerAway({
-    filesAway, filesError, bodyBackup: body?.unreachable, fileError: downloads.errorFor(selectedFile) ?? readError,
+    filesAway, filesError, bodyFrom: body?.from, fileError: downloads.errorFor(selectedFile) ?? readError,
     computerId: wsData?.computer_id ?? null, invalidate: cache.invalidate,
   });
   const { fileError } = away;

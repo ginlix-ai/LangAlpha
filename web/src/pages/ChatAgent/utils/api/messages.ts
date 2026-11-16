@@ -10,7 +10,7 @@ import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { PING_STREAM_BEAT_MS, RUN_STREAM_BEAT_MS, watchStreamSilence } from '@/lib/streamSilence';
 import type { PageBudget } from '../../session/history/pageBudget';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
-import { BACKUP_OK } from './files';
+import { BACKUP_OK, readFromBody, type ReadFrom } from './readFrom';
 
 /**
  * Which part of the history a replay covers. With neither bound the server
@@ -853,11 +853,11 @@ export async function listWorkspaceFiles(
   workspaceId: string,
   dirPath: string = 'results',
   { autoStart = false, includeSystem = false }: { autoStart?: boolean; includeSystem?: boolean } = {}
-) {
+): Promise<{ files: string[]; from: ReadFrom }> {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files`, {
     params: { path: dirPath, include_system: includeSystem, auto_start: autoStart, wait_for_sandbox: autoStart, ...BACKUP_OK },
   });
-  return data; // { workspace_id, path, files: [...] }
+  return { files: data?.files ?? [], from: readFromBody(data) };
 }
 
 /**

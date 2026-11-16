@@ -228,12 +228,12 @@ describe('useWorkspaceFiles', () => {
   });
 
   it.each([
-    ['the backup of a computer that did not answer', { source: 'database', unreachable: 'not_connected' }, { code: 'not_connected', backup: true }],
+    ['the backup of a computer that did not answer', { kind: 'backup', unreachable: 'not_connected' }, { code: 'not_connected', backup: true }],
     // A stopped workspace's listing is the backup too, and says so its own way.
-    ["a stopped workspace's backup", { source: 'database' }, null],
-    ['a live listing', {}, null],
-  ])('says when it lists %s', async (_label, extra, away) => {
-    mockListFiles.mockResolvedValue({ files: ['notes.md'], ...extra });
+    ["a stopped workspace's backup", { kind: 'backup', unreachable: null }, null],
+    ['a live listing', { kind: 'live' }, null],
+  ])('says when it lists %s', async (_label, from, away) => {
+    mockListFiles.mockResolvedValue({ files: ['notes.md'], from });
 
     const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'));
 

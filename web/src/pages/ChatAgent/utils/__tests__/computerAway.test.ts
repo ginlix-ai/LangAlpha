@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { Computer } from '@/types/api';
 
 import {
-  awayMachineOf, awayRetryMessage, backupShownText, backupUnreachable, unreachableCode, unreachableTurnCopy,
+  awayMachineOf, awayRetryMessage, backupCode, backupShownText, unreachableCode, unreachableTurnCopy,
 } from '../computerAway';
 
 // Only the named keys print the name, as the catalogs do.
@@ -39,10 +39,10 @@ describe('computerAway', () => {
     expect(unreachableCode(null)).toBeNull();
   });
 
-  it('reads a listing as the backup of an away machine only when it names the code', () => {
-    expect(backupUnreachable({ source: 'database', unreachable: 'timeout' })).toBe('timeout');
-    expect(backupUnreachable({ source: 'database' })).toBeNull();
-    expect(backupUnreachable({ source: 'sandbox', unreachable: 'timeout' })).toBeNull();
+  it('reads a backup as an away machine\'s only when it names the code', () => {
+    expect(backupCode({ kind: 'backup', unreachable: 'timeout' })).toBe('timeout');
+    expect(backupCode({ kind: 'backup', unreachable: null })).toBeNull();
+    expect(backupCode({ kind: 'live' })).toBeNull();
   });
 
   it('calls a Mac "your Mac" and any other machine by its name', () => {

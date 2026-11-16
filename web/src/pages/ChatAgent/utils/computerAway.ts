@@ -3,7 +3,7 @@
  *
  * The server names the connect code wherever it reports one: on a failed
  * turn's `error` frame (`error_code`), on a file listing or read it answered
- * from the backup (`unreachable`), and on a 503 with no backup to stand in
+ * from the backup (`ReadFrom`), and on a 503 with no backup to stand in
  * (the `X-Computer-Unreachable` header). Its own sentence is English and
  * says nothing the machine's owner can act on, so the code is what is read,
  * and the machine is called what its owner calls it: "your Mac" for a Mac,
@@ -16,6 +16,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import type { Computer, ComputersResponse } from '@/types/api';
 
 import { machineArtOf } from '../components/machineArt/machine';
+import type { ReadFrom } from './api/readFrom';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -64,16 +65,10 @@ export function isMachineCode(code: string | null | undefined): boolean {
   return !!code && code !== SERVICE_CODE;
 }
 
-/**
- * The connect code of a listing or read the server answered from the backup
- * because the computer did not answer; null for a live one, and for a stopped
- * workspace's backup, which carries no code.
- */
-export function backupUnreachable(data: unknown): string | null {
-  const answer = data as { source?: unknown; unreachable?: unknown } | null | undefined;
-  return answer?.source === 'database' && typeof answer.unreachable === 'string' && answer.unreachable
-    ? answer.unreachable
-    : null;
+/** The connect code of a read the backup answered because the computer did
+ *  not; null for a live read, and for a stopped workspace's backup. */
+export function backupCode(from: ReadFrom | undefined): string | null {
+  return from?.kind === 'backup' ? from.unreachable : null;
 }
 
 /** What to tell someone whose request the computer could not take. */
