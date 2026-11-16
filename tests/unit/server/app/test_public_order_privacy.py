@@ -384,7 +384,12 @@ async def test_replay_keeps_a_wakeup_on_an_order_to_its_label(client):
         "data": {
             "tool_call_id": "call_abc",
             "content": "- w_ab12 (AAPL buy fill): order 900104, Buy 7 AAPL.",
-            "artifact": {"quiet": False, "changed": True},
+            "artifact": {
+                "quiet": False,
+                "changed": True,
+                "set": [{"wakeup_id": "w_ab12", "kind": "order", "label": "AAPL buy fill", "order": order}],
+                "cancelled": [],
+            },
         },
     }
     body, events = await _replay(
@@ -409,3 +414,7 @@ async def test_replay_keeps_a_wakeup_on_an_order_to_its_label(client):
     assert call["data"]["tool_calls"][0]["args"] == {
         "triggers": [{"label": "AAPL buy fill"}]
     }
+    answer = next(e for e in events if e["event"] == "tool_call_result")
+    assert answer["data"]["artifact"]["set"] == [
+        {"wakeup_id": "w_ab12", "kind": "order", "label": "AAPL buy fill"}
+    ]

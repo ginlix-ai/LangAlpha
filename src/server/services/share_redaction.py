@@ -47,8 +47,9 @@ _PRIVATE_QUERY_METADATA_KEYS = frozenset(
 # share keeps each notice's label and kind, which name what fired, and drops
 # the order wherever the notice sits: a wake turn's query metadata and the
 # entry a running turn took it in by. The agent's own ``schedule_wakeup``
-# calls name the order too, by its id in the arguments and in the answer's
-# listing, so those go as an order call's do.
+# calls name the order too, by its id in the arguments, in the answer's
+# listing and in the rows its artifact lists as set or cancelled, so those go
+# as an order call's do.
 _WAKEUP_ORDER_KEYS = frozenset({"order"})
 # Keys naming the owner's account wherever they sit in an event: no share
 # renders them, and none is the viewer's to read.
@@ -344,6 +345,9 @@ class ShareRedaction:
             call_name = self._call_names.get(str(call_id))
             self._call_names[str(call_id)] = None
         rule = "blank" if call_name is None else _ANSWER_RULES.get(call_name)
+        # An answer no call can be named for may be a wakeup's too.
+        if call_name in (None, WAKEUP_TOOL_NAME) and isinstance(data.get("artifact"), dict):
+            data["artifact"] = without_keys(data["artifact"], _WAKEUP_ORDER_KEYS)
         content = data.get("content")
         if rule == "blank":
             data["content"] = ""

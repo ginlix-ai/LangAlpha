@@ -28,6 +28,7 @@ from src.server.database.wakeups import read as read_db
 from src.server.database.wakeups.arm import WakeupSpec
 from src.server.database.wakeups.cancel import CancelOutcome
 from src.server.services.wakeups.changes import wakeups_changed
+from src.server.services.wakeups.listing import wakeup_out
 from src.tools.wakeups import orders as order_wakeups
 from src.tools.wakeups import price as price_wakeups
 from src.tools.wakeups.call import parse_call
@@ -70,7 +71,20 @@ class _ToolInput(ScheduleWakeupArgs):
 
 
 def _artifact(*, changed: bool = False) -> WakeupArtifact:
-    return WakeupArtifact(quiet=False, changed=changed)
+    return WakeupArtifact(quiet=False, changed=changed, set=[], cancelled=[])
+
+
+def _listed(rows: Sequence[Mapping[str, Any]], now: datetime) -> List[Dict[str, Any]]:
+    """Rows the call changed, in the listing's shape, for the transcript to
+    name. One the listing cannot read is left out rather than failing a call
+    whose changes are already committed and told in its text."""
+    shown: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            shown.append(wakeup_out(dict(row), now).model_dump(mode="json"))
+        except Exception:
+            logger.warning("[Wakeups] could not list a changed wakeup", exc_info=True)
+    return shown
 
 
 class _Entry:
@@ -199,6 +213,10 @@ async def _execute(
             sections.append(block)
 
     artifact = _artifact(changed=changed_this_turn(messages, args))
+    artifact["set"] = _listed([row for row, _ in armed], now)
+    artifact["cancelled"] = _listed(
+        [o.row for o in outcomes if o.outcome in _ENDED and o.row is not None], now
+    )
     error = False
     if call.quiet is not None:
         refusal = quiet_refusal(messages, configurable)
