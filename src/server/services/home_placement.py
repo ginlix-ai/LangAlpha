@@ -14,9 +14,11 @@ here is kept in process memory.
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from ptc_agent.agent.middleware.runtime_context import HomeAway
 from src.server.database.computer import get_computer_for_workspace, get_home_computer
@@ -26,12 +28,16 @@ from src.server.database.home_stand_in import (
     stand_in_computer,
 )
 from src.server.database.home_workspace import (
+    STAND_IN_COMPUTER,
     get_home_stand_in_id,
     get_home_workspace_id,
     is_home_id,
     is_home_stand_in_id,
 )
 from src.server.services.ssh_computers import computer_unreachable
+
+if TYPE_CHECKING:
+    from src.server.services.turn_runtime import TurnRoute
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +122,83 @@ async def runs_in(user_id: Optional[str], workspace_id: str, *, make: bool) -> s
         return workspace_id
     away = await place_home_turn(user_id, make=make)
     return away.workspace_id if away is not None else workspace_id
+
+
+@dataclass(frozen=True, slots=True)
+class HomeTurnStart:
+    """What where a Home turn runs adds to its start, read once so the run
+    states it alike in its context, its rows, its START and its stream."""
+
+    #: The thread's workspace, which the stream names.
+    workspace_id: str
+    #: Set while the turn runs in Home's stand-in.
+    away: Optional[HomeAway] = None
+    #: On a Home turn back on Home's own computer, what came back from the
+    #: stand-in (``home_back_notice``).
+    back: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    async def read(cls, user_id: str, route: TurnRoute) -> HomeTurnStart:
+        home_on_its_own = route.role == "chief_of_staff" and route.away is None
+        return cls(
+            workspace_id=route.workspace_id,
+            away=route.away,
+            back=await home_back_notice(user_id) if home_on_its_own and user_id else None,
+        )
+
+    def query_metadata(self) -> Dict[str, Any]:
+        """Read back with the turn, so a reload still says where it ran."""
+        return {"home_fallback": self.away.as_metadata()} if self.away else {}
+
+    def run_metadata(self) -> Dict[str, Any]:
+        """Where it runs, for the idle sweep to count it there."""
+        return {STAND_IN_COMPUTER: self.away.cloud_computer_id} if self.away else {}
+
+    @property
+    def moved_off(self) -> Optional[str]:
+        """Where it runs, which START holds a turn checked for a computer's
+        token to (``admission.refuse_moved_off``); None for its thread's own."""
+        return self.away.workspace_id if self.away else None
+
+    def frame(self) -> Optional[str]:
+        """The stream's word on where the turn runs, said before the computer
+        it runs on starts. Id 0: it comes before any cursor counts."""
+        if self.away is None:
+            return None
+        data = {"home_fallback": self.away.as_metadata(), "workspace_id": self.workspace_id}
+        return f"id: 0\nevent: turn_placement\ndata: {json.dumps(data)}\n\n"
+
+    def in_start(
+        self, user_id: str, then: Optional[Callable[[Any], Awaitable[None]]]
+    ) -> Optional[Callable[[Any], Awaitable[None]]]:
+        """What the START transaction also writes. A turn in the stand-in
+        marks its user away there, so the mark commits with its run row and
+        after Home's row lock, which the hand-back reads under."""
+        if self.away is None:
+            return then
+
+        async def run(conn: Any) -> None:
+            from fastapi import HTTPException
+
+            from src.server.database.home_away import StandInGone, mark_away
+
+            try:
+                await mark_away(user_id, conn=conn)
+            except StandInGone:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "busy",
+                        "message": (
+                            "The computer this Home turn was to run on was just "
+                            "removed. Send it again."
+                        ),
+                    },
+                ) from None
+            if then is not None:
+                await then(conn)
+
+        return run
 
 
 async def home_back_notice(user_id: str) -> Optional[Dict[str, Any]]:

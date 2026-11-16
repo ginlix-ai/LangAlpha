@@ -14,7 +14,6 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
 from typing import Any
@@ -27,7 +26,6 @@ from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
 )
-from src.server.database.home_workspace import STAND_IN_COMPUTER
 from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.commands.mirror import mirror_computer
@@ -78,7 +76,7 @@ from src.server.utils.multimodal_context import (
 )
 
 from ptc_agent.agent.graph import build_ptc_graph_with_session
-from src.server.services.home_placement import home_back_notice
+from src.server.services.home_placement import HomeTurnStart
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
@@ -139,37 +137,6 @@ def _turn_held(data: dict) -> str:
     """A ``turn_held`` frame. Id 0 like ``workspace_status``: it comes before
     the run has a stream to resume, so no cursor counts it."""
     return f"id: 0\nevent: turn_held\ndata: {json.dumps(data)}\n\n"
-
-
-def _in_start(
-    then: Callable[[Any], Awaitable[None]] | None, *, away_user: str | None
-) -> Callable[[Any], Awaitable[None]] | None:
-    """What the START transaction also writes. A Home turn placed in Home's
-    stand-in marks its user away there, so the mark commits with its run row
-    and after Home's row lock, which the hand-back reads under."""
-    if away_user is None:
-        return then
-
-    async def run(conn: Any) -> None:
-        from src.server.database.home_away import StandInGone, mark_away
-
-        try:
-            await mark_away(away_user, conn=conn)
-        except StandInGone:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "busy",
-                    "message": (
-                        "The computer this Home turn was to run on was just "
-                        "removed. Send it again."
-                    ),
-                },
-            ) from None
-        if then is not None:
-            await then(conn)
-
-    return run
 
 
 async def _admit_attachments(
@@ -455,6 +422,7 @@ async def astream_ptc_workflow(
             user_profile = (
                 await get_user_profile_for_prompt(user_id) if user_id else None
             )
+            home = await HomeTurnStart.read(user_id, route)
             turn_context = build_turn_context(
                 request,
                 prior_thread,
@@ -464,12 +432,8 @@ async def astream_ptc_workflow(
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
                 carried_unwatched=carry.carried_unwatched(request, prior),
-                home_away=route.away,
-                home_back=(
-                    await home_back_notice(user_id)
-                    if route.role == "chief_of_staff" and route.away is None and user_id
-                    else None
-                ),
+                home_away=home.away,
+                home_back=home.back,
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
@@ -508,10 +472,8 @@ async def astream_ptc_workflow(
             query_metadata = {
                 # The resolved one: a request may name a former Home row.
                 "workspace_id": workspace_id,
+                **home.query_metadata(),
             }
-            if route.away is not None:
-                # Read back with the turn, so a reload still says where it ran.
-                query_metadata["home_fallback"] = route.away.as_metadata()
             if effective_model:
                 query_metadata["llm_model"] = effective_model
             query_metadata.update(provenance_metadata(request))
@@ -625,15 +587,11 @@ async def astream_ptc_workflow(
                     UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
                     **firing,
-                    # Where it runs, for the idle sweep to count it there.
-                    **(
-                        {STAND_IN_COMPUTER: route.away.cloud_computer_id}
-                        if route.away is not None
-                        else {}
-                    ),
+                    **home.run_metadata(),
                     **(run_metadata or {}),
                 },
-                in_start=_in_start(
+                in_start=home.in_start(
+                    user_id,
                     partial(
                         _admit_attachments,
                         turn_attachments,
@@ -642,11 +600,8 @@ async def astream_ptc_workflow(
                     )
                     if turn_attachments
                     else None,
-                    away_user=user_id if route.away is not None else None,
                 ),
-                # Where it runs, which START holds a turn checked for a
-                # computer's token to (``refuse_moved_off``).
-                runs_in=runs_in if route.away is not None else None,
+                runs_in=home.moved_off,
             )
             if firing:
                 await automation_settlement.take_over_firing(
@@ -727,9 +682,8 @@ async def astream_ptc_workflow(
             platform=request.platform,
             delegated=bool(getattr(request, "origin_home_thread_id", None)),
         )
-        if route.away is not None:
-            # Where the turn runs, said before the computer it runs on starts.
-            yield f"id: 0\nevent: turn_placement\ndata: {json.dumps({'home_fallback': route.away.as_metadata(), 'workspace_id': workspace_id})}\n\n"
+        if (placement := home.frame()) is not None:
+            yield placement
         if not needs_startup:
             with computer_cause(turn_cause_name, client=turn_client):
                 session = await workspace_manager.get_session_for_workspace(

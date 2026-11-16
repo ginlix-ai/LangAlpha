@@ -167,3 +167,58 @@ async def test_a_gate_judges_a_home_turn_on_the_computer_it_would_run_on(
     assert await home_placement.home_turn_computer(USER) == expected
     rows["placed"].assert_not_called()
 
+
+def _start(away):
+    from src.server.services.home_placement import HomeTurnStart
+
+    return HomeTurnStart(workspace_id=HOME, away=away)
+
+
+def _away():
+    from ptc_agent.agent.middleware.runtime_context import HomeAway
+
+    return HomeAway(STAND_IN, "mac-1", "MacBook Pro", "cloud-1", "Cloud computer", at="t")
+
+
+def test_a_turn_in_the_stand_in_states_it_on_its_rows_and_stream():
+    import json
+
+    away = _away()
+    start = _start(away)
+
+    assert start.query_metadata() == {"home_fallback": away.as_metadata()}
+    assert start.run_metadata() == {"stand_in_computer": "cloud-1"}
+    assert start.moved_off == STAND_IN
+    # The frame clients read, byte for byte.
+    assert start.frame() == (
+        "id: 0\nevent: turn_placement\ndata: "
+        + json.dumps({"home_fallback": away.as_metadata(), "workspace_id": HOME})
+        + "\n\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_turn_at_home_adds_nothing_to_its_start():
+    start = _start(None)
+    then = AsyncMock()
+
+    assert start.query_metadata() == {} and start.run_metadata() == {}
+    assert start.moved_off is None and start.frame() is None
+    assert start.in_start(USER, then) is then
+    assert start.in_start(USER, None) is None
+
+
+@pytest.mark.asyncio
+async def test_a_stand_in_whose_computer_goes_refuses_the_turn_as_busy():
+    from fastapi import HTTPException
+
+    from src.server.database.home_away import StandInGone
+
+    then = AsyncMock()
+    with patch("src.server.database.home_away.mark_away", AsyncMock(side_effect=StandInGone())):
+        with pytest.raises(HTTPException) as refused:
+            await _start(_away()).in_start(USER, then)("conn")
+
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "busy"
+    then.assert_not_awaited()

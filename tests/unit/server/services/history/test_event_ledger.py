@@ -32,6 +32,7 @@ _SCAN_ROOTS = (
     SRC / "server" / "services" / "history",
     SRC / "server" / "services" / "runs",
     SRC / "server" / "services" / "report_back",
+    SRC / "server" / "services" / "home_placement.py",
     SRC / "server" / "app" / "threads",
 )
 
