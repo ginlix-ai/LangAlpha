@@ -9,11 +9,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether the call lists anything under `key` (`triggers` or `cancel`). A
- *  list may arrive as its JSON text, and text that is not JSON after all
- *  still counts when it is not empty: the server reads it the same way. */
-export function wakeupArgListed(args: unknown, key: 'triggers' | 'cancel'): boolean {
-  if (!isRecord(args)) return false;
+/** How many entries the call lists under `key` (`triggers` or `cancel`): a
+ *  list's length, and one for anything else given that is not empty, such
+ *  as `cancel: "all"` or a single entry given bare. A list may arrive as its
+ *  JSON text, and text that is not JSON after all still counts when it is
+ *  not empty: the server reads it the same way. */
+export function wakeupArgCount(args: unknown, key: 'triggers' | 'cancel'): number {
+  if (!isRecord(args)) return 0;
   let value = args[key];
   if (typeof value === 'string' && value.trim().startsWith('[')) {
     try {
@@ -22,10 +24,15 @@ export function wakeupArgListed(args: unknown, key: 'triggers' | 'cancel'): bool
       // Not JSON after all: the text stands as given.
     }
   }
-  if (Array.isArray(value)) return value.length > 0;
-  if (isRecord(value)) return Object.keys(value).length > 0;
-  if (typeof value === 'string') return value.length > 0;
-  return !!value;
+  if (Array.isArray(value)) return value.length;
+  if (isRecord(value)) return Object.keys(value).length > 0 ? 1 : 0;
+  if (typeof value === 'string') return value.length > 0 ? 1 : 0;
+  return value ? 1 : 0;
+}
+
+/** Whether the call lists anything under `key`. */
+export function wakeupArgListed(args: unknown, key: 'triggers' | 'cancel'): boolean {
+  return wakeupArgCount(args, key) > 0;
 }
 
 /** The line the call ends a check quietly with, or '' when it ends none. */

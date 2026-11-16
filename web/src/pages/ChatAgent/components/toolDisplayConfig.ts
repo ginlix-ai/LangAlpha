@@ -13,7 +13,7 @@ import { directToolDisplayName, parseDirectToolName, summarizeDirectToolArgs } f
 import { INTERVAL_LABEL } from '@/lib/bars';
 import { LARGE_TOOL_RESULTS_PREFIX } from './filePanel/fileMeta';
 import { messagingAppName, platformOf } from './messaging/messageDelivery';
-import { quietArg, wakeupArgListed } from '../session/wakeupArgs';
+import { quietArg, wakeupArgCount, wakeupArgListed } from '../session/wakeupArgs';
 import type { TFn } from '@/lib/elapsed';
 
 interface ToolDisplayEntry {
@@ -333,13 +333,11 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       if (has('targets')) return tr?.('settingPriceTargets') ?? 'setting price targets...';
       return tr?.('checkingMarketWatch') ?? 'checking market watch...';
     }
-    case 'schedule_wakeup': {
-      const tw = (key: string, fallback: string) => (t ? t(`chat.wakeups.${key}`) : fallback);
-      if (quietArg(args)) return tw('endingQuietly', 'ending the check...');
-      if (wakeupArgListed(args, 'triggers')) return tw('settingWakeups', 'setting wakeups...');
-      if (wakeupArgListed(args, 'cancel')) return tw('cancellingWakeups', 'cancelling wakeups...');
-      return tw('checkingWakeups', 'checking wakeups...');
-    }
+    case 'schedule_wakeup':
+      if (quietArg(args)) return wakeupWords(t, 'endingQuietly', 'ending the check...');
+      if (wakeupArgListed(args, 'triggers')) return wakeupWords(t, 'settingWakeups', 'setting wakeups...');
+      if (wakeupArgListed(args, 'cancel')) return wakeupWords(t, 'cancellingWakeups', 'cancelling wakeups...');
+      return wakeupWords(t, 'checkingWakeups', 'checking wakeups...');
     case 'get_sec_filing':
       return args?.symbol
         ? (tr?.('fetchingSymbolFiling', { symbol: args.symbol }) ?? `fetching ${args.symbol} filing...`)
@@ -438,7 +436,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
  *  but older threads still hold their calls. */
 const CHART_INSTANCE_TOOLS = new Set(['manage_chart_layers', 'draw_chart_annotation', 'manage_chart_annotations']);
 
-export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn, root?: string | null): string | null {
+export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, t?: TFn, { artifact, root }: ToolTitleContext = {}): string | null {
   const args = toolCall?.args;
   if (!args) return null;
   // Path-aware summaries: emit just the meaningful object (skill name, topic,
@@ -476,6 +474,8 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
   // The app a send was addressed to. With no target it went to the turn's own
   // conversation, which the call alone does not name.
   if (toolName === 'send_message') return messagingAppName(platformOf(args.target));
+  // A turn can call it several times over; each row says what that call did.
+  if (toolName === 'schedule_wakeup') return wakeupCallSummary(args, artifact, t);
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
   if (args.query) return args.query;
@@ -492,6 +492,34 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
     return fp!.split('/').pop() || null;
   }
   return null;
+}
+
+/** A `chat.wakeups` string, or its English when there is no `t`. */
+function wakeupWords(t: TFn | undefined, key: string, fallback: string, options?: Record<string, unknown>): string {
+  return t ? t(`chat.wakeups.${key}`, options) : fallback;
+}
+
+/**
+ * `set 2 · ended the check`, or null for a call that only listed them. Read
+ * from the result, so an entry or a quiet the tool refused is not counted. A
+ * result from before it listed the entries still says whether quiet ended
+ * the check; the entries then fall back to what the call asked for, as does
+ * everything while the result has not arrived.
+ */
+function wakeupCallSummary(args: ToolCallArgs, artifact: unknown, t?: TFn): string | null {
+  const result = typeof artifact === 'object' && artifact !== null ? artifact as Record<string, unknown> : {};
+  const done = Array.isArray(result.set) && Array.isArray(result.cancelled)
+    ? { set: result.set.length, cancelled: result.cancelled.length }
+    : null;
+  const set = done ? done.set : wakeupArgCount(args, 'triggers');
+  const cancelled = done ? done.cancelled : wakeupArgCount(args, 'cancel');
+  const ended = typeof result.quiet === 'boolean' ? result.quiet : !!quietArg(args);
+  const parts: string[] = [];
+  if (set) parts.push(wakeupWords(t, 'summarySet', `set ${set}`, { count: set }));
+  if (!done && args.cancel === 'all') parts.push(wakeupWords(t, 'summaryCancelledAll', 'cancelled all'));
+  else if (cancelled) parts.push(wakeupWords(t, 'summaryCancelled', `cancelled ${cancelled}`, { count: cancelled }));
+  if (ended) parts.push(wakeupWords(t, 'summaryEnded', 'ended the check'));
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /**
