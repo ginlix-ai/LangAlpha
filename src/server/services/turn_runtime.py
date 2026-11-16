@@ -60,11 +60,16 @@ class TurnRoute:
         """
         if self.role != "chief_of_staff":
             return self
+        await ensure_home(user_id, workspace)
+        return await self.placed(user_id, follows=follows) if place else self
+
+    async def placed(self, user_id: str, *, follows: Optional[str] = None) -> TurnRoute:
+        """This route with where its Home turn runs read again, as for a turn
+        that waited for its thread after its bind."""
+        if self.role != "chief_of_staff":
+            return self
         from src.server.services.home_placement import place_home_turn
 
-        await ensure_home(user_id, workspace)
-        if not place:
-            return self
         return replace(self, away=await place_home_turn(user_id, follows=follows))
 
 
@@ -139,7 +144,6 @@ async def ensure_home(
         HomeWorkspaceTaken,
         get_or_create_home_workspace,
     )
-    from src.server.services.computer_errors import NeedsComputer
     from src.server.services.workspace_manager import WorkspaceManager
 
     home_id = get_home_workspace_id(user_id)
@@ -151,9 +155,5 @@ async def ensure_home(
             # for any row another account holds, and no retry can make this
             # one the caller's.
             raise HTTPException(status_code=403, detail="Forbidden") from None
-    try:
-        await WorkspaceManager.get_instance().ensure_home_bound(user_id)
-    except NeedsComputer as e:
-        # A user who works only on machines of their own, with none connected.
-        raise HTTPException(status_code=409, detail=e.detail) from None
+    await WorkspaceManager.get_instance().ensure_home_bound(user_id)
     return home_id

@@ -916,6 +916,9 @@ class AutomationExecutor:
             if fresh is None:
                 return False
             firing.automation = fresh
+            # Where a Home turn runs is read again: the wait may outlast the
+            # placement the route was bound with (Home back, or gone).
+            firing.route = await firing.route.placed(user_id)
             # Before the credit gate, so a refusal there ends the run with
             # the delivery the automation now has.
             await self._start_delivery(execution_id, firing)
