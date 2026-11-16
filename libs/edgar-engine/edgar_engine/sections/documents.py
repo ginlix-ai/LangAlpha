@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .vocab import spec_for
+from .vocab import is_amendment, spec_for
 
 _DOC = re.compile(r"<DOCUMENT>(.*?)</DOCUMENT>", re.S | re.I)
 _TEXT = re.compile(r"<TEXT>(.*)</TEXT>", re.S | re.I)
@@ -84,6 +84,6 @@ def main_documents(docs: list[Document], form: str) -> list[Document]:
     spec = spec_for(form)
     ordered = sorted(docs, key=lambda d: d.seq)
     main = next((d for d in ordered if d.type.upper().startswith(spec.family) and not d.is_binary), ordered[0])
-    extra = spec.exhibit_documents + (spec.amendment_documents if form.upper().endswith("/A") else ())
+    extra = spec.exhibit_documents + (spec.amendment_documents if is_amendment(form) else ())
     keep = [main] + [d for d in ordered if d is not main and d.type.upper().startswith(extra) and not d.is_binary]
     return sorted(keep, key=lambda d: d.seq)

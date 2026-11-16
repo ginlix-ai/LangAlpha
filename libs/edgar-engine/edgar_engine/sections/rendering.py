@@ -18,7 +18,7 @@ import lxml.html
 from lxml import etree
 
 from .documents import Document
-from .model import Span
+from .model import DocumentInfo, Span
 
 _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "hr", "center",
           "blockquote", "dt", "dd", "title", "ul", "ol", "dl", "section", "article", "body", "pre", "caption"}
@@ -36,7 +36,7 @@ class Rendering:
     into, with offsets[i] where line i starts in it (offsets[len(lines)] is its end). Document 0 is the main one."""
     lines: list[str] = field(default_factory=list)
     line_doc: list[int] = field(default_factory=list)
-    documents: list[dict] = field(default_factory=list)
+    documents: list[DocumentInfo] = field(default_factory=list)
     text: str = field(init=False)
     offsets: list[int] = field(init=False)
 
@@ -51,10 +51,10 @@ class Rendering:
     @property
     def main_end(self) -> int:
         """The line after the main document's last."""
-        return self.documents[0]["line_end"] if self.documents else 0
+        return self.documents[0].line_end if self.documents else 0
 
     def doc_range(self, d: int) -> tuple[int, int]:
-        return self.documents[d]["line_start"], self.documents[d]["line_end"]
+        return self.documents[d].line_start, self.documents[d].line_end
 
     def span(self, a: int, b: int) -> Span:
         """The text of lines a..b-1."""
@@ -207,12 +207,11 @@ def is_html(doc: Document) -> bool:
 def render_documents(docs: list[Document]) -> Rendering:
     lines: list[str] = []
     line_doc: list[int] = []
-    documents: list[dict] = []
+    documents: list[DocumentInfo] = []
     for i, d in enumerate(docs):
         start = len(lines)
         doc_lines = [] if d.is_binary else (html_lines(d.body) if is_html(d) else text_lines(d.body))
         lines.extend(doc_lines)
         line_doc.extend([i] * len(doc_lines))
-        documents.append({"seq": d.seq, "type": d.type, "filename": d.filename, "line_start": start,
-                          "line_end": len(lines)})
+        documents.append(DocumentInfo(d.seq, d.type, d.filename, start, len(lines)))
     return Rendering(lines, line_doc, documents)

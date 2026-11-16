@@ -23,7 +23,8 @@ import re
 from dataclasses import replace
 from typing import TypeVar
 
-from .filings import FilingRef, base_form, get_filing
+from .cache import SectionsCache, SubmissionCache
+from .filings import FilingRef, base_form, filing_order, get_filing
 from .sections import sections_for_filing
 from .sections.model import FilingSections, Scope, Section, Span
 from .sections.vocab import spec_for
@@ -51,10 +52,6 @@ def _date(m: re.Match) -> str | None:
         return f"{int(year):04d}-{_MONTHS[month[:3].lower()]:02d}-{int(day):02d}"
     except (KeyError, ValueError):
         return None
-
-
-def _order(filing) -> tuple[str, str]:
-    return filing.filing_date or "", filing.accession or ""
 
 
 def cover_period(text: str) -> str | None:
@@ -99,7 +96,7 @@ def resolve_amends(amendment: FilingSections, refs: list[FilingRef]) -> str | No
     period = cover_period(amendment.text)
     by_period = [r for r in originals if period and r.report_date == period]
     if by_period:
-        return max(by_period, key=_order).accession
+        return max(by_period, key=filing_order).accession
     for day in original_filed_on(amendment.text):
         by_date = [r for r in originals if r.filing_date == day]
         if by_date:
@@ -126,16 +123,16 @@ def _shifted(s: Section, chars: int, source: str | None) -> Section:
 
 def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingSections:
     """The original as amended by amendments, applied in filing order (see the module docstring)."""
-    amendments = sorted(amendments, key=_order)
+    amendments = sorted(amendments, key=filing_order)
     items = {k: _shifted(s, 0, original.accession) for k, s in original.items.items()}
     text = original.text
-    documents = [{**d, "accession": original.accession} for d in original.documents]
+    documents = [replace(d, accession=original.accession) for d in original.documents]
     for a in amendments:
         text += "\n" if text and not text.endswith("\n") else ""
         chars, lines = len(text), text.count("\n")
         text += a.text
-        documents += [{**d, "accession": a.accession, "line_start": d["line_start"] + lines,
-                       "line_end": d["line_end"] + lines} for d in a.documents]
+        documents += [replace(d, accession=a.accession, line_start=d.line_start + lines, line_end=d.line_end + lines)
+                      for d in a.documents]
         printed = {k: _shifted(s, chars, a.accession) for k, s in a.items.items()}
         scope = a.scope or amendment_scope(a)
         if scope == "complete":
@@ -150,20 +147,21 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
                           amendments=[a.accession for a in amendments])
 
 
-def read(ref: FilingRef, cache=None, submissions=None) -> FilingSections:
+def read(ref: FilingRef, cache: SectionsCache | None = None, submissions: SubmissionCache | None = None) -> FilingSections:
     """A filing's sections as filed, with amends from the filing list and, for an amendment, its scope."""
     sections = sections_for_filing(get_filing(ref), cache, submissions)
     return replace(sections, amends=ref.amends,
                    scope=amendment_scope(sections) if sections.filing_status == "amendment" else sections.scope)
 
 
-def amended_sections(original: FilingRef, refs: list[FilingRef], cache=None, submissions=None) -> list[FilingSections]:
+def amended_sections(original: FilingRef, refs: list[FilingRef], cache: SectionsCache | None = None,
+                     submissions: SubmissionCache | None = None) -> list[FilingSections]:
     """The amendments of original as filed, in filing order: those the filing list links to it or cannot place,
     kept when their own text names it (or, when the text places them nowhere, the list does)."""
     candidates = [r for r in refs if r.filing_status == "amendment" and base_form(r.form) == base_form(original.form)
                   and (r.amends == original.accession or (r.amends is None and r.filing_date >= original.filing_date))]
     found = []
-    for ref in sorted(candidates, key=_order):
+    for ref in sorted(candidates, key=filing_order):
         sections = read(ref, cache, submissions)
         sections = replace(sections, amends=resolve_amends(sections, refs) or ref.amends)
         if sections.amends == original.accession:

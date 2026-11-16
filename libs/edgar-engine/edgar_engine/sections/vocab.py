@@ -101,6 +101,24 @@ _FORTYF = FormSpec("40-F", part_of={d: "documents" for d in _FORTYF_DOCUMENTS}, 
                    amendment_documents=("EX-99",), titled=True)
 
 
+FORM_VARIANTS = {"10-K": ("10-K", "10-K405")}
+
+
+def is_amendment(form: str) -> bool:
+    return form.upper().endswith("/A")
+
+
+def base_form(form: str) -> str:
+    """The form an amendment amends, with 10-K405 folded into 10-K: "10-K405/A" -> "10-K"."""
+    f = form.upper().removesuffix("/A")
+    return "10-K" if f == "10-K405" else f
+
+
+def filed_forms(form: str) -> tuple[str, ...]:
+    """The form names a base form is filed under: a 10-K also as 10-K405."""
+    return FORM_VARIANTS.get(form, (form,))
+
+
 def form_family(form: str) -> str:
     f = form.upper().replace("/A", "")
     if f.startswith("10-K"):

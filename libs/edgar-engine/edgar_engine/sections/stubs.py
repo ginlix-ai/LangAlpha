@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from .boundaries import ItemSpan
-from .model import Target
+from .model import Target, TargetKind
 from .pages import Pagination
 from .rendering import Rendering
 from .text import EXHIBIT_INDEX, STATEMENTS_OPENER, normalize
@@ -42,7 +42,7 @@ _SENT = re.compile(r"[.;:]\s*$")
 
 @dataclass
 class TargetSpan:
-    kind: str
+    kind: TargetKind
     description: str
     lines: list[tuple[int, int]] = field(default_factory=list)
 
@@ -87,7 +87,7 @@ class Resolver:
                  toc: set[int]):
         self.rendering, self.pages, self.spans, self.spec, self.toc = rendering, pages, spans, spec, toc
         self.lines = rendering.lines
-        self.ex13 = [i for i, d in enumerate(rendering.documents) if d["type"].upper().startswith("EX-13")]
+        self.ex13 = [i for i, d in enumerate(rendering.documents) if d.type.upper().startswith("EX-13")]
 
     def _docs_for(self, pointer: str) -> list[int]:
         if self.ex13 and _ANNUAL.search(pointer):

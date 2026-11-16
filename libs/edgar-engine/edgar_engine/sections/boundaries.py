@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
+from .model import Status
 from .rendering import Rendering
 from .text import CONTENTS, SENTENCE, SIGNATURE_PARAGRAPH, SIGNATURES, STATEMENTS_MARKER, normalize
 from .vocab import PART_NUMERAL, ROMAN, FormSpec
@@ -40,10 +42,13 @@ _PART_ORDER = {"I": 1, "II": 2, "III": 3, "IV": 4}
 _ANSWERED = re.compile(r"\b(?:none|not applicable|n/a|omitted|inapplicable)\b", re.I)
 
 
+HeadingKind = Literal["item", "other_item", "part", "sig", "section", "fpages"]
+
+
 @dataclass
 class Heading:
     line: int
-    kind: str
+    kind: HeadingKind
     ids: tuple[str, ...] = ()
     part: str | None = None
     upper: bool = False
@@ -57,7 +62,7 @@ class ItemSpan:
     end: int
     heading_line: int
     combined_with: list[str]
-    status: str = "present"
+    status: Status = "present"
 
 
 _OMITTED = re.compile(r"\W*(?:omitted|not applicable)\s+(?:as|because|since|in|pursuant)\b", re.I)

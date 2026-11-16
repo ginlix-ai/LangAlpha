@@ -14,7 +14,7 @@ from edgar_engine.amendments import (amendment_scope, cover_period, merge, nth_a
 from edgar_engine.cache import LocalDirStore, SectionsCache
 from edgar_engine.filings import FilingRef, base_form, link_amendments, refs_from_rows, select_filing
 from edgar_engine.sections import extract_sections
-from edgar_engine.sections.model import FilingSections, Section, Span, Target
+from edgar_engine.sections.model import DocumentInfo, FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
 
 CIK = 1234567
@@ -206,8 +206,7 @@ def filing(accession, form, filed, items, scope=None, head=""):
         out[iid] = section(iid, body, start=len(text))
         text += body + "\n"
     fs = FilingSections(accession=accession, form=form, filing_date=filed, items=out, text=text,
-                        engine_version=SECTIONS_VERSION, documents=[{"seq": 1, "type": form, "filename": "d.htm",
-                                                                     "line_start": 0, "line_end": text.count("\n")}])
+                        engine_version=SECTIONS_VERSION, documents=[DocumentInfo(1, form, "d.htm", 0, text.count("\n"))])
     fs.scope = scope or (amendment_scope(fs) if fs.filing_status == "amendment" else None)
     return fs
 
@@ -276,15 +275,15 @@ def test_merged_offsets_and_target_spans_index_the_merged_text():
                    target=Target(kind="in_document", spans=[Span(0, 18)], text="Item 12. Ownership"))
     amendment = FilingSections(accession="S", form="10-K/A", filing_date="2024-05-01", items={"12": stub},
                                text="Item 12. Ownership\nsee below\n", engine_version=SECTIONS_VERSION,
-                               documents=[{"seq": 1, "type": "10-K/A", "filename": "s.htm", "line_start": 0, "line_end": 2}])
+                               documents=[DocumentInfo(1, "10-K/A", "s.htm", 0, 2)])
     amendment.scope = "partial"
     m = merge(ORIGINAL, [PART_III, amendment])
     for s in m.items.values():
         assert m.text[s.start:s.end] == s.text
     span = m["12"].target.spans[0]
     assert m.text[span.start:span.end] == "Item 12. Ownership"
-    assert [d["accession"] for d in m.documents] == ["O", "P", "S"]
-    assert m.text.count("\n") == m.documents[-1]["line_end"]
+    assert [d.accession for d in m.documents] == ["O", "P", "S"]
+    assert m.text.count("\n") == m.documents[-1].line_end
     assert ORIGINAL["10"].source is None and PART_III["10"].start == 0
 
 

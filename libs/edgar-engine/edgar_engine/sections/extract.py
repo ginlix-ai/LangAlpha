@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from .boundaries import find_items
 from .documents import decode, header, main_documents, split
@@ -14,6 +15,9 @@ from .stubs import Resolver, is_stub
 from . import xref
 from .vocab import spec_for
 from .version import SECTIONS_VERSION
+
+if TYPE_CHECKING:
+    from ..cache import SectionsCache, SubmissionCache
 
 _OPEN = re.compile(r"<DOCUMENT>", re.I)
 _CLOSE = re.compile(r"</DOCUMENT>", re.I)
@@ -59,7 +63,8 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
                           items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
 
 
-def sections_for_filing(filing, cache=None, submissions=None) -> FilingSections:
+def sections_for_filing(filing, cache: SectionsCache | None = None,
+                        submissions: SubmissionCache | None = None) -> FilingSections:
     """Items of an edgartools Filing as filed, each labeled with the filing's accession as its source, read
     through cache (a SectionsCache) when one is given. With submissions (a SubmissionCache), the raw submission is
     kept by accession and read from there; one that does not parse (a truncated download) is not kept."""

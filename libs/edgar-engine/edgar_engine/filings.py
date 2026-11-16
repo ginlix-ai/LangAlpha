@@ -29,8 +29,10 @@ from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Iterable, Literal, Mapping
 
+from .sections.model import FilingStatus
+from .sections.vocab import base_form, filed_forms, is_amendment
+
 FiscalSource = Literal["xbrl", "period_rule"]
-FilingStatus = Literal["original", "amendment"]
 
 
 @dataclass(frozen=True)
@@ -47,17 +49,12 @@ class FilingRef:
 
     @property
     def filing_status(self) -> FilingStatus:
-        return "amendment" if self.form.endswith("/A") else "original"
+        return "amendment" if is_amendment(self.form) else "original"
 
 
-def base_form(form: str) -> str:
-    """The form an amendment amends, with 10-K405 folded into 10-K: "10-K405/A" -> "10-K"."""
-    f = form.upper().removesuffix("/A")
-    return "10-K" if f == "10-K405" else f
-
-
-def _order(ref: FilingRef) -> tuple[str, str]:
-    return ref.filing_date, ref.accession
+def filing_order(filing) -> tuple[str, str]:
+    """Filing date, then accession: the order EDGAR received filings in (for a FilingRef or FilingSections)."""
+    return filing.filing_date or "", filing.accession or ""
 
 
 def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
@@ -72,7 +69,7 @@ def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
         if r.filing_status == "amendment" and r.report_date:
             prior = [o for o in originals[(base_form(r.form), r.report_date)] if o.filing_date <= r.filing_date]
             if prior:
-                r = replace(r, amends=max(prior, key=_order).accession)
+                r = replace(r, amends=max(prior, key=filing_order).accession)
         linked.append(r)
     return linked
 
@@ -141,7 +138,7 @@ def refs_from_rows(
             label, source = period_rule(form, report_date, fiscal_year_end), "period_rule"
         year, period = label or (None, None)
         refs.append(FilingRef(cik, accession, form, filing_date, report_date, year, period, source))
-    return sorted(link_amendments(refs), key=_order, reverse=True)
+    return sorted(link_amendments(refs), key=filing_order, reverse=True)
 
 
 def pick_ref(
@@ -161,7 +158,7 @@ def pick_ref(
         and (fiscal_period is None or r.fiscal_period == fiscal_period)
         and (period_end is None or (r.report_date or "").startswith(period_end))
     ]
-    return min(matches, key=_order, default=None)
+    return min(matches, key=filing_order, default=None)
 
 
 def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:
@@ -210,7 +207,7 @@ def list_filings(
 ) -> list[FilingRef]:
     """Filings of a form, newest first. company is a ticker, a CIK (int or str) or an edgar.Company."""
     company = _company(company)
-    forms = ("10-K", "10-K405") if form == "10-K" else (form,)
+    forms = filed_forms(form)
     filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms)] if amendments else list(forms))
     if filings is None or filings.data.num_rows == 0:
         return []

@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
+from .vocab import is_amendment
+
 Status = Literal["present", "stub", "xref"]
 TargetKind = Literal["in_document", "exhibit", "proxy", "annual_report", "other_filing", "none_stated"]
 FilingStatus = Literal["original", "amendment"]
@@ -15,6 +17,18 @@ Scope = Literal["complete", "partial", "exhibits", "cover"]
 class Span:
     start: int
     end: int
+
+
+@dataclass(frozen=True)
+class DocumentInfo:
+    """A document the engine read: its sequence, type and file name, and the lines it rendered to. In an
+    as-amended view, accession names the filing it comes from."""
+    seq: int
+    type: str
+    filename: str
+    line_start: int
+    line_end: int
+    accession: str | None = None
 
 
 @dataclass
@@ -55,7 +69,7 @@ class FilingSections:
     items: dict[str, Section]
     text: str
     engine_version: str
-    documents: list[dict] = field(default_factory=list)
+    documents: list[DocumentInfo] = field(default_factory=list)
     filing_status: FilingStatus | None = None
     amends: str | None = None
     view: View = "as_filed"
@@ -64,7 +78,7 @@ class FilingSections:
 
     def __post_init__(self):
         if self.filing_status is None:
-            self.filing_status = "amendment" if self.form.upper().endswith("/A") else "original"
+            self.filing_status = "amendment" if is_amendment(self.form) else "original"
 
     def __getitem__(self, item: str) -> Section:
         return self.items[item]
@@ -82,4 +96,4 @@ class FilingSections:
                 return None
             return Target(**{**t, "spans": [Span(**s) for s in t.get("spans") or []]})
         items = {k: Section(**{**v, "target": target(v.get("target"))}) for k, v in d["items"].items()}
-        return cls(**{**d, "items": items})
+        return cls(**{**d, "items": items, "documents": [DocumentInfo(**x) for x in d.get("documents") or []]})
