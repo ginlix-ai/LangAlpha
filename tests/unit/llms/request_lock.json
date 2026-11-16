@@ -6787,7 +6787,7 @@
    "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses"
   }
  },
- "qwen3.8-max": {
+ "qwen4-max": {
   "client": "ChatDashScope",
   "graph_build": {
    "middleware": [
@@ -6861,11 +6861,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "qwen3.8-max",
-   "pricing_model_id": "qwen3.8-max",
+   "manifest_model": "qwen4-max",
+   "pricing_model_id": "qwen4-max",
    "pricing_provider": "dashscope",
    "provider_route": "dashscope",
-   "reasoning_effort": "medium"
+   "reasoning_effort": "high"
   },
   "request": {
    "body": {
@@ -6881,9 +6881,9 @@
       "type": "message"
      }
     ],
-    "model": "qwen3.8-max",
+    "model": "qwen4-max",
     "reasoning": {
-     "effort": "medium"
+     "effort": "high"
     },
     "stream": false,
     "tools": [
@@ -6916,7 +6916,7 @@
    "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
   }
  },
- "qwen3.8-max-intl": {
+ "qwen4-max-intl": {
   "client": "ChatDashScope",
   "graph_build": {
    "middleware": [
@@ -6990,11 +6990,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "qwen3.8-max-intl",
-   "pricing_model_id": "qwen3.8-max",
+   "manifest_model": "qwen4-max-intl",
+   "pricing_model_id": "qwen4-max",
    "pricing_provider": "dashscope-intl",
    "provider_route": "dashscope-intl",
-   "reasoning_effort": "medium"
+   "reasoning_effort": "high"
   },
   "request": {
    "body": {
@@ -7010,9 +7010,9 @@
       "type": "message"
      }
     ],
-    "model": "qwen3.8-max",
+    "model": "qwen4-max",
     "reasoning": {
-     "effort": "medium"
+     "effort": "high"
     },
     "stream": false,
     "tools": [

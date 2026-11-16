@@ -701,14 +701,14 @@
       }
     }
   },
-  "qwen3.8-max": {
+  "qwen4-max": {
     "prompt_guidance": "lean",
-    "model_id": "qwen3.8-max",
+    "model_id": "qwen4-max",
     "provider": "dashscope",
-    "display_name": "Qwen3.8 Max",
+    "display_name": "Qwen4 Max",
     "visible": true,
     "speed": 1,
-    "intelligence": 4,
+    "intelligence": 5,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -717,14 +717,11 @@
     "reasoning": {
       "efforts": [
         "none",
-        "minimal",
         "low",
-        "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
-      "default": "medium",
+      "default": "high",
       "write": "parameters.reasoning.effort"
     }
   },
@@ -780,14 +777,14 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "qwen3.8-max-intl": {
+  "qwen4-max-intl": {
     "prompt_guidance": "lean",
-    "model_id": "qwen3.8-max",
+    "model_id": "qwen4-max",
     "provider": "dashscope-intl",
-    "display_name": "Qwen3.8 Max (Intl)",
+    "display_name": "Qwen4 Max (Intl)",
     "visible": true,
     "speed": 1,
-    "intelligence": 4,
+    "intelligence": 5,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -796,14 +793,11 @@
     "reasoning": {
       "efforts": [
         "none",
-        "minimal",
         "low",
-        "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
-      "default": "medium",
+      "default": "high",
       "write": "parameters.reasoning.effort"
     }
   },

@@ -28,7 +28,7 @@ class TestImageRoute:
             ("gpt-6.1-sol", "openai"),
             ("gpt-6.1-sol-oauth", "openai"),
             ("gemini-4-hydrogen", "gemini"),
-            ("qwen3.8-max-intl", "dashscope"),
+            ("qwen4-max-intl", "dashscope"),
         ],
     )
     def test_a_manifest_model_is_judged_as_its_vendor(self, model, route):
