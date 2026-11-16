@@ -13,8 +13,10 @@ from dataclasses import dataclass, replace
 from typing import Literal, Optional
 
 from ptc_agent.agent.middleware.image_capture import CAPTURE_TIMEOUT_SECONDS
+from ptc_agent.core.sandbox.unreachable import unanswered_code
 from src.config.settings import get_checkpoint_flush_timeout
 from src.server.contracts.status import (
+    GATEWAY_OUTAGE_META,
     INTERRUPT_REASON_CREDIT_PAUSE,
     RESTART_INTERRUPTED_META,
     classify_interrupts,
@@ -31,6 +33,7 @@ from src.server.services.runs.stream_errors import (
     failure_kind_metadata,
     model_call_failure,
     plan_stop_metadata,
+    unreachable_failure,
     upstream_failure,
 )
 from src.server.utils.persistence_utils import (
@@ -174,11 +177,11 @@ async def assemble_finalize_artifacts(
             if kind.get("error_kind") == COMPUTER_UNREACHABLE:
                 # Which machine did not answer, as the live frame named it,
                 # so a reload of a run that went mid-turn names it too.
-                from src.server.services.ssh_computers import unreachable_machine
-
                 persist_metadata.update(
-                    await unreachable_machine(exc, workspace_id=workspace_id)
+                    await unreachable_failure(exc, workspace_id=workspace_id)
                 )
+            if unanswered_code(exc) == "gateway_unreachable":
+                persist_metadata[GATEWAY_OUTAGE_META] = True
             if kind.get("error_kind") == "upstream":
                 # Who pays decides the card, so a reload of a run that sent
                 # no frame words it as the live one would have.

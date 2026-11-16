@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from src.server.contracts.run_times import run_completed_at
-from src.server.contracts.status import TERMINAL_STATUSES, UNREACHABLE_FRAME_KEYS
+from src.server.contracts.status import TERMINAL_STATUSES, unreachable_facts
 from src.server.contracts.turn_kinds import NOTIFICATION_QUERY_TYPES
 from src.server.database.provenance import provenance_row_to_event
 from src.server.services.history.replay import facts as replay_facts
@@ -297,9 +297,7 @@ def _error_item(
             data[key] = metadata[key]
     if kind == "computer_unreachable":
         data["error_kind"] = kind
-        for key in UNREACHABLE_FRAME_KEYS:
-            if metadata.get(key):
-                data[key] = metadata[key]
+        data.update(unreachable_facts(metadata))
     if kind in ("upstream", "internal"):
         data["error_kind"] = kind
         status = metadata.get("error_status_code")
@@ -356,9 +354,10 @@ def _stamp_row_kind(frame: dict[str, Any], row: dict[str, Any]) -> None:
     drops its text by ``_error_item``'s rule, also one whose row predates
     kinds: its own kind names the same fault, and its text is the same
     diagnostic."""
-    for key in ("error_kind", "status_code", *UNREACHABLE_FRAME_KEYS):
+    for key in ("error_kind", "status_code"):
         if key in row:
             frame[key] = row[key]
+    frame.update(unreachable_facts(row))
     if frame.get("error_kind") == "internal":
         frame["error"] = ""
     elif isinstance(frame.get("error"), str):

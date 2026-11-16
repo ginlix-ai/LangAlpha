@@ -668,7 +668,7 @@ async def test_a_machine_that_did_not_answer_names_its_computer(coordinator):
     on the row a reload words it by."""
     computer = {"computer_id": "c-mac", "name": "Work Mac"}
     with patch(
-        "src.server.services.ssh_computers.get_computer_for_workspace",
+        "src.server.database.computer.get_computer_for_workspace",
         new=AsyncMock(return_value=computer),
     ) as looked_up:
         frames = await _fail(

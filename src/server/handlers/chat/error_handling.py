@@ -26,7 +26,7 @@ from ptc_agent.core.sandbox.runtime import (
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
-from src.server.services.runs.stream_errors import unreachable_kind
+from src.server.services.runs.stream_errors import unreachable_failure, unreachable_kind
 from src.server.services.runs.pending_input import (
     can_retry,
     needs_resend,
@@ -671,18 +671,9 @@ async def handle_workflow_error(
 
         error_type_label = _classify_non_recoverable_error_type(e)
         # The user's own machine not answering is worded by the client in the
-        # user's terms, so it carries its own kind and the connect code, as a
-        # turn whose machine went mid-run does (``unreachable_kind``).
-        machine_kind = unreachable_kind(e)
-        if machine_kind:
-            # Which machine, so the card names the one to wake: the turn's
-            # own computer is its workspace's.
-            from src.server.services.ssh_computers import unreachable_machine
-
-            machine_kind = {
-                **machine_kind,
-                **await unreachable_machine(e, workspace_id=workspace_id),
-            }
+        # user's terms, so it carries its own kind, the connect code and which
+        # machine, as a turn whose machine went mid-run does.
+        machine_kind = await unreachable_failure(e, workspace_id=workspace_id)
         # error_type/error_class ride the row so replay can reconstruct the
         # terminal error event (the yield below happens after this finalize).
         if await _finalize_error(

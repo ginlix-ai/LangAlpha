@@ -446,3 +446,24 @@ async def test_a_dead_dispatch_reads_as_our_fault_live_and_on_a_reload():
     assert written[0]["error_kind"] == "internal"
     frame = executor.append_run_end_event.await_args.kwargs["error_frame"]
     assert frame["error_kind"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_tunnel_gateway_ended_settles_its_firing_as_our_outage():
+    """The gateway going down mid-turn stamped the run with the generic kind,
+    so the automation that ran it took a strike for the service's outage, as
+    the same outage before the turn already did not."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+    from src.server.services.automation_settlement import Outcome, ledger_outcome
+
+    try:
+        raise RuntimeError("acquire failed") from SSHConnectError(
+            "gateway_unreachable", "The tunnel is not answering."
+        )
+    except RuntimeError as e:
+        exc = e
+
+    metadata = await _failed_metadata(exc)
+
+    assert metadata.get("error_kind") != "computer_unreachable"
+    assert ledger_outcome({"status": "error", "metadata": metadata}) is Outcome.FAILED_OURS

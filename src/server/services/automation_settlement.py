@@ -31,6 +31,7 @@ from typing import Any, Dict, Literal, Optional
 
 from src.observability import automation_executions, safe_add
 from src.server.contracts.status import (
+    GATEWAY_OUTAGE_META,
     INTERRUPT_REASON_CREDIT_PAUSE,
     is_restart_interrupted,
     is_user_stop,
@@ -252,8 +253,9 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     A run that ended because its computer did not answer was skipped for
     that, whichever role ran it. A run a restart stopped goes on in the turn that takes it over, for as
     long as one may (``carried_firing``). Any other cancel the reader did
-    not ask for is a server stopping, and an error
-    written by the ledger's recovery is a worker lost: both are ours. A run
+    not ask for is a server stopping, an error
+    written by the ledger's recovery is a worker lost, and one the tunnel
+    gateway not answering ended is its outage: all are ours. A run
     the credit gate paused hit a usage limit, and one the Claude plan stopped
     (``claude_plan``, ``plan_stop_metadata``) the plan's, and one another
     subscription refused at its limit (``plan_limit``) that one's. A model call refused 401/403
@@ -283,6 +285,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     if status == "error":
         if metadata.get("recovery"):
             return Outcome.INTERRUPTED
+        if metadata.get(GATEWAY_OUTAGE_META):
+            return Outcome.FAILED_OURS
         if metadata.get("claude_plan"):
             return Outcome.PLAN_LIMITED
         upstream = metadata.get("upstream") or {}
