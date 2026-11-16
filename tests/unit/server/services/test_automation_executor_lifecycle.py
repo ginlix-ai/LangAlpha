@@ -947,8 +947,12 @@ async def test_a_chief_of_staff_automation_runs_in_home():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("checked", ["computer-1", None])
 async def test_a_run_now_starts_its_turn_held_to_the_computer_it_was_checked_on(checked):
+    """Read off the row the start moves, whichever process starts it."""
     with _firing([_streams]) as fx, _delivery(None):
-        await AutomationExecutor().execute(_automation(), _EXEC, checked_computer_id=checked)
+        fx.db.transition_execution.return_value = {
+            "conversation_thread_id": None, "checked_computer_id": checked,
+        }
+        await AutomationExecutor().execute(_automation(), _EXEC)
 
     assert _turn_args(fx)["request"].checked_computer_id == checked
 

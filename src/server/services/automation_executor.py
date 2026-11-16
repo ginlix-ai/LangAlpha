@@ -95,7 +95,6 @@ async def hand_off(
     thread_id: str,
     *,
     from_status: str,
-    checked_computer_id: str | None = None,
 ) -> None:
     """Leave a firing this draining process has not started a turn for to the
     next process: back to ``pending``, with a job that starts it there."""
@@ -103,7 +102,6 @@ async def hand_off(
         execution_id=execution_id,
         automation_id=str(automation["automation_id"]),
         user_id=automation["user_id"],
-        checked_computer_id=checked_computer_id,
     )
     handed = await exec_db.hand_off_execution(
         execution_id, from_statuses=(from_status,), thread_id=thread_id, job=job
@@ -136,11 +134,17 @@ async def start_handed_off(job: Dict[str, Any]) -> None:
     automation = await auto_db.get_automation(payload["automation_id"], payload["user_id"])
     if automation is None:
         return
+    if checked := payload.get("checked_computer_id"):
+        # A hand-off from a build that kept the checked computer in the job
+        # rather than on the row: onto the row, where the start reads it.
+        await exec_db.transition_execution(
+            payload["execution_id"], from_statuses=("pending",), to="pending",
+            checked_computer_id=checked,
+        )
     AutomationScheduler.get_instance().dispatch(
         automation,
         payload["execution_id"],
         name=f"handed_exec_{payload['automation_id'][:8]}",
-        checked_computer_id=payload.get("checked_computer_id"),
     )
 
 
@@ -544,7 +548,6 @@ class AutomationExecutor:
         execution_id: str,
         thread_id: str,
         deadline: float,
-        checked_computer_id: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         """Hold the firing as ``waiting`` until its thread's turn ends.
 
@@ -601,11 +604,7 @@ class AutomationExecutor:
                 # firing on, still in line for the thread.
                 if restart_drain.draining():
                     await hand_off(
-                        automation,
-                        execution_id,
-                        thread_id,
-                        from_status="waiting",
-                        checked_computer_id=checked_computer_id,
+                        automation, execution_id, thread_id, from_status="waiting"
                     )
                 else:
                     await self._skip_interrupted(automation, execution_id)
@@ -633,8 +632,6 @@ class AutomationExecutor:
         automation: Dict[str, Any],
         execution_id: str,
         workspace_id: str,
-        *,
-        checked_computer_id: str | None = None,
     ) -> bool:
         """Park the firing as ``waiting`` while the computer its turn runs on
         can't be reached (``computer_away``); True when it parked, or was
@@ -645,8 +642,7 @@ class AutomationExecutor:
         computer is back, or skips it (``computer_unreachable``) once a later
         firing of the automation comes along or at the deadline its first
         park set. A computer that
-        answers costs one read and no wait. ``checked_computer_id`` is kept on
-        the row, so the started turn is held to it as this one would be.
+        answers costs one read and no wait.
         """
         from src.server.services.ssh_computers import computer_away
 
@@ -671,7 +667,6 @@ class AutomationExecutor:
                 if runs_once(automation)
                 else COMPUTER_WAIT_CAP_SECONDS
             ),
-            checked_computer_id=checked_computer_id,
         )
         if parked:
             logger.info(
@@ -993,11 +988,7 @@ class AutomationExecutor:
                 return True
             firing.run_id = None
             fresh = await self._wait_for_thread(
-                automation,
-                execution_id,
-                firing.thread_id,
-                deadline,
-                checked_computer_id=firing.checked_computer_id,
+                automation, execution_id, firing.thread_id, deadline
             )
             if fresh is None:
                 return False
@@ -1008,13 +999,7 @@ class AutomationExecutor:
             has_byok, has_cred = await _credentials(user_id)
             await enforce_credit_limit(user_id, byok=has_cred)
 
-    async def execute(
-        self,
-        automation: Dict[str, Any],
-        execution_id: str,
-        *,
-        checked_computer_id: str | None = None,
-    ) -> None:
+    async def execute(self, automation: Dict[str, Any], execution_id: str) -> None:
         """Run one firing of ``automation`` until it settles or its run does.
 
         It starts only from ``pending``: the sweep may have settled it while
@@ -1024,7 +1009,8 @@ class AutomationExecutor:
         firing then stays as they recorded it. A firing a draining process
         handed over (``hand_off``) runs on the thread it had there, and one
         parked for its computer (``_park_for_computer``) starts here again
-        once the sweep releases it.
+        once the sweep releases it. Every start holds the turn to the computer
+        the row's ``checked_computer_id`` names.
         """
         automation_id = str(automation["automation_id"])
         user_id = automation["user_id"]
@@ -1060,9 +1046,10 @@ class AutomationExecutor:
             name=f"automation_heartbeat_{execution_id[:8]}",
         )
 
+        checked = started.get("checked_computer_id")
         firing = _Firing(
             automation=automation,
-            checked_computer_id=checked_computer_id,
+            checked_computer_id=str(checked) if checked else None,
             late=await _late_note(automation, started),
         )
         wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
@@ -1074,11 +1061,7 @@ class AutomationExecutor:
             pinned = _pinned_thread(automation)
             if pinned and await _thread_busy(pinned):
                 fresh = await self._wait_for_thread(
-                    automation,
-                    execution_id,
-                    pinned,
-                    wait_deadline,
-                    checked_computer_id=firing.checked_computer_id,
+                    automation, execution_id, pinned, wait_deadline
                 )
                 if fresh is None:
                     _exec_span.set_attribute("status", "skipped")
@@ -1095,10 +1078,7 @@ class AutomationExecutor:
             place = await _turn_place(firing.automation)
             route = turn_route(user_id, place.workspace)
             if await self._park_for_computer(
-                firing.automation,
-                execution_id,
-                route.workspace_id,
-                checked_computer_id=firing.checked_computer_id,
+                firing.automation, execution_id, route.workspace_id
             ):
                 _exec_span.set_attribute("status", "waiting_for_computer")
                 return
@@ -1155,11 +1135,7 @@ class AutomationExecutor:
 
         except restart_drain.Draining:
             await hand_off(
-                firing.automation,
-                execution_id,
-                firing.thread_id,
-                from_status="running",
-                checked_computer_id=firing.checked_computer_id,
+                firing.automation, execution_id, firing.thread_id, from_status="running"
             )
             _exec_span.set_attribute("status", "handed_off")
         except Exception as e:

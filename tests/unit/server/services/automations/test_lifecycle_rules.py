@@ -3,7 +3,7 @@ pause or resume needs, and the field each refusal names for the file and REST.""
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -350,3 +350,22 @@ def test_no_warning_with_a_webhook_or_without_delivery(monkeypatch, webhook, met
     monkeypatch.setattr(lifecycle.settings, "AUTOMATION_WEBHOOK_URL", webhook)
 
     assert lifecycle.delivery_warning(methods) is None
+
+
+@pytest.mark.asyncio
+@patch(f"{_LIFECYCLE}.exec_db")
+@patch(f"{_LIFECYCLE}.auto_db")
+async def test_a_run_now_keeps_the_computer_it_was_checked_on_with_its_firing(
+    mock_auto_db, mock_exec_db
+):
+    """On the row, where every start of the firing reads it: one handed to
+    the next process, or parked for its computer, is held to it as well."""
+    mock_auto_db.get_automation = AsyncMock(return_value=_row(status="active"))
+    mock_exec_db.create_execution = AsyncMock(return_value="exec-1")
+    scheduler = MagicMock(server_id="server-1")
+    with patch(f"{_LIFECYCLE}.AutomationScheduler.get_instance", return_value=scheduler):
+        await lifecycle.trigger_automation(AUTOMATION_ID, OWNER, checked_computer_id="computer-1")
+
+    assert mock_exec_db.create_execution.await_args.kwargs["checked_computer_id"] == "computer-1"
+    scheduler.dispatch.assert_called_once()
+    assert "checked_computer_id" not in scheduler.dispatch.call_args.kwargs

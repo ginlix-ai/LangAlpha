@@ -332,7 +332,6 @@ def _parked_row(automation_id, **verdict):
         "automation_id": automation_id,
         "user_id": "user-1",
         "parked_status": "active",
-        "checked_computer_id": None,
         "superseded": False,
         "reachable": False,
         "expired": False,
@@ -419,9 +418,7 @@ class TestSweep:
         """A deploy while the machine sleeps must not cost the run it waits for."""
         executor = AsyncMock()
         mock_executor_cls.get_instance.return_value = executor
-        parked = _parked_row(
-            "auto-1", reachable=True, checked_computer_id="computer-1"
-        )
+        parked = _parked_row("auto-1", reachable=True)
         automation = _make_automation(automation_id="auto-1", status="active")
         mock_exec_db.list_parked_executions = AsyncMock(return_value=[parked])
         mock_exec_db.release_parked_execution = AsyncMock(return_value=True)
@@ -434,11 +431,7 @@ class TestSweep:
         mock_exec_db.list_parked_executions.assert_awaited_once_with()
         execution_id = parked["automation_execution_id"]
         mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)
-        # A run a computer's token was checked to start there is still held
-        # to that computer once released.
-        executor.execute.assert_awaited_once_with(
-            automation, execution_id, checked_computer_id="computer-1"
-        )
+        executor.execute.assert_awaited_once_with(automation, execution_id)
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.exec_db")

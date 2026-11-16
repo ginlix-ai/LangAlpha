@@ -78,7 +78,7 @@ def _execution_update(
         where_params=where_params,
         returning_columns=[
             "conversation_thread_id", "conversation_response_id",
-            "scheduled_at", "wait_reason", "awaits_computer",
+            "scheduled_at", "wait_reason", "awaits_computer", "checked_computer_id",
         ],
         include_updated_at=False,  # no updated_at column on executions
     )
@@ -551,7 +551,6 @@ async def park_execution(
     awaits_computer: str,
     parked_status: str,
     wait_seconds: int,
-    checked_computer_id: Optional[str] = None,
 ) -> bool:
     """Park a pending or running firing as ``waiting`` for ``awaits_computer``;
     False when it had moved on.
@@ -569,7 +568,6 @@ async def park_execution(
                 SET status = 'waiting', started_at = NOW(),
                     wait_reason = 'computer_unreachable',
                     awaits_computer = %(computer)s, parked_status = %(parked_status)s,
-                    checked_computer_id = COALESCE(%(checked)s, checked_computer_id),
                     awaits_until = COALESCE(
                         awaits_until, NOW() + make_interval(secs => %(wait_s)s)),
                     heartbeat_at = COALESCE(
@@ -578,8 +576,7 @@ async def park_execution(
                   AND status IN ('pending', 'running')
             """, {
                 "execution_id": execution_id, "computer": awaits_computer,
-                "parked_status": parked_status, "checked": checked_computer_id,
-                "wait_s": wait_seconds,
+                "parked_status": parked_status, "wait_s": wait_seconds,
             })
             return cur.rowcount == 1
 
@@ -587,8 +584,7 @@ async def park_execution(
 async def list_parked_executions(limit: int = 50) -> List[Dict[str, Any]]:
     """Firings parked for a computer that the sweep has something to do with,
     soonest deadline first, with their owner, the automation's status when
-    each parked, the computer a computer token's run was checked to run on,
-    and the sweep's verdict on each: ``superseded`` by a later firing,
+    each parked, and the sweep's verdict on each: ``superseded`` by a later firing,
     ``reachable`` (its computer's tunnel is live, it names none, or its
     workspace is on another computer now) or ``expired`` (past its
     ``awaits_until``).
@@ -600,7 +596,7 @@ async def list_parked_executions(limit: int = 50) -> List[Dict[str, Any]]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
                 SELECT e.automation_execution_id, e.automation_id, e.parked_status,
-                       e.checked_computer_id::text AS checked_computer_id, a.user_id,
+                       a.user_id,
                        {_SUPERSEDED} AS superseded,
                        {_REACHABLE} AS reachable,
                        {_EXPIRED} AS expired
@@ -701,11 +697,13 @@ async def create_execution(
     automation_id: str,
     scheduled_at: datetime,
     server_id: str,
+    *,
+    checked_computer_id: Optional[str] = None,
 ) -> str:
-    """Create a new execution record (for manual triggers).
+    """Create a new execution record (for manual triggers); its id.
 
-    Returns:
-        The new execution_id.
+    ``checked_computer_id`` is the computer a computer token's call was
+    checked to run it on, which every start of the firing reads off the row.
     """
     execution_id = str(uuid4())
     async with get_db_connection() as conn:
@@ -714,8 +712,8 @@ async def create_execution(
                 INSERT INTO automation_executions (
                     automation_execution_id, automation_id,
                     status, scheduled_at, server_id, created_at,
-                    heartbeat_at
+                    heartbeat_at, checked_computer_id
                 )
-                VALUES (%s, %s, 'pending', %s, %s, NOW(), NOW())
-            """, (execution_id, automation_id, scheduled_at, server_id))
+                VALUES (%s, %s, 'pending', %s, %s, NOW(), NOW(), %s)
+            """, (execution_id, automation_id, scheduled_at, server_id, checked_computer_id))
     return execution_id

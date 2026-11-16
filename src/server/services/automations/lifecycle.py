@@ -689,14 +689,10 @@ async def trigger_automation(
         automation_id=automation_id,
         scheduled_at=datetime.now(timezone.utc),
         server_id=scheduler.server_id,
-    )
-
-    scheduler.dispatch(
-        current,
-        execution_id,
-        name=f"manual_exec_{automation_id[:8]}",
         checked_computer_id=checked_computer_id,
     )
+
+    scheduler.dispatch(current, execution_id, name=f"manual_exec_{automation_id[:8]}")
 
     logger.info(
         f"[AUTOMATION] Manual trigger: automation_id={automation_id} "

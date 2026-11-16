@@ -269,7 +269,11 @@ async def test_the_next_process_starts_a_handed_firing(draining, age):
 
 
 @pytest.mark.asyncio
-async def test_a_handed_firing_stays_held_to_the_computer_it_was_checked_on():
+@pytest.mark.parametrize("in_job", [False, True], ids=["this build", "an older build's job"])
+async def test_a_handed_firing_stays_held_to_the_computer_it_was_checked_on(in_job):
+    """The checked computer rides on the row, which the next start reads. A
+    hand-off an older build enqueued keeps it in the job instead, and the
+    start puts it on the row first."""
     from src.server.services import automation_executor
     from src.server.services.automation_scheduler import AutomationScheduler
 
@@ -277,12 +281,15 @@ async def test_a_handed_firing_stays_held_to_the_computer_it_was_checked_on():
     with patch.object(automation_executor.exec_db, "hand_off_execution", hand):
         await automation_executor.hand_off(
             {"automation_id": "auto-1", "user_id": "u-1"}, "exec-1", "thread-1",
-            from_status="waiting", checked_computer_id="computer-1",
+            from_status="waiting",
         )
     payload = hand.await_args.kwargs["job"].payload
-    assert payload["checked_computer_id"] == "computer-1"
+    assert "checked_computer_id" not in payload
+    if in_job:
+        payload = {**payload, "checked_computer_id": "computer-1"}
 
     scheduler = SimpleNamespace(dispatch=MagicMock())
+    move = AsyncMock(return_value={})
     job = {"created_at": datetime.now(timezone.utc), "payload": payload}
     with (
         patch("src.server.services.runs.restart_drain.draining", return_value=False),
@@ -291,8 +298,16 @@ async def test_a_handed_firing_stays_held_to_the_computer_it_was_checked_on():
             "get_automation",
             AsyncMock(return_value={"automation_id": "auto-1"}),
         ),
+        patch.object(automation_executor.exec_db, "transition_execution", move),
         patch.object(AutomationScheduler, "get_instance", return_value=scheduler),
     ):
         await automation_executor.start_handed_off(job)
 
-    assert scheduler.dispatch.call_args.kwargs["checked_computer_id"] == "computer-1"
+    scheduler.dispatch.assert_called_once()
+    if in_job:
+        move.assert_awaited_once_with(
+            "exec-1", from_statuses=("pending",), to="pending",
+            checked_computer_id="computer-1",
+        )
+    else:
+        move.assert_not_awaited()

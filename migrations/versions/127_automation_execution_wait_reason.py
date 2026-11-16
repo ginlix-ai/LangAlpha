@@ -10,8 +10,9 @@ keeps the reason of its last wait once it runs or is skipped. NULL is a run
 that never waited, or one written before this column.
 
 ``checked_computer_id`` is the computer a run started from a computer's token
-was checked to run on, kept with a wait for the computer so the process that
-resumes it still holds the turn to that computer. NULL for any other run.
+was checked to run on, written when the firing is made, so whichever process
+starts its turn (after a hand-off, or a wait for the computer) holds it to that
+computer. NULL for any other run.
 
 Catalog work only: nullable columns with no default take ACCESS EXCLUSIVE
 for the catalog update and rewrite nothing. Rollback leaves the columns in
