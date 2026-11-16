@@ -19,23 +19,24 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2 } from 'lucide-react';
 
-import { apiErrorDetailMessage, apiErrorReason } from '@/api/errors';
+import { apiErrorReason } from '@/api/errors';
 import { setComputerChoice, type ComputerChoice } from '@/api/computerChoice';
 import PageLoading from '@/components/PageLoading/PageLoading';
 import { Button } from '@/components/ui/button';
 import { Loader } from '@/components/ui/loader';
 import { WizardFooter, WizardShell, WizardStepHeader, type WizardFooterProps } from '@/components/ui/wizard';
-import type { Computer, ComputerCreate } from '@/types/api';
+import type { Computer } from '@/types/api';
 
 import { providerIsOwnMachine } from '@/pages/ChatAgent/components/providerUi';
-import { RemoteControlSetup } from '@/pages/ChatAgent/components/remoteControlSetup';
-import { useRemoteControlSetup } from '@/pages/ChatAgent/components/remoteControlSetupState';
+import { CreateRefusal, createRefusalMessage } from '@/pages/ChatAgent/components/addComputer';
+import { useAddThisMac } from '@/pages/ChatAgent/components/addThisMac';
+import { RemoteControlSetup, remoteControlActionLabel } from '@/pages/ChatAgent/components/remoteControlSetup';
 import { useComputerActions } from '@/pages/ChatAgent/hooks/useComputerActions';
 import { fetchComputerList, useComputers } from '@/pages/ChatAgent/hooks/useComputers';
 import { useThisMacAvailability } from '@/pages/ChatAgent/hooks/useRemoteControl';
 import { moveRefusal } from '@/pages/ChatAgent/utils/api';
 import { takesWorkspaces } from '@/pages/ChatAgent/utils/computerStatus';
-import { folderMarkedOwner, sshLimitMessage } from '@/pages/ChatAgent/utils/sshLimit';
+import { folderMarkedOwner } from '@/pages/ChatAgent/utils/sshLimit';
 
 import { markAskedOnThisMac } from './computerChoiceGate';
 
@@ -108,7 +109,8 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
     : providerIsOwnMachine(primary.kind) ? { kind: 'machine', name: primary.name } : { kind: 'cloud' };
 
   const [step, setStep] = useState<Step>('ask');
-  const mac = useRemoteControlSetup(step === 'setup');
+  const addThisMac = useAddThisMac(step === 'setup');
+  const mac = addThisMac.setup;
   const { create, makePrimary } = useComputerActions();
   const [saveError, setSaveError] = useState(false);
   const [savingCloud, setSavingCloud] = useState(false);
@@ -193,14 +195,9 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
     setStep('done');
   };
 
-  const submitCreate = (extra: Partial<NonNullable<ComputerCreate['ssh']>> = {}) => {
-    if (!mac.create || create.isPending) return;
-    const body: ComputerCreate = {
-      ...mac.create,
-      ssh: { ...mac.create.ssh, ...extra },
-      resource_tier: 'standard',
-      kind: 'ssh',
-    };
+  const submitCreate = (takeOver: string | null = null) => {
+    const body = addThisMac.body({ takeOver });
+    if (!body || create.isPending) return;
     create.mutate(body, { onSuccess: (row) => void finish(row) });
   };
 
@@ -208,12 +205,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
 
   const busy = create.isPending;
   const takeOver = folderMarkedOwner(create.error);
-  const createError = create.error
-    ? sshLimitMessage(create.error, t)
-      ?? apiErrorDetailMessage(create.error)
-      ?? apiErrorReason(create.error)
-      ?? t('thisMacFirstRun.createFailed')
-    : null;
+  const createError = create.error ? createRefusalMessage(create.error, t, create.variables?.resource_tier) : null;
   const backupOff = mac.ready && !mac.readyStep.filesBackup;
 
   let body: ReactNode;
@@ -255,29 +247,18 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
             </div>
           )}
           {createError && !busy && (
-            <div role="alert" className="mt-4 flex flex-col gap-1.5 text-sm">
-              <p style={dangerStyle}>{createError}</p>
-              {takeOver && (
-                <p className="text-xs" style={secondaryStyle}>
-                  {t('computer.takeOverFolderNote', 'The other computer stops working in it. The files in it stay.')}{' '}
-                  <button
-                    type="button"
-                    className="font-medium underline"
-                    style={{ color: 'var(--color-text-primary)' }}
-                    onClick={() => submitCreate({ take_over: takeOver })}
-                  >
-                    {t('computer.takeOverFolder', 'Take over this folder')}
-                  </button>
-                </p>
-              )}
-            </div>
+            <CreateRefusal
+              className="mt-4"
+              message={createError}
+              onTakeOver={takeOver ? () => submitCreate(takeOver) : undefined}
+            />
           )}
         </>
       );
       footer = {
         back: busy ? null : { label: t('thisMacFirstRun.back'), onClick: () => setStep('ask') },
         primary: mac.action
-          ? { label: actionLabel(t, mac.action), onClick: mac.start, disabled: !mac.acknowledged }
+          ? { label: remoteControlActionLabel(t, mac.action), onClick: mac.start, disabled: !mac.acknowledged }
           : mac.ready
             ? { label: t('thisMacFirstRun.addThisMac'), onClick: () => submitCreate(), disabled: !mac.create, busy }
             : null,
@@ -340,12 +321,6 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
       {body}
     </WizardShell>
   );
-}
-
-function actionLabel(t: Translate, action: 'turnOn' | 'continue' | 'tryAgain'): string {
-  if (action === 'turnOn') return t('computer.remoteControl.turnOn', 'Turn on remote control');
-  if (action === 'continue') return t('computer.remoteControl.continue', 'Continue');
-  return t('computer.remoteControl.tryAgain', 'Try again');
 }
 
 type Translate = ReturnType<typeof useTranslation>['t'];

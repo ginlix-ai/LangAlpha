@@ -45,6 +45,7 @@ import {
 } from '../hooks/useComputerActions';
 import { useTierQuota } from '../hooks/useTierQuota';
 import { isMoveActive, useWorkspaceMove } from '../hooks/useWorkspaceMove';
+import { createRefusalMessage } from './addComputer';
 import ComputerCard from './ComputerCard';
 import ComputerDetails from './ComputerDetails';
 import { ComputerRail, type RailStart } from './computerRail';
@@ -68,8 +69,7 @@ import {
 } from './providerUi';
 import { apiErrorObject, apiErrorReason, apiErrorStatus, moveRefusal } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
-import { entitlementErrorMessage } from '../utils/entitlementErrors';
-import { folderMarkedOwner, sshLimitMessage } from '../utils/sshLimit';
+import { folderMarkedOwner } from '../utils/sshLimit';
 import { computerNameTakenMessage } from '../utils/computerName';
 import { liveComputers, tunnelDown } from '../utils/computerStatus';
 import { pairedElsewhere } from './startFailure';
@@ -247,7 +247,7 @@ function ComputersPanel({
   // A taken name is said under the name field; anything else under the form.
   const createNameError = create.error ? computerNameTakenMessage(create.error, t) : null;
   const createError = create.error && !createNameError
-    ? (sshLimitMessage(create.error, t) ?? entitlementErrorMessage(create.error, t, create.variables?.resource_tier))
+    ? createRefusalMessage(create.error, t, create.variables?.resource_tier)
     : null;
   const removeError = handOffHome.error
     ? handOffErrorMessage(handOffHome.error, t)

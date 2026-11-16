@@ -6918,7 +6918,6 @@
     "backupOffNew": "Without backup, this Mac can't be your primary computer, so Home and new workspaces go on a cloud computer.",
     "back": "Back",
     "addThisMac": "Add this Mac",
-    "createFailed": "Couldn't add this Mac. Try again.",
     "finishingTitle": "Setting up this Mac…",
     "doneTitle": "This Mac is ready",
     "doneTitleAdded": "This Mac is added",

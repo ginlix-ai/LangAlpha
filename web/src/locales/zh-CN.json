@@ -6836,7 +6836,6 @@
     "backupOffNew": "不开启备份，这台 Mac 就不能成为默认计算机，Home 和新工作区会放在云端计算机上。",
     "back": "返回",
     "addThisMac": "添加这台 Mac",
-    "createFailed": "没能添加这台 Mac，请重试。",
     "finishingTitle": "正在设置这台 Mac…",
     "doneTitle": "这台 Mac 已就绪",
     "doneTitleAdded": "已添加这台 Mac",
