@@ -8,10 +8,15 @@ given a guessed span.
 """
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass, field
 
+from .boundaries import Heading, Layout
+from .model import Section, Span, Target
 from .pages import Pagination
+from .rendering import Rendering
+from .stubs import Resolver, TargetSpan
 from .text import normalize
 
 TITLE = re.compile(r"cross[- ]?reference|\b(?:form\s+)?(?:10-K|20-F)\s+(?:items?|index|reference|cross)|\bsec\s+items?\b|"
@@ -22,6 +27,7 @@ _ONLY_PAGES = re.compile(rf"\s*(?:pages?\s+)?{_PAGE}(?:\s*[,;]\s*{_PAGE})*\s*[,;
 _NA = re.compile(r"\b(?:not\s+applicable|omitted)\b|\b(?:none|n/a|not\s+required)\b[\s.*]*$", re.I)
 _ROW = re.compile(r"(?:PART\s+(?:IV|I{1,3})\W*)?(?P<kw>ITEMS?\s*)?(?P<ids>\d{1,2}[A-K]?(?:\s*(?:,|and|&)\s*\d{1,2}[A-K]?)*)"
                   r"(?![\d.,]\d)\.?(?P<rest>(?:\s+\S.*)?)$", re.I)
+_ROW_PAGE = re.compile(r"(?:^|[\s|])(\d{1,3})\s*$")
 WINDOW = 200
 GAP = 40
 
@@ -220,3 +226,107 @@ def carve(ranges: list[tuple[int, int]], out: list[tuple[int, int]]) -> list[tup
 def is_sub_item(child: str, parent: str) -> bool:
     """7A of 7, 16C of 16: a lettered item printed inside its parent's section is not a boundary of it."""
     return child[:-1] == parent and child[-1:].isalpha()
+
+def apply(items: dict[str, Section], rendering: Rendering, pages: Pagination, resolver: Resolver, layout: Layout,
+          order: list[str]) -> None:
+    """Items the body prints no heading for but an index maps: first by the cross-reference index, then any item
+    still missing by its contents row."""
+    index = find_index(rendering.lines, order)
+    if index:
+        apply_index(index, rendering, pages, items)
+    apply_contents_rows(items, rendering, pages, resolver, layout, order)
+
+
+def apply_index(index: Index, rendering: Rendering, pages: Pagination, items: dict[str, Section]) -> None:
+    """Items a cross-reference index maps to pages and the body prints no heading for: xref sections of
+    their page ranges, or stubs pointing at the index row when the pages cannot be found. An item printed
+    with a heading ends where a later item's mapped pages begin, unless that item is its own lettered
+    sub-item (market risk inside MD&A); the pages it prints itself are cut out of the mapped ranges."""
+    lines, full, offs, line_at = rendering.lines, rendering.text, rendering.offsets, rendering.line_at
+    rows = {row.line for row in index.rows if row.pages or row.na}
+    for iid in [iid for iid, s in items.items() if s.status == "present" and line_at(s.start) in rows]:
+        del items[iid]
+    mapped = item_ranges(index, pages)
+    ranges = {iid: r for iid, r in mapped.items() if iid not in items}
+    starts = sorted(line_at(s.start) for s in items.values() if s.status == "present")
+    breaks = pages.breaks()
+    for iid, sec in items.items():
+        if sec.status != "present":
+            continue
+        line = line_at(sec.start)
+        cut = min((r[0][0] for x, r in ranges.items() if not is_sub_item(x, iid) and r[0][0] > line
+                   and not _shared(r[0][0], starts, breaks)), default=None)
+        own = next((b for a, b in mapped.get(iid, []) if a <= line < b), None)
+        if own is not None and any(a <= own < b for x, r in ranges.items() if not is_sub_item(iid, x) for a, b in r):
+            cut = min(own, cut) if cut is not None else own
+        if cut is not None and offs[cut] < sec.end:
+            sec.end = offs[cut]
+            sec.text = full[sec.start:sec.end].rstrip("\n")
+    present = {iid: (line_at(s.start), line_at(s.end)) for iid, s in items.items() if s.status == "present"}
+    for row in index.rows:
+        for iid in row.items:
+            if iid in items or not (iid in ranges or row.pages and mapped):
+                continue
+            desc = " ".join(lines[row.line].split())[:300]
+            rngs = carve(ranges.get(iid, []), [sp for p, sp in present.items() if not is_sub_item(iid, p)])
+            if not rngs:
+                items[iid] = Section(item=iid, status="stub", text=lines[row.line], start=offs[row.line],
+                                     end=offs[row.line + 1], target=Target(kind="in_document", description=desc))
+                continue
+            items[iid] = _mapped(iid, [rendering.span(a, b) for a, b in rngs], desc, rendering)
+
+
+def _shared(line: int, starts: list[int], breaks: list[int]) -> bool:
+    """A page that also opens an item printed with a heading, so it starts no new item where it begins."""
+    end = breaks[bisect.bisect_left(breaks, line)] if line <= (breaks or [-1])[-1] else line
+    k = bisect.bisect_left(starts, line)
+    return k < len(starts) and starts[k] <= end
+
+def apply_contents_rows(items: dict[str, Section], rendering: Rendering, pages: Pagination, resolver: Resolver,
+                        layout: Layout, order: list[str]) -> None:
+    """An item with no heading and no index row, whose contents row locates it: xref of what the row points at.
+    An item a lettered child already fills (7A for 7) is left out."""
+    rows = [h for h in layout.heads if h.kind == "item" and h.line in layout.toc]
+    for iid in order:
+        if iid in items or any(k[:-1] == iid and k[-1].isalpha() for k in items):
+            continue
+        for row in [h.line for h in rows if iid in h.ids]:
+            t = _row_target(resolver, pages, rendering, iid, row, rows)
+            if t.kind == "in_document" and t.lines:
+                items[iid] = _mapped(iid, [rendering.span(a, b) for a, b in t.lines], t.description, rendering)
+                break
+
+
+def _row_target(resolver: Resolver, pages: Pagination, rendering: Rendering, iid: str, row: int,
+                rows: list[Heading]) -> TargetSpan:
+    """What a contents or cross-reference row maps its item to: its quoted captions or page reference, else the
+    pages from its row's page to the page before the next item's row."""
+    lines = rendering.lines
+    t = resolver.resolve(iid, lines[row], (row, row + 1), index_row=True)
+    if t.lines:
+        return t
+    text = normalize(lines[row])
+    page = _ROW_PAGE.search(text)
+    if not page:
+        return t
+    nxt = next((h for h in rows if h.line > row and iid not in h.ids), None)
+    npage = _ROW_PAGE.search(normalize(lines[nxt.line])) if nxt else None
+    if npage and int(npage.group(1)) > int(page.group(1)):
+        for d in range(len(rendering.documents)):
+            rng = pages.page_range(d, page.group(1), str(int(npage.group(1)) - 1))
+            if rng and rng[0] > row:
+                t.kind, t.lines, t.via = "in_document", [rng], "index_pages"
+                return t
+    title = re.sub(r"^(?:PART\s+[IV]+\W*)?ITEMS?\s*[\dA-Z.,\s]*?(?=[A-Z][a-z])|[\s|]*\d{1,3}\s*$", "", text).strip(" |.-")
+    if len(title.split()) >= 2:
+        rng = resolver.located(iid, f"\u201c{title}\u201d on page {page.group(1)}", (row, row + 1))
+        if rng:
+            t.kind, t.lines, t.via = "in_document", rng, "index_caption"
+    return t
+
+
+def _mapped(iid: str, spans: list[Span], description: str, rendering: Rendering) -> Section:
+    """An item with no heading of its own, made of the spans a row maps it to."""
+    text = rendering.text_of(spans)
+    return Section(item=iid, status="xref", text=text, start=spans[0].start, end=spans[-1].end,
+                   target=Target(kind="in_document", description=description, spans=spans, text=text or None))

@@ -442,6 +442,16 @@ def _addressed(lines: list[str], doc: _Doc, spans: dict[str, ItemSpan], order: l
             spans[i] = ItemSpan(i, ln, end, ln, [o for o in missing if o != i])
 
 
+def _untitled_part1_item1(doc: _Doc, spans: dict[str, ItemSpan], a0: int) -> None:
+    """A 10-Q that prints its statements with no Item 1 heading: Part I Item 1 is what precedes Item 2, after any
+    contents, page number or PART line."""
+    start = max([a0] + [ln + 1 for ln in doc.toc if a0 <= ln < spans["I-2"].start])
+    start = next((ln for ln in range(start, spans["I-2"].start) if not _paged(doc.lines, ln, strict=True)
+                  and not (doc.markers.get(ln) and doc.markers[ln].kind == "part")), start)
+    if start < spans["I-2"].start:
+        spans["I-1"] = ItemSpan("I-1", start, spans["I-2"].start, -1, [], "xref")
+
+
 def _spans(doc: _Doc, spec: FormSpec) -> dict[str, ItemSpan]:
     lines, main_end = doc.lines, doc.main_end
     if spec.parts_split:
@@ -449,11 +459,7 @@ def _spans(doc: _Doc, spec: FormSpec) -> dict[str, ItemSpan]:
         by_id = doc.by_id()
         spans = doc.select(spec.part_items("I"), by_id, a0, a1, key=lambda i: f"I-{i}")
         if "I-1" not in spans and "I-2" in spans:
-            start = max([a0] + [ln + 1 for ln in doc.toc if a0 <= ln < spans["I-2"].start])
-            start = next((ln for ln in range(start, spans["I-2"].start) if not _paged(lines, ln, strict=True)
-                          and not (doc.markers.get(ln) and doc.markers[ln].kind == "part")), start)
-            if start < spans["I-2"].start:
-                spans["I-1"] = ItemSpan("I-1", start, spans["I-2"].start, -1, [], "xref")
+            _untitled_part1_item1(doc, spans, a0)
         if two:
             spans.update(doc.select(spec.part_items("II"), by_id, two[0], two[1], key=lambda i: f"II-{i}"))
         return spans

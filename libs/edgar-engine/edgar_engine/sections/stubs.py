@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from .boundaries import ItemSpan
+from .model import Target
 from .pages import Pagination
 from .rendering import Rendering
 from .text import EXHIBIT_INDEX, STATEMENTS_OPENER, normalize
@@ -46,6 +47,11 @@ class TargetSpan:
     doc: str | None = None
     lines: list[tuple[int, int]] = field(default_factory=list)
     via: str | None = None
+
+    def to_target(self, rendering: Rendering) -> Target:
+        spans = [rendering.span(a, b) for a, b in self.lines]
+        return Target(kind=self.kind, description=self.description, doc=self.doc, spans=spans,
+                      text=rendering.text_of(spans) or None)
 
 
 def _words(s: str) -> str:
@@ -101,8 +107,8 @@ class Resolver:
         t = TargetSpan(kind, " ".join(pointer.split())[:300])
         if kind in ("proxy", "other_filing", "annual_report"):
             return t
-        finders = (self._located,) if index_row else (
-            self._statements, self._note, self._exhibit_index, self._item, self._located)
+        finders = (self.located,) if index_row else (
+            self._statements, self._note, self._exhibit_index, self._item, self.located)
         for finder in finders:
             rng = finder(iid, pointer, own)
             if rng:
@@ -110,31 +116,6 @@ class Resolver:
                 return t
         if kind == "in_document" and not re.search(r"\bpages?\b|\bnote\b|\bitem\b|caption|heading|exhibit 13|annual report", pointer, re.I):
             t.kind = "none_stated"
-        return t
-
-    def index_row(self, iid: str, row: int, rows: list) -> TargetSpan:
-        """An item with no body heading, mapped by a contents or cross-reference row: its quoted captions or
-        page reference, else the pages from its row's page to the page before the next item's row."""
-        t = self.resolve(iid, self.lines[row], (row, row + 1), index_row=True)
-        if t.lines:
-            return t
-        text = normalize(self.lines[row])
-        page = re.search(r"(?:^|[\s|])(\d{1,3})\s*$", text)
-        if not page:
-            return t
-        nxt = next((h for h in rows if h.line > row and iid not in h.ids), None)
-        npage = re.search(r"(?:^|[\s|])(\d{1,3})\s*$", normalize(self.lines[nxt.line])) if nxt else None
-        if npage and int(npage.group(1)) > int(page.group(1)):
-            for d in range(len(self.rendering.documents)):
-                rng = self.pages.page_range(d, page.group(1), str(int(npage.group(1)) - 1))
-                if rng and rng[0] > row:
-                    t.kind, t.lines, t.via = "in_document", [rng], "index_pages"
-                    return t
-        title = re.sub(r"^(?:PART\s+[IV]+\W*)?ITEMS?\s*[\dA-Z.,\s]*?(?=[A-Z][a-z])|[\s|]*\d{1,3}\s*$", "", text).strip(" |.-")
-        if len(title.split()) >= 2:
-            rng = self._located(iid, f"\u201c{title}\u201d on page {page.group(1)}", (row, row + 1))
-            if rng:
-                t.kind, t.lines, t.via = "in_document", rng, "index_caption"
         return t
 
     def _item(self, iid, pointer, own):
@@ -208,7 +189,7 @@ class Resolver:
                     return [(ln, max(fpages) + 1 if fpages else end)]
         return None
 
-    def _located(self, iid, pointer, own):
+    def located(self, iid, pointer, own):
         """Captioned sections and printed page ranges. A caption found inside the cited pages starts there;
         a caption with no pages runs to the next heading of the same style."""
         caps = [(m.group("c") or m.group("d") or "").strip(" .,;") for m in _CAPTION.finditer(pointer)]
