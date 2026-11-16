@@ -106,6 +106,33 @@
   transition-property: opacity;
 }
 
+/* The parts of an area one by one, where the page reports them so: picked,
+   in the pick blue a single element's outline settles to; on a comment whose
+   card is open, dashed amber, as an area's outline. Each glides as its part
+   moves, and stays put while the page scrolls. */
+.page-comments-part {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border-radius: 4px;
+  pointer-events: none;
+  border: 1.5px solid var(--color-info);
+  background: color-mix(in srgb, var(--color-info) 14%, transparent);
+  animation: overlay-fade-in var(--motion-quick) var(--ease-out);
+  transition-property: transform, width, height;
+  transition-duration: var(--motion-quick);
+  transition-timing-function: var(--ease-out);
+}
+.page-comments-part[data-tone='marked'] {
+  border-style: dashed;
+  border-color: var(--color-accent-primary);
+  background: color-mix(in srgb, var(--color-accent-primary) 7%, transparent);
+}
+.page-comments-part[data-still] {
+  transition: none;
+}
+
 /* Every pin, in one layer: faded out while the document under them is being
    replaced, and dimmed while the page scrolls. A frame scrolls on its own
    compositor a frame ahead of anything drawn over it, so a pin trails its spot
@@ -165,6 +192,23 @@
   animation:
     pop-in var(--motion-quick) var(--ease-out),
     page-comment-arrival var(--motion-reveal) var(--ease-reveal) var(--motion-quick) backwards;
+}
+
+/* Cmd held over a draft that takes parts: the box fades and lets clicks
+   through, so a part under it can be added or taken out. The fade waits a
+   beat, so a shortcut typed in the box (Cmd-V) does not flicker it. */
+.page-comment-box {
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.page-comment-box[data-see-through] {
+  opacity: 0.3;
+  pointer-events: none;
+  transition-delay: var(--motion-quick);
+}
+/* Radix places the box in a wrapper of its size, which would catch the
+   click instead and close the box as a press outside it. */
+[data-radix-popper-content-wrapper]:has(> .page-comment-box[data-see-through]) {
+  pointer-events: none;
 }
 
 /* The offer to comment on selected words: it drops out of the selection's

@@ -208,7 +208,7 @@ export interface NamedAnchor extends SpotAnchorFields {
 /** An area dragged around several elements. */
 export interface AreaAnchor {
   kind: 'area';
-  /** Its first elements (2 to 8), in document order. */
+  /** Its elements in document order: a drag's first 8, or every part picked one by one (up to 64). */
   elements: ArtifactCommentAreaElement[];
   /** How many elements it holds in all. */
   count: number;

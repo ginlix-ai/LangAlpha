@@ -474,11 +474,13 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
    * to the pointer as it goes, unless the press was cancelled or the page
    * made text unselectable.
    */
-  const drag = (from: [number, number], to: [number, number], { escape = false } = {}) => {
+  type Keys = { escape?: boolean; meta?: boolean; metaAtClick?: boolean };
+  const drag = (from: [number, number], to: [number, number], { escape = false, meta = false, metaAtClick = meta }: Keys = {}) => {
     sent.length = 0;
     const at = w.document.elementFromPoint(...from) ?? w.document.body;
-    const event = (type: string, [x, y]: [number, number]) =>
-      new w.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1 });
+    const event = (type: string, [x, y]: [number, number]) => new w.MouseEvent(type, {
+      bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1, metaKey: type === 'click' ? metaAtClick : meta,
+    });
     at.dispatchEvent(event('pointerdown', from));
     const down = event('mousedown', from);
     at.dispatchEvent(down);
@@ -497,22 +499,22 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
     at.dispatchEvent(event('pointerup', to));
     at.dispatchEvent(event('click', to));
     const area = sent.find((m) => m.type === 'page:area') as
-      | { press: number; anchor: { label?: string; count: number; point?: unknown; elements: { path?: string; label?: string; quote?: string }[]; rect: Record<string, number> } }
+      | { press: number; extend?: boolean; anchor: { label?: string; count: number; point?: unknown; elements: { path?: string; label?: string; quote?: string }[]; rect: Record<string, number> } }
       | undefined;
-    const picks = sent.filter((m) => m.type === 'page:pick') as { press?: number; anchor: { path?: string; label?: string; point?: unknown } }[];
+    const picks = sent.filter((m) => m.type === 'page:pick') as { press?: number; extend?: boolean; anchor: { path?: string; label?: string; point?: unknown } }[];
     const words = sent.filter((m) => m.type === 'page:selection' && m.compose) as {
       press?: number; rect: Record<string, number>; anchor: { quote: string; label?: string; path?: string; prefix?: string; suffix?: string; point?: unknown };
     }[];
     return { area, picks, words, sent: [...sent], prevented: down.defaultPrevented };
   };
 
-  /** A click that does not move, at a point. */
-  const click = (point: [number, number]) => drag(point, point);
+  /** A click that does not move, at a point; `meta` holds Cmd down, until the click itself with `metaAtClick`. */
+  const click = (point: [number, number], { meta = false, metaAtClick = meta }: Keys = {}) => drag(point, point, { meta, metaAtClick });
 
   /** The pointer moved to a point, onto whatever is there, and the hover a frame later. */
-  const hover = async (point: [number, number]) => {
+  const hover = async (point: [number, number], { meta = false } = {}) => {
     const at = w.document.elementFromPoint(...point) ?? w.document.body;
-    const event = (type: string) => new w.MouseEvent(type, { bubbles: true, clientX: point[0], clientY: point[1] });
+    const event = (type: string) => new w.MouseEvent(type, { bubbles: true, clientX: point[0], clientY: point[1], metaKey: meta });
     at.dispatchEvent(event('pointerover'));
     at.dispatchEvent(event('pointermove'));
     await new Promise((done) => setTimeout(done, 50));
@@ -649,6 +651,276 @@ describe('the page bridge takes an area dragged around several elements', () => 
     w.document.querySelector('#grid > div:nth-of-type(3)')!.remove();
     expect(positions({ kind: 'area', elements, count: 2 })).toEqual({ x: 120, y: 10, width: 100, height: 80 });
     expect(positions({ kind: 'area', elements: [{ path: '#nowhere', quote: 'Nothing like it' }], count: 2 })).toBeNull();
+  });
+});
+
+describe('the page bridge picks several parts for one comment', () => {
+  const TILE = (i: number): [number, number] => [12 + i * 110, 12];
+  const path = (i: number) => `#grid > div:nth-of-type(${i + 1})`;
+  type Anchor = Record<string, unknown>;
+
+  /** A page with the viewer writing a comment on what `pick` sent, as the layer marks its draft. */
+  function drafting(body = ROW) {
+    const pg = laidOutPage(body);
+    const draft = (anchor: Anchor) => pg.send({ type: 'page:anchors', items: [{ id: '__draft__', anchor, draft: true }] });
+    return { ...pg, draft };
+  }
+
+  it('adds a Cmd-clicked tile to the comment being written, with no press that would close its box', () => {
+    const { click, draft } = drafting();
+    const first = click(TILE(0)).picks[0];
+    draft(first.anchor);
+    const { area, picks, sent } = click(TILE(1), { meta: true });
+    expect(sent.some((m) => m.type === 'page:press')).toBe(false);
+    expect(picks).toEqual([]);
+    expect(area?.extend).toBe(true);
+    // Every part listed, as many as it counts: the box lists each with a way out.
+    expect(area?.anchor.count).toBe(2);
+    expect(area?.anchor.elements.map((e) => e.path)).toEqual([path(0), path(1)]);
+    expect(area?.press).toBeUndefined();
+  });
+
+  it('takes a Cmd-clicked part back out, and keeps the last one', () => {
+    const { click, draft } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    draft(click(TILE(2), { meta: true }).area!.anchor);
+    const out = click(TILE(0), { meta: true });
+    expect(out.area).toBeUndefined();
+    expect(out.picks).toHaveLength(1);
+    expect(out.picks[0]).toMatchObject({ extend: true, anchor: { path: path(2) } });
+    draft(out.picks[0].anchor);
+    const last = click(TILE(2), { meta: true });
+    expect(last.picks).toEqual([]);
+    expect(last.area).toBeUndefined();
+  });
+
+  it('adds what a Cmd-drag holds to the parts, in document order', () => {
+    const { click, drag, draft } = drafting();
+    draft(click(TILE(3)).picks[0].anchor);
+    const { area } = drag([116, 4], [336, 96], { meta: true });
+    expect(area?.extend).toBe(true);
+    expect(area?.anchor.elements.map((e) => e.path)).toEqual([path(1), path(2), path(3)]);
+    expect(area?.anchor.count).toBe(3);
+  });
+
+  it('takes a part out by a Cmd-click anywhere on it, and outlines the whole part while Cmd is held', async () => {
+    const { click, draft, hover } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    draft(click(TILE(1), { meta: true }).area!.anchor);
+    // On the value line inside tile 0, x 18 to 102 at y 36 to 60.
+    expect((await hover([30, 48])).label).toBe('$46.7B');
+    expect((await hover([31, 48], { meta: true })).rect).toMatchObject({ x: 10, y: 10, width: 100, height: 80 });
+    const { picks, area } = click([30, 48], { meta: true });
+    expect(area).toBeUndefined();
+    expect(picks[0]).toMatchObject({ extend: true, anchor: { path: path(1) } });
+  });
+
+  it('narrows the last part to what a Cmd-click inside it is on, since the last part cannot go', () => {
+    const { click, draft } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    const { picks, area } = click([30, 48], { meta: true });
+    expect(area).toBeUndefined();
+    expect(picks[0]).toMatchObject({ extend: true, anchor: { path: `${path(0)} > div:nth-of-type(2)` } });
+  });
+
+  it('starts the parts afresh from a Cmd-click with no comment being written, opening the box there', () => {
+    const { click } = drafting();
+    const { picks } = click(TILE(1), { meta: true });
+    expect(picks).toHaveLength(1);
+    expect(picks[0]).toMatchObject({ extend: true, anchor: { path: path(1) } });
+  });
+
+  it('drops the part a chip names', () => {
+    const { click, draft, send, sent } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    draft(click(TILE(1), { meta: true }).area!.anchor);
+    const three = click(TILE(2), { meta: true }).area!;
+    draft(three.anchor);
+    sent.length = 0;
+    send({ type: 'page:drop-part', part: three.anchor.elements[1] });
+    const left = sent.find((m) => m.type === 'page:area') as { extend: boolean; anchor: { elements: { path: string }[]; count: number } };
+    expect(left.extend).toBe(true);
+    expect(left.anchor.elements.map((e) => e.path)).toEqual([path(0), path(2)]);
+    expect(left.anchor.count).toBe(2);
+    // A second press on the box's old list, before it catches up, takes nothing more out.
+    sent.length = 0;
+    send({ type: 'page:drop-part', part: three.anchor.elements[1] });
+    expect(sent.some((m) => m.type === 'page:area' || m.type === 'page:pick')).toBe(false);
+  });
+
+  it('drops the part a chip names, on a list the page changed to as many parts since', () => {
+    const { click, draft, send, sent } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    click(TILE(1), { meta: true });
+    const shown = click(TILE(2), { meta: true }).area!;
+    draft(shown.anchor);
+    // Before the box hears of it, tile 0 goes out and tile 3 comes in: three parts again.
+    click(TILE(0), { meta: true });
+    click(TILE(3), { meta: true });
+    sent.length = 0;
+    send({ type: 'page:drop-part', part: shown.anchor.elements[1] });
+    const left = sent.find((m) => m.type === 'page:area') as { anchor: { elements: { path: string }[] } };
+    expect(left.anchor.elements.map((e) => e.path)).toEqual([path(2), path(3)]);
+  });
+
+  it('keeps the pin on one of the parts once one is taken out, never on the one taken out or between them', () => {
+    const { click, draft, send, sent } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    draft(click(TILE(2), { meta: true }).area!.anchor);
+    draft(click(TILE(3), { meta: true }).area!.anchor);
+    // Tiles 0 and 3 left, spanning x 10 to 440: the pin goes to tile 0's
+    // top-right corner, not under the click on tile 2.
+    const at = (anchor: { point?: unknown }) => {
+      const p = anchor.point as { x: number; y: number };
+      return { x: 10 + p.x * 430, y: 10 + p.y * 80 };
+    };
+    const out = click(TILE(2), { meta: true }).area!;
+    expect(out.anchor.elements.map((e) => e.path)).toEqual([path(0), path(3)]);
+    expect(at(out.anchor).x).toBeCloseTo(110, 0);
+    expect(at(out.anchor).y).toBeCloseTo(10, 0);
+    // The same for a chip's way out, which has no click at all.
+    const back = click(TILE(1), { meta: true }).area!;
+    draft(back.anchor);
+    sent.length = 0;
+    send({ type: 'page:drop-part', part: back.anchor.elements[1] });
+    const left = sent.find((m) => m.type === 'page:area') as { anchor: { point?: { x: number; y: number } } };
+    expect(at(left.anchor).x).toBeCloseTo(110, 0);
+  });
+
+  it('keeps a part added a moment ago when the next Cmd-click comes before the viewer echoes the draft', () => {
+    const { click, draft } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    click(TILE(1), { meta: true });
+    const { area } = click(TILE(2), { meta: true });
+    expect(area?.anchor.elements.map((e) => e.path)).toEqual([path(0), path(1), path(2)]);
+  });
+
+  it('tells the viewer the asked-for tap was taken, even one that adds nothing', () => {
+    const { click, draft, send, sent } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    sent.length = 0;
+    send({ type: 'page:extend-next', on: true });
+    expect(sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ next: true }]);
+    // A tap on the only part: the last part stays, so nothing is sent but the box's button lets go.
+    const tapped = click(TILE(0));
+    expect(tapped.picks).toEqual([]);
+    expect(tapped.sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ next: false }]);
+  });
+
+  it('lets the asked-for tap go once a drag has added with it', () => {
+    const { click, drag, draft, send } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    send({ type: 'page:extend-next', on: true });
+    const dragged = drag([116, 4], [336, 96]);
+    expect(dragged.area?.extend).toBe(true);
+    expect(dragged.sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ next: false }]);
+    draft(dragged.area!.anchor);
+    expect(click(TILE(3)).picks[0].extend).toBeFalsy();
+  });
+
+  it('adds by what the press was, not by the keys still down at its click', () => {
+    const { click, draft } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    // Cmd let go before the click: the viewer never heard the press, so the click adds.
+    const early = click(TILE(1), { meta: true, metaAtClick: false });
+    expect(early.area?.extend).toBe(true);
+    draft(early.area!.anchor);
+    // Cmd pressed only by the click: the viewer heard a plain press, so the click picks afresh.
+    const late = click(TILE(2), { meta: false, metaAtClick: true });
+    expect(late.sent.some((m) => m.type === 'page:press')).toBe(true);
+    expect(late.picks[0]).toMatchObject({ anchor: { path: path(2) } });
+    expect(late.picks[0].extend).toBeFalsy();
+  });
+
+  it('adds a Cmd-click to every part a plain drag found, not only the few it lists', () => {
+    const many = Array.from({ length: 11 }, (_, i) => `<p data-box="10 ${10 + i * 20} 100 16">Line ${i + 1}</p>`).join('');
+    const { drag, click, draft } = drafting(`<div id="list">${many}</div>`);
+    const dragged = drag([4, 4], [120, 208]).area!;
+    expect(dragged.anchor.elements).toHaveLength(8);
+    draft(dragged.anchor);
+    const added = click([50, 218], { meta: true }).area!;
+    expect(added.extend).toBe(true);
+    expect(added.anchor.count).toBe(11);
+    expect(added.anchor.elements.map((e) => e.label)).toEqual(Array.from({ length: 11 }, (_, i) => `Line ${i + 1}`));
+  });
+
+  describe('keeps the parts it still has for a draft whose page lost one', () => {
+    const listed = { kind: 'area', count: 3, elements: [{ path: path(0) }, { path: '#gone' }, { path: path(2) }] };
+
+    it('drops the part a chip names', () => {
+      const { draft, send, sent } = drafting();
+      draft(listed);
+      sent.length = 0;
+      send({ type: 'page:drop-part', part: { path: path(2) } });
+      const left = sent.find((m) => m.type === 'page:pick') as { extend: boolean; anchor: { path: string } };
+      expect(left).toMatchObject({ extend: true, anchor: { path: path(0) } });
+    });
+
+    it('drops the chip of the part it lost, keeping the two still there', () => {
+      const { draft, send, sent } = drafting();
+      draft({ kind: 'area', count: 2, elements: [{ path: '#gone' }, { path: path(2) }] });
+      sent.length = 0;
+      send({ type: 'page:drop-part', part: { path: '#gone' } });
+      expect(sent.find((m) => m.type === 'page:pick')).toMatchObject({ extend: true, anchor: { path: path(2) } });
+      const three = drafting();
+      three.draft(listed);
+      three.send({ type: 'page:drop-part', part: { path: '#gone' } });
+      const left = three.sent.find((m) => m.type === 'page:area') as { anchor: { elements: { path: string }[] } };
+      expect(left.anchor.elements.map((e) => e.path)).toEqual([path(0), path(2)]);
+    });
+
+    it('adds a Cmd-click to what is still there rather than starting afresh', () => {
+      const { click, draft } = drafting();
+      draft(listed);
+      const added = click(TILE(3), { meta: true }).area!;
+      expect(added.anchor.elements.map((e) => e.path)).toEqual([path(0), path(2), path(3)]);
+    });
+  });
+
+  it('takes the next click as a part once the box asks, for a screen with no modifier, and only that click', () => {
+    const { click, draft, send } = drafting();
+    draft(click(TILE(0)).picks[0].anchor);
+    send({ type: 'page:extend-next', on: true });
+    const added = click(TILE(1));
+    expect(added.sent.some((m) => m.type === 'page:press')).toBe(false);
+    expect(added.area?.anchor.count).toBe(2);
+    draft(added.area!.anchor);
+    const next = click(TILE(2));
+    expect(next.sent.some((m) => m.type === 'page:press')).toBe(true);
+    expect(next.picks[0].extend).toBeFalsy();
+  });
+
+  it('reports where each part shows for an area listing every part, and not for a drag that lists only its first few', () => {
+    const { send, sent } = drafting();
+    const parts = (anchor: Anchor) => {
+      sent.length = 0;
+      send({ type: 'page:anchors', items: [{ id: 'c1', anchor }] });
+      const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { parts?: unknown[] }[] };
+      return last.items[0].parts;
+    };
+    const elements = [{ path: path(0) }, { path: path(2) }];
+    expect(parts({ kind: 'area', elements, count: 2 })).toEqual([
+      { x: 10, y: 10, width: 100, height: 80 }, { x: 230, y: 10, width: 100, height: 80 },
+    ]);
+    expect(parts({ kind: 'area', elements, count: 9 })).toBeUndefined();
+  });
+
+  it('offers the element, not the word, while Cmd is held over glyphs', async () => {
+    const { hover } = laidOutPage(ROW, { glyphs: true });
+    expect((await hover([20, 44])).word).toBe(true);
+    const held = await hover([20, 44], { meta: true });
+    expect(held.word).toBeFalsy();
+    expect(held.cursor).toBe('copy');
+  });
+
+  it('tells the viewer when Cmd goes down and up, which keys pressed in the page never reach', () => {
+    const { w, sent } = laidOutPage(ROW);
+    const key = (type: string) => w.dispatchEvent(new w.KeyboardEvent(type, { key: 'Meta', bubbles: true }));
+    sent.length = 0;
+    key('keydown');
+    key('keydown');
+    key('keyup');
+    expect(sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ held: true, next: false }, { held: false, next: false }]);
   });
 });
 

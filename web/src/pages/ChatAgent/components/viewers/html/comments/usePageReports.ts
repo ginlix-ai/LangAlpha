@@ -5,6 +5,24 @@ import type { PageBridge } from '../usePageBridge';
 import { DRAFT_ID } from './pinPlaces';
 
 const NO_POSITIONS: ReadonlyMap<string, FrameRect | null> = new Map();
+const NO_PARTS: ReadonlyMap<string, FrameRect[]> = new Map();
+const NOT_ADDING: PageAdding = { held: false, next: false };
+
+/** Whether a click on the page adds a part to the draft: Cmd held over it, or the next tap asked for. */
+export interface PageAdding {
+  held: boolean;
+  next: boolean;
+}
+
+/**
+ * How a pick opens: on words picked in comment mode (`selected`), and as the
+ * draft's parts grown or shrunk by a modifier click (`extend`), which keeps
+ * its box and words.
+ */
+export interface PickHow {
+  selected: boolean;
+  extend: boolean;
+}
 
 /** What the owner does on the page that opens or closes something over it, which the layer decides. */
 export interface PageActs {
@@ -12,8 +30,8 @@ export interface PageActs {
   onHover: (hover: PageHover | null) => void;
   /** A press on the page: whether it closed or asked anything, which swallows the pick its own click reports. */
   onPress: () => boolean;
-  /** An element, an area or words picked in comment mode; `selected` for words. */
-  onPick: (pick: PagePick, selected: boolean) => void;
+  /** An element, an area or words picked in comment mode. */
+  onPick: (pick: PagePick, how: PickHow) => void;
   /** C or Esc pressed inside the frame, taken as they are outside it. */
   onKey: (key: 'Escape' | 'c') => void;
 }
@@ -35,6 +53,8 @@ export interface PageReports {
    * version change rather than blinking out.
    */
   positions: ReadonlyMap<string, FrameRect | null>;
+  /** Where each part of an area that lists every part shows, by the spot's id. */
+  parts: ReadonlyMap<string, FrameRect[]>;
   /** `positions` is the answer of the document on screen. */
   fresh: boolean;
   /** The document that last finished building itself. */
@@ -51,6 +71,8 @@ export interface PageReports {
    * hearing it: a pin it rested on lets its preview go.
    */
   pointerIn: number;
+  /** What the page says a click there adds, which keys pressed in the frame only it hears. */
+  adding: PageAdding;
   /** A spot drawn at `rect` until the page reports it: a new pin in the draft's place. */
   placeSpot: (id: string, rect: FrameRect) => void;
   clearSelection: () => void;
@@ -62,10 +84,11 @@ interface Scoped {
   selection: PageSelection | null;
   areaDrag: FrameRect | null;
   scrolling: boolean;
+  adding: PageAdding;
 }
 
 function emptyScope(doc: string): Scoped {
-  return { doc, selection: null, areaDrag: null, scrolling: false };
+  return { doc, selection: null, areaDrag: null, scrolling: false, adding: NOT_ADDING };
 }
 
 /**
@@ -91,9 +114,12 @@ export function usePageReports(
   const update = (patch: Partial<Omit<Scoped, 'doc'>>) => {
     setScoped((prev) => ({ ...(prev.doc === doc ? prev : emptyScope(doc)), ...patch }));
   };
-  const [reported, setReported] = useState<{ doc: string; serial: number; map: ReadonlyMap<string, FrameRect | null> }>(
-    () => ({ doc, serial: draftSerial, map: NO_POSITIONS }),
-  );
+  const [reported, setReported] = useState<{
+    doc: string;
+    serial: number;
+    map: ReadonlyMap<string, FrameRect | null>;
+    parts: ReadonlyMap<string, FrameRect[]>;
+  }>(() => ({ doc, serial: draftSerial, map: NO_POSITIONS, parts: NO_PARTS }));
   const [settledDoc, setSettledDoc] = useState<string | null>(null);
   const [pointerIn, setPointerIn] = useState(0);
   // A draft picked since the last report has its spot looked for afresh.
@@ -104,6 +130,13 @@ export function usePageReports(
     return map;
   }, [reported, draftSerial]);
   const fresh = reported.doc === doc;
+  const parts = useMemo(() => {
+    if (!fresh) return NO_PARTS;
+    if (reported.serial === draftSerial || !reported.parts.has(DRAFT_ID)) return reported.parts;
+    const map = new Map(reported.parts);
+    map.delete(DRAFT_ID);
+    return map;
+  }, [fresh, reported, draftSerial]);
 
   const asked = useMemo(() => new Set(anchors.map((item) => item.id)), [anchors]);
   const anchorsKey = useMemo(() => JSON.stringify(anchors), [anchors]);
@@ -133,7 +166,7 @@ export function usePageReports(
         return;
       case 'page:pick':
         // Only while the owner asked clicks to pick: a page cannot open the box itself.
-        if (opens(message.press)) acts.onPick(message, false);
+        if (opens(message.press)) acts.onPick(message, { selected: false, extend: message.extend });
         return;
       case 'page:area-drag': {
         // A drag whose press closed a box opens nothing, so it draws nothing.
@@ -144,7 +177,7 @@ export function usePageReports(
       }
       case 'page:area':
         // A pick of several elements at once, paired with its press as a click's is.
-        if (opens(message.press)) acts.onPick(message, false);
+        if (opens(message.press)) acts.onPick(message, { selected: false, extend: message.extend });
         return;
       case 'page:selection': {
         const next = message.selection;
@@ -154,7 +187,7 @@ export function usePageReports(
           // once, with no chip, paired with their press as a pick is. Words
           // that open nothing are let go, so the page keeps no selection
           // that no box is on.
-          if (opens(next.press)) acts.onPick(next, true);
+          if (opens(next.press)) acts.onPick(next, { selected: true, extend: false });
           else bridge.post({ type: 'page:clear-selection' });
         } else update({ selection: next });
         return;
@@ -162,8 +195,13 @@ export function usePageReports(
       case 'page:positions': {
         // Only the spots this view asked about count.
         const next = new Map<string, FrameRect | null>();
-        for (const item of message.items) if (asked.has(item.id)) next.set(item.id, item.rect);
-        setReported({ doc, serial: draftSerial, map: next });
+        const partsNow = new Map<string, FrameRect[]>();
+        for (const item of message.items) {
+          if (!asked.has(item.id)) continue;
+          next.set(item.id, item.rect);
+          if (item.parts) partsNow.set(item.id, item.parts);
+        }
+        setReported({ doc, serial: draftSerial, map: next, parts: partsNow.size ? partsNow : NO_PARTS });
         return;
       }
       case 'page:settled':
@@ -171,6 +209,9 @@ export function usePageReports(
         return;
       case 'page:pointer-in':
         setPointerIn((n) => n + 1);
+        return;
+      case 'page:adding':
+        update({ adding: { held: message.held, next: message.next } });
         return;
       case 'page:scroll':
         // A document not yet on screen is only being put back where the
@@ -189,6 +230,7 @@ export function usePageReports(
   return {
     doc,
     positions,
+    parts,
     fresh,
     settledDoc,
     settled: fresh && settledDoc === doc,
@@ -196,6 +238,7 @@ export function usePageReports(
     areaDrag: current.areaDrag,
     scrolling: current.scrolling,
     pointerIn,
+    adding: current.adding,
     placeSpot: (id, rect) => setReported((prev) => ({ ...prev, map: new Map(prev.map).set(id, rect) })),
     clearSelection: () => update({ selection: null }),
   };

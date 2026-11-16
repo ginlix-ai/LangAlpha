@@ -39,7 +39,34 @@ function run(...actions: BoxAction[]): BoxState {
   return actions.reduce(boxReducer, initialBox({ doc: '1:a', listOpen: false }));
 }
 
-const picked: BoxAction = { type: 'pick', pick: pick(), path: 'report.html', selected: false };
+const picked: BoxAction = { type: 'pick', pick: pick(), path: 'report.html', selected: false, extend: false };
+
+describe('a pick that extends the draft: its parts grown or shrunk', () => {
+  const parts = (n: number): PagePick => ({
+    anchor: { kind: 'area', elements: Array.from({ length: n }, (_, i) => ({ path: `#p${i}` })), count: n },
+    rect: { ...RECT, width: 50 * n },
+    title: 'Report',
+  });
+  const element: BoxAction = { type: 'pick', pick: { anchor: { kind: 'element', path: '#p0' }, rect: RECT, title: 'Report' }, path: 'report.html', selected: false, extend: false };
+
+  it('keeps the box, its number and its words on the parts picked now', () => {
+    const state = run(element, { type: 'write', text: 'make these match' }, { type: 'pick', pick: parts(2), path: 'report.html', selected: false, extend: true });
+    expect(state.open).toMatchObject({ kind: 'draft', serial: 1, draft: { anchor: parts(2).anchor, rect: parts(2).rect } });
+    expect(state.text).toBe('make these match');
+    expect(state.serial).toBe(1);
+  });
+
+  it('answers a pending discard question by staying, since the writer is still picking', () => {
+    const state = run(element, { type: 'write', text: 'x' }, { type: 'askDiscard' }, { type: 'pick', pick: parts(2), path: 'report.html', selected: false, extend: true });
+    expect(state.confirmDiscard).toBe(false);
+  });
+
+  it('opens a draft as a pick does where none is over the page, or the draft is on another file', () => {
+    expect(run({ type: 'pick', pick: parts(2), path: 'report.html', selected: false, extend: true }).open).toMatchObject({ kind: 'draft', serial: 1 });
+    const other = run(element, { type: 'pick', pick: parts(2), path: 'other.html', selected: false, extend: true });
+    expect(other.open).toMatchObject({ kind: 'draft', serial: 2, draft: { path: 'other.html' } });
+  });
+});
 
 describe('a pick', () => {
   it('opens a numbered draft box on the spot, for the agent, to the default', () => {
@@ -58,7 +85,7 @@ describe('a pick', () => {
       { type: 'write', text: 'check this' },
       { type: 'forAgent', on: false },
       { type: 'to', target: { threadId: 't-2' } },
-      { type: 'pick', pick: pick('Q4'), path: 'report.html', selected: true },
+      { type: 'pick', pick: pick('Q4'), path: 'report.html', selected: true, extend: false },
     );
     expect(state.open).toMatchObject({ kind: 'draft', serial: 2, draft: { selected: true } });
     expect(state).toMatchObject({ text: 'check this', forAgent: false, to: { threadId: 't-2' } });

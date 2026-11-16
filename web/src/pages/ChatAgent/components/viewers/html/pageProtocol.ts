@@ -30,11 +30,16 @@ export const SETTLE_CAP_MS = 5000;
 
 // --- The viewer to the page ---
 
-/** A spot to find on the document; `mark` keeps its words marked while its box is open. */
+/**
+ * A spot to find on the document; `mark` keeps its words marked while its box
+ * is open. `draft` is the comment being written, whose parts a modifier click
+ * adds to.
+ */
 export interface PageAnchorItem {
   id: string;
   anchor: ArtifactCommentAnchor;
   mark?: boolean;
+  draft?: boolean;
 }
 
 /**
@@ -54,6 +59,14 @@ export type ViewerToPage =
   /** Report the pointer's next move over the page (`page:pointer-in`). */
   | { type: 'page:pointer-watch' }
   | { type: 'page:clear-selection' }
+  /**
+   * Take `part`, an entry of the draft's area as the box showed it, out of the
+   * selection. The page answers with the parts left, as an `extend` pick, and
+   * takes nothing out once the draft no longer lists that part.
+   */
+  | { type: 'page:drop-part'; part: ArtifactCommentAreaElement }
+  /** The next tap adds a part to the draft: a touch screen has no modifier to hold. */
+  | { type: 'page:extend-next'; on: boolean }
   /** The document's address under a renewed grant, which it moves to without loading again. */
   | { type: 'page:address'; src: string };
 
@@ -81,9 +94,18 @@ export interface PagePick {
   title: string | null;
 }
 
-export interface PageClick extends PagePick {
+export interface PagePressed extends PagePick {
   /** The press whose click this was, or null for a click a key made. */
   press: number | null;
+}
+
+export interface PageClick extends PagePressed {
+  /**
+   * The draft's whole selection, grown or shrunk by a modifier click or the
+   * box's "Add a part": it takes the open draft's place, its box and words
+   * staying, rather than opening a new one.
+   */
+  extend: boolean;
 }
 
 export interface PageAreaDrag {
@@ -92,7 +114,7 @@ export interface PageAreaDrag {
   press: number | null;
 }
 
-export interface PageSelection extends PageClick {
+export interface PageSelection extends PagePressed {
   /**
    * Made in comment mode, by a drag over words or a click on one: the box
    * opens on it at once, with no chip, paired with `press` as a pick is.
@@ -110,8 +132,11 @@ export type PageToViewer =
   | { type: 'page:scroll'; x: number; y: number; moving: boolean }
   /** Loaded, its requests back, and still: a spot it does not show now is not coming. */
   | { type: 'page:settled' }
-  /** Where each spot the viewer asked about sits now, null where it is not on the page. */
-  | { type: 'page:positions'; items: { id: string; rect: FrameRect | null }[] }
+  /**
+   * Where each spot the viewer asked about sits now, null where it is not on
+   * the page; an area that lists every part also says where each part shows.
+   */
+  | { type: 'page:positions'; items: { id: string; rect: FrameRect | null; parts?: FrameRect[] }[] }
   /** In comment mode, what is under the pointer; null when nothing is. */
   | { type: 'page:hover'; hover: PageHover | null }
   /** A press on the page, in either mode, numbered from 1 for each document. */
@@ -127,6 +152,12 @@ export type PageToViewer =
   /** Esc or C pressed inside the frame, which the viewer takes as it takes them outside. */
   | { type: 'page:key'; key: 'Escape' | 'c' }
   | { type: 'page:pointer-in' }
+  /**
+   * In comment mode, whether a click on the page adds a part to the draft:
+   * Cmd (Ctrl elsewhere) is held over it (`held`), or "Add a part" asked for
+   * the next tap (`next`). Sent on each change.
+   */
+  | { type: 'page:adding'; held: boolean; next: boolean }
   /** A link to another workspace file in the owner's view: the path, and its section or empty. */
   | { type: 'page:open-file'; path: string; fragment: string }
   /** Every workspace file the document has loaded in the owner's view, and the file it is. Sent once it settles, then as it grows. */
@@ -157,8 +188,13 @@ const MAX_HOVER_LABEL = 300;
 /** The API's limit on a comment's title, the document's when it was made. */
 export const MAX_TITLE = 300;
 export const MAX_POSITIONS = 500;
-/** The API's limits on an area: the elements it lists, and how many it counts. */
-export const MAX_AREA_ELEMENTS = 8;
+/**
+ * The API's limits on an area: the elements it lists, and how many it counts.
+ * Parts picked one by one are each listed; a drag lists its first
+ * `DRAG_AREA_LISTED` and counts the rest.
+ */
+export const MAX_AREA_ELEMENTS = 64;
+export const DRAG_AREA_LISTED = 8;
 export const MAX_AREA_COUNT = 500;
 /** A computed colour as the browser writes one; anything else is not trusted into a style. */
 const RGB = /^rgba?\(\s*\d{1,3}(\.\d+)?\s*,\s*\d{1,3}(\.\d+)?\s*,\s*\d{1,3}(\.\d+)?\s*(,\s*(0|1|0?\.\d+)\s*)?\)$/;
@@ -254,11 +290,13 @@ const areaAnchor = z.pipe(
 const title = text(MAX_TITLE);
 const press = lenient(pressNumber);
 
-/** A click's or an area's comment spot: the anchor, its box, and the press it pairs with. */
+/** A click's or an area's comment spot: the anchor, its box, the press it pairs with, and whether it extends the draft. */
 function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof elementAnchor | typeof areaAnchor) {
   return z.pipe(
-    z.object({ type: z.literal(type), anchor, rect: frameRect, title, press }),
-    z.transform((m) => ({ type: m.type, anchor: m.anchor, rect: m.rect, title: m.title ?? null, press: m.press ?? null })),
+    z.object({ type: z.literal(type), anchor, rect: frameRect, title, press, extend: lenient(z.boolean()) }),
+    z.transform((m) => ({
+      type: m.type, anchor: m.anchor, rect: m.rect, title: m.title ?? null, press: m.press ?? null, extend: m.extend === true,
+    })),
   );
 }
 
@@ -293,8 +331,14 @@ const pageToViewer = z.discriminatedUnion('type', [
     z.transform((m) => ({
       type: m.type,
       items: m.items.slice(0, MAX_POSITIONS).flatMap((item) => {
-        const read = z.object({ id: z.string(), rect: z.catch(z.nullable(frameRect), null) }).safeParse(item);
-        return read.success ? [read.data] : [];
+        const read = z.object({
+          id: z.string(),
+          rect: z.catch(z.nullable(frameRect), null),
+          parts: lenient(z.array(frameRect).check(z.maxLength(MAX_AREA_ELEMENTS))),
+        }).safeParse(item);
+        if (!read.success) return [];
+        const { id, rect, parts } = read.data;
+        return [parts?.length ? { id, rect, parts } : { id, rect }];
       }),
     })),
   ),
@@ -346,6 +390,7 @@ const pageToViewer = z.discriminatedUnion('type', [
   ),
   z.object({ type: z.literal('page:key'), key: z.enum(['Escape', 'c']) }),
   z.object({ type: z.literal('page:pointer-in') }),
+  z.object({ type: z.literal('page:adding'), held: z.boolean(), next: z.boolean() }),
 ]);
 
 /**

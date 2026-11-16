@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CheckboxChoice } from '@/components/ui/choice';
 import { InPlaceSwap, SwapCell } from '@/components/ui/crossfade';
@@ -47,6 +47,17 @@ export type ComposerMode =
     quote: string | null;
     /** The quote whole, about four lines tall and scrolling past that, as selected words are shown; else two lines, cut. */
     fullQuote: boolean;
+    /**
+     * The parts the comment is on, by their labels, each with a way out of
+     * the selection, for an area that lists every part. Absent for one
+     * element, and for a drag that lists only its first few.
+     */
+    parts?: { labels: string[]; onDrop?: (index: number) => void };
+    /**
+     * "Add a part", on a touch screen, which has no modifier to hold: the next
+     * tap adds to the comment rather than starting a new one. `on` while it waits.
+     */
+    addPart?: { on: boolean; onToggle: () => void };
   } & NewComment)
   /** A new comment waiting in the list, whose card names the spot. */
   | ({ kind: 'list' } & NewComment)
@@ -182,7 +193,19 @@ export function CommentComposer({
           </button>
         </div>
       )}
+      {over?.parts && <PartChips labels={over.parts.labels} onDrop={over.parts.onDrop} />}
       {over?.quote && <p className={cn('page-comment-quote text-xs', over.fullQuote ? 'page-comment-quote-full' : 'line-clamp-2')}>{over.quote}</p>}
+      {over?.addPart && (
+        <button
+          type="button"
+          className="page-comment-add-part tap-target hidden pointer-coarse:inline-flex"
+          aria-pressed={over.addPart.on}
+          onClick={over.addPart.onToggle}
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden />
+          {t('pageViewer.comments.addPart')}
+        </button>
+      )}
       <textarea
         ref={fieldRef}
         value={value}
@@ -293,5 +316,46 @@ export function CommentComposer({
         )}
       </SwapCell>
     </div>
+  );
+}
+
+/**
+ * Labels shown without the leading segments they all share ("Revenue · "),
+ * which would only repeat across the chips.
+ */
+function shortLabels(labels: string[]): string[] {
+  const split = labels.map((l) => l.split(' · '));
+  let common = 0;
+  while (split.every((parts) => parts.length > common + 1 && parts[common] === split[0][common])) common += 1;
+  return split.map((parts) => parts.slice(common).join(' · '));
+}
+
+/**
+ * The parts a comment is on, one chip each, whose × takes that part out of
+ * the selection when it can be changed (`onDrop`). The last part has none:
+ * a comment is on something.
+ */
+function PartChips({ labels, onDrop }: { labels: string[]; onDrop?: (index: number) => void }) {
+  const { t } = useTranslation();
+  const shown = shortLabels(labels);
+  return (
+    <ul className="page-comment-parts" aria-label={t('pageViewer.comments.partsLabel')}>
+      {labels.map((label, i) => (
+        // A part is known by its place in the list, which is how the page drops it.
+        <li key={i} className="page-comment-part" title={label}>
+          <span className="min-w-0 truncate">{shown[i]}</span>
+          {onDrop && labels.length > 1 && (
+            <button
+              type="button"
+              className="page-comment-part-drop"
+              onClick={() => onDrop(i)}
+              aria-label={t('pageViewer.comments.dropPart', { label })}
+            >
+              <X className="h-3 w-3" aria-hidden />
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
