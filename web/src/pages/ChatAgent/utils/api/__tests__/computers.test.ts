@@ -142,6 +142,12 @@ describe('createComputer', () => {
     expect(mockPost.mock.calls[0][1]).toEqual({ resource_tier: 'standard' });
   });
 
+  it('asks the server to make the new computer primary once it starts', async () => {
+    mockPost.mockResolvedValueOnce({ data: {} });
+    await createComputer({ kind: 'ssh', make_primary: true });
+    expect(mockPost.mock.calls[0][1]).toEqual({ resource_tier: 'standard', kind: 'ssh', make_primary: true });
+  });
+
   it('carries the backup choice for a machine the user brings, off included', async () => {
     mockPost.mockResolvedValueOnce({ data: {} });
     const ssh = {

@@ -76,6 +76,9 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   // Backup off is not held here: the confirmation offers to turn it on.
   const home = homeEligibility(computer);
   const primaryUnreachable = !computer.is_primary && home.held === 'unreachable';
+  // Make primary asked with the create, which the server could not apply:
+  // said here, beside the button that asks again.
+  const primaryDropped = !computer.is_primary && computer.make_primary?.state === 'dropped' ? computer.make_primary : null;
   const primaryHintId = useId();
   const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
 
@@ -132,6 +135,14 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
             {removable && primaryUnreachable && !actions.movingHome && (
               <p id={primaryHintId} className="computer-details-hint">
                 {t('computer.makePrimary.unreachable', "You can make it primary once it's connected.")}
+              </p>
+            )}
+            {primaryDropped && (
+              <p className="computer-details-hint" data-testid="computer-primary-dropped">
+                {t('computer.makePrimary.dropped', "{{name}} wasn't made primary. {{reason}}", {
+                  name: computer.name,
+                  reason: primaryDropped.error?.message ?? '',
+                }).trim()}
               </p>
             )}
             {removeHint && (

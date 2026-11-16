@@ -1656,7 +1656,8 @@
       "done": "{{name}} 已设为默认计算机",
       "failedTitle": "无法将 {{name}} 设为默认",
       "failed": "无法将这台计算机设为默认，请重试。",
-      "unreachable": "连接恢复后即可设为默认。"
+      "unreachable": "连接恢复后即可设为默认。",
+      "dropped": "{{name}} 未能设为默认计算机。{{reason}}"
     },
     "workspaceCount_one": "{{count}} 个工作区",
     "workspaceCount_other": "{{count}} 个工作区",

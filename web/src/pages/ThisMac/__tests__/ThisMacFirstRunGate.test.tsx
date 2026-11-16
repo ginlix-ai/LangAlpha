@@ -4,8 +4,9 @@
  * and nothing under it (Home's warm-up among it) runs until it has its
  * answer. Whether this Mac was asked is all the gate reads, so a launch after
  * that holds on nothing. "Work on this Mac" adds the Mac, says plainly that refusing backup
- * keeps it from being primary, and moves Home to it from a cloud computer or
- * another machine once the Mac's first start is through.
+ * keeps it from being primary, and asks the server with the create to move
+ * Home to it from a cloud computer or another machine once the Mac's first
+ * start is through. The answer is saved on the user (`PUT /users/me`).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
@@ -107,17 +108,6 @@ const OFFICE_HOME: Partial<Computer> = {
   provider_ref: 'ssh-1', ssh: { fingerprint: 'SHA256:office' } as Computer['ssh'],
 };
 
-function homeMove(source: string) {
-  return {
-    computer_id: 'c-mac',
-    is_primary: false,
-    move: {
-      move_id: 'mv-1', workspace_id: 'home-1', source_computer_id: source, target_computer_id: 'c-mac',
-      make_primary: true, phase: 'preparing', created_at: '2026-11-15T10:00:00Z',
-    },
-  };
-}
-
 function macRow(filesBackup: boolean): Partial<Computer> {
   return {
     computer_id: 'c-mac', name: 'Alex Mac', kind: 'ssh', status: 'stopped', is_primary: false,
@@ -157,7 +147,6 @@ beforeEach(() => {
     api.computers = [...api.computers, row];
     return row;
   });
-  api.makeComputerPrimary.mockImplementation(async () => ({ computer_id: 'c-mac', is_primary: true, move: null }));
 });
 
 afterEach(() => {
@@ -272,53 +261,41 @@ describe('working on this Mac', () => {
     expect(screen.getByTestId('pairing')).toBeInTheDocument();
   }
 
-  it('makes the Mac primary for a user with a cloud Home, which moves Home', async () => {
-    api.computers = [CLOUD_HOME];
-    api.makeComputerPrimary.mockImplementation(async () => homeMove('c-cloud'));
-    await addThisMac();
-    expect(screen.queryByTestId('this-mac-backup-off')).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
-    });
-    expect(await screen.findByText(/Home is moving to this Mac/, {}, WAIT)).toBeInTheDocument();
-    expect(api.createComputer).toHaveBeenCalledWith(expect.objectContaining({ kind: 'ssh', files_backup: true }));
-    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
-    expect(api.makeComputerPrimary).toHaveBeenCalledWith('c-mac', { fromBackup: false });
-    expect(screen.queryByTestId('app')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Get started' }));
-    expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
-  });
-
-  it('moves Home only once the Mac has finished its first start', async () => {
+  // The server moves Home once the Mac's first start is through, so the
+  // first run is over as soon as the Mac is added and the answer saved.
+  it('asks with the create to make the Mac primary for a user with a cloud Home, which moves Home', async () => {
     api.computers = [CLOUD_HOME];
     api.createComputer.mockImplementation(async () => {
       const row = { ...macRow(true), status: 'starting', provider_ref: null };
       api.computers = [CLOUD_HOME, row];
       return row;
     });
-    api.makeComputerPrimary.mockImplementation(async () => homeMove('c-cloud'));
     await addThisMac();
+    expect(screen.queryByTestId('this-mac-backup-off')).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
     });
-    await waitFor(() => expect(api.getComputers.mock.calls.length).toBeGreaterThan(1), WAIT);
-    expect(api.makeComputerPrimary).not.toHaveBeenCalled();
-
-    api.computers = [CLOUD_HOME, { ...macRow(true), status: 'running', provider_ref: 'ssh-mac' }];
     expect(await screen.findByText(/Home is moving to this Mac/, {}, WAIT)).toBeInTheDocument();
-    expect(api.makeComputerPrimary).toHaveBeenCalledWith('c-mac', { fromBackup: false });
+    expect(api.createComputer).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'ssh', files_backup: true, make_primary: true }),
+    );
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
+    expect(api.makeComputerPrimary).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('app')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Get started' }));
+    expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
   });
 
   it('says Home moves from the machine it is on, not from the cloud', async () => {
     api.computers = [OFFICE_HOME];
-    api.makeComputerPrimary.mockImplementation(async () => homeMove('c-office'));
     await addThisMac();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
     });
     expect(await screen.findByText('Home is moving to this Mac from Office Mac.', {}, WAIT)).toBeInTheDocument();
     expect(screen.queryByText(/cloud/)).toBeNull();
+    expect(api.createComputer).toHaveBeenCalledWith(expect.objectContaining({ make_primary: true }));
   });
 
   it('says a Mac without backup leaves Home on the machine it is on', async () => {
@@ -333,7 +310,7 @@ describe('working on this Mac', () => {
     });
     expect(await screen.findByText(/so Home stays on Office Mac\./, {}, WAIT)).toBeInTheDocument();
     expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
-    expect(api.makeComputerPrimary).not.toHaveBeenCalled();
+    expect(api.createComputer.mock.calls[0][0]).not.toHaveProperty('make_primary');
   });
 
   it('says plainly that a Mac without backup cannot be primary, and leaves Home on the cloud', async () => {
@@ -348,7 +325,7 @@ describe('working on this Mac', () => {
     });
     expect(await screen.findByText(/Without backup it can't be your primary computer, so Home stays on the cloud/, {}, WAIT)).toBeInTheDocument();
     expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'cloud' });
-    expect(api.makeComputerPrimary).not.toHaveBeenCalled();
+    expect(api.createComputer.mock.calls[0][0]).not.toHaveProperty('make_primary');
   });
 
   it('makes nothing primary by hand for a new user: the Mac is where Home and workspaces go', async () => {
@@ -358,7 +335,7 @@ describe('working on this Mac', () => {
     });
     expect(await screen.findByText('Home and new workspaces go on this Mac.', {}, WAIT)).toBeInTheDocument();
     expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
-    expect(api.makeComputerPrimary).not.toHaveBeenCalled();
+    expect(api.createComputer.mock.calls[0][0]).not.toHaveProperty('make_primary');
     await waitFor(() => expect(screen.getByText('/Users/alex/langalpha')).toBeInTheDocument());
   });
 });

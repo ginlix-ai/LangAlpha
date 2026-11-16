@@ -11,17 +11,16 @@
  * Computers dialog, offers the folder (and taking it over from another
  * computer), and says that backup is what lets the Mac hold Home, which the
  * user may refuse. Backed up, the Mac becomes primary: for a user whose Home
- * is elsewhere (a cloud computer, or another machine of theirs) Home moves to
- * it once the Mac's first start is through, which the question says up front.
+ * is elsewhere (a cloud computer, or another machine of theirs) the create
+ * asks the server to move Home to it once the Mac's first start is through,
+ * which the question says up front.
  */
 import { useEffect, useId, useState, type ReactNode } from 'react';
-import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2 } from 'lucide-react';
 
-import { apiErrorReason } from '@/api/errors';
 import PageLoading from '@/components/PageLoading/PageLoading';
-import { Button } from '@/components/ui/button';
 import { Loader } from '@/components/ui/loader';
 import { WizardFooter, WizardShell, WizardStepHeader, type WizardFooterProps } from '@/components/ui/wizard';
 import { queryKeys } from '@/lib/queryKeys';
@@ -33,10 +32,8 @@ import { CreateRefusal, createRefusalMessage } from '@/pages/ChatAgent/component
 import { useAddThisMac } from '@/pages/ChatAgent/components/addThisMac';
 import { RemoteControlSetup, remoteControlActionLabel } from '@/pages/ChatAgent/components/remoteControlSetup';
 import { useComputerActions } from '@/pages/ChatAgent/hooks/useComputerActions';
-import { fetchComputerList, useComputers } from '@/pages/ChatAgent/hooks/useComputers';
+import { useComputers } from '@/pages/ChatAgent/hooks/useComputers';
 import { useThisMacAvailability } from '@/pages/ChatAgent/hooks/useRemoteControl';
-import { moveRefusal } from '@/pages/ChatAgent/utils/api';
-import { takesWorkspaces } from '@/pages/ChatAgent/utils/computerStatus';
 import { folderMarkedOwner } from '@/pages/ChatAgent/utils/sshLimit';
 
 import { markAskedOnThisMac } from './computerChoiceGate';
@@ -47,36 +44,12 @@ const ORDER: Step[] = ['ask', 'setup', 'finishing', 'done'];
 /** Where Home is, which says what working on this Mac does to it. */
 type HomeNow = { kind: 'none' } | { kind: 'cloud' } | { kind: 'machine'; name: string };
 
-/** How the setup ended: where Home is, or why it is not on this Mac. */
-type Outcome =
-  | { kind: 'primary' }
-  | { kind: 'moving' }
-  | { kind: 'notPrimary' }
-  | { kind: 'notReady' }
-  | { kind: 'primaryFailed'; reason: string };
-
 /**
- * How long Home's move waits for this Mac's first start. The create answers
- * once the start is claimed, and nothing can land on a computer still being
- * built; past this the user is told it is still getting ready.
+ * Where Home is going: it is on this Mac, moving here (the server moves it
+ * once the Mac's first start is through), or staying where it is, since a
+ * Mac without backup can't hold it.
  */
-const READY_WAIT_MS = 5 * 60_000;
-const READY_POLL_MS = 2_000;
-
-type Readiness = { kind: 'ready' } | { kind: 'failed'; reason: string | null } | { kind: 'slow' };
-
-/** Read from the server, since nothing on this page follows the computer's status. */
-async function untilTakesWorkspaces(queryClient: QueryClient, computerId: string): Promise<Readiness> {
-  const deadline = Date.now() + READY_WAIT_MS;
-  for (;;) {
-    const row = (await fetchComputerList(queryClient)).computers.find((c) => c.computer_id === computerId);
-    if (!row || row.status === 'deleted') return { kind: 'failed', reason: null };
-    if (row.status === 'error') return { kind: 'failed', reason: row.start_failure?.message ?? null };
-    if (takesWorkspaces(row)) return { kind: 'ready' };
-    if (Date.now() >= deadline) return { kind: 'slow' };
-    await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
-  }
-}
+type Outcome = 'primary' | 'moving' | 'notPrimary';
 
 const secondaryStyle = { color: 'var(--color-text-secondary)' } as const;
 const warningStyle = { color: 'var(--color-warning)' } as const;
@@ -115,7 +88,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<Step>('ask');
   const addThisMac = useAddThisMac(step === 'setup');
   const mac = addThisMac.setup;
-  const { create, makePrimary } = useComputerActions();
+  const { create } = useComputerActions();
   const [saveError, setSaveError] = useState(false);
   const [savingCloud, setSavingCloud] = useState(false);
   // Read when the user picked this Mac, before adding it can make it primary.
@@ -151,59 +124,28 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
     setStep('setup');
   };
 
-  const failed = (reason: string | null) =>
-    setOutcome({ kind: 'primaryFailed', reason: reason ?? tRun('tryAgainLater') });
-
-  // Home can only land once the Mac's first start is through.
-  const makeThisMacPrimary = async (row: Computer): Promise<void> => {
-    let ready: Readiness;
-    try {
-      ready = await untilTakesWorkspaces(queryClient, row.computer_id);
-    } catch (err) {
-      failed(apiErrorReason(err));
-      return;
-    }
-    if (ready.kind === 'slow') {
-      setOutcome({ kind: 'notReady' });
-      return;
-    }
-    if (ready.kind === 'failed') {
-      failed(ready.reason ?? tRun('startFailed'));
-      return;
-    }
-    await makePrimary.mutateAsync({ computerId: row.computer_id, name: row.name }).then(
-      (res) => setOutcome({ kind: res.move ? 'moving' : 'primary' }),
-      (err: unknown) => failed(moveRefusal(err)?.message ?? apiErrorReason(err)),
-    );
-  };
-
-  const tryPrimaryAgain = async (row: Computer) => {
-    setStep('finishing');
-    await makeThisMacPrimary(row);
-    setStep('done');
-  };
-
   // Backed up, this Mac is where the user said they work, and Home goes to
-  // it. Not backed up, it cannot hold Home, so Home stays where it is (or
-  // goes to a cloud computer) and the saved answer says so. The answer only
-  // decides while the account has no primary; either way this Mac is now a
-  // computer, so a save that failed asks nothing again.
+  // it: the first computer is primary as it is created, and Home elsewhere
+  // moves here once the Mac's first start is through, which the create asked
+  // the server to do. Not backed up, it cannot hold Home, so Home stays where
+  // it is (or goes to a cloud computer) and the saved answer says so. The
+  // answer only decides while the account has no primary; either way this
+  // Mac is now a computer, so a save that failed asks nothing again.
   const finish = async (row: Computer) => {
     setAdded(row);
     setStep('finishing');
     markAskedOnThisMac();
     const backedUp = row.files_backup !== false;
     await saveChoice(backedUp || homeFrom.kind === 'machine' ? 'own_machine' : 'cloud').catch(() => {});
-    if (!backedUp) setOutcome({ kind: 'notPrimary' });
-    else if (homeFrom.kind !== 'none') await makeThisMacPrimary(row);
-    else setOutcome({ kind: 'primary' });
+    setOutcome(!backedUp ? 'notPrimary' : homeFrom.kind === 'none' ? 'primary' : 'moving');
     setStep('done');
   };
 
   const submitCreate = (takeOver: string | null = null) => {
     const body = addThisMac.body({ takeOver });
     if (!body || create.isPending) return;
-    create.mutate(body, { onSuccess: (row) => void finish(row) });
+    const movesHome = body.files_backup !== false && homeFrom.kind !== 'none';
+    create.mutate(movesHome ? { ...body, make_primary: true } : body, { onSuccess: (row) => void finish(row) });
   };
 
   if (!asking) return <PageLoading />;
@@ -284,22 +226,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
       body = (
         <>
           <CheckCircle2 aria-hidden="true" className="mb-4 h-12 w-12" style={{ color: 'var(--color-success)' }} />
-          <WizardStepHeader
-            titleId={headingId}
-            title={outcome?.kind === 'notReady' ? tRun('doneTitleAdded') : tRun('doneTitle')}
-            helper={outcomeText(tRun, outcome, homeFrom)}
-          />
-          {(outcome?.kind === 'primaryFailed' || outcome?.kind === 'notReady') && (
-            <Button
-              type="button"
-              variant="outline"
-              className="mb-6"
-              disabled={makePrimary.isPending}
-              onClick={() => added && void tryPrimaryAgain(added)}
-            >
-              {tRun('tryAgain')}
-            </Button>
-          )}
+          <WizardStepHeader titleId={headingId} title={tRun('doneTitle')} helper={outcomeText(tRun, outcome, homeFrom)} />
           {added && (
             <div
               className="w-full overflow-hidden rounded-lg border"
@@ -349,7 +276,7 @@ function backupOffText(t: Translate, home: HomeNow): string {
 }
 
 function outcomeText(t: Translate, outcome: Outcome | null, home: HomeNow): string {
-  switch (outcome?.kind) {
+  switch (outcome) {
     case 'moving':
       return home.kind === 'machine'
         ? t('doneMovingFromMachine', { name: home.name })
@@ -358,10 +285,6 @@ function outcomeText(t: Translate, outcome: Outcome | null, home: HomeNow): stri
       if (home.kind === 'cloud') return t('doneNotPrimaryCloud');
       if (home.kind === 'machine') return t('doneNotPrimaryMachine', { name: home.name });
       return t('doneNotPrimaryNew');
-    case 'notReady':
-      return t('doneNotReady');
-    case 'primaryFailed':
-      return t('primaryFailed', { reason: outcome.reason });
     default:
       return t('donePrimary');
   }

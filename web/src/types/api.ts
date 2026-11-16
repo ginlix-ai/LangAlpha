@@ -273,6 +273,22 @@ export interface Computer {
   /** Why the last start failed, kept until a start succeeds or a reinstall or
    *  reconnect is accepted. Absent from an older server. */
   start_failure?: ComputerStartFailure | null;
+  /** Make primary, asked with the create (`ComputerCreate.make_primary`);
+   *  null once applied, or when none was asked. */
+  make_primary?: ComputerMakePrimaryIntent | null;
+}
+
+/** Why the server did not carry out what its owner asked of a computer, in its own sentence. */
+export interface ComputerIntentError {
+  /** A move refusal code, or a removal refusal code. */
+  code: string;
+  message: string;
+}
+
+/** `pending` until the first start completes; `dropped` with Make primary's refusal. */
+export interface ComputerMakePrimaryIntent {
+  state: 'pending' | 'dropped';
+  error: ComputerIntentError | null;
 }
 
 /** What fixes a failed start, decided by the server from its code. */
@@ -537,6 +553,9 @@ export interface ComputerCreate {
   /** Keep a backup of each workspace's files. Omitted means on; the server
    *  refuses off for a machine it runs. */
   files_backup?: boolean;
+  /** Make it primary, moving Home onto it, once its first start completes;
+   *  one the server can't apply shows in the computer's `make_primary`. */
+  make_primary?: boolean;
 }
 
 export interface SshTarget {

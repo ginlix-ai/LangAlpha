@@ -120,6 +120,19 @@ describe('ComputersDialog: making a machine the user brings primary', () => {
     expect(button).toHaveAccessibleDescription("You can make it primary once it's connected.");
   });
 
+  it('says why a make primary asked with the create was dropped, beside Make primary', async () => {
+    mockGetComputers.mockResolvedValue(ownMachine({
+      make_primary: { state: 'dropped', error: { code: 'turn_active', message: 'A turn is running in Home.' } },
+    }));
+    const user = userEvent.setup();
+    open();
+    await openDetails(user, 'Office Mac');
+    expect(screen.getByTestId('computer-primary-dropped')).toHaveTextContent(
+      "Office Mac wasn't made primary. A turn is running in Home.",
+    );
+    expect(screen.getByRole('button', { name: 'Make primary' })).toBeEnabled();
+  });
+
   it('names the cloud computer that stands in while the machine is away', async () => {
     const { user, dialog } = await openMakePrimary();
     expect(await within(dialog).findByText(/the Chief of Staff works on Alpha Research, starting it if it's stopped/)).toBeInTheDocument();

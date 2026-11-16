@@ -1614,7 +1614,8 @@
       "done": "{{name}} is now your primary computer",
       "failedTitle": "Couldn't make {{name}} primary",
       "failed": "Couldn't make this computer primary. Try again.",
-      "unreachable": "You can make it primary once it's connected."
+      "unreachable": "You can make it primary once it's connected.",
+      "dropped": "{{name}} wasn't made primary. {{reason}}"
     },
     "workspaceCount_one": "{{count}} workspace",
     "workspaceCount_other": "{{count}} workspaces",

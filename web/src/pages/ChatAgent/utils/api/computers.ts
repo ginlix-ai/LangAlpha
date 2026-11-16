@@ -69,6 +69,7 @@ export async function createComputer(body: ComputerCreate = {}): Promise<Compute
       ...(body.kind ? { kind: body.kind } : {}),
       ...(body.ssh ? { ssh: body.ssh } : {}),
       ...(body.files_backup !== undefined ? { files_backup: body.files_backup } : {}),
+      ...(body.make_primary !== undefined ? { make_primary: body.make_primary } : {}),
     },
     { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
   );
