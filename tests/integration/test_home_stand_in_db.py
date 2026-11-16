@@ -194,7 +194,7 @@ async def test_a_removal_holding_the_stand_in_and_a_turn_starting_exclude_each_o
     """A removal reads what Home is owed and deletes the stand-in under the
     exclusive side; a Home turn's owed mark, in its START transaction, takes
     the shared side, so the turn is never admitted between the two."""
-    import psycopg
+    import time
 
     from src.server.database import home_away
     from src.server.database.pool import get_db_connection
@@ -209,15 +209,18 @@ async def test_a_removal_holding_the_stand_in_and_a_turn_starting_exclude_each_o
         async with home_away.stand_in_held(user_id) as held:
             assert not held
 
-    # A removal holding it makes a START wait for it.
+    # A removal holding it refuses a START at once, rather than holding
+    # Home's row and a connection through its teardown; nothing is marked.
     async with home_away.stand_in_held(user_id) as held:
         assert held
+        before = await home_away.get_home_away(user_id)
         async with get_db_connection() as conn:
-            await conn.execute("SET lock_timeout = '200ms'")
-            with pytest.raises(psycopg.errors.LockNotAvailable):
+            started = time.monotonic()
+            with pytest.raises(home_away.StandInGone):
                 async with conn.transaction():
                     await home_away.mark_away(user_id, conn=conn)
-            await conn.execute("RESET lock_timeout")
+            assert time.monotonic() - started < 1
+        assert await home_away.get_home_away(user_id) == before
         await db_conn.execute(
             "UPDATE workspaces SET status = 'deleted' WHERE workspace_id = %s",
             (get_home_stand_in_id(user_id),),

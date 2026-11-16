@@ -92,7 +92,8 @@ def stand_in_lock_key(user_id: str) -> str:
 
 class StandInGone(Exception):
     """The stand-in a Home turn was placed in was removed before the turn
-    started: refused, so nothing is written into a folder already deleted."""
+    started, or its computer is being removed or retired now: refused, so
+    nothing is written into a folder that is going."""
 
 
 @contextlib.asynccontextmanager
@@ -103,8 +104,8 @@ async def stand_in_held(user_id: str) -> AsyncIterator[bool]:
     A turn placed in the stand-in takes the shared side in its START
     transaction, where it marks that Home is owed files (``mark_away``). So
     a removal or retirement that reads nothing owed under this hold deletes
-    the stand-in before any turn's mark, and that turn then finds it gone and
-    is refused rather than writing into it."""
+    the stand-in before any turn's mark, and that turn then finds it gone, or
+    finds this held, and is refused rather than writing into it."""
     from src.server.database.session_lock import try_own_session_lock
 
     async with try_own_session_lock(stand_in_lock_key(user_id)) as held:
@@ -121,12 +122,16 @@ async def mark_away(user_id: str, *, conn=None) -> None:
 
     The shared side of ``stand_in_lock_key`` is held to the transaction's end:
     a removal that read nothing owed has already deleted the stand-in, which
-    this then finds, or waits for this mark and reads it."""
-    async with get_db_connection(conn) as c, c.cursor() as cur:
+    this then finds. One still holding it (``stand_in_held``) refuses the turn
+    at once: its teardown can take minutes, which START would hold Home's row
+    and a connection through."""
+    async with get_db_connection(conn) as c, c.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s, 0))",
+            "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(%s, 0)) AS held",
             (stand_in_lock_key(user_id),),
         )
+        if not (await cur.fetchone())["held"]:
+            raise StandInGone()
         await cur.execute(
             "SELECT 1 FROM workspaces WHERE workspace_id = %s AND status <> 'deleted'",
             (get_home_stand_in_id(user_id),),
