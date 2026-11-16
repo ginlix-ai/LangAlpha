@@ -1192,7 +1192,7 @@ class TestAlertSweeps:
             passes[0] += 1
             if passes[0] == 1:
                 # A minute on: the close is due again, the revive is not.
-                drainer._next_alert_close = 0.0
+                drainer._due["alert close"] = 0.0
             else:
                 drainer._stopping.set()
 
@@ -1205,7 +1205,7 @@ class TestAlertSweeps:
         mocks["revive_dead_alerts"].assert_awaited_once()
         assert hook_outbox.ALERT_CLOSE_INTERVAL == 60.0
         assert hook_outbox.ALERT_REVIVE_INTERVAL == 600.0
-        assert drainer._next_alert_revive - drainer._next_alert_close == pytest.approx(
+        assert drainer._due["alert revive"] - drainer._due["alert close"] == pytest.approx(
             hook_outbox.ALERT_REVIVE_INTERVAL - hook_outbox.ALERT_CLOSE_INTERVAL, abs=5
         )
 
