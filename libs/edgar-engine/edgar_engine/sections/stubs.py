@@ -12,9 +12,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .boundaries import ItemSpan, normalize
+from .boundaries import ItemSpan
 from .pages import Pagination
 from .rendering import Rendering
+from .text import EXHIBIT_INDEX, STATEMENTS_OPENER, normalize
 from .vocab import FormSpec
 
 _POINTER = re.compile(
@@ -35,9 +36,6 @@ _CAPTION = re.compile(r"[\"\u201c\u201d](?P<c>[^\"\u201c\u201d]{3,120})[\"\u201c
 _PAGES = re.compile(r"\bpages?\s+(?P<a>F-\s?\d{1,3}|\d{1,3})(?:\s*(?:-|\u2013|\u2014|to|through|and)\s*(?P<b>F-\s?\d{1,3}|\d{1,3}))?", re.I)
 _EXHIBIT_INDEX_REF = re.compile(r"exhibit index|index to exhibits|exhibits index", re.I)
 _FS_REF = re.compile(r"page F-\s?\d|pages F-|index to (?:the )?(?:consolidated )?financial statements|financial statements (?:and (?:the )?notes thereto )?(?:beginning|commencing|which begin|that begin|appear|included|filed)", re.I)
-_EXHIBIT_INDEX = re.compile(r"(?:EXHIBIT INDEX|INDEX TO EXHIBITS|EXHIBITS INDEX)\s*[.:]?", re.I)
-_FS_OPENER = re.compile(r"(?:INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS\b.*|REPORTS? OF INDEPENDENT (?:REGISTERED PUBLIC ACCOUNTING FIRMS?|AUDITORS?|ACCOUNTANTS?|CERTIFIED PUBLIC ACCOUNTANTS?)\b.*)", re.I)
-_PAGE_LINE = re.compile(r"(?:page\s+)?-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?", re.I)
 _SENT = re.compile(r"[.;:]\s*$")
 
 
@@ -188,7 +186,7 @@ class Resolver:
         for d in [0] + self.ex13:
             a, b = self.rendering.doc_range(d)
             for ln in range(a, b):
-                if self._outside(ln, own) and _EXHIBIT_INDEX.fullmatch(normalize(self.lines[ln])):
+                if self._outside(ln, own) and EXHIBIT_INDEX.fullmatch(normalize(self.lines[ln])):
                     return [(ln, b)]
         return None
 
@@ -203,8 +201,8 @@ class Resolver:
             a, b = self.rendering.doc_range(d)
             for ln in range(max(a, back) if d == 0 else a, b):
                 s = normalize(self.lines[ln])
-                if self._outside(ln, own) and len(s) <= 120 and _FS_OPENER.fullmatch(s) and not re.search(r"\d\s*$", s):
-                    end = next((x for x in range(ln + 1, b) if _EXHIBIT_INDEX.fullmatch(normalize(self.lines[x]))
+                if self._outside(ln, own) and len(s) <= 120 and STATEMENTS_OPENER.fullmatch(s) and not re.search(r"\d\s*$", s):
+                    end = next((x for x in range(ln + 1, b) if EXHIBIT_INDEX.fullmatch(normalize(self.lines[x]))
                                 or re.fullmatch(r"SIGNATURES?", normalize(self.lines[x]))), b)
                     fpages = [x for p, x in self.pages.footers(d).items() if p.startswith("F") and ln < x < end]
                     return [(ln, max(fpages) + 1 if fpages else end)]

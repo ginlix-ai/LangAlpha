@@ -1,9 +1,9 @@
 """40-F boundaries: the general-instruction wrapper, its printed titles, and the documents it carries."""
 import re
 
-from .boundaries import (Heading, ItemSpan, Layout, normalize, toc_lines, _SIG, _SIG_PARA,
-                                              _SENTENCE, _CONTENTS)
+from .boundaries import Heading, ItemSpan, Layout, toc_lines
 from .rendering import Rendering
+from .text import CONTENTS, EXHIBIT_LIST, SENTENCE, SIGNATURE_PARAGRAPH, SIGNATURES, normalize
 from .vocab import spec_for
 
 LABEL = r"(?:(?:[A-Z]|\d{1,2}|[IVX]{1,4})\.\s*|\([a-z0-9]{1,3}\)\s*)?"
@@ -52,7 +52,6 @@ UNLISTED = re.compile(LABEL + r"(?:NOTICES? PURSUANT TO REGULATION BTR|NOTICE OF
                       r"PRINCIPAL (?:CANADIAN )?DOCUMENTS|DOCUMENTS INCORPORATED BY REFERENCE|INCORPORATION BY REFERENCE|CERTIFICATIONS?)\s*[.:]?", re.I)
 PRINCIPAL = re.compile(r"(?:PRINCIPAL (?:CANADIAN )?DOCUMENTS|DOCUMENTS INCORPORATED BY REFERENCE|INCORPORATION BY REFERENCE|"
                        r"MATERIAL INCLUDED IN THIS FORM.*|DOCUMENTS FILED UNDER COVER.*)\s*[.:]?", re.I)
-EXHIBIT_INDEX = re.compile(r"(?:EXHIBIT INDEX|INDEX TO EXHIBITS|EXHIBITS?|LIST OF EXHIBITS|EXHIBIT LIST)\s*[.:]?", re.I)
 DOC_LABEL = re.compile(r"DOCUMENT (?:NO\.? ?)?(?:\d+|[A-Z])", re.I)
 CERT_DOC = re.compile(r"CERTIFICATION OF ANNUAL FILINGS|EXHIBIT \d+(?:\.\d+)?", re.I)
 PERIOD_LINE = re.compile(r"(?:for the (?:fiscal )?(?:year|period|nine|six|three|twelve)\b.*|as (?:at|of) [A-Z][a-z]+ \d{1,2}, \d{4}|"
@@ -101,7 +100,7 @@ def match_title(s, prev_raw):
         for ids, rx in STANDALONE:
             if rx.fullmatch(s) and (ids != ("NYSE_GOV",) or titled(s)):
                 return ids, "standalone"
-    if len(s) <= 120 and is_caps(s) and not _SENTENCE.search(s[:-1] if s.endswith(".") else s):
+    if len(s) <= 120 and is_caps(s) and not SENTENCE.search(s[:-1] if s.endswith(".") else s):
         for ids, rx in SUFFIXED:
             if rx.fullmatch(s):
                 return ids, "standalone"
@@ -169,10 +168,10 @@ def fortyf(rendering: Rendering):
     for i, s in enumerate(norm):
         if i in consumed or not s:
             continue
-        if len(s) <= 40 and _SIG.fullmatch(s) or (_SIG_PARA.match(s) and "duly caused" in s[:400].lower()):
+        if len(s) <= 40 and SIGNATURES.fullmatch(s) or (SIGNATURE_PARAGRAPH.match(s) and "duly caused" in s[:400].lower()):
             kind[i] = "sig"
             continue
-        if len(s) <= 40 and EXHIBIT_INDEX.fullmatch(s):
+        if len(s) <= 40 and EXHIBIT_LIST.fullmatch(s):
             kind[i] = "exindex"
             continue
         if len(s) <= 20 and DOC_LABEL.fullmatch(s):
@@ -203,15 +202,15 @@ def fortyf(rendering: Rendering):
     heads = [Heading(i, "item", ids_at[i]) for i in ids_at]
     toc = set(toc_lines(heads, lines, [x for ids, _ in TITLES for x in ids]))
     for i, s in enumerate(norm):
-        if s and len(s) < 40 and _CONTENTS.fullmatch(s.upper().replace("TABLE OF CONTENTS", "CONTENTS")) or (s and s.upper() == "TABLE OF CONTENTS"):
+        if s and len(s) < 40 and CONTENTS.fullmatch(s.upper().replace("TABLE OF CONTENTS", "CONTENTS")) or (s and s.upper() == "TABLE OF CONTENTS"):
             seen, win = set(), []
             for j in range(i + 1, min(n, i + 80)):
                 t = norm[j]
                 if not t:
                     continue
                 nx = next((k for k in range(j + 1, min(n, j + 3)) if norm[k]), None)
-                if kind[j] == "doclabel" or (len(t) > 40 and _SENTENCE.search(t)) or len(t) > 90 or t.upper() in seen or \
-                        (nx is not None and (len(norm[nx]) > 90 or (len(norm[nx]) > 40 and _SENTENCE.search(norm[nx])))):
+                if kind[j] == "doclabel" or (len(t) > 40 and SENTENCE.search(t)) or len(t) > 90 or t.upper() in seen or \
+                        (nx is not None and (len(norm[nx]) > 90 or (len(norm[nx]) > 40 and SENTENCE.search(norm[nx])))):
                     break
                 seen.add(t.upper())
                 win.append(j)
@@ -367,7 +366,7 @@ def fortyf(rendering: Rendering):
         if not (main[0] <= j <= region_end):
             return False
         body = s[:-1] if s.endswith(".") else s
-        if _SENTENCE.search(body) or s.endswith(":") or len(re.findall(r"[A-Za-z]{2,}", s)) < 1:
+        if SENTENCE.search(body) or s.endswith(":") or len(re.findall(r"[A-Za-z]{2,}", s)) < 1:
             return False
         if j > 0 and is_caps(norm[j - 1]) and CONNECT.search(norm[j - 1]):
             return False

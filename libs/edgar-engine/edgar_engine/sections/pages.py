@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import re
 
-from .boundaries import normalize
 from .rendering import Rendering
+from .text import normalize
 
 
 class Pagination:

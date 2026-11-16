@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .boundaries import normalize
 from .pages import Pagination
+from .text import normalize
 
 TITLE = re.compile(r"cross[- ]?reference|\b(?:form\s+)?(?:10-K|20-F)\s+(?:items?|index|reference|cross)|\bsec\s+items?\b|"
                    r"\bitem\s+(?:item\s+)?caption\b|location\s+in\s+(?:this|the)\s+(?:document|report)", re.I)

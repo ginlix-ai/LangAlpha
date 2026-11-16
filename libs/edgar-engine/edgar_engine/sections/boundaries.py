@@ -14,13 +14,9 @@ import re
 from dataclasses import dataclass
 
 from .rendering import Rendering
+from .text import CONTENTS, SENTENCE, SIGNATURE_PARAGRAPH, SIGNATURES, STATEMENTS_MARKER, normalize
 from .vocab import PART_NUMERAL, ROMAN, FormSpec
 
-_DASH = re.compile(r"[\u2010-\u2015\u2212]")
-_LEAD = re.compile(r"^[\s|*\u2022\u00b7\u25cf\u25aa>]+")
-_SPACED = re.compile(r"^((?:[A-Za-z] ){2,}[A-Za-z])(?=[\s\d.:\-]|$)")
-_SPACED_WORDS = {"ITEM", "ITEMS", "PART", "SIGNATURE", "SIGNATURES"}
-_WS = re.compile(r"\s+")
 
 _ITEM = re.compile(r"(?:PART\s*(?:IV|I{1,3}|[1-4])\s*[,.:\-]?\s*)?(?P<kw>ITEMS?)\s*"
                    r"(?P<num>\d{1,2}|[IVX]{1,5}(?![A-Za-z]))(?:(?P<sp>\s?|\.)(?P<let>[A-Za-z])(?![A-Za-z]))?", re.I)
@@ -28,8 +24,6 @@ _ITEM_8K = re.compile(r"(?P<kw>ITEMS?)\s*(?P<a>\d{1,2})\s*\.\s*(?P<b>\d{2})(?!\d
 _MORE = re.compile(r"\s*(?P<conn>,|and|&|through|thru|to|-)\s*(?:and\s+)?(?:items?\s*)?"
                    r"(?P<num>\d{1,2}(?:\.\d{2})?)(?:(?P<sp>\s?)(?P<let>[A-Za-z])(?![A-Za-z]))?(?!\d)", re.I)
 _PART = re.compile(r"PART\s*(?P<p>IV|I{1,3}|[1-4]|ONE|TWO|THREE|FOUR)(?![A-Za-z0-9])", re.I)
-_SIG = re.compile(r"SIGNATURES?(?:\s*\(S\))?(?:\s+PAGES?)?\s*[.:]?", re.I)
-_SIG_PARA = re.compile(r"Pursuant to the requirements of\b", re.I)
 _SECTION_8K = re.compile(r"SECTION\s+\d{1,2}\s*[-.:](?!\d)\s*[A-Z]", re.I)
 _REG_AB = re.compile(r"ITEMS?\s*11\d\d\b", re.I)
 _SUB16 = re.compile(r"16\s?\.?\s?(?P<let>[A-K])\s?[.:)\-]\s*[A-Z]")
@@ -39,14 +33,9 @@ _SUB16_TITLES = {"A": "audit committee financial expert", "B": "code of ethics",
                  "I": "disclosure regarding foreign jurisdictions", "J": "insider trading polic", "K": "cybersecurity"}
 _SUB16_LINE = re.compile(r"(?:(?P<let>[A-K])\s?[.)]\s*)?(?P<title>[A-Za-z][^.]{0,110})\.?")
 _BARE16 = re.compile(r"ITEM\s*16\s*[.:]?", re.I)
-_FPAGES = re.compile(r"(?:REPORTS? OF INDEPENDENT (?:REGISTERED PUBLIC ACCOUNTING FIRMS?|AUDITORS?|ACCOUNTANTS?|"
-                     r"CERTIFIED PUBLIC ACCOUNTANTS?)|INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS\b.*|"
-                     r"REPORT AND (?:CONSOLIDATED )?FINANCIAL STATEMENTS|CONSOLIDATED BALANCE SHEETS?)\s*[.:]?", re.I)
 _INCLUDED_HERE = re.compile(r"included herein|herein included|included in this (?:report|item)|"
                             r"(?:on|beginning on|at) pages? F-\d|set forth (?:herein|below)|follow(?:s|ing)? (?:this|the signature)", re.I)
 _PAGE_END = re.compile(r"(?:\b\d{1,3}|\b[ivx]{1,5}|F-\d{1,3})\s*$", re.I)
-_CONTENTS = re.compile(r"\b(?:TABLE OF CONTENTS|CONTENTS|INDEX)\b", re.I)
-_SENTENCE = re.compile(r"\w\W*\s+\S.*[.;]$")
 _PART_ORDER = {"I": 1, "II": 2, "III": 3, "IV": 4}
 _ANSWERED = re.compile(r"\b(?:none|not applicable|n/a|omitted|inapplicable)\b", re.I)
 
@@ -69,16 +58,6 @@ class ItemSpan:
     heading_line: int
     combined_with: list[str]
     status: str = "present"
-
-
-def normalize(line: str) -> str:
-    s = _DASH.sub("-", line.replace("\xa0", " "))
-    s = s.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
-    s = _WS.sub(" ", _LEAD.sub("", s)).strip()
-    m = _SPACED.match(s)
-    if m and m.group(1).replace(" ", "").upper() in _SPACED_WORDS:
-        s = m.group(1).replace(" ", "") + s[m.end():]
-    return s
 
 
 _OMITTED = re.compile(r"\W*(?:omitted|not applicable)\s+(?:as|because|since|in|pursuant)\b", re.I)
@@ -162,11 +141,11 @@ def classify(line: str, spec: FormSpec) -> Heading | None:
     m = _PART.match(s)
     if m and len(s) <= 150 and _rest_ok(s[m.end():]):
         return Heading(0, "part", part=PART_NUMERAL[m.group("p").upper()], upper=s[:4].isupper())
-    if len(s) <= 40 and _SIG.fullmatch(s):
+    if len(s) <= 40 and SIGNATURES.fullmatch(s):
         return Heading(0, "sig", upper=s[:9].isupper())
     if spec.section_dividers and len(s) <= 160 and _SECTION_8K.match(s):
         return Heading(0, "section")
-    if spec.statement_pages and len(s) <= 90 and _FPAGES.fullmatch(s) and not _paged([s], 0, strict=True):
+    if spec.statement_pages and len(s) <= 90 and STATEMENTS_MARKER.fullmatch(s) and not _paged([s], 0, strict=True):
         return Heading(0, "fpages", upper=s.isupper())
     return None
 
@@ -177,7 +156,7 @@ def find_headings(lines: list[str], spec: FormSpec) -> list[Heading]:
         if len(ln) > 3000:
             continue
         h = classify(ln, spec)
-        if h is None and _SIG_PARA.match(normalize(ln)) and "duly caused" in normalize(" ".join(lines[i:i + 3]))[:500].lower():
+        if h is None and SIGNATURE_PARAGRAPH.match(normalize(ln)) and "duly caused" in normalize(" ".join(lines[i:i + 3]))[:500].lower():
             h = Heading(i, "sig")
         if h:
             h.line = i
@@ -223,12 +202,12 @@ def toc_lines(heads: list[Heading], lines: list[str], order: list[str]) -> set[i
     def close():
         items = [h for h in run if h.kind == "item"]
         lines_in = {h.line for h in run}
-        prose = any(_SENTENCE.search(normalize(lines[j])) for j in range(run[0].line, run[-1].line + 1)
+        prose = any(SENTENCE.search(normalize(lines[j])) for j in range(run[0].line, run[-1].line + 1)
                     if j not in lines_in) if run else False
         if len(items) >= 3 and not prose:
             paged = sum(1 for h in items if _paged(lines, h.line))
             first = run[0].line
-            titled = any(_CONTENTS.search(lines[j]) and len(lines[j]) < 80 for j in range(max(0, first - 4), first + 1))
+            titled = any(CONTENTS.search(lines[j]) and len(lines[j]) < 80 for j in range(max(0, first - 4), first + 1))
             repeated = sum(1 for h in items if any(o.line > run[-1].line and set(o.ids) & set(h.ids) for o in later))
             if paged * 2 >= len(items) or (titled and repeated * 3 >= 2 * len(items)):
                 toc.update(h.line for h in run)
@@ -309,7 +288,7 @@ class _Doc:
         while start - 1 > s and ln - start < 3:
             t = normalize(self.lines[start - 1])
             letters = [ch for ch in t if ch.isalpha()]
-            if not t or len(t) > 80 or _SENTENCE.search(t) or not letters or sum(ch.isupper() for ch in letters) < 0.6 * len(letters):
+            if not t or len(t) > 80 or SENTENCE.search(t) or not letters or sum(ch.isupper() for ch in letters) < 0.6 * len(letters):
                 break
             start -= 1
         return start
