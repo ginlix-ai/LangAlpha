@@ -15,7 +15,7 @@ TITLES = [
     (("AC", "ACFE"), rf"{COMMITTEE} IDENTIFICATION AND FINANCIAL EXPERTS?"),
     (("AC", "FEES"), rf"{COMMITTEE} INFORMATION (?:AND|&) (?:PRINCIPAL )?(?:ACCOUNTANT|AUDITOR)'?S?'? FEES(?: AND SERVICES)?"),
     (("OBS", "CONTRACTUAL"), r"OFF[- ]?BALANCE[- ]SHEET (?:ARRANGEMENTS|TRANSACTIONS) AND (?:TABULAR DISCLOSURE OF )?CONTRACTUAL OBLIGATIONS?"),
-    (("AIF",), r"(?:RENEWAL )?ANNUAL INFORMATION FORMS?"),
+    (("AIF",), r"(?:(?:19|20)\d\d )?(?:RENEWAL )?ANNUAL INFORMATION FORMS?"),
     (("AFS",), AFS_RX),
     (("MDA",), rf"{MDA_RX}(?:\s+OF\b.*|\s*\(.*\))?"),
     (("DCP",), r"(?:CERTIFICATIONS AND )?(?:DISCLOSURE REGARDING )?(?:INTERNAL CONTROLS? OVER FINANCIAL REPORTING AND )?"
@@ -248,8 +248,19 @@ def fortyf(lines, line_doc, offs):
             group.add(i)
     starts = [i for i in titles if i not in group]
     # main cluster of wrapper sections
+    # an annual information form printed whole (its title, then its date) holds its own governance headings,
+    # which are not the wrapper's when the wrapper prints sections outside it
+    aif_at = next((i for i in titles if ids_at[i] == ("AIF",) and kind[i] == "title" and not table[i] and len(norm[i]) <= 150
+                   and any(PERIOD_LINE.fullmatch(norm[j]) for j in range(i + 1, min(n, i + 4)) if norm[j])), None)
+    wrapper = [x for x in starts if set(ids_at[x]) - DOCS]
+    inside = set()
+    if aif_at is not None:
+        aif_end = next((j for j in range(aif_at + 1, n) if kind[j] in ("doclabel", "quicklinks", "sig", "certdoc")), n)
+        if any(not aif_at < x < aif_end for x in wrapper):
+            inside = set(range(aif_at + 1, aif_end))
+            wrapper = [x for x in wrapper if x not in inside]
     clusters = []
-    for i in [x for x in starts if set(ids_at[x]) - DOCS]:
+    for i in wrapper:
         if clusters and offs[i] - offs[clusters[-1][-1]] <= 20000:
             clusters[-1].append(i)
         else:
@@ -262,7 +273,7 @@ def fortyf(lines, line_doc, offs):
     lo = offs[main[0]] - 3000
     near = [i for i in starts if lo <= offs[i] <= offs[main[-1]] and (i in main or not set(ids_at[i]) - DOCS)]
     sig_after = next((j for j in range(main[-1] + 1, n) if kind[j] == "sig" and j not in toc), n)
-    main = sorted(set(main) | {i for i in starts if main[-1] < i < sig_after and set(ids_at[i]) - DOCS})
+    main = sorted(set(main) | {i for i in starts if main[-1] < i < sig_after and set(ids_at[i]) - DOCS and i not in inside})
     wstart = main[0]
     main = sorted(set(main) | set(near))
     for i in main:

@@ -311,6 +311,30 @@ def test_forty_f_amendment_reads_the_documents_it_refiles_as_exhibits():
     assert "MDA" not in original.items
 
 
+def test_an_amendment_lead_in_opens_the_item_it_amends():
+    from test_sections import BODY, html, p, submission
+    lead = "Item {} of the Annual Report for the fiscal year ended June 30, 2024 is hereby amended in full as follows:"
+    body = html(p("FORM 10-K/A"), p("PART III"), p(lead.format(10)), p("ITEM 10. DIRECTORS AND EXECUTIVE OFFICERS"), p(BODY),
+                p(lead.format(11)), p("ITEM 11. EXECUTIVE COMPENSATION"), p(BODY), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K/A", "2024-10-28", ("10-K/A", body)))
+    assert "hereby amended" not in fs["10"].text.split("ITEM 10.", 1)[1]
+    assert fs["11"].text.startswith("ITEM 11. EXECUTIVE COMPENSATION")
+
+
+def test_forty_f_amendment_printing_its_annual_information_form_keeps_its_headings_out_of_the_wrapper():
+    from test_sections import BODY, html, p, submission
+    body = html(p("FORM 40-F/A"), p("EXPLANATORY NOTE"), p("This amendment is filed to include the annual information form."),
+                p("UNDERTAKING"), p("The Registrant undertakes to make available representatives to respond to inquiries."),
+                p("FORWARD-LOOKING INFORMATION"), p(BODY),
+                p("2023 Annual information form"), p("February 15, 2024"), *[p(BODY)] * 3, p("AUDIT COMMITTEE"),
+                *[p(BODY)] * 3, p("PRINCIPAL ACCOUNTANT FEES AND SERVICES"), *[p(BODY)] * 3,
+                p("CODE OF BUSINESS CONDUCT AND ETHICS"), *[p(BODY)] * 3)
+    fs = extract_sections(submission("40-F/A", "2024-03-01", ("40-F/A", body)))
+    assert fs["UNDERTAKING"].text.startswith("UNDERTAKING")
+    assert fs["AIF"].text.startswith("2023 Annual information form") and "CODE OF BUSINESS CONDUCT" in fs["AIF"].text
+    assert not {"AC", "FEES", "CODE"} & set(fs.items)
+
+
 def test_part_iii_amendment_extracts_only_what_it_prints():
     html = ("<html><body><p>FORM 10-K/A</p><p>For the fiscal year ended December 31, 2023</p>"
             "<p>EXPLANATORY NOTE</p><p>This Amendment No. 1 amends our Annual Report on Form 10-K originally filed on "
