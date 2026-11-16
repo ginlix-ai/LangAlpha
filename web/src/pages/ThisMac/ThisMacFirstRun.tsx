@@ -83,6 +83,9 @@ const dangerStyle = { color: 'var(--color-icon-danger)' } as const;
 
 export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   const { t } = useTranslation();
+  // The page's own copy is a namespace of its own, fetched with its chunk
+  // rather than riding the first-load catalog.
+  const { t: tRun } = useTranslation('thisMacFirstRun');
   const queryClient = useQueryClient();
   const headingId = useId();
 
@@ -147,7 +150,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   };
 
   const failed = (reason: string | null) =>
-    setOutcome({ kind: 'primaryFailed', reason: reason ?? t('thisMacFirstRun.tryAgainLater') });
+    setOutcome({ kind: 'primaryFailed', reason: reason ?? tRun('tryAgainLater') });
 
   // Home can only land once the Mac's first start is through.
   const makeThisMacPrimary = async (row: Computer): Promise<void> => {
@@ -163,7 +166,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
       return;
     }
     if (ready.kind === 'failed') {
-      failed(ready.reason ?? t('thisMacFirstRun.startFailed'));
+      failed(ready.reason ?? tRun('startFailed'));
       return;
     }
     await makePrimary.mutateAsync({ computerId: row.computer_id, name: row.name }).then(
@@ -216,32 +219,32 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
         <>
           <WizardStepHeader
             titleId={headingId}
-            title={t('thisMacFirstRun.title')}
-            helper={askText(t, homeNow)}
+            title={tRun('title')}
+            helper={askText(tRun, homeNow)}
           />
           {saveError && (
             <p role="alert" className="text-sm" style={dangerStyle}>
-              {t('thisMacFirstRun.saveFailed')}
+              {tRun('saveFailed')}
             </p>
           )}
         </>
       );
       footer = {
-        skip: { label: elsewhereLabel(t, homeNow), onClick: chooseElsewhere },
-        primary: { label: t('thisMacFirstRun.workOnThisMac'), onClick: begin, disabled: savingCloud },
+        skip: { label: elsewhereLabel(tRun, homeNow), onClick: chooseElsewhere },
+        primary: { label: tRun('workOnThisMac'), onClick: begin, disabled: savingCloud },
       };
       break;
     case 'setup':
       body = (
         <>
-          <WizardStepHeader titleId={headingId} title={t('thisMacFirstRun.setupTitle')} helper={t('thisMacFirstRun.setupHelper')} />
+          <WizardStepHeader titleId={headingId} title={tRun('setupTitle')} helper={tRun('setupHelper')} />
           <RemoteControlSetup state={mac} account={availability.status?.account ?? ''} busy={busy} />
           {mac.ready && (
             <div className="mt-4 flex flex-col gap-2 text-sm" data-testid="this-mac-backup-notice">
-              <p style={secondaryStyle}>{t('thisMacFirstRun.backupNotice')}</p>
+              <p style={secondaryStyle}>{tRun('backupNotice')}</p>
               {backupOff && (
                 <p role="status" style={warningStyle} data-testid="this-mac-backup-off">
-                  {backupOffText(t, homeFrom)}
+                  {backupOffText(tRun, homeFrom)}
                 </p>
               )}
             </div>
@@ -256,18 +259,18 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
         </>
       );
       footer = {
-        back: busy ? null : { label: t('thisMacFirstRun.back'), onClick: () => setStep('ask') },
+        back: busy ? null : { label: tRun('back'), onClick: () => setStep('ask') },
         primary: mac.action
           ? { label: remoteControlActionLabel(t, mac.action), onClick: mac.start, disabled: !mac.acknowledged }
           : mac.ready
-            ? { label: t('thisMacFirstRun.addThisMac'), onClick: () => submitCreate(), disabled: !mac.create, busy }
+            ? { label: tRun('addThisMac'), onClick: () => submitCreate(), disabled: !mac.create, busy }
             : null,
       };
       break;
     case 'finishing':
       body = (
         <>
-          <WizardStepHeader titleId={headingId} title={t('thisMacFirstRun.finishingTitle')} />
+          <WizardStepHeader titleId={headingId} title={tRun('finishingTitle')} />
           <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm" style={secondaryStyle}>
             <Loader size={16} />
           </div>
@@ -281,8 +284,8 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
           <CheckCircle2 aria-hidden="true" className="mb-4 h-12 w-12" style={{ color: 'var(--color-success)' }} />
           <WizardStepHeader
             titleId={headingId}
-            title={outcome?.kind === 'notReady' ? t('thisMacFirstRun.doneTitleAdded') : t('thisMacFirstRun.doneTitle')}
-            helper={outcomeText(t, outcome, homeFrom)}
+            title={outcome?.kind === 'notReady' ? tRun('doneTitleAdded') : tRun('doneTitle')}
+            helper={outcomeText(tRun, outcome, homeFrom)}
           />
           {(outcome?.kind === 'primaryFailed' || outcome?.kind === 'notReady') && (
             <Button
@@ -292,7 +295,7 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
               disabled={makePrimary.isPending}
               onClick={() => added && void tryPrimaryAgain(added)}
             >
-              {t('thisMacFirstRun.tryAgain')}
+              {tRun('tryAgain')}
             </Button>
           )}
           {added && (
@@ -300,13 +303,13 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
               className="w-full overflow-hidden rounded-lg border"
               style={{ borderColor: 'var(--color-border-default)', background: 'var(--color-bg-surface)' }}
             >
-              <SummaryRow label={t('thisMacFirstRun.folderLabel')} value={added.root_dir} />
-              <SummaryRow label={t('thisMacFirstRun.computerLabel')} value={added.name} />
+              <SummaryRow label={tRun('folderLabel')} value={added.root_dir} />
+              <SummaryRow label={tRun('computerLabel')} value={added.name} />
             </div>
           )}
         </>
       );
-      footer = { primary: { label: t('thisMacFirstRun.getStarted'), onClick: onDone } };
+      footer = { primary: { label: tRun('getStarted'), onClick: onDone } };
       break;
   }
 
@@ -326,39 +329,39 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 function askText(t: Translate, home: HomeNow): string {
-  if (home.kind === 'cloud') return t('thisMacFirstRun.movesHome');
-  if (home.kind === 'machine') return t('thisMacFirstRun.movesHomeFromMachine', { name: home.name });
-  return t('thisMacFirstRun.intro');
+  if (home.kind === 'cloud') return t('movesHome');
+  if (home.kind === 'machine') return t('movesHomeFromMachine', { name: home.name });
+  return t('intro');
 }
 
 function elsewhereLabel(t: Translate, home: HomeNow): string {
-  if (home.kind === 'cloud') return t('thisMacFirstRun.keepCloud');
-  if (home.kind === 'machine') return t('thisMacFirstRun.keepMachine', { name: home.name });
-  return t('thisMacFirstRun.useCloud');
+  if (home.kind === 'cloud') return t('keepCloud');
+  if (home.kind === 'machine') return t('keepMachine', { name: home.name });
+  return t('useCloud');
 }
 
 function backupOffText(t: Translate, home: HomeNow): string {
-  if (home.kind === 'cloud') return t('thisMacFirstRun.backupOffCloud');
-  if (home.kind === 'machine') return t('thisMacFirstRun.backupOffMachine', { name: home.name });
-  return t('thisMacFirstRun.backupOffNew');
+  if (home.kind === 'cloud') return t('backupOffCloud');
+  if (home.kind === 'machine') return t('backupOffMachine', { name: home.name });
+  return t('backupOffNew');
 }
 
 function outcomeText(t: Translate, outcome: Outcome | null, home: HomeNow): string {
   switch (outcome?.kind) {
     case 'moving':
       return home.kind === 'machine'
-        ? t('thisMacFirstRun.doneMovingFromMachine', { name: home.name })
-        : t('thisMacFirstRun.doneMoving');
+        ? t('doneMovingFromMachine', { name: home.name })
+        : t('doneMoving');
     case 'notPrimary':
-      if (home.kind === 'cloud') return t('thisMacFirstRun.doneNotPrimaryCloud');
-      if (home.kind === 'machine') return t('thisMacFirstRun.doneNotPrimaryMachine', { name: home.name });
-      return t('thisMacFirstRun.doneNotPrimaryNew');
+      if (home.kind === 'cloud') return t('doneNotPrimaryCloud');
+      if (home.kind === 'machine') return t('doneNotPrimaryMachine', { name: home.name });
+      return t('doneNotPrimaryNew');
     case 'notReady':
-      return t('thisMacFirstRun.doneNotReady');
+      return t('doneNotReady');
     case 'primaryFailed':
-      return t('thisMacFirstRun.primaryFailed', { reason: outcome.reason });
+      return t('primaryFailed', { reason: outcome.reason });
     default:
-      return t('thisMacFirstRun.donePrimary');
+      return t('donePrimary');
   }
 }
 
