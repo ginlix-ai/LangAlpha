@@ -28,10 +28,13 @@ vi.mock('@/lib/desktop', async (importOriginal) => ({
   getRemoteControl: async () => shell.status,
 }));
 
-const choice = vi.hoisted(() => ({
-  setComputerChoice: vi.fn(async (value: string) => ({ choice: value })),
+const user = vi.hoisted(() => ({
+  updateCurrentUser: vi.fn(async (fields: Record<string, unknown>) => fields),
 }));
-vi.mock('@/api/computerChoice', () => choice);
+vi.mock('@/pages/Dashboard/utils/api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  updateCurrentUser: user.updateCurrentUser,
+}));
 
 const api = vi.hoisted(() => ({
   computers: [] as Partial<Computer>[],
@@ -183,7 +186,7 @@ describe('the first-run gate', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Use the cloud' }));
     });
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('cloud');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'cloud' });
     expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalled();
@@ -225,7 +228,7 @@ describe('the first-run gate', () => {
     api.computers = [macRow(true)];
     const first = draw();
     expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
-    expect(choice.setComputerChoice).not.toHaveBeenCalled();
+    expect(user.updateCurrentUser).not.toHaveBeenCalled();
     first.unmount();
     api.getComputers.mockClear();
 
@@ -247,7 +250,7 @@ describe('the first-run gate', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Keep Home on Office Mac' }));
     });
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('own_machine');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
     expect(await screen.findByTestId('app', {}, WAIT)).toBeInTheDocument();
   });
 
@@ -279,7 +282,7 @@ describe('working on this Mac', () => {
     });
     expect(await screen.findByText(/Home is moving to this Mac/, {}, WAIT)).toBeInTheDocument();
     expect(api.createComputer).toHaveBeenCalledWith(expect.objectContaining({ kind: 'ssh', files_backup: true }));
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('own_machine');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
     expect(api.makeComputerPrimary).toHaveBeenCalledWith('c-mac', { fromBackup: false });
     expect(screen.queryByTestId('app')).toBeNull();
 
@@ -329,7 +332,7 @@ describe('working on this Mac', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
     });
     expect(await screen.findByText(/so Home stays on Office Mac\./, {}, WAIT)).toBeInTheDocument();
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('own_machine');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
     expect(api.makeComputerPrimary).not.toHaveBeenCalled();
   });
 
@@ -344,7 +347,7 @@ describe('working on this Mac', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
     });
     expect(await screen.findByText(/Without backup it can't be your primary computer, so Home stays on the cloud/, {}, WAIT)).toBeInTheDocument();
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('cloud');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'cloud' });
     expect(api.makeComputerPrimary).not.toHaveBeenCalled();
   });
 
@@ -354,7 +357,7 @@ describe('working on this Mac', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add this Mac' }));
     });
     expect(await screen.findByText('Home and new workspaces go on this Mac.', {}, WAIT)).toBeInTheDocument();
-    expect(choice.setComputerChoice).toHaveBeenCalledWith('own_machine');
+    expect(user.updateCurrentUser).toHaveBeenCalledWith({ computer_choice: 'own_machine' });
     expect(api.makeComputerPrimary).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByText('/Users/alex/langalpha')).toBeInTheDocument());
   });

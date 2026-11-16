@@ -20,13 +20,14 @@ import { useTranslation } from 'react-i18next';
 import { CheckCircle2 } from 'lucide-react';
 
 import { apiErrorReason } from '@/api/errors';
-import { setComputerChoice, type ComputerChoice } from '@/api/computerChoice';
 import PageLoading from '@/components/PageLoading/PageLoading';
 import { Button } from '@/components/ui/button';
 import { Loader } from '@/components/ui/loader';
 import { WizardFooter, WizardShell, WizardStepHeader, type WizardFooterProps } from '@/components/ui/wizard';
-import type { Computer } from '@/types/api';
+import { queryKeys } from '@/lib/queryKeys';
+import type { Computer, ComputerChoice } from '@/types/api';
 
+import { updateCurrentUser } from '@/pages/Dashboard/utils/api';
 import { providerIsOwnMachine } from '@/pages/ChatAgent/components/providerUi';
 import { CreateRefusal, createRefusalMessage } from '@/pages/ChatAgent/components/addComputer';
 import { useAddThisMac } from '@/pages/ChatAgent/components/addThisMac';
@@ -123,7 +124,8 @@ export default function ThisMacFirstRun({ onDone }: { onDone: () => void }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
   const saveChoice = async (choice: ComputerChoice) => {
-    await setComputerChoice(choice);
+    await updateCurrentUser({ computer_choice: choice });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
   };
 
   // Home on another machine of the user's own stays there, so the answer

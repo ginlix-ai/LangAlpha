@@ -24,10 +24,18 @@ export interface User {
   personalization_completed?: boolean;
   /** Completed the legacy first-run onboarding flow. */
   onboarding_completed?: boolean;
+  /** Where the user chose to work, asked once by the desktop app's first run; null when never asked. */
+  computer_choice?: ComputerChoice | null;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
 }
+
+/**
+ * `own_machine` keeps a cloud computer from being built for a user with no
+ * computer Home can live on; `cloud` keeps the default.
+ */
+export type ComputerChoice = 'own_machine' | 'cloud';
 
 export interface UserPreferences {
   [key: string]: unknown;
