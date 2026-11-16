@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import time
 from contextlib import AsyncExitStack
@@ -19,7 +20,8 @@ from pydantic import BaseModel, Field
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.server.services.persistence.transfer import held_bytes_budget, scan_cap_bytes
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
-from ptc_agent.core.sandbox.files import WritePreconditionFailed
+from ptc_agent.core.sandbox.file_version import FileStamp
+from ptc_agent.core.sandbox.text_write import WriteGuard, WritePreconditionFailed
 from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
 from ptc_agent.core.paths import logged_path
 from src.server.utils.uploads import read_capped
@@ -67,12 +69,7 @@ from src.server.services.workspace_file_containment import (
     is_within,
     normalize_requested_path,
     ContainedFile,
-    edit_version,
     read_contained_sandbox_file_versioned,
-    write_guard,
-    written_version,
-    stamps_of_etag,
-    version_etag,
     read_contained_sandbox_range,
 )
 from src.server.services.served_paths import (
@@ -172,7 +169,7 @@ async def _read_contained_target(
             raise HTTPException(status_code=404, detail="File not found")
         # Rewritten while it was read, it has no version, and an edit started
         # from it would save unchecked; read again while it may have settled.
-        if read.stamps is not None:
+        if read.stamp is not None:
             break
     return read
 
@@ -563,7 +560,9 @@ async def _read_live(
         "truncated": truncated,
         # Of the bytes on the machine, before redaction: what a save names
         # as the text it edited.
-        "version": edit_version(read),
+        "version": (
+            read.stamp.edit_version(settled=read.settled) if read.stamp is not None else None
+        ),
     }
 
 
@@ -635,10 +634,18 @@ async def write_workspace_file(
     if len(content_bytes) > MAX_WRITE_BYTES:
         raise HTTPException(status_code=413, detail="File content too large (max 10MB)")
 
-    guard = write_guard(body.base_version, body.base_sha256)
-    if guard is None:
-        # A client's bug, not a concurrent edit: no read gave it.
-        raise HTTPException(status_code=422, detail=INVALID_BASE_VERSION_DETAIL)
+    base_line = None
+    if body.base_version is not None:
+        base, settled = FileStamp.from_edit_version(body.base_version)
+        if base is None:
+            # A client's bug, not a concurrent edit: no read gave it.
+            raise HTTPException(status_code=422, detail=INVALID_BASE_VERSION_DETAIL)
+        # A stamp that had not settled may be shared by a write in the same
+        # clock step, and the guard lets a save through on either check, so
+        # the text's hash, when sent, is the check alone.
+        if settled or body.base_sha256 is None:
+            base_line = base.line
+    guard = WriteGuard(base_line, body.base_sha256)
 
     async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
         work_dir = owner_work_dir(workspace)
@@ -648,11 +655,12 @@ async def write_workspace_file(
         # The write takes this path's write lock, and checks the guard in the
         # script that renames the file into place.
         try:
-            stamp = await sandbox.awrite_file_text_guarded(normalized, body.content, guard)
+            line = await sandbox.awrite_file_text_guarded(normalized, body.content, guard)
         except WritePreconditionFailed:
             raise HTTPException(status_code=409, detail=FILE_CHANGED_DETAIL) from None
-    if stamp is None:
+    if line is None:
         raise HTTPException(status_code=500, detail="Write failed")
+    written = FileStamp.from_line(line)
 
     # Invalidate agent.md cache when user edits agent.md via UI
     client_path = to_client_path(sandbox, normalized, work_dir)
@@ -684,7 +692,8 @@ async def write_workspace_file(
         "workspace_id": workspace_id,
         "path": client_path,
         "size": len(content_bytes),
-        "version": written_version(stamp),
+        # Just written, so not settled.
+        "version": written.edit_version(settled=False) if written is not None else None,
     }
 
 
@@ -816,7 +825,7 @@ async def _live_range_response(
         sliced.content,
         first,
         sliced.size,
-        version_etag(sliced.size, sliced.version),
+        sliced.version,
         filename,
         mime,
         disposition,
@@ -934,6 +943,17 @@ async def download_workspace_file(
     return await files_from(workspace_id, workspace, live, backup, away_ok=backup_ok)
 
 
+# One entity-tag of an If-None-Match list: quoted, so a comma inside one is
+# part of it rather than the start of the next.
+_ENTITY_TAG = re.compile(r'(?:W/)?"([^"]*)"')
+
+
+def _held_stamps(if_none_match: str | None) -> list[FileStamp]:
+    """The stamps of the ETags a browser asking again says it holds."""
+    stamps = (FileStamp.from_etag(tag) for tag in _ENTITY_TAG.findall(if_none_match or ""))
+    return [stamp for stamp in stamps if stamp is not None]
+
+
 async def _download_live(
     workspace_id: str,
     user_id: str,
@@ -968,7 +988,7 @@ async def _download_live(
         if_none_match = request.headers.get("if-none-match")
         try:
             read = await read_contained_sandbox_file_versioned(
-                sandbox, candidate, work_dir=work_dir, unless=stamps_of_etag(if_none_match)
+                sandbox, candidate, work_dir=work_dir, unless=_held_stamps(if_none_match)
             )
             too_large = None
         except FileTooLargeToServe as e:
@@ -993,7 +1013,7 @@ async def _download_live(
                         filename, disposition=disposition
                     ),
                     # Its stamps matched one of ours, aged before it went out.
-                    "ETag": f'"{version_etag(read.size, read.version)}"'
+                    "ETag": f'"{read.version}"'
                     if read.version
                     else (if_none_match or ""),
                     "Cache-Control": "private, no-cache",
@@ -1021,7 +1041,7 @@ async def _download_live(
             mime,
             request,
             disposition,
-            etag=version_etag(len(content), version) if version else None,
+            etag=version,
         )
 
 

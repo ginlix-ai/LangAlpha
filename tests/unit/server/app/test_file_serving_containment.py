@@ -1042,7 +1042,7 @@ VAULT_SECRET = "vault-secret-value-1234"
 # A version line as stat prints it (size, mtime, ctime, inode), and the clock.
 STAMPED = "10 1700000000.5 1700000000.5 42"
 CLOCK = "1700000100"
-_VERSION_MIN_AGE = "src.server.services.workspace_file_containment._VERSION_MIN_AGE_S"
+_VERSION_MIN_AGE = "ptc_agent.core.sandbox.file_version._SETTLED_AFTER_S"
 
 
 @pytest.fixture
@@ -1170,8 +1170,9 @@ async def test_a_ranged_read_returns_the_slice_and_the_file_it_was_cut_from(
     sliced = await _read_range(tree, "work/chart.png", 2, 4)
     assert sliced.canonical == f"{tree.root}/work/chart.png"
     assert (sliced.size, sliced.content, sliced.head) == (10, chart[2:6], chart)
-    # mtime, ctime and inode from GNU or BSD stat, with the fraction both give.
-    assert re.fullmatch(r"\d+\.\d+-\d+\.\d+-\d+", sliced.version)
+    # Size, mtime, ctime and inode from GNU or BSD stat, with the fraction
+    # both give.
+    assert re.fullmatch(r"10-\d+\.\d+-\d+\.\d+-\d+", sliced.version)
 
 
 @pytest.mark.usefixtures("settled")
@@ -1326,7 +1327,7 @@ async def test_a_ctime_counts_once_the_clock_is_two_seconds_past_it(
         _b64(canonical.encode()), line, clock, _b64(b"head"), _b64(b"abcd"), line
     )
     sliced = await _read_range(tree, "work/chart.png", 0, 4)
-    assert sliced.version == (f"1700000000.5-{ctime}-42" if versioned else None)
+    assert sliced.version == (f"10-1700000000.5-{ctime}-42" if versioned else None)
 
 
 @pytest.mark.usefixtures("settled")

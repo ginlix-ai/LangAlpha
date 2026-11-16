@@ -670,7 +670,7 @@ class _LocalSandbox:
         return True
 
     async def awrite_file_text_guarded(self, filepath, content, guard):
-        from ptc_agent.core.sandbox.files import awrite_file_text_guarded
+        from ptc_agent.core.sandbox.text_write import awrite_file_text_guarded
 
         return await awrite_file_text_guarded(self, filepath, content, guard)
 
@@ -958,7 +958,7 @@ async def test_a_large_save_run_again_after_it_landed_reports_it_landed(tmp_path
     import os
     from pathlib import Path
 
-    monkeypatch.setattr("ptc_agent.core.sandbox.files._INLINE_TEXT_WRITE_LIMIT", 8)
+    monkeypatch.setattr("ptc_agent.core.sandbox.text_write._INLINE_TEXT_WRITE_LIMIT", 8)
     root = os.path.realpath(tmp_path)
     notes = Path(root, "notes.md")
     notes.write_text("# Notes")
@@ -981,7 +981,7 @@ async def test_a_large_save_that_never_reached_its_script_leaves_nothing_staged(
     import os
     from pathlib import Path
 
-    monkeypatch.setattr("ptc_agent.core.sandbox.files._INLINE_TEXT_WRITE_LIMIT", 8)
+    monkeypatch.setattr("ptc_agent.core.sandbox.text_write._INLINE_TEXT_WRITE_LIMIT", 8)
     root = os.path.realpath(tmp_path)
     notes = Path(root, "notes.md")
     notes.write_text("# Notes")
@@ -1001,7 +1001,7 @@ async def test_a_save_waits_for_another_saves_check_and_rename(tmp_path):
     import os
     from pathlib import Path
 
-    from ptc_agent.core.sandbox.files import _guard_lock
+    from ptc_agent.core.sandbox.text_write import _guard_lock
 
     root = os.path.realpath(tmp_path)
     notes = Path(root, "notes.md")
@@ -1022,3 +1022,283 @@ async def test_a_save_waits_for_another_saves_check_and_rename(tmp_path):
     assert result["version"]
     assert notes.read_text() == "# Notes, edited"
     assert not os.path.exists(lock)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("holder", ["running", "gone"])
+async def test_a_save_takes_the_lock_only_from_a_save_that_is_gone(tmp_path, monkeypatch, holder):
+    """A save that waited out the lock took it from a holder still running,
+    which could then land over it. It takes a lock only from a holder whose
+    process is gone, and fails rather than wait on one that runs."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from ptc_agent.core.sandbox import text_write
+
+    monkeypatch.setattr(text_write, "_GUARD_LOCK_TRIES", 2)
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    lock = text_write._guard_lock(str(notes))
+    proc = subprocess.Popen(["sleep", "30"])
+    if holder == "gone":
+        proc.kill()
+        proc.wait()
+    os.mkdir(lock)
+    Path(lock, "pid").write_text(f"{proc.pid}\n")
+    try:
+        if holder == "running":
+            with pytest.raises(HTTPException):
+                await _read_then_save(sandbox, root, notes)
+            assert notes.read_text() == "# Notes"
+            assert Path(lock, "pid").read_text() == f"{proc.pid}\n"
+        else:
+            result = await _read_then_save(sandbox, root, notes)
+            assert result["version"]
+            assert notes.read_text() == "# Notes, edited"
+            assert not os.path.exists(lock)
+    finally:
+        proc.kill()
+        proc.wait()
+        subprocess.run(["rm", "-rf", lock])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age_min", [0, 20], ids=["fresh", "stale"])
+async def test_a_save_waits_out_a_lock_whose_holder_has_not_written_its_id(
+    tmp_path, monkeypatch, age_min
+):
+    """A lock with no id is a holder between its mkdir and its id as often as
+    one killed there, so it is taken only once past the stale age."""
+    import os
+    import subprocess
+    import time
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from ptc_agent.core.sandbox import text_write
+
+    monkeypatch.setattr(text_write, "_GUARD_LOCK_TRIES", 2)
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    lock = text_write._guard_lock(str(notes))
+    os.mkdir(lock)
+    then = time.time() - age_min * 60
+    os.utime(lock, (then, then))
+    try:
+        if age_min < text_write._GUARD_LOCK_STALE_MIN:
+            with pytest.raises(HTTPException):
+                await _read_then_save(sandbox, root, notes)
+            assert notes.read_text() == "# Notes"
+            assert os.path.isdir(lock)
+        else:
+            result = await _read_then_save(sandbox, root, notes)
+            assert result["version"]
+            assert notes.read_text() == "# Notes, edited"
+            assert not os.path.exists(lock)
+    finally:
+        subprocess.run(["rm", "-rf", lock])
+        subprocess.run(["sh", "-c", f"rm -rf '{lock}'.gone.*"])
+
+
+@pytest.mark.asyncio
+async def test_a_save_leaves_a_dead_holders_lock_to_the_save_that_claimed_it(
+    tmp_path, monkeypatch
+):
+    """Two saves that found the same holder gone each removed its lock, the
+    second removing the one the first had just taken, and both landed. Only
+    the save that claims the dead holder removes its lock."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from ptc_agent.core.sandbox import text_write
+
+    monkeypatch.setattr(text_write, "_GUARD_LOCK_TRIES", 2)
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    lock = text_write._guard_lock(str(notes))
+    proc = subprocess.Popen(["sleep", "30"])
+    proc.kill()
+    proc.wait()
+    os.mkdir(lock)
+    Path(lock, "pid").write_text(f"{proc.pid}\n")
+    claim = f"{lock}.gone.{os.stat(lock).st_ino}.{proc.pid}"
+    os.mkdir(claim)
+    try:
+        with pytest.raises(HTTPException):
+            await _read_then_save(sandbox, root, notes)
+        assert notes.read_text() == "# Notes"
+        assert Path(lock, "pid").read_text() == f"{proc.pid}\n"
+    finally:
+        subprocess.run(["rm", "-rf", lock, claim])
+
+
+
+@pytest.mark.asyncio
+async def test_a_payload_that_arrives_short_is_never_renamed_in(tmp_path, monkeypatch):
+    """A staged payload that arrived short was renamed into place, and the
+    rewrite took its guard from that short file. It is refused before the
+    rename and staged again under the caller's own guard."""
+    import os
+    from pathlib import Path
+
+    import shlex
+
+    from ptc_agent.core.sandbox import text_write
+    from ptc_agent.core.sandbox.file_version import version_line
+
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    content = "x" * text_write._INLINE_TEXT_WRITE_LIMIT
+    seen = []
+
+    async def upload(_sandbox, _filepath, staged, data):
+        seen.append(notes.read_text())
+        Path(staged).write_bytes(data[:-1] if len(seen) == 1 else data)
+        return True
+
+    monkeypatch.setattr(text_write, "_upload_once", upload)
+    read = await sandbox.runtime.exec(
+        f"{version_line(shlex.quote(str(notes)))}printf '%s' \"$v\""
+    )
+    guard = text_write.WriteGuard(base_line=read.stdout.strip())
+
+    assert await text_write.awrite_file_text_guarded(sandbox, str(notes), content, guard)
+    assert seen == ["# Notes", "# Notes"]
+    assert notes.read_text() == content
+    assert [p.name for p in Path(root).iterdir()] == ["notes.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_rewrite_after_a_short_landing_keeps_a_save_that_landed_between(
+    tmp_path, monkeypatch
+):
+    """The rewrite of a write that landed short skipped the check, so a save
+    that landed between the two attempts was written over. It now replaces
+    only its own short landing."""
+    import os
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from ptc_agent.core.sandbox import text_write
+
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    real = text_write._exec_text_write_once
+    calls = 0
+
+    async def short_then_another_save(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        written, size, stamp = await real(*args, **kwargs)
+        if calls == 1:
+            other = Path(root, "other.tmp")
+            other.write_text("# Another save")
+            os.replace(other, notes)
+            return written, (size or 0) - 1, stamp
+        return written, size, stamp
+
+    monkeypatch.setattr(text_write, "_exec_text_write_once", short_then_another_save)
+
+    with pytest.raises(HTTPException) as refused:
+        await _read_then_save(sandbox, root, notes)
+
+    assert refused.value.status_code == 409
+    assert notes.read_text() == "# Another save"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", ["text", "download"])
+async def test_a_backup_read_refuses_an_always_hidden_path_as_a_live_read_does(read):
+    """A stored row at a path the live routes never serve was served whenever
+    the workspace was read from its backup."""
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files import backup_reads
+
+    work_dir = "/home/workspace/ws"
+    with pytest.raises(HTTPException) as refused:
+        if read == "text":
+            await backup_reads.read_from_backup(
+                "ws-1", {"user_id": "user-1"}, ".file_sync_marker", work_dir, (),
+                0, 100, False,
+            )
+        else:
+            await backup_reads.download_from_backup(
+                "ws-1", {"user_id": "user-1"}, ".file_sync_marker", work_dir, (),
+                None, None, "attachment",
+            )
+    assert refused.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_save_from_a_stamp_not_yet_settled_is_held_to_the_texts_hash():
+    """A file written within the clock's step shares its stamp with a later
+    write of the same size, and the save took the stamp alone as proof the
+    file was unchanged. A save naming a stamp that had not settled is held
+    to the hash of the text it was read as."""
+    import hashlib
+    import os
+    import tempfile
+    from contextlib import ExitStack
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import (
+        WriteFileRequest,
+        read_workspace_file,
+        write_workspace_file,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        notes = Path(root, "notes.md")
+        notes.write_text("# Notes")
+        sandbox = _LocalSandbox(root)
+        sandbox.runtime = _AsyncLocalShell()
+        row = _workspace("ws-live", "user-1", status="running")
+        with ExitStack() as stack:
+            for p in _save_patches(sandbox, row, root, notes):
+                stack.enter_context(p)
+            read = await read_workspace_file(
+                workspace_id="ws-live", x_user_id="user-1", path="notes.md",
+                offset=0, limit=100, unlimited=True,
+            )
+            # Just written, so not settled.
+            assert read["version"].endswith("+u")
+            with pytest.raises(HTTPException) as refused:
+                await write_workspace_file(
+                    workspace_id="ws-live", x_user_id="user-1", path="notes.md",
+                    body=WriteFileRequest(
+                        content="# Mine",
+                        base_version=read["version"],
+                        # What a write in the same step, keeping the stamp, left.
+                        base_sha256=hashlib.sha256(b"# Other").hexdigest(),
+                    ),
+                )
+        assert refused.value.status_code == 409
+        assert notes.read_text() == "# Notes"
