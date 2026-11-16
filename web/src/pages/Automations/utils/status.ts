@@ -350,7 +350,7 @@ export function describeRun(run: AutomationExecution): RunView {
   const { status } = run;
   const waiting = status === 'waiting';
   let noteKey: string | null = null;
-  if (waiting) noteKey = WAIT_REASON_NOTE[run.wait_reason ?? 'thread_busy'] ?? WAIT_REASON_NOTE.thread_busy;
+  if (waiting) noteKey = WAIT_REASON_NOTE[run.wait_reason ?? 'thread_busy'];
   else if (status === 'skipped' && run.skip_reason) noteKey = SKIP_REASON_NOTE[run.skip_reason] ?? null;
   else if (isRunFailed(status) && run.failure_reason) noteKey = FAILURE_REASON_NOTE[run.failure_reason] ?? null;
   const ended = status === 'completed' || isRunFailed(status);

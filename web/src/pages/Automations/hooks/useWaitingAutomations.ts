@@ -15,8 +15,8 @@ const EMPTY: AutomationRun[] = [];
 
 /**
  * Automation runs held until the turn running in a thread ends. A run that
- * waits for its computer to answer instead is left out: this turn ending
- * would not start it.
+ * waits for its computer to answer instead is left out by the server, before
+ * the page is cut: this turn ending would not start it.
  *
  * Every open chat mounts this, so a failure reads as nothing waiting: no
  * retries, no toast, no error state. A backend without the runs endpoint
@@ -33,9 +33,7 @@ export function useWaitingAutomations(
   const { data, isError } = useQuery({
     queryKey: queryKeys.automations.waiting(enabled ? threadId : ''),
     queryFn: async () =>
-      (await listRecentRuns({ thread_id: threadId, status: 'waiting', limit: 10 })).data.executions.filter(
-        (run) => run.wait_reason !== 'computer_unreachable',
-      ),
+      (await listRecentRuns({ thread_id: threadId, status: 'waiting', wait_reason: 'thread_busy', limit: 10 })).data.executions,
     enabled,
     retry: false,
     refetchInterval: (q) =>
