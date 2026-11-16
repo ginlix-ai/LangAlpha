@@ -48,6 +48,12 @@ def test_amendments_are_opt_in():
     assert "10-K/A" in {r.form for r in refs(amendments=True)}
 
 
+def test_amendment_carries_its_status_and_the_original_it_amends():
+    amendment = next(r for r in refs(amendments=True) if r.form == "10-K/A")
+    assert (amendment.filing_status, amendment.amends) == ("amendment", "0001234567-24-000050")
+    assert {r.filing_status for r in refs()} == {"original"}
+
+
 def test_filed_on_or_before():
     assert [r.accession for r in refs(filed_on_or_before="2024-03-30")][0] == "0001234567-24-000050"
     assert refs(filed_on_or_before="2022-01-01") == []

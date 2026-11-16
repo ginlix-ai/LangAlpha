@@ -74,6 +74,8 @@ class SectionsCache:
     def put(self, sections: FilingSections) -> None:
         if not sections.accession:
             raise ValueError("sections.accession is required to cache")
+        if sections.view != "as_filed":
+            raise ValueError("only an as-filed view can be cached: an as-amended one depends on its amendments")
         payload = json.dumps(sections.to_dict(), separators=(",", ":")).encode()
         self.store.put(self._key(sections.accession), gzip.compress(payload, mtime=0))
 

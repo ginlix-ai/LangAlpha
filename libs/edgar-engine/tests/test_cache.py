@@ -59,9 +59,38 @@ def test_sections_cache_round_trip_and_key(tmp_path):
     assert json.loads(gzip.decompress(raw)) == sections.to_dict()
 
 
+def test_amendment_fields_round_trip(tmp_path):
+    cache = SectionsCache(LocalDirStore(tmp_path))
+    sections = make_sections(accession="0001234567-24-000002")
+    sections.form, sections.filing_status, sections.amends, sections.scope = "10-K/A", "amendment", "0001234567-24-000001", "partial"
+    sections.items["1A"].source = "0001234567-24-000002"
+    cache.put(sections)
+    assert cache.get(sections.accession) == sections
+    assert FilingSections.from_dict(sections.to_dict()) == sections
+
+
+def test_entry_cached_before_amendment_fields_still_loads(tmp_path):
+    store = LocalDirStore(tmp_path)
+    v1 = make_sections().to_dict()
+    for key in ("filing_status", "amends", "view", "amendments", "scope"):
+        v1.pop(key)
+    v1["items"]["1A"].pop("source")
+    v1["form"] = "10-K/A"
+    store.put(f"sections/v{SECTIONS_VERSION}/0001234567-24-000001.json.gz", gzip.compress(json.dumps(v1).encode()))
+    got = SectionsCache(store).get("0001234567-24-000001")
+    assert (got.filing_status, got.amends, got.view, got.amendments, got.items["1A"].source) == (
+        "amendment", None, "as_filed", [], None)
+
+
 def test_sections_cache_requires_accession(tmp_path):
     with pytest.raises(ValueError):
         SectionsCache(LocalDirStore(tmp_path)).put(make_sections(accession=None))
+
+
+def test_sections_cache_refuses_an_as_amended_view(tmp_path):
+    from dataclasses import replace
+    with pytest.raises(ValueError):
+        SectionsCache(LocalDirStore(tmp_path)).put(replace(make_sections(), view="as_amended"))
 
 
 def test_sections_cache_get_or_compute_computes_once(tmp_path):

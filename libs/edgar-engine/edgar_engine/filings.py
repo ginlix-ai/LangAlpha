@@ -9,6 +9,13 @@ ending in the first 3 weeks of January, which belongs to the previous year (the
 Q1 to Q3 by the quarters between the prior fiscal year end (Company.fiscal_year_end,
 "MMDD") and the report date, rounded to the nearest quarter.
 
+An amendment (10-K/A, 10-Q/A, 20-F/A, 40-F/A) amends the latest original of the same base form
+(10-K405 counting as 10-K) with the same period of report, filed on or before it. EDGAR records no
+link between the two, but the period of report is the filer's own key for the report, and it holds
+for amendments filed years later and for several amendments to one original. An amendment whose
+period matches no original gets amends=None here; edgar_engine.amendments reads the amendment's own
+cover page and explanatory note, which place it and correct a period of report typed wrong.
+
 Only APIs that edgartools 5.62 and 6.0 share are used. A company with no filings of the form
 yields an empty list on both; other errors propagate.
 """
@@ -16,13 +23,14 @@ from __future__ import annotations
 
 import calendar
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Iterable, Literal, Mapping
 
 FiscalSource = Literal["xbrl", "period_rule"]
+FilingStatus = Literal["original", "amendment"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,38 @@ class FilingRef:
     fiscal_year: int | None = None
     fiscal_period: str | None = None
     fiscal_source: FiscalSource | None = None
+    amends: str | None = None
+
+    @property
+    def filing_status(self) -> FilingStatus:
+        return "amendment" if self.form.endswith("/A") else "original"
+
+
+def base_form(form: str) -> str:
+    """The form an amendment amends, with 10-K405 folded into 10-K: "10-K405/A" -> "10-K"."""
+    f = form.upper().removesuffix("/A")
+    return "10-K" if f == "10-K405" else f
+
+
+def _order(ref: FilingRef) -> tuple[str, str]:
+    return ref.filing_date, ref.accession
+
+
+def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
+    """refs with each amendment's amends set to the latest original of its base form and period filed on or before it."""
+    refs = list(refs)
+    originals: dict[tuple[str, str], list[FilingRef]] = defaultdict(list)
+    for r in refs:
+        if r.filing_status == "original" and r.report_date:
+            originals[(base_form(r.form), r.report_date)].append(r)
+    linked = []
+    for r in refs:
+        if r.filing_status == "amendment" and r.report_date:
+            prior = [o for o in originals[(base_form(r.form), r.report_date)] if o.filing_date <= r.filing_date]
+            if prior:
+                r = replace(r, amends=max(prior, key=_order).accession)
+        linked.append(r)
+    return linked
 
 
 def _on(year: int, month: int, day: int) -> date:
@@ -91,7 +131,7 @@ def refs_from_rows(
             label, source = period_rule(form, report_date, fiscal_year_end), "period_rule"
         year, period = label or (None, None)
         refs.append(FilingRef(cik, accession, form, filing_date, report_date, year, period, source))
-    return sorted(refs, key=lambda r: (r.filing_date, r.accession), reverse=True)
+    return sorted(link_amendments(refs), key=_order, reverse=True)
 
 
 def pick_ref(
@@ -111,7 +151,23 @@ def pick_ref(
         and (fiscal_period is None or r.fiscal_period == fiscal_period)
         and (period_end is None or (r.report_date or "").startswith(period_end))
     ]
-    return min(matches, key=lambda r: (r.filing_date, r.accession), default=None)
+    return min(matches, key=_order, default=None)
+
+
+def amendments_of(original: FilingRef, refs: Iterable[FilingRef] | None = None) -> list[FilingRef]:
+    """The amendments of an original filing, in filing order. refs is a list_filings(..., amendments=True)
+    result to search; without it the filer's list is read."""
+    if refs is None:
+        refs = list_filings(original.cik, base_form(original.form), amendments=True)
+    return sorted((r for r in refs if r.amends == original.accession), key=_order)
+
+
+def nth_amendment(amendments: list, n: int):
+    """The n-th of amendments in filing order: 1 is the first, -1 the latest. None when there is no such one."""
+    if n == 0:
+        raise ValueError("amendment counts from 1 (the first) or from -1 (the latest)")
+    i = n - 1 if n > 0 else n
+    return amendments[i] if -len(amendments) <= i < len(amendments) else None
 
 
 def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:
@@ -185,10 +241,17 @@ def select_filing(
     period_end: str | None = None,
     filed_on_or_before: str | None = None,
     amendments: bool = False,
+    amendment: int | None = None,
 ) -> FilingRef | None:
-    """One filing: the latest, or the original for a fiscal year/period or for a report period ending on period_end (YYYY-MM-DD or YYYY-MM)."""
-    refs = list_filings(company, form, amendments=amendments, filed_on_or_before=filed_on_or_before)
-    return pick_ref(refs, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
+    """One filing: the latest, or the original for a fiscal year/period or for a report period ending on period_end
+    (YYYY-MM-DD or YYYY-MM). With amendment=n, the n-th amendment of that original instead (1 the first, -1 the latest)."""
+    refs = list_filings(company, form, amendments=amendments or amendment is not None,
+                        filed_on_or_before=filed_on_or_before)
+    if amendment is None:
+        return pick_ref(refs, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
+    originals = [r for r in refs if r.filing_status == "original"]
+    original = pick_ref(originals, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
+    return nth_amendment(amendments_of(original, refs), amendment) if original else None
 
 
 def get_filing(ref: FilingRef):

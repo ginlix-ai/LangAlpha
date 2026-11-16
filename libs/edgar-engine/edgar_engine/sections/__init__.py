@@ -140,20 +140,30 @@ def lines_at(offs: list[int], pos: int) -> int:
 
 
 def sections_for_filing(filing, cache=None) -> FilingSections:
-    """Items of an edgartools Filing, read through cache (a SectionsCache) when one is given."""
+    """Items of an edgartools Filing as filed, each labeled with the filing's accession as its source, read
+    through cache (a SectionsCache) when one is given."""
     def compute():
         return extract_sections(filing.full_text_submission(), form=filing.form, filing_date=str(filing.filing_date),
                                 accession=filing.accession_no)
-    if cache is None:
-        return compute()
-    return cache.get_or_compute(filing.accession_no, compute)
+    sections = compute() if cache is None else cache.get_or_compute(filing.accession_no, compute)
+    for section in sections.items.values():
+        section.source = section.source or sections.accession
+    return sections
 
 
 def get_sections(company, form: str, *, fiscal_year: int | None = None, fiscal_period: str | None = None,
-                 period_end: str | None = None, cache=None) -> FilingSections | None:
-    """Items of one company's filing for any period: the latest by default, else the original filing for
-    fiscal_year/fiscal_period or for the report period ending on period_end. None when there is no such filing."""
-    from ..filings import get_filing, select_filing
+                 period_end: str | None = None, filed_on_or_before: str | None = None, view: str = "as_filed",
+                 amendment: int | None = None, cache=None) -> FilingSections | None:
+    """Items of one company's filing for any period: the latest original by default, else the original for
+    fiscal_year/fiscal_period or for the report period ending on period_end. None when there is no such filing.
 
-    ref = select_filing(company, form, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
-    return sections_for_filing(get_filing(ref), cache) if ref else None
+    view="as_filed" (the default) returns that original as filed; view="as_amended" returns it with its
+    amendments merged in filing order, each item labeled with its source accession. amendment=n selects the
+    n-th amendment of that original (1 the first, -1 the latest): as filed, or with view="as_amended" the
+    original as amended through it. filed_on_or_before leaves out filings made after that date, so an
+    as-amended view can be taken as of a day. See edgar_engine.amendments for the rules.
+    """
+    from ..amendments import get_sections as amended
+
+    return amended(company, form, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end,
+                   filed_on_or_before=filed_on_or_before, view=view, amendment=amendment, cache=cache)

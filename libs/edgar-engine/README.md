@@ -45,10 +45,46 @@ document or an Exhibit 13. When the pointer names nothing it can find, the stub 
 description and no text, never a guess. Items with no heading that a cross-reference index maps to pages are
 returned as `xref` with the mapped pages.
 
+## Amendments
+
+10-K/A, 10-Q/A, 20-F/A and 40-F/A are read like any filing: an amendment has the items it prints and no others,
+so one that carries only Part III, an exhibit list or a cover page simply has fewer items. Every result says
+which filing it is: `filing_status` is `"original"` or `"amendment"`, and an amendment's `amends` is the
+accession of the original it amends (`None` when that cannot be found).
+
+```python
+original = get_sections("AAPL", "10-K", fiscal_year=2023)                          # as filed (the default)
+amended = get_sections("AAPL", "10-K", fiscal_year=2023, view="as_amended")      # with every amendment merged in
+first = get_sections("AAPL", "10-K", fiscal_year=2023, amendment=1)              # the first amendment, as filed
+through = get_sections("AAPL", "10-K", fiscal_year=2023, view="as_amended", amendment=1)
+amended["10"].source   # the accession the item's text comes from
+amended.amendments     # the amendments merged, in filing order
+first.scope            # "complete", "partial", "exhibits" or "cover"
+```
+
+`amendment=n` counts in filing order from 1, or from the end with -1 for the latest. `filed_on_or_before`
+leaves out later filings, so an as-amended view can be taken as of a day.
+
+**Which filing an amendment amends.** EDGAR does not record it. The engine takes the latest original of the same
+form (10-K405 counts as 10-K) with the same period of report, filed on or before the amendment; this holds for
+amendments filed years later and for several amendments to one original. Some filings carry a wrong period of
+report, so an amendment is also read: the period its cover page states, or else the date its explanatory note
+gives for the original filing, places it, and wins over the period of report when it does.
+`filings.amendments_of(ref, refs)` lists an original's amendments from the filing list alone.
+
+**What an amendment restates.** An amendment that prints an item from every part of the form (the exhibit list
+aside) is `complete` and replaces the whole item set. Otherwise it is `partial` and replaces only the items
+it prints. A partial amendment's exhibit list names only the exhibits filed with it, so the original's exhibit
+list stays. An amendment that prints only its exhibit list (`exhibits`) or no item at all (`cover`) changes
+no item. The as-amended view applies the amendments in filing order. Its `text` is the original's text
+followed by each amendment's, so every offset still indexes it. It is computed from the per-accession cache
+entries and is not cached itself.
+
 ## Filings and cache
 
 `edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks a
-filing for any period, not only the latest. Fiscal labels come from the filer's own XBRL facts where they exist
+filing for any period, not only the latest; `amendment=n` picks that filing's n-th amendment instead. Fiscal
+labels come from the filer's own XBRL facts where they exist
 and from the report date and fiscal year end otherwise. `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
 `~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.

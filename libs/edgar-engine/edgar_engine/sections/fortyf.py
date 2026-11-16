@@ -122,7 +122,38 @@ def first_doc(s):
     return min(hits)[1] if hits else None
 
 
+def exhibit_documents(lines, line_doc, start):
+    """Principal documents a 40-F/A refiles as exhibits: each exhibit whose opening title names the annual
+    information form, the statements or the MD&A (or the statements' report package) is that document whole."""
+    out = {}
+    n = len(lines)
+    a = start
+    while a < n:
+        b = next((j for j in range(a, n) if line_doc[j] != line_doc[a]), n)
+        seen = 0
+        for j in range(a, b):
+            s = normalize(strip_label_cell(lines[j]))
+            if not s:
+                continue
+            seen += 1
+            if seen > 25 or " | " in s:
+                continue
+            m = match_title(s, lines[j - 1] if j else "")
+            ids = m[0] if m and m[1] == "standalone" and set(m[0]) <= DOCS else ("AFS",) if PACKAGE.fullmatch(s) else None
+            if ids:
+                for x in ids:
+                    out.setdefault(x, ItemSpan(x, j, b, j, [o for o in ids if o != x]))
+                break
+        a = b
+    return out
+
+
 def fortyf(lines, line_doc, offs):
+    main_end = next((i for i, d in enumerate(line_doc) if d != line_doc[0]), len(lines))
+    if main_end < len(lines):
+        layout = fortyf(lines[:main_end], line_doc[:main_end], offs[:main_end + 1])
+        layout.spans.update(exhibit_documents(lines, line_doc, main_end))
+        return layout
     n = len(lines)
     raw = [strip_label_cell(l) if len(l) <= 4000 else "" for l in lines]
     norm = [normalize(r) for r in raw]

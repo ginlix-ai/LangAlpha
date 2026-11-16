@@ -6,6 +6,9 @@ from typing import Literal
 
 Status = Literal["present", "stub", "xref"]
 TargetKind = Literal["in_document", "exhibit", "proxy", "annual_report", "other_filing", "none_stated"]
+FilingStatus = Literal["original", "amendment"]
+View = Literal["as_filed", "as_amended"]
+Scope = Literal["complete", "partial", "exhibits", "cover"]
 
 
 @dataclass(frozen=True)
@@ -35,10 +38,19 @@ class Section:
     combined_with: list[str] = field(default_factory=list)
     target: Target | None = None
     override: str | None = None
+    source: str | None = None
 
 
 @dataclass
 class FilingSections:
+    """One filing's items, or with view "as_amended" an original with its amendments merged in.
+
+    filing_status follows the form ("/A" is an amendment). amends is the accession of the original an
+    amendment amends, None when it cannot be found. scope says what an amendment restates: "complete",
+    "partial", "exhibits" (only its exhibit list) or "cover" (no item). In an as-amended view, amendments
+    lists the accessions merged in filing order, each item's source names the filing its text comes from,
+    and text is the original's text followed by each amendment's, so offsets still index it.
+    """
     accession: str | None
     form: str
     filing_date: str | None
@@ -46,6 +58,15 @@ class FilingSections:
     text: str
     engine_version: str
     documents: list[dict] = field(default_factory=list)
+    filing_status: FilingStatus | None = None
+    amends: str | None = None
+    view: View = "as_filed"
+    amendments: list[str] = field(default_factory=list)
+    scope: Scope | None = None
+
+    def __post_init__(self):
+        if self.filing_status is None:
+            self.filing_status = "amendment" if self.form.upper().endswith("/A") else "original"
 
     def __getitem__(self, item: str) -> Section:
         return self.items[item]
