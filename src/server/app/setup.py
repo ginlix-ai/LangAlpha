@@ -1473,15 +1473,13 @@ app.add_exception_handler(SandboxTransientError, _sandbox_failure_handler)
 app.add_exception_handler(SSHConnectError, _sandbox_failure_handler)
 
 
-async def _needs_computer_handler(request: Request, exc: Exception) -> JSONResponse:
-    """A user with no computer and none built for them, wherever a route let
-    the refusal through: the client offers to add one."""
-    detail = exc.detail if isinstance(exc, NeedsComputer) else str(exc)
-    return JSONResponse(status_code=409, content={"detail": detail})
+async def _needs_computer_handler(request: Request, exc: NeedsComputer) -> JSONResponse:
+    """The one answer to a user with no computer Home can live on: every
+    route lets the refusal through to here, and the client offers a way out."""
+    return JSONResponse(status_code=409, content={"detail": exc.detail})
 
 
 app.add_exception_handler(NeedsComputer, _needs_computer_handler)
-
 
 
 # ============================================================================

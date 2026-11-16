@@ -1,8 +1,8 @@
 """Refusals a computer action raises that the client can act on.
 
-Each refusal subclasses RuntimeError so every existing caller keeps treating
-them as a refused action (the workspace aliases still answer 400 with the
-message); the computer routes map them to a 409 with a code the UI switches on.
+Most subclass RuntimeError so every existing caller keeps treating them as a
+refused action (the workspace aliases still answer 400 with the message); the
+computer routes map them to a 409 with a code the UI switches on.
 Kept out of the ComputerManager package so the router can import them without
 loading the provider stack.
 """
@@ -10,6 +10,7 @@ loading the provider stack.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any, Mapping, Optional
 
 
 class Retirement(StrEnum):
@@ -104,53 +105,50 @@ class SpecChangeLostError(RuntimeError):
     """Another request took the change over; this runner stops before it touches the machine."""
 
 
-class NeedsComputer(RuntimeError):
-    """The user has no computer and none is built for them.
+class NeedsComputer(Exception):
+    """The user has no computer Home can live on, and none is built for them.
 
     Either they chose to work on their own machine, or the deployment builds
-    no computers, so nothing runs until they connect one; whatever needs a
-    computer stops here instead of making a cloud computer they did not ask
-    for. The routes answer 409 ``needs_computer``.
+    no computers, so nothing runs until they connect one or turn on the
+    backup of the one they have; whatever needs a computer stops here instead
+    of making a cloud computer they did not ask for. Not a RuntimeError, so
+    no route's catch-all words it as a failed action: the app answers it
+    once, 409 with ``detail``.
     """
 
-    code = "needs_computer"
+    def __init__(
+        self, code: str, message: str, computer: Optional[Mapping[str, Any]] = None
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.computer = computer
 
-    def __init__(self) -> None:
-        super().__init__(
-            "You have no computer to work on yet. Add one in Computers first."
+    @classmethod
+    def no_computer(cls) -> "NeedsComputer":
+        return cls(
+            "needs_computer",
+            "You have no computer to work on yet. Add one in Computers first.",
+        )
+
+    @classmethod
+    def backup_off(cls, computer: Mapping[str, Any]) -> "NeedsComputer":
+        """Not "you have no computer": they have one, and turning its backup
+        on lets it be primary, where Home lives and is restored from."""
+        return cls(
+            "needs_backup",
+            f"File backup is off on {computer.get('name') or ''}. Turn it on in "
+            "Computers to make it your primary computer, where Home lives.",
+            computer,
         )
 
     @property
     def detail(self) -> dict[str, str]:
         """The 409 body, in the shape of the other computer refusals."""
-        return {"code": self.code, "message": str(self)}
-
-
-class NeedsBackup(NeedsComputer):
-    """The user's computer could be their primary but its files are not
-    backed up, and Home lives on the primary, restored from that backup if
-    the machine is lost. Turning backup on lets it be primary. A
-    ``NeedsComputer`` so every route that answers that answers this, with its
-    own code and the computer named."""
-
-    code = "needs_backup"
-
-    def __init__(self, computer_id: str, computer_name: str) -> None:
-        RuntimeError.__init__(
-            self,
-            f"File backup is off on {computer_name}. Turn it on in Computers to "
-            "make it your primary computer, where Home lives.",
-        )
-        self.computer_id = computer_id
-        self.computer_name = computer_name
-
-    @property
-    def detail(self) -> dict[str, str]:
-        return {
-            **super().detail,
-            "computer_id": self.computer_id,
-            "computer_name": self.computer_name,
-        }
+        detail = {"code": self.code, "message": str(self)}
+        if self.computer is not None:
+            detail["computer_id"] = str(self.computer["computer_id"])
+            detail["computer_name"] = self.computer.get("name") or ""
+        return detail
 
 
 class ComputerPreparingError(RuntimeError):

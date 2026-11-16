@@ -92,6 +92,7 @@ from src.server.services.computer_errors import (
     ComputerRemovalRefused,
     ComputerRepairRefused,
     MachineBusyError,
+    NeedsComputer,
     ProviderNotOffered,
     UnknownResourceTier,
 )
@@ -195,7 +196,7 @@ async def _computer_action_errors(action: str, computer_id: str, *, spec: bool =
     """
     try:
         yield
-    except HTTPException:
+    except (HTTPException, NeedsComputer):
         raise
     except ComputerRuntimeUnavailable as e:
         logger.warning("Computer runtime unavailable for %s: %s", action, e)

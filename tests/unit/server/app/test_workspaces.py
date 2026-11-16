@@ -214,6 +214,49 @@ async def test_create_without_a_computer_asks_for_none(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    ["no_computer", "backup_off"],
+)
+async def test_a_user_with_no_computer_for_home_is_answered_once_by_the_app(refusal):
+    """The route lets the refusal through its catch-all, and the app's one
+    handler answers 409 with the body the client reads."""
+    from src.server.app.setup import _needs_computer_handler
+    from src.server.app.workspaces import router
+    from src.server.services.computer_errors import NeedsComputer
+
+    mac = {"computer_id": COMPUTER_ID, "name": "MacBook Pro"}
+    exc = (
+        NeedsComputer.no_computer()
+        if refusal == "no_computer"
+        else NeedsComputer.backup_off(mac)
+    )
+    app = create_test_app(router)
+    app.add_exception_handler(NeedsComputer, _needs_computer_handler)
+    with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:
+        mock_manager = AsyncMock()
+        mock_manager.create_workspace = AsyncMock(side_effect=exc)
+        MockWM.get_instance.return_value = mock_manager
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as c:
+            resp = await c.post("/api/v1/workspaces", json={"name": "W"})
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    if refusal == "no_computer":
+        assert detail == {"code": "needs_computer", "message": str(exc)}
+    else:
+        assert detail == {
+            "code": "needs_backup",
+            "message": str(exc),
+            "computer_id": COMPUTER_ID,
+            "computer_name": "MacBook Pro",
+        }
+        assert "MacBook Pro" in detail["message"]
+
+
+@pytest.mark.asyncio
 async def test_create_on_a_chosen_computer_passes_it_to_the_manager(client):
     computer_id = str(uuid.uuid4())
     with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:

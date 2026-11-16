@@ -132,12 +132,12 @@ async def _workspace_action_errors(action: str, workspace_id: str):
     """Shared error mapping for workspace action routes.
 
     Re-raises HTTPException so ``require_workspace_owner``'s 403/404 pass
-    through, maps ValueError→404 and RuntimeError→400, and turns anything
+    through, and NeedsComputer for the app's one answer to it, maps ValueError→404 and RuntimeError→400, and turns anything
     else into a logged 500.
     """
     try:
         yield
-    except HTTPException:
+    except (HTTPException, NeedsComputer):
         raise
     except (SandboxGoneError, SandboxTransientError) as e:
         # Before the RuntimeError arm, which these subclass. An unreachable
@@ -152,9 +152,6 @@ async def _workspace_action_errors(action: str, workspace_id: str):
     except (WorkspaceNameTaken, WorkspaceNameInvalid) as e:
         # Before the ValueError arm: an unusable name is not a missing workspace.
         raise _name_error(e) from None
-    except NeedsComputer as e:
-        # Before the RuntimeError arm, which it subclasses.
-        raise HTTPException(status_code=409, detail=e.detail) from None
     except UnknownResourceTier as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     except ValueError as e:
@@ -264,7 +261,7 @@ async def create_workspace(
         )
         return _workspace_to_response(workspace)
 
-    except HTTPException:
+    except (HTTPException, NeedsComputer):
         raise
     except (WorkspaceNameTaken, WorkspaceNameInvalid) as e:
         raise _name_error(e) from None
@@ -274,8 +271,6 @@ async def create_workspace(
         raise HTTPException(
             status_code=409, detail={"code": "computer_preparing", "message": str(e)}
         ) from None
-    except NeedsComputer as e:
-        raise HTTPException(status_code=409, detail=e.detail) from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

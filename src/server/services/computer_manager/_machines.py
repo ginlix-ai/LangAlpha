@@ -56,7 +56,6 @@ from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_errors import (
-    NeedsBackup,
     NeedsComputer,
     ProviderNotOffered,
     UnknownResourceTier,
@@ -230,8 +229,8 @@ class MachineLifecycleMixin:
             await get_computer_choice(user_id) == COMPUTER_CHOICE_OWN_MACHINE
         ):
             if (held_back := await _backup_off_candidate(user_id)) is not None:
-                raise NeedsBackup(str(held_back["computer_id"]), held_back.get("name") or "")
-            raise NeedsComputer()
+                raise NeedsComputer.backup_off(held_back)
+            raise NeedsComputer.no_computer()
 
         computer = await self.create_computer_for_user(
             user_id,
