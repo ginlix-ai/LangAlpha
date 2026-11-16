@@ -14,7 +14,7 @@ import type { HomeFallback } from '@/types/sse';
 
 import type { MessageRecord } from '../components/messageList/types';
 import { getHomeHandbacks } from '../utils/api/workspaces';
-import { placeCloudTurns } from '../utils/cloudTurnFiles';
+import { cloudTurnsSince, placeCloudTurns } from '../utils/cloudTurnFiles';
 import type { TurnFile } from '../utils/turnFiles';
 
 /** How often the hand-backs are read again while a cloud turn's file is still only on the cloud. */
@@ -34,9 +34,10 @@ export function useCloudTurnFiles(
     return byTurn;
   }, [turned]);
   const reading = enabled && cloudTurns.size > 0;
+  const since = useMemo(() => cloudTurnsSince(cloudTurns.values()), [cloudTurns]);
   const { data: handbacks } = useQuery({
-    queryKey: queryKeys.workspaces.homeHandbacks(),
-    queryFn: getHomeHandbacks,
+    queryKey: queryKeys.workspaces.homeHandbacks(since),
+    queryFn: () => getHomeHandbacks(since),
     enabled: reading,
     staleTime: 15_000,
     retry: false,

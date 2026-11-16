@@ -5,10 +5,14 @@ the same files twice, the record of where each hand-back's files went, and a
 failing hand-back's delays and giving up.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 
 from src.server.database import home_away
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -72,7 +76,7 @@ async def test_the_watermark_moves_once_for_the_value_read(seed_user):
     assert row["handed_back_through"] == through and row["away_since"] is None
     assert row["last_handback"]["folder"] == "From the cloud/2026-11-15"
     assert not await home_away.handback_owed(user_id)
-    assert [h["files"] for h in await home_away.list_handbacks(user_id)] == [["a.md"]]
+    assert [h["files"] for h in await home_away.list_handbacks(user_id, _EPOCH)] == [["a.md"]]
     assert await home_away.handed_back(user_id) == {"a.md": [3, "1.0"]}
 
 
@@ -95,11 +99,42 @@ async def test_each_hand_back_keeps_what_it_carried_and_the_latest_listing_wins(
             carried=carried,
         )
 
-    assert [(h["folder"], h["files"]) for h in await home_away.list_handbacks(user_id)] == [
+    assert [(h["folder"], h["files"]) for h in await home_away.list_handbacks(user_id, _EPOCH)] == [
         ("From the cloud/2026-11-15", ["a.md", "b.md"]),
         ("From the cloud/2026-11-16", ["a.md"]),
     ]
     assert await home_away.handed_back(user_id) == {"a.md": [4, "2.0"], "b.md": [3, "1.0"]}
+
+
+async def test_a_hand_back_that_copied_nothing_still_records_what_it_found_unchanged(
+    seed_user,
+):
+    """A card of a turn that named a file it did not change opens the copy an
+    earlier hand-back carried, which only this row says."""
+    user_id = seed_user["user_id"]
+    await home_away.mark_away(user_id)
+    _, first = await home_away.begin_handback(user_id)
+    await home_away.finish_handback(
+        user_id,
+        previous=None,
+        through=first,
+        record=_record("From the cloud/2026-11-15", 2),
+        carried={"a.md": [1, "1.0"], "b.md": [2, "1.0"]},
+    )
+    await home_away.mark_away(user_id)
+    _, through = await home_away.begin_handback(user_id)
+    assert await home_away.finish_handback(
+        user_id, previous=first, through=through, record=None, kept=["b.md", "a.md"]
+    )
+
+    handback = (await home_away.list_handbacks(user_id, _EPOCH))[-1]
+    folder = "From the cloud/2026-11-15"
+    assert (handback["folder"], handback["files"], handback["kept"]) == (
+        None,
+        [],
+        {"a.md": folder, "b.md": folder},
+    )
+    assert await home_away.handed_back(user_id) == {"a.md": [1, "1.0"], "b.md": [2, "1.0"]}
 
 
 async def test_a_turn_after_the_mark_is_owed_again(seed_user):
@@ -117,32 +152,58 @@ async def test_a_turn_after_the_mark_is_owed_again(seed_user):
     assert row["handed_back_through"] == through and row["away_since"] is not None
 
 
-async def test_a_hand_back_reaches_its_listing_and_leaves_later_turns_owed(seed_user):
-    """A turn admitted mid-copy may have files the listing caught: the row
-    reaches the listing, so its cards find them there, and the watermark
-    stays where the hand-back began, so the turn stays owed."""
-    from datetime import timedelta
-
+async def test_a_turn_placed_mid_copy_belongs_to_the_next_hand_back(seed_user):
+    """The row reaches the watermark, read under the lock a turn's placement
+    is stamped under: a turn placed mid-copy is after it, stays owed, and its
+    cards look in the next hand-back, which carries what it changed or keeps
+    what it did not, naming this one's folder."""
     user_id = seed_user["user_id"]
     await home_away.mark_away(user_id)
     _, through = await home_away.begin_handback(user_id)
-    await home_away.mark_away(user_id)
-    listed_at = (await home_away.get_home_away(user_id))["last_away_at"] + timedelta(
-        seconds=1
-    )
+    at = await home_away.mark_away(user_id)
+    assert at > through
 
     await home_away.finish_handback(
         user_id,
         previous=None,
         through=through,
-        listed_at=listed_at,
         record=_record("From the cloud/2026-11-15", 1),
         carried={"a.md": [1, "1.0"]},
     )
-
-    [handback] = await home_away.list_handbacks(user_id)
-    assert handback["through"] == listed_at
+    [handback] = await home_away.list_handbacks(user_id, _EPOCH)
+    assert handback["through"] == through < at
     assert await home_away.handback_owed(user_id)
+
+    _, later = await home_away.begin_handback(user_id)
+    await home_away.finish_handback(
+        user_id, previous=through, through=later, record=None, kept=["a.md"]
+    )
+    [after] = await home_away.list_handbacks(user_id, at)
+    assert after["kept"] == {"a.md": "From the cloud/2026-11-15"}
+
+
+async def test_the_hand_backs_a_turn_needs_are_read_from_its_placement(seed_user):
+    """Read from the turn's placement on, however many came before; one that
+    found a file unchanged names the folder of the latest copy, however old."""
+    user_id = seed_user["user_id"]
+    previous = None
+    for i in range(3):
+        await home_away.mark_away(user_id)
+        _, through = await home_away.begin_handback(user_id)
+        await home_away.finish_handback(
+            user_id,
+            previous=previous,
+            through=through,
+            record=_record(f"From the cloud/2026-11-1{i}", 1),
+            carried={"a.md": [i, "1.0"]} if i < 2 else {"b.md": [1, "1.0"]},
+            kept=["a.md"] if i == 2 else None,
+        )
+        previous = through
+
+    [last] = await home_away.list_handbacks(user_id, previous)
+    assert last["files"] == ["b.md"]
+    assert last["kept"] == {"a.md": "From the cloud/2026-11-11"}
+    assert len(await home_away.list_handbacks(user_id, _EPOCH)) == 3
 
 
 async def test_a_dismissed_notice_stays_dismissed_until_the_next_one(seed_user):

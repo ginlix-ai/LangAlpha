@@ -13,7 +13,7 @@ import type { TurnFile } from '../../utils/turnFiles';
 import { useCloudTurnFiles } from '../useCloudTurnFiles';
 
 const getHomeHandbacks = vi.fn();
-vi.mock('../../utils/api/workspaces', () => ({ getHomeHandbacks: () => getHomeHandbacks() }));
+vi.mock('../../utils/api/workspaces', () => ({ getHomeHandbacks: (since: string) => getHomeHandbacks(since) }));
 
 const FALLBACK = {
   computer_id: 'mac-1',
@@ -44,7 +44,7 @@ describe('useCloudTurnFiles', () => {
 
     const { result } = renderHookWithProviders(() => useCloudTurnFiles(turned, files, { enabled: true }));
 
-    await waitFor(() => expect(getHomeHandbacks).toHaveBeenCalled());
+    await waitFor(() => expect(getHomeHandbacks).toHaveBeenCalledWith('2026-11-16T10:00:00Z'));
     expect(result.current.get(0)).toEqual([{ path: 'notes.md', workspaceId: 'ws-research' }]);
   });
 });

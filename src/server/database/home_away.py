@@ -1,4 +1,4 @@
-"""When a user's Home ran on the cloud, and how far that work is handed back (migrations 132 and 133).
+"""When a user's Home ran on the cloud, and how far that work is handed back (migrations 133 and 134).
 
 A Home turn admitted while the machine Home lives on can't be reached runs in
 Home's stand-in and marks the user away here, in its START transaction, so the
@@ -11,6 +11,7 @@ with a guarded update under its advisory lock (``services.home_handback``).
 from __future__ import annotations
 
 import contextlib
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any, Dict, List, NotRequired, Optional, Tuple, TypedDict
@@ -125,8 +126,11 @@ async def stand_in_held(user_id: str) -> AsyncIterator[bool]:
 
 async def mark_away(
     user_id: str, *, computer_id: Optional[str] = None, conn=None
-) -> None:
-    """Record a Home turn admitted onto the stand-in on ``computer_id``, now.
+) -> datetime:
+    """Record a Home turn admitted onto the stand-in on ``computer_id``, now,
+    and return that time: the turn's placement, on the clock and under the
+    lock a hand-back's watermark is read with, so each hand-back is wholly
+    before or after it.
 
     Run in the turn's START transaction (``conn``), after it took Home's row
     FOR SHARE, so the mark is later than any hand-back's watermark read under
@@ -166,9 +170,11 @@ async def mark_away(
                 handback_attempts = 0,
                 next_handback_at = NULL,
                 updated_at = NOW()
+            RETURNING last_away_at
             """,
             {"user_id": user_id, "home_id": get_home_workspace_id(user_id)},
         )
+        return (await cur.fetchone())["last_away_at"]
 
 
 async def get_home_away(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
@@ -260,19 +266,22 @@ async def finish_handback(
     record: Optional[HandbackNotice],
     carried: Optional[Dict[str, Listed]] = None,
     done: bool = True,
-    listed_at: Optional[datetime] = None,
+    kept: Optional[List[str]] = None,
 ) -> bool:
     """A hand-back ended. ``record`` is what arrived, for the user's notice;
     None when nothing did, which leaves the last notice as it was. ``carried``
     is each path copied into the record's folder as it was listed, kept in
     one row per hand-back for the file cards of the turns that wrote them and
-    for the next hand-back (``handed_back``). ``done`` False leaves the
-    watermark, so files a pass had no room for stay owed.
+    for the next hand-back (``handed_back``). ``kept`` are the paths it found
+    as an earlier hand-back carried them, stored with the folder the latest
+    of those filled, so a card of a turn before this hand-back opens that
+    copy; a row holds them even when nothing was copied. ``done`` False
+    leaves the watermark, so files a pass had no room for stay owed.
 
-    The hand-back's row reaches ``listed_at``, when the stand-in was listed,
-    rather than the watermark ``through``: a turn admitted between the two
-    may have files in it, and its cards look for them in hand-backs reaching
-    past its start. The watermark stays ``through``, so that turn stays owed.
+    The row reaches the watermark ``through``, read under Home's row lock as
+    each turn's placement is (``mark_away``): a turn placed after it belongs
+    to a later hand-back, which carries what it changed or keeps what it did
+    not.
 
     Guarded on the watermark the caller read (``previous``): a second writer
     that slipped past the lock changes nothing. False when it moved."""
@@ -303,19 +312,31 @@ async def finish_handback(
         )
         if cur.rowcount == 0:
             return False
-        if record is not None and carried:
+        if (record is not None and carried) or kept:
             await cur.execute(
                 """
-                INSERT INTO home_handbacks (handback_id, user_id, through, folder, files)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO home_handbacks
+                    (handback_id, user_id, through, folder, files, kept)
+                SELECT %(id)s, %(user_id)s, %(through)s, %(folder)s, %(files)s,
+                       COALESCE((
+                           SELECT jsonb_object_agg(path, folder) FROM (
+                               SELECT DISTINCT ON (k.path) k.path, h.folder
+                               FROM unnest(%(kept)s::text[]) AS k(path)
+                               JOIN home_handbacks h
+                                 ON h.user_id = %(user_id)s AND h.files ? k.path
+                                AND h.folder IS NOT NULL
+                               ORDER BY k.path, h.through DESC
+                           ) latest
+                       ), '{}'::jsonb)
                 """,
-                (
-                    record["handback_id"],
-                    user_id,
-                    listed_at or through,
-                    record["folder"],
-                    Json(carried),
-                ),
+                {
+                    "id": record["handback_id"] if record is not None else str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "through": through,
+                    "folder": record["folder"] if record is not None and carried else None,
+                    "files": Json(carried or {}),
+                    "kept": sorted(kept or []),
+                },
             )
         return True
 
@@ -381,19 +402,17 @@ async def defer_handback(user_id: str, seconds: float) -> None:
         )
 
 
-async def list_handbacks(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
-    """The user's latest hand-backs, oldest first: how far each reached, the
-    folder in Home it filled, and the paths (relative to the stand-in's
-    folder) it carried there, sorted."""
+async def list_handbacks(user_id: str, since: datetime) -> List[Dict[str, Any]]:
+    """The user's hand-backs reaching ``since`` or later, oldest first: how
+    far each reached, the folder in Home it filled (None when it copied
+    nothing), the paths (relative to the stand-in's folder) it carried there,
+    sorted, and those it found as an earlier one carried them, with that
+    one's folder. Every one a turn placed at ``since`` or later can need."""
     async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            """
-            SELECT through, folder, files FROM (
-                SELECT through, folder, files FROM home_handbacks
-                WHERE user_id = %s ORDER BY through DESC LIMIT %s
-            ) latest ORDER BY through
-            """,
-            (user_id, limit),
+            "SELECT through, folder, files, kept FROM home_handbacks"
+            " WHERE user_id = %s AND through >= %s ORDER BY through",
+            (user_id, since),
         )
         return [{**r, "files": sorted(r["files"])} for r in await cur.fetchall()]
 

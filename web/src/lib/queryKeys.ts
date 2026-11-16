@@ -72,7 +72,10 @@ export const queryKeys = {
     // machine can't be reached, with what came back from it.
     homePlacement: () => [...queryKeys.workspaces.all, 'home', 'placement'],
     // Where each hand-back put the files Home's cloud turns wrote, for their cards.
-    homeHandbacks: () => [...queryKeys.workspaces.all, 'home', 'handbacks'],
+    homeHandbacks: (since?: string) =>
+      since === undefined
+        ? [...queryKeys.workspaces.all, 'home', 'handbacks']
+        : [...queryKeys.workspaces.all, 'home', 'handbacks', since],
     quota:  () => [...queryKeys.workspaces.all, 'quota'],
   },
   // A workspace's latest move to another computer, polled while it runs. Its

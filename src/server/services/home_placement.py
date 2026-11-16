@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Tuple
 
@@ -133,6 +133,9 @@ class HomeTurnStart:
     #: A retry of a Home turn, which writes no query row of its own
     #: (``begin_run``), so its START corrects where the turn's row says it ran.
     retry: bool = False
+    #: What START learned: the turn's placement time (``mark_away``), which
+    #: its row and its stream then carry. Per request, written once by START.
+    stamped: Dict[str, str] = field(default_factory=dict, compare=False)
 
     @classmethod
     async def read(
@@ -162,7 +165,7 @@ class HomeTurnStart:
         return self.away.workspace_id if self.away else None
 
     def _placement(self) -> Optional[Dict[str, Any]]:
-        return self.away.as_metadata() if self.away else None
+        return {**self.away.as_metadata(), **self.stamped} if self.away else None
 
     def frame(self) -> Optional[str]:
         """The stream's word on where the turn runs, said before the computer
@@ -181,8 +184,9 @@ class HomeTurnStart:
     ) -> Optional[Callable[[Any], Awaitable[None]]]:
         """What the START transaction also writes. A turn in the stand-in
         marks its user away there, so the mark commits with its run row and
-        after Home's row lock, which the hand-back reads under. A retry
-        restates on its turn's query row where this attempt runs."""
+        after Home's row lock, which the hand-back reads under, and stamps its
+        row with that time: which hand-back carried its files is decided by
+        it. A retry restates on its turn's query row where this attempt runs."""
         if self.away is None and not self.retry:
             return then
 
@@ -195,7 +199,7 @@ class HomeTurnStart:
 
             if self.away is not None:
                 try:
-                    await mark_away(
+                    at = await mark_away(
                         user_id, computer_id=self.away.cloud_computer_id, conn=conn
                     )
                 except StandInGone:
@@ -203,7 +207,8 @@ class HomeTurnStart:
                     # refused as a move is, which chat and automations both
                     # retry.
                     raise WorkspaceMovingError(self.away.workspace_id) from None
-            if self.retry:
+                self.stamped["at"] = at.isoformat()
+            if self.away is not None or self.retry:
                 await set_run_query_metadata(
                     conn, run_id, "home_fallback", self._placement()
                 )

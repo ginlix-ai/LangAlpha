@@ -6,9 +6,10 @@ as a workspace id.
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from src.server.app.workspaces import _workspace_to_response
 from src.server.database.home_away import list_handbacks, mark_handback_seen
@@ -65,17 +66,24 @@ async def get_home_placement(x_user_id: ReadUserId):
 
 
 @router.get("/home/handbacks", response_model=HomeHandbacksResponse)
-async def list_home_handbacks(x_user_id: ReadUserId):
+async def list_home_handbacks(
+    x_user_id: ReadUserId,
+    since: datetime = Query(
+        description="The earliest placement (`home_fallback.at`) of the turns asked about"
+    ),
+):
     """Where each file a Home turn wrote in the stand-in went in Home.
 
     A turn's file card names the path in the stand-in's folder; the first
     hand-back after that turn whose ``files`` hold it put the copy under its
-    ``folder`` in Home.
+    ``folder`` in Home, and one whose ``kept`` holds it found it unchanged
+    since the earlier hand-back whose folder it names.
     """
     return HomeHandbacksResponse(
         stand_in_workspace_id=get_home_stand_in_id(x_user_id),
         handbacks=[
-            HomeHandbackOut.model_validate(row) for row in await list_handbacks(x_user_id)
+            HomeHandbackOut.model_validate(row)
+            for row in await list_handbacks(x_user_id, since)
         ],
     )
 

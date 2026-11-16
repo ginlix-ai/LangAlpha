@@ -138,17 +138,21 @@ export async function markHomeHandbackSeen(handbackId: string): Promise<void> {
 }
 
 /**
- * Where Home's cloud turns' files are now: each hand-back's folder in Home and
- * the paths, relative to the stand-in's folder, it carried there (oldest
- * first). A path none carried yet is only in the stand-in workspace.
+ * Where Home's cloud turns' files are now: each hand-back's folder in Home
+ * (null when it copied nothing), the paths, relative to the stand-in's
+ * folder, it carried there, and those it found as an earlier one carried
+ * them, each with that one's folder (oldest first). A path none carried yet
+ * is only in the stand-in workspace.
  */
 export interface HomeHandbacks {
   stand_in_workspace_id: string;
-  handbacks: { through: string; folder: string; files: string[] }[];
+  handbacks: { through: string; folder: string | null; files: string[]; kept: Record<string, string> }[];
 }
 
-export async function getHomeHandbacks(): Promise<HomeHandbacks> {
+/** The hand-backs reaching `since` or later: all a turn placed then or after can need. */
+export async function getHomeHandbacks(since: string): Promise<HomeHandbacks> {
   const { data } = await api.get<HomeHandbacks>('/api/v1/workspaces/home/handbacks', {
+    params: { since },
     timeout: WORKSPACE_QUERY_TIMEOUT_MS,
   });
   return data;

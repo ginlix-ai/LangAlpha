@@ -23,8 +23,8 @@ import tarfile
 import tempfile
 import unicodedata
 import uuid
+from contextlib import aclosing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -63,11 +63,13 @@ Listing = Dict[str, Tuple[int, str]]
 @dataclass
 class Pick:
     """What goes this time (path to its listed size and mtime), what is
-    too large ever to go, and what waits for the next hand-back for room."""
+    too large ever to go, what waits for the next hand-back for room, and
+    what an earlier hand-back already carried as it is now."""
 
     chosen: Listing = field(default_factory=dict)
     too_large: List[str] = field(default_factory=list)
     deferred: List[str] = field(default_factory=list)
+    unchanged: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -81,10 +83,12 @@ class Moved:
     too_large: List[str] = field(default_factory=list)
     unreadable: List[str] = field(default_factory=list)
     deferred: List[str] = field(default_factory=list)
-    #: When the stand-in's files were listed. A turn admitted while the copy
-    #: runs may write files the listing catches, so the record holds files
-    #: of turns placed up to here, not only up to the hand-back's watermark.
-    listed_at: Optional[datetime] = None
+    #: Paths listed as an earlier hand-back carried them: a card of a turn
+    #: before this hand-back opens that one's copy, not the stand-in's.
+    kept: List[str] = field(default_factory=list)
+    #: The computer Home was on while the files went in, read under its
+    #: folder's hold, which a move waits for.
+    computer_id: Optional[str] = None
     # Removes what is left of the copy's staging once its outcome is recorded.
     stage: Optional[Tuple[Any, str]] = None
 
@@ -164,6 +168,7 @@ def pick_files(listed: Listing, handed_back: Mapping[str, Any]) -> Pick:
         size, mtime = listed[path]
         before = handed_back.get(path)
         if before is not None and list(before) == [size, mtime]:
+            pick.unchanged.append(path)
             continue
         folded = _folded(path)
         parents = {folded.rsplit("/", n)[0] for n in range(1, folded.count("/") + 1)}
@@ -347,7 +352,14 @@ async def _is_seeded(runtime: Any, folder: str, size: int) -> bool:
     seeded = _SEEDED_AGENT_MD.encode()
     if size != len(seeded):
         return False
-    return await runtime.download_file(f"{folder}/{_SEEDED}") == seeded
+    # Read no further than the seed: the file may have grown since its listing.
+    got = bytearray()
+    async with aclosing(runtime.download_file_stream(f"{folder}/{_SEEDED}")) as chunks:
+        async for chunk in chunks:
+            got += chunk
+            if len(got) > len(seeded):
+                return False
+    return bytes(got) == seeded
 
 
 async def _pack_on_cloud(
@@ -390,6 +402,7 @@ async def move_into_home(
     not land; nothing then is in Home's folders. The caller records the
     outcome before ``Moved.clean_up``, so a cleanup that fails never repeats
     the copy."""
+    from src.server.database.computer import get_computer_for_workspace
     from src.server.database.home_workspace import (
         get_home_stand_in_id,
         get_home_workspace_id,
@@ -427,6 +440,8 @@ async def move_into_home(
         except Exception:
             await Moved(stage=(home_runtime, stage)).clean_up()
             raise
+        computer = await get_computer_for_workspace(home_id)
+        moved.computer_id = str(computer["computer_id"]) if computer else None
     moved.stage = (home_runtime, stage)
     return moved
 
@@ -453,8 +468,6 @@ async def _copy(
             f"cd {shlex.quote(cloud_dir)} && find . -type f "
             f"-printf '%s\\t%T@\\t%P\\0' > {listing_path}",
         )
-        # On the clock a turn's placement is stamped with (``HomeAway.at``).
-        listed_at = datetime.now(timezone.utc)
         try:
             await _download(cloud_runtime, listing_path, listing_file, _LISTING_CAP)
         finally:
@@ -465,12 +478,16 @@ async def _copy(
         if seeded and await _is_seeded(cloud_runtime, cloud_dir, seeded[0]):
             del pick.chosen[_SEEDED]
         if not pick.chosen:
-            return Moved(too_large=pick.too_large, unreadable=unreadable)
+            return Moved(
+                too_large=pick.too_large,
+                unreadable=unreadable,
+                kept=pick.unchanged,
+            )
 
         raw, clean = Path(tmp) / "raw.tar", Path(tmp) / "clean.tgz"
         await _pack_on_cloud(cloud_runtime, cloud_dir, pick.chosen, token, raw)
         moved = await asyncio.to_thread(rebuild_archive, raw, clean, pick.chosen)
-        moved.listed_at = listed_at
+        moved.kept = pick.unchanged
         moved.too_large = sorted([*pick.too_large, *moved.too_large])
         moved.deferred = sorted([*pick.deferred, *moved.deferred])
         moved.unreadable = sorted([*unreadable, *moved.unreadable])

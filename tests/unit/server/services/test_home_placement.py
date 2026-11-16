@@ -234,11 +234,14 @@ async def test_a_retry_restates_where_it_runs_on_its_turns_row(in_stand_in):
     attempt's placement unless the retry's START corrects it, either way."""
     import json
 
+    from datetime import datetime, timezone
+
     away = _away() if in_stand_in else None
     start = _start(away, retry=True)
     then = AsyncMock()
+    marked = datetime(2026, 11, 16, 10, tzinfo=timezone.utc)
     with (
-        patch("src.server.database.home_away.mark_away", AsyncMock()) as mark,
+        patch("src.server.database.home_away.mark_away", AsyncMock(return_value=marked)) as mark,
         patch(
             "src.server.database.conversation.queries.set_run_query_metadata",
             AsyncMock(),
@@ -246,9 +249,34 @@ async def test_a_retry_restates_where_it_runs_on_its_turns_row(in_stand_in):
     ):
         await start.in_start(USER, "run-1", then)("conn")
 
-    placement = away.as_metadata() if away else None
+    placement = {**away.as_metadata(), "at": marked.isoformat()} if away else None
     restate.assert_awaited_once_with("conn", "run-1", "home_fallback", placement)
     assert mark.await_count == (1 if in_stand_in else 0)
     then.assert_awaited_once_with("conn")
     # Live, the frame says it too, clearing the first attempt's badge.
+    assert json.loads(start.frame().split("data: ", 1)[1])["home_fallback"] == placement
+
+
+@pytest.mark.asyncio
+async def test_a_turn_in_the_stand_in_is_placed_when_its_start_marks_it():
+    """Placed at START, under the lock and on the clock a hand-back's
+    watermark is read with, so its row and its stream name a time no
+    hand-back straddles; not when the route was read, before the gap a
+    hand-back could run in."""
+    import json
+    from datetime import datetime, timezone
+
+    start = _start(_away())
+    marked = datetime(2026, 11, 16, 10, tzinfo=timezone.utc)
+    with (
+        patch("src.server.database.home_away.mark_away", AsyncMock(return_value=marked)),
+        patch(
+            "src.server.database.conversation.queries.set_run_query_metadata",
+            AsyncMock(),
+        ) as stamp,
+    ):
+        await start.in_start(USER, "run-1", None)("conn")
+
+    placement = stamp.await_args.args[3]
+    assert placement["at"] == marked.isoformat()
     assert json.loads(start.frame().split("data: ", 1)[1])["home_fallback"] == placement

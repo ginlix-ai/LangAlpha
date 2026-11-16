@@ -74,6 +74,7 @@ def test_what_went_before_unchanged_stays_and_the_rest_goes_within_the_caps():
     ]
     assert pick.too_large == ["huge.bin"]
     assert pick.deferred == ["d.parquet"]
+    assert pick.unchanged == ["same.md"]
 
 
 @pytest.mark.parametrize(
@@ -377,7 +378,11 @@ def owed():
     async def begin(user_id):
         return None if state["live_run"] else (dict(row), THROUGH)
 
-    moved = Moved(folder="From the cloud/2026-11-15", carried={"a.md": [3, "1.0"]})
+    moved = Moved(
+        folder="From the cloud/2026-11-15",
+        carried={"a.md": [3, "1.0"]},
+        computer_id="mac-1",
+    )
     moved.clean_up = AsyncMock(side_effect=lambda: order.append("clean_up"))
     finish = AsyncMock(side_effect=lambda *a, **k: order.append("finish") or True)
     mirror = AsyncMock(side_effect=lambda _: order.append("mirror"))
@@ -416,7 +421,6 @@ async def test_a_hand_back_records_what_it_copied_before_cleaning_up(owed):
     assert owed["copy"].await_args.args == (USER, {"old.md": [1, "0.5"]})
     kwargs = owed["finish"].await_args.kwargs
     assert kwargs["previous"] is None and kwargs["through"] == THROUGH
-    assert kwargs["listed_at"] is owed["moved"].listed_at
     assert kwargs["carried"] == {"a.md": [3, "1.0"]} and kwargs["done"] is True
     assert kwargs["record"]["folder"] == "From the cloud/2026-11-15"
     assert kwargs["record"]["files"] == 1
@@ -435,6 +439,15 @@ async def test_home_is_backed_up_only_after_a_hand_back_it_took(owed, why):
     await home_handback.hand_back_owed(USER)
 
     owed["mirror"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_what_a_hand_back_found_unchanged_is_recorded(owed):
+    owed["moved"].kept = ["old.md"]
+
+    await home_handback.hand_back_owed(USER)
+
+    assert owed["finish"].await_args.kwargs["kept"] == ["old.md"]
 
 
 @pytest.mark.asyncio
@@ -704,3 +717,39 @@ async def test_a_cleanup_that_fails_after_the_copy_is_recorded_raises_nothing():
     runtime.exec = AsyncMock(side_effect=ConnectionError("tunnel dropped"))
 
     await Moved(stage=(runtime, "/home/.handback-x")).clean_up()
+
+
+@pytest.mark.asyncio
+async def test_home_is_backed_up_on_the_computer_the_files_went_to(owed):
+    """Home moved since the hand-back first read its computer: the files
+    went where it is now, so that computer is the one backed up."""
+    owed["moved"].computer_id = "mac-2"
+
+    await home_handback.hand_back_owed(USER)
+
+    owed["mirror"].assert_awaited_once_with("mac-2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grown", [False, True], ids=["seed", "grown"])
+async def test_the_seed_check_reads_no_further_than_the_seed(grown):
+    """The notes file may have grown since its listing; the check stops one
+    byte past the seed rather than read it all into memory."""
+    from src.server.services.computer_manager._types import _SEEDED_AGENT_MD
+
+    seed = _SEEDED_AGENT_MD.encode()
+    read = []
+
+    class Runtime:
+        async def download_file_stream(self, path):
+            yield seed
+            read.append("seed")
+            if grown:
+                for _ in range(1000):
+                    read.append("more")
+                    yield b"x" * 65536
+
+    seeded = await home_handback_transfer._is_seeded(Runtime(), "/f", len(seed))
+
+    assert seeded is (not grown)
+    assert read.count("more") <= 1

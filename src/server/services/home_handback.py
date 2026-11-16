@@ -206,19 +206,21 @@ async def hand_back_owed(user_id: str) -> bool:
             user_id,
             previous=previous,
             through=through,
-            listed_at=moved.listed_at,
             record=record,
             carried=moved.carried,
+            kept=moved.kept,
             done=not moved.deferred,
         )
         # Recorded first: a cleanup that fails never repeats the copy.
         try:
             await moved.clean_up()
         finally:
-            if finished and moved.folder:
+            if finished and moved.folder and moved.computer_id:
                 # No turn of Home's backs up what landed, and a Home moved
                 # from its backup before one runs would come back without it.
-                await mirror_computer(str(home_computer["computer_id"]))
+                # The computer the files went to, which a move since the
+                # first read may have changed.
+                await mirror_computer(moved.computer_id)
         logger.info(
             "Handed %d file(s) of user %s's Home back from its stand-in into %s"
             " (%d too large, %d unreadable, %d next time)",

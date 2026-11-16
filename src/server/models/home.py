@@ -6,7 +6,7 @@ those turns wrote into Home once it is back (``services.home_handback``).
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -78,9 +78,18 @@ class HomePlacementResponse(BaseModel):
 
 class HomeHandbackOut(BaseModel):
     through: datetime = Field(description="The latest cloud turn this hand-back carried")
-    folder: str = Field(description="The folder in Home it filled")
+    folder: Optional[str] = Field(
+        None, description="The folder in Home it filled; null when it copied nothing"
+    )
     files: List[str] = Field(
         description="Paths, relative to the stand-in's folder, it carried there, sorted"
+    )
+    kept: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Paths it found as an earlier hand-back carried them, each with the"
+            " folder in Home the latest of those filled"
+        ),
     )
 
 

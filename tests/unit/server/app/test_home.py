@@ -199,16 +199,27 @@ async def test_handbacks_name_the_stand_in_and_each_folder_filled(client):
     from src.server.database.home_workspace import get_home_stand_in_id
 
     through = datetime(2026, 11, 15, 10, tzinfo=timezone.utc)
-    rows = [{"through": through, "folder": "From the cloud/2026-11-15", "files": ["a.md"]}]
-    with patch(f"{HOME}.list_handbacks", AsyncMock(return_value=rows)):
-        resp = await client.get("/api/v1/workspaces/home/handbacks")
+    rows = [
+        {"through": through, "folder": "From the cloud/2026-11-15", "files": ["a.md"]},
+        {"through": through, "folder": None, "files": [], "kept": {"a.md": "From the cloud/2026-11-15"}},
+    ]
+    listed = AsyncMock(return_value=rows)
+    with patch(f"{HOME}.list_handbacks", listed):
+        resp = await client.get(
+            "/api/v1/workspaces/home/handbacks", params={"since": "2026-11-15T09:00:00Z"}
+        )
+        missing = await client.get("/api/v1/workspaces/home/handbacks")
 
+    assert missing.status_code == 422
     assert resp.status_code == 200
+    listed.assert_awaited_once_with(USER, datetime(2026, 11, 15, 9, tzinfo=timezone.utc))
     body = resp.json()
     assert body["stand_in_workspace_id"] == get_home_stand_in_id(USER)
-    (handback,) = body["handbacks"]
+    handback, unchanged = body["handbacks"]
     assert handback["folder"] == "From the cloud/2026-11-15"
-    assert handback["files"] == ["a.md"]
+    assert handback["files"] == ["a.md"] and handback["kept"] == {}
+    assert unchanged["folder"] is None
+    assert unchanged["kept"] == {"a.md": "From the cloud/2026-11-15"}
     assert datetime.fromisoformat(handback["through"].replace("Z", "+00:00")) == through
 
 
