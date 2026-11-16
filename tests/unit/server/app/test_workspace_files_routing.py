@@ -582,6 +582,44 @@ async def test_bytes_from_the_backup_say_by_header_that_the_machine_is_away(away
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("link", ["https://store.example.com/report.pdf?sig=1", None])
+async def test_a_download_link_from_the_backup_says_the_machine_is_away(link):
+    """The browser follows a download link itself, so the header that marks a
+    backup download never reached the app, which saved the backup under the
+    live file's name unremarked. The link's answer says where it is from."""
+    from src.server.app.workspace_files.crud import workspace_file_download_url
+
+    with (
+        patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
+        patch(
+            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
+            AsyncMock(return_value=_mac_row("ws-away")),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owner_layout",
+            return_value=SimpleNamespace(workspace="/Users/me/langalpha/ws"),
+        ),
+        patch(
+            "src.server.services.workspace_files.computer_backs_up_files",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.services.workspace_files.workspace_has_backup",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.backup_download_link",
+            AsyncMock(return_value=link),
+        ),
+    ):
+        answer = await workspace_file_download_url(
+            workspace_id="ws-away", x_user_id="user-1", path="report.pdf", backup_ok=True
+        )
+
+    assert answer == {"url": link, "source": "database", "unreachable": "not_connected"}
+
+
+@pytest.mark.asyncio
 async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missing():
     """Written since the last backup, it may well be on the machine: a 404
     would say it is gone, so the machine's 503 stands."""
@@ -1255,6 +1293,44 @@ async def test_a_backup_read_refuses_an_always_hidden_path_as_a_live_read_does(r
 
 
 @pytest.mark.asyncio
+async def test_a_redacted_read_names_no_version_until_its_stamp_settles():
+    """A save naming a stamp not yet settled is held to its text's hash, which
+    a redacted read's text never matches: every save was refused as a change
+    nobody made. Such a read names no version until the stamp settles."""
+    import os
+    import tempfile
+    from contextlib import ExitStack
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from ptc_agent.core.sandbox.file_version import FileStamp
+    from src.server.app.workspace_files.crud import read_workspace_file
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        notes = Path(root, "notes.md")
+        notes.write_text("key = sk-live-0123456789abcdef0123\n")
+        sandbox = _LocalSandbox(root)
+        sandbox.runtime = _AsyncLocalShell()
+        row = _workspace("ws-live", "user-1", status="running")
+        with ExitStack() as stack:
+            for p in _save_patches(sandbox, row, root, notes):
+                stack.enter_context(p)
+            stack.enter_context(patch(
+                "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction",
+                AsyncMock(return_value={"API_KEY": "sk-live-0123456789abcdef0123"}),
+            ))
+            # Not settled however long the read takes to reach the file.
+            stack.enter_context(patch.object(FileStamp, "settled", return_value=False))
+            read = await read_workspace_file(
+                workspace_id="ws-live", x_user_id="user-1", path="notes.md",
+                offset=0, limit=100, unlimited=True,
+            )
+        assert "sk-live-0123456789abcdef0123" not in read["content"]
+        assert read["version"] is None
+
+
+@pytest.mark.asyncio
 async def test_a_save_from_a_stamp_not_yet_settled_is_held_to_the_texts_hash():
     """A file written within the clock's step shares its stamp with a later
     write of the same size, and the save took the stamp alone as proof the
@@ -1268,6 +1344,7 @@ async def test_a_save_from_a_stamp_not_yet_settled_is_held_to_the_texts_hash():
 
     from fastapi import HTTPException
 
+    from ptc_agent.core.sandbox.file_version import FileStamp
     from src.server.app.workspace_files.crud import (
         WriteFileRequest,
         read_workspace_file,
@@ -1284,11 +1361,12 @@ async def test_a_save_from_a_stamp_not_yet_settled_is_held_to_the_texts_hash():
         with ExitStack() as stack:
             for p in _save_patches(sandbox, row, root, notes):
                 stack.enter_context(p)
+            # Not settled however long the read takes to reach the file.
+            stack.enter_context(patch.object(FileStamp, "settled", return_value=False))
             read = await read_workspace_file(
                 workspace_id="ws-live", x_user_id="user-1", path="notes.md",
                 offset=0, limit=100, unlimited=True,
             )
-            # Just written, so not settled.
             assert read["version"].endswith("+u")
             with pytest.raises(HTTPException) as refused:
                 await write_workspace_file(

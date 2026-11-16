@@ -1476,6 +1476,39 @@ async def test_a_file_without_a_version_goes_whole(tree) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_range_the_live_read_gave_up_on_still_reaches_the_backup(tree) -> None:
+    """The warm read found no version and sent the live read for the whole
+    file; when that read failed over, the backup served the whole file to a
+    request for a slice."""
+    from fastapi.responses import Response
+
+    from src.server.services.workspace_files import FromBackup
+
+    async def live_then_backup(_ws_id, _workspace, live, backup, *, away_ok):
+        try:
+            return await live()
+        except SandboxTransientError:
+            return await backup(FromBackup())
+
+    from_backup = AsyncMock(return_value=Response(status_code=206))
+    crud = "src.server.app.workspace_files.crud"
+    with (
+        patch(f"{crud}._warm_range_response", AsyncMock(return_value=(True, None))),
+        patch(
+            f"{crud}._download_live",
+            AsyncMock(side_effect=SandboxTransientError("machine away")),
+        ) as whole,
+        patch(f"{crud}.files_from", live_then_backup),
+        patch(f"{crud}.download_from_backup", from_backup),
+    ):
+        response = await _ranged_download(tree, "bytes=0-3")
+
+    assert response.status_code == 206
+    assert whole.await_args.args[4] is None
+    assert from_backup.await_args.args[5] == (0, 3)
+
+
+@pytest.mark.asyncio
 async def test_a_file_that_changed_mid_read_is_a_503_to_retry(tree) -> None:
     """Not the sandbox-unreachable answer: the sandbox is fine, the file moved."""
     changed = AsyncMock(side_effect=FileChangedWhileRead("work/chart.png"))

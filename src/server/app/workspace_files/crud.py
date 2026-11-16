@@ -550,6 +550,14 @@ async def _read_live(
 
     record_fs_bytes("read", len(raw_bytes))
 
+    # A save naming a stamp that had not settled is checked by the hash of its
+    # text alone, which holds only for text that is the bytes on the machine:
+    # redacted or decoded from another charset, it never matches, so such a
+    # read names no version until the stamp settles.
+    version = None
+    if read.stamp is not None and (read.settled or text_content.encode("utf-8") == raw_bytes):
+        version = read.stamp.edit_version(settled=read.settled)
+
     return {
         "workspace_id": workspace_id,
         "path": client_path,
@@ -560,9 +568,7 @@ async def _read_live(
         "truncated": truncated,
         # Of the bytes on the machine, before redaction: what a save names
         # as the text it edited.
-        "version": (
-            read.stamp.edit_version(settled=read.settled) if read.stamp is not None else None
-        ),
+        "version": version,
     }
 
 
@@ -909,23 +915,24 @@ async def download_workspace_file(
         )
 
     async def live() -> Response:
-        nonlocal byte_range
-        if byte_range is not None:
+        # Local, so a backup taking over after this still serves the range.
+        live_range = byte_range
+        if live_range is not None:
             candidate = contained_absolute_path(path, work_dir, previous_dirs)
             if candidate is not None and not is_text_content_type(
                 resolve_content_type(candidate.rsplit("/", 1)[-1])
             ):
                 settled, ranged = await _warm_range_response(
-                    workspace, workspace_id, candidate, work_dir, byte_range, disposition
+                    workspace, workspace_id, candidate, work_dir, live_range, disposition
                 )
                 if ranged is not None:
                     return ranged
                 if settled:
                     # The file goes whole, which another ranged read would only
                     # find again.
-                    byte_range = None
+                    live_range = None
         return await _download_live(
-            workspace_id, x_user_id, request, path, byte_range, disposition
+            workspace_id, x_user_id, request, path, live_range, disposition
         )
 
     async def backup(source: FromBackup) -> Response:
@@ -1155,10 +1162,13 @@ async def workspace_file_download_url(
                 raise HTTPException(status_code=404, detail="File not found") from None
         return {"url": url}
 
-    async def backup(_source: FromBackup) -> dict[str, str | None]:
+    async def backup(source: FromBackup) -> dict[str, str | None]:
         # No link for a file the backup lacks: /files/download then says
-        # what the machine's failure is.
-        return {"url": await backup_download_link(workspace, path, work_dir, previous_dirs)}
+        # what the machine's failure is. The answer says it is the backup's
+        # either way, since a download the browser makes itself never sees
+        # /files/download's header.
+        url = await backup_download_link(workspace, path, work_dir, previous_dirs)
+        return {"url": url, **source.marks}
 
     return await files_from(workspace_id, workspace, live, backup, away_ok=backup_ok)
 
