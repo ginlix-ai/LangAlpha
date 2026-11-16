@@ -71,12 +71,14 @@ class CredentialPayer(NamedTuple):
 class IdleCompactConfig(BaseModel):
     """Compaction of a thread idle after a turn, while its prompt cache is
     warm, on routes whose cache entries live an hour (see
-    ``compaction.rebuild.TurnStartRebuilds.idle``). On only with the
+    ``compaction.rebuild.TurnStartRebuilds.idle``, and for a Claude Code
+    session ``CompactionRules.idle_plan``). On only with the
     ``idle_compaction`` feature (``src.config.features``)."""
 
     #: The least context an idle thread is summarized at keeping its tail
-    #: (I2); None takes ``cold_compact_tokens``. Never where the user turned
-    #: the summary after a break off (see ``CompactionConfig.idle_tokens``).
+    #: (I2), and a Claude Code session compacted at; None takes
+    #: ``cold_compact_tokens``. Never where the user turned the summary after
+    #: a break off (see ``CompactionConfig.idle_tokens``).
     threshold_tokens: int | None = Field(default=None, ge=0)
     #: How long before the cache entry the summary reads expires it fires:
     #: a minute past the five a firing is given up at, so a sweep or two can

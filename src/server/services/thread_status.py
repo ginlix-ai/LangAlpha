@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
+    read_claude_session,
     turn_base_checkpoint_id,
 )
 
@@ -68,24 +69,6 @@ NEXT_SUMMARY_READ_TIMEOUT_S = 1.0
 UNREAD = object()
 
 
-async def _claude_session(thread_id: str, checkpoint_id: Optional[str]) -> dict:
-    """Claude's session records at ``checkpoint_id`` (the newest when None),
-    replayed from the checkpoints' writes: the channel keeps no value of its
-    own in a checkpoint, so a raw read of one has none."""
-    from langgraph.graph import START, StateGraph
-
-    from ptc_agent.agent.claude_code.session import SessionState
-
-    graph = (
-        StateGraph(SessionState)
-        .add_node("noop", lambda state: {})
-        .add_edge(START, "noop")
-        .compile(checkpointer=get_checkpointer())
-    )
-    snapshot = await graph.aget_state(build_checkpoint_config(thread_id, checkpoint_id))
-    return snapshot.values.get("claude_session") or {}
-
-
 async def read_next_summary(
     thread_id: str,
     *,
@@ -112,7 +95,7 @@ async def read_next_summary(
     from src.server.contracts.run_times import run_settled_at
     from src.server.database.runs import lifecycle as tl_db
     from src.server.services.runs.pending_input import cache_clock_attempt
-    from ptc_agent.agent.claude_code.session import RULES_KEY
+    from ptc_agent.agent.claude_code.session import claude_code_rules
     from ptc_agent.agent.middleware.compaction.rebuild import next_summary
 
     try:
@@ -123,10 +106,8 @@ async def read_next_summary(
             if values is None:
                 base = await turn_base_checkpoint_id(get_checkpointer(), thread_id)
                 values = extract_state_values(await get_checkpoint_tuple(thread_id, base))
-            rules = values.get(RULES_KEY)
-            if rules and rules.get("at", 0) < (values.get("_last_model_response_at") or 0):
-                rules = None
-            records = await _claude_session(thread_id, base) if rules else None
+            rules = claude_code_rules(values)
+            records = await read_claude_session(thread_id, base) if rules else None
             clock = await cache_clock_attempt(thread_id, latest)
         settled_at = run_settled_at(clock)
         if rules:
