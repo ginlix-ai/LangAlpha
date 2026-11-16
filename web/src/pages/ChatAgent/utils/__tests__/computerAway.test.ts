@@ -59,7 +59,7 @@ describe('computerAway', () => {
     expect(awayRetryMessage(away, t, linux)).toBe('filePanel.away.retryNamed:lab-box');
     expect(awayRetryMessage(away, t, awayMachineOf(null))).toBe('filePanel.away.retry');
     expect(awayRetryMessage(refused(503, { 'x-computer-unreachable': 'gateway_unreachable' }), t, sshMac))
-      .toBe('filePanel.away.service');
+      .toBe('filePanel.away.retryService');
     expect(awayRetryMessage(refused(500), t, sshMac)).toBeNull();
   });
 
@@ -78,7 +78,7 @@ describe('computerAway', () => {
       title: 'chat.computerUnreachable.titleNamed:lab-box', detail: 'chat.computerUnreachable.checkNamed:lab-box',
     });
     expect(unreachableTurnCopy(t, 'gateway_unreachable', remoteMac)).toEqual({
-      title: 'chat.computerUnreachable.titleService', detail: 'chat.computerUnreachable.service',
+      title: 'chat.computerUnreachable.titleService', detail: 'chat.computerUnreachable.checkService',
     });
   });
 });

@@ -2238,7 +2238,7 @@
       "checkMac": "Wake your Mac and check that it's online, then try again.",
       "checkNamed": "Check that {{name}} is on and online, then try again.",
       "check": "Check that the computer is on and online, then try again.",
-      "service": "The service that connects your computers isn't answering right now. Try again in a moment."
+      "checkService": "The service that connects your computers isn't answering right now. Try again in a moment."
     },
     "autoRetryExhausted": "This reply didn't go through after a few tries. Try again in a moment.",
     "forkStaleEdit": "This chat changed somewhere else, so it was refreshed. Your edited message is ready to send again.",
@@ -3063,11 +3063,13 @@
       "retryMac": "Can't reach your Mac right now. Try again once it's awake and online.",
       "retryNamed": "Can't reach {{name}} right now. Try again once it's on and online.",
       "retry": "Can't reach this workspace's computer right now. Try again once it's on and online.",
-      "service": "Can't reach the computer right now. Try again in a moment.",
+      "retryService": "Can't reach the computer right now. Try again in a moment.",
       "backupMac": "Can't reach your Mac, so these are its backed-up files. They go live again once it's back.",
       "backupNamed": "Can't reach {{name}}, so these are its backed-up files. They go live again once it's back.",
       "backup": "Can't reach this workspace's computer, so these are its backed-up files. They go live again once it's back.",
-      "backupService": "Can't reach the computer right now, so these are its backed-up files."
+      "backupService": "Can't reach the computer right now, so these are its backed-up files.",
+      "downloadedBackup": "Download started: {{name}}, from its backup. Can't reach this workspace's computer, so it may be older than the copy there.",
+      "downloadedBackupService": "Download started: {{name}}, from its backup. Can't reach the computer right now, so it may be older than the copy there."
     },
     "backupFiles": "Backup files to database",
     "backupOff": "File backup is off for this computer.",

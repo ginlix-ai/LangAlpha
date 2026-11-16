@@ -158,9 +158,9 @@ describe('categorizeFileError', () => {
       });
     });
 
-    it('keeps the service gateway being down, which is not the machine, as unavailable', () => {
-      expect(categorizeFileError(withCode('gateway_unreachable', 'Sandbox is not reachable: x')).category)
-        .toBe('sandbox_unavailable');
+    it('reads the service gateway being down by its code too, which words it for the service', () => {
+      expect(categorizeFileError(withCode('gateway_unreachable', 'Sandbox is not reachable: x')))
+        .toMatchObject({ category: 'computer_unreachable', code: 'gateway_unreachable' });
     });
 
     it('does not read a machine named "starting" as a sandbox starting', () => {

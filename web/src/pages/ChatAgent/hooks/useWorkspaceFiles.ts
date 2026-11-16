@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
 import { listWorkspaceFiles, type ReadFrom } from '../utils/api';
 import { apiErrorDetail, apiErrorStatus } from '@/api/errors';
-import { AWAY_REFETCH_MS, backupCode, unreachableCode } from '../utils/computerAway';
+import { awayRefetch, backupCode, unreachableCode } from '../utils/computerAway';
 
 interface UseWorkspaceFilesOptions {
   includeSystem?: boolean;
@@ -78,8 +78,9 @@ export function useWorkspaceFiles(
     staleTime: 30_000,
     // A computer that went away comes back by itself, so its listing is asked
     // for again until it answers live. Never by `refresh`, which would start
-    // a stopped one.
-    refetchInterval: (q) => (awayOf(q.state.data?.from, q.state.error) ? AWAY_REFETCH_MS : false),
+    // a stopped one. A backup still on screen keeps it asking past a failed
+    // poll, as an open file does.
+    refetchInterval: (q) => awayRefetch(q, unreachableCode(q.state.error) ?? backupCode(q.state.data?.from)),
   });
 
   const away = useMemo(() => awayOf(data?.from, error), [data?.from, error]);

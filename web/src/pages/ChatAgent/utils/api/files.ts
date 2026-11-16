@@ -84,6 +84,14 @@ export async function downloadWorkspaceFile(
   filePath: string,
   onProgress?: DownloadProgressReport,
 ) {
+  return (await downloadWorkspaceBlob(workspaceId, filePath, onProgress)).href;
+}
+
+async function downloadWorkspaceBlob(
+  workspaceId: string,
+  filePath: string,
+  onProgress?: DownloadProgressReport,
+): Promise<{ href: string; from: ReadFrom }> {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
     params: { path: filePath, ...BACKUP_OK },
     responseType: 'blob',
@@ -91,7 +99,7 @@ export async function downloadWorkspaceFile(
       ? (event) => { if (event.total) onProgress(event.loaded / event.total); }
       : undefined,
   });
-  return URL.createObjectURL(response.data as Blob);
+  return { href: URL.createObjectURL(response.data as Blob), from: readFromHeaders(response.headers) };
 }
 
 /**
@@ -261,18 +269,22 @@ async function saveWorkspaceFile(
   // A large file is handed out as a short-lived storage link the browser
   // streams to disk itself; buffering it as a blob would hold the whole file
   // in tab memory. A null url means the file is small enough to fetch here.
-  const { data } = await api.get<{ url: string | null }>(
+  const { data } = await api.get<{ url: string | null; source?: string; unreachable?: string }>(
     `/api/v1/workspaces/${workspaceId}/files/download-url`,
     { params: { path: filePath, ...BACKUP_OK } },
   );
   // Without a bearer token the download route itself is a plain GET, so the
   // browser can stream it to disk too; with one, only a blob can carry it.
+  // A download the browser makes never shows its header here, so where it
+  // comes from is read off this answer; a blob says by its own header.
   const direct = data?.url ?? (isPlatformMode ? null : directDownloadUrl(workspaceId, filePath));
-  const href = direct ?? (await downloadWorkspaceFile(workspaceId, filePath, report));
+  const blob = direct ? null : await downloadWorkspaceBlob(workspaceId, filePath, report);
+  const href = direct ?? blob!.href;
+  const from = blob?.from ?? readFromBody(data);
   // Signed out while this was being prepared: the file is the last account's.
   if (!current()) {
     if (!direct) URL.revokeObjectURL(href);
-    return;
+    return LIVE;
   }
   const a = document.createElement('a');
   a.href = href;
@@ -281,6 +293,7 @@ async function saveWorkspaceFile(
   a.click();
   document.body.removeChild(a);
   if (!direct) URL.revokeObjectURL(href);
+  return from;
 }
 
 function directDownloadUrl(workspaceId: string, filePath: string): string {

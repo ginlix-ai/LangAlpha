@@ -269,4 +269,33 @@ describe('useWorkspaceFiles', () => {
       vi.useRealTimers();
     }
   });
+  it('keeps asking for a backup listing past a poll the network dropped', async () => {
+    vi.useFakeTimers();
+    try {
+      const network = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' });
+      mockListFiles
+        .mockResolvedValueOnce({ files: ['old.md'], from: { kind: 'backup', unreachable: 'not_connected' } })
+        .mockRejectedValueOnce(network)
+        .mockResolvedValue({ files: ['live.md'], from: { kind: 'live' } });
+
+      const queryClient = createFastRetryClient();
+      const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'), { queryClient });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mockListFiles).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mockListFiles).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(result.current.files).toEqual(['live.md']);
+      expect(result.current.away).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

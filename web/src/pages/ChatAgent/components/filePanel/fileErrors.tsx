@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
 import { downloadLabel, type DownloadState } from '../../utils/downloadNotice';
-import { isMachineCode, unreachableCode } from '../../utils/computerAway';
+import { unreachableCode } from '../../utils/computerAway';
 
 // --- File error categorization ---
 
@@ -57,14 +57,10 @@ export function categorizeFileError(err: unknown, wsStatus?: string): FileError 
       return { category: 'binary_file', detail };
     case 503: {
       // The server names an owner's machine that did not answer in a header,
-      // so its name (one called "starting-mac") is never read as a state.
-      // The service's own gateway being down is not the machine's doing.
+      // so its name (one called "starting-mac") is never read as a state. Its
+      // code words the error, the service's own gateway included.
       const code = unreachableCode(err);
-      if (code) {
-        return isMachineCode(code)
-          ? { category: 'computer_unreachable', detail, code }
-          : { category: 'sandbox_unavailable', detail };
-      }
+      if (code) return { category: 'computer_unreachable', detail, code };
       if (detail.toLowerCase().includes('starting')) {
         return { category: 'sandbox_starting', detail };
       }

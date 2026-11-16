@@ -74,6 +74,15 @@ describe('FilePanel editing while the computer is away', () => {
     expect(screen.queryByTitle('Edit file')).toBeNull();
   });
 
+  it('words a file the gateway could not serve as the listing does', async () => {
+    vi.mocked(readWorkspaceFile).mockRejectedValue({
+      response: { status: 503, headers: { 'x-computer-unreachable': 'gateway_unreachable' }, data: { detail: 'x' } },
+    });
+    renderWithProviders(panel());
+
+    expect(await screen.findByText("Can't reach the computer right now. Try again in a moment.")).toBeTruthy();
+  });
+
   it('refuses to open the editor on a full read the backup answered', async () => {
     vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
     vi.mocked(readWorkspaceFileFull).mockResolvedValue(FULL_FROM_BACKUP);
