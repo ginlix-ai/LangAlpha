@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -75,8 +76,10 @@ _ASKED_OTHERWISE = (
     "reply under each comment."
 )
 
-_ANCHOR_KINDS = frozenset({"element", "text", "named", "area"})
+_ANCHOR_KINDS = frozenset({"element", "text", "named", "block"})
 _ANCHOR_FIELDS = (
+    ("lines", "lines"),
+    ("page", "page"),
     ("path", "path"),
     ("label", "label"),
     ("quote", "quote"),
@@ -152,7 +155,7 @@ def _render_area(anchor: dict[str, Any]) -> list[str]:
     for element in elements:
         parts = [
             f"<{key}>{text}</{key}>"
-            for key in ("path", "label", "quote")
+            for key in ("lines", "path", "label", "quote")
             if (text := _text(element.get(key)))
         ]
         if parts:
@@ -164,17 +167,52 @@ def _render_area(anchor: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _render_anchor(anchor: dict[str, Any]) -> list[str]:
+def _sheet(anchor: dict[str, Any]) -> str | None:
+    """The sheet's name as the workbook spells it: spaces at its ends are part
+    of it, and the agent opens the sheet by it."""
+    sheet = anchor.get("sheet")
+    return sheet if isinstance(sheet, str) and sheet.strip() else None
+
+
+def _render_cells(anchor: dict[str, Any]) -> list[str]:
+    """Cells: the sheet, the ranges together, and their values in that order,
+    one per range, so a range that showed nothing still holds its place."""
+    lines = ['<anchor kind="cells">']
+    if sheet := _sheet(anchor):
+        lines.append(f"<sheet>{_data(sheet)}</sheet>")
+    ranges = [
+        (name, _text(r.get("values")))
+        for r in anchor.get("ranges") or []
+        if isinstance(r, dict) and (name := _text(r.get("range")))
+    ]
+    if ranges:
+        lines.append(f"<range>{', '.join(name for name, _ in ranges)}</range>")
+    if any(values for _, values in ranges):
+        shown = " · ".join(values or "(blank)" for _, values in ranges)
+        lines.append(f"<values>{shown}</values>")
+    lines.append("</anchor>")
+    return lines if len(lines) > 2 else []
+
+
+def _render_generic(anchor: dict[str, Any]) -> list[str]:
     kind = anchor.get("kind")
-    if kind == "area":
-        return _render_area(anchor)
-    opening = f'<anchor kind="{kind}">' if kind in _ANCHOR_KINDS else "<anchor>"
-    lines = [opening]
+    lines = [f'<anchor kind="{kind}">' if kind in _ANCHOR_KINDS else "<anchor>"]
     for key, tag in _ANCHOR_FIELDS:
-        if text := _text(anchor.get(key)):
+        value = anchor.get(key)
+        # A PDF page is a number; every other field is text.
+        if key == "page" and isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)
+        if text := _text(value):
             lines.append(f"<{tag}>{text}</{tag}>")
     lines.append("</anchor>")
     return lines if len(lines) > 2 else []
+
+
+_RENDERERS = {"area": _render_area, "cells": _render_cells}
+
+
+def _render_anchor(anchor: dict[str, Any]) -> list[str]:
+    return _RENDERERS.get(anchor.get("kind"), _render_generic)(anchor)
 
 
 def _render_file(comment: ClaimedComment, place: FilePlace | None) -> str:
@@ -234,8 +272,30 @@ def render_message(
     return f"{note.rstrip()}\n\n{body}" if note.strip() else body
 
 
+def _cells_place(anchor: dict[str, Any]) -> str | None:
+    """Cells by where they are, as the sheet names them: "Model!B2:C2, D3:D6",
+    or the ranges alone in a CSV, as the file's comment list says it."""
+    names = ", ".join(
+        r["range"]
+        for r in anchor.get("ranges") or []
+        if isinstance(r, dict) and isinstance(r.get("range"), str)
+    )
+    if not names:
+        return None
+    sheet = _sheet(anchor)
+    if sheet is None:
+        return names
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", sheet):
+        sheet = "'" + sheet.replace("'", "''") + "'"
+    return f"{sheet}!{names}"
+
+
 def _shown_anchor(anchor: dict[str, Any], key: str) -> str | None:
-    value = anchor.get(key)
+    # Cells have no label of their own: their place is what names them.
+    if key == "label" and anchor.get("kind") == "cells":
+        value = _cells_place(anchor)
+    else:
+        value = anchor.get(key)
     if not isinstance(value, str) or not value.strip():
         return None
     return _clip(" ".join(value.split()), _SHOWN_ANCHOR_CHARS)

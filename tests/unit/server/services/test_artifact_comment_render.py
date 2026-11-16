@@ -143,3 +143,146 @@ def test_the_chat_names_an_area_by_its_parts():
         "reports/q3/index.html",
         "Q3 margins",
     )
+
+
+def test_a_markdown_block_renders_its_lines_label_and_quote():
+    anchor = {
+        "kind": "block",
+        "lines": "14-15",
+        "label": "Margin outlook",
+        "quote": "We model 61.5% for Q3, 50 bp under…",
+    }
+    assert "\n".join(_render_anchor(anchor)) == (
+        '<anchor kind="block">\n<lines>14-15</lines>\n<label>Margin outlook</label>\n'
+        "<quote>We model 61.5% for Q3, 50 bp under…</quote>\n</anchor>"
+    )
+
+
+def test_words_say_their_lines_or_page_before_the_quote():
+    on_lines = {
+        "kind": "text",
+        "lines": "7",
+        "label": "Margin outlook",
+        "quote": "61.5%",
+        "prefix": "We model",
+        "suffix": "for Q3",
+    }
+    assert _render_anchor(on_lines) == [
+        '<anchor kind="text">',
+        "<lines>7</lines>",
+        "<label>Margin outlook</label>",
+        "<quote>61.5%</quote>",
+        "<before>We model</before>",
+        "<after>for Q3</after>",
+        "</anchor>",
+    ]
+    on_page = {"kind": "text", "page": 3, "quote": "net revenue"}
+    assert _render_anchor(on_page) == [
+        '<anchor kind="text">',
+        "<page>3</page>",
+        "<quote>net revenue</quote>",
+        "</anchor>",
+    ]
+
+
+def test_cells_render_their_sheet_ranges_and_values():
+    anchor = {
+        "kind": "cells",
+        "sheet": "Model",
+        "ranges": [
+            {"range": "D3:D6", "values": "338, 231, 196, 519"},
+            {"range": "D10", "values": "0.94"},
+        ],
+    }
+    assert "\n".join(_render_anchor(anchor)) == (
+        '<anchor kind="cells">\n<sheet>Model</sheet>\n<range>D3:D6, D10</range>\n'
+        "<values>338, 231, 196, 519 · 0.94</values>\n</anchor>"
+    )
+    csv = {"kind": "cells", "ranges": [{"range": "B2", "values": "41%"}]}
+    assert _render_anchor(csv) == [
+        '<anchor kind="cells">',
+        "<range>B2</range>",
+        "<values>41%</values>",
+        "</anchor>",
+    ]
+
+
+def test_a_range_that_showed_nothing_keeps_its_place_among_the_values():
+    anchor = {
+        "kind": "cells",
+        "sheet": "Q3 ",
+        "ranges": [{"range": "C2:C5"}, {"range": "D3", "values": "0.94"}],
+    }
+    assert _render_anchor(anchor) == [
+        '<anchor kind="cells">',
+        "<sheet>Q3 </sheet>",
+        "<range>C2:C5, D3</range>",
+        "<values>(blank) · 0.94</values>",
+        "</anchor>",
+    ]
+    blank = {"kind": "cells", "ranges": [{"range": "C2:C5"}, {"range": "D3"}]}
+    assert _render_anchor(blank) == [
+        '<anchor kind="cells">',
+        "<range>C2:C5, D3</range>",
+        "</anchor>",
+    ]
+
+
+def test_the_chat_names_cells_by_their_place():
+    sheet = {
+        "kind": "cells",
+        "sheet": "Model",
+        "ranges": [{"range": "B2:C2", "values": "1, 2"}, {"range": "D3:D6"}],
+    }
+    spaced = {"kind": "cells", "sheet": "Q3 ", "ranges": [{"range": "B2"}]}
+    csv = {"kind": "cells", "ranges": [{"range": "B2", "values": "41%"}]}
+    shown = shown_send(
+        "",
+        [_comment(anchor=a) for a in (sheet, spaced, csv)],
+        reading="chat",
+    ).model_dump(mode="json")
+    assert [(c["label"], c["quote"]) for c in shown["comments"]] == [
+        ("Model!B2:C2, D3:D6", None),
+        ("'Q3 '!B2", None),
+        ("B2", None),
+    ]
+
+
+def test_an_area_of_markdown_blocks_lists_each_blocks_lines_first():
+    anchor = {
+        "kind": "area",
+        "label": "Revenue ($M), Gross margin",
+        "elements": [
+            {"lines": "11", "label": "Revenue ($M)", "quote": "Revenue ($M) | 338"},
+            {"lines": "12", "label": "Gross margin", "quote": "Gross margin | 61%"},
+        ],
+        "count": 2,
+    }
+    assert _render_anchor(anchor) == [
+        '<anchor kind="area">',
+        "<label>Revenue ($M), Gross margin</label>",
+        "<element><lines>11</lines><label>Revenue ($M)</label>"
+        "<quote>Revenue ($M) | 338</quote></element>",
+        "<element><lines>12</lines><label>Gross margin</label>"
+        "<quote>Gross margin | 61%</quote></element>",
+        "</anchor>",
+    ]
+
+
+def test_a_page_s_anchors_render_as_they_always_have():
+    element = {
+        "kind": "element",
+        "path": "#margin",
+        "label": "Margin",
+        "quote": "41%",
+        "point": {"x": 0.5, "y": 0.5},
+    }
+    assert "\n".join(_render_anchor(element)) == (
+        '<anchor kind="element">\n<path>#margin</path>\n<label>Margin</label>\n'
+        "<quote>41%</quote>\n</anchor>"
+    )
+    words = {"kind": "text", "path": "#p", "quote": "beat", "prefix": "a", "suffix": "b"}
+    assert "\n".join(_render_anchor(words)) == (
+        '<anchor kind="text">\n<path>#p</path>\n<quote>beat</quote>\n'
+        "<before>a</before>\n<after>b</after>\n</anchor>"
+    )
