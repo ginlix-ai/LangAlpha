@@ -236,8 +236,8 @@ async def test_a_failed_start_is_on_the_row_before_its_frame_goes_out(row):
     starting = {**row, "status": "starting"}
     settled = {**row, "status": "stopped", "start_failure": stored}
 
-    async def record(computer_id, exc, *, kind):
-        events.append(("record", kind))
+    async def record(computer_id, exc):
+        events.append(("record", computer_id))
 
     async def publish(computer_id, status, *, extra):
         events.append(("publish", status, extra))
@@ -250,7 +250,7 @@ async def test_a_failed_start_is_on_the_row_before_its_frame_goes_out(row):
     ):
         await computers._report_start_failure(COMPUTER_ID, RuntimeError("boom"))
 
-    assert events[0] == ("record", "ssh")
+    assert events[0] == ("record", COMPUTER_ID)
     kind, status, extra = events[1]
     assert (kind, status) == ("publish", "error")
     assert extra["start_failure"]["code"] == "folder_marked"

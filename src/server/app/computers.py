@@ -368,7 +368,7 @@ async def _report_start_failure(computer_id: str, exc: Exception) -> None:
                 computer_id, "stopped", expected="starting"
             )
             if settled is not None:
-                await record_start_failure(computer_id, exc, kind=settled["kind"])
+                await record_start_failure(computer_id, exc)
             row = await get_computer(computer_id)
         failure = start_failure_from_row(row) if row is not None else None
         if failure is not None:

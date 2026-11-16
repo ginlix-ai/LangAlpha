@@ -36,7 +36,7 @@ _REINSTALL_CODES = frozenset({SSHFolderMarked.code_name, "root_dir"})
 _RECONNECT_CODES = frozenset({"paired_elsewhere", "auth_failed", "host_key_mismatch"})
 
 
-def remedy_for(code: str, *, kind: str) -> StartFailureRemedy:
+def remedy_for(code: str, *, kind: Optional[str]) -> StartFailureRemedy:
     """The repair the client offers for *code*. Only a machine its owner
     brought can be reinstalled or paired again; any other is retried."""
     if kind == SSH_KIND and code in _REINSTALL_CODES:
@@ -46,8 +46,9 @@ def remedy_for(code: str, *, kind: str) -> StartFailureRemedy:
     return "retry"
 
 
-def describe_start_failure(exc: BaseException, *, kind: str) -> Dict[str, Any]:
-    """The failure as the row keeps it, without ``at``, which the write stamps.
+def describe_start_failure(exc: BaseException) -> Dict[str, Any]:
+    """The failure as the row keeps it, without ``at``, which the write
+    stamps, nor the remedy, which a read derives (``start_failure_from_row``).
 
     An SSH machine's own sentence is the owner's to read; any other failure
     is told in the words a start route answers it with, which never carry
@@ -66,17 +67,10 @@ def describe_start_failure(exc: BaseException, *, kind: str) -> Dict[str, Any]:
         code = START_FAILED
         detail = sandbox_failure_http(exc).detail
         message = detail if isinstance(detail, str) else str(detail)
-    return {
-        "code": code,
-        "message": message,
-        "owner": owner,
-        "remedy": remedy_for(code, kind=kind),
-    }
+    return {"code": code, "message": message, "owner": owner}
 
 
-async def record_start_failure(
-    computer_id: Optional[str], exc: BaseException, *, kind: str
-) -> None:
+async def record_start_failure(computer_id: Optional[str], exc: BaseException) -> None:
     """Record *exc* as the computer's last failed start, best effort.
 
     Called from a start's failure path, which goes on to raise the start's
@@ -84,7 +78,7 @@ async def record_start_failure(
     """
     if not computer_id:
         return
-    failure = describe_start_failure(exc, kind=kind)
+    failure = describe_start_failure(exc)
     try:
         await record_computer_start_failure(computer_id, failure)
     except Exception:
@@ -99,16 +93,16 @@ async def record_start_failure(
 def start_failure_from_row(row: Dict[str, Any]) -> Optional[StartFailure]:
     """The row's last failed start, None when there is none or it does not parse.
 
-    The remedy is derived again from the code, so a failure recorded under an
-    older rule (a sleeping machine sent back through pairing) offers the fix
-    the server would choose now.
+    The remedy is derived from the code here, so a failure offers the fix
+    the server would choose now, one recorded under an older rule (which
+    stored its own) included.
     """
     value = row.get("start_failure")
     if not isinstance(value, dict):
         return None
-    kind = row.get("kind")
-    if kind and isinstance(value.get("code"), str):
-        value = {**value, "remedy": remedy_for(value["code"], kind=kind)}
+    code = value.get("code")
+    if isinstance(code, str):
+        value = {**value, "remedy": remedy_for(code, kind=row.get("kind"))}
     try:
         return StartFailure.model_validate(value)
     except ValueError:

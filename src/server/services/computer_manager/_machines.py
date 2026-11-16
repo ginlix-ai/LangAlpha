@@ -998,7 +998,7 @@ class MachineLifecycleMixin:
             # cancel is a shutdown or a dropped client, not the machine's.
             if not isinstance(e, asyncio.CancelledError):
                 await asyncio.shield(
-                    record_start_failure(computer_id, e, kind=computer["kind"])
+                    record_start_failure(computer_id, e)
                 )
             # CancelledError is a BaseException: a client dropping mid
             # provision would otherwise leave the machine at 'starting'

@@ -4334,7 +4334,7 @@ class TestALazyStartKeepsWhyBeforeItReverts(_Base):
             (
                 f"{_LIFECYCLE}.update_computer_status",
                 lambda m, f: m._release_lost_lazy_start(
-                    "comp-1", "sandbox-abc", failure=f, kind="ssh"
+                    "comp-1", "sandbox-abc", failure=f
                 ),
             ),
             (f"{_LIFECYCLE}.update_workspace_status", _lazy),
@@ -4349,7 +4349,7 @@ class TestALazyStartKeepsWhyBeforeItReverts(_Base):
         order: list[str] = []
         failure = RuntimeError("boom")
 
-        async def _record(computer_id, exc, *, kind):
+        async def _record(computer_id, exc):
             assert (computer_id, exc) == ("comp-1", failure)
             order.append("record")
 
