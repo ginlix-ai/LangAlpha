@@ -52,6 +52,12 @@ interface PickOverlaysProps {
   picked: FrameRect | null;
   /** The area of the draft, or of the comment whose card is open; null while the pins are out. */
   area: FrameRect | null;
+  /**
+   * The parts of an area one by one, where the page reports them so: the
+   * draft's as picked (`picked`), or those of the comment whose card is open
+   * (`marked`). Drawn instead of the area's one outline.
+   */
+  parts: { rects: FrameRect[]; tone: 'picked' | 'marked' } | null;
   scrolling: boolean;
   /** Words selected outside comment mode, which the chip offers; null while a draft's box is open. */
   selection: PagePick | null;
@@ -67,7 +73,7 @@ interface PickOverlaysProps {
  * and the chip that offers to comment on words selected outside the mode.
  */
 export function PickOverlays({
-  mode, boxOpen, hover, areaDrag, picked, area: settledArea, scrolling, selection, size, drafting, onComment,
+  mode, boxOpen, hover, areaDrag, picked, area: settledArea, parts, scrolling, selection, size, drafting, onComment,
 }: PickOverlaysProps): React.ReactElement {
   const { t } = useTranslation();
   const liveArea = mode ? areaDrag : null;
@@ -171,6 +177,21 @@ export function PickOverlays({
           }}
         />
       )}
+
+      {parts?.rects.map((r, i) => (
+        <div
+          // A part has no id here; by its place, each outline glides as the parts move.
+          key={i}
+          className="page-comments-part"
+          data-tone={parts.tone}
+          data-still={scrolling || undefined}
+          style={{
+            transform: `translate(${r.x - AREA_PAD}px, ${r.y - AREA_PAD}px)`,
+            width: r.width + 2 * AREA_PAD,
+            height: r.height + 2 * AREA_PAD,
+          }}
+        />
+      ))}
 
       <AnimatePresence custom={drafting}>
         {chip && selection && (

@@ -23,11 +23,13 @@
 /** @typedef {{ node: Text, box: DOMRect | null }} BridgeRun */
 // The viewer's anchor as the page-side code reads it: its fields are checked
 // where they are used, since a stored anchor may be of any shape.
-/** @typedef {{ kind: string, path?: any, quote?: any, prefix?: any, suffix?: any, elements?: any }} BridgeAnchor */
+/** @typedef {{ kind: string, path?: any, quote?: any, prefix?: any, suffix?: any, elements?: any, count?: any }} BridgeAnchor */
 /** @typedef {{ el?: Element, els?: Element[], range?: Range }} BridgeHit */
-/** @typedef {{ id: string, anchor: BridgeAnchor, hit: BridgeHit | null, mark: boolean }} BridgeTracked */
-/** @typedef {{ id: number, press: number, on: boolean, moved: boolean, text: boolean, glyph: BridgeGlyph | null, x: number, y: number, cx: number, cy: number, selecting?: boolean, dropped?: boolean }} BridgeDrag */
-/** @typedef {{ id: number, target: EventTarget | null, cx: number, cy: number }} BridgeHeld */
+/** @typedef {{ id: string, anchor: BridgeAnchor, hit: BridgeHit | null, mark: boolean, draft: boolean }} BridgeTracked */
+// `extend`: a modifier was held at the press, so what it picks joins the
+// draft's parts rather than starting a new comment.
+/** @typedef {{ id: number, press: number, on: boolean, moved: boolean, text: boolean, glyph: BridgeGlyph | null, x: number, y: number, cx: number, cy: number, selecting?: boolean, dropped?: boolean, extend?: boolean }} BridgeDrag */
+/** @typedef {{ id: number, target: EventTarget | null, cx: number, cy: number, extend: boolean }} BridgeHeld */
 
 var MODE_STYLE_ID = '__page_comment_mode__';
 var DRAG_STYLE_ID = '__page_area_drag__';
@@ -61,9 +63,13 @@ var MAX_AROUND = 60;
 
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_POSITIONS} */
 var MAX_ANCHORS = 500;
-// An area lists its first few elements in full and counts the rest.
+// An area dragged out lists its first few elements in full and counts the rest.
+/** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').DRAG_AREA_LISTED} */
+var DRAG_LISTED = 8;
+// Parts picked one by one are each listed, up to the API's limit: the agent
+// is asked to change every one.
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_AREA_ELEMENTS} */
-var MAX_AREA_ELEMENTS = 8;
+var MAX_PARTS = 64;
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_AREA_COUNT} */
 var MAX_AREA_COUNT = 500;
 var MAX_AREA_QUOTE = 160;
@@ -75,6 +81,8 @@ var MAX_TITLE = 300;
 // the bridge runs before the document's <title> is parsed.
 /** @param {Extract<PageToViewerWire, { anchor: any }>} message */
 function sendSpot(message) {
+  // Any spot but the draft's parts grown or shrunk is a new comment's.
+  if (!('extend' in message && message.extend)) keepParts(null, null);
   var title = clip(squash(document.title), MAX_TITLE);
   if (title) message.title = title;
   send(message);

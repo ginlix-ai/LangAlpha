@@ -209,7 +209,7 @@ function stillShort(el, quote, whole) {
 function areaHit(anchor, index) {
   var parts = Object.prototype.toString.call(anchor.elements) === '[object Array]' ? anchor.elements : [];
   var els = [];
-  for (var i = 0; i < parts.length && i < MAX_AREA_ELEMENTS; i++) {
+  for (var i = 0; i < parts.length && i < MAX_PARTS; i++) {
     var part = parts[i];
     if (!part || typeof part !== 'object') continue;
     var hit = hitOf({ kind: 'element', path: part.path, quote: part.quote }, index);
@@ -327,7 +327,8 @@ function reportPositions() {
       schedule();
       rect = null;
     }
-    items.push({ id: tracked[i].id, rect: rect });
+    var parts = rect ? partRects(tracked[i]) : null;
+    items.push(parts ? { id: tracked[i].id, rect: rect, parts: parts } : { id: tracked[i].id, rect: rect });
   }
   var key = JSON.stringify(items);
   if (key === lastPositions) return;

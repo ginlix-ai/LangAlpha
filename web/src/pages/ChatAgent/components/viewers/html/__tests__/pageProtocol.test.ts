@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { MAX_DOC_PATH, parsePageMessage, type PageToViewer } from '../pageProtocol';
+import { MAX_AREA_ELEMENTS, MAX_DOC_PATH, parsePageMessage, type PageToViewer } from '../pageProtocol';
 
 const RECT = { x: 10, y: 20, width: 30, height: 40 };
 
@@ -112,9 +112,12 @@ describe('an area anchor', () => {
     expect(area({ ...anchor, point: { x: 1.5, y: 1 } })?.anchor.point).toBeUndefined();
   });
 
-  it('refuses an area of fewer than two parts or more than eight, or one counting fewer than it lists', () => {
+  it('refuses an area of fewer than two parts or more than the API lists, or one counting fewer than it lists', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ path: `#p${i}` }));
     expect(area({ ...anchor, elements: parts.slice(0, 1), count: 1 })).toBeNull();
-    expect(area({ ...anchor, elements: Array.from({ length: 9 }, (_, i) => ({ path: `#p${i}` })), count: 9 })).toBeNull();
+    expect(area({ ...anchor, elements: many(MAX_AREA_ELEMENTS + 1), count: MAX_AREA_ELEMENTS + 1 })).toBeNull();
+    // Parts picked one by one are each listed, past the 8 a drag lists.
+    expect(area({ ...anchor, elements: many(MAX_AREA_ELEMENTS), count: MAX_AREA_ELEMENTS })?.anchor.elements).toHaveLength(MAX_AREA_ELEMENTS);
     for (const count of [1, 501, 2.5]) expect(area({ ...anchor, count })).toBeNull();
     expect(area({ ...anchor, elements: 'two' })).toBeNull();
   });
@@ -144,7 +147,10 @@ describe('page:area and page:area-drag', () => {
   const anchor = { kind: 'area', elements: [{ path: '#a' }, { path: '#b' }], count: 2 };
 
   it('read an area like a pick, with the press it began with', () => {
-    expect(read('page:area', { anchor, rect: RECT, press: 4 })).toEqual({ type: 'page:area', anchor, rect: RECT, title: null, press: 4 });
+    expect(read('page:area', { anchor, rect: RECT, press: 4 })).toEqual({ type: 'page:area', anchor, rect: RECT, title: null, press: 4, extend: false });
+    // A modifier click's parts replace the draft's rather than open a new box; only a true flag says so.
+    expect(read('page:area', { anchor, rect: RECT, extend: true })?.extend).toBe(true);
+    expect(read('page:area', { anchor, rect: RECT, extend: 'yes' })?.extend).toBe(false);
     expect(read('page:area', { anchor })).toBeNull();
     expect(area({ kind: 'element', path: '#a' })).toBeNull();
   });
@@ -172,7 +178,9 @@ describe('page:hover', () => {
 
 describe('page:pick and page:selection', () => {
   it('need both a trusted anchor and a box', () => {
-    expect(pick({ kind: 'element', path: '#a' })).toEqual({ type: 'page:pick', anchor: { kind: 'element', path: '#a' }, rect: RECT, title: null, press: null });
+    expect(pick({ kind: 'element', path: '#a' })).toEqual({
+      type: 'page:pick', anchor: { kind: 'element', path: '#a' }, rect: RECT, title: null, press: null, extend: false,
+    });
     expect(read('page:pick', { anchor: { kind: 'element', path: '#a' } })).toBeNull();
   });
 
@@ -221,6 +229,14 @@ describe('page:positions', () => {
 
   it('refuses a message without a list', () => {
     expect(read('page:positions', { items: { a: RECT } })).toBeNull();
+  });
+
+  it('keeps where each part of an area shows, and drops parts it cannot trust rather than the spot', () => {
+    const parts = [RECT, { ...RECT, x: 50 }];
+    expect(read('page:positions', { items: [{ id: 'a', rect: RECT, parts }] })?.items).toEqual([{ id: 'a', rect: RECT, parts }]);
+    for (const bad of [[{ x: 'bad' }], 'junk', []]) {
+      expect(read('page:positions', { items: [{ id: 'a', rect: RECT, parts: bad }] })?.items).toEqual([{ id: 'a', rect: RECT }]);
+    }
   });
 });
 

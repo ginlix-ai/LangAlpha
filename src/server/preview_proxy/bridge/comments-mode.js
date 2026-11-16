@@ -12,6 +12,8 @@ var cursorShown = '';
 
 /** @param {unknown} on */
 function setMode(on) {
+  // Told while the mode is still on, so the viewer's "Add a part" lets go.
+  if (!on) setAdding(false, false);
   mode = !!on;
   var style = document.getElementById(MODE_STYLE_ID);
   if (mode && !style) {
@@ -55,8 +57,8 @@ function showCursor(name) {
 // found.
 /** @param {number} x @param {number} y */
 function hoverAt(x, y) {
-  var glyph = glyphAt(x, y);
-  showCursor(glyph ? 'text' : 'crosshair');
+  var glyph = adding() ? null : glyphAt(x, y);
+  showCursor(adding() ? 'copy' : glyph ? 'text' : 'crosshair');
   hoverText = glyph ? { word: wordAt(glyph, x), y: y } : null;
 }
 
@@ -93,9 +95,18 @@ function holdHover(el) {
 var presses = 0;
 var tapping = false;
 
-function press() {
+// A press that adds to the draft (`quiet`) is numbered as any other, so a
+// drag's swallowed click stays paired with its own press, but the viewer
+// does not hear it: it must not close the box the part is joining. Its
+// click adds too, whatever keys are down by then (`addingPress`): the
+// viewer has either heard the press or not, and the click must agree.
+var addingPress = -1;
+
+/** @param {boolean} [quiet] */
+function press(quiet) {
   presses++;
-  send({ type: 'page:press', press: presses });
+  if (quiet) addingPress = presses;
+  else send({ type: 'page:press', press: presses });
 }
 
 // ---- Drags in comment mode: an area, or words ----
@@ -239,9 +250,17 @@ function reportArea(was) {
   var area = dragArea();
   var release = { clientX: clamp(was.cx, 0, window.innerWidth), clientY: clamp(was.cy, 0, window.innerHeight) };
   var found = areaElements(area);
-  var made = found.els.length > 1 ? areaAnchor(found.els, release) : null;
+  if (was.extend) {
+    // The drag was the asked-for tap: its click is swallowed, so it is let go here.
+    setAdding(modHeld, false);
+    if (found.els.length) sendParts(joined(draftParts(), found.els), release);
+    return;
+  }
+  var made = found.els.length > 1 ? areaAnchor(found.els, release, DRAG_LISTED) : null;
   if (made) {
     sendSpot({ type: 'page:area', press: was.press, anchor: made.anchor, rect: made.rect });
+    // It lists its first few, but a Cmd-click adds to every part it found.
+    keepParts(made.els, made.anchor.elements);
     return;
   }
   var el = found.els.length === 1 ? found.els[0] : null;
@@ -269,15 +288,16 @@ function releaseHeld(continuation) {
   held = null;
   window.clearTimeout(heldTimer);
   if (!h || continuation) return;
-  press();
+  press(h.extend);
   endDrag();
   textPress = null;
   if (mode && !refused(h.target)) {
-    var glyph = glyphAt(h.cx, h.cy);
+    // A press adding parts takes elements, so on glyphs too it draws an area.
+    var glyph = h.extend ? null : glyphAt(h.cx, h.cy);
     drag = {
       id: h.id, press: presses, on: false, moved: false, text: !!glyph, glyph: glyph,
       x: h.cx + window.scrollX, y: h.cy + window.scrollY,
-      cx: h.cx, cy: h.cy,
+      cx: h.cx, cy: h.cy, extend: h.extend,
     };
     // Words pressed on begin a selection of their own, never a drag of the
     // words selected before, and the mark of words not yet answered for
@@ -299,7 +319,10 @@ window.addEventListener('pointerdown', function (event) {
     return;
   }
   releaseHeld(false);
-  held = { id: event.pointerId, target: event.target, cx: event.clientX, cy: event.clientY };
+  // Cmd pressed while the focus was outside the frame reaches it only on
+  // the events it carries.
+  if (mode) readModifier(event);
+  held = { id: event.pointerId, target: event.target, cx: event.clientX, cy: event.clientY, extend: extending(event) };
   heldTimer = window.setTimeout(function () { releaseHeld(false); }, 0);
 }, true);
 window.addEventListener('mousedown', function (event) {
@@ -341,6 +364,7 @@ function hoverNow() {
 /** @param {PointerEvent} event */
 function hoverSoon(event) {
   pointer = { x: event.clientX, y: event.clientY };
+  readModifier(event);
   if (!hoverFrame) hoverFrame = window.requestAnimationFrame(hoverNow);
 }
 
@@ -351,7 +375,7 @@ window.addEventListener('pointerup', function (event) {
   pointerDown = false;
   if (tapping) {
     tapping = false;
-    press();
+    press(mode && extendNext);
   }
   if (drag && event.pointerId === drag.id) {
     // The area before the clear, so the viewer's outline goes straight
@@ -423,8 +447,16 @@ window.addEventListener('click', function (event) {
   if (event.detail > 0 && swallowed && swallowed === presses) return;
   // The later clicks of a multi-click pick nothing: the first one did.
   if (event.detail > 1) return;
+  if (event.button !== 0) return;
+  // A click a key made has no press: its own keys say.
+  if (event.detail > 0 ? addingPress === presses : extending(event)) {
+    var part = commentable(event.target);
+    setAdding(modHeld, false);
+    if (part) togglePart(part, event);
+    return;
+  }
   // A double click that selected words is a selection, reported as one.
-  if (event.button !== 0 || selectedRange()) return;
+  if (selectedRange()) return;
   if (event.detail > 0 && textPress && textPress.press === presses && clickText(event)) return;
   var el = commentable(event.target);
   if (!el) return;
@@ -451,13 +483,16 @@ window.addEventListener('pointerover', function (event) {
   if (!mode || event.pointerType === 'touch' || pressing()) return;
   // Glyphs first, so a move onto words never flashes the element's outline.
   pointer = { x: event.clientX, y: event.clientY };
+  readModifier(event);
   hoverAt(pointer.x, pointer.y);
-  var el = commentable(event.target);
+  var under = commentable(event.target);
+  var el = pickable(under);
   if (el === hovered) {
     reportHover();
     return;
   }
-  if (el && hovered && el.contains(hovered)) {
+  // A part standing in for what is under the pointer shows at once.
+  if (el === under && el && hovered && el.contains(hovered)) {
     holdHover(el);
     if (hoverText) reportHover();
     return;
@@ -554,15 +589,20 @@ listen('page:comment-mode', function (data) {
 listen('page:anchors', function (data) {
   var items = Object.prototype.toString.call(data.items) === '[object Array]' ? data.items : [];
   tracked = [];
+  var drafting = false;
   for (var i = 0; i < items.length && tracked.length < MAX_ANCHORS; i++) {
     var item = items[i];
     if (item && typeof item.id === 'string' && item.anchor && typeof item.anchor === 'object') {
       var marked = item.mark === true;
-      tracked.push({ id: item.id, anchor: item.anchor, hit: null, mark: marked });
+      var isDraft = item.draft === true;
+      drafting = drafting || isDraft;
+      tracked.push({ id: item.id, anchor: item.anchor, hit: null, mark: marked, draft: isDraft });
       // The viewer has opened the words' box, whose anchor marks them now.
       if (marked) pendingMark = null;
     }
   }
+  // No comment is being written: there are no parts to add to.
+  if (!drafting) draftGone();
   stale = true;
   lastPositions = '';
   watch();

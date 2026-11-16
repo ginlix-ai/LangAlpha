@@ -414,10 +414,14 @@ function fine(n) {
 // An area's anchor: each element as an element anchor names it, and a
 // label naming the parts. Only the elements a later version could find
 // again count: by a path, or by their words. Null when fewer than two can.
-// Its pin stands where the drag was let go (`release`), kept as a point
-// on the area as a click's is on an element: a corner, mostly.
-/** @param {Element[]} els @param {BridgePoint} release */
-function areaAnchor(els, release) {
+// The first `listed` are listed in full and the rest counted: a drag's
+// first few, or every part picked one by one. `els` is what it kept, in the
+// order it lists them. Its pin stands where the drag was let go or the part
+// was clicked (`release`), kept as a point on the area as a click's is on an
+// element; with none, where the viewer puts a pin by default.
+/** @param {Element[]} els @param {BridgePoint | null} release @param {number} listed */
+function areaAnchor(els, release, listed) {
+  var kept = [];
   var elements = [];
   var count = 0;
   var labels = [];
@@ -430,17 +434,18 @@ function areaAnchor(els, release) {
     var el = els[i];
     var path = pathOf(el);
     // Spaced only where it is kept as a quote: an area may hold hundreds.
-    var text = visibleText(el, elements.length < MAX_AREA_ELEMENTS ? MAX_AREA_QUOTE : 0);
+    var text = visibleText(el, elements.length < listed ? MAX_AREA_QUOTE : 0);
     if (!path && !text) continue;
     count++;
+    kept.push(el);
     bounds = union(bounds, el.getBoundingClientRect());
-    var label = count <= MAX_AREA_ELEMENTS || length <= MAX_LABEL ? partLabel(el) : null;
+    var label = count <= listed || length <= MAX_LABEL ? partLabel(el) : null;
     if (label && !seen['#' + label] && length <= MAX_LABEL) {
       seen['#' + label] = true;
       labels.push(label);
       length += label.length + 2;
     }
-    if (elements.length < MAX_AREA_ELEMENTS) {
+    if (elements.length < listed) {
       var part = {};
       put(part, 'path', path);
       put(part, 'label', label);
@@ -456,7 +461,7 @@ function areaAnchor(els, release) {
   anchor.elements = elements;
   anchor.count = count;
   var r = sized(/** @type {BridgeEdges} */ (bounds));
-  if (r.width > 0 && r.height > 0) {
+  if (release && r.width > 0 && r.height > 0) {
     anchor.point = {
       x: fraction((release.clientX - r.left) / r.width),
       y: fraction((release.clientY - r.top) / r.height),
@@ -473,6 +478,6 @@ function areaAnchor(els, release) {
     w: fine(r.width / width),
     h: fine(r.height / height),
   };
-  return { anchor: anchor, rect: box(r) };
+  return { anchor: anchor, rect: box(r), els: kept };
 }
 

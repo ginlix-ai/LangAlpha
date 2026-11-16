@@ -138,3 +138,90 @@
   line-height: 16px;
   color: var(--color-text-secondary);
 }
+
+/* The parts a new comment is on, where it lists every one: one quiet chip
+   each, in the quote's ground, wrapping and scrolling past about three rows.
+   The ×'s 28 px reach past the chip's 24, so the row keeps its height. */
+.page-comment-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: calc(3 * 24px + 2 * 4px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+.page-comment-part {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 24px;
+  padding-left: 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+}
+.page-comment-part:not(:has(.page-comment-part-drop)) {
+  padding-right: 8px;
+}
+.page-comment-part-drop {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+/* A finger gets taller chips rather than a tap-target box, which would spill
+   past the row and scroll it. */
+@media (pointer: coarse) {
+  .page-comment-parts {
+    max-height: calc(3 * 32px + 2 * 4px);
+  }
+  .page-comment-part {
+    height: 32px;
+  }
+  .page-comment-part-drop {
+    width: 32px;
+    height: 32px;
+  }
+}
+.page-comment-part-drop:hover {
+  color: var(--color-text-primary);
+}
+.page-comment-part-drop:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: -4px;
+}
+
+/* "Add a part", on a touch screen: a quiet row button that, pressed, waits
+   in the pick blue for the tap that adds the part. */
+.page-comment-add-part {
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+}
+.page-comment-add-part[aria-pressed='true'] {
+  color: var(--color-info);
+  border-color: color-mix(in srgb, var(--color-info) 45%, transparent);
+  background: color-mix(in srgb, var(--color-info) 10%, transparent);
+}
+.page-comment-add-part:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}

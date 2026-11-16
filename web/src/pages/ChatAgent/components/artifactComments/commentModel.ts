@@ -183,6 +183,21 @@ export function draftHeading(t: TFunction, anchor: ArtifactCommentAnchor): { lab
   return { label, quote };
 }
 
+/**
+ * The parts a spot is a list of, by their labels, in the order the anchor
+ * lists them: an element's comment is a list of one, an area that lists
+ * every part it holds a list of those. A modifier click adds to such a list
+ * or takes a part out. Null for words, and for a drag that lists only its
+ * first few, which a modifier click starts afresh.
+ */
+export function partLabels(anchor: ArtifactCommentAnchor): string[] | null {
+  if (anchor.kind === 'element') return [anchor.label ?? anchor.quote ?? anchor.path ?? ''];
+  if (anchor.kind === 'area' && anchor.count === anchor.elements.length) {
+    return anchor.elements.map((e) => e.label ?? e.quote ?? e.path ?? '');
+  }
+  return null;
+}
+
 /** An area by its size, the composer's header: "Selected area · 3 elements". */
 export function areaTitle(t: TFunction, anchor: Pick<ArtifactCommentAnchor, 'count' | 'elements'>): string {
   return t('pageViewer.comments.areaTitle', { count: anchor.count ?? anchor.elements?.length ?? 0 });

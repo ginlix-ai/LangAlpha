@@ -35,6 +35,7 @@ _PARTS: dict[Variant, tuple[str, ...]] = {
         "comments-text",
         "comments-areas",
         "comments-anchors",
+        "comments-parts",
         "comments-mode",
     ),
     "nested": ("opaque", "nested"),

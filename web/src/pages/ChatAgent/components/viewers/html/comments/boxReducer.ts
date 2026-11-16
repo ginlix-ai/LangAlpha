@@ -78,8 +78,12 @@ export type BoxAction =
   | { type: 'docChanged'; doc: string }
   | { type: 'listShown'; open: boolean; comments: readonly ArtifactComment[] }
   | { type: 'hover'; hover: PageHover | null }
-  /** A spot picked on the page at `path`, or words: a new draft's box opens on it. */
-  | { type: 'pick'; pick: PagePick; path: string; selected: boolean }
+  /**
+   * A spot picked on the page at `path`, or words: a new draft's box opens on
+   * it. The open draft's parts grown or shrunk by a modifier click (`extend`)
+   * keep its box and words instead, on the parts picked now.
+   */
+  | { type: 'pick'; pick: PagePick; path: string; selected: boolean; extend: boolean }
   /** A press on a pin opens its card. */
   | { type: 'pinPressed'; id: string }
   /** The chat brought a comment forward whose pin is in view. */
@@ -219,6 +223,11 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
     case 'hover':
       return { ...state, hover: action.hover };
     case 'pick': {
+      const open = state.open;
+      if (action.extend && open?.kind === 'draft' && open.draft.path === action.path) {
+        const grown: Draft = { anchor: action.pick.anchor, rect: action.pick.rect, path: open.draft.path, title: open.draft.title };
+        return { ...state, open: { ...open, draft: grown }, confirmDiscard: false };
+      }
       // Words already written move with the box to the new spot, and whether
       // they are for the agent and where with them; a new comment starts for
       // the agent, to the default.
