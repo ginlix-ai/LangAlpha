@@ -433,6 +433,7 @@ async def settle(
     skip_reason: Optional[SkipReason] = None,
     excerpt: Optional[str] = None,
     quiet_for: Optional[int] = None,
+    parked: bool = False,
     delivery: Optional[automation_delivery.Delivery] = None,
     final_text: Optional[str] = None,
 ) -> bool:
@@ -441,7 +442,8 @@ async def settle(
 
     The execution must belong to ``automation``, which keeps the skip
     endpoint to its own automation's firings. ``quiet_for`` is the sweep's:
-    settle only while the heartbeat is still that many seconds quiet.
+    settle only while the heartbeat is still that many seconds quiet, and
+    ``parked`` the parked sweep's: only while still parked for its computer.
     ``delivery`` is how the firing's start left its delivery: one the
     messaging service holds ends there instead of firing the webhook, and
     ``final_text`` is the result a completed one hands over; one the service
@@ -472,6 +474,7 @@ async def settle(
         strike=policy.strike,
         schedule=_schedule_action(policy, automation),
         quiet_for=quiet_for,
+        parked=parked,
         in_transaction=leave_finish,
         conversation_thread_id=thread_id,
         conversation_response_id=run_id,

@@ -18,15 +18,13 @@ from zoneinfo import ZoneInfo
 
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
+from src.server.services import automation_computer_wait
 from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
     AutomationExecutor,
-    stopped_meanwhile,
 )
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
-    Outcome,
-    settle,
     settle_abandoned,
 )
 from src.utils.timezone_utils import zone_or_none
@@ -180,56 +178,10 @@ class AutomationScheduler:
                 )
 
     async def _sweep_parked_firings(self) -> None:
-        """Start the firings parked for a computer that is back, through the
-        ordinary start, and skip those a later firing took the wait over from
-        or that waited out their deadline with the computer still away.
-
-        A machine asleep for the night is not the automation failing: no
-        strike either way. A release is one guarded statement, so of the
-        workers whose sweeps reach a row exactly one starts it.
-        """
-        try:
-            rows = await exec_db.list_parked_executions()
-        except Exception as e:
-            logger.error(f"[SCHEDULER] Parked-firing sweep failed: {e}")
-            return
-        for row in rows:
-            execution_id = str(row["automation_execution_id"])
-            try:
-                await self._sweep_parked(row, execution_id)
-            except Exception as e:
-                logger.error(
-                    f"[SCHEDULER] Sweeping a parked firing failed: "
-                    f"execution_id={execution_id} error={e}"
-                )
-
-    async def _sweep_parked(self, row: Dict[str, Any], execution_id: str) -> None:
-        automation = await auto_db.get_automation(
-            str(row["automation_id"]), row["user_id"]
-        )
-        if automation is None:
-            return
-        if row["superseded"] or (row["expired"] and not row["reachable"]):
-            await settle(
-                automation, execution_id, Outcome.SKIPPED,
-                skip_reason="computer_unreachable",
-            )
-            return
-        if not row["reachable"] or self._shutdown_event.is_set():
-            return
-        if stopped_meanwhile(automation, row["parked_status"] or automation["status"]):
-            await settle(automation, execution_id, Outcome.SKIPPED, skip_reason="user")
-            return
-        if not await exec_db.release_parked_execution(execution_id):
-            return
-        logger.info(
-            f"[SCHEDULER] Starting a firing whose computer is back: "
-            f"execution_id={execution_id}"
-        )
-        self.dispatch(
-            automation,
-            execution_id,
-            name=f"automation_exec_{str(automation['automation_id'])[:8]}",
+        """Start the firings parked for a computer that is back, or skip
+        those it no longer waits for (``automation_computer_wait``)."""
+        await automation_computer_wait.sweep_parked(
+            self.dispatch, stopping=self._shutdown_event.is_set
         )
 
     def dispatch(

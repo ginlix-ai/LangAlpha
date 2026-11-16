@@ -27,11 +27,12 @@ from src.server.handlers.chat.admission_gate import (
 from src.server.services import automation_delivery
 from src.server.services import automation_executor as executor_mod
 from src.server.services.automation_delivery import Delivery, Target
-from src.server.services.automation_executor import (
+from src.server.services import automation_computer_wait as computer_wait
+from src.server.services.automation_computer_wait import (
     COMPUTER_WAIT_CAP_SECONDS,
     ONE_SHOT_WAIT_CAP_SECONDS,
-    AutomationExecutor,
 )
+from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     Outcome,
@@ -42,6 +43,7 @@ from src.server.services.turn_runtime import TurnRoute
 from src.server.services.writer_guard import WriterGuardUnavailable
 
 _MOD = "src.server.services.automation_executor"
+_WAIT = "src.server.services.automation_computer_wait"
 _USER = "user-1"
 _EXEC = "exec-1"
 _HOME = get_home_workspace_id(_USER)
@@ -138,6 +140,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,), away=())
     with (
         patch(f"{_MOD}.auto_db", new=db),
         patch(f"{_MOD}.exec_db", new=db),
+        patch(f"{_WAIT}.exec_db", new=db),
         patch("src.server.services.automation_settlement.auto_db", new=db),
         patch("src.server.services.automation_settlement.exec_db", new=db),
         patch(f"{_MOD}.is_byok_active", new=fx.byok),
@@ -977,10 +980,10 @@ def _parked(automation_id="auto-1", **verdict):
 
 async def _sweep_parked(fx, row):
     """The scheduler's sweep over one parked firing, settling for real."""
-    from src.server.services.automation_scheduler import AutomationScheduler
+    from src.server.services import automation_computer_wait
 
-    with patch("src.server.services.automation_scheduler.auto_db", new=fx.db):
-        await AutomationScheduler()._sweep_parked(row, row["automation_execution_id"])
+    with patch(f"{_WAIT}.auto_db", new=fx.db):
+        await automation_computer_wait.sweep_one(row, MagicMock(), stopping=lambda: False)
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1110,8 @@ async def test_a_turn_whose_computer_did_not_answer_is_skipped_not_struck():
 @pytest.mark.asyncio
 async def test_the_tunnel_gateway_down_is_not_the_users_computer_unreachable():
     """Our gateway's outage says nothing of the machine: the firing does not
-    record that the user's computer could not be reached."""
+    record that the user's computer could not be reached, and fails as an
+    outage of ours, which never counts toward turning the automation off."""
     from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 
     try:
@@ -1120,6 +1124,8 @@ async def test_the_tunnel_gateway_down_is_not_the_users_computer_unreachable():
         await AutomationExecutor().execute(_automation(), _EXEC)
 
     assert _settled(fx).get("skip_reason") != "computer_unreachable"
+    assert _settled(fx)["failure_reason"] == "server_error"
+    assert _settled(fx)["strike"] is None
 
 
 @pytest.mark.asyncio
@@ -1155,7 +1161,7 @@ class TestARunReleasedLate:
             "src.server.database.computer.get_computer",
             new=AsyncMock(return_value={"name": "MacBook Pro"}),
         ):
-            note = await executor_mod._late_note(
+            note = await computer_wait.late_note(
                 {"timezone": "America/New_York"}, self._row(timedelta(hours=3))
             )
 
@@ -1175,4 +1181,4 @@ class TestARunReleasedLate:
         from datetime import timedelta
 
         row = self._row(timedelta(minutes=due_ago_min), wait_reason)
-        assert await executor_mod._late_note({}, row) is None
+        assert await computer_wait.late_note({}, row) is None

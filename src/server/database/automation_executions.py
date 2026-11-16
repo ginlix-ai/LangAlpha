@@ -16,6 +16,7 @@ from src.server.database.automation import (
 from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
 from src.server.database.pool import get_db_connection
 from src.server.database.ssh_tunnels import awaited_computer_back_sql
+from src.server.models.automation import WaitReason
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ async def transition_execution(
     from_statuses: Sequence[str],
     to: str,
     automation_id: Optional[str] = None,
+    wait_reason: Optional[WaitReason] = None,
     **fields: Any,
 ) -> Optional[Dict[str, Any]]:
     """Move an execution to ``to`` only while its status is one of
@@ -106,6 +108,8 @@ async def transition_execution(
     if automation_id is not None:
         where_clause += " AND automation_id = %s"
         where_params.append(automation_id)
+    if wait_reason is not None:
+        fields["wait_reason"] = wait_reason
     query, params = _execution_update(to, where_clause, where_params, fields)
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -151,6 +155,7 @@ async def settle_execution(
     strike: Optional[Literal["count", "fuse", "reset"]] = None,
     schedule: Optional[ScheduleAction] = None,
     quiet_for: Optional[int] = None,
+    parked: bool = False,
     in_transaction: Optional[Callable[[Any, Dict[str, Any]], Awaitable[Any]]] = None,
     **fields: Any,
 ) -> Optional[Dict[str, Any]]:
@@ -160,7 +165,10 @@ async def settle_execution(
     One transaction, so a failure between the two can never leave a price
     alert 'executing' behind a settled firing. ``quiet_for`` settles only a
     firing whose heartbeat has been quiet that many seconds, which is what
-    keeps the sweep off a firing whose process came back. Returns the row's
+    keeps the sweep off a firing whose process came back; ``parked`` only one
+    still parked for its computer, which keeps the parked sweep's verdict,
+    read before the row was locked, off a firing released and waiting since
+    for something else. Returns the row's
     thread and run, ``settled_from``, the status it left, the ``delivery``
     its start kept (``stamp_delivery``), and the ``previous_failure_reason``
     and ``previous_delivery_result`` of the automation's newest firing
@@ -185,6 +193,8 @@ async def settle_execution(
                 if quiet_for is not None:
                     quiet = "AND heartbeat_at < NOW() - make_interval(secs => %s)"
                     params.append(quiet_for)
+                if parked:
+                    quiet += f" AND {_PARKED.format(e='automation_executions')}"
                 await cur.execute(f"""
                     SELECT status, created_at, delivery
                     FROM automation_executions
@@ -490,7 +500,7 @@ async def list_abandoned_executions(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
-                SELECT e.automation_execution_id, e.automation_id, e.status, e.wait_reason,
+                SELECT e.automation_execution_id, e.automation_id, e.status,
                        e.conversation_thread_id, e.conversation_response_id,
                        a.user_id, t.workspace_id
                 FROM automation_executions e

@@ -17,6 +17,7 @@ from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import INTERRUPTED_ERROR, Outcome
 
 _MOD = "src.server.services.automation_scheduler"
+_WAIT = "src.server.services.automation_computer_wait"
 
 
 # ---------------------------------------------------------------------------
@@ -409,8 +410,8 @@ class TestSweep:
         mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch(f"{_MOD}.exec_db")
-    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
     @patch(f"{_MOD}.AutomationExecutor")
     async def test_a_firing_parked_for_a_computer_that_is_back_starts_as_any_firing(
         self, mock_executor_cls, mock_auto_db, mock_exec_db
@@ -434,8 +435,8 @@ class TestSweep:
         executor.execute.assert_awaited_once_with(automation, execution_id)
 
     @pytest.mark.asyncio
-    @patch(f"{_MOD}.exec_db")
-    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
     @patch(f"{_MOD}.AutomationExecutor")
     async def test_a_parked_firing_another_worker_released_is_left_to_it(
         self, mock_executor_cls, mock_auto_db, mock_exec_db
@@ -462,9 +463,9 @@ class TestSweep:
         [("active", "paused", True), ("paused", "paused", False)],
         ids=["paused-meanwhile", "manual-run-of-a-paused-one"],
     )
-    @patch(f"{_MOD}.settle")
-    @patch(f"{_MOD}.exec_db")
-    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_WAIT}.settle")
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
     @patch(f"{_MOD}.AutomationExecutor")
     async def test_a_parked_firing_of_an_automation_paused_meanwhile_is_skipped(
         self, mock_executor_cls, mock_auto_db, mock_exec_db, mock_settle,
@@ -485,7 +486,7 @@ class TestSweep:
         if skipped:
             mock_settle.assert_awaited_once_with(
                 automation, parked["automation_execution_id"], Outcome.SKIPPED,
-                skip_reason="user",
+                skip_reason="user", parked=True,
             )
             mock_exec_db.release_parked_execution.assert_not_awaited()
         else:
@@ -493,9 +494,9 @@ class TestSweep:
             mock_exec_db.release_parked_execution.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch(f"{_MOD}.settle")
-    @patch(f"{_MOD}.exec_db")
-    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_WAIT}.settle")
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
     @patch(f"{_MOD}.AutomationExecutor")
     async def test_a_parked_firing_whose_computer_is_still_away_is_left_parked(
         self, mock_executor_cls, mock_auto_db, mock_exec_db, mock_settle
@@ -510,6 +511,31 @@ class TestSweep:
         await AutomationScheduler()._sweep_parked_firings()
 
         mock_settle.assert_not_awaited()
+        mock_exec_db.release_parked_execution.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_WAIT}.settle")
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_parked_firing_past_its_deadline_is_skipped_with_its_computer_back(
+        self, mock_executor_cls, mock_auto_db, mock_exec_db, mock_settle
+    ):
+        """No sweep looked at the deadline itself (the scheduler was down),
+        and the computer came back since: the wait is over all the same."""
+        mock_executor_cls.get_instance.return_value = AsyncMock()
+        parked = _parked_row("auto-1", expired=True, reachable=True)
+        automation = _make_automation(automation_id="auto-1")
+        mock_exec_db.list_parked_executions = AsyncMock(return_value=[parked])
+        mock_exec_db.release_parked_execution = AsyncMock()
+        mock_auto_db.get_automation = AsyncMock(return_value=automation)
+
+        await AutomationScheduler()._sweep_parked_firings()
+
+        mock_settle.assert_awaited_once_with(
+            automation, parked["automation_execution_id"], Outcome.SKIPPED,
+            skip_reason="computer_unreachable", parked=True,
+        )
         mock_exec_db.release_parked_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
