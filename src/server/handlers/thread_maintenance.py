@@ -25,6 +25,7 @@ from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.computer_manager import ComputerNotRunning, attaching_only
 from src.server.services.history.projector import context_window_record
+from src.server.services.home_placement import runs_in as home_runs_in
 from src.server.services.thread_agent import thread_route
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
@@ -55,14 +56,6 @@ class ThreadAgent:
     project: ProjectContext | None
     #: Whether the thread runs on Claude Code, whose graph runs a CLI session.
     claude_code: bool = False
-    #: The workspace whose folder ``backend`` is pinned to, when not the
-    #: thread's: Home's stand-in while the machine Home lives on can't be
-    #: reached.
-    runs_in: str | None = None
-
-    @property
-    def folder_id(self) -> str:
-        return self.runs_in or self.workspace_id
 
     async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
@@ -174,10 +167,9 @@ async def _thread_agent(
     # The row holds a uuid.UUID; the session and its asset sync key on the str
     # the request paths pass.
     workspace_id = str(workspace_id)
-    # Where the thread's next turn would run: Home's stand-in while the
-    # machine Home lives on can't be reached, so the agent is built as that
-    # turn builds it, and nothing waits on the machine.
-    runs_in = await thread_runs_in(workspace_id, user_id)
+    # Built where its next turn would run, so nothing waits on a machine that
+    # can't be reached; attaching only places no stand-in.
+    runs_in = await home_runs_in(user_id, workspace_id, make=not attaching_only())
 
     # Session
     workspace_manager = WorkspaceManager.get_instance()
@@ -279,23 +271,7 @@ async def _thread_agent(
         backend=backend,
         project=inputs.project,
         claude_code=isinstance(getattr(effective_config, "llm_client", None), ClaudeCodeTarget),
-        runs_in=runs_in,
     )
-
-
-async def thread_runs_in(workspace_id: str, user_id: str | None) -> str:
-    """The workspace whose computer the thread's next turn would run on,
-    decided as its admission decides it (``place_home_turn``), with no stretch
-    on the cloud marked: work between turns writes nothing a hand-back would
-    carry. Only attaching, as an idle compaction does, places no stand-in."""
-    from src.server.database.home_workspace import is_home_id
-
-    if not user_id or not is_home_id(user_id, workspace_id):
-        return workspace_id
-    from src.server.services.home_placement import place_home_turn
-
-    placement = await place_home_turn(user_id, make=not attaching_only())
-    return placement.runs_in
 
 
 async def _update_graph_state(
@@ -510,7 +486,7 @@ async def _summarize(agent: ThreadAgent, config):
         thread_id=agent.thread_id,
         backend=agent.backend,
         # The folder a transcript pointer is read from.
-        workspace_id=agent.folder_id,
+        workspace_id=agent.project.workspace_id if agent.project else agent.workspace_id,
         notes_dir=scratchpad.notes_dir if scratchpad is not None else None,
     )
 
@@ -819,7 +795,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     settings,
                     thread_id=thread_id,
                     backend=agent.backend,
-                    workspace_id=agent.folder_id,
+                    workspace_id=agent.project.workspace_id if agent.project else agent.workspace_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))

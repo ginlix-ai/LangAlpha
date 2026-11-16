@@ -700,16 +700,13 @@ async def start_workspace(
         # Opening Home warms the computer its next turn would run on: Home's
         # stand-in while the machine Home lives on can't be reached. Placing
         # its row is cheap and builds nothing; the response still names Home.
-        warm_id = workspace_id
-        if is_home_row(workspace):
-            from src.server.services.home_placement import place_home_turn
+        from src.server.services.home_placement import runs_in
 
-            placement = await place_home_turn(x_user_id)
-            if placement.away is not None:
-                warm_id = placement.runs_in
-                workspace = await db_get_workspace(warm_id)
-                if not workspace:
-                    raise HTTPException(status_code=404, detail="Workspace not found")
+        warm_id = await runs_in(x_user_id, workspace_id, make=True)
+        if warm_id != workspace_id:
+            workspace = await db_get_workspace(warm_id)
+            if not workspace:
+                raise HTTPException(status_code=404, detail="Workspace not found")
 
         if workspace["status"] == "stopping":
             await manager.reconcile_stopping_computer(str(workspace["computer_id"]))

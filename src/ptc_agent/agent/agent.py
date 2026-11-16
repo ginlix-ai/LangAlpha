@@ -452,8 +452,8 @@ class PTCAgent:
                 # computer, which Home's later turns reach by name.
                 **(
                     {
-                        "computer": away.get("cloud_name") or "",
-                        "computer_id": away.get("cloud_computer_id"),
+                        "computer": away.cloud_name,
+                        "computer_id": away.cloud_computer_id,
                         "whole": True,
                     }
                     if away

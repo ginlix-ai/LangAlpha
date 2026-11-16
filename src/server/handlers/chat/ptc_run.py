@@ -290,7 +290,7 @@ async def astream_ptc_workflow(
     # The workspace whose computer and folder the turn runs in: Home's
     # stand-in while the machine Home lives on can't be reached, else the
     # thread's own. The thread, its admission and its records stay Home's.
-    runs_in = route.computer_workspace_id
+    runs_in = route.runs_in
     start_time = time.time()
     handler = None
     run_handle = None
@@ -464,7 +464,7 @@ async def astream_ptc_workflow(
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
                 carried_unwatched=carry.carried_unwatched(request, prior),
-                home_away=route.away.as_metadata() if route.away else None,
+                home_away=route.away,
                 home_back=(
                     await home_back_notice(user_id)
                     if route.role == "chief_of_staff" and route.away is None and user_id

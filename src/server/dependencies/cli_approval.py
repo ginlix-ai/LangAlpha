@@ -52,7 +52,6 @@ from src.config.settings import (
 from src.server.database.automation import get_automation
 from src.server.database.computer import (
     get_computer,
-    get_computer_for_workspace,
     get_primary_computer,
 )
 from src.server.database.conversation.threads_read import (
@@ -85,7 +84,7 @@ from src.server.models.computer import ComputerRemoveRequest
 from src.server.models.workflow import RetryRequest
 from src.server.models.workspace import WorkspaceCreate
 from src.server.services import cli_approvals as store
-from src.server.services.home_placement import stand_in_computer
+from src.server.services.home_placement import home_turn_computer
 from src.server.services.runs.admission import run_named_by_key
 from src.server.services.runs.pending_input import can_retry
 from src.server.services.automations.lifecycle import (
@@ -96,7 +95,6 @@ from src.server.services.automations.lifecycle import (
     check_model,
     resume_refusal,
 )
-from src.server.services.ssh_computers import computer_unreachable
 from src.server.services.turn_runtime import ensure_home, named_workspace_id
 from src.tools.secretary.approvals import AUTO_APPROVE_WORKSPACE_CREATION
 
@@ -507,11 +505,10 @@ async def _turn_place(
     bound one never moves. A failure refuses the request rather than ask
     about a computer the turn might not use.
 
-    A Home turn runs in Home's stand-in on a cloud computer while Home's own
-    can't be reached (``home_placement.place_home_turn``), so that is the
-    computer it is judged on and the user is shown. Read only: the turn's
-    bind places the stand-in, and its START refuses one that then runs
-    anywhere else (``admission.refuse_moved_off``)."""
+    A Home turn is judged on the computer it runs on, which the user is shown
+    (``home_placement.home_turn_computer``). Read only: the turn's bind places
+    the stand-in, and its START refuses one that then runs anywhere else
+    (``admission.refuse_moved_off``)."""
     place = await turn_place(user_id, workspace_id=workspace_id, thread_id=thread_id)
     if place is None or not place.in_home:
         return place
@@ -519,10 +516,8 @@ async def _turn_place(
     place = await turn_place(user_id, workspace_id=workspace_id, thread_id=thread_id)
     if place is None:
         return None
-    if not await computer_unreachable(await get_computer_for_workspace(place.workspace_id)):
-        return place
-    cloud = await stand_in_computer(user_id)
-    if cloud is None:
+    cloud, stand_in = await home_turn_computer(user_id)
+    if not stand_in:
         return place
     return replace(place, computer_id=str(cloud["computer_id"]), computer_name=cloud.get("name"))
 

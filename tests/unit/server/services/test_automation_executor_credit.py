@@ -493,11 +493,5 @@ def _setup_auto_db(mock_adb):
 def _home_runs_at_home():
     """Home's turn runs on Home's own computer here; where it runs while that
     computer can't be reached is ``test_home_placement``'s."""
-    from src.server.database.home_workspace import get_home_workspace_id
-    from src.server.services.home_placement import HomePlacement
-
-    async def place(user_id, **_):
-        return HomePlacement(get_home_workspace_id(user_id))
-
-    with patch("src.server.services.home_placement.place_home_turn", side_effect=place):
+    with patch("src.server.services.home_placement.place_home_turn", new=AsyncMock(return_value=None)):
         yield

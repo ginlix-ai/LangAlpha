@@ -43,11 +43,8 @@ def rows():
             state["stand_in"] = _stand_in()
         return state["stand_in"]
 
-    async def computer_for(workspace_id, conn=None):
-        return MAC if workspace_id == HOME else None
-
     with (
-        patch(f"{_P}.get_computer_for_workspace", side_effect=computer_for),
+        patch(f"{_P}.get_home_computer", AsyncMock(return_value=MAC)),
         patch(f"{_P}.computer_unreachable", AsyncMock(side_effect=lambda c, **_: state["unreachable"] and c is MAC)),
         patch(f"{_P}.stand_in_computer", AsyncMock(side_effect=lambda *a, **k: state["picked"])),
         patch(f"{_P}.place_home_stand_in", side_effect=place) as placed,
@@ -76,30 +73,26 @@ def rows():
 async def test_a_reachable_home_runs_at_home(rows):
     rows["unreachable"] = False
 
-    placement = await home_placement.place_home_turn(USER)
-
-    assert placement.runs_in == HOME and placement.away is None
+    assert await home_placement.place_home_turn(USER) is None
     rows["placed"].assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_an_unreachable_home_runs_in_its_stand_in_on_an_existing_cloud(rows):
-    placement = await home_placement.place_home_turn(USER)
+    away = await home_placement.place_home_turn(USER)
 
-    assert placement.runs_in == STAND_IN
-    assert placement.away.reason == "unreachable"
-    assert placement.away.computer_name == "MacBook Pro"
-    assert placement.away.cloud_name == "Cloud computer"
-    assert placement.away.as_metadata()["cloud_computer_id"] == "cloud-1"
+    assert away.workspace_id == STAND_IN
+    assert away.reason == "unreachable"
+    assert away.computer_name == "MacBook Pro"
+    assert away.cloud_name == "Cloud computer"
+    assert away.as_metadata()["cloud_computer_id"] == "cloud-1"
 
 
 @pytest.mark.asyncio
 async def test_with_no_cloud_computer_the_turn_stays_on_home_and_nothing_is_built(rows):
     rows["picked"] = None
 
-    placement = await home_placement.place_home_turn(USER)
-
-    assert placement.runs_in == HOME and placement.away is None
+    assert await home_placement.place_home_turn(USER) is None
 
 
 @pytest.mark.asyncio
@@ -108,19 +101,19 @@ async def test_a_stand_in_whose_computer_takes_no_turn_leaves_the_turn_at_home(r
     there, so Home's turn goes where Home is, as it was."""
     rows["stand_in"] = _stand_in(runs=False)
 
-    placement = await home_placement.place_home_turn(USER)
-
-    assert placement.runs_in == HOME and placement.away is None
+    assert await home_placement.place_home_turn(USER) is None
 
 
 @pytest.mark.asyncio
 async def test_work_between_turns_places_nothing_unasked(rows):
-    unplaced = await home_placement.place_home_turn(USER, make=False)
-    placed = await home_placement.place_home_turn(USER, make=True)
-    again = await home_placement.place_home_turn(USER, make=False)
+    unplaced = await home_placement.runs_in(USER, HOME, make=False)
+    placed = await home_placement.runs_in(USER, HOME, make=True)
+    again = await home_placement.runs_in(USER, HOME, make=False)
+    workspace = await home_placement.runs_in(USER, "ws-on-the-mac", make=True)
 
-    assert unplaced.runs_in == HOME
-    assert placed.runs_in == STAND_IN == again.runs_in
+    assert unplaced == HOME
+    assert placed == STAND_IN == again
+    assert workspace == "ws-on-the-mac"
 
 
 @pytest.mark.asyncio
@@ -131,17 +124,15 @@ async def test_a_report_on_a_command_in_the_stand_in_runs_there_once_home_is_bac
     follows = await home_placement.place_home_turn(USER, follows=STAND_IN)
     elsewhere = await home_placement.place_home_turn(USER, follows="ws-other")
 
-    assert follows.runs_in == STAND_IN and follows.away.reason == "command"
-    assert elsewhere.runs_in == HOME
+    assert follows.workspace_id == STAND_IN and follows.reason == "command"
+    assert elsewhere is None
 
 
 @pytest.mark.asyncio
 async def test_a_placement_that_fails_runs_the_turn_as_it_was(rows):
     rows["placed"].side_effect = RuntimeError("database gone")
 
-    placement = await home_placement.place_home_turn(USER)
-
-    assert placement.runs_in == HOME and placement.away is None
+    assert await home_placement.place_home_turn(USER) is None
 
 
 @pytest.mark.asyncio
@@ -160,3 +151,19 @@ async def test_unattended_home_work_waits_only_without_a_cloud_computer(rows, pi
     assert (away is not None) is waits
     # A workspace's own turn runs only on its own computer.
     assert workspace_away is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unreachable", "picked", "expected"),
+    [(False, CLOUD, (MAC, False)), (True, CLOUD, (CLOUD, True)), (True, None, (MAC, False))],
+    ids=["reachable", "stand-in", "no-cloud"],
+)
+async def test_a_gate_judges_a_home_turn_on_the_computer_it_would_run_on(
+    rows, unreachable, picked, expected
+):
+    rows["unreachable"], rows["picked"] = unreachable, picked
+
+    assert await home_placement.home_turn_computer(USER) == expected
+    rows["placed"].assert_not_called()
+

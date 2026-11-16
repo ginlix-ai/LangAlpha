@@ -178,7 +178,6 @@ async def test_a_turn_runs_the_sends_tuning_else_the_threads_own(stored, sent, r
 async def test_home_is_bound_only_once_the_admission_gates_pass(admitted):
     from fastapi import HTTPException
 
-    from src.server.services.home_placement import HomePlacement
     from src.server.services.turn_runtime import TurnRoute
 
     credit = AsyncMock(
@@ -193,7 +192,7 @@ async def test_home_is_bound_only_once_the_admission_gates_pass(admitted):
         patch("src.server.services.turn_runtime.ensure_home", new=bind),
         patch(
             "src.server.services.home_placement.place_home_turn",
-            new=AsyncMock(return_value=HomePlacement("home-ws")),
+            new=AsyncMock(return_value=None),
         ) as place,
     ):
         resp = await _send()

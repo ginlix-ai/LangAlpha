@@ -10,6 +10,7 @@ anywhere in it costs the row, never the turn.
 """
 
 import re
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -21,6 +22,7 @@ from ptc_agent.agent.middleware.runtime_context import (
     RUNTIME_UPDATE_SOURCE,
     TURN_ROW_KIND,
     TURN_SCHEMA_VERSION,
+    HomeAway,
     TurnContextMiddleware,
     render_update_row,
     runtime_update_from_message,
@@ -932,7 +934,13 @@ class TestWhereAHomeTurnRuns:
     """A Home turn in its stand-in on a cloud computer says so, and the first
     turn back on Home's own computer takes it back, as the disk line does."""
 
-    AWAY = {"computer_name": "MacBook Pro", "cloud_name": "Cloud computer", "reason": "unreachable"}
+    AWAY = HomeAway(
+        workspace_id="stand-in",
+        computer_id="mac-1",
+        computer_name="MacBook Pro",
+        cloud_computer_id="cloud-1",
+        cloud_name="Cloud computer",
+    )
     BACK = {"computer_name": "MacBook Pro", "folder": "From the cloud/2026-11-15", "files": 3}
 
     @pytest.mark.asyncio
@@ -946,7 +954,7 @@ class TestWhereAHomeTurnRuns:
 
     @pytest.mark.asyncio
     async def test_a_report_on_a_command_there_says_why_it_runs_there(self):
-        report = await _row(home_away={**self.AWAY, "reason": "command"})
+        report = await _row(home_away=replace(self.AWAY, reason="command"))
 
         assert "where the command it reports on ran" in report.content
         assert "Home lives on" not in report.content

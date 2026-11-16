@@ -61,6 +61,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
 from ptc_agent.agent.middleware.runtime_context.state import STATE_BASELINE, state_get
 from ptc_agent.agent.middleware.runtime_context.surface import Surface, parse_surface
 from ptc_agent.agent.middleware.runtime_context.templates import render_template
+from ptc_agent.agent.middleware.runtime_context.turn_context import HomeAway
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +270,8 @@ class TurnContextMiddleware(AgentMiddleware):
             when it is low enough that the agent should work around it.
         disk_known: Whether a current reading stands behind ``disk_free_mb``
             being None, as opposed to no reading at all.
-        home_away: For a Home turn in Home's stand-in on a cloud computer, the
-            two computers' names and why it runs there.
+        home_away: For a Home turn in Home's stand-in on a cloud computer,
+            where it runs and why.
         home_back: For a Home turn on Home's own computer, what came back from
             the stand-in; stated after a row that said Home was away, and once
             more, naming the folder, after one that said the copy was not done.
@@ -291,7 +292,7 @@ class TurnContextMiddleware(AgentMiddleware):
         inherits_rules: bool = False,
         disk_free_mb: int | None = None,
         disk_known: bool = False,
-        home_away: dict[str, Any] | None = None,
+        home_away: HomeAway | None = None,
         home_back: dict[str, Any] | None = None,
         is_subagent: bool = False,
     ) -> None:

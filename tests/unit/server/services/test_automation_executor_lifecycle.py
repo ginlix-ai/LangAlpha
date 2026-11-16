@@ -943,7 +943,7 @@ async def test_a_chief_of_staff_automation_runs_in_home():
 
     turn = fx.astream.call_args.kwargs
     assert turn["request"].workspace_id == _HOME
-    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff", runs_in=_HOME)
+    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff")
     manager.ensure_home_bound.assert_awaited_once_with(_USER)
 
 
@@ -1190,11 +1190,5 @@ class TestARunReleasedLate:
 def _home_runs_at_home():
     """Home's turn runs on Home's own computer here; where it runs while that
     computer can't be reached is ``test_home_placement``'s."""
-    from src.server.database.home_workspace import get_home_workspace_id
-    from src.server.services.home_placement import HomePlacement
-
-    async def place(user_id, **_):
-        return HomePlacement(get_home_workspace_id(user_id))
-
-    with patch("src.server.services.home_placement.place_home_turn", side_effect=place):
+    with patch("src.server.services.home_placement.place_home_turn", new=AsyncMock(return_value=None)):
         yield

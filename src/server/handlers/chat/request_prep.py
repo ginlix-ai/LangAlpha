@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
 from ptc_agent.agent.middleware.provenance.command_trace import REPORT_COMMAND_KEY
-from ptc_agent.agent.middleware.runtime_context import TurnContext, parse_surface
+from ptc_agent.agent.middleware.runtime_context import HomeAway, TurnContext, parse_surface
 from ptc_agent.agent.tools.command_handoff import JOB_ENV_KEY
 from src.config.settings import (
     get_langsmith_metadata,
@@ -607,7 +607,7 @@ def build_turn_context(
     inherits_rules: bool = False,
     sent_at: float | None = None,
     carried_unwatched: bool | None = None,
-    home_away: dict[str, Any] | None = None,
+    home_away: HomeAway | None = None,
     home_back: dict[str, Any] | None = None,
 ) -> TurnContext:
     """What this turn knows about itself: the request's surface plus the prior row.

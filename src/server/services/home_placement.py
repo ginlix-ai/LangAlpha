@@ -15,11 +15,11 @@ here is kept in process memory.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from src.server.database.computer import get_computer_for_workspace
+from ptc_agent.agent.middleware.runtime_context import HomeAway
+from src.server.database.computer import get_computer_for_workspace, get_home_computer
 from src.server.database.home_stand_in import (
     place_home_stand_in,
     read_stand_in,
@@ -28,6 +28,7 @@ from src.server.database.home_stand_in import (
 from src.server.database.home_workspace import (
     get_home_stand_in_id,
     get_home_workspace_id,
+    is_home_id,
     is_home_stand_in_id,
 )
 from src.server.services.ssh_computers import computer_unreachable
@@ -35,53 +36,20 @@ from src.server.services.ssh_computers import computer_unreachable
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class HomeAway:
-    """A Home turn running in the stand-in rather than on Home's own computer."""
-
-    #: The computer Home lives on.
-    computer_id: str
-    computer_name: str
-    #: The cloud computer the stand-in is on, where the turn runs.
-    cloud_computer_id: str
-    cloud_name: str
-    #: When the turn was admitted, ISO 8601: a file card of the turn finds the
-    #: hand-back that carried its file by it (the first one after).
-    at: str = ""
-    #: ``unreachable`` (Home's computer can't be reached) or ``command`` (the
-    #: turn reports on a background command that ran in the stand-in, whose log
-    #: and files are there, though Home's computer is back).
-    reason: str = "unreachable"
-
-    def as_metadata(self) -> Dict[str, str]:
-        return {
-            "computer_id": self.computer_id,
-            "computer_name": self.computer_name,
-            "cloud_computer_id": self.cloud_computer_id,
-            "cloud_name": self.cloud_name,
-            "at": self.at,
-            "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class HomePlacement:
-    #: The workspace whose computer and folder the turn runs in.
-    runs_in: str
-    away: Optional[HomeAway] = None
-
-
-def _away(
-    home_computer: Mapping[str, Any], cloud: Mapping[str, Any], reason: str
-) -> HomeAway:
-    return HomeAway(
-        computer_id=str(home_computer["computer_id"]),
-        computer_name=str(home_computer.get("name") or ""),
-        cloud_computer_id=str(cloud["computer_id"]),
-        cloud_name=str(cloud.get("name") or ""),
-        at=datetime.now(timezone.utc).isoformat(),
-        reason=reason,
-    )
+async def home_turn_computer(
+    user_id: str, *, conn=None
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """The computer a Home turn would run on now, and whether it is the
+    stand-in's: that one while Home's computer can't be reached and the user
+    has a cloud computer to stand on, else Home's (``get_home_computer``),
+    None for a user with no computer. A read for a gate that judges a turn
+    before it runs: nothing is placed, built or started."""
+    computer = await get_home_computer(user_id, conn=conn)
+    if await computer_unreachable(computer, conn=conn):
+        cloud = await stand_in_computer(user_id, conn=conn)
+        if cloud is not None:
+            return cloud, True
+    return computer, False
 
 
 async def place_home_turn(
@@ -89,16 +57,15 @@ async def place_home_turn(
     *,
     make: bool = True,
     follows: Optional[str] = None,
-) -> HomePlacement:
-    """Where a Home turn runs, Home already bound (``turn_runtime.ensure_home``).
-
-    The stand-in while Home's computer can't be reached and the user has a
-    cloud computer; otherwise Home's own computer, where a turn on a machine
-    that can't be reached fails as a workspace turn does. ``make`` places the
-    stand-in row if it is not placed yet (cheap, and never builds or starts a
-    computer); off, only one already placed is used. Nothing is marked here:
-    a turn placed in the stand-in marks the user away in its START
-    transaction (``home_away.mark_away``), and work between turns (a
+) -> Optional[HomeAway]:
+    """Where a Home turn runs, Home already bound (``turn_runtime.ensure_home``):
+    the stand-in while Home's computer can't be reached and the user has a
+    cloud computer, else None for Home's own computer, where a turn on a
+    machine that can't be reached fails as a workspace turn does. ``make``
+    places the stand-in row if it is not placed yet (cheap, and never builds
+    or starts a computer); off, only one already placed is used. Nothing is
+    marked here: a turn placed in the stand-in marks the user away in its
+    START transaction (``home_away.mark_away``), and work between turns (a
     compaction, opening Home) writes nothing the hand-back would carry.
 
     ``follows`` is the workspace a background command ran in when the turn
@@ -106,34 +73,49 @@ async def place_home_turn(
     Home's computer is back, since its log and the files it wrote are there
     and reach Home only with the next hand-back.
     """
-    home_id = get_home_workspace_id(user_id)
-    home_computer = await get_computer_for_workspace(home_id)
+    home_computer = await get_home_computer(user_id)
     try:
         reachable = not await computer_unreachable(home_computer)
-        if reachable and (follows is None or not is_home_stand_in_id(user_id, follows)):
-            return HomePlacement(home_id)
-        if not reachable and make:
-            stand_in = await place_home_stand_in(user_id)
-        else:
-            stand_in = await read_stand_in(user_id)
+        if reachable and not is_home_stand_in_id(user_id, follows):
+            return None
+        place = place_home_stand_in if make and not reachable else read_stand_in
+        stand_in = await place(user_id)
         # None stands, or the one standing keeps owed files on a computer
         # that takes no turn: the turn goes where Home is, as it was.
         if stand_in is None or not stand_in.runs or home_computer is None:
-            return HomePlacement(home_id)
-        reason = "command" if reachable else "unreachable"
+            return None
     except Exception:  # noqa: BLE001 - no stand-in is the turn as it was
         logger.warning(
             "Could not place user %s's Home turn on its stand-in", user_id, exc_info=True
         )
-        return HomePlacement(home_id)
-    away = _away(home_computer, stand_in.computer, reason)
+        return None
+    away = HomeAway(
+        workspace_id=get_home_stand_in_id(user_id),
+        computer_id=str(home_computer["computer_id"]),
+        computer_name=str(home_computer.get("name") or ""),
+        cloud_computer_id=str(stand_in.computer["computer_id"]),
+        cloud_name=str(stand_in.computer.get("name") or ""),
+        at=datetime.now(timezone.utc).isoformat(),
+        reason="command" if reachable else "unreachable",
+    )
     logger.info(
         "Home work of user %s runs in its stand-in on computer %s (%s)",
         user_id,
         away.cloud_computer_id,
-        reason,
+        away.reason,
     )
-    return HomePlacement(get_home_stand_in_id(user_id), away)
+    return away
+
+
+async def runs_in(user_id: Optional[str], workspace_id: str, *, make: bool) -> str:
+    """The workspace whose computer and folder a turn in ``workspace_id``,
+    or work between its turns, runs in: Home's stand-in for Home while
+    ``place_home_turn`` puts it there, else ``workspace_id`` itself. ``make``
+    as there: work that only attaches to a running computer places nothing."""
+    if not user_id or not is_home_id(user_id, workspace_id):
+        return workspace_id
+    away = await place_home_turn(user_id, make=make)
+    return away.workspace_id if away is not None else workspace_id
 
 
 async def home_back_notice(user_id: str) -> Optional[Dict[str, Any]]:

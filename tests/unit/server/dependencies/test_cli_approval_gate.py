@@ -532,18 +532,12 @@ def rows(monkeypatch) -> SimpleNamespace:
 
     monkeypatch.setattr(cli_approval, "ensure_home", bind_home)
 
-    async def computer_for_workspace(workspace_id):
-        return {"computer_id": HOME.computer_id}
+    async def home_turn_computer(user_id):
+        if world.home_away and world.stand_in is not None:
+            return world.stand_in, True
+        return {"computer_id": HOME.computer_id}, False
 
-    async def unreachable(computer):
-        return world.home_away
-
-    async def stand_in(user_id):
-        return world.stand_in
-
-    monkeypatch.setattr(cli_approval, "get_computer_for_workspace", computer_for_workspace)
-    monkeypatch.setattr(cli_approval, "computer_unreachable", unreachable)
-    monkeypatch.setattr(cli_approval, "stand_in_computer", stand_in)
+    monkeypatch.setattr(cli_approval, "home_turn_computer", home_turn_computer)
 
     async def any_place(user_id, name, workspace_id, conn=None, pref=None):
         return None

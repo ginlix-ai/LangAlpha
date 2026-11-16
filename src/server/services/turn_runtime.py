@@ -18,7 +18,7 @@ from src.server.database.home_workspace import get_home_workspace_id, is_home_id
 
 if TYPE_CHECKING:
     from ptc_agent.agent.agent import AgentRole
-    from src.server.services.home_placement import HomeAway
+    from ptc_agent.agent.middleware.runtime_context import HomeAway
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,19 +26,19 @@ class TurnRoute:
     """The workspace a turn runs in and the role the agent plays there.
 
     ``workspace_id`` is the thread's: its turns, memory and records. Once
-    bound, ``runs_in`` is the workspace whose computer and folder the turn
-    runs in, which differs only for a Home turn in Home's stand-in while the
-    machine Home lives on can't be reached (``away`` says which).
+    bound, ``away`` is set for a Home turn in Home's stand-in while the
+    machine Home lives on can't be reached, the one case whose computer and
+    folder (``runs_in``) are another workspace's.
     """
 
     workspace_id: str
     role: AgentRole
-    runs_in: Optional[str] = None
     away: Optional[HomeAway] = None
 
     @property
-    def computer_workspace_id(self) -> str:
-        return self.runs_in or self.workspace_id
+    def runs_in(self) -> str:
+        """The workspace whose computer and folder the turn runs in."""
+        return self.away.workspace_id if self.away is not None else self.workspace_id
 
     async def bind(
         self,
@@ -65,8 +65,7 @@ class TurnRoute:
         await ensure_home(user_id, workspace)
         if not place:
             return self
-        placement = await place_home_turn(user_id, follows=follows)
-        return replace(self, runs_in=placement.runs_in, away=placement.away)
+        return replace(self, away=await place_home_turn(user_id, follows=follows))
 
 
 def turn_route(user_id: str, workspace: Optional[Dict[str, Any]]) -> TurnRoute:
