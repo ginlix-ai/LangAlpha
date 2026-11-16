@@ -108,23 +108,19 @@ export async function seedWorkspaceMove(queryClient: QueryClient, move: Workspac
 
 /**
  * Resolves once `move` has ended, read afresh every {@link WORKSPACE_MOVE_POLL_MS}
- * whoever else is following it, so a step that has to wait for the move
- * (removing the computer Home just left) does not depend on a mounted reader.
- * Null when the workspace's latest move is another one by then. Still running
- * after `timeoutMs`, it resolves with the move as it stands, so the caller
- * says so rather than wait on with nothing to show for it.
+ * whoever else is following it, so a caller that waits on the move (a
+ * removal waiting for Home to leave the computer) does not depend on a
+ * mounted reader. Null when the workspace's latest move is another one by then.
  */
 export async function waitForMoveEnd(
   queryClient: QueryClient,
-  move: WorkspaceMove,
-  { timeoutMs }: { timeoutMs: number },
+  move: Pick<WorkspaceMove, 'workspace_id' | 'move_id'>,
 ): Promise<WorkspaceMove | null> {
   const query = workspaceMoveQuery(queryClient, move.workspace_id);
-  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const current = await queryClient.fetchQuery(query);
     if (current?.move_id !== move.move_id) return null;
-    if (!isMoveActive(current) || Date.now() >= deadline) return current;
+    if (!isMoveActive(current)) return current;
     await new Promise((resolve) => setTimeout(resolve, WORKSPACE_MOVE_POLL_MS));
   }
 }
@@ -180,14 +176,20 @@ export function useWatchedMoves(): Readonly<Record<string, WatchedMove>> {
   return useSyncExternalStore(watched.subscribe, watched.get);
 }
 
-/** Whether a dialog is showing this workspace's move. */
-export function useMoveShowing(workspaceId: string): boolean {
-  return useSyncExternalStore(showing.subscribe, () => (showing.get()[workspaceId] ?? 0) > 0);
+/** Whether a dialog is showing this workspace's move now. */
+export function isMoveShown(workspaceId: string): boolean {
+  return (showing.get()[workspaceId] ?? 0) > 0;
 }
 
-/** Mark this workspace's move as shown for as long as the caller is mounted. */
-export function useShowMove(workspaceId: string): void {
+/** Whether a dialog is showing this workspace's move. */
+export function useMoveShowing(workspaceId: string): boolean {
+  return useSyncExternalStore(showing.subscribe, () => isMoveShown(workspaceId));
+}
+
+/** Mark this workspace's move as shown for as long as the caller is mounted with it named. */
+export function useShowMove(workspaceId: string | null | undefined): void {
   useEffect(() => {
+    if (!workspaceId) return;
     const bump = (by: number) => {
       const current = showing.get();
       showing.set({ ...current, [workspaceId]: (current[workspaceId] ?? 0) + by });

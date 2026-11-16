@@ -2012,7 +2012,6 @@
       "backupOff": "备份已关闭",
       "unreachable": "无法连接",
       "failed": "无法迁移 Home，因此没有移除任何内容。请重试。",
-      "stillMoving": "Home 仍在迁移中，因此没有移除任何内容。请等 Home 迁移完成后再移除这台计算机。",
       "movedNotRemoved": "Home 已迁移到 {{home}}，但 {{name}} 没有被移除。"
     },
     "needsComputer": {

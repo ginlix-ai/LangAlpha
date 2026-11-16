@@ -276,6 +276,9 @@ export interface Computer {
   /** Make primary, asked with the create (`ComputerCreate.make_primary`);
    *  null once applied, or when none was asked. */
   make_primary?: ComputerMakePrimaryIntent | null;
+  /** A remove waiting on Home's move off it (`home_to`), or how one ended
+   *  without the computer going. */
+  removal?: ComputerRemoval | null;
 }
 
 /** Why the server did not carry out what its owner asked of a computer, in its own sentence. */
@@ -289,6 +292,20 @@ export interface ComputerIntentError {
 export interface ComputerMakePrimaryIntent {
   state: 'pending' | 'dropped';
   error: ComputerIntentError | null;
+}
+
+/**
+ * `waiting_for_home` while Home's move `move_id` runs; `home_did_not_move`
+ * when it failed or was cancelled, and the computer stays primary;
+ * `not_removed` when Home moved but the remove was then refused; `removed`
+ * once the computer is gone, `removed` saying what it left behind (null when
+ * that was not recorded).
+ */
+export interface ComputerRemoval {
+  state: 'waiting_for_home' | 'home_did_not_move' | 'not_removed' | 'removed';
+  move_id: string;
+  error: ComputerIntentError | null;
+  removed?: ComputerRemoveResponse | null;
 }
 
 /** What fixes a failed start, decided by the server from its code. */
@@ -426,6 +443,9 @@ export interface ComputerRemoveResponse {
   token?: ComputerTokenRemoval | null;
   /** The named workspaces it deleted, not one moved off it meanwhile; absent from an older backend. */
   workspaces_deleted?: string[];
+  /** On a 202: Home is moving to `home_to` first, and the computer is
+   *  removed once it has. `GET /computers/{id}/removal` says how it ended. */
+  move_id?: string | null;
 }
 
 export interface ComputerFilesRemoval {

@@ -253,6 +253,13 @@ describe('deleteComputer', () => {
     expect(opts.data).toEqual({ delete_workspaces: ids });
   });
 
+  it('names where Home goes when it removes the primary, and answers the move a 202 started', async () => {
+    const body = { key: null, move_id: 'mv-1' };
+    mockDelete.mockResolvedValueOnce({ data: body, status: 202, headers: {} });
+    await expect(deleteComputer('c1', { removeKey: false, homeTo: 'c2' })).resolves.toEqual(body);
+    expect(String(mockDelete.mock.calls[0][1].params)).toBe('remove_key=false&home_to=c2');
+  });
+
   it('refuses an empty id rather than deleting a route with a hole in it', async () => {
     await expect(deleteComputer('', { removeKey: true })).rejects.toThrow('Computer ID is required');
     expect(mockDelete).not.toHaveBeenCalled();

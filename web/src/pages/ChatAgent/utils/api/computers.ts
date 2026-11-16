@@ -13,6 +13,7 @@ import type {
   ComputerProvidersResponse,
   ComputerReconnectTarget,
   ComputerReinstall,
+  ComputerRemoval,
   ComputerRemoveResponse,
   ComputerStorage,
   ComputersResponse,
@@ -204,6 +205,10 @@ export async function setComputerSpec(computerId: string, tier: ResourceTier, pl
  * (files written here while Home's own machine was away are still to be
  * copied back into Home), or `busy` (moving between states, being prepared,
  * changing spec, a workspace moving, or held by another action).
+ * `homeTo`, on the primary, names where Home goes: Home moves there as Make
+ * primary moves it, refused with Make primary's codes, and a 202 carries
+ * that move's `move_id`; the computer goes once the move is done, and its
+ * `removal` says how a removal that did not happen ended.
  */
 /** As many ids as a request line keeps well under the 8 KB proxies allow. */
 const QUERY_WORKSPACES_MAX = 30;
@@ -214,11 +219,13 @@ export async function deleteComputer(
     removeKey,
     deleteWorkspaces = [],
     deleteFiles = false,
-  }: { removeKey: boolean; deleteWorkspaces?: readonly string[]; deleteFiles?: boolean },
+    homeTo = null,
+  }: { removeKey: boolean; deleteWorkspaces?: readonly string[]; deleteFiles?: boolean; homeTo?: string | null },
 ): Promise<ComputerRemoveResponse> {
   if (!computerId) throw new Error('Computer ID is required');
   const params = new URLSearchParams({ remove_key: String(removeKey) });
   if (deleteFiles) params.set('delete_files', 'true');
+  if (homeTo) params.set('home_to', homeTo);
   if (deleteWorkspaces.length <= QUERY_WORKSPACES_MAX) {
     for (const id of deleteWorkspaces) params.append('delete_workspaces', id);
   }
@@ -231,23 +238,32 @@ export async function deleteComputer(
   return data;
 }
 
+/** How a remove that waited on Home's move off the computer ended, read even once it is gone. */
+export async function getComputerRemoval(computerId: string): Promise<ComputerRemoval> {
+  const { data } = await api.get<ComputerRemoval>(`/api/v1/computers/${computerId}/removal`);
+  return data;
+}
+
 /**
  * Make this the computer new workspaces and Home land on. A 200 means the
  * flip landed now (Home was on no computer yet, or already on this one). A
  * 202 means Home's files move first: `move` is that move, read back like any
  * other, and the flip lands when it commits. `fromBackup` lays Home on it
  * from Home's last backup, for when Home's computer can't be reached.
- * Refusals are a 409 in the move's error shape (`moveRefusal`), among them
- * `not_backed_up` (this computer's file backup is off) and `no_backup`.
+ * `turnOnBackup` turns this computer's file backup on first, in the same
+ * request, so one with it off can take Home. Refusals are a 409 in the
+ * move's error shape (`moveRefusal`), among them `not_backed_up` (this
+ * computer's file backup is off) and `no_backup`.
  */
 export async function makeComputerPrimary(
   computerId: string,
-  { fromBackup = false }: { fromBackup?: boolean } = {},
+  { fromBackup = false, turnOnBackup = false }: { fromBackup?: boolean; turnOnBackup?: boolean } = {},
 ): Promise<MakePrimaryResponse> {
   if (!computerId) throw new Error('Computer ID is required');
+  const body = { ...(fromBackup && { from_backup: true }), ...(turnOnBackup && { turn_on_backup: true }) };
   const { data } = await api.post<MakePrimaryResponse>(
     `/api/v1/computers/${computerId}/make-primary`,
-    fromBackup ? { from_backup: true } : null,
+    Object.keys(body).length ? body : null,
     { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
   );
   return data;

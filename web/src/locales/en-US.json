@@ -1971,7 +1971,6 @@
       "backupOff": "Backup off",
       "unreachable": "Can't be reached",
       "failed": "Couldn't move Home, so nothing was removed. Try again.",
-      "stillMoving": "Home is still moving, so nothing was removed. Remove this computer again once Home has moved.",
       "movedNotRemoved": "Home moved to {{home}}, but {{name}} wasn't removed."
     },
     "needsComputer": {

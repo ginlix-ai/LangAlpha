@@ -24,7 +24,6 @@ import { AnimatePresence } from '@/lib/framer';
 import { SwapCell } from '@/components/ui/crossfade';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { Loader } from '@/components/ui/loader';
-import { toast } from '@/components/ui/use-toast';
 import { useHomeWorkspaceId } from '@/hooks/useHomeWorkspace';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 import { DURATION } from '@/lib/motion';
@@ -37,14 +36,15 @@ import { useReleaseRefusedRemoteControl, useThisMac, useThisMacAvailability } fr
 import { openComputerSpec, type ComputersPanelView } from '../hooks/computerPanelStore';
 import {
   deletedBeforeRefusal,
-  HomeMoveFailed,
-  HomeStillMoving,
+  primaryName,
+  removalEndedMessage,
+  removeRefusalMessage,
   useComputerActions,
   type ReconnectComputerVariables,
   type RemoveComputerVariables,
 } from '../hooks/useComputerActions';
 import { useTierQuota } from '../hooks/useTierQuota';
-import { isMoveActive, useWorkspaceMove } from '../hooks/useWorkspaceMove';
+import { isMoveActive, useShowMove, useWorkspaceMove } from '../hooks/useWorkspaceMove';
 import { createRefusalMessage } from './addComputer';
 import ComputerCard from './ComputerCard';
 import ComputerDetails from './ComputerDetails';
@@ -62,12 +62,12 @@ import {
   computerCapReached,
   isProviderLocked,
   providerHoldsOurKey,
+  providerIsOwnMachine,
   providerKeepsFilesOnRemove,
-  providerRemovableWhilePrimary,
   rowsShowProvider,
   THIS_MAC_OPTION,
 } from './providerUi';
-import { apiErrorObject, apiErrorReason, apiErrorStatus, moveRefusal } from '../utils/api';
+import { apiErrorObject, apiErrorReason, apiErrorStatus } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
 import { folderMarkedOwner } from '../utils/sshLimit';
 import { computerNameTakenMessage } from '../utils/computerName';
@@ -154,19 +154,6 @@ function ComputersPanel({
   // The machine whose Claude Code token a sheet adds or replaces, or a
   // confirmation removes.
   const [claudeCodeDialog, setClaudeCodeDialog] = useState<ClaudeCodeDialog | null>(null);
-  // Where Home went ahead of the removal under way, so a removal refused
-  // after that says Home has moved and the computer is still here.
-  const [homeMovedTo, setHomeMovedTo] = useState<string | null>(null);
-  // The removal awaits its steps rather than hanging them off `mutate`, whose
-  // callbacks stop once this panel unmounts, so it finishes after a close; what
-  // it would have said here then goes to a toast.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
   // The source the Add dialog opens on when a reconnect sends the user there.
   const [createPick, setCreatePick] = useState<string | null>(null);
 
@@ -228,7 +215,6 @@ function ComputersPanel({
     create,
     remove,
     makePrimary,
-    handOffHome,
     reinstall,
     reconnect,
   } = useComputerActions();
@@ -249,13 +235,20 @@ function ComputersPanel({
   const createError = create.error && !createNameError
     ? createRefusalMessage(create.error, t, create.variables?.resource_tier)
     : null;
-  const removeError = handOffHome.error
-    ? handOffErrorMessage(handOffHome.error, t)
-    : remove.error ? removeErrorMessage(remove.error, t, placement, homeMovedTo && removeTarget ? { home: homeMovedTo, name: removeTarget.name } : null) : null;
+  // A removal of the primary waits on Home's move off it, which the server
+  // keeps on the row: one this panel sent, or one still waiting from before
+  // it opened. How one ended is told while that move is Home's latest.
+  const removal = removeTarget?.removal && removeTarget.removal.move_id === homeMove?.move_id ? removeTarget.removal : null;
+  const followingHome = remove.isPending && !!remove.variables?.homeTo;
+  const homeLeaving = followingHome || (removal?.state === 'waiting_for_home' && !!homeMoving);
+  useShowMove(followingHome ? homeId : null);
+  const removeError = remove.error
+    ? removeErrorMessage(remove.error, t, placement)
+    : removal && removeTarget ? removalEndedMessage(removal, { name: removeTarget.name, home: primaryName(computers) }, t) : null;
   const removeOnlyComputer = apiErrorStatus(remove.error) === 409 && apiErrorObject(remove.error)?.code === 'only_computer';
   // A primary the user brought takes Home with it: these are where Home can
   // go instead. The rest of a hosted primary's removal is never offered.
-  const homeTargets = removeTarget?.is_primary && providerRemovableWhilePrimary(removeTarget.kind)
+  const homeTargets = removeTarget?.is_primary && providerIsOwnMachine(removeTarget.kind)
     ? liveComputers(computers).filter((c) => c.computer_id !== removeTarget.computer_id)
     : null;
   // A machine that can't be reached can't hand its files over, so Home comes
@@ -285,8 +278,6 @@ function ComputersPanel({
       },
       remove: () => {
         remove.reset();
-        handOffHome.reset();
-        setHomeMovedTo(null);
         setRemoveTargetId(computerId);
       },
       reinstall: () => {
@@ -344,8 +335,10 @@ function ComputersPanel({
     });
   };
 
-  const confirmRemove = async (removeKey: boolean, workspaceIds: string[], deleteFiles: boolean, homeTo: string | null) => {
-    if (!removeTarget || remove.isPending || handOffHome.isPending) return;
+  // On a primary, `homeTo` names where Home goes first; the server removes
+  // the computer once Home is there, and the removal follows that here.
+  const confirmRemove = (removeKey: boolean, workspaceIds: string[], deleteFiles: boolean, homeTo: string | null) => {
+    if (!removeTarget || remove.isPending) return;
     const vars: RemoveComputerVariables = {
       computerId: removeTarget.computer_id,
       name: removeTarget.name,
@@ -354,49 +347,23 @@ function ComputersPanel({
       deleteFiles,
       folder: removeTarget.root_dir,
       fingerprint: removeTarget.ssh?.fingerprint,
+      homeTo: homeTo ?? undefined,
     };
-    const index = computers.indexOf(removeTarget);
-    setHomeMovedTo(null);
-    let homeName: string | null = null;
-    if (homeTo) {
-      // Home first: the computer picked becomes primary, and the removal
-      // waits for Home to land there.
-      homeName = find(homeTo)?.name ?? '';
-      try {
-        await handOffHome.mutateAsync({ computerId: homeTo, name: homeName, fromBackup: homeFromBackup });
-      } catch (err) {
-        if (!mounted.current) {
-          toast({
-            variant: 'destructive',
-            title: t('computer.removeFailedNamed', "Couldn't remove {{name}}", { name: vars.name }),
-            description: handOffErrorMessage(err, t),
-          });
-        }
-        return;
-      }
-      setHomeMovedTo(homeName);
-    }
-    await removeComputer(vars, index, homeName);
-  };
-
-  const removeComputer = async (vars: RemoveComputerVariables, index: number, homeWentTo: string | null) => {
     // Out of its details as it goes, the rail comes back with the card after
     // it in the middle.
+    const index = computers.indexOf(removeTarget);
     setRailStart((last) => ({ id: null, index, focus: true, visit: last.visit + 1 }));
-    try {
-      const { workspaces_deleted: deleted } = await remove.mutateAsync(vars);
-      setRemoveTargetId(null);
-      if (currentWorkspaceId && deleted.includes(currentWorkspaceId)) navigate('/chat');
-    } catch (err) {
-      if (currentWorkspaceId && deletedBeforeRefusal(err).includes(currentWorkspaceId)) navigate('/chat');
-      if (!mounted.current) {
-        toast({
-          variant: 'destructive',
-          title: t('computer.removeFailedNamed', "Couldn't remove {{name}}", { name: vars.name }),
-          description: removeErrorMessage(err, t, placement, homeWentTo !== null ? { home: homeWentTo, name: vars.name } : null),
-        });
-      }
-    }
+    remove.mutate(vars, {
+      onSuccess: ({ workspaces_deleted: deleted, kept }) => {
+        // Kept, the row's removal says why, here.
+        if (kept) return;
+        setRemoveTargetId(null);
+        if (currentWorkspaceId && deleted.includes(currentWorkspaceId)) navigate('/chat');
+      },
+      onError: (err) => {
+        if (currentWorkspaceId && deletedBeforeRefusal(err).includes(currentWorkspaceId)) navigate('/chat');
+      },
+    });
   };
 
   // Each closes once its request is accepted: the row then says 'starting',
@@ -428,15 +395,11 @@ function ComputersPanel({
     setBackupOffTargetId(null);
   };
 
-  // Backup goes on first where it was off; a refusal to turn it on is told
-  // by its own toast and leaves the confirmation open.
+  // Backup goes on first where it was off, in the same request.
   const confirmMakePrimary = ({ turnOnBackup, fromBackup }: MakePrimaryChoice) => {
-    if (!primaryTarget || makePrimary.isPending || setFilesBackup.isPending) return;
+    if (!primaryTarget || makePrimary.isPending) return;
     const { computer_id: computerId, name } = primaryTarget;
-    const makeIt = () =>
-      makePrimary.mutate({ computerId, name, fromBackup }, { onSuccess: () => setPrimaryTargetId(null) });
-    if (turnOnBackup) setFilesBackup.mutate({ computerId, enabled: true }, { onSuccess: makeIt });
-    else makeIt();
+    makePrimary.mutate({ computerId, name, fromBackup, turnOnBackup }, { onSuccess: () => setPrimaryTargetId(null) });
   };
 
   return (
@@ -565,14 +528,14 @@ function ComputersPanel({
                 ? { ...placement.left_on_stand_in, homeComputer: placement.computer_name }
                 : null
             }
-            movingHome={handOffHome.isPending}
+            movingHome={homeLeaving}
             onAddComputer={() => {
               setRemoveTargetId(null);
               openCreate();
             }}
-            onClose={() => { if (!remove.isPending && !handOffHome.isPending) setRemoveTargetId(null); }}
-            onConfirm={(...args) => void confirmRemove(...args)}
-            busy={remove.isPending || handOffHome.isPending}
+            onClose={() => { if (!remove.isPending && !homeLeaving) setRemoveTargetId(null); }}
+            onConfirm={confirmRemove}
+            busy={remove.isPending || homeLeaving}
             error={removeError}
             onlyComputer={removeOnlyComputer}
           />
@@ -630,9 +593,9 @@ function ComputersPanel({
           <MakePrimaryDialog
             computer={primaryTarget}
             placement={placement}
-            onClose={() => { if (!makePrimary.isPending && !setFilesBackup.isPending) setPrimaryTargetId(null); }}
+            onClose={() => { if (!makePrimary.isPending) setPrimaryTargetId(null); }}
             onConfirm={confirmMakePrimary}
-            busy={makePrimary.isPending || pendingFor(setFilesBackup, primaryTarget.computer_id)}
+            busy={makePrimary.isPending}
             error={makePrimary.error}
           />
         )}
@@ -641,66 +604,10 @@ function ComputersPanel({
   );
 }
 
-/**
- * A refused remove, in this app's words for the refusals the route names,
- * else the server's own sentence, else a plain line. After Home already left
- * it (`homeMoved`), led by that, since the computer stays with Home gone.
- */
-function removeErrorMessage(
-  err: unknown,
-  t: Translate,
-  placement: HomePlacement | undefined,
-  homeMoved: { home: string; name: string } | null = null,
-): string {
-  const reason = removeRefusalReason(err, t, placement);
-  return homeMoved
-    ? `${t('computer.removeHome.movedNotRemoved', "Home moved to {{home}}, but {{name}} wasn't removed.", homeMoved)} ${reason}`
-    : reason;
-}
-
-function removeRefusalReason(err: unknown, t: Translate, placement: HomePlacement | undefined): string {
-  if (apiErrorStatus(err) === 409) {
-    switch (apiErrorObject(err)?.code) {
-      case 'primary':
-        return t(
-          'computer.removeRefused.primary',
-          'This is your primary computer. Make another computer primary first, and Home moves there.',
-        );
-      case 'only_computer':
-        return t(
-          'computer.removeRefused.onlyComputer',
-          "This is your only computer, so it can't be removed. Add another computer first.",
-        );
-      case 'handback_owed':
-        // Named by the machine Home is on; the server's own sentence where that is unknown.
-        if (placement?.computer_name) {
-          return t(
-            'computer.removeRefused.handbackOwed',
-            "Files written on this computer while {{mac}} was away haven't been copied back into Home yet. Try again once {{mac}} is back.",
-            { mac: placement.computer_name },
-          );
-        }
-        break;
-      case 'has_workspaces':
-        // Only a workspace the confirmation did not name keeps it now.
-        return t('computer.removeRefused.hasWorkspaces', 'A workspace not listed here is on it now. Check the list and try again.');
-      case 'busy':
-        return t('computer.removeRefused.busy', 'This computer is busy. Try again in a moment.');
-    }
-  }
-  return apiErrorReason(err) || t('computer.removeFailed', "Couldn't remove this computer. Try again.");
-}
-
-/** Home's move ahead of a removal didn't land, so nothing was removed. */
-function handOffErrorMessage(err: unknown, t: Translate): string {
-  if (err instanceof HomeStillMoving) {
-    return t(
-      'computer.removeHome.stillMoving',
-      'Home is still moving, so nothing was removed. Remove this computer again once Home has moved.',
-    );
-  }
-  const reason = err instanceof HomeMoveFailed ? err.move?.error?.message : moveRefusal(err)?.message ?? apiErrorReason(err);
-  return reason || t('computer.removeHome.failed', "Couldn't move Home, so nothing was removed. Try again.");
+/** A refused remove request: a 409 the route names, in this app's words, else the server's sentence. */
+function removeErrorMessage(err: unknown, t: Translate, placement: HomePlacement | undefined): string {
+  const code = apiErrorStatus(err) === 409 ? apiErrorObject(err)?.code : undefined;
+  return removeRefusalMessage(typeof code === 'string' ? code : undefined, apiErrorReason(err), t, placement?.computer_name);
 }
 
 export default ComputersDialog;

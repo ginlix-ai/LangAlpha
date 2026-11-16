@@ -27,7 +27,7 @@ import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
 import { MakePrimaryButton } from './MakePrimaryDialog';
-import { providerManagesSpec, providerRemovableWhilePrimary } from './providerUi';
+import { providerIsOwnMachine, providerManagesSpec } from './providerUi';
 import { ComputerFacts } from './computerFacts';
 import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
@@ -70,7 +70,7 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   // computer offers it, held while the server would refuse, with the reason
   // under it; on a primary the user brings the confirmation asks where Home
   // goes. Workspaces on it do not hold it: the confirmation offers to delete them.
-  const removable = !computer.is_primary || providerRemovableWhilePrimary(computer.kind);
+  const removable = !computer.is_primary || providerIsOwnMachine(computer.kind);
   const removeHeld = removable ? removeBlock(computer, actions.powerBusy) : null;
   const removeHint = removeHeld ? removeBlockHint(t, removeHeld) : null;
   // Backup off is not held here: the confirmation offers to turn it on.

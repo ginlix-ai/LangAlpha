@@ -40,17 +40,11 @@ export function providerManagesSpec(kind: string): boolean {
 /**
  * A machine the user brings. Any computer may be primary, this one included,
  * but Home on it needs a cloud computer to stand in while it can't be reached,
- * so making it primary says so.
+ * so making it primary says so. A primary the user brings can be removed,
+ * Home moving to another computer first; a hosted primary is kept, so
+ * nothing is offered on it.
  */
 export function providerIsOwnMachine(kind: string): boolean {
-  return !!providerUi(kind)?.ownMachine;
-}
-
-/**
- * A primary the user brings can be removed, Home moving to another computer
- * first; a hosted primary is kept, so nothing is offered on it.
- */
-export function providerRemovableWhilePrimary(kind: string): boolean {
   return !!providerUi(kind)?.ownMachine;
 }
 

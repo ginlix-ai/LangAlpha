@@ -19,6 +19,7 @@ export async function computersApi() {
     startComputer: vi.fn(),
     stopComputer: vi.fn(),
     deleteComputer: vi.fn(),
+    getComputerRemoval: vi.fn(),
     setComputerAlwaysOn: vi.fn(),
     setComputerFilesBackup: vi.fn(),
     reinstallComputer: vi.fn(),

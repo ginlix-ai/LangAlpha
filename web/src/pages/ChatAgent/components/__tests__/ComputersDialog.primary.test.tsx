@@ -3,7 +3,8 @@
  * confirmation says depends on where Home stands (`GET /workspaces/home/placement`):
  * which cloud computer stands in while the machine can't be reached, none, or
  * Home's own computer being unreachable, when Home is restored from its backup.
- * A machine with its file backup off is asked to turn it on first.
+ * A machine with its file backup off is asked to turn it on first, which
+ * Make primary does in the same request.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -138,7 +139,7 @@ describe('ComputersDialog: making a machine the user brings primary', () => {
     expect(await within(dialog).findByText(/the Chief of Staff works on Alpha Research, starting it if it's stopped/)).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: 'Make primary' }));
-    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: false }));
+    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: false, turnOnBackup: false }));
     expect(mockSetFilesBackup).not.toHaveBeenCalled();
   });
 
@@ -175,19 +176,18 @@ describe('ComputersDialog: making a machine the user brings primary', () => {
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: 'Make primary' }));
-    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(PRIMARY_ID, { fromBackup: true }));
+    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(PRIMARY_ID, { fromBackup: true, turnOnBackup: false }));
   });
 
-  it('asks to turn backup on first, then turns it on and makes it primary', async () => {
+  it('asks to turn backup on first, then turns it on and makes it primary in one request', async () => {
     mockGetComputers.mockResolvedValue(ownMachine({ files_backup: false }));
     const { user, dialog } = await openMakePrimary();
     expect(dialog).toHaveAccessibleName('Turn on backup for Office Mac?');
     expect(within(dialog).getByText("Home will live on this computer. With backup on, Home can be restored if it's lost.")).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: 'Turn on and make primary' }));
-    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: false }));
-    expect(mockSetFilesBackup).toHaveBeenCalledWith(SECOND_ID, true);
-    expect(mockSetFilesBackup.mock.invocationCallOrder[0]).toBeLessThan(mockMakePrimary.mock.invocationCallOrder[0]);
+    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: false, turnOnBackup: true }));
+    expect(mockSetFilesBackup).not.toHaveBeenCalled();
   });
 
   it('asks to turn backup on when the server refuses for it', async () => {

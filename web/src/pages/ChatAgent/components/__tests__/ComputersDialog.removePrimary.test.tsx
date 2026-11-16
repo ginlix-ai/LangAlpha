@@ -1,8 +1,10 @@
 /**
  * Removing the primary when it is a machine the user brings: the confirmation
- * asks where Home moves, makes that computer primary, waits for Home's move to
- * land, and only then removes. The user's only computer can't be removed, and
- * the refusals the route names are worded here.
+ * asks where Home moves and sends one DELETE naming it (`home_to`). The
+ * server moves Home and removes the computer once Home is there; the dialog
+ * follows Home's move, then reads how the removal ended: gone, with what it
+ * left behind, or why it stays. The user's only computer can't be removed,
+ * and the refusals the route names are worded here.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -19,12 +21,14 @@ vi.mock('@/config/hostMode', () => ({
 }));
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
+import { toast } from '@/components/ui/use-toast';
 
 vi.mock('../../utils/api', () => import('./computersDialogApi').then((m) => m.computersApi()));
 
 import {
   deleteComputer,
   getComputerProviders,
+  getComputerRemoval,
   getComputers,
   getComputerStorage,
   getHomePlacement,
@@ -41,6 +45,7 @@ const MOVE_ID = '6f0b2d8a-1c4e-4a7b-9e3d-5b8c2a1f7e64';
 
 const mockGetComputers = getComputers as Mock;
 const mockDelete = deleteComputer as Mock;
+const mockRemoval = getComputerRemoval as Mock;
 const mockMakePrimary = makeComputerPrimary as Mock;
 const mockGetMove = getWorkspaceMove as Mock;
 const mockPlacement = getHomePlacement as Mock;
@@ -64,6 +69,42 @@ function macPrimary(tunnelConnected: boolean | null = true, others = [{ ...SECON
   return { computers: [mac, ...others], total: 1 + others.length };
 }
 
+/** The list once the server removed the Mac: Home is on the second machine, now primary. */
+function macGone() {
+  return { computers: [{ ...SECOND, status: 'running', provider_ref: 'sbx-2', is_primary: true }], total: 1 };
+}
+
+/** The list with the Mac still on it, its removal ended as `state` says. */
+function macKept(state: string, error: { code: string; message: string } | null, homeMoved: boolean) {
+  const list = macPrimary();
+  const [mac, second] = list.computers;
+  return {
+    ...list,
+    computers: [
+      { ...mac, is_primary: !homeMoved, removal: { state, move_id: MOVE_ID, error } },
+      { ...second, is_primary: homeMoved },
+    ],
+  };
+}
+
+type List = ReturnType<typeof macPrimary>;
+
+/** The removal as the server reads it off `list`: the Mac's own, or removed once it is gone. */
+function removalOn(list: List, removed: unknown = null) {
+  const mac = list.computers.find((c) => c.computer_id === PRIMARY_ID) as { removal?: unknown } | undefined;
+  return mac ? mac.removal : { state: 'removed', move_id: MOVE_ID, error: null, removed };
+}
+
+/** DELETE accepted with a 202: Home moves first, and `after` is what the server reads once it has. */
+function acceptRemoval(after: { move: ReturnType<typeof homeMove>; list: List; removed?: unknown }) {
+  mockDelete.mockImplementation(async () => {
+    mockGetMove.mockResolvedValue(after.move);
+    mockGetComputers.mockResolvedValue(after.list);
+    mockRemoval.mockResolvedValue(removalOn(after.list, after.removed));
+    return { key: null, files: null, token: null, workspaces_deleted: null, move_id: MOVE_ID };
+  });
+}
+
 function homeMove(phase: string) {
   return {
     move_id: MOVE_ID,
@@ -73,7 +114,7 @@ function homeMove(phase: string) {
     phase,
     make_primary: true,
     from_backup: false,
-    error: null,
+    error: null as { code: string; message: string } | null,
     created_at: '2026-11-15T09:00:00Z',
   };
 }
@@ -123,36 +164,58 @@ beforeEach(() => {
 });
 
 describe('ComputersDialog: removing a primary the user brought', () => {
-  it('moves Home to the computer picked, waits for it to land, then removes', async () => {
-    // Accepted, Home's move runs; the next read of it has landed.
-    mockMakePrimary.mockImplementation(async () => {
-      mockGetMove.mockResolvedValue(homeMove('done'));
-      return { computer_id: SECOND_ID, is_primary: false, move: homeMove('preparing') };
-    });
+  it('sends one DELETE naming where Home goes, follows the move, and is done once the computer is gone', async () => {
+    acceptRemoval({ move: homeMove('done'), list: macGone() });
     const { user, confirm } = await openRemove('Office Mac');
     const picker = within(confirm).getByRole('radiogroup', { name: 'Home moves to' });
     expect(within(picker).getByRole('radio', { name: /^Second machine/ })).toBeChecked();
 
     await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
-    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
-    expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: false });
-    expect(mockMakePrimary.mock.invocationCallOrder[0]).toBeLessThan(mockDelete.mock.invocationCallOrder[0]);
-    expect(mockDelete).toHaveBeenCalledWith(PRIMARY_ID, { removeKey: false, deleteWorkspaces: [], deleteFiles: false });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Office Mac?' })).toBeNull());
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    expect(mockDelete).toHaveBeenCalledWith(PRIMARY_ID, {
+      removeKey: false, deleteWorkspaces: [], deleteFiles: false, homeTo: SECOND_ID,
+    });
+    expect(mockGetMove).toHaveBeenCalledWith(HOME_ID);
+    expect(mockMakePrimary).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Office Mac removed' }));
   });
 
-  it("restores Home from its backup when Home's placement says the machine can't be reached", async () => {
+  it('says what a removal after Home\'s move left on the machine', async () => {
+    acceptRemoval({
+      move: homeMove('done'),
+      list: macGone(),
+      removed: { key: { outcome: 'unreached', used_by: null, fingerprint: null, comment: null }, files: null, token: null, workspaces_deleted: [] },
+    });
+    const { user, confirm } = await openRemove('Office Mac');
+    await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Office Mac removed',
+      description: 'We could not reach the machine, so our key is still there.',
+      duration: Infinity,
+    })));
+    expect(mockRemoval).toHaveBeenCalledWith(PRIMARY_ID);
+  });
+
+  it('removes at once when Home had nothing to move', async () => {
+    const { user, confirm } = await openRemove('Office Mac');
+    await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Office Mac removed' })));
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("says Home is restored from its backup when Home's placement says the machine can't be reached", async () => {
     // The row's tunnel flag is as old as the list; the placement is Home's own reading.
     mockGetComputers.mockResolvedValue(macPrimary(true));
     mockPlacement.mockResolvedValue(placement({ unreachable: true }));
-    mockMakePrimary.mockResolvedValue({ computer_id: SECOND_ID, is_primary: true, move: null });
     const { user, confirm } = await openRemove('Office Mac');
     expect(
       await within(confirm).findByText("Office Mac can't be reached, so Home is restored on Second machine from its last backup."),
     ).toBeInTheDocument();
 
     await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
-    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
-    expect(mockMakePrimary).toHaveBeenCalledWith(SECOND_ID, { fromBackup: true });
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith(PRIMARY_ID, expect.objectContaining({ homeTo: SECOND_ID })));
   });
 
   it("holds a machine of the user's own that can't be reached, and picks the next", async () => {
@@ -175,35 +238,71 @@ describe('ComputersDialog: removing a primary the user brought', () => {
     expect(within(picker).getByRole('radio', { name: /^Second machine/ })).toBeChecked();
   });
 
-  it('still removes once Home has landed after the dialog closed', async () => {
-    mockMakePrimary.mockResolvedValue({ computer_id: SECOND_ID, is_primary: false, move: homeMove('preparing') });
-    mockGetMove.mockResolvedValue(homeMove('preparing'));
+  it('says how the removal ended once Home stopped moving after the dialog closed', async () => {
+    acceptRemoval({ move: homeMove('preparing'), list: macPrimary() });
     const user = userEvent.setup();
     const view = open();
     await openDetails(user, 'Office Mac');
     await user.click(screen.getByRole('button', { name: 'Remove' }));
     const confirm = await screen.findByRole('dialog', { name: 'Remove Office Mac?' });
     await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
-    await waitFor(() => expect(mockMakePrimary).toHaveBeenCalled());
+    expect(await within(confirm).findByRole('button', { name: 'Moving Home…' })).toBeDisabled();
 
     view.unmount();
-    mockGetMove.mockResolvedValue(homeMove('done'));
-    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith(PRIMARY_ID, expect.anything()), { timeout: 5000 });
+    const kept = macKept('home_did_not_move', { code: 'target_unavailable', message: 'Second machine stopped answering.' }, false);
+    mockGetMove.mockResolvedValue({ ...homeMove('failed'), error: { code: 'target_unavailable', message: 'Second machine stopped answering.' } });
+    mockGetComputers.mockResolvedValue(kept);
+    mockRemoval.mockResolvedValue(removalOn(kept));
+    await waitFor(
+      () => expect(toast).toHaveBeenCalledWith(expect.objectContaining({
+        variant: 'destructive',
+        title: "Couldn't remove Office Mac",
+        description: 'Second machine stopped answering.',
+      })),
+      { timeout: 5000 },
+    );
+    expect(mockDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('removes nothing when Home does not land', async () => {
-    mockMakePrimary.mockImplementation(async () => {
-      mockGetMove.mockResolvedValue({
-        ...homeMove('failed'),
-        error: { code: 'target_unavailable', message: 'Second machine stopped answering.' },
-      });
-      return { computer_id: SECOND_ID, is_primary: false, move: homeMove('preparing') };
+  it("says Home didn't move, and the computer stays", async () => {
+    acceptRemoval({
+      move: { ...homeMove('failed'), error: { code: 'target_unavailable', message: 'Second machine stopped answering.' } },
+      list: macKept('home_did_not_move', { code: 'target_unavailable', message: 'Second machine stopped answering.' }, false),
     });
     const { user, confirm } = await openRemove('Office Mac');
     await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
 
     expect(await within(confirm).findByRole('alert')).toHaveTextContent('Second machine stopped answering.');
-    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    // The dialog says it, so no toast does.
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it("says Home moved but the computer wasn't removed, and why", async () => {
+    acceptRemoval({
+      move: homeMove('done'),
+      list: macKept('not_removed', { code: 'has_workspaces', message: 'A workspace is on it.' }, true),
+    });
+    const { user, confirm } = await openRemove('Office Mac');
+    await user.click(within(confirm).getByRole('button', { name: 'Remove computer' }));
+
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+      "Home moved to Second machine, but Office Mac wasn't removed. A workspace not listed here is on it now. Check the list and try again.",
+    );
+  });
+
+  it('holds the confirmation while a removal from before it opened still waits on Home', async () => {
+    mockGetComputers.mockResolvedValue(macKept('waiting_for_home', null, false));
+    mockGetMove.mockResolvedValue(homeMove('backing_up'));
+    const { confirm } = await openRemove('Office Mac');
+    expect(await within(confirm).findByRole('button', { name: 'Moving Home…' })).toBeDisabled();
+  });
+
+  it("says nothing of a removal whose move is not Home's latest", async () => {
+    mockGetComputers.mockResolvedValue(macKept('home_did_not_move', { code: 'cancelled', message: 'Home stayed.' }, false));
+    mockGetMove.mockResolvedValue({ ...homeMove('done'), move_id: 'another-move' });
+    const { confirm } = await openRemove('Office Mac');
+    expect(within(confirm).queryByRole('alert')).toBeNull();
   });
 
   it('offers Add a computer, not Remove, on the only computer', async () => {
