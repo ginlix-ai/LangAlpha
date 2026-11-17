@@ -103,12 +103,21 @@ def shared_link_target(base: str, user_base: str) -> str:
 _SCRIPT = textwrap.dedent(r'''
 import errno, fcntl, hashlib, json, os, re, shutil, stat, sys, time
 
-ARGS = json.loads(__ARGS_JSON__)
+def load_args():
+    path = os.environ.get(__ARGS_FILE_ENV__)
+    if path:
+        with open(path) as f:
+            return json.load(f)
+    return json.loads(os.environ[__ARGS_ENV__])
+
+
+ARGS = load_args()
 BASE = ARGS["base"]
 MODE = ARGS["mode"]
 LOCK_VERSION = ARGS["lockVersion"]
 MANAGED_SOURCE_TYPE = ARGS["managedSourceType"]
 ORPHAN_TTL = ARGS["orphanTtl"]
+INTERNAL = ARGS["internal"]
 LOCK_PATH = os.path.join(BASE, "skills-lock.json")
 STAGING = os.path.join(BASE, ".staging")
 DELETING = ".deleting-"
@@ -357,14 +366,18 @@ def replace_live(live, staged, trash):
 
 def gc_orphans():
     now = time.time()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    for name in os.listdir(script_dir):
+    try:
+        names = os.listdir(INTERNAL)
+    except OSError:
+        # Nothing was ever uploaded there.
+        names = []
+    for name in names:
         if not (
-            (name.startswith(".skill-sync-") and name.endswith(".py"))
+            (name.startswith(".skill-sync-") and name.endswith((".py", ".json")))
             or (name.startswith(".tree-upload-") and name.endswith(".tar.gz"))
         ):
             continue
-        p = os.path.join(script_dir, name)
+        p = os.path.join(INTERNAL, name)
         try:
             if now - os.lstat(p).st_mtime > ORPHAN_TTL:
                 os.unlink(p)
@@ -850,43 +863,68 @@ else:
 ''')
 
 
-def _build_script(args: dict[str, Any]) -> bytes:
-    args = {
-        "lockVersion": LOCK_FILE_VERSION,
-        "managedSourceType": MANAGED_SOURCE_TYPE,
-        "orphanTtl": ORPHAN_TTL_SECONDS,
-        **args,
-    }
-    return _SCRIPT.replace("__ARGS_JSON__", repr(json.dumps(args))).encode()
+_ARGS_ENV = "LANGALPHA_SKILL_SYNC_ARGS"
+_ARGS_FILE_ENV = "LANGALPHA_SKILL_SYNC_ARGS_FILE"
+# One environment string must fit the kernel's per-string limit (128 KiB on
+# Linux); larger arguments go up as a file.
+_MAX_ENV_ARGS = 96 * 1024
+# The script goes whole with every call, as the glob runtime does: it is a
+# fixed size well under that limit, so nothing is installed on the computer
+# for code there to replace, and a call is one exec. Only the arguments,
+# which grow with the ledger, stay out of the command.
+_COMMAND = "python3 -I -c " + shlex.quote(
+    _SCRIPT.replace("__ARGS_ENV__", repr(_ARGS_ENV)).replace(
+        "__ARGS_FILE_ENV__", repr(_ARGS_FILE_ENV)
+    )
+)
 
 
 async def _run(
     sandbox: "PTCSandbox", args: dict[str, Any], *, retry_policy: RetryPolicy
 ) -> dict[str, Any]:
     assert sandbox.runtime is not None
-    script = f"{SandboxLayout(sandbox._work_dir).internal}/.skill-sync-{secrets.token_hex(8)}.py"
-    try:
-        await sandbox._runtime_call(
-            sandbox.runtime.upload_file,
-            _build_script(args),
-            script,
-            retry_policy=RetryPolicy.SAFE,
-        )
+    internal = SandboxLayout(sandbox._work_dir).internal
+    encoded = json.dumps(
+        {
+            "lockVersion": LOCK_FILE_VERSION,
+            "managedSourceType": MANAGED_SOURCE_TYPE,
+            "orphanTtl": ORPHAN_TTL_SECONDS,
+            "internal": internal,
+            **args,
+        }
+    )
+    if len(encoded) <= _MAX_ENV_ARGS:
         result = await sandbox._runtime_call(
             sandbox.runtime.exec,
-            f"python3 -I {shlex.quote(script)}",
+            _COMMAND,
+            env={_ARGS_ENV: encoded},
             retry_policy=retry_policy,
         )
-    finally:
-        with anyio.move_on_after(_CLEANUP_TIMEOUT_SECONDS, shield=True):
-            try:
-                await sandbox._runtime_call(
-                    sandbox.runtime.exec,
-                    f"rm -f {shlex.quote(script)}",
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception:
-                logger.debug("Could not remove skill-sync script", path=script)
+    else:
+        args_file = f"{internal}/.skill-sync-args-{secrets.token_hex(8)}.json"
+        try:
+            await sandbox._runtime_call(
+                sandbox.runtime.upload_file,
+                encoded.encode(),
+                args_file,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            result = await sandbox._runtime_call(
+                sandbox.runtime.exec,
+                _COMMAND,
+                env={_ARGS_FILE_ENV: args_file},
+                retry_policy=retry_policy,
+            )
+        finally:
+            with anyio.move_on_after(_CLEANUP_TIMEOUT_SECONDS, shield=True):
+                try:
+                    await sandbox._runtime_call(
+                        sandbox.runtime.exec,
+                        f"rm -f {shlex.quote(args_file)}",
+                        retry_policy=RetryPolicy.SAFE,
+                    )
+                except Exception:
+                    logger.debug("Could not remove skill-sync arguments", path=args_file)
     stdout = (getattr(result, "stdout", "") or "").strip()
     try:
         payload = json.loads(stdout.splitlines()[-1]) if stdout else {}

@@ -49,10 +49,15 @@ class _ShellRuntime:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
-    async def exec(self, command: str, *args, **kwargs):
+    async def exec(self, command: str, *args, env=None, **kwargs):
         self.commands.append(command)
         proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True, check=False
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, **(env or {})},
         )
         return SimpleNamespace(
             stdout=proc.stdout, stderr=proc.stderr, exit_code=proc.returncode
@@ -95,6 +100,12 @@ def _entries(path: Path) -> dict[str, str]:
         else:
             out[name] = "file"
     return out
+
+
+def _payloads_kept_out_of_argv(commands: list[str]) -> bool:
+    """The script's own fixed command aside, no command carries a payload:
+    the ledger and file lists grow, and one argument is capped at 128 KiB."""
+    return all(c == skill_sync._COMMAND or len(c.encode()) < 4096 for c in commands)
 
 
 @pytest.fixture
@@ -685,7 +696,7 @@ class TestScriptTransport:
             ]
         lock = json.loads((tiers.user / "skills-lock.json").read_text())
         assert lock["skills"] == entries
-        assert max(len(c.encode()) for c in tiers.sandbox.runtime.commands) < 4096
+        assert _payloads_kept_out_of_argv(tiers.sandbox.runtime.commands)
         assert not list(Path(tiers.sandbox.layout.internal).glob(".skill-sync-*"))
 
     def test_many_long_staging_paths_use_an_archive(self, tmp_path):
@@ -698,7 +709,7 @@ class TestScriptTransport:
         for rel, content in files:
             assert (staged / rel).read_bytes() == content
         assert asyncio.run(skill_sync.report(sandbox)) == {}
-        assert max(len(c.encode()) for c in sandbox.runtime.commands) < 4096
+        assert _payloads_kept_out_of_argv(sandbox.runtime.commands)
         assert not list(Path(sandbox.layout.internal).glob(".tree-upload-*"))
 
     @pytest.mark.parametrize("mode", ["install", "apply"])
@@ -743,18 +754,38 @@ class TestScriptTransport:
             assert attempts == 1
         assert not list(Path(sandbox.layout.internal).glob(".skill-sync-*"))
 
-    @pytest.mark.parametrize("phase", ["upload", "exec", "parse", "cancel"])
-    def test_failed_calls_remove_the_uploaded_script(self, tiers, monkeypatch, phase):
+    def test_a_call_is_one_exec_and_leaves_nothing_on_the_computer(self, tiers, monkeypatch):
+        runtime = tiers.sandbox.runtime
+        upload = runtime.upload_file
+        uploads: list[str] = []
+
+        async def counted(content, path):
+            uploads.append(path)
+            await upload(content, path)
+
+        monkeypatch.setattr(runtime, "upload_file", counted)
+        assert asyncio.run(skill_sync.report(tiers.sandbox)) == {}
+        assert uploads == []
+        assert runtime.commands == [skill_sync._COMMAND]
+        internal = Path(tiers.sandbox.layout.internal)
+        assert not internal.exists() or not list(internal.iterdir())
+
+    @pytest.mark.parametrize("phase", ["ok", "upload", "exec", "parse", "cancel"])
+    def test_arguments_too_large_for_the_environment_go_as_a_file_that_is_removed(
+        self, tiers, monkeypatch, phase
+    ):
+        monkeypatch.setattr(skill_sync, "_MAX_ENV_ARGS", 10)
         runtime = tiers.sandbox.runtime
         upload = runtime.upload_file
         execute = runtime.exec
 
         async def fail_upload(content, path):
             await upload(content, path)
-            raise RuntimeError("upload failed")
+            if ".skill-sync-args-" in path:
+                raise RuntimeError("upload failed")
 
         async def fail_exec(command, *args, **kwargs):
-            if not command.startswith("python3 -I "):
+            if not command.startswith("python3 -I ") or phase == "ok":
                 return await execute(command, *args, **kwargs)
             if phase == "parse":
                 return SimpleNamespace(stdout="not JSON", exit_code=1)
@@ -771,33 +802,16 @@ class TestScriptTransport:
             "exec": RuntimeError,
             "parse": skill_sync.SkillSyncError,
             "cancel": asyncio.CancelledError,
-        }[phase]
-        with pytest.raises(expected):
-            asyncio.run(skill_sync.report(tiers.sandbox))
-        assert not list(Path(tiers.sandbox.layout.internal).glob(".skill-sync-*"))
+        }.get(phase)
+        if expected is None:
+            assert asyncio.run(skill_sync.report(tiers.sandbox)) == {}
+        else:
+            with pytest.raises(expected):
+                asyncio.run(skill_sync.report(tiers.sandbox))
+        assert not list(Path(tiers.sandbox.layout.internal).glob(".skill-sync-args-*"))
 
-    def test_concurrent_calls_have_separate_scripts(self, tiers, monkeypatch):
-        runtime = tiers.sandbox.runtime
-        upload = runtime.upload_file
-        paths = []
-
-        async def interleave(content, path):
-            paths.append(path)
-            await upload(content, path)
-            await asyncio.sleep(0)
-
-        async def reports():
-            return await asyncio.gather(
-                skill_sync.report(tiers.sandbox, base=tiers.user_base),
-                skill_sync.report(tiers.sandbox, base=tiers.ws_base),
-            )
-
-        monkeypatch.setattr(runtime, "upload_file", interleave)
-        assert asyncio.run(reports()) == [{}, {}]
-        assert len(set(paths)) == 2
-        assert all(not Path(path).exists() for path in paths)
-
-    def test_cleanup_outlasts_an_anyio_cancel_scope(self, tiers, monkeypatch):
+    def test_argument_cleanup_outlasts_an_anyio_cancel_scope(self, tiers, monkeypatch):
+        monkeypatch.setattr(skill_sync, "_MAX_ENV_ARGS", 10)
         runtime = tiers.sandbox.runtime
         execute = runtime.exec
 
@@ -813,12 +827,15 @@ class TestScriptTransport:
                 await skill_sync.report(tiers.sandbox)
 
         asyncio.run(cancelled_call())
-        assert not list(Path(tiers.sandbox.layout.internal).glob(".skill-sync-*"))
+        assert not list(Path(tiers.sandbox.layout.internal).glob(".skill-sync-args-*"))
 
     @pytest.mark.parametrize("outcome", ["ok", "error", "cancel"])
     def test_stalled_cleanup_preserves_the_sync_outcome(self, tiers, monkeypatch, outcome):
+        monkeypatch.setattr(skill_sync, "_MAX_ENV_ARGS", 10)
         runtime = tiers.sandbox.runtime
         execute = runtime.exec
+        # Installed first, so the call under test is the launch alone.
+        assert asyncio.run(skill_sync.report(tiers.sandbox)) == {}
 
         async def stall_cleanup(command, *args, **kwargs):
             if command.startswith("rm -f "):
@@ -841,13 +858,20 @@ class TestScriptTransport:
             with pytest.raises(error):
                 asyncio.run(bounded_call())
 
-        (orphan,) = Path(tiers.sandbox.layout.internal).glob(".skill-sync-*")
+        (orphan,) = Path(tiers.sandbox.layout.internal).glob(".skill-sync-args-*")
         os.utime(orphan, (0, 0))
         monkeypatch.setattr(runtime, "exec", execute)
         assert asyncio.run(skill_sync.report(tiers.sandbox)) == {}
         assert not orphan.exists()
 
-    @pytest.mark.parametrize("name", [".skill-sync-stale.py", ".tree-upload-stale.tar.gz"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            ".skill-sync-stale.py",
+            ".skill-sync-args-stale.json",
+            ".tree-upload-stale.tar.gz",
+        ],
+    )
     def test_report_sweeps_only_abandoned_sync_uploads(self, tiers, name):
         internal = Path(tiers.sandbox.layout.internal)
         internal.mkdir(parents=True)

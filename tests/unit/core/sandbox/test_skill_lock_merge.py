@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,9 +42,14 @@ class _ShellSandbox:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
-    async def exec(self, command: str, *args, **kwargs):
+    async def exec(self, command: str, *args, env=None, **kwargs):
         proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True, check=False
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, **(env or {})},
         )
         return SimpleNamespace(
             stdout=proc.stdout, stderr=proc.stderr, exit_code=proc.returncode
