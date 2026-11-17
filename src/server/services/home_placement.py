@@ -209,13 +209,33 @@ class HomeTurnStart:
                     raise WorkspaceMovingError(self.away.workspace_id) from None
                 self.stamped["at"] = at.isoformat()
             if self.away is not None or self.retry:
+                # A retry back on Home stores a null rather than dropping the
+                # key, so a reconnect can still clear its first attempt's badge.
                 await set_run_query_metadata(
-                    conn, run_id, "home_fallback", self._placement()
+                    conn, run_id, "home_fallback", self._placement(), keep_null=True
                 )
             if then is not None:
                 await then(conn)
 
         return run
+
+
+async def placement_frame(run_id: str) -> Optional[str]:
+    """The ``turn_placement`` frame of a turn that ran in Home's stand-in, or
+    of a retry of one back on Home, which clears it, for a client attaching
+    after the live one went by: a send that dropped silently during setup is
+    adopted with no frame of its own. No id, so the client's cursor stays
+    where the run's own frames left it. Never fails the reconnect."""
+    from src.server.database.conversation.queries import get_run_query_metadata
+
+    try:
+        stated, placement = await get_run_query_metadata(run_id, "home_fallback")
+    except Exception:  # noqa: BLE001 - the badge is not worth the stream
+        logger.warning("Could not read where run %s ran", run_id, exc_info=True)
+        return None
+    if not stated:
+        return None
+    return f"event: turn_placement\ndata: {json.dumps({'home_fallback': placement})}\n\n"
 
 
 async def home_back_notice(user_id: str) -> Optional[Dict[str, Any]]:

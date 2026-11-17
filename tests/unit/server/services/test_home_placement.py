@@ -250,7 +250,9 @@ async def test_a_retry_restates_where_it_runs_on_its_turns_row(in_stand_in):
         await start.in_start(USER, "run-1", then)("conn")
 
     placement = {**away.as_metadata(), "at": marked.isoformat()} if away else None
-    restate.assert_awaited_once_with("conn", "run-1", "home_fallback", placement)
+    restate.assert_awaited_once_with(
+        "conn", "run-1", "home_fallback", placement, keep_null=True
+    )
     assert mark.await_count == (1 if in_stand_in else 0)
     then.assert_awaited_once_with("conn")
     # Live, the frame says it too, clearing the first attempt's badge.
@@ -280,3 +282,37 @@ async def test_a_turn_in_the_stand_in_is_placed_when_its_start_marks_it():
     placement = stamp.await_args.args[3]
     assert placement["at"] == marked.isoformat()
     assert json.loads(start.frame().split("data: ", 1)[1])["home_fallback"] == placement
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_to_a_turn_in_the_stand_in_says_where_it_runs_first():
+    """A send that dropped silently in setup is adopted on a reconnect, which
+    never saw the live placement frame; the reconnect says it before the
+    run's own frames, without moving the client's cursor."""
+    import json
+
+    from src.server.handlers.chat import reconnect_admission
+
+    placement = {"computer_name": "MacBook Pro", "cloud_name": "Cloud", "reason": "unreachable"}
+
+    async def log(thread_id, run_id, last_event_id):
+        yield "id: 7\nevent: message_chunk\ndata: {}\n\n"
+
+    async def frames(stored):
+        with (
+            patch(
+                "src.server.database.conversation.queries.get_run_query_metadata",
+                new=AsyncMock(return_value=stored),
+            ),
+            patch.object(reconnect_admission, "stream_from_log", log),
+        ):
+            return [f async for f in reconnect_admission.reconnect_to_workflow_stream("t", "r", 6)]
+
+    first, chunk = await frames((True, placement))
+    assert first.startswith("event: turn_placement\n")
+    assert json.loads(first.split("data: ", 1)[1]) == {"home_fallback": placement}
+    assert chunk.startswith("id: 7")
+    # A retry back on Home cleared it: the reconnect clears the badge too.
+    cleared, _ = await frames((True, None))
+    assert json.loads(cleared.split("data: ", 1)[1]) == {"home_fallback": None}
+    assert len(await frames((False, None))) == 1

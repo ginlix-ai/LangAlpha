@@ -522,11 +522,13 @@ export interface HomeFallback {
 /**
  * Sent once near the start of a Home turn that runs on the cloud stand-in,
  * and of a retry of a Home turn, where null says this attempt runs on Home.
+ * A reconnect to a turn that ran there sends it again, with no id and no
+ * `workspace_id`, ahead of the run's own frames.
  */
 export interface TurnPlacementEvent extends BaseSSEEvent {
   event: 'turn_placement';
   home_fallback: HomeFallback | null;
-  workspace_id: string;
+  workspace_id?: string;
 }
 
 /** Discriminated union of all SSE events */
