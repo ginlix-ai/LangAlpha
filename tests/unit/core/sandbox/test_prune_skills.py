@@ -8,7 +8,6 @@ signal: a lock it could not read means it does not know what it is replacing.
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 import os
@@ -353,21 +352,14 @@ class TestUploadOwnershipGuard:
         ]
 
     def _script_args(self, mock_runtime) -> list[dict]:
-        """The decoded ARGS of every skill-sync script exec, in call order."""
-        out = []
-        uploads = {c.args[1]: c.args[0] for c in mock_runtime.upload_file.call_args_list}
-        for c in mock_runtime.exec.call_args_list:
-            argv = shlex.split(c.args[0])
-            if argv[:2] != ["python3", "-I"]:
-                continue
-            script = ast.parse(uploads[argv[2]])
-            args = next(
-                node.value for node in script.body
-                if isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "ARGS" for t in node.targets)
-            )
-            out.append(json.loads(ast.literal_eval(args.args[0])))
-        return out
+        """The ARGS of every skill-sync script exec, in call order."""
+        from ptc_agent.core.sandbox import skill_sync
+
+        return [
+            json.loads(c.kwargs["env"][skill_sync._ARGS_ENV])
+            for c in mock_runtime.exec.call_args_list
+            if shlex.split(c.args[0])[:2] == ["python3", "-I"]
+        ]
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
