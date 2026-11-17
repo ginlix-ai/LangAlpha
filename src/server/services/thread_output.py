@@ -95,8 +95,12 @@ _WSREF_PREFIX = "__wsref__"
 # which `_rewrite` already emits untouched. Left unqualified, a titled link is
 # not safely ignored the way a URL is -- the parser hands the client the bare
 # path, which then resolves against Home and opens nothing.
+# The title starts only where a run of whitespace does, or one character into
+# a destination that opens with whitespace: the lazy destination reaches that
+# point first, and a title tried again from deeper in the run would rescan the
+# rest of it each time, quadratic on an unclosed destination.
 _DEST = r"<[^<>\n]+>|(?:[^()<>\n]|\([^()<>\n]*\))+?"
-_TITLE = r"""(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?"""
+_TITLE = r"""(?:(?:(?<![ \t])|(?<=\]\([ \t]))[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?"""
 _MD_LINK_RE = re.compile(r"(!?\[[^\]\n]{0,512}\]\()(" + _DEST + r")(" + _TITLE + r"\))")
 
 # Fenced blocks and inline code spans: shown, not read. A link inside one is

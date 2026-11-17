@@ -259,3 +259,16 @@ def test_rewrites_every_link_in_a_reply():
     assert _qualify_file_paths(text, WID) == (
         f"See [a]({Q}/a.md) and [b](https://x.io) then ![c]({Q}/charts/c.png)."
     )
+
+
+def test_an_unclosed_link_before_a_long_run_of_whitespace_reads_in_linear_time():
+    """Reading a thread runs on the server's event loop: a title tried again
+    from inside the run rescanned the rest of it, about six seconds here."""
+    import time
+
+    from src.server.services.thread_output import _MD_LINK_RE
+
+    for opening in ("[a](x", "[a]("):
+        started = time.perf_counter()
+        assert _MD_LINK_RE.search(opening + " \t" * 16000) is None
+        assert time.perf_counter() - started < 1.0
