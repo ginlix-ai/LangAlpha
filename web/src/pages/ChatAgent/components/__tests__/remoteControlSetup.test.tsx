@@ -41,6 +41,8 @@ vi.mock('../../utils/api', () => ({
 import { createSshPairing, getComputerProviders, getComputers, getSshPairing } from '../../utils/api';
 import { addComputerRow } from '../../hooks/useComputers';
 import CreateComputerDialog from '../CreateComputerDialog';
+import { useRemoteControlSetup } from '../remoteControlSetupState';
+import { renderHookWithProviders } from '@/test/utils';
 
 const mockProviders = getComputerProviders as Mock;
 const mockGetComputers = getComputers as Mock;
@@ -574,3 +576,17 @@ describe('closing the dialog', () => {
     expect(disable).not.toHaveBeenCalled();
   });
 });
+
+describe('useRemoteControlSetup', () => {
+  it('pairs no Mac again while a supported one it reached is being added', async () => {
+    mockStatus.mockResolvedValue(READY);
+    const { result } = renderHookWithProviders(() => useRemoteControlSetup(true));
+    act(() => result.current.setAcknowledged(true));
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.create).toBeTruthy());
+    act(() => result.current.start());
+    await settle();
+    expect(mockMint).toHaveBeenCalledTimes(1);
+  });
+});
+

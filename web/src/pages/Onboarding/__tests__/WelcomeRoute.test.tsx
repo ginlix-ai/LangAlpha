@@ -39,6 +39,7 @@ import {
   primary,
   resetWelcomeMocks,
   routeRenderer,
+  routeState,
 } from './welcomeHarness';
 import Welcome from '../welcome/Welcome';
 import { emptyProfile, profileRow, type InvestingProfile } from '../welcome/profile';
@@ -58,6 +59,21 @@ describe('Welcome route', () => {
 
   const LAST_QUESTION = 'welcome-turn-agent';
   const FIRST_QUESTION = 'welcome-turn-experience';
+
+  it('from setup under reduced motion, writes nothing in: the card is there with its line', async () => {
+    renderRoute('/welcome', { state: { fromSetup: true } });
+    expect(await screen.findByTestId('welcome-flow')).toHaveClass('welcome-chat--arrive');
+    expect(screen.getByTestId('brokerage-step')).toBeInTheDocument();
+    // Spent on arrival, so a reload opens standing.
+    await waitFor(() => expect(routeState()).toBeNull());
+  });
+
+  it('opens standing when it was not setup that sent it', async () => {
+    renderRoute('/welcome');
+    const flow = await screen.findByTestId('welcome-flow');
+    expect(flow).not.toHaveClass('welcome-chat--arrive');
+    expect(screen.getByTestId('brokerage-step')).toBeInTheDocument();
+  });
 
   it('a profile it cannot read is not opened blank, and Retry reads it again', async () => {
     getPreferences.mockRejectedValueOnce(new Error('down'));

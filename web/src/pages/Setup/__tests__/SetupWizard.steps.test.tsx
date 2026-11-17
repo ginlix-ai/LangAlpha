@@ -10,6 +10,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 
 vi.mock('@/config/hostMode', () => ({ isPlatformMode: false, HOST_MODE: 'oss', APP_ENTRY_PATH: '/' }));
 vi.mock('@/hooks/useSetupGate', () => ({ skipSetup: vi.fn() }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: 'done' }) }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({ useConfiguredProviders: () => ({ providers: [], hasAny: false }) }));
 vi.mock('@/hooks/useUser', () => ({ useUser: () => ({ user: { access_tier: -1 } }) }));
 vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'light' }) }));

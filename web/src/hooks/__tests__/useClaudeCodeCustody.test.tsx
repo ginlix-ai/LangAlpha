@@ -10,6 +10,7 @@ import { act, waitFor } from '@testing-library/react';
 import { QueryClient } from '@tanstack/react-query';
 import { renderHookWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
+import { runAuthResets } from '@/lib/authResets';
 import type { ClaudeCodeCustody, ClaudeCodeStatus } from '@/api/model';
 
 vi.mock('@/api/client', () => ({ api: { get: vi.fn(), put: vi.fn() } }));
@@ -60,6 +61,33 @@ describe('useClaudeCodeCustody', () => {
     serve({ ...OWN_ONLY, state: 'signed_in', saved: true }, async () => stored);
     const { result } = run();
     await waitFor(() => expect(result.current.custody).toEqual(stored));
+  });
+
+  it('reads a status that could not be read as unread, not as no choice, and reads it again on retry', async () => {
+    (api.get as Mock).mockImplementation(async (url: string) => { throw new Error(url); });
+    const { result } = run();
+    await waitFor(() => expect(result.current.unread).toBe(true));
+    expect(result.current.custody).toBeNull();
+    expect(calls('/api/v1/claude-code/custody')).toBe(0);
+    serve(OWN_ONLY, async () => LOCAL);
+    act(() => result.current.retry());
+    await waitFor(() => expect(result.current.custody).toEqual(LOCAL));
+    expect(result.current.unread).toBe(false);
+  });
+
+  it('keeps a choice answered after the account changed out of the answer, and rejects it', async () => {
+    serve(OWN_ONLY, async () => LOCAL);
+    let answer!: (v: unknown) => void;
+    (api.put as Mock).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const { result } = run();
+    await waitFor(() => expect(result.current.custody).toEqual(LOCAL));
+    let outcome: Promise<unknown> = Promise.resolve();
+    act(() => { outcome = result.current.choose({ mode: 'stored', disclosure: '2026-11-v1' }).then(() => 'kept', () => 'dropped'); });
+    await waitFor(() => expect(api.put).toHaveBeenCalled());
+    runAuthResets();
+    await act(async () => { answer({ data: { ...LOCAL, mode: 'stored' } }); });
+    expect(await outcome).toBe('dropped');
+    expect(result.current.custody).toEqual(LOCAL);
   });
 
   it('reads nothing while Claude Code is off for the user', async () => {

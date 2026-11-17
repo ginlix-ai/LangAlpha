@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHookWithProviders } from '../../test/utils';
-import { useSetupGate, skipSetup } from '../useSetupGate';
+import { runAuthResets } from '../../lib/authResets';
+import { useSetupGate, skipSetup, setupSkipped } from '../useSetupGate';
 
 vi.mock('../useUser', () => ({
   useUser: vi.fn(),
@@ -21,6 +22,13 @@ describe('useSetupGate', () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     mockUseClaudeCodeSetup.mockReturnValue({ setup: null, isLoading: false, unread: false });
+  });
+
+  it('forgets Exit setup at a sign-out or an account switch, so the next account gets its own setup', () => {
+    skipSetup();
+    expect(setupSkipped()).toBe(true);
+    runAuthResets();
+    expect(setupSkipped()).toBe(false);
   });
 
   it('returns needsSetup=false when user has_api_key=true', () => {

@@ -320,12 +320,13 @@ export function flowRenderer(Flow: Flow) {
 
 /** Mounts the route at `url`, with the preferences cache filled when given. */
 export function routeRenderer(Welcome: ComponentType) {
-  return function renderRoute(url: string, { cached }: { cached?: unknown } = {}) {
+  return function renderRoute(url: string, { cached, state }: { cached?: unknown; state?: unknown } = {}) {
+    const [pathname, search = ''] = url.split('?');
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (cached !== undefined) client.setQueryData(queryKeys.user.preferences(), cached);
     render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[url]}>
+        <MemoryRouter initialEntries={[{ pathname, search: search && `?${search}`, state }]}>
           <Routes>
             <Route path="/welcome" element={<Welcome />} />
             <Route path="*" element={null} />

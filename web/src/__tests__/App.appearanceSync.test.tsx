@@ -20,7 +20,8 @@ vi.mock('@/hooks/useAppearance', () => ({
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ isLoggedIn: h.loggedIn, isInitialized: true }),
 }));
-vi.mock('@/hooks/useSetupGate', () => ({ useSetupGate: () => ({ isLoading: false, needsSetup: false }) }));
+vi.mock('@/hooks/useSetupGate', () => ({ setupSkipped: () => false }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: 'done' }) }));
 vi.mock('@/pages/Setup/SetupWizard', () => ({ default: () => <div>setup wizard</div> }));
 vi.mock('@/pages/Onboarding/welcome/Welcome', () => ({ default: () => <div>welcome flow</div> }));
 vi.mock('@/components/Main/Main', () => ({ default: () => <div>main</div>, preloadRouteChunk: () => {} }));

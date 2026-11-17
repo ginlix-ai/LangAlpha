@@ -5,8 +5,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import type { UsageSteps } from '@/components/modelAccess/usageSteps';
-import { UsageTableContext } from '@/components/modelAccess/usageSteps';
+import type { UsageSteps } from '../usageSteps';
+import { UsageTableContext } from '../usageSteps';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
 vi.mock('@/pages/ChatAgent/components/mcp/BrandMark', () => ({ BrandMark: () => <span /> }));
@@ -14,7 +14,7 @@ vi.mock('@/hooks/useClaudeCodePlan', () => ({
   usePlanClock: () => ({ locale: 'en-US', zone: 'UTC', now: Date.parse('2026-11-07T15:00:00Z') }),
 }));
 
-import { AccessRow } from '../AccessRows';
+import { AccessRow } from '../AccessRow';
 
 const FULL: UsageSteps = {
   grid: '', window: 'flex', resets: 'block', header: 'grid', spanUsage: 'col-span-4', inline: 'hidden', row: 'grid grid-cols-subgrid',

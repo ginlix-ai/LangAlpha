@@ -19,8 +19,12 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/config/hostMode', () => ({ isPlatformMode: true, HOST_MODE: 'platform', APP_ENTRY_PATH: '/app' }));
-vi.mock('@/config/supportLinks', () => ({ PLATFORM_URL: '/account' }));
+vi.mock('@/config/supportLinks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config/supportLinks')>()),
+  PLATFORM_URL: '/account',
+}));
 vi.mock('@/hooks/useSetupGate', () => ({ skipSetup: h.skipSetup }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: 'done' }) }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], hasAny: h.hasAny }),
 }));
