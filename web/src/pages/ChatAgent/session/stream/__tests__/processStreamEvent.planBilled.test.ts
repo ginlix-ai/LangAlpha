@@ -57,7 +57,7 @@ describe('live: a reply billed to usage credits', () => {
     process(billed('model:abc', 5));
     process(billed('model:abc', 6));
     expect(notices()).toEqual([
-      { type: 'notification', order: 5, planBilled: { window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
+      { type: 'notification', order: 5, notice: { kind: 'planBilled', window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
     ]);
   });
 

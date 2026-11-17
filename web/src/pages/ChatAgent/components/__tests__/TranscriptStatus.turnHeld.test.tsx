@@ -11,8 +11,7 @@ function renderStatus(props: { turnHeld: string | null; workspaceStarting?: fals
       modelStatus={null}
       isLoading={false}
       retired={null}
-      workspaceStarting={props.workspaceStarting ?? false}
-      turnHeld={props.turnHeld}
+      turnStatus={{ workspaceStarting: props.workspaceStarting ?? false, turnHeld: props.turnHeld, cliQueue: null }}
       model={props.model ?? null}
       isCompacting={false}
       compactionTokens={null}

@@ -48,7 +48,7 @@ describe('history replay: a reply billed to usage credits', () => {
     ]);
 
     expect(notices(reply)).toEqual([
-      { type: 'notification', order: 6, planBilled: { window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
+      { type: 'notification', order: 6, notice: { kind: 'planBilled', window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
     ]);
     const last = [...(reply.contentSegments ?? [])].sort((a, b) => a.order - b.order).at(-1);
     expect(last?.type).toBe('notification');
