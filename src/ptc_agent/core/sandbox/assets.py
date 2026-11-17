@@ -893,6 +893,10 @@ async def sync_sandbox_assets(
                     or remote_mod.get("version") != mod_data["version"]
                 ):
                     changed_modules.add(mod_name)
+            if "skills" in changed_modules and await _carry_held_collisions(
+                sandbox, remote_manifest, local_manifest
+            ):
+                changed_modules.discard("skills")
 
         if not changed_modules:
             # `is None` guard (like the slow path): the cached manifest may
@@ -1043,6 +1047,7 @@ async def sync_sandbox_assets(
             mod = local_manifest["modules"]["skills"]
             collision_key = ",".join(sorted(skill_collisions))
             mod["collisions"] = sorted(skill_collisions)
+            mod["base_version"] = mod["version"]
             mod["version"] = hashlib.sha256(
                 f"{mod['version']}|collisions:{collision_key}".encode()
             ).hexdigest()
@@ -1175,6 +1180,61 @@ async def _collect_local_skill_names(
         return names
 
     return await asyncio.to_thread(build)
+
+
+def _held_by_another(lock: Mapping[str, Any], name: str) -> bool:
+    """Whether the asset sync may not write over ``name``: the agent installed
+    it, or the reconciler links it to a workspace's skill row."""
+    from ptc_agent.agent.middleware.skills.lock import is_agent_installed, is_linked
+
+    entry = lock.get(name)
+    # The lock sits where sandbox code can rewrite it.
+    return isinstance(entry, dict) and (is_agent_installed(entry) or is_linked(entry))
+
+
+async def _carry_held_collisions(
+    sandbox: "PTCSandbox",
+    remote_manifest: dict[str, Any] | None,
+    local_manifest: dict[str, Any],
+) -> bool:
+    """Carry the recorded collision stamp into ``local_manifest`` when the
+    skills differ from the recorded ones only by it and the names held now
+    are exactly the stamped ones; answers whether it did.
+
+    An upload would then skip the same names and write the same stamp, at a
+    full skills pass per start, forever. Carried, the delivered names still
+    leave those out, and the upload runs again once a name frees, another
+    is taken, or a skill changes. One lock read decides it.
+    """
+    remote = ((remote_manifest or {}).get("modules") or {}).get("skills") or {}
+    local = local_manifest["modules"]["skills"]
+    collisions = remote.get("collisions")
+    stamped = remote.get("version")
+    # The manifest sits where sandbox code can rewrite it, and anything this
+    # check cannot read means upload, never a failed sync.
+    if (
+        not isinstance(collisions, list)
+        or not collisions
+        or not all(isinstance(name, str) for name in collisions)
+        or not isinstance(stamped, str)
+        or remote.get("base_version") != local["version"]
+    ):
+        return False
+    try:
+        lock = await sandbox._download_skills_lock()
+    except Exception:
+        return False
+    if not lock:
+        return False
+    held = {name for name in local.get("skills", {}) if _held_by_another(lock, name)}
+    if held != set(collisions):
+        return False
+    local.update(version=stamped, base_version=local["version"], collisions=collisions)
+    if sandbox._skills_manifest is None:
+        # The upload this replaces folds the agent's own skills in from the
+        # lock; this read has them, so nothing reads it twice.
+        sandbox._build_complete_skills_cache(local, {"skills": lock})
+    return True
 
 
 async def _download_skills_lock(sandbox: "PTCSandbox") -> dict[str, Any] | None:
@@ -1324,7 +1384,6 @@ async def _upload_skills(
         folds these into the module version so the skipped upload retries).
     """
     from ptc_agent.agent.middleware.skills import skills_outside_sandbox
-    from ptc_agent.agent.middleware.skills.lock import is_agent_installed, is_linked
 
     disabled = _resolve_disabled_skills(disabled)
 
@@ -1404,13 +1463,7 @@ async def _upload_skills(
     # retries once the name frees up). Same predicate pair as the prune side.
     if existing_lock:
         collisions = {
-            name
-            for name in final_skills
-            if name in existing_lock
-            and (
-                is_agent_installed(existing_lock[name])
-                or is_linked(existing_lock[name])
-            )
+            name for name in final_skills if _held_by_another(existing_lock, name)
         }
     else:
         # No lock means either a fresh sandbox or a failed read, and the two
