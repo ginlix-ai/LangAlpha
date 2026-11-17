@@ -229,13 +229,13 @@ def _catalog():
     ("model", "named"),
     [
         # Named as `la models list` and a hand-off's `model` take it too.
-        ("m-one", "on Model One (m-one)"),
+        ("m-one", "started on Model One (m-one)"),
         # A model the catalog does not know reads by its name.
-        ("m-gone", "on m-gone"),
+        ("m-gone", "started on m-gone"),
     ],
     ids=["catalog", "unknown"],
 )
-def test_a_run_names_the_model_it_ran_on(_catalog, model, named):
+def test_a_run_names_the_model_it_started_on(_catalog, model, named):
     run = _response(7, created_at=_STARTED, metadata={"llm_model": model})
 
     assert _run_block(run, "x", _UTC).startswith(

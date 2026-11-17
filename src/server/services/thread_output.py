@@ -491,8 +491,9 @@ def _run_block(run: dict[str, Any], text: str, zone: Zone) -> str:
     status = str(run.get("status") or "")
     parts.append(_RUN_STATUS.get(status, status or "status unknown"))
     metadata = run.get("metadata")
+    # The model the run was admitted on: a fallback may have written its text.
     if isinstance(metadata, dict) and (model := metadata.get("llm_model")):
-        parts.append(f"on {model_label(model)}")
+        parts.append(f"started on {model_label(model)}")
     if (attempt := run.get("attempt_no") or 1) > 1:
         parts.append(f"attempt {attempt} of the same request")
     if isinstance(metadata, dict) and (
