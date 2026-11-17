@@ -99,9 +99,18 @@ def original_filed_on(text: str) -> list[str]:
 
 def resolve_amends(amendment: FilingSections, refs: list[FilingRef]) -> str | None:
     """The original an amendment amends, read from its own text: the original with the period its cover states,
-    else the one filed on the first date its explanatory note gives for the original. None when neither places it."""
+    else the one filed on the first date its explanatory note gives for the original. None when neither places it.
+    Only originals filed before the amendment count, ordered by the filing list's acceptance times when the list
+    holds the amendment, else by filing date."""
+    own = next((r for r in refs if r.accession == amendment.accession), None)
+
+    def filed_before(r: FilingRef) -> bool:
+        if own is not None:
+            return filing_order(r) <= filing_order(own)
+        return amendment.filing_date is None or r.filing_date <= amendment.filing_date
+
     originals = [r for r in refs if r.filing_status == "original" and base_form(r.form) == base_form(amendment.form)
-                 and (amendment.filing_date is None or filing_order(r) <= filing_order(amendment))]
+                 and filed_before(r)]
     period = cover_period(amendment.text)
     by_period = [r for r in originals if period and r.report_date == period]
     if by_period:
@@ -133,8 +142,9 @@ def _shifted(s: Section, chars: int, source: str | None) -> Section:
 
 
 def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingSections:
-    """The original as amended by amendments, applied in filing order (see the module docstring)."""
-    amendments = sorted(amendments, key=filing_order)
+    """The original as amended by amendments, applied in filing order (see the module docstring): by filing date,
+    and amendments of one day in the order given, which amended_sections gives as EDGAR accepted them."""
+    amendments = sorted(amendments, key=lambda a: a.filing_date or "")
     items = {k: _shifted(s, 0, original.accession) for k, s in original.items.items()}
     text = original.text
     documents = [replace(d, accession=original.accession) for d in original.documents]

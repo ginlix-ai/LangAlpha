@@ -51,15 +51,18 @@ class FilingRef:
     fiscal_period: str | None = None
     fiscal_source: FiscalSource | None = None
     amends: str | None = None
+    accepted: str | None = None
 
     @property
     def filing_status(self) -> FilingStatus:
         return "amendment" if is_amendment(self.form) else "original"
 
 
-def filing_order(filing) -> tuple[str, str]:
-    """Filing date, then accession: the order EDGAR received filings in (for a FilingRef or FilingSections)."""
-    return filing.filing_date or "", filing.accession or ""
+def filing_order(filing) -> tuple[str, str, str]:
+    """Filing date, then the time EDGAR accepted it, then accession: the order EDGAR received filings in (for a
+    FilingRef or FilingSections). An accession's prefix names the filer agent, so accessions alone do not order
+    two agents' filings of one day."""
+    return filing.filing_date or "", getattr(filing, "accepted", None) or "", filing.accession or ""
 
 
 def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
@@ -72,7 +75,7 @@ def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
     linked = []
     for r in refs:
         if r.filing_status == "amendment" and r.report_date:
-            prior = [o for o in originals[(base_form(r.form), r.report_date)] if o.filing_date <= r.filing_date]
+            prior = [o for o in originals[(base_form(r.form), r.report_date)] if filing_order(o) <= filing_order(r)]
             if prior:
                 r = replace(r, amends=max(prior, key=filing_order).accession)
         linked.append(r)
@@ -123,9 +126,10 @@ def refs_from_rows(
     fiscal_year_end: str | None = None,
 ) -> list[FilingRef]:
     """Newest-first refs for the rows of a filings table (accession_number, form, filing_date, reportDate). An annual
-    report the table gives no period of report covers the last fiscal year end before it was filed. A quarter is
-    counted from the year end of the next annual report in the table within a year, so a filer that moved its year
-    end keeps its old quarters, and from fiscal_year_end when no annual report follows it. A filing with no
+    report the table gives no period of report covers the last fiscal year end before it was filed; an amendment with
+    none is left for its own text to place. A quarter is counted from the year end of the next annual report in the
+    table within a year, so a filer that moved its year end keeps its old quarters, and from fiscal_year_end
+    when no annual report follows it. A filing with no
     XBRL label is labeled by the period rule, moved by the years the filer's own XBRL labels differ from it on
     filings with the same year-end month (a January year end is the prior fiscal year for some filers and the
     same one for others, and a filer that moved its year end may label each convention differently)."""
@@ -156,12 +160,14 @@ def refs_from_rows(
         end = next((e for e in annual_ends if report_date <= e <= within), None)
         return f"{end[5:7]}{end[8:10]}" if end else fiscal_year_end
 
-    picked = []
+    picked, accepted = [], {}
     for row in rows:
         form, accession = row["form"], row["accession_number"]
         filing_date = str(row["filing_date"])
         if form not in wanted or (filed_on_or_before and filing_date > filed_on_or_before):
             continue
+        if at := row.get("acceptanceDateTime"):
+            accepted[accession] = at.isoformat() if hasattr(at, "isoformat") else str(at)
         report_date = str(row.get("reportDate") or "") or None
         if report_date is None and not is_amendment(form) and base_form(form) in ("10-K", "20-F", "40-F") \
                 and (year_end := undated_year_end(filing_date)):
@@ -190,7 +196,8 @@ def refs_from_rows(
         source = "xbrl" if label else "period_rule" if rule else None
         shift = shifts.get(year_end_month(form, report_date), 0)
         year, period = label or ((rule[0] + shift, rule[1]) if rule else (None, None))
-        refs.append(FilingRef(cik, accession, form, filing_date, report_date, year, period, source))
+        refs.append(FilingRef(cik, accession, form, filing_date, report_date, year, period, source,
+                              accepted=accepted.get(accession)))
     return sorted(link_amendments(refs), key=filing_order, reverse=True)
 
 
@@ -201,7 +208,9 @@ def pick_ref(
     fiscal_period: str | None = None,
     period_end: str | None = None,
 ) -> FilingRef | None:
-    """Latest ref when no period is given, else the earliest filed match, which is the original of a refile."""
+    """Latest ref when no period is given, else the latest original filed for the period: a report filed twice
+    is superseded by its refile, which its amendments link to (link_amendments). With no original, the earliest
+    filed match."""
     if fiscal_year is None and fiscal_period is None and period_end is None:
         return refs[0] if refs else None
     matches = [
@@ -211,7 +220,8 @@ def pick_ref(
         and (fiscal_period is None or r.fiscal_period == fiscal_period)
         and (period_end is None or (r.report_date or "").startswith(period_end))
     ]
-    return min(matches, key=filing_order, default=None)
+    originals = [r for r in matches if r.filing_status == "original"]
+    return max(originals, key=filing_order) if originals else min(matches, key=filing_order, default=None)
 
 
 def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:

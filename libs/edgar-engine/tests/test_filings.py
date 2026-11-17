@@ -91,6 +91,14 @@ def test_an_old_quarter_counts_from_the_year_end_of_its_own_annual_report():
     assert [(r.accession, r.fiscal_year, r.fiscal_period) for r in got] == [("0001234567-05-000002", 2005, "Q1")]
 
 
+def test_same_day_filings_are_ordered_by_acceptance_time_not_accession():
+    from datetime import datetime
+    rows = [dict(row("0009999999-24-000001", "10-K", "2024-03-01", "2023-12-31"), acceptanceDateTime=datetime(2024, 3, 1, 9)),
+            dict(row("0001111111-24-000002", "10-K", "2024-03-01", "2023-12-31"), acceptanceDateTime=datetime(2024, 3, 1, 16))]
+    got = refs_from_rows(rows, CIK, ["10-K"], fiscal_year_end="1231")
+    assert pick_ref(got, fiscal_year=2023).accession == "0001111111-24-000002"
+
+
 def test_annual_report_without_report_date_covers_the_last_fiscal_year_end_before_it():
     got = refs_from_rows([row("0001234567-09-000001", "40-F", "2009-03-30", ""),
                           row("0001234567-09-000002", "40-F/A", "2009-04-15", "2008-12-31")],
@@ -118,12 +126,14 @@ def test_pick_latest_without_a_period():
     assert pick_ref([]) is None
 
 
-def test_pick_by_fiscal_year_takes_earliest_filed_original():
-    assert pick_ref(refs(), fiscal_year=2023).accession == "0001234567-24-000011"
+def test_pick_by_fiscal_year_takes_the_refile_its_amendments_link_to():
+    got = refs(amendments=True)
+    assert pick_ref(refs(), fiscal_year=2023).accession == "0001234567-24-000050"
+    assert next(r for r in got if r.form == "10-K/A").amends == "0001234567-24-000050"
 
 
 def test_pick_amendment_never_beats_the_original():
-    assert pick_ref(refs(amendments=True), fiscal_year=2023).accession == "0001234567-24-000011"
+    assert pick_ref(refs(amendments=True), fiscal_year=2023).accession == "0001234567-24-000050"
 
 
 def test_pick_by_fiscal_period():
@@ -232,3 +242,19 @@ def test_the_year_shift_is_learned_from_originals_before_amendments():
               ("0001234567-10-000002", "10-K/A"): (2010, "FY")}
     got = refs_from_rows(rows, CIK, ["10-K"], amendments=True, fiscal_labels=labels, fiscal_year_end="0131")
     assert next(r for r in got if r.accession == "0001234567-09-000001").fiscal_year == 2008
+
+
+def test_an_amendment_with_no_period_of_report_is_left_for_its_text_to_place():
+    got = refs_from_rows([row("0001234567-12-000001", "10-K", "2012-03-01", "2011-12-31"),
+                          row("0001234567-12-000009", "10-K/A", "2012-09-01", "")],
+                         CIK, ["10-K"], amendments=True, fiscal_year_end="1231")
+    amendment = next(r for r in got if r.form == "10-K/A")
+    assert (amendment.report_date, amendment.amends) == (None, None)
+
+
+def test_a_same_day_amendment_links_to_the_original_received_before_it():
+    got = refs_from_rows([row("0001234567-12-000001", "10-K", "2012-03-01", "2011-12-31"),
+                          row("0001234567-12-000002", "10-K/A", "2012-03-01", "2011-12-31"),
+                          row("0001234567-12-000003", "10-K", "2012-03-01", "2011-12-31")],
+                         CIK, ["10-K"], amendments=True, fiscal_year_end="1231")
+    assert next(r for r in got if r.form == "10-K/A").amends == "0001234567-12-000001"

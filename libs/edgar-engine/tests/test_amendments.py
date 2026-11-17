@@ -187,8 +187,10 @@ def test_resolve_amends_by_cover_period_then_by_original_filing_date():
                                 "This amends our Form 10-K originally filed with the SEC on March 20, 2006.\n"
                                 "Our Annual Report on Form 10-K was filed on March 30, 2010.\n")
     assert resolve_amends(later_date, listed) is None
-    same_day = [FilingRef(CIK, "G-5", "10-K", "2010-06-01", "2009-12-31"), FilingRef(CIK, "Y-5", "10-K", "2010-06-01", "2009-12-31")]
-    assert resolve_amends(amendment_text("10-K/A", "2010-06-01", "For the fiscal year ended December 31, 2009\n"), same_day) == "G-5"
+    same_day = [FilingRef(CIK, "Z-5", "10-K", "2010-06-01", "2009-12-31", accepted="2010-06-01T09:00:00"),
+                FilingRef(CIK, "B-5", "10-K", "2010-06-01", "2009-12-31", accepted="2010-06-01T11:00:00"),
+                FilingRef(CIK, "X-a", "10-K/A", "2010-06-01", "2009-12-31", accepted="2010-06-01T10:00:00")]
+    assert resolve_amends(amendment_text("10-K/A", "2010-06-01", "For the fiscal year ended December 31, 2009\n"), same_day) == "Z-5"
 
 
 def test_the_explanatory_note_date_comes_before_dates_in_the_exhibit_index():
