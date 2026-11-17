@@ -284,6 +284,7 @@ async def home_placement_view(user_id: str) -> Dict[str, Any]:
     home_id = get_home_workspace_id(user_id)
     home_computer = await get_computer_for_workspace(home_id)
     cloud = await stand_in_computer(user_id)
+    stand_in = await read_stand_in(user_id)
     row = await get_home_away(user_id)
     last = (row or {}).get("last_handback")
     return {
@@ -304,6 +305,8 @@ async def home_placement_view(user_id: str) -> Dict[str, Any]:
         "handback": last if last and row.get("handback_seen_at") is None else None,
         # Kept after the notice is dismissed: removing the stand-in's computer
         # takes these files with it.
-        "left_on_stand_in": left_on_stand_in(last),
+        "left_on_stand_in": left_on_stand_in(
+            last, str(stand_in.computer["computer_id"]) if stand_in else None
+        ),
         "move": move_from_row(await get_latest_workspace_move(home_id)),
     }

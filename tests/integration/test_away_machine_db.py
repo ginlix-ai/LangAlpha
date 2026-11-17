@@ -707,7 +707,7 @@ async def test_home_work_waits_while_owed_files_keep_the_stand_in_on_a_failed_co
 
         # Given up, the files are no longer owed but are still only there.
         await home_away.fail_handback(
-            machine.user_id, max_attempts=1, given_up={"failed": True}
+            machine.user_id, max_attempts=1, given_up={"failed": True, "cloud_computer_id": first_id}
         )
         assert await stand_in_computer(machine.user_id) is None
         assert await _parked_verdict(execution_id) is None

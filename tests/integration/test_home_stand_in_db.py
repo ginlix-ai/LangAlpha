@@ -102,8 +102,9 @@ async def _owed(db_conn, user_id):
     )
 
 
-async def _left(db_conn, user_id):
-    """Handed back, with one file too large to carry left in the stand-in."""
+async def _left(db_conn, user_id, computer_id):
+    """Handed back, with one file too large to carry left in the stand-in on
+    ``computer_id``."""
     import json
 
     await db_conn.execute(
@@ -120,6 +121,7 @@ async def _left(db_conn, user_id):
                     "unreadable": [],
                     "computer_name": "Mac",
                     "cloud_name": "Broken",
+                    "cloud_computer_id": computer_id,
                     "created_at": "2026-11-16T00:00:00+00:00",
                 }
             ),
@@ -148,7 +150,7 @@ async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_files_hold_
     if held == "owed":
         await _owed(db_conn, user_id)
     elif held == "left":
-        await _left(db_conn, user_id)
+        await _left(db_conn, user_id, broken)
 
     placed = await home_stand_in.place_home_stand_in(user_id)
 
@@ -162,6 +164,27 @@ async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_files_hold_
         held == "left",
     )
     assert placed.row["status"] != "deleted"
+
+
+async def test_files_left_on_a_removed_computer_hold_no_other(seed_user, db_conn):
+    """What a hand-back left went with the computer its owner removed; the
+    stand-in placed elsewhere since holds none of it."""
+    from src.server.database.computer import update_computer_status
+
+    user_id = seed_user["user_id"]
+    removed = await _computer(user_id, "Removed")
+    await _touch(db_conn, removed)
+    await home_stand_in.place_home_stand_in(user_id)
+    await _left(db_conn, user_id, removed)
+    await update_computer_status(removed, "deleted")
+    other = await _computer(user_id, "Other")
+
+    placed = await home_stand_in.place_home_stand_in(user_id)
+    await db_conn.execute("UPDATE computers SET status = 'error' WHERE computer_id = %s", (other,))
+    stays = await home_stand_in.read_stand_in(user_id)
+
+    assert str(placed.computer["computer_id"]) == other
+    assert (placed.left, stays.kept, stays.left) == (False, False, False)
 
 
 async def test_a_computer_being_retired_takes_no_stand_in(seed_user, db_conn):

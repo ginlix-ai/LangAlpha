@@ -142,7 +142,7 @@ async def test_placement_answers_in_the_shape_the_client_reads(client):
             "cloud_name": "Cloud computer",
             "created_at": "2026-11-15T10:00:00+00:00",
         },
-        "left_on_stand_in": {"failed": False, "paths": ["big.bin"]},
+        "left_on_stand_in": {"failed": False, "paths": ["big.bin"], "computer_id": CLOUD_ID},
         "move": move,
     }
     with patch(
@@ -167,7 +167,7 @@ async def test_placement_answers_in_the_shape_the_client_reads(client):
     assert body["stand_in"]["computer_id"] == CLOUD_ID
     assert body["handback"]["folder"] == "From the cloud/2026-11-15"
     assert body["handback"]["failed"] is False
-    assert body["left_on_stand_in"] == {"failed": False, "paths": ["big.bin"]}
+    assert body["left_on_stand_in"] == {"failed": False, "paths": ["big.bin"], "computer_id": CLOUD_ID}
     assert body["move"]["move_id"] == move.move_id
 
 

@@ -99,6 +99,8 @@ export interface HomeHandback {
 export interface HomeLeftOnStandIn {
   failed: boolean;
   paths: string[];
+  /** The computer holding them, the one whose removal deletes them. */
+  computer_id: string;
 }
 
 /**

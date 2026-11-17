@@ -344,7 +344,7 @@ describe('ComputersDialog: refusals to remove', () => {
   });
 
   it('says which of Home\'s files a removal deletes once a hand-back left them there', async () => {
-    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: false, paths: ['huge.bin'] } }));
+    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: false, paths: ['huge.bin'], computer_id: SECOND_ID } }));
     const { confirm } = await openRemove('Second machine');
 
     expect(await within(confirm).findByTestId('remove-computer-home-files')).toHaveTextContent(
@@ -353,7 +353,7 @@ describe('ComputersDialog: refusals to remove', () => {
   });
 
   it('says a given-up hand-back\'s files go with the computer', async () => {
-    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: true, paths: [] } }));
+    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: true, paths: [], computer_id: SECOND_ID } }));
     const { confirm } = await openRemove('Second machine');
 
     expect(await within(confirm).findByTestId('remove-computer-home-files')).toHaveTextContent(

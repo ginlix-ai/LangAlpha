@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
-from src.server.database.home_away import LEFT_SQL, OWED_SQL, left_on_stand_in
+from src.server.database.home_away import OWED_SQL, left_on_stand_in, left_sql
 from src.server.database.home_workspace import (
     HOME_STAND_IN_KEY,
     get_home_stand_in_id,
@@ -56,10 +56,10 @@ def _owed_sql(user_id_sql: str) -> str:
     )
 
 
-def _left_sql(user_id_sql: str) -> str:
+def _left_sql(user_id_sql: str, computer_id_sql: str) -> str:
     return (
         "EXISTS (SELECT 1 FROM home_away"
-        f" WHERE home_away.user_id = {user_id_sql} AND {LEFT_SQL})"
+        f" WHERE home_away.user_id = {user_id_sql} AND {left_sql(computer_id_sql)})"
     )
 
 
@@ -73,7 +73,7 @@ def kept_sql(stand_in: str, computer: str) -> str:
     return (
         f"({stand_in}.status <> 'deleted' AND {computer}.status <> 'deleted'"
         f" AND ({takes_a_workspace_sql(computer)}"
-        f" OR {_owed_sql(user_id)} OR {_left_sql(user_id)}))"
+        f" OR {_owed_sql(user_id)} OR {_left_sql(user_id, f'{computer}.computer_id')}))"
     )
 
 
@@ -199,7 +199,10 @@ async def read_stand_in(user_id: str, *, conn=None) -> Optional[StandIn]:
         kept=record["stand_in_kept"],
         runs=record["stand_in_runs"],
         owed=record["stand_in_owed"],
-        left=left_on_stand_in(record["stand_in_last_handback"]) is not None,
+        left=left_on_stand_in(
+            record["stand_in_last_handback"], str(computer["computer_id"])
+        )
+        is not None,
     )
 
 

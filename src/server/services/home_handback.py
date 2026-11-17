@@ -96,6 +96,7 @@ async def _names(user_id: str) -> Dict[str, str]:
     return {
         "computer_name": str((home_computer or {}).get("name") or ""),
         "cloud_name": str((cloud_computer or {}).get("name") or ""),
+        "cloud_computer_id": str((cloud_computer or {}).get("computer_id") or ""),
     }
 
 
@@ -121,21 +122,23 @@ async def _record(
     stays on the cloud, too large or unreadable. None when nothing arrived
     and what stays is what the last notice already named."""
     left, unreadable = sorted(moved.too_large), sorted(moved.unreadable)
-    if moved.folder is None:
-        if not left and not unreadable:
-            return None
-        if (
-            last is not None
-            and last["left_on_cloud"] == left
-            and last["unreadable"] == unreadable
-        ):
-            return None
+    if moved.folder is None and not left and not unreadable:
+        return None
+    names = await _names(user_id)
+    if (
+        moved.folder is None
+        and last is not None
+        and last["left_on_cloud"] == left
+        and last["unreadable"] == unreadable
+        and last.get("cloud_computer_id") == names["cloud_computer_id"]
+    ):
+        return None
     return _notice(
         folder=moved.folder,
         files=len(moved.carried),
         left_on_cloud=left,
         unreadable=unreadable,
-        **await _names(user_id),
+        **names,
     )
 
 

@@ -38,7 +38,9 @@ async def _stand_in(seed_user):
 def _record(folder, files):
     from src.server.services.home_handback import _notice
 
-    return _notice(folder=folder, files=files, computer_name="Mac", cloud_name="Cloud")
+    return _notice(
+        folder=folder, files=files, computer_name="Mac", cloud_name="Cloud", cloud_computer_id="c1"
+    )
 
 
 async def _through(user_id):
@@ -260,7 +262,11 @@ async def test_a_failing_hand_back_waits_and_then_gives_up(seed_user):
     assert waiting["handback_attempts"] == 1 and waiting["next_handback_at"] is not None
     assert user_id not in listed
     assert not home_away.is_owed(row) and row["last_handback"]["failed"] is True
-    assert home_away.left_on_stand_in(row["last_handback"]) == {"failed": True, "paths": []}
+    assert home_away.left_on_stand_in(row["last_handback"], "c1") == {
+        "failed": True,
+        "paths": [],
+        "computer_id": "c1",
+    }
     # New work on the cloud owes a hand-back again, with its tries afresh.
     await home_away.mark_away(user_id)
     again = await home_away.get_home_away(user_id)

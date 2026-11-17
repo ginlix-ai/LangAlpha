@@ -524,7 +524,7 @@ function ComputersPanel({
             homeTargets={homeTargets}
             homeFromBackup={homeFromBackup}
             homeFilesLeft={
-              placement?.left_on_stand_in && placement.stand_in?.computer_id === removeTarget.computer_id
+              placement?.left_on_stand_in?.computer_id === removeTarget.computer_id
                 ? { ...placement.left_on_stand_in, homeComputer: placement.computer_name }
                 : null
             }

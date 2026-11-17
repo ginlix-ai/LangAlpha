@@ -49,6 +49,9 @@ class HandbackNotice(TypedDict):
     unreadable: List[str]
     computer_name: str
     cloud_name: str
+    #: The computer the stand-in stood on: what the hand-back left is there,
+    #: and only while the stand-in still is.
+    cloud_computer_id: str
     created_at: str
     #: The hand-back gave up; everything it owed stays on the cloud.
     failed: NotRequired[bool]
@@ -73,28 +76,35 @@ def is_owed(row: Optional[Dict[str, Any]]) -> bool:
     return through is None or row["last_away_at"] > through
 
 
-# Whether a row's last hand-back left files in the stand-in, as SQL over
-# home_away: ``left_on_stand_in`` not None.
-LEFT_SQL = (
-    "last_handback IS NOT NULL AND ("
-    "COALESCE((last_handback->>'failed')::boolean, false)"
-    " OR jsonb_array_length(COALESCE(last_handback->'left_on_cloud', '[]'::jsonb)) > 0"
-    " OR jsonb_array_length(COALESCE(last_handback->'unreadable', '[]'::jsonb)) > 0)"
-)
+def left_sql(computer_id_sql: str) -> str:
+    """Whether a row's last hand-back left files in the stand-in on computer
+    ``computer_id_sql``, as SQL over home_away: ``left_on_stand_in`` not None."""
+    return (
+        "last_handback IS NOT NULL"
+        f" AND last_handback->>'cloud_computer_id' = ({computer_id_sql})::text AND ("
+        "COALESCE((last_handback->>'failed')::boolean, false)"
+        " OR jsonb_array_length(COALESCE(last_handback->'left_on_cloud', '[]'::jsonb)) > 0"
+        " OR jsonb_array_length(COALESCE(last_handback->'unreadable', '[]'::jsonb)) > 0)"
+    )
 
 
-def left_on_stand_in(last: Optional[HandbackNotice]) -> Optional[Dict[str, Any]]:
-    """What the last hand-back left in the stand-in and Home does not have:
-    ``failed`` when it gave up, else the paths too large or unreadable to
-    carry. None when it left nothing."""
-    if last is None:
+def left_on_stand_in(
+    last: Optional[HandbackNotice], computer_id: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """What the last hand-back left in the stand-in on ``computer_id`` and
+    Home does not have: ``failed`` when it gave up, else the paths too large
+    or unreadable to carry. None when it left nothing there, as when that
+    computer was removed and the stand-in stands elsewhere now."""
+    if last is None or computer_id is None:
+        return None
+    if last.get("cloud_computer_id") != str(computer_id):
         return None
     # As ``LEFT_SQL`` reads it: a key a notice lacks is an empty list.
     paths = [*(last.get("left_on_cloud") or []), *(last.get("unreadable") or [])]
     failed = last.get("failed", False)
     if not failed and not paths:
         return None
-    return {"failed": failed, "paths": paths}
+    return {"failed": failed, "paths": paths, "computer_id": str(computer_id)}
 
 
 def stand_in_lock_key(user_id: str) -> str:

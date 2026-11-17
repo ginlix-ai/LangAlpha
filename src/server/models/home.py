@@ -53,6 +53,8 @@ class HomeLeftOnStandIn(BaseModel):
 
     failed: bool
     paths: List[str]
+    #: The computer holding them, the one whose removal deletes them.
+    computer_id: str
 
 
 class HomePlacementResponse(BaseModel):

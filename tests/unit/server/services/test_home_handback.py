@@ -537,14 +537,18 @@ async def test_home_is_backed_up_even_when_the_cleanup_is_cancelled(owed):
 @pytest.mark.asyncio
 async def test_files_left_on_the_cloud_are_named_once():
     left = Moved(too_large=["huge.bin"])
-    names = AsyncMock(return_value={"computer_name": "Mac", "cloud_name": "Cloud"})
-    with patch(f"{_P}._names", names):
+    names = {"computer_name": "Mac", "cloud_name": "Cloud", "cloud_computer_id": "c1"}
+    with patch(f"{_P}._names", AsyncMock(return_value=names)):
         first = await home_handback._record(USER, left, None)
         again = await home_handback._record(USER, left, first)
         nothing = await home_handback._record(USER, Moved(), first)
+    # The stand-in stands on another computer now, which holds its own copy.
+    with patch(f"{_P}._names", AsyncMock(return_value={**names, "cloud_computer_id": "c2"})):
+        moved = await home_handback._record(USER, left, first)
 
     assert first["folder"] is None and first["left_on_cloud"] == ["huge.bin"]
     assert again is None and nothing is None
+    assert moved["cloud_computer_id"] == "c2"
 
 
 def _stand_in(*, owed=False, left=False):
@@ -700,15 +704,20 @@ async def test_the_stand_ins_computer_stays_for_a_primary_that_can_be_away(
 def test_what_a_hand_back_left_is_read_off_its_notice():
     from src.server.database.home_away import left_on_stand_in
 
-    notice = home_handback._notice(computer_name="Mac", cloud_name="Cloud")
+    notice = home_handback._notice(computer_name="Mac", cloud_name="Cloud", cloud_computer_id="c1")
+    left = {**notice, "left_on_cloud": ["huge.bin"]}
 
-    assert left_on_stand_in(None) is None
-    assert left_on_stand_in(notice) is None
-    assert left_on_stand_in({**notice, "left_on_cloud": ["huge.bin"]}) == {
-        "failed": False,
-        "paths": ["huge.bin"],
+    assert left_on_stand_in(None, "c1") is None
+    assert left_on_stand_in(notice, "c1") is None
+    assert left_on_stand_in(left, "c1") == {"failed": False, "paths": ["huge.bin"], "computer_id": "c1"}
+    assert left_on_stand_in({**notice, "failed": True}, "c1") == {
+        "failed": True,
+        "paths": [],
+        "computer_id": "c1",
     }
-    assert left_on_stand_in({**notice, "failed": True}) == {"failed": True, "paths": []}
+    # The stand-in stands elsewhere now: what was left went with that computer.
+    assert left_on_stand_in(left, "c2") is None
+    assert left_on_stand_in(left, None) is None
 
 
 @pytest.mark.asyncio
