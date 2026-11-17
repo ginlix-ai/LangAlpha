@@ -1,0 +1,43 @@
+[project]
+name = "langalpha-edgar-engine"
+version = "0.1.0"
+description = "SEC EDGAR engine over edgartools: filing item sections with lossless text, cross-reference stubs, period selection and an accession-keyed cache"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    # Only the submission, header and filing-index APIs are used, which 6.0
+    # keeps; the legacy edgar.files parser and ChunkedDocument are not.
+    "edgartools>=5.62.1,<7",
+    "lxml>=5.3",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edgar_engine"]
+
+[tool.hatch.build.targets.sdist]
+include = ["edgar_engine", "README.md", "LICENSE", "pyproject.toml"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+# A table of its own stops uv from walking up to the backend's [tool.uv] in
+# the repository root, so the package resolves the way a consumer installing
+# it from git resolves it.
+[tool.uv]
+required-version = ">=0.6.15"
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "edgar_engine/**/*.py" },
+    { file = "edgar_engine/py.typed" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: reads EDGAR; deselected by default"]
+addopts = "-m 'not network'"
