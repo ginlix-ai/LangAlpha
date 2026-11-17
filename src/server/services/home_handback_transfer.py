@@ -50,11 +50,15 @@ MAX_FILE_BYTES = 200 * 1024 * 1024
 _LISTING_CAP = 32 * 1024 * 1024
 # A tar block, and the record GNU tar pads an archive to.
 _BLOCK, _RECORD = 512, 20 * 512
+# The longest target a symlink may name (PATH_MAX).
+_LINK_MAX = 4096
 # The notes file every folder is seeded with is no work of a turn's.
 _SEEDED = "agent.md"
 # Ends the unpack script's output, before the folder it filled: tar's warnings
 # share the output.
 _DEST_MARK = "HANDBACK_DEST="
+# A hand-back's staging folder in Home: this, then 12 hex digits.
+_STAGE = ".handback-"
 
 # (size, mtime as ``find`` printed it), by path in the stand-in's folder.
 Listing = Dict[str, Tuple[int, str]]
@@ -102,15 +106,28 @@ class Moved:
             logger.info("Could not remove hand-back staging %s", path, exc_info=True)
 
 
+def is_note(path: str) -> bool:
+    """A file of a thread's checkpoint notes (``.agents/scratchpad/<t8>/note/``).
+    Home's turns read their notes where a summary left them, so these go to
+    the same path in Home, not into the dated folder."""
+    parts = path.split("/")
+    return (
+        len(parts) >= 5
+        and "/".join(parts[:2]) == WorkspaceLayout.SCRATCHPAD_DIR
+        and parts[3] == WorkspaceLayout.SCRATCHPAD_NOTE_DIR
+    )
+
+
 def _carriable(path: str) -> bool:
     """A path below the folder that a backup of it keeps, less the agent's own
-    ``.agents`` tree, whose files mean nothing in a folder of Home's. A file
-    the user made hidden (``.gitignore``, ``.github/``) goes like any other."""
+    ``.agents`` tree, whose files mean nothing in a folder of Home's, but for
+    the threads' checkpoint notes. A file the user made hidden
+    (``.gitignore``, ``.github/``) goes like any other."""
     parts = path.split("/")
     if any(part in ("", ".", "..") for part in parts):
         return False
     head, name = parts[0], parts[-1]
-    if head == WorkspaceLayout.AGENTS_DIR or head in EXCLUDE_ROOT_DIRS:
+    if (head == WorkspaceLayout.AGENTS_DIR and not is_note(path)) or head in EXCLUDE_ROOT_DIRS:
         return False
     if len(parts) == 1 and (
         name == SYNC_MARKER_NAME or name.startswith(TRANSIENT_ROOT_PREFIX)
@@ -197,21 +214,28 @@ def packed_cap(chosen: Listing) -> int:
     at the whole cap, so a file grown since its listing waits rather than
     failing the download."""
     meta = 0
-    for path in chosen:
+    for path, (size, _) in chosen.items():
         meta += _BLOCK + _BLOCK - 1
         name = len(path.encode())
         if name >= 100:
             meta += _BLOCK + _up(name + 1)
+        # A link's listed size is its target's length, which a long one
+        # carries in a header of its own; a file's room for it is spare.
+        if size >= 100:
+            meta += _BLOCK + _up(min(size, _LINK_MAX) + 1)
     return _up(MAX_TOTAL_BYTES + meta + 2 * _BLOCK, _RECORD) + (1 << 20)
 
 
 def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
-    """Copy the regular files ``chosen`` names from the archive at ``raw``
-    into a gzipped archive at ``out``, each owned by nobody and mode 0644.
+    """Copy the regular files and symlinks ``chosen`` names from the archive
+    at ``raw`` into a gzipped archive at ``out``, each owned by nobody, a
+    file mode 0644.
 
-    Anything else in ``raw`` is dropped: links, devices, folders, a name not
-    asked for or asked for twice, one that escapes the folder. A file asked
-    for and not found as a regular file is named ``unreadable``; one whose
+    Anything else in ``raw`` is dropped: hard links, devices, folders, a name
+    not asked for or asked for twice, one that escapes the folder. A link
+    whose target leaves the folder is dropped too, holding nothing of it, so
+    that nothing in Home points at a file of the user's own the cloud chose.
+    A name asked for and not found as either is named ``unreadable``; one whose
     packed size broke a cap is too large or waits, as if listed so. One packed
     with another size or mtime than listed changed in between, so it waits
     rather than be recorded as the listed file it is not."""
@@ -228,13 +252,27 @@ def rebuild_archive(raw: Path, out: Path, chosen: Listing) -> Moved:
     ):
         for member in source:
             name = member.name
-            if name not in chosen or name in seen or not member.isreg():
+            if name not in chosen or name in seen:
+                continue
+            if not (member.isreg() or member.issym()):
                 continue
             try:
                 tarfile.data_filter(member, "/handback")
             except tarfile.FilterError:
+                if member.issym():
+                    seen.add(name)
                 continue
             seen.add(name)
+            if member.issym():
+                if _link_as_listed(member, chosen[name]):
+                    link = tarfile.TarInfo(name)
+                    link.type, link.linkname = tarfile.SYMTYPE, member.linkname
+                    link.mtime = member.mtime
+                    target.addfile(link)
+                    moved.carried[name] = list(chosen[name])
+                else:
+                    moved.deferred.append(name)
+                continue
             if not _as_listed(member, chosen[name]):
                 moved.deferred.append(name)
                 continue
@@ -268,10 +306,37 @@ def _as_listed(member: tarfile.TarInfo, listed: Tuple[int, str]) -> bool:
         return False
 
 
+def _link_as_listed(member: tarfile.TarInfo, listed: Tuple[int, str]) -> bool:
+    """Whether link ``member`` is the one the listing saw, by the length of
+    its target, which ``find`` gives as a link's size, and its mtime."""
+    size, mtime = listed
+    try:
+        return len(member.linkname.encode()) == size and int(member.mtime) == int(
+            float(mtime)
+        )
+    except ValueError:
+        return False
+
+
+def stage_script(home: str, stage: str) -> str:
+    """Make ``stage`` for the parts, clearing what earlier hand-backs left.
+
+    Only one hand-back per user runs at a time, so staging left in Home is an
+    earlier one's that never finished: a folder named as ours are, holding
+    the parts folder ours have. Nothing else in Home is touched."""
+    return (
+        f"cd -- {shlex.quote(home)} && for d in {_STAGE}{'[0-9a-f]' * 12}; do"
+        ' if [ -d "$d/parts" ] && [ ! -L "$d" ]; then rm -rf -- "$d"; fi; done && '
+        f"mkdir -p {shlex.quote(stage)}/parts"
+    )
+
+
 def unpack_script(home: str, stage: str, base: str, day: str) -> str:
     """Unpack the parts under ``<stage>/parts`` into a folder named as the
     stage is, then rename that to the first free ``<home>/<base>/<day>[ n]``
-    and print it.
+    and print it. Checkpoint notes go to their own path in Home instead,
+    a note written there since kept; with nothing else, no folder is made
+    and an empty one printed.
 
     The folder appears whole or not at all, and a name something already
     holds is never reused: a folder made at that name just before the rename
@@ -286,6 +351,16 @@ def unpack_script(home: str, stage: str, base: str, day: str) -> str:
         'mkdir -p "$held"; '
         'cat "$stage"/parts/* | tar -x -z -k --no-same-owner --no-same-permissions'
         ' -f - -C "$held"; '
+        # Each note moved unless Home's is newer; one that can't go is left
+        # rather than failing the copy. Not tar: GNU tar's keep-newer fails
+        # on every folder that exists.
+        'if [ -d "$held/.agents" ]; then '
+        '(cd "$held" && find .agents -type f -exec sh -c \''
+        'for f; do d="$0/$f"; if [ ! -d "$d" ] && [ ! "$d" -nt "$f" ]; then '
+        'mkdir -p "$(dirname "$d")" && mv -f "$f" "$d"; fi; done; exit 0'
+        f"' {shlex.quote(home)} {{}} +); "
+        'rm -rf "$held/.agents"; fi; '
+        f"""if [ -z "$(ls -A "$held")" ]; then printf '\\n{_DEST_MARK}'; exit 0; fi; """
         'mkdir -p "$(dirname "$base")"; '
         "dest=$base; n=2; "
         "while :; do "
@@ -416,14 +491,8 @@ async def move_into_home(
     # Home's folder stays where it is for the copy.
     async with workspace_folder_in_use(home_id):
         home_runtime, home_dir = await _folder_of(manager, home_id, user_id)
-        stage = f"{home_dir}/.handback-{token}"
-        # Only one hand-back per user runs at a time, so any staging left in
-        # Home is an earlier one's that never finished.
-        await _run(
-            home_runtime,
-            f"rm -rf -- {shlex.quote(home_dir)}/.handback-* && "
-            f"mkdir -p {shlex.quote(stage)}/parts",
-        )
+        stage = f"{home_dir}/{_STAGE}{token}"
+        await _run(home_runtime, stage_script(home_dir, stage))
         try:
             moved = await _copy(
                 manager,
@@ -465,7 +534,9 @@ async def _copy(
         listing_file = Path(tmp) / "listing"
         await _run(
             cloud_runtime,
-            f"cd {shlex.quote(cloud_dir)} && find . -type f "
+            # Files, and links but those to an absolute path, which hold
+            # nothing of the folder; a link's size is its target's length.
+            f"cd {shlex.quote(cloud_dir)} && find . \\( -type f -o \\( -type l ! -lname '/*' \\) \\) "
             f"-printf '%s\\t%T@\\t%P\\0' > {listing_path}",
         )
         try:
@@ -504,5 +575,5 @@ async def _copy(
     folder = folder.strip()
     moved.folder = (
         folder[len(home_dir) :].lstrip("/") if folder.startswith(home_dir) else folder
-    )
+    ) or None
     return moved

@@ -86,7 +86,9 @@ def test_what_went_before_unchanged_stays_and_the_rest_goes_within_the_caps():
         ("sub/.hidden.md", True),
         ("results/.file_sync_marker", True),
         (".agents/threads/x.log", False),
-        (".agents/scratchpad/ab12cd34/note/n.md", False),
+        # A thread's checkpoint notes go back, to their own path.
+        (".agents/scratchpad/ab12cd34/note/n.md", True),
+        (".agents/scratchpad/ab12cd34/draft.csv", False),
         (".file_sync_marker", False),
         (".wsfiles-abc", False),
         ("proj/.git/HEAD", False),
@@ -165,6 +167,8 @@ def test_the_archive_is_rebuilt_from_the_regular_files_asked_for_alone(
         _member(tar, "report.md", b"report", mode=0o4755, uid=0, uname="root", mtime=1)
         _member(tar, "report.md", b"second copy")
         _member(tar, "link.md", type=tarfile.SYMTYPE, linkname="/etc/passwd")
+        _member(tar, "up.md", type=tarfile.SYMTYPE, linkname="../../.ssh/id_rsa", mtime=1)
+        _member(tar, "sub/latest.png", type=tarfile.SYMTYPE, linkname="chart.png", mtime=1)
         _member(tar, "hard.md", type=tarfile.LNKTYPE, linkname="report.md")
         _member(tar, "dev.bin", type=tarfile.CHRTYPE, devmajor=1, devminor=3)
         _member(tar, "../escape.md", b"out")
@@ -176,6 +180,8 @@ def test_the_archive_is_rebuilt_from_the_regular_files_asked_for_alone(
     chosen = {
         "report.md": (6, "1.5"),
         "link.md": (0, "1.0"),
+        "up.md": (17, "1.0"),
+        "sub/latest.png": (9, "1.0"),
         "hard.md": (0, "1.0"),
         "dev.bin": (0, "1.0"),
         "big.bin": (11, "1.0"),
@@ -187,15 +193,18 @@ def test_the_archive_is_rebuilt_from_the_regular_files_asked_for_alone(
 
     with tarfile.open(clean, "r:gz") as tar:
         members = {m.name: m for m in tar.getmembers()}
-        assert set(members) == {"report.md", "sub/chart.png"}
+        assert set(members) == {"report.md", "sub/chart.png", "sub/latest.png"}
         assert tar.extractfile("report.md").read() == b"report"
+        link = members.pop("sub/latest.png")
+        assert link.issym() and link.linkname == "chart.png" and link.uid == 0
         assert all(
             m.isreg() and m.mode == 0o644 and m.uid == 0 and not m.uname
             for m in members.values()
         )
-    assert sorted(moved.carried) == ["report.md", "sub/chart.png"]
+    assert sorted(moved.carried) == ["report.md", "sub/chart.png", "sub/latest.png"]
     assert moved.too_large == ["big.bin"]
-    assert moved.unreadable == ["dev.bin", "gone.md", "hard.md", "link.md"]
+    # A link out of the folder holds nothing of it: dropped, not left behind.
+    assert moved.unreadable == ["dev.bin", "gone.md", "hard.md"]
 
 
 def test_a_file_changed_since_its_listing_waits_rather_than_be_recorded(tmp_path):
@@ -245,12 +254,15 @@ def test_names_a_mac_spells_alike_go_one_per_hand_back():
     )
 
 
-def _parts(tmp_path, stage, files):
-    """A gzipped archive of ``files`` cut into parts, as the server uploads it."""
+def _parts(tmp_path, stage, files, links=None):
+    """A gzipped archive of ``files`` and symlinks ``links`` cut into parts,
+    as the server uploads it."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
         for name, data in files.items():
             _member(tar, name, data, mode=0o644)
+        for name, target in (links or {}).items():
+            _member(tar, name, type=tarfile.SYMTYPE, linkname=target)
     data = buf.getvalue()
     parts = stage / "parts"
     parts.mkdir(parents=True)
@@ -314,6 +326,76 @@ def test_a_folder_made_at_the_name_just_before_the_rename_is_left_alone(tmp_path
     assert out.stdout.rpartition("HANDBACK_DEST=")[2] == str(base / "2026-11-15 2")
     assert (base / "2026-11-15 2" / "report.md").read_bytes() == b"hi"
     assert list((base / "2026-11-15").iterdir()) == []
+
+
+def test_notes_go_back_to_their_own_path_and_links_stay_links(tmp_path):
+    """A summary names a thread's notes where they were, so they go there in
+    Home, never over a note written there since; the rest lands in the
+    dated folder, a link as a link."""
+    home = tmp_path / "Home"
+    note = home / ".agents/scratchpad/ab12cd34/note"
+    note.mkdir(parents=True)
+    (note / "newer.md").write_text("mac")
+    stage = home / ".handback-0123456789ab"
+    _parts(
+        tmp_path,
+        stage,
+        {
+            ".agents/scratchpad/ab12cd34/note/task.md": b"cloud",
+            ".agents/scratchpad/ab12cd34/note/newer.md": b"older",
+            "sub/chart.png": b"png",
+        },
+        links={"sub/latest.png": "chart.png"},
+    )
+    import os
+
+    os.utime(note / "newer.md", (2_000_000_000, 2_000_000_000))
+
+    out = _unpack(home, stage)
+
+    assert out.returncode == 0, out.stdout + out.stderr
+    dest = home / "From the cloud" / "2026-11-15"
+    assert out.stdout.rpartition("HANDBACK_DEST=")[2] == str(dest)
+    assert (note / "task.md").read_text() == "cloud"
+    assert (note / "newer.md").read_text() == "mac"
+    assert not (dest / ".agents").exists()
+    assert os.readlink(dest / "sub/latest.png") == "chart.png"
+
+
+def test_notes_alone_fill_no_folder(tmp_path):
+    home = tmp_path / "Home"
+    stage = home / ".handback-0123456789ab"
+    _parts(tmp_path, stage, {".agents/scratchpad/ab12cd34/note/task.md": b"cloud"})
+
+    out = _unpack(home, stage)
+
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert out.stdout.rpartition("HANDBACK_DEST=")[2] == ""
+    assert (home / ".agents/scratchpad/ab12cd34/note/task.md").read_text() == "cloud"
+    assert not (home / "From the cloud").exists()
+
+
+def test_a_new_stage_clears_only_what_earlier_hand_backs_left(tmp_path):
+    home = tmp_path / "Home"
+    stale = home / ".handback-aaaaaaaaaaaa"
+    (stale / "parts").mkdir(parents=True)
+    (home / ".handback-notes").mkdir()
+    (home / ".handback-bbbbbbbbbbbb").mkdir()
+    stage = home / ".handback-0123456789ab"
+
+    out = subprocess.run(
+        ["sh", "-c", home_handback_transfer.stage_script(str(home), str(stage))],
+        capture_output=True,
+        text=True,
+    )
+
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert sorted(p.name for p in home.iterdir()) == [
+        ".handback-0123456789ab",
+        ".handback-bbbbbbbbbbbb",
+        ".handback-notes",
+    ]
+    assert (stage / "parts").is_dir()
 
 
 def test_an_archive_that_does_not_unpack_leaves_no_folder(tmp_path):

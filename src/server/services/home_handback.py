@@ -121,6 +121,8 @@ async def _record(
     """The user's notice of a hand-back: what arrived and where, and what
     stays on the cloud, too large or unreadable. None when nothing arrived
     and what stays is what the last notice already named."""
+    from src.server.services.home_handback_transfer import is_note
+
     left, unreadable = sorted(moved.too_large), sorted(moved.unreadable)
     if moved.folder is None and not left and not unreadable:
         return None
@@ -135,7 +137,8 @@ async def _record(
         return None
     return _notice(
         folder=moved.folder,
-        files=len(moved.carried),
+        # The threads' notes go back where they were, not into the folder.
+        files=sum(not is_note(path) for path in moved.carried),
         left_on_cloud=left,
         unreadable=unreadable,
         **names,
@@ -218,7 +221,7 @@ async def hand_back_owed(user_id: str) -> bool:
         try:
             await moved.clean_up()
         finally:
-            if finished and moved.folder and moved.computer_id:
+            if finished and moved.carried and moved.computer_id:
                 # No turn of Home's backs up what landed, and a Home moved
                 # from its backup before one runs would come back without it.
                 # The computer the files went to, which a move since the
