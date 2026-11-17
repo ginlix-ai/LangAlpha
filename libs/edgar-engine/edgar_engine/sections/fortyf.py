@@ -106,14 +106,15 @@ def match_title(s, prev_raw):
             if rx.fullmatch(s):
                 return ids, "standalone"
     p = (prev_raw or "").rstrip()
-    if not p or p[-1] in ".:;!?)\"201d" or is_caps(normalize(p)) or len(p) <= 50:
+    if not p or p[-1] in ".:;!?)\"\u201d" or is_caps(normalize(p)) or len(p) <= 50:
         for ids, rx in RUNIN:
             if rx.match(s[:200]):
                 return ids, "runin"
     return None
 
 
-def first_doc(s):
+def named_docs(s) -> list[str]:
+    """The principal documents a line names, in the order it names them."""
     s = s[:200]
     hits = []
     for iid, rx in (("AIF", r"annual information form"), ("MDA", r"management'?s?'? discussion (?:and|&) analysis|\bMD&A\b"),
@@ -121,7 +122,7 @@ def first_doc(s):
         m = re.search(rx, s, re.I)
         if m:
             hits.append((m.start(), iid))
-    return min(hits)[1] if hits else None
+    return [iid for _, iid in sorted(hits)]
 
 
 def exhibit_documents(lines, line_doc, start):
@@ -293,16 +294,23 @@ def _exhibit_rows(L: _Lines, toc: set[int]) -> set[int]:
 
 
 def _principal_list(L: _Lines) -> dict[str, int]:
-    """Principal-document lists: each entry naming the AIF, statements or MD&A is a stub heading for it."""
+    """Principal-document lists: each entry naming the AIF, statements or MD&A is a stub heading for it, for the
+    document it names first, and for any other it names that no entry names first."""
     norm, kind, n = L.norm, L.kind, len(L.norm)
     listed: dict[str, int] = {}
     for i, s in enumerate(norm):
         if s and (len(s) <= 80 and PRINCIPAL.fullmatch(s) or re.match(r"the following documents\b.*\b(?:filed|incorporated|included)\b", s, re.I) and len(s) <= 300):
+            entries = []
             for j in range(i + 1, min(n, i + 12)):
                 if kind[j] in ("title", "unlisted", "sig", "exindex") and not (kind[j] == "title" and set(L.ids_at[j]) <= DOCS):
                     break
-                d = first_doc(norm[j])
-                if d and not re.match(r"the following", norm[j], re.I):
+                if not re.match(r"the following", norm[j], re.I):
+                    entries.append((j, named_docs(norm[j])))
+            for j, docs in entries:
+                if docs:
+                    listed.setdefault(docs[0], j)
+            for j, docs in entries:
+                for d in docs[1:]:
                     listed.setdefault(d, j)
     return listed
 
@@ -367,22 +375,21 @@ def _opening(L: _Lines, i: int) -> bool:
 
 
 def _printed_documents(L: _Lines, main: list[int], toc: set[int]) -> dict[str, int]:
-    """Principal documents printed whole in the body: the title after each document label, else the AIF that
-    opens with its period and then the MD&A and statements after it, outside the wrapper's sections."""
+    """Principal documents printed whole in the body: the title after each document label, then, outside the
+    wrapper's sections, the AIF that opens with its period and the MD&A and statements after it, each document
+    kept where it was found first."""
     norm, n = L.norm, len(L.norm)
     printed: dict[str, int] = {}
-    labels = [i for i in range(n) if L.kind[i] == "doclabel"]
-    if labels:
-        for lb in labels:
-            st = next((j for j in range(lb + 1, min(n, lb + 9)) if _doc_ids(L, j, toc)), lb + 1)
-            d = _doc_ids(L, st, toc)
-            if d:
-                printed.setdefault(d[0], st)
-        return printed
-    aif = next((i for i in range(n) if _doc_ids(L, i, toc) == ["AIF"] and _opening(L, i)), None)
+    for lb in (i for i in range(n) if L.kind[i] == "doclabel"):
+        st = next((j for j in range(lb + 1, min(n, lb + 9)) if _doc_ids(L, j, toc)), None)
+        for doc_id in (_doc_ids(L, st, toc) if st is not None else None) or ():
+            printed.setdefault(doc_id, st)
+    aif = printed.get("AIF")
     if aif is None:
-        return printed
-    printed["AIF"] = aif
+        aif = next((i for i in range(n) if _doc_ids(L, i, toc) == ["AIF"] and _opening(L, i)), None)
+        if aif is None:
+            return printed
+        printed["AIF"] = aif
     cur = aif
     while True:
         nxt = None
@@ -418,7 +425,7 @@ def _assign(L: _Lines, main: list[int], titles: list[int], printed: dict[str, in
         if w is None or w == i or kind[w] != "title" or _opening(L, w) or w in listed.values() or i < w:
             chosen[d] = i
     for d, i in listed.items():
-        if d not in chosen and not printed:
+        if d not in chosen:
             chosen[d] = i
     for i in sorted(set(chosen.values())):
         own = set(ids_at.get(i, ()))

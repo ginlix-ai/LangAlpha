@@ -333,6 +333,56 @@ def test_forty_f_sections_are_found_by_title():
     assert fs["UNDERTAKING"].combined_with == ["CONSENT"]
 
 
+FORTY_F_WRAPPER = [
+    p("DISCLOSURE CONTROLS AND PROCEDURES"), p("Our disclosure controls are effective."),
+    p("AUDIT COMMITTEE FINANCIAL EXPERT"), p("Our board has determined that one member is an expert."),
+    p("CODE OF ETHICS"), p("We have adopted a code of ethics."),
+    p("UNDERTAKING AND CONSENT TO SERVICE OF PROCESS"), p("The registrant undertakes to make its staff available."),
+    p("SIGNATURES"), p("Pursuant to the requirements of the Exchange Act, the registrant has duly caused this report to be signed.")]
+
+
+def test_forty_f_keeps_listed_documents_beside_a_printed_one():
+    doc = html(p("PRINCIPAL DOCUMENTS"), p("The following documents are filed as part of this annual report:"),
+               p("A. Annual Information Form for the year ended December 31, 2023"),
+               p("B. Management's Discussion and Analysis for the year ended December 31, 2023"),
+               p("C. Audited Annual Financial Statements for the year ended December 31, 2023"), *FORTY_F_WRAPPER,
+               p("DOCUMENT 3"), p("AUDITED ANNUAL FINANCIAL STATEMENTS"), p("For the years ended December 31, 2023 and 2022"),
+               p("Consolidated balance sheet. " + BODY))
+    fs = extract_sections(submission("40-F", "2024-03-01", ("40-F", doc)))
+    assert fs["AFS"].text.startswith("AUDITED ANNUAL FINANCIAL STATEMENTS")
+    assert fs["AIF"].text.startswith("A. Annual Information Form") and fs["MDA"].text.startswith("B. Management's")
+
+
+def test_forty_f_lists_every_document_an_entry_names():
+    doc = html(p("PRINCIPAL DOCUMENTS"), p("The following documents are filed as part of this annual report:"),
+               p("A. Annual Information Form for the year ended December 31, 2023"),
+               p("B. Audited Annual Financial Statements and Management's Discussion and Analysis for the year ended "
+                 "December 31, 2023"), *FORTY_F_WRAPPER)
+    fs = extract_sections(submission("40-F", "2024-03-01", ("40-F", doc)))
+    assert {"AIF", "AFS", "MDA"} <= set(fs.items)
+    assert fs["MDA"].text == fs["AFS"].text and fs["AFS"].text.startswith("B. Audited")
+
+
+def test_forty_f_ending_on_a_document_label_still_parses():
+    doc = html(p("ANNUAL INFORMATION FORM"), p("The annual information form is filed as Exhibit 99.1."), *FORTY_F_WRAPPER, p("DOCUMENT 1"))
+    fs = extract_sections(submission("40-F", "2024-03-01", ("40-F", doc)))
+    assert "CODE" in fs.items
+
+
+def test_forty_f_finds_an_unlabeled_aif_before_a_labeled_document():
+    doc = html(p("ANNUAL INFORMATION FORM"), p("For the year ended December 31, 2023"),
+               *[p("Our business. " + BODY) for _ in range(40)], *FORTY_F_WRAPPER,
+               p("DOCUMENT 2"), p("MANAGEMENT'S DISCUSSION AND ANALYSIS"), p("For the year ended December 31, 2023"), p("Results. " + BODY))
+    fs = extract_sections(submission("40-F", "2024-03-01", ("40-F", doc)))
+    assert fs["AIF"].text.startswith("ANNUAL INFORMATION FORM") and fs["MDA"].text.startswith("MANAGEMENT'S DISCUSSION")
+
+
+def test_a_letter_spaced_part_or_item_keyword_closes_up_before_its_numeral():
+    from edgar_engine.sections.text import normalize
+    assert [normalize(s) for s in ("P A R T I", "P A R T IV", "P A R T I I", "I T E M S 1 and 2", "I T E M I Z E D costs")] == [
+        "PART I", "PART IV", "PART II", "ITEMS 1 and 2", "I T E M I Z E D costs"]
+
+
 def test_truncated_submission_is_refused():
     full = submission("10-K", "2024-02-01", ("10-K", TENK), ("EX-21", "Subsidiaries of the registrant."))
     with pytest.raises(ValueError, match="truncated"):
@@ -476,3 +526,32 @@ def test_an_addressing_sentence_wrapped_over_two_lines_is_a_stub():
     fs = extract_sections(submission("10-K", "1999-03-01", ("10-K", body)))
     assert {fs[i].status for i in ("10", "11", "12", "13")} == {"stub"}
     assert fs["10"].target.kind == "proxy"
+
+
+def test_stacked_eight_k_headings_share_the_body_that_follows_them_all():
+    body = html(p("Item 2.02 Results of Operations and Financial Condition."), p("Item 7.01 Regulation FD Disclosure."),
+                p("Item 9.01 Financial Statements and Exhibits."),
+                p("On May 1, 2024 the company issued a press release announcing its first quarter results, attached as Exhibit 99.1."),
+                p("SIGNATURES"))
+    fs = extract_sections(submission("8-K", "2024-05-01", ("8-K", body)))
+    assert fs["2.02"].text == fs["7.01"].text == fs["9.01"].text and "press release" in fs["2.02"].text
+    assert set(fs["2.02"].combined_with) == {"7.01", "9.01"}
+
+
+def test_forty_f_combined_document_title_opens_every_document_it_names():
+    doc = html(p("ANNUAL INFORMATION FORM"), p("The annual information form is filed as Exhibit 99.1."),
+               p("DISCLOSURE CONTROLS AND PROCEDURES"), p("Our disclosure controls are effective."),
+               p("CODE OF ETHICS"), p("We have adopted a code of ethics."),
+               p("UNDERTAKING AND CONSENT TO SERVICE OF PROCESS"), p("The registrant undertakes to make its staff available."),
+               p("SIGNATURES"), p("Pursuant to the requirements of the Exchange Act, the registrant has duly caused this report to be signed."),
+               p("DOCUMENT 2"), p("MANAGEMENT'S DISCUSSION AND ANALYSIS AND CONSOLIDATED FINANCIAL STATEMENTS"),
+               p("For the year ended December 31, 2023"), p(BODY), p("Consolidated balance sheet. " + BODY))
+    fs = extract_sections(submission("40-F", "2024-03-01", ("40-F", doc)))
+    assert fs["MDA"].start == fs["AFS"].start
+
+
+def test_forty_f_run_in_title_needs_the_line_before_to_end_a_sentence():
+    from edgar_engine.sections.fortyf import match_title
+    title = "Code of Ethics. The Company has adopted a code of ethics for its officers."
+    assert match_title(title, "the board approved the plan that the company had previously described and adopted") is None
+    assert match_title(title, "the board approved the plan the company described in its \u201creport\u201d") == (("CODE",), "runin")

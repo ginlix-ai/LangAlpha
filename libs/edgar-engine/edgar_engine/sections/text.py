@@ -15,6 +15,7 @@ _LEAD = re.compile(r"^[\s|*\u2022\u00b7\u25cf\u25aa>]+")
 _SPACED = re.compile(r"^((?:[A-Za-z] ){2,}[A-Za-z])(?=[\s\d.:\-]|$)")
 _SPACED_WORDS = {"ITEM", "ITEMS", "PART", "SIGNATURE", "SIGNATURES"}
 _WS = re.compile(r"\s+")
+_NUMERAL = re.compile(r"[IVX]+", re.I)
 
 SIGNATURES = re.compile(r"SIGNATURES?(?:\s*\(S\))?(?:\s+PAGES?)?\s*[.:]?", re.I)
 SIGNATURE_PARAGRAPH = re.compile(r"Pursuant to the requirements of\b", re.I)
@@ -37,6 +38,9 @@ def normalize(line: str) -> str:
     s = s.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
     s = _WS.sub(" ", _LEAD.sub("", s)).strip()
     m = _SPACED.match(s)
-    if m and m.group(1).replace(" ", "").upper() in _SPACED_WORDS:
-        s = m.group(1).replace(" ", "") + s[m.end():]
+    if m:
+        letters = m.group(1).replace(" ", "")
+        word = letters[:4] if letters.upper()[:4] in ("PART", "ITEM") and _NUMERAL.fullmatch(letters[4:]) else letters
+        if word.upper() in _SPACED_WORDS:
+            s = " ".join(filter(None, (word, letters[len(word):]))) + s[m.end():]
     return s

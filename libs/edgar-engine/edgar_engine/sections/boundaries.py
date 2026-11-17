@@ -340,13 +340,20 @@ class _Doc:
         """8-K headings stacked with nothing between them share the body that follows ("Item 2.02 ..." on
         one line and "Item 7.01 ..." on the next, then one paragraph): one span from the first heading. A
         heading line that carries its own answer ("Not applicable.") is an item of its own."""
-        ordered = sorted(spans.values(), key=lambda sp: sp.start)
-        for a, b in zip(ordered, ordered[1:]):
-            if a.end == a.start + 1 == b.start and b.end > b.start + 1 and not _ANSWERED.search(self.lines[a.start]):
-                group = sorted({a.item, b.item, *a.combined_with, *b.combined_with}, key=lambda i: spans[i].start)
+        run: list[ItemSpan] = []
+        for sp in sorted(spans.values(), key=lambda sp: sp.start):
+            if run and run[-1].end != sp.start:
+                run = []
+            if sp.end == sp.start + 1 and not _ANSWERED.search(self.lines[sp.start]):
+                run.append(sp)
+                continue
+            if run and sp.end > sp.start + 1:
+                group = sorted({sp.item, *sp.combined_with, *(x for r in run for x in (r.item, *r.combined_with))},
+                               key=lambda i: spans[i].start)
                 for i in group:
-                    spans[i].start, spans[i].end = min(spans[g].start for g in group), b.end
+                    spans[i].start, spans[i].end = run[0].start, sp.end
                     spans[i].combined_with = [g for g in group if g != i]
+            run = []
         return spans
 
 
