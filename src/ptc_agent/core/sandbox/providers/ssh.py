@@ -593,7 +593,7 @@ async def _one_off(target: SSHTarget, private_key: str) -> AsyncIterator[Link]:
     """
     conn = await connect(target, private_key)
     try:
-        yield Link(target, conn)
+        yield Link(target, conn, helper=answered_by_helper(conn))
     finally:
         conn.close()
         await conn.wait_closed()

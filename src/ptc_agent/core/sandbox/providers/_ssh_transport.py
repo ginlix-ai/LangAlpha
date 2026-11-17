@@ -52,10 +52,19 @@ logger = structlog.get_logger(__name__)
 _COMMAND_SLOTS = 6
 # A Claude Code turn's CLI holds a command slot for the whole turn, so no more
 # than this many run on a connection, leaving two for the commands, installs
-# and checks those turns and their computers still need. CLIs past them run on
-# one more connection to the login (``Link.spill``), which carries only
-# those CLIs and their kills.
+# and checks those turns and their computers still need. A turn running a
+# command holds a second slot as it waits for it, so CLIs and commands past a
+# connection's room run on more connections to the login (``Link.spill``).
 CLI_SLOTS = _COMMAND_SLOTS - 2
+# A connection LangAlpha's helper answers has no MaxSessions: each session is
+# one process on the machine. So it carries every CLI a computer may run
+# (``CLIS_MAX``) and a command for each of them, with room for the rest.
+_HELPER_CLI_SLOTS = 16
+_HELPER_COMMAND_SLOTS = 3 * _HELPER_CLI_SLOTS
+# Channel opens refused in a row after which a connection past a login's
+# first is passed over and replaced: sshd holds sessions of it that we no
+# longer count.
+REFUSALS_REPLACED = 2
 # Kept from a command's output, so one runaway command cannot take the
 # server's memory. Past it the rest is read and dropped, so the command is
 # never blocked writing.
@@ -116,10 +125,13 @@ class _Drain:
 
 
 class _Run:
-    """One script on one channel, readable while it runs."""
+    """One script on one channel, readable while it runs, and the connection
+    it runs on (``link``), which may be another of the login's than the one
+    it was started from."""
 
-    def __init__(self, process: Any, cap: int) -> None:
+    def __init__(self, process: Any, cap: int, link: Link) -> None:
         self.process = process
+        self.link = link
         self._out = _Drain(process.stdout, cap)
         self._err = _Drain(process.stderr, 1 << 20)
 
@@ -268,6 +280,19 @@ class SlotWaitTimeout(TimeoutError):
         self.n = n
 
 
+class _Slots(asyncio.Semaphore):
+    """A connection's command or CLI slots, setting its ``freed`` as one is
+    given back, however that comes."""
+
+    def __init__(self, value: int, link: Link) -> None:
+        super().__init__(value)
+        self._link = link
+
+    def release(self) -> None:
+        super().release()
+        self._link.freed.set()
+
+
 class CliHold(NamedTuple):
     """The connection a CLI runs on, where it is signalled, and what starts
     it there (``Link.cli_hold``)."""
@@ -279,12 +304,16 @@ class CliHold(NamedTuple):
 class Link:
     """One connection and what rides on it, pooled or a one-off's."""
 
-    def __init__(self, target: SSHTarget, conn: asyncssh.SSHClientConnection) -> None:
+    def __init__(
+        self, target: SSHTarget, conn: asyncssh.SSHClientConnection, *, helper: bool = False
+    ) -> None:
         self.target = target
         self.conn = conn
         self.facts: HostFacts | None = None
-        self.slots = asyncio.Semaphore(_COMMAND_SLOTS)
-        self.cli_slots = asyncio.Semaphore(CLI_SLOTS)
+        #: How many CLIs this connection carries, by what answered it (``helper``).
+        self.cli_room = _HELPER_CLI_SLOTS if helper else CLI_SLOTS
+        self.slots = _Slots(_HELPER_COMMAND_SLOTS if helper else _COMMAND_SLOTS, self)
+        self.cli_slots = _Slots(self.cli_room, self)
         self.control_slot = asyncio.Semaphore(1)
         self.kill_slot = asyncio.Semaphore(1)
         self.forwards: dict[int, Any] = {}
@@ -300,17 +329,29 @@ class Link:
         self._sftp_lock = asyncio.Lock()
         self._forward_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
-        # The login's other connection, for CLIs past this one's slots,
-        # dialed once needed; None on a one-off's, whose CLIs wait for this
-        # one's.
-        self.spill: Callable[[], Awaitable[Link]] | None = None
-        # Set as a CLI slot frees on any of the login's connections, which
-        # share it once pooled, so a CLI waits for whichever frees first.
-        self.cli_freed = asyncio.Event()
+        # A dial for more room, by what it is for, which the calls waiting
+        # share and a slot freed meanwhile overtakes (``_dial_or_freed``).
+        self._dials: dict[str, asyncio.Future[Link | None]] = {}
+        # Another of the login's connections with room for a CLI or a
+        # command, dialed once none has it; None where the login already
+        # runs as many as it may, and on a one-off's, whose CLIs and commands
+        # wait for this one's. ``peers`` lists the ones dialed so far.
+        self.spill: Callable[[Literal["cli", "command"]], Awaitable[Link | None]] | None = None
+        self.peers: Callable[[], list[Link]] = list
+        # Set as a command or CLI slot frees on any of the login's
+        # connections, which share it once pooled, so a command or a CLI
+        # waits for whichever frees first.
+        self.freed = asyncio.Event()
 
     @property
     def usable(self) -> bool:
         return not self.retired and not self.conn.is_closed()
+
+    @property
+    def accepting(self) -> bool:
+        """Open to new calls as another connection's overflow: up, not
+        draining, and not refusing the channels sshd says it has room for."""
+        return self.usable and not self.draining and self.refusals < REFUSALS_REPLACED
 
     @property
     def host(self) -> str:
@@ -401,12 +442,115 @@ class Link:
     ) -> _Run:
         """Open a channel and send *script*; the caller reads it and finishes it.
 
+        A command that finds this connection's command slots all taken runs
+        on another of the login's connections with one free (``spill``), or
+        on whichever frees one first (``freed``), so the turns' long commands
+        never leave the rest of them waiting while another has room. One
+        that other connections fail to start twice waits for one of this
+        one's.
+
         A transport error raised here came before anything was sent, so the
         caller can tell a command that never ran from one that may have.
         """
+        if slot is not None and slot is not self.slots:
+            return await self._start_here(script, root=root, cap=cap, slot=slot)
+        failed = 0
+        while self.slots.locked() and failed < REFUSALS_REPLACED:
+            other = await self._room_for_command()
+            if other is None:
+                self.freed.clear()
+                if self.slots.locked() and self._peer_with_room() is None:
+                    await self.freed.wait()
+                continue
+            try:
+                async with other.in_use():
+                    run = await other._start_here(script, root=root, cap=cap, slot=None)
+                    other._in_use_until_closed(run.process)
+                return run
+            except TRANSPORT_ERRORS as e:
+                # Lost or refusing, it is passed over from here on and
+                # replaced at the next dial (``spill``).
+                failed += 1
+                logger.warning(
+                    "SSH connection for more commands failed a command, trying again",
+                    target=self.target.label, error=str(e) or type(e).__name__,
+                )
+        return await self._start_here(script, root=root, cap=cap, slot=None)
+
+    def _peer_with_room(self) -> Link | None:
+        for link in self.peers():
+            if link is not self and link.accepting and not link.slots.locked():
+                return link
+        return None
+
+    async def _room_for_command(self) -> Link | None:
+        """Another of the login's connections with a command slot free,
+        dialed where none has one; None where the login has no more room,
+        the dial failed, or a slot freed before the dial ended, so the
+        command looks again."""
+        if (link := self._peer_with_room()) is not None:
+            return link
+        self.freed.clear()
+        other = await self._dial_or_freed("command", None)
+        if other is None or other is self or not other.accepting or other.slots.locked():
+            return None
+        return other
+
+    async def _dial_or_freed(self, want: Literal["cli", "command"], deadline: float | None) -> Link | None:
+        """A connection of the login with room for ``want`` (``spill``), or
+        None once a slot frees first (``freed``, which the caller clears
+        before it last looked), the login is at its most, or the dial
+        fails. The calls waiting share one dial, which still ends once a
+        freed slot overtakes it, for the calls after.
+
+        Raises:
+            TimeoutError: ``deadline`` passed first.
+        """
+        if self.spill is None:
+            return None
+        dial = self._dials.get(want)
+        if dial is None or dial.done():
+            dial = self._dials[want] = asyncio.ensure_future(self.spill(want))
+            dial.add_done_callback(self._dial_ended)
+        freed = asyncio.ensure_future(self.freed.wait())
+        try:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.wait((dial, freed), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            freed.cancel()
+        if not dial.done() or dial.cancelled() or dial.exception() is not None:
+            return None
+        return dial.result()
+
+    def _dial_ended(self, dial: asyncio.Future[Link | None]) -> None:
+        if not dial.cancelled() and (e := dial.exception()) is not None:
+            logger.warning(
+                "SSH connection for more CLIs and commands failed, waiting on the ones up",
+                target=self.target.label, error=str(e) or type(e).__name__,
+            )
+
+    def _in_use_until_closed(self, process: Any) -> None:
+        """Count *process*'s channel as a call on this connection until it
+        closes, so a drain or the idle sweep never closes the connection
+        under a command another connection's caller is reading."""
+        self.active += 1
+
+        async def closed() -> None:
+            with contextlib.suppress(Exception):
+                await process.wait_closed()
+            self.active -= 1
+            self.last_used = time.monotonic()
+            if self.draining and self.active == 0:
+                self.close()
+
+        self.spawn(closed())
+
+    async def _start_here(
+        self, script: str, *, root: bool, cap: int, slot: asyncio.Semaphore | None
+    ) -> _Run:
         command = f"exec sudo -n {BOOT.removeprefix('exec ')}" if root else BOOT
         process = await self.open_process(command, slot=slot)
-        run = _Run(process, cap)
+        run = _Run(process, cap, self)
         try:
             process.stdin.write(script.encode())
             process.stdin.write_eof()
@@ -519,7 +663,7 @@ class Link:
     async def cli_hold(self, wait_s: float) -> AsyncIterator[CliHold]:
         """Hold what a long-lived CLI needs: a CLI slot on whichever of the
         login's connections has one first, this one or, once its slots are
-        taken, the other (``spill``), and the command slot its channel will
+        taken, another (``spill``), and the command slot its channel will
         take there, all within ``wait_s``, so commands filling every command
         slot are a wait like any other. It yields the connection the CLI
         runs on and what starts it there: its channel takes the command slot
@@ -537,43 +681,63 @@ class Link:
                     yield CliHold(link, start)
             finally:
                 link.cli_slots.release()
-                link.cli_freed.set()
 
     async def _cli_slot(self, deadline: float) -> Link:
         """A CLI slot on one of the login's connections, taken by
-        ``deadline``: this one's while it has one free, else the other's,
-        dialed once needed, else the first either frees (``cli_freed``). A
-        slot is taken as it is seen free, with no wait between. A second
-        connection that cannot be dialed leaves the CLI to this one's until
-        it next wakes, when it looks for one again, so one another CLI dialed
-        meanwhile serves it too. This
-        one's slot is taken even once it is lost, so the CLI fails starting
-        as a lost connection rather than waiting out its time as a full one."""
-        loop = asyncio.get_running_loop()
-        other = None
+        ``deadline``: this one's while it has one free, else another's,
+        dialed once none has one, else the first any frees (``freed``).
+        A slot is taken as it is seen free, with no wait between, and only
+        on a connection with a command slot free too, which the CLI's start
+        takes. A connection that cannot be dialed, or a login at its most,
+        leaves the CLI to the ones up until it next wakes, when it looks
+        again, so one another CLI dialed meanwhile serves it too. A wait
+        that runs out with CLI slots free but no command slot is the
+        commands' (``which`` "command"). This one's slot is taken
+        even once it is lost, so the CLI fails starting as a lost connection
+        rather than waiting out its time as a full one."""
+
+        def room() -> int:
+            return self.cli_room + sum(link.cli_room for link in self.peers() if link is not self and link.accepting)
+
+        def ran_out() -> SlotWaitTimeout:
+            return SlotWaitTimeout("command") if open_to_clis() else SlotWaitTimeout("cli", room())
+
+        def open_to_clis() -> list[Link]:
+            return [
+                link for link in (self, *self.peers())
+                if (link is self or link.accepting) and not link.cli_slots.locked()
+            ]
+
         while True:
-            if self.cli_slots.locked() and self.spill is not None:
-                try:
-                    async with asyncio.timeout_at(deadline):
-                        other = await self.spill()
-                except Exception as e:
-                    if isinstance(e, TimeoutError) and loop.time() >= deadline:
-                        raise SlotWaitTimeout("cli", CLI_SLOTS if other is None else 2 * CLI_SLOTS) from None
-                    logger.warning(
-                        "SSH connection for more CLIs failed, waiting for one of the first's",
-                        target=self.target.label, error=str(e) or type(e).__name__,
-                    )
-                    other = None
-            for link in (self, other):
-                if link is not None and (link is self or link.usable) and not link.cli_slots.locked():
+            # Only one with a command slot free too: on one whose commands
+            # hold every slot, the CLI would start only once one of those
+            # ended, minutes later for a waited-on command, while another
+            # connection may free one first.
+            for link in open_to_clis():
+                if not link.slots.locked():
                     await link.cli_slots.acquire()
                     return link
-            self.cli_freed.clear()
+            # Cleared before the dial, so a slot freed during it is seen.
+            self.freed.clear()
+            try:
+                other = await self._dial_or_freed("cli", deadline)
+            except TimeoutError:
+                raise ran_out() from None
+            if (
+                other is not None and other.accepting
+                and not other.cli_slots.locked() and not other.slots.locked()
+            ):
+                await other.cli_slots.acquire()
+                return other
+            # By what is free, not by ``freed``: a command woken by the same
+            # release may already have cleared it.
+            if any(not link.slots.locked() for link in open_to_clis()):
+                continue
             try:
                 async with asyncio.timeout_at(deadline):
-                    await self.cli_freed.wait()
+                    await self.freed.wait()
             except TimeoutError:
-                raise SlotWaitTimeout("cli", CLI_SLOTS if other is None else 2 * CLI_SLOTS) from None
+                raise ran_out() from None
 
     @contextlib.asynccontextmanager
     async def _cli_start(self, deadline: float) -> AsyncIterator[Callable[[str], Awaitable[Any]]]:
@@ -669,6 +833,9 @@ class Link:
     def close(self) -> None:
         self.retired = True
         self.conn.abort()
+        # Its room is gone, which a call waiting at a login's most
+        # connections waits for, to dial another in its place.
+        self.freed.set()
 
 
 L = TypeVar("L")
@@ -749,7 +916,12 @@ class FramedResult:
 
 
 class ScriptLost(ConnectionError):
-    """The connection dropped while a command may have been running."""
+    """The connection dropped while a command may have been running; ``link``
+    is the one it ran on."""
+
+    def __init__(self, message: str, link: Link) -> None:
+        super().__init__(message)
+        self.link = link
 
 
 async def run_framed(
@@ -791,7 +963,7 @@ async def run_framed(
         except TimeoutError:
             # Shielded: a cancel that comes during the kill must not stop it.
             await asyncio.shield(
-                link.spawn(_end_group(link, run, computer_dir, root=root))
+                run.link.spawn(_end_group(run.link, run, computer_dir, root=root))
             )
             return FramedResult.parse(
                 run.stdout,
@@ -802,11 +974,11 @@ async def run_framed(
             )
         except TRANSPORT_ERRORS as e:
             run.abandon()
-            raise ScriptLost(str(e) or type(e).__name__) from e
+            raise ScriptLost(str(e) or type(e).__name__, run.link) from e
         except BaseException:
             # The caller gave up, or reading failed; what it started on the
             # machine must not keep running unowned.
-            link.spawn(_end_group(link, run, computer_dir, root=root))
+            run.link.spawn(_end_group(run.link, run, computer_dir, root=root))
             raise
     return FramedResult.parse(
         result.stdout,
