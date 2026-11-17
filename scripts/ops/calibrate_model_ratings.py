@@ -60,17 +60,18 @@ DEFAULT_ENV = REPO / ".env"
 # Frontier-calibrated bands. (lower_bound_inclusive, tier) high->low.
 # Placed in the GAPS of the observed distribution, not at round numbers: a
 # threshold sitting on top of a model flips that badge on the next AA refresh.
-# Re-placed for the rescaled index: the frontier now tops out near 58 rather
-# than 63, so the old 54 cut left one model in band 5. Each cut sits in a gap
-# of at least 1.5 points (48.5: 47.5|49.6, 43: 42.1|43.6, 35.5: 33.7|37.3,
-# 27: 25.2|29.2); speed cuts moved off the three models sitting on 65 tok/s.
-INTEL_BANDS = [(48.5, 5), (43, 4), (35.5, 3), (27, 2), (0, 1)]  # <- AA intelligence index
-SPEED_BANDS = [(150, 5), (92, 4), (63, 3), (44, 2), (0, 1)]     # <- AA output tokens/sec
+# Re-placed for Intelligence Index v5.0.1 (2026-11-17), where the frontier
+# tops out at 64.6 and the v4 cuts sat on Qwen4 Max (42.9) and Grok 4.7 (35.5).
+# Each cut takes the widest gap in its stretch of the lineup: intelligence
+# 56: 54.5|57.3, 48.5: 46.5|50.4, 39.5: 36.5|42.9, 23: 18.9|27.8; speed
+# 150: 134|169, 110: 104|115, 75: 69|82, 40: 28|52 tok/s.
+INTEL_BANDS = [(56, 5), (48.5, 4), (39.5, 3), (23, 2), (0, 1)]  # <- AA intelligence index
+SPEED_BANDS = [(150, 5), (110, 4), (75, 3), (40, 2), (0, 1)]    # <- AA output tokens/sec
 
 # Our access/region/serving variants that map onto a base model's AA rating.
 VARIANT_SUFFIXES = (
     "-oauth-1m", "-oauth", "-anthropic", "-cn", "-intl",
-    "-coding", "-highspeed", "-spark",
+    "-coding", "-spark", "-code",
 )
 # Noise tokens dropped during name matching (release qualifiers, not identity).
 STOP_TOKENS = {"preview", "experimental", "exp"}
@@ -78,7 +79,13 @@ STOP_TOKENS = {"preview", "experimental", "exp"}
 # Models AA's language endpoint doesn't track (or tracks without throughput).
 # Hand-grounded from the cited sources; applied to every visible variant of the
 # base, and only for the fields present (so AA-derived fields survive otherwise).
-MANUAL: dict[str, dict] = {}
+MANUAL: dict[str, dict] = {
+    "kimi-k3.1-pro-highspeed": {
+        "speed": 2, "intelligence": 3,
+        "ref": "Kimi K3.1 Pro's weights (AA 46.5), served faster: 50 tok/s on OpenRouter's "
+               "Moonshot route and 61 in AA's provider table, against AA's 28 for standard",
+    },
+}
 
 # Our model key -> AA slug, where AA files a model under its research release
 # name and the vendor sells it under another. The opposite of a MANUAL entry:
@@ -87,8 +94,9 @@ AA_SLUG_ALIASES = {
     # DashScope's `qwen3.8-flash` is the productionised Qwen3.8-Flash-Next
     # (same weights, 262k native context served extended to 1M).
     "qwen3.8-flash": "qwen3-8-flash-next",
-    # The key predates the point release; the entry serves V4.1 Flash.
-    "deepseek-flash": "deepseek-v4-1-flash",
+    # The key predates the point release; the entry serves V4.1 Flash 1017,
+    # the release task_costs.json cites.
+    "deepseek-flash": "deepseek-v4-1-flash-1017",
 }
 
 
@@ -202,7 +210,7 @@ def aa_effort_rank(name: str) -> int | None:
     n = name.lower()
     if "instant" in n or "non-reasoning" in n or "non reasoning" in n:
         return 0
-    if "xhigh" in n or "max effort" in n:
+    if "xhigh" in n or "max effort" in n or "(max" in n:
         return 4
     if "high" in n:
         return 3
@@ -213,16 +221,27 @@ def aa_effort_rank(name: str) -> int | None:
     return None  # no effort qualifier on this row
 
 
+def _tps(row: dict) -> float | None:
+    return _num((row.get("performance") or {}).get("median_output_tokens_per_second"))
+
+
 def pick_row(rows: list[dict], target: int | None, basis: str) -> dict:
-    rows = [r for r in rows if ii_of(r) is not None]
-    if not rows:
-        return {}
+    scored = [r for r in rows if ii_of(r) is not None]
+    if scored:
+        rows, ceiling = scored, ii_of
+    else:
+        # AA still measures throughput on models it no longer scores, so the
+        # speed rating stays current; intelligence is kept (or set in MANUAL).
+        rows = [r for r in rows if _tps(r) is not None]
+        ceiling = lambda r: aa_effort_rank(r["name"]) or 0  # noqa: E731
+        if not rows:
+            return {}
     if basis == "ceiling" or target is None:
-        return max(rows, key=ii_of)
+        return max(rows, key=ceiling)
     ranked = [(aa_effort_rank(r["name"]), r) for r in rows]
     cand = [(rk, r) for rk, r in ranked if rk is not None]
     if not cand:
-        return max(rows, key=ii_of)
+        return max(rows, key=ceiling)
     # nearest effort to how we serve it; tie-break on higher intelligence
     return min(cand, key=lambda x: (abs(x[0] - target), -(ii_of(x[1]) or -1)))[1]
 
@@ -275,9 +294,16 @@ def main() -> None:
             unmatched.append(k)
             print(f"{k:30s} {f'{cur_s}/{cur_i}':>7}  {'—':>6} {'—':>7}  {f'{new_s}/{new_i}' if label == '(manual)' else label:>8}  — no AA match")
             continue
-        ii, tps, name = ii_of(row), _num(row.get("performance", {}).get("median_output_tokens_per_second")), row["name"]
+        ii, tps, name = ii_of(row), _tps(row), row["name"]
         new_i = band(ii, INTEL_BANDS) if ("intelligence" in write_fields and ii is not None) else cur_i
         new_s = band(tps, SPEED_BANDS) if ("speed" in write_fields and tps is not None) else cur_s
+        ov = overrides.get(k, {})
+        if "speed" in ov and "speed" in write_fields:
+            new_s = ov["speed"]
+        if "intelligence" in ov and "intelligence" in write_fields:
+            new_i = ov["intelligence"]
+        if ov:
+            name = f"{name} (manual)"
         flag = "" if (new_s == cur_s and new_i == cur_i) else "  *"
         if flag:
             changes += 1
