@@ -82,6 +82,95 @@ that prints no item at all, or that furnishes an employee plan's Form 11-K, is `
 followed by each amendment's, so every offset still indexes it. It is computed from the per-accession cache
 entries and is not cached itself.
 
+## Insider transactions (Forms 3, 4 and 5)
+
+`edgar_engine.ownership` reads an ownership document from a filing's full-text submission
+(`/Archives/edgar/data/<cik>/<accession>.txt`, one request) or from its XML.
+
+```python
+from edgar_engine import get_insider_filings
+from edgar_engine.ownership import insider_statistics, transaction_rows
+import pandas as pd
+
+filings = get_insider_filings("AAPL", start="2024-01-01")       # Forms 4 and 4/A where Apple is the issuer
+rows = pd.DataFrame([r for f in filings for r in transaction_rows(f)])
+stats = insider_statistics(rows)                                  # one row per calendar quarter
+```
+
+**Lines as filed.** Every line of Table I and Table II is a transaction row, in document order, identical lines
+included; a holdings-only line is a holding, never a transaction. The price is the filed
+`transactionPricePerShare`, and a derivative line's exercise price is its own field. A value the filer left to a
+footnote (an exercise date "see footnote 4") is `None`, with its footnote ids under the field's name, and the
+footnote texts are on the filing. `aff10b5_one` is the filing-level Rule 10b5-1 checkbox; which transactions a
+plan covers is only ever stated in footnotes.
+
+**Issuer, not owner.** EDGAR lists an ownership filing under the issuer and under every reporting owner, so a
+company's own filing list holds filings where it is only an owner (a bank's broker-dealer, a parent holding another
+issuer's shares). `belongs_to_issuer` keeps a filing on its parsed `issuerCik`.
+
+**Statistics.** `insider_statistics` counts, per issuer and calendar quarter of the transaction date, the lines
+acquired and disposed, their shares, their averages and ratio, and the open-market purchases (code P) and sales
+(code S): Forms 4 and 4/A (an amendment's lines count beside its original's), both tables, a line repeated
+identically within one filing (every value equal; footnotes are not compared, as the vendors do not) counted once,
+zero-share lines kept. A joint
+filing's line counts once for all its owners. `get_insider_filings` selects on filing date, so a quarter at either
+end of its range is partial.
+
+**Data sets.** `read_insider_dataset` reads SEC's quarterly Insider Transactions Data Set into the same columns.
+It is SEC's own extraction of the same documents, rounded to 2 decimals, and in multi-line filings it sometimes
+puts a line's nature of ownership (rarely a price or a holding) on a neighbouring line; the filing is right.
+Footnote ids come from its per-field footnote columns.
+
+## 13F holdings
+
+`edgar_engine.thirteenf` reads a 13F-HR or 13F-HR/A: the cover and summary page from the primary document, and
+every row of the XML information table (2013 onward).
+
+```python
+from edgar_engine import get_13f_holdings
+from edgar_engine.thirteenf import holding_rows, ticker_for_cusip
+
+reports = get_13f_holdings(1067983, "2024-06-30")    # the reports that make up the period, amendments resolved
+rows = [r | {"ticker": ticker_for_cusip(r["cusip"])} for f in reports for r in holding_rows(f)]
+```
+
+**Namespaces.** Information tables declare their namespace under any prefix and in any order. Element names are
+unique within the schema, so the engine parses the document as filed, reads elements by local name and never picks
+"the document namespace" from the declarations; a table whose root declares `xmlns:xsi` before the prefixed 13F
+namespace reads like any other. Each document is decoded on its own, so a submission that carries another
+document in another encoding does not garble it.
+
+**Units.** Since the 2023 schema (reports for periods after 2022-09-30) values are whole dollars; before, thousands. Some filers still report thousands,
+repeat shares in the value column, or mix scales. `value_unit` on each report is edgartools' resolver (implied
+prices, schema, period); `check_units` takes a period's rows from every filer and compares each row's value per
+share with the median price the other filers imply for the same CUSIP (one vote per filer, never the report's
+own), and flags a report 100x or more away; a report whose rows split between scales reads `mixed`, since one
+multiplier would break its correct rows.
+Each catches errors the other misses, so `unit_flags` takes either. `checks` adds generic summary-page checks: a
+row count or value total that disagrees with the summary page (another manager's table attached, a truncated or
+transposed table) and nil tables.
+
+**Amendments.** `resolve_amendments` returns the reports that make up a filer's period: the latest original or
+RESTATEMENT is the base, and a NEW HOLDINGS amendment filed on or after it adds its rows, unless it re-files them:
+most of its rows repeat a row held so far (CUSIP, shares, type and put or call) and those repeats cover most of the
+holdings (some filers mark a full re-filing as NEW HOLDINGS). Reports filed the same day go original first, then
+by amendment number. `get_13f_holdings` leaves out, with a warning, a report whose information table is missing
+or unreadable, so it can never replace a readable one.
+
+**Tickers.** `ticker_for_cusip` looks a CUSIP up in edgartools' bundled CUSIP snapshot. A CUSIP whose check digit
+fails (a typo, an option series' pseudo-CUSIP) maps to nothing, and class tickers come back in exchange form
+(`BRK-B`, where the snapshot writes `BRKB`). A CUSIP the snapshot does not know has no ticker; fund-class
+symbols from other identifier services are not exchange tickers, so there is no fallback.
+
+`read_13f_dataset` reads SEC's Form 13F Data Sets into the same columns, `value_usd` included (the same per-report
+unit resolution, with the filing date standing in for the schema version the data sets do not carry); select a
+period, since a filing window carries stray older ones.
+
+**Fetching.** `edgar_engine.submission.fetch_submission` reads a filing's `.txt` with one request through
+edgartools' identity, rate limit and retries. A body without its `</SEC-DOCUMENT>` trailer is a truncated download:
+it is fetched once more past edgartools' HTTP cache, then raises and is never cached. The parsers are strict: an XML document cut short or not well formed reads as no
+document, never as a partial one.
+
 ## Filings and cache
 
 `edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks an

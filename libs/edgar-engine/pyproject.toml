@@ -1,7 +1,7 @@
 [project]
 name = "langalpha-edgar-engine"
 version = "0.1.0"
-description = "SEC EDGAR engine over edgartools: filing item sections with lossless text, cross-reference stubs, period selection and an accession-keyed cache"
+description = "SEC EDGAR engine over edgartools: filing item sections with lossless text, cross-reference stubs, period selection, insider transactions (Forms 3/4/5), 13F holdings and an accession-keyed cache"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -11,6 +11,7 @@ dependencies = [
     # keeps; the legacy edgar.files parser and ChunkedDocument are not.
     "edgartools>=5.62.1,<7",
     "lxml>=5.3",
+    "pandas>=2.2",
 ]
 
 [build-system]

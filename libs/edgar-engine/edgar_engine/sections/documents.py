@@ -15,12 +15,6 @@ _OPEN = re.compile(r"<DOCUMENT>", re.I)
 _CLOSE = re.compile(r"</DOCUMENT>", re.I)
 _SUBMISSION_OPEN = re.compile(r"<SEC-DOCUMENT>", re.I)
 _SUBMISSION_CLOSE = re.compile(r"</SEC-DOCUMENT>", re.I)
-_HEADER_FIELD = {
-    "form": re.compile(r"^\s*CONFORMED SUBMISSION TYPE:\s*(\S+)", re.M),
-    "filing_date": re.compile(r"^\s*FILED AS OF DATE:\s*(\d{8})", re.M),
-    "accession": re.compile(r"^\s*ACCESSION NUMBER:\s*([\d-]+)", re.M),
-    "period": re.compile(r"^\s*CONFORMED PERIOD OF REPORT:\s*(\d{8})", re.M),
-}
 
 
 @dataclass
@@ -37,15 +31,6 @@ class Document:
         return bool(re.match(r"\s*begin \d{3} ", head)) or head.lstrip()[:5] == "%PDF-"
 
 
-def decode(raw: bytes | str) -> str:
-    if isinstance(raw, str):
-        return raw
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("cp1252", errors="replace")
-
-
 def require_complete(submission: str) -> None:
     """Refuse a submission with no document, a <DOCUMENT> left open, or an <SEC-DOCUMENT> never closed: a partial
     download, or an HTTP cache that kept one, would otherwise parse into documents cut short or missing with no
@@ -54,19 +39,6 @@ def require_complete(submission: str) -> None:
     if not opened or opened != len(_CLOSE.findall(submission)) or (
             _SUBMISSION_OPEN.search(submission[:1000]) and not _SUBMISSION_CLOSE.search(submission[-1000:])):
         raise ValueError("the submission is truncated or holds no document")
-
-
-def header(submission: str) -> dict:
-    """Form, filing date, accession and period from the SEC header (dates as YYYY-MM-DD)."""
-    head = submission[:20000]
-    out = {}
-    for key, rx in _HEADER_FIELD.items():
-        m = rx.search(head)
-        if not m:
-            continue
-        v = m.group(1)
-        out[key] = f"{v[:4]}-{v[4:6]}-{v[6:]}" if key in ("filing_date", "period") else v
-    return out
 
 
 def split(submission: str) -> list[Document]:

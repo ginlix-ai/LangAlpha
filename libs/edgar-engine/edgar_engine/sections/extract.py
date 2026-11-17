@@ -6,9 +6,9 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from ..submission import parse_submission
+from ..submission import decode, header, parse_submission
 from .boundaries import find_items
-from .documents import decode, header, main_documents, require_complete, split
+from .documents import main_documents, require_complete, split
 from .model import FilingSections, Section
 from .pages import Pagination
 from .rendering import render_documents

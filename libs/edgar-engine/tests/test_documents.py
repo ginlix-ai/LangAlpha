@@ -7,7 +7,7 @@ import pytest
 
 from edgar_engine import SubmissionDocument, submission_documents
 from edgar_engine.documents import attached_documents, exhibit_index, read_with_documents, readable
-from edgar_engine.sections.documents import decode
+from edgar_engine.submission import decode
 
 BODY = "The company reported results for the quarter ended in the period."
 
