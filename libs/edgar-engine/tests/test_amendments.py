@@ -149,6 +149,7 @@ def test_original_filed_on_keeps_only_dates_for_the_report_being_amended():
 
 def test_original_filed_on_takes_the_report_named_last_before_the_date():
     assert original_filed_on("This Form 10-K/A discusses our Form 8-K filed on March 1, 2020.\n") == []
+    assert original_filed_on("This Form 10-K/A discusses our Form 8-K originally filed on February 20, 2024.\n") == []
     assert original_filed_on("This Amendment to Annual Report on Form 20-F/A is being filed solely to update Item 16 "
                              "of the Form 20-F filed on April 7, 2000.\n") == ["2000-04-07"]
     assert original_filed_on("This Amendment No. 1 amends our Annual Report on Form 10\u2011K for the fiscal year ended "
@@ -182,6 +183,12 @@ def test_resolve_amends_by_cover_period_then_by_original_filing_date():
     assert resolve_amends(by_note, listed) == "G-1"
     neither = amendment_text("10-K/A", "2009-10-09", "For the fiscal year ended December 31, 2005\n")
     assert resolve_amends(neither, listed) is None
+    later_date = amendment_text("10-K/A", "2010-06-01", "For the fiscal year ended December 31, 2005\n"
+                                "This amends our Form 10-K originally filed with the SEC on March 20, 2006.\n"
+                                "Our Annual Report on Form 10-K was filed on March 30, 2010.\n")
+    assert resolve_amends(later_date, listed) is None
+    same_day = [FilingRef(CIK, "G-5", "10-K", "2010-06-01", "2009-12-31"), FilingRef(CIK, "Y-5", "10-K", "2010-06-01", "2009-12-31")]
+    assert resolve_amends(amendment_text("10-K/A", "2010-06-01", "For the fiscal year ended December 31, 2009\n"), same_day) == "G-5"
 
 
 def test_the_explanatory_note_date_comes_before_dates_in_the_exhibit_index():
@@ -220,9 +227,11 @@ PART_III = filing("P", "10-K/A", "2024-04-29", {
     "10": "Item 10. Directors\nthe board", "11": "Item 11. Executive Compensation\npay table",
     "15": "Item 15. Exhibits\n31.1 31.2",
 })
+FULL_ITEMS = {iid: f"Item {iid}. Restated\nas restated" for iid in ["1", "2", "3", "4", "5", "7", "7A", "9", "9A", "9B", "12"]}
 FULL = filing("F", "10-K/A", "2024-06-01", {
-    "1": "Item 1. Business\nwidgets", "7": "Item 7. MD&A\nsales fell", "8": "Item 8. Financial Statements\nnet income 7",
-    "10": "Item 10. Directors\nthe board", "15": "Item 15. Exhibits\n3.1 4.1 21 23 31.1",
+    "1": "Item 1. Business\nwidgets", **FULL_ITEMS, "7": "Item 7. MD&A\nsales fell",
+    "8": "Item 8. Financial Statements\nnet income 7", "10": "Item 10. Directors\nthe board",
+    "15": "Item 15. Exhibits\n3.1 4.1 21 23 31.1",
 })
 
 
@@ -233,10 +242,35 @@ def test_scope_by_parts_printed():
     assert filing("C", "10-K/A", "2024-05-01", {}).scope == "cover"
     assert filing("Q", "10-Q/A", "2024-05-01", {"I-1": "Item 1. Financial Statements\nx", "I-2": "Item 2. MD&A\ny",
                                                  "II-6": "Item 6. Exhibits\n31.1"}).scope == "partial"
-    assert filing("Q2", "10-Q/A", "2024-05-01", {"I-1": "Item 1. Financial Statements\nx",
-                                                  "II-1": "Item 1. Legal Proceedings\nnone"}).scope == "complete"
+    assert filing("Q2", "10-Q/A", "2024-05-01", {iid: f"Item {iid[-1]}. x\ny" for iid in
+                                                 ["I-1", "I-2", "I-3", "I-4", "II-1", "II-1A"]}).scope == "complete"
     assert filing("H", "40-F/A", "2024-05-01", {"FEES": "Principal Accountant Fees\nx"}).scope == "partial"
-    assert filing("H2", "40-F/A", "2024-05-01", {"AIF": "Annual Information Form\nx", "FEES": "Fees\ny"}).scope == "complete"
+    assert filing("H2", "40-F/A", "2024-05-01", {"AIF": "Annual Information Form\nx", "AFS": "Financial Statements\nx",
+                                                 "MDA": "MD&A\nx", "FEES": "Fees\ny"}).scope == "complete"
+
+
+def test_an_amendment_printing_one_item_per_part_is_partial():
+    assert filing("Q3", "10-Q/A", "2024-05-01", {iid: f"Item {iid[-1]}. x\ny" for iid in
+                                                 ["I-1", "I-2", "I-4", "II-1A"]}).scope == "partial"
+    assert filing("T", "20-F/A", "2024-05-01", {iid: f"Item {iid}. x\ny" for iid in ["5", "15", "18", "19"]}).scope == "partial"
+    assert filing("K", "10-K/A", "2024-05-01", {iid: f"Item {iid}. x\ny" for iid in ["1A", "9A", "10"]}).scope == "partial"
+    afs_only = filing("A", "40-F/A", "2024-05-01", {"UNDERTAKING": "Undertaking\nx", "CONSENT": "Consent\nx",
+                                                    "AFS": "Audited Financial Statements\nrestated"})
+    assert afs_only.scope == "partial"
+
+
+def test_an_amendment_carrying_a_plan_annual_report_changes_no_item():
+    plan = filing("K11", "10-K/A", "2024-06-20", {"4": "Item 4. Financial Statements and Supplemental Schedules\nplan assets"},
+                  head="This Amendment is filed to furnish the annual report on Form 11-K of the Savings Plan.\n")
+    assert plan.scope == "cover"
+    m = merge(ORIGINAL, [plan])
+    assert m.amendments == ["K11"] and "4" not in m.items
+
+
+def test_a_plan_report_named_only_in_the_exhibit_list_leaves_a_part_three_amendment_partial():
+    part3 = filing("P3", "10-K/A", "2024-04-29", {"10": "Item 10. Directors\nboard", "11": "Item 11. Compensation\npay",
+                                               "15": "Item 15. Exhibits\n99.1 Annual report on Form 11-K of the Savings Plan"})
+    assert part3.scope == "partial"
 
 
 def test_old_ten_k_exhibit_item_is_known_by_its_heading():
@@ -257,8 +291,8 @@ def test_complete_amendment_replaces_the_item_set_and_later_amendments_apply_on_
     later_part_iii = replace(PART_III, accession="P2", filing_date="2024-07-01")
     m = merge(ORIGINAL, [later_part_iii, FULL])
     assert m.amendments == ["F", "P2"]
-    assert list(m.items) == ["1", "7", "8", "10", "11", "15"]
-    assert {k: s.source for k, s in m.items.items()} == {"1": "F", "7": "F", "8": "F", "10": "P2", "11": "P2", "15": "P2"}
+    assert list(m.items) == ["1", "2", "3", "4", "5", "7", "7A", "8", "9", "9A", "9B", "10", "11", "12", "15"]
+    assert {k: s.source for k, s in m.items.items() if s.source != "F"} == {"10": "P2", "11": "P2", "15": "P2"}
     assert "1A" not in m.items
 
 
@@ -414,6 +448,12 @@ def test_an_amendment_as_filed(engine):
     assert get_sections(CIK, "10-K", fiscal_year=2023, amendment=3) is None
 
 
+def test_the_first_amendment_is_read_without_reading_later_ones(engine):
+    assert get_sections(CIK, "10-K", fiscal_year=2023, amendment=1).accession == "0001234567-24-000020"
+    assert get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended", amendment=1).amendments == ["0001234567-24-000020"]
+    assert "0001234567-25-000030" not in FETCHED
+
+
 def test_as_amended_merges_every_amendment_in_filing_order(engine):
     fs = get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended")
     assert fs.amendments == ["0001234567-24-000020", "0001234567-25-000030"]
@@ -472,6 +512,21 @@ def test_amendment_whose_cover_names_another_year_is_not_merged_into_this_one(en
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(api_mod, "list_filings", fake)
     assert stray not in get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended").amendments
+
+
+def test_amendment_the_list_links_to_another_year_is_placed_by_its_cover(engine, monkeypatch):
+    mistyped = "0001234567-25-000045"
+    monkeypatch.setitem(TEXTS, mistyped, ("10-K/A", "2025-03-01", filing(
+        "w", "10-K/A", "2025-03-01", {"9A": "Item 9A. Controls and Procedures\nmaterial weakness"},
+        head="For the fiscal year ended December 31, 2023\n")))
+    rows = [*ROWS, row(mistyped, "10-K/A", "2025-03-01", "2024-12-31")]
+
+    def fake(company, form, *, amendments=False, filed_on_or_before=None):
+        return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
+                              filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
+    monkeypatch.setattr(api_mod, "list_filings", fake)
+    assert get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended")["9A"].source == mistyped
+    assert mistyped not in get_sections(CIK, "10-K", fiscal_year=2024, view="as_amended").amendments
 
 # Live: an original with a Part III amendment and a second, narrower one, pinned by accession.
 

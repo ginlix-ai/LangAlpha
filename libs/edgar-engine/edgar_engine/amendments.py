@@ -5,17 +5,19 @@ Every amendment read is then checked against its own text, which wins when it pl
 cover page names the period it reports on, and the explanatory note usually names the date the original
 was filed. That corrects a period of report typed wrong on either filing, and places an amendment the
 list could not (amends=None). An amendment read for an original is kept only when its text, or failing
-that the list, names that original; one the list links elsewhere is not read for it.
+that the list, names that original.
 
 Scope. An amendment restates the items it prints (Rule 12b-15 asks for the complete text of each item
-amended). It is "complete" when it prints an item from every part of the form, leaving out the exhibit
-list: a full refiling. Otherwise it is "partial" (Part III only, restated statements), "exhibits" when
-the only item it prints is its exhibit list, and "cover" when it prints no item at all (a cover page,
-an explanatory note and signatures, or exhibits with no item around them).
+amended). It is "complete" when it prints an item from every part of the form and at least half the
+form's items (for a 40-F, every principal document), leaving out the exhibit list: a full refiling.
+Otherwise it is "partial" (Part III only, restated statements), "exhibits" when the only item it prints
+is its exhibit list, and "cover" when it prints no item at all (a cover page, an explanatory note and
+signatures, or exhibits with no item around them) or says before its first item that it carries an employee
+plan's annual report (Form 11-K under Rule 15d-21), whose numbered items are the plan's, not the form's.
 
 Merge. The as-amended view starts from the original and applies each amendment in filing order. A
-complete amendment replaces the item set. Any other replaces the items it prints, its exhibit list
-included, and keeps the rest; a cover amendment changes no item. Every item names its source accession.
+complete amendment replaces the item set. A cover amendment changes no item. Any other replaces the items
+it prints, its exhibit list included, and keeps the rest. Every item names its source accession.
 """
 from __future__ import annotations
 
@@ -42,7 +44,8 @@ _COVER_PERIOD = re.compile(
     rf"\s+ended\s*:?\s*{_DATE}", re.I)
 _FILED_ON = re.compile(rf"\bfiled\b[^\n;]{{0,160}}?\bon\s+{_DATE}", re.I)
 _ORIGINAL = re.compile(r"\boriginal|\bannual\s+report|\bquarterly\s+report|\bform\s+(?:10-K|10-Q|20-F|40-F)(?![\w-]*/A)", re.I)
-_REPORT = re.compile(r"\boriginal|\b(?:annual|quarterly|current)\s+report|\bform\s+[\w-]+(?:/A)?", re.I)
+_REPORT = re.compile(r"\b(?:annual|quarterly|current)\s+report|\bform\s+[\w-]+(?:/A)?", re.I)
+_PLAN_REPORT = re.compile(r"\bForm\s+11-K\b|\bRule\s+15d-21\b", re.I)
 _SENTENCE_END = re.compile(r"[.!?]\s+(?=[A-Z(\u201c\"])")
 COVER_HEAD = 6_000
 NOTE_HEAD = 40_000
@@ -76,16 +79,20 @@ def _unwrap(text: str) -> str:
 def original_filed_on(text: str) -> list[str]:
     """Dates the explanatory note gives for filing the report being amended, as YYYY-MM-DD.
 
-    A date counts only when the last report its sentence names before the date is the original or the report, so
-    neither "our Form 8-K filed on ..." nor "this Form 10-K/A discusses our Form 8-K filed on ..." does.
+    A date counts when the last report its sentence names before the date is the kind being amended (an annual or
+    quarterly report, a Form 10-K, 10-Q, 20-F or 40-F, not an amendment), or when the sentence names no report
+    but calls the filing the original. So neither "our Form 8-K originally filed on ..." nor "this Form 10-K/A
+    discusses our Form 8-K filed on ..." does.
     """
     head, dates = re.sub(r"[\u2010-\u2015\u2212]", "-", _unwrap(text[:NOTE_HEAD])), []
     for m in _FILED_ON.finditer(head):
         before = head[head.rfind("\n", 0, m.start()) + 1:m.start()]
         ends = list(_SENTENCE_END.finditer(before))
         sentence = before[ends[-1].end():] if ends else before
-        mentions = _REPORT.findall(sentence + head[m.start():m.start("m1") if m["m1"] else m.start("d2")])
-        if mentions and _ORIGINAL.match(mentions[-1]) and (d := _date(m)) and d not in dates:
+        context = sentence + head[m.start():m.start("m1") if m["m1"] else m.start("d2")]
+        mentions = _REPORT.findall(context)
+        named = _ORIGINAL.match(mentions[-1]) if mentions else re.search(r"\boriginal", context, re.I)
+        if named and (d := _date(m)) and d not in dates:
             dates.append(d)
     return dates
 
@@ -94,16 +101,14 @@ def resolve_amends(amendment: FilingSections, refs: list[FilingRef]) -> str | No
     """The original an amendment amends, read from its own text: the original with the period its cover states,
     else the one filed on the first date its explanatory note gives for the original. None when neither places it."""
     originals = [r for r in refs if r.filing_status == "original" and base_form(r.form) == base_form(amendment.form)
-                 and r.filing_date <= (amendment.filing_date or "9999")]
+                 and (amendment.filing_date is None or filing_order(r) <= filing_order(amendment))]
     period = cover_period(amendment.text)
     by_period = [r for r in originals if period and r.report_date == period]
     if by_period:
         return max(by_period, key=filing_order).accession
-    for day in original_filed_on(amendment.text):
-        by_date = [r for r in originals if r.filing_date == day]
-        if by_date:
-            return by_date[0].accession if len(by_date) == 1 else None
-    return None
+    days = original_filed_on(amendment.text)
+    by_date = [r for r in originals if days and r.filing_date == days[0]]
+    return by_date[0].accession if len(by_date) == 1 else None
 
 
 def amendment_scope(sections: FilingSections) -> Scope:
@@ -114,8 +119,12 @@ def amendment_scope(sections: FilingSections) -> Scope:
     printed = [s for s in sections.items.values() if not spec.lists_exhibits(s.item, s.heading)]
     if not printed:
         return "exhibits"
+    keys = {s.item for s in printed}
+    whole = spec.principal_documents <= keys if spec.titled else 2 * len(keys) >= len(spec.order)
+    if not whole and _PLAN_REPORT.search(sections.text[:min(NOTE_HEAD, min(s.start for s in sections.items.values()))]):
+        return "cover"
     required = spec.required_parts
-    return "complete" if required and required <= {spec.part(s.item) for s in printed} else "partial"
+    return "complete" if whole and required and required <= {spec.part(k) for k in keys} else "partial"
 
 
 def _shifted(s: Section, chars: int, source: str | None) -> Section:
@@ -139,7 +148,7 @@ def merge(original: FilingSections, amendments: list[FilingSections]) -> FilingS
         scope = a.scope or amendment_scope(a)
         if scope == "complete":
             items = printed
-        else:
+        elif scope != "cover":
             items.update(printed)
     rank = {k: i for i, k in enumerate(spec_for(original.form, original.filing_date).order)}
     keys = sorted(items, key=lambda k: rank.get(k, len(rank)))
@@ -157,17 +166,21 @@ def read(ref: FilingRef, cache: SectionsCache | None = None, submissions: Submis
 
 
 def amended_sections(original: FilingRef, refs: list[FilingRef], cache: SectionsCache | None = None,
-                     submissions: SubmissionCache | None = None) -> list[FilingSections]:
-    """The amendments of original as filed, in filing order: those the filing list links to it or cannot place,
-    kept when their own text names it (or, when the text places them nowhere, the list does)."""
+                     submissions: SubmissionCache | None = None, limit: int | None = None) -> list[FilingSections]:
+    """The amendments of original as filed, in filing order: every amendment of its form filed after it, kept
+    when its own text names original (or, when the text places it nowhere, the filing list does), so a period
+    of report typed wrong on the list cannot hide an amendment from its original. With limit, reading stops
+    at the first limit amendments, so a later submission that cannot be read does not fail them."""
     candidates = [r for r in refs if r.filing_status == "amendment" and base_form(r.form) == base_form(original.form)
-                  and (r.amends == original.accession or (r.amends is None and r.filing_date >= original.filing_date))]
+                  and (r.amends == original.accession or r.filing_date >= original.filing_date)]
     found = []
     for ref in sorted(candidates, key=filing_order):
         sections = read(ref, cache, submissions)
         sections = replace(sections, amends=resolve_amends(sections, refs) or ref.amends)
         if sections.amends == original.accession:
             found.append(sections)
+            if len(found) == limit:
+                break
     return found
 
 

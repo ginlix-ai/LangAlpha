@@ -71,10 +71,11 @@ amendments filed years later and for several amendments to one original. Some fi
 report, so an amendment is also read: the period its cover page states, or else the date its explanatory note
 gives for the original filing, places it, and wins over the period of report when it does.
 
-**What an amendment restates.** An amendment that prints an item from every part of the form (the exhibit list
-aside) is `complete` and replaces the whole item set. Otherwise it is `partial` (or `exhibits` when it prints
-only its exhibit list) and replaces only the items it prints, its exhibit list included; the original's full list
-stays in the as-filed view. An amendment that prints no item at all (`cover`) changes no item. The as-amended view applies the amendments in filing order. Its `text` is the original's text
+**What an amendment restates.** An amendment that prints an item from every part of the form and at least half
+its items (every principal document for a 40-F), the exhibit list aside, is `complete` and replaces the whole
+item set. Otherwise it is `partial` (or `exhibits` when it prints only its exhibit list) and replaces only the
+items it prints, its exhibit list included; the original's full list stays in the as-filed view. An amendment
+that prints no item at all, or that furnishes an employee plan's Form 11-K, is `cover` and changes no item. The as-amended view applies the amendments in filing order. Its `text` is the original's text
 followed by each amendment's, so every offset still indexes it. It is computed from the per-accession cache
 entries and is not cached itself.
 

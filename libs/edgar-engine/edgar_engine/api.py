@@ -35,7 +35,7 @@ def get_sections(company: Any, form: str, *, fiscal_year: int | None = None, fis
     original = pick_ref([r for r in refs if r.filing_status == "original"], **period)
     if original is None:
         return None
-    amendments = amended_sections(original, refs, cache, submissions)
+    amendments = amended_sections(original, refs, cache, submissions, limit=amendment if amendment and amendment > 0 else None)
     if amendment is not None:
         picked = nth_amendment(amendments, amendment)
         if picked is None or view == "as_filed":
