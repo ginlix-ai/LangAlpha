@@ -1110,3 +1110,43 @@ async def test_a_parked_firing_stays_parked_while_a_new_gateway_settles(
 
     await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(seconds=1))
     assert await ex.release_parked_execution(execution_id) is True
+
+
+async def test_the_stand_ins_computer_lists_homes_threads_at_the_stand_ins_folder(
+    machine, test_db_pool
+):
+    """The stand-in's folder serves Home's transcripts, so its computer's
+    thread index lists Home's threads there, where the agent finds them."""
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+    from src.server.database.conversation.threads_read import list_computer_threads
+    from src.server.database.home_stand_in import place_home_stand_in
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    cloud = await create_computer(machine.user_id, kind="daytona", name="cloud",
+                                  status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    cloud_id = str(cloud["computer_id"])
+    home_thread = str(uuid.uuid4())
+    try:
+        await create_thread(
+            conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+        )
+        before, rows = await list_computer_threads(cloud_id)
+        assert rows == []
+
+        stand_in = await place_home_stand_in(machine.user_id)
+        assert str(stand_in.computer["computer_id"]) == cloud_id
+        after, rows = await list_computer_threads(cloud_id)
+
+        assert after != before
+        [row] = rows
+        assert str(row["conversation_thread_id"]) == home_thread
+        assert str(row["workspace_id"]) == home_id
+        assert row["dir_name"] == stand_in.row["dir_name"]
+        # Home's own computer lists it once, at Home's folder.
+        _, on_machine = await list_computer_threads(machine.computer_id)
+        assert [str(r["conversation_thread_id"]) for r in on_machine].count(home_thread) == 1
+    finally:
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM workspaces WHERE user_id = %s", (machine.user_id,))
