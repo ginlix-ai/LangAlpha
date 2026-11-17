@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Check, Copy, MessageSquarePlus, MoreHorizontal, Quote } from 'lucide-react';
+import { Check, Copy, MessageCircle, MessageSquarePlus, MoreHorizontal, Quote } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -32,15 +32,19 @@ function useOutsidePress(onPress: () => void, enabled = true) {
 }
 
 export function SelectionToolbar<A extends TextAnchor>({
-  anchor, boundsRef, place, label, addLabel, onReply, onAdd, onLost,
+  anchor, boundsRef, place, label, addLabel, asks = false, onReply, onAdd, onComment, onLost,
 }: {
   anchor: A;
   boundsRef: RefObject<HTMLElement | null>;
   place: Place<A>;
   label: string;
   addLabel: string;
+  /** The reply is a question in the chat about words outside it (a file's), named so beside Comment. */
+  asks?: boolean;
   onReply: () => void;
   onAdd: () => void;
+  /** Opens a comment box on the words, where the viewer takes comments. */
+  onComment?: () => void;
   onLost: () => void;
 }) {
   const { t } = useTranslation();
@@ -70,9 +74,22 @@ export function SelectionToolbar<A extends TextAnchor>({
       // Pressing a button must not collapse the selection it acts on.
       onMouseDown={(e) => e.preventDefault()}
     >
-      <button type="button" className="selection-quote-icon" title={t('context.quote.quoteAction')} aria-label={t('context.quote.quoteAction')} onClick={onReply}>
-        <Quote className="h-4 w-4" />
-      </button>
+      {onComment && (
+        <button type="button" className="selection-quote-action tap-target" onClick={onComment}>
+          <MessageSquarePlus className="h-4 w-4" />
+          {t('pageViewer.comments.comment')}
+        </button>
+      )}
+      {asks ? (
+        <button type="button" className="selection-quote-action tap-target" onClick={onReply}>
+          <MessageCircle className="h-4 w-4" />
+          {t('context.quote.askInChat')}
+        </button>
+      ) : (
+        <button type="button" className="selection-quote-icon" title={t('context.quote.quoteAction')} aria-label={t('context.quote.quoteAction')} onClick={onReply}>
+          <Quote className="h-4 w-4" />
+        </button>
+      )}
       <button
         type="button"
         className="selection-quote-icon"
@@ -226,7 +243,7 @@ export function QuoteComposer({ anchor, boundsRef, label, placeholder, hidden = 
 
 /** The floating controls for a text selection: a small toolbar over the text, then the reply popover. */
 export function SelectionQuote({
-  anchor, composing, hidden = false, boundsRef, label, placeholder, addLabel, onReply, onAdd, onDismiss,
+  anchor, composing, hidden = false, boundsRef, label, placeholder, addLabel, asks, onReply, onAdd, onComment, onDismiss,
 }: {
   anchor: TextAnchor;
   composing: boolean;
@@ -239,8 +256,12 @@ export function SelectionQuote({
   placeholder: string;
   /** The menu's way of adding the quote with no reply. */
   addLabel: string;
+  /** The toolbar's reply reads Ask in chat (`SelectionToolbar`). */
+  asks?: boolean;
   onReply: () => void;
   onAdd: (reply?: string) => void;
+  /** The toolbar offers a comment on the words. */
+  onComment?: () => void;
   onDismiss: () => void;
 }) {
   const { t } = useTranslation();
@@ -273,8 +294,10 @@ export function SelectionQuote({
       place={placeBeside}
       label={t('context.quote.toolbar')}
       addLabel={addLabel}
+      asks={asks}
       onReply={onReply}
       onAdd={() => onAdd()}
+      onComment={onComment}
       onLost={onDismiss}
     />
   );

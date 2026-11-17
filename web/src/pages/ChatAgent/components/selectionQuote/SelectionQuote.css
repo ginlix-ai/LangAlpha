@@ -62,6 +62,39 @@
   }
 }
 
+/* An action named in words beside its icon: the ones that say where the words go. */
+.selection-quote-action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+}
+
+.selection-quote-action svg {
+  width: 14px;
+  height: 14px;
+  color: var(--color-icon-muted);
+}
+
+@media (pointer: coarse) {
+  .selection-quote-action {
+    height: 32px;
+  }
+}
+
+.selection-quote-action:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
 .selection-quote-icon:hover:not(:disabled) {
   color: var(--color-text-primary);
   background-color: var(--color-bg-hover);

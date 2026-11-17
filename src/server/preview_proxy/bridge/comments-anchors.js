@@ -11,8 +11,8 @@ var SKIPPED = /^(script|style|noscript|template|title)$/;
 
 /** @param {number} code */
 function isSpace(code) {
-  return code <= 32 || code === 160 || code === 0x2028 || code === 0x2029 || code === 0x3000 || code === 0xfeff ||
-    (code >= 0x2000 && code <= 0x200b);
+  return code <= 32 || code === 160 || code === 0x1680 || code === 0x2028 || code === 0x2029 || code === 0x202f ||
+    code === 0x205f || code === 0x3000 || code === 0xfeff || (code >= 0x2000 && code <= 0x200b);
 }
 
 // Lower case with every space dropped: the stored quote is the rendered
@@ -281,6 +281,10 @@ var mode = false;
 var tracked = [];
 var stale = true;
 var lastPositions = '';
+// The comment whose card is open: beside the draft, the only spot whose
+// parts the viewer outlines, so the only other one they are measured for.
+/** @type {string | null} */
+var outlined = null;
 /** @type {Element | null} */
 var hovered = null;
 /** @type {string | null} */
@@ -327,7 +331,7 @@ function reportPositions() {
       schedule();
       rect = null;
     }
-    var parts = rect ? partRects(tracked[i]) : null;
+    var parts = rect && (tracked[i].draft || tracked[i].id === outlined) ? partRects(tracked[i]) : null;
     items.push(parts ? { id: tracked[i].id, rect: rect, parts: parts } : { id: tracked[i].id, rect: rect });
   }
   var key = JSON.stringify(items);

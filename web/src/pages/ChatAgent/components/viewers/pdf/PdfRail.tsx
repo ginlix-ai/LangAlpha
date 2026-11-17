@@ -13,6 +13,7 @@ const THUMB_WIDTH = 104;
 // Thumbnails mount within one rail height above and below what it shows, as the
 // pages do in the document, so a long PDF never draws them all.
 const THUMB_MARGIN = '100% 0px';
+const NO_COMMENTS: ReadonlyMap<number, number> = new Map();
 
 interface PdfRailProps {
   pdf: PDFDocumentProxy;
@@ -24,6 +25,8 @@ interface PdfRailProps {
   onTabChange: (tab: RailTab) => void;
   onGoToPage: (index: number) => void;
   onMeasure: (index: number, size: PageSize) => void;
+  /** How many open comments each page has, by its 1-based number; none where the file takes no comments. */
+  comments?: ReadonlyMap<number, number>;
 }
 
 /**
@@ -40,6 +43,7 @@ export default function PdfRail({
   onTabChange,
   onGoToPage,
   onMeasure,
+  comments = NO_COMMENTS,
 }: PdfRailProps) {
   const { t } = useTranslation();
   const showContents = hasOutline && tab === 'contents';
@@ -76,6 +80,7 @@ export default function PdfRail({
           currentPage={currentPage}
           onGoToPage={onGoToPage}
           onMeasure={onMeasure}
+          comments={comments}
         />
       )}
     </div>
@@ -88,7 +93,8 @@ function Thumbnails({
   currentPage,
   onGoToPage,
   onMeasure,
-}: Pick<PdfRailProps, 'pdf' | 'pageSizes' | 'currentPage' | 'onGoToPage' | 'onMeasure'>) {
+  comments,
+}: Pick<PdfRailProps, 'pdf' | 'pageSizes' | 'currentPage' | 'onGoToPage' | 'onMeasure'> & { comments: ReadonlyMap<number, number> }) {
   const { t } = useTranslation();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState<ReadonlySet<number>>(() => new Set());
@@ -131,42 +137,46 @@ function Thumbnails({
   return (
     <div ref={scrollerRef} className="pdf-rail-scroller">
       <div className="pdf-thumbs">
-        {pageSizes.map((size, i) => (
-          // A link, as react-pdf's own Thumbnail is: it moves within the
-          // document, and aria-current="page" is the state a link carries.
-          <a
-            key={i}
-            href="#"
-            className="pdf-thumb"
-            data-pdf-thumb={i}
-            aria-label={t('pdfViewer.goToPage', { page: i + 1 })}
-            aria-current={i === currentPage - 1 ? 'page' : undefined}
-            onClick={(e) => {
-              e.preventDefault();
-              onGoToPage(i);
-            }}
-          >
-            <span
-              className="pdf-thumb-paper"
-              style={{ width: THUMB_WIDTH, height: Math.round((THUMB_WIDTH * size.height) / size.width) }}
+        {pageSizes.map((size, i) => {
+          const count = comments.get(i + 1) ?? 0;
+          return (
+            // A link, as react-pdf's own Thumbnail is: it moves within the
+            // document, and aria-current="page" is the state a link carries.
+            <a
+              key={i}
+              href="#"
+              className="pdf-thumb"
+              data-pdf-thumb={i}
+              aria-label={count ? t('pdfViewer.goToPageWithComments', { page: i + 1, count }) : t('pdfViewer.goToPage', { page: i + 1 })}
+              aria-current={i === currentPage - 1 ? 'page' : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                onGoToPage(i);
+              }}
             >
-              {mounted.has(i) && (
-                <Page
-                  pdf={pdf}
-                  pageNumber={i + 1}
-                  width={THUMB_WIDTH}
-                  suspense={false}
-                  renderAnnotationLayer={false}
-                  renderTextLayer={false}
-                  loading={null}
-                  error={null}
-                  onLoadSuccess={(page) => onMeasure(i, sizeOf(page))}
-                />
-              )}
-            </span>
-            <span className="pdf-thumb-number">{i + 1}</span>
-          </a>
-        ))}
+              <span
+                className="pdf-thumb-paper"
+                style={{ width: THUMB_WIDTH, height: Math.round((THUMB_WIDTH * size.height) / size.width) }}
+              >
+                {mounted.has(i) && (
+                  <Page
+                    pdf={pdf}
+                    pageNumber={i + 1}
+                    width={THUMB_WIDTH}
+                    suspense={false}
+                    renderAnnotationLayer={false}
+                    renderTextLayer={false}
+                    loading={null}
+                    error={null}
+                    onLoadSuccess={(page) => onMeasure(i, sizeOf(page))}
+                  />
+                )}
+                {count > 0 && <span className="pdf-thumb-comments" aria-hidden>{count}</span>}
+              </span>
+              <span className="pdf-thumb-number">{i + 1}</span>
+            </a>
+          );
+        })}
       </div>
     </div>
   );

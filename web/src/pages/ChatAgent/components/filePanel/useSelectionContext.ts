@@ -4,6 +4,7 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { lineCountOf, makeQuoteAnchor, type RectAnchor, type SelectionAnchor } from '../selectionQuote/quoteAnchor';
 import { useQuoteSession } from '../selectionQuote/useQuoteSession';
 import { useTextSelectionCapture } from '../selectionQuote/useTextSelectionCapture';
+import type { AskedWords } from '../viewers/html/comments/useCommentUi';
 import type { ContextMenuData, EditorTextSelectData, FileQuoteAnchor } from './types';
 
 /** `report.md:L3-5`, the spot a file selection is quoted from. */
@@ -154,17 +155,25 @@ export function useSelectionContext({ selectedFile, fileContent, onAddContext }:
     });
   });
 
+  // Words a framed page's chip asks about in the chat: the reply opens on
+  // them as on words selected here, the page's selection being out of reach.
+  const askAboutWords = useCallback(({ text, rect, path }: AskedWords) => {
+    if (!onAddContext || !selectedFile) return;
+    beginReply({ ...makeQuoteAnchor<RectAnchor>({ kind: 'rect', text, rect }), lineStart: null, lineEnd: null, path });
+  }, [onAddContext, selectedFile, beginReply]);
+
   const handleAddSelectionContext = useCallback((reply?: string) => {
     if (!selectionTooltip || !selectedFile || !onAddContext) return;
     const { text, lineStart, lineEnd } = selectionTooltip;
+    const path = selectionTooltip.path ?? selectedFile;
     onAddContext({
       kind: 'quote',
       snippet: text,
       reply,
       from: {
         kind: 'file',
-        path: selectedFile,
-        label: selectionSourceName(selectedFile, selectionTooltip),
+        path,
+        label: selectionSourceName(path, selectionTooltip),
         lineStart,
         lineEnd,
         lineCount: lineStart != null && lineEnd != null ? lineEnd - lineStart + 1 : lineCountOf(text),
@@ -184,5 +193,6 @@ export function useSelectionContext({ selectedFile, fileContent, onAddContext }:
     setContextMenu,
     handleEditorTextSelect,
     handleAddSelectionContext,
+    askAboutWords,
   };
 }

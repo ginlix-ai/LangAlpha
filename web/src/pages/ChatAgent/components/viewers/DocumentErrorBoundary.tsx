@@ -3,6 +3,8 @@ import React from 'react';
 interface DocumentErrorBoundaryProps {
   fallback?: React.ReactNode;
   children: React.ReactNode;
+  /** Hears whether the fallback stands in for the viewer, which takes what the viewer drew with it (its comment layer). */
+  onFailedChange?: (failed: boolean) => void;
 }
 
 interface DocumentErrorBoundaryState {
@@ -21,6 +23,11 @@ class DocumentErrorBoundary extends React.Component<DocumentErrorBoundaryProps, 
 
   override componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[DocumentErrorBoundary]', error, info);
+    this.props.onFailedChange?.(true);
+  }
+
+  override componentWillUnmount() {
+    if (this.state.hasError) this.props.onFailedChange?.(false);
   }
 
   override render() {

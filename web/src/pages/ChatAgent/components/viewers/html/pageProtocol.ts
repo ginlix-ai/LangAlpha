@@ -13,11 +13,15 @@
  */
 import * as z from 'zod/mini';
 import { MAX_PAGE_LOADS } from '@/lib/pageLoads';
+import { parseRange } from '@/pages/ChatAgent/utils/a1';
 import type {
   AreaAnchor,
   ArtifactCommentAnchor,
   ArtifactCommentAreaElement,
+  BlockAnchor,
+  CellsAnchor,
   ElementAnchor,
+  PartEntry,
   TextAnchor,
 } from '@/types/artifacts';
 
@@ -64,9 +68,22 @@ export type ViewerToPage =
    * selection. The page answers with the parts left, as an `extend` pick, and
    * takes nothing out once the draft no longer lists that part.
    */
-  | { type: 'page:drop-part'; part: ArtifactCommentAreaElement }
+  | { type: 'page:drop-part'; part: PartEntry }
   /** The next tap adds a part to the draft: a touch screen has no modifier to hold. */
   | { type: 'page:extend-next'; on: boolean }
+  /**
+   * The press `press` opens nothing: it closes what the viewer has open, or
+   * asks before a written draft goes. What it picks is not the draft's, so
+   * its parts are not kept for a modifier click to grow.
+   */
+  | { type: 'page:declined'; press: number }
+  /**
+   * The comment whose card is open, null for none: besides the draft, the
+   * only spot whose parts are outlined, so the only other one `page:positions`
+   * measures them for. A page that never hears it reports the draft's alone,
+   * and one that ignores it may report every spot's.
+   */
+  | { type: 'page:outlined'; id: string | null }
   /** The document's address under a renewed grant, which it moves to without loading again. */
   | { type: 'page:address'; src: string };
 
@@ -134,7 +151,8 @@ export type PageToViewer =
   | { type: 'page:settled' }
   /**
    * Where each spot the viewer asked about sits now, null where it is not on
-   * the page; an area that lists every part also says where each part shows.
+   * the page. An area that lists every part also says where each part shows,
+   * for the draft and the spot `page:outlined` names.
    */
   | { type: 'page:positions'; items: { id: string; rect: FrameRect | null; parts?: FrameRect[] }[] }
   /** In comment mode, what is under the pointer; null when nothing is. */
@@ -190,20 +208,26 @@ export const MAX_TITLE = 300;
 export const MAX_POSITIONS = 500;
 /**
  * The API's limits on an area: the elements it lists, and how many it counts.
- * Parts picked one by one are each listed; a drag lists its first
- * `DRAG_AREA_LISTED` and counts the rest.
+ * An area lists each part, picked or dragged around; a drag over more than
+ * `MAX_AREA_ELEMENTS` counts the rest.
  */
 export const MAX_AREA_ELEMENTS = 64;
-export const DRAG_AREA_LISTED = 8;
 export const MAX_AREA_COUNT = 500;
+/** The API's limit on the cell ranges one comment names. */
+export const MAX_CELL_RANGES = 64;
+/** 1-based source lines, one or a span, as the API takes them. */
+const SOURCE_LINES = /^[1-9][0-9]{0,6}(-[1-9][0-9]{0,6})?$/;
+/** A sheet's cell or range of cells, as the API takes it. */
+const CELL_RANGE = /^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$/;
 /** A computed colour as the browser writes one; anything else is not trusted into a style. */
 const RGB = /^rgba?\(\s*\d{1,3}(\.\d+)?\s*,\s*\d{1,3}(\.\d+)?\s*,\s*\d{1,3}(\.\d+)?\s*(,\s*(0|1|0?\.\d+)\s*)?\)$/;
 
-/** Text as the page sent it, without control characters, cut to `limit`; empty is absent. */
-function cleanText(v: string, limit: number): string | undefined {
+/** Text as the page sent it, without control characters, cut to `limit`; empty is absent. `keepEnds` keeps spaces at its ends, which a name may hold. */
+function cleanText(v: string, limit: number, keepEnds = false): string | undefined {
   // eslint-disable-next-line no-control-regex
-  const text = v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim();
-  if (!text) return undefined;
+  const kept = v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+  const text = keepEnds ? kept : kept.trim();
+  if (!text.trim()) return undefined;
   if (text.length <= limit) return text;
   // Never end on half a surrogate pair: the server cannot store one alone.
   let cut = limit - 1;
@@ -223,8 +247,8 @@ function lenient<T extends z.ZodMiniType>(schema: T) {
 }
 
 /** A text field, cleaned and cut to `limit`; null and anything not text are absent. */
-function text(limit: number) {
-  return lenient(z.pipe(z.nullable(z.string()), z.transform((v) => (v === null ? undefined : cleanText(v, limit)))));
+function text(limit: number, keepEnds = false) {
+  return lenient(z.pipe(z.nullable(z.string()), z.transform((v) => (v === null ? undefined : cleanText(v, limit, keepEnds)))));
 }
 
 /** A path a workspace file could have. */
@@ -256,21 +280,64 @@ const elementAnchor = z.pipe(
   z.transform((a): ElementAnchor => defined(a)),
 );
 
-/** Selected words, found again by them. */
+/** Lines as the API takes them: a span runs forwards. */
+const sourceLines = z.string().check(z.regex(SOURCE_LINES), z.refine((v) => {
+  const [first, last = first] = v.split('-').map(Number);
+  return first <= last;
+}));
+
+/** Selected words, found again by them; in a text file, on the lines or the page they are on. */
 const textAnchor = z.pipe(
-  z.object({ kind: z.literal('text'), ...spotFields }).check(z.refine((a) => !!a.quote)),
+  z.object({
+    kind: z.literal('text'),
+    ...spotFields,
+    lines: lenient(sourceLines),
+    page: lenient(z.int().check(z.gte(1), z.lte(100_000))),
+  }).check(z.refine((a) => !!a.quote)),
   z.transform((a): TextAnchor => defined(a)),
 );
 
+/** A Markdown block, by its lines and its text. */
+const blockAnchor = z.pipe(
+  z.object({
+    kind: z.literal('block'),
+    lines: sourceLines,
+    label: text(ANCHOR_LIMITS.label),
+    quote: text(ANCHOR_LIMITS.quote),
+    point: lenient(point),
+  }),
+  z.transform((a): BlockAnchor => defined(a)),
+);
+
+/** Cells of a sheet, by their ranges, each with the values it showed. */
+const cellsAnchor = z.pipe(
+  z.object({
+    kind: z.literal('cells'),
+    // A sheet is found again by its exact name, which may end in a space ("Q3 ").
+    sheet: text(ANCHOR_LIMITS.label, true),
+    ranges: z.array(z.pipe(
+      // Within a sheet's last column and row, as the API takes it.
+      z.object({ range: z.string().check(z.regex(CELL_RANGE), z.refine((v) => parseRange(v) !== null)), values: text(ANCHOR_LIMITS.quote) }),
+      z.transform((r) => defined(r)),
+    )).check(z.minLength(1), z.maxLength(MAX_CELL_RANGES)),
+    point: lenient(point),
+  }),
+  z.transform((a): CellsAnchor => defined(a)),
+);
+
 const areaElement = z.pipe(
-  z.object({ path: text(ANCHOR_LIMITS.path), label: text(ANCHOR_LIMITS.label), quote: text(ANCHOR_LIMITS.quote) })
-    .check(z.refine((e) => !!(e.path || e.quote))),
+  z.object({
+    lines: lenient(sourceLines),
+    path: text(ANCHOR_LIMITS.path),
+    label: text(ANCHOR_LIMITS.label),
+    quote: text(ANCHOR_LIMITS.quote),
+  }).check(z.refine((e) => !!(e.path || e.quote || e.lines))),
   z.transform((e): ArtifactCommentAreaElement => defined(e)),
 );
 
 /**
  * An area as the page described it: at least two elements it can be found
- * by again, the first few listed, and the count of them all. Anything the API
+ * by again, up to the limit listed, and the count of them all. Anything the API
  * would refuse fails the whole area, rather than leaving a smaller one the
  * reader never drew.
  */
@@ -289,9 +356,11 @@ const areaAnchor = z.pipe(
 
 const title = text(MAX_TITLE);
 const press = lenient(pressNumber);
+/** What one click picks: a page's element, a Markdown block, or cells. */
+const pickAnchor = z.union([elementAnchor, blockAnchor, cellsAnchor]);
 
 /** A click's or an area's comment spot: the anchor, its box, the press it pairs with, and whether it extends the draft. */
-function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof elementAnchor | typeof areaAnchor) {
+function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof pickAnchor | typeof areaAnchor) {
   return z.pipe(
     z.object({ type: z.literal(type), anchor, rect: frameRect, title, press, extend: lenient(z.boolean()) }),
     z.transform((m) => ({
@@ -359,7 +428,7 @@ const pageToViewer = z.discriminatedUnion('type', [
     })),
   ),
   z.object({ type: z.literal('page:press'), press: pressNumber }),
-  click('page:pick', elementAnchor),
+  click('page:pick', pickAnchor),
   click('page:area', areaAnchor),
   z.pipe(
     z.discriminatedUnion('clear', [

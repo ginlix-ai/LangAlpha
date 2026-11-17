@@ -37,13 +37,26 @@ export function pinPoint(anchor: ArtifactCommentAnchor, rect: FrameRect): Point 
  * already drawn steps right, a whole pin at a time, until it clears them, so
  * every number stays readable. Measured against where earlier pins were drawn, not
  * their spots, so a pin whose spot sits where another was stepped to still
- * steps past it. Only the drawing moves; the anchors do not.
+ * steps past it. One that would step past the view's right edge (`width`)
+ * steps left instead: a pin out of view hides its box. Only the drawing
+ * moves; the anchors do not.
  */
-export function fanOut<T extends Point>(points: readonly T[]): T[] {
+export function fanOut<T extends Point>(points: readonly T[], width = Infinity): T[] {
   const drawn: T[] = [];
+  const last = Math.max(0, width - PIN_SIZE);
   for (const p of points) {
+    const taken = (x: number) => drawn.some((d) => Math.abs(d.x - x) < FAN_STEP && Math.abs(d.y - p.y) < PIN_SIZE);
     let x = p.x;
-    while (drawn.some((d) => Math.abs(d.x - x) < FAN_STEP && Math.abs(d.y - p.y) < PIN_SIZE)) x += FAN_STEP;
+    while (taken(x) && x + FAN_STEP <= Math.max(last, p.x)) x += FAN_STEP;
+    if (taken(x)) {
+      x = p.x;
+      while (taken(x) && x - FAN_STEP >= 0) x -= FAN_STEP;
+    }
+    // A row full both ways keeps stepping right, as it always did.
+    if (taken(x)) {
+      x = p.x;
+      while (taken(x)) x += FAN_STEP;
+    }
     drawn.push(x === p.x ? p : { ...p, x });
   }
   return drawn;
@@ -126,6 +139,7 @@ export function placePins({
     .sort((a, b) => a.comment.number - b.comment.number);
   const pins = fanOut<PlacedPin>(
     draft && draftRect && draftPinned ? [...drawn, { comment: null, ...pinPoint(draft.anchor, draftRect) }] : drawn,
+    size.width > 0 ? size.width : Infinity,
   );
   const at = new Map<string | null, Point>(pins.map((p) => [p.comment?.comment_id ?? null, { x: p.x, y: p.y }]));
   const inView = (p: Point) => p.x >= 0 && p.x <= size.width - PIN_SIZE && p.y >= PIN_SIZE && p.y <= size.height;

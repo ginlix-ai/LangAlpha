@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactCommentMessage } from '@/types/api';
 import { flattenMarkdown } from '@/lib/plainLine';
 import {
-  cardActions, describeComment, draftHeading, filterCounts, filterShowing, firstWords, inFilter, isWorking,
+  cardActions, describeComment, filterCounts, filterShowing, firstWords, inFilter, isWorking,
   laterMessages, newestUnread, oneLine, pinState, reachedAgent, showsDraft,
 } from '../commentModel';
+import { draftHeading } from '../anchorKinds';
 
 function message(author: ArtifactCommentMessage['author'], body: string, seq = 1): ArtifactCommentMessage {
   return { message_id: `${author}-${body}`, seq, author, body, sent_at: null, request_key: null, thread_id: null, created_at: '2026-01-01T00:00:00Z' };
@@ -140,9 +141,15 @@ describe('draftHeading', () => {
     expect(draftHeading(t, { kind: 'element', path: '#a', quote: 'Total' })).toEqual({ label: 'pageViewer.comments.onElement', quote: null });
   });
 
-  it('names an area by its size and lists its parts under it', () => {
+  it('names an area that lists every part by its parts, and one too large to list by its size', () => {
     const area = { kind: 'area' as const, elements: [{ path: '#a' }, { path: '#b' }], count: 2, label: 'Chart, Table' };
-    expect(draftHeading(t, area)).toEqual({ label: 'pageViewer.comments.areaTitle {"count":2}', quote: 'Chart, Table' });
+    expect(draftHeading(t, area)).toEqual({ label: 'pageViewer.comments.partsTitle {"count":2}', quote: 'Chart, Table' });
+    expect(draftHeading(t, { ...area, count: 70 })).toEqual({ label: 'pageViewer.comments.areaTitle {"count":70}', quote: 'Chart, Table' });
+  });
+
+  it('names a block nothing in the file names by its lines', () => {
+    expect(draftHeading(t, { kind: 'block', lines: '6', quote: 'MAX_PAYOUT = 0.75' }).label).toBe('pageViewer.comments.onLine {"line":"6"}');
+    expect(draftHeading(t, { kind: 'block', lines: '6-8' }).label).toBe('pageViewer.comments.onLines {"lines":"6-8"}');
   });
 });
 

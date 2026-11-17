@@ -30,17 +30,37 @@ function adding() {
   return modHeld || extendNext;
 }
 
+// The key that adds a part: Cmd on a Mac, Ctrl elsewhere, never both. A
+// Ctrl-click on a Mac is a right-click: it opens the context menu and the
+// page sees no click to add with.
+// Decided in the app's order (`clientOs`): the client hints first, so the
+// two never disagree on which key a user holds. A touch screen is no Mac.
+/** @type {Navigator & {userAgentData?: {platform?: string}}} */
+var UA_NAV = navigator;
+var ADD_ON_META = /mac/i.test(
+  (UA_NAV.userAgentData && UA_NAV.userAgentData.platform) ||
+    navigator.platform ||
+    navigator.userAgent ||
+    ''
+) && !(navigator.maxTouchPoints > 1);
+var ADD_KEY = ADD_ON_META ? 'Meta' : 'Control';
+
+/** @param {MouseEvent | PointerEvent} event */
+function addKeyDown(event) {
+  return ADD_ON_META ? event.metaKey : event.ctrlKey;
+}
+
 // Cmd as a pointer event over the page carries it, which is how the page
 // learns of a key pressed with the focus outside it. What the pointer is
 // over is then looked at again: on a part, a click now takes all of it.
 /** @param {MouseEvent | PointerEvent} event */
 function readModifier(event) {
-  if (setAdding(event.metaKey || event.ctrlKey, extendNext)) hoverAgain();
+  if (setAdding(addKeyDown(event), extendNext)) hoverAgain();
 }
 
 /** @param {MouseEvent | PointerEvent} event */
 function extending(event) {
-  return mode && (event.metaKey || event.ctrlKey || extendNext);
+  return mode && (addKeyDown(event) || extendNext);
 }
 
 // What a click under a still pointer takes changed: the word or the
@@ -58,7 +78,7 @@ function hoverAgain() {
 
 /** @param {KeyboardEvent} event */
 function modifierMoved(event) {
-  if (!mode || (event.key !== 'Meta' && event.key !== 'Control')) return;
+  if (!mode || event.key !== ADD_KEY) return;
   var held = event.type === 'keydown';
   if (held === modHeld) return;
   setAdding(held, extendNext);
@@ -75,12 +95,12 @@ listen('page:extend-next', function (data) {
 
 // ---- The draft's parts ----
 
-// The parts this page sent for the draft, in the order its anchor lists
-// them (`ownListed`, which a plain drag keeps to its first few). They hold
-// until the page sends a spot that starts a new comment (`sendSpot`) or the
-// viewer says none is being written: found again from the anchor, a part
-// could be another element with the same words, and the viewer's echo of
-// the new draft lags a quick second click.
+// The parts this page sent for the draft, and the entries its anchor lists
+// for them, in the same order (`ownListed`). They hold until the page sends
+// a spot that starts a new comment (`sendSpot`) or the viewer says none is
+// being written: found again from the anchor, a part could be another
+// element with the same words, and the viewer's echo of the new draft lags
+// a quick second click.
 /** @type {Element[] | null} */
 var ownParts = null;
 /** @type {AreaPart[] | null} */
@@ -92,8 +112,7 @@ function keepParts(els, listed) {
   ownListed = listed;
 }
 
-// An area that lists every part it holds: parts picked one by one, or a
-// drag around a few.
+// An area that lists every part it holds: any but a drag too large to list.
 /** @param {BridgeAnchor} anchor */
 function listsEvery(anchor) {
   var parts = anchor.elements;
@@ -104,8 +123,8 @@ function listsEvery(anchor) {
 // The elements a spot is a list of parts of, in the order its anchor lists
 // them: an element's comment is a list of one, an area that lists every
 // part a list of those. A part the page no longer has is left out, so the
-// rest can still be added to or taken out of. Null for words, and for a
-// drag that lists only its first few.
+// rest can still be added to or taken out of. Null for words, and for an
+// area too large to list.
 /** @param {BridgeTracked} item @returns {Element[] | null} */
 function trackedParts(item) {
   var hit = item.hit;
@@ -167,7 +186,7 @@ function partsWithout(part) {
   var left = [];
   var draft = draftItem();
   var listed = ownParts ? ownListed : draft && listsEvery(draft.anchor) ? draft.anchor.elements : null;
-  if (!listed || (ownParts && ownParts.length !== listed.length)) return left;
+  if (!listed) return left;
   var at = -1;
   for (var i = 0; i < listed.length && at === -1; i++) {
     if (samePart(listed[i], part)) at = i;
@@ -242,7 +261,7 @@ function sendParts(els, release) {
     keepParts(els, null);
     sendSpot({ type: 'page:pick', extend: true, anchor: one.anchor, rect: one.rect });
   } else {
-    var made = areaAnchor(els, point, MAX_PARTS);
+    var made = areaAnchor(els, point);
     if (!made) return;
     keepParts(made.els, made.anchor.elements);
     sendSpot({ type: 'page:area', extend: true, anchor: made.anchor, rect: made.rect });
@@ -287,6 +306,7 @@ function togglePart(el, point) {
 // A chip's close button in the box: the part it names leaves the selection.
 listen('page:drop-part', function (data) {
   var part = data.part;
-  if (!part || typeof part !== 'object') return;
+  // A range of cells is a sheet's part; a page never lists one.
+  if (!part || typeof part !== 'object' || 'range' in part) return;
   sendParts(partsWithout({ path: part.path, quote: part.quote }), null);
 });

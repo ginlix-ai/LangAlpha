@@ -163,11 +163,13 @@ const ONE_LINE_DISPLAY_MATH_RE = /^( {0,3})\$\$((?:[^$\\\n]|\\.)+)\$\$[ \t]*$/gm
  * onto its own line between fences; `$$x$$` inside a sentence stays inline,
  * and an equation still streaming in has no closing `$$` to match yet.
  */
-function blockOneLineDisplayMath(content: string): string {
+function blockOneLineDisplayMath(content: string, split: (at: number) => void): string {
   if (!content || typeof content !== 'string') return content;
-  return content.replace(ONE_LINE_DISPLAY_MATH_RE, (line, indent: string, body: string) =>
-    body.trim() ? `${indent}$$\n${indent}${body.trim()}\n${indent}$$` : line,
-  );
+  return content.replace(ONE_LINE_DISPLAY_MATH_RE, (line, indent: string, body: string, at: number) => {
+    if (!body.trim()) return line;
+    split(at);
+    return `${indent}$$\n${indent}${body.trim()}\n${indent}$$`;
+  });
 }
 
 /**
@@ -178,9 +180,13 @@ function blockOneLineDisplayMath(content: string): string {
  * number. The unnumbered forms (`aligned`, `align*`, matrices) draw nothing
  * for it, so only the three numbered ones are touched.
  */
-function dropTrailingRowBreaks(content: string): string {
+function dropTrailingRowBreaks(content: string, joined: (at: number, lines: number) => void): string {
   if (!content || typeof content !== 'string') return content;
-  return content.replace(/\\\\\s*(?=\\end\{(?:align|gather|alignat)\})/g, '');
+  return content.replace(/\\\\\s*(?=\\end\{(?:align|gather|alignat)\})/g, (dropped: string, at: number) => {
+    const lines = breaks(dropped);
+    if (lines) joined(at, lines);
+    return '';
+  });
 }
 
 /**
@@ -203,24 +209,65 @@ export function transformCitationBubbles(content: string): string {
   );
 }
 
+function breaks(text: string, end = text.length): number {
+  let n = 0;
+  for (let i = text.indexOf('\n'); i !== -1 && i < end; i = text.indexOf('\n', i + 1)) n++;
+  return n;
+}
+
+/** Where a pass took or added line breaks: from line `at` of its input, `from` breaks became `to`. */
+interface LineEdit {
+  at: number;
+  from: number;
+  to: number;
+}
+
+/** The line of a pass's input that `line` of its output came from, 0-based. */
+function lineBefore(edits: readonly LineEdit[], line: number): number {
+  let shift = 0;
+  for (const e of edits) {
+    const start = e.at + shift;
+    if (line < start) break;
+    if (line <= start + e.to) return e.at + Math.min(line - start, e.from);
+    shift += e.to - e.from;
+  }
+  return line - shift;
+}
+
+export interface PreparedMarkdown {
+  text: string;
+  /** The line of the content (0-based) that a line of `text` came from. */
+  lineOf: (line: number) => number;
+}
+
 /**
  * The text the markdown parser reads. Every pass rewrites prose before it gets
  * there, so each one has to say how much of the string it may touch. Inside code,
  * markdown stops interpreting escapes and raw HTML: a rewrite that lands there is
- * visible corruption and makes the Copy button return unparseable text.
+ * visible corruption and makes the Copy button return unparseable text. The
+ * passes that take or add lines say where, so a line parsed can be named by
+ * the content's own.
  */
-export function prepareMarkdownSource(content: string, rootDir: Parameters<typeof normalizeFileRefs>[1], otherRoots: Parameters<typeof normalizeFileRefs>[2]): string {
+export function prepareMarkdownSource(content: string, rootDir: Parameters<typeof normalizeFileRefs>[1], otherRoots: Parameters<typeof normalizeFileRefs>[2]): PreparedMarkdown {
+  const stripped = stripFrontMatter(content);
+  const front = stripped === content ? 0 : breaks(content) - breaks(stripped);
   // Whole-string by design: front matter is anchored at the start, and
   // normalizeFileRefs deliberately unwraps backticks around file refs.
-  const base = normalizeFileRefs(stripFrontMatter(content), rootDir, otherRoots);
+  const base = normalizeFileRefs(stripped, rootDir, otherRoots);
   // Table repair is line-structural, so it reads whole lines and has to stay
   // out of the code spans that own one: fenced, or inline across a break.
   const tables = mapOutsideMultilineCode(base, fixMarkdownTables);
   // These inject characters and tags, which is corruption inside any code.
-  const prose = mapOutsideCode(tables, (text) =>
-    dropTrailingRowBreaks(normalizeLatexDelimiters(escapeCurrencyDollars(transformCitationBubbles(text))))
-  );
+  const joins: LineEdit[] = [];
+  const prose = mapOutsideCode(tables, (text, at) => {
+    const out = normalizeLatexDelimiters(escapeCurrencyDollars(transformCitationBubbles(text)));
+    // The passes before keep every line break where it was.
+    return dropTrailingRowBreaks(out, (offset, lines) => joins.push({ at: breaks(tables, at) + breaks(out, offset), from: lines, to: 0 }));
+  });
   // Line-structural again, and after the delimiter pass so `\[x\]` arrives
   // already spelled `$$x$$`.
-  return mapOutsideMultilineCode(prose, blockOneLineDisplayMath);
+  const splits: LineEdit[] = [];
+  const text = mapOutsideMultilineCode(prose, (segment, at) =>
+    blockOneLineDisplayMath(segment, (offset) => splits.push({ at: breaks(prose, at) + breaks(segment, offset), from: 0, to: 2 })));
+  return { text, lineOf: (line) => lineBefore(joins, lineBefore(splits, line)) + front };
 }

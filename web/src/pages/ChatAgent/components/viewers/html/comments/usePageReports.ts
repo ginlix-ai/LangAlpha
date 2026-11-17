@@ -8,7 +8,7 @@ const NO_POSITIONS: ReadonlyMap<string, FrameRect | null> = new Map();
 const NO_PARTS: ReadonlyMap<string, FrameRect[]> = new Map();
 const NOT_ADDING: PageAdding = { held: false, next: false };
 
-/** Whether a click on the page adds a part to the draft: Cmd held over it, or the next tap asked for. */
+/** Whether a click on the page adds a part to the draft: the add key held over it, or the next tap asked for. */
 export interface PageAdding {
   held: boolean;
   next: boolean;
@@ -41,6 +41,8 @@ interface PageReportsOptions extends PageActs {
   anchors: PageAnchorItem[];
   /** The draft's number: its spot, reported under one id whatever draft it is, counts only once reported for this one. */
   draftSerial: number;
+  /** The comment whose card is open, here or in the list, whose parts are outlined as the draft's are. */
+  outlined: string | null;
 }
 
 /** What the page reports, scoped to the document that said it. */
@@ -53,7 +55,7 @@ export interface PageReports {
    * version change rather than blinking out.
    */
   positions: ReadonlyMap<string, FrameRect | null>;
-  /** Where each part of an area that lists every part shows, by the spot's id. */
+  /** Where each part shows, for the draft and the `outlined` comment when they are areas that list every part. */
   parts: ReadonlyMap<string, FrameRect[]>;
   /** `positions` is the answer of the document on screen. */
   fresh: boolean;
@@ -106,7 +108,7 @@ export function usePageReports(
   bridge: PageBridge,
   view: FrameView,
   mode: boolean,
-  { anchors, draftSerial, ...acts }: PageReportsOptions,
+  { anchors, draftSerial, outlined, ...acts }: PageReportsOptions,
 ): PageReports {
   const doc = `${bridge.session}:${view.key}`;
   const [scoped, setScoped] = useState<Scoped>(() => emptyScope(doc));
@@ -140,6 +142,10 @@ export function usePageReports(
 
   const asked = useMemo(() => new Set(anchors.map((item) => item.id)), [anchors]);
   const anchorsKey = useMemo(() => JSON.stringify(anchors), [anchors]);
+  // Before the anchors, so a document's first report already measures its parts.
+  useEffect(() => {
+    if (bridge.ready) bridge.post({ type: 'page:outlined', id: outlined });
+  }, [bridge, outlined]);
   const postAnchors = useEffectEvent(() => bridge.post({ type: 'page:anchors', items: anchors }));
   useEffect(() => {
     if (bridge.ready) postAnchors();
@@ -163,6 +169,7 @@ export function usePageReports(
         return;
       case 'page:press':
         closingPress.current = acts.onPress() ? message.press : null;
+        if (closingPress.current !== null) bridge.post({ type: 'page:declined', press: message.press });
         return;
       case 'page:pick':
         // Only while the owner asked clicks to pick: a page cannot open the box itself.

@@ -438,3 +438,27 @@
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
+
+/* ====== Comments ====== */
+
+/* The grid's scroll viewport in a box of its own size, which the comment
+   layer covers: the formula bar and the footer are not the sheet's. */
+.excel-grid-host {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* An empty sheet's note sits on the panel, as it did outside the grid. */
+.excel-table-wrapper.is-empty {
+  background: none;
+}
+
+/* In comment mode a press on a CSV's cells picks them, as on a workbook's,
+   rather than selecting their words. */
+.excel-table-wrapper[data-comment-cursor] .excel-table {
+  -webkit-user-select: none;
+  user-select: none;
+}

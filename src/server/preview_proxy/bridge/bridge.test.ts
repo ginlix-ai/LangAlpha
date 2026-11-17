@@ -331,12 +331,16 @@ interface LayoutOptions {
   highlights?: Map<string, { ranges: Range[] }>;
   /** A browser without Intl.Segmenter. */
   noSegmenter?: boolean;
+  /** `navigator.platform`: a Mac's adds parts with Cmd, any other's with Ctrl. */
+  platform?: string;
+  /** `navigator.userAgentData.platform`, which wins over `platform` when present. */
+  hintPlatform?: string;
 }
 
 // A page in comment mode laid out by hand: an element with `data-box="x y w
 // h"` is drawn there, and one without spans the elements inside it, as a
 // container does. jsdom lays nothing out, and an area is all geometry.
-function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights, noSegmenter = false }: LayoutOptions = {}) {
+function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights, noSegmenter = false, platform = 'MacIntel', hintPlatform }: LayoutOptions = {}) {
   const sent: Record<string, unknown>[] = [];
   const viewer = { postMessage: (message: unknown) => sent.push(JSON.parse(JSON.stringify(message))) };
   const { window: w } = new JSDOM(`<!doctype html><html><head><script>${source}</script></head><body>${body}</body></html>`, {
@@ -345,6 +349,8 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
     pretendToBeVisual: true,
     beforeParse(win) {
       Object.defineProperty(win, 'parent', { value: viewer, configurable: true });
+      Object.defineProperty(win.navigator, 'platform', { value: platform, configurable: true });
+      if (hintPlatform) Object.defineProperty(win.navigator, 'userAgentData', { value: { platform: hintPlatform }, configurable: true });
       type Box = { x: number; y: number; left: number; top: number; right: number; bottom: number; width: number; height: number; toJSON: () => object };
       const make = (left: number, top: number, right: number, bottom: number): Box => ({
         x: left, y: top, left, top, right, bottom, width: right - left, height: bottom - top, toJSON: () => ({}),
@@ -611,12 +617,16 @@ describe('the page bridge takes an area dragged around several elements', () => 
     expect(area?.anchor.point).toEqual({ x: 0, y: 0 });
   });
 
-  it('lists eight elements and counts the rest', () => {
+  it('lists every element it covers, and counts the rest past the API\'s limit', () => {
     const many = Array.from({ length: 11 }, (_, i) => `<p data-box="10 ${10 + i * 20} 100 16">Line ${i + 1}</p>`).join('');
     const { area } = laidOutPage(`<div id="list">${many}</div>`).drag([4, 4], [120, 208]);
     expect(area?.anchor.count).toBe(10);
-    expect(area?.anchor.elements).toHaveLength(8);
+    expect(area?.anchor.elements.map((e) => e.label)).toEqual(Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`));
     expect(area?.anchor.label).toBe('Line 1, Line 2, Line 3, Line 4, Line 5, Line 6, Line 7, Line 8, Line 9, Line 10');
+    const lines = Array.from({ length: 71 }, (_, i) => `<p data-box="10 ${10 + i * 10} 100 8">Line ${i + 1}</p>`).join('');
+    const huge = laidOutPage(`<div id="list">${lines}</div>`).drag([4, 4], [120, 708]).area;
+    expect(huge?.anchor.count).toBe(70);
+    expect(huge?.anchor.elements).toHaveLength(64);
   });
 
   it('reports nothing for a drag called off with Esc, and swallows the click after it', () => {
@@ -832,16 +842,31 @@ describe('the page bridge picks several parts for one comment', () => {
     expect(late.picks[0].extend).toBeFalsy();
   });
 
-  it('adds a Cmd-click to every part a plain drag found, not only the few it lists', () => {
+  it('adds a Cmd-click to the parts a plain drag listed, and starts afresh after one too large to list', () => {
     const many = Array.from({ length: 11 }, (_, i) => `<p data-box="10 ${10 + i * 20} 100 16">Line ${i + 1}</p>`).join('');
     const { drag, click, draft } = drafting(`<div id="list">${many}</div>`);
-    const dragged = drag([4, 4], [120, 208]).area!;
-    expect(dragged.anchor.elements).toHaveLength(8);
-    draft(dragged.anchor);
+    draft(drag([4, 4], [120, 208]).area!.anchor);
     const added = click([50, 218], { meta: true }).area!;
     expect(added.extend).toBe(true);
     expect(added.anchor.count).toBe(11);
     expect(added.anchor.elements.map((e) => e.label)).toEqual(Array.from({ length: 11 }, (_, i) => `Line ${i + 1}`));
+    const lines = Array.from({ length: 71 }, (_, i) => `<p data-box="10 ${10 + i * 10} 100 8">Line ${i + 1}</p>`).join('');
+    const huge = drafting(`<div id="list">${lines}</div>`);
+    huge.draft(huge.drag([4, 4], [120, 708]).area!.anchor);
+    expect(huge.click([50, 714], { meta: true }).picks[0]).toMatchObject({ extend: true, anchor: { label: 'Line 71' } });
+  });
+
+  it('keeps no parts from a drag the viewer declined, so a Cmd-click grows the draft it has', () => {
+    const lines = Array.from({ length: 6 }, (_, i) => `<p data-box="10 ${10 + i * 20} 100 16">Line ${i + 1}</p>`).join('');
+    const { drag, click, draft, send } = drafting(`<div id="list">${lines}</div>`);
+    const first = drag([4, 4], [120, 48]).area!;
+    draft(first.anchor);
+    // The next press only asks before the written draft goes.
+    send({ type: 'page:declined', press: first.press + 1 });
+    expect(drag([4, 66], [120, 128]).area!.anchor.count).toBe(3);
+    const added = click([50, 58], { meta: true }).area!;
+    expect(added).toMatchObject({ extend: true });
+    expect(added.anchor.elements.map((e) => e.label)).toEqual(['Line 1', 'Line 2', 'Line 3']);
   });
 
   describe('keeps the parts it still has for a draft whose page lost one', () => {
@@ -890,19 +915,25 @@ describe('the page bridge picks several parts for one comment', () => {
     expect(next.picks[0].extend).toBeFalsy();
   });
 
-  it('reports where each part shows for an area listing every part, and not for a drag that lists only its first few', () => {
+  it('reports where each part shows for the draft and the outlined comment listing every part, and for no other', () => {
     const { send, sent } = drafting();
-    const parts = (anchor: Anchor) => {
-      sent.length = 0;
-      send({ type: 'page:anchors', items: [{ id: 'c1', anchor }] });
-      const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { parts?: unknown[] }[] };
-      return last.items[0].parts;
-    };
     const elements = [{ path: path(0) }, { path: path(2) }];
-    expect(parts({ kind: 'area', elements, count: 2 })).toEqual([
-      { x: 10, y: 10, width: 100, height: 80 }, { x: 230, y: 10, width: 100, height: 80 },
-    ]);
-    expect(parts({ kind: 'area', elements, count: 9 })).toBeUndefined();
+    const rects = [{ x: 10, y: 10, width: 100, height: 80 }, { x: 230, y: 10, width: 100, height: 80 }];
+    const parts = () => {
+      const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { id: string; parts?: unknown[] }[] };
+      return Object.fromEntries(last.items.map((item) => [item.id, item.parts ?? null]));
+    };
+    send({ type: 'page:anchors', items: [
+      { id: 'c1', anchor: { kind: 'area', elements, count: 2 } },
+      { id: 'c2', anchor: { kind: 'area', elements, count: 2 } },
+      { id: '__draft__', anchor: { kind: 'area', elements, count: 2 }, draft: true },
+    ] });
+    expect(parts()).toEqual({ c1: null, c2: null, __draft__: rects });
+    send({ type: 'page:outlined', id: 'c2' });
+    expect(parts()).toEqual({ c1: null, c2: rects, __draft__: rects });
+    // An area too large to list is outlined whole.
+    send({ type: 'page:anchors', items: [{ id: 'c2', anchor: { kind: 'area', elements, count: 70 } }] });
+    expect(parts()).toEqual({ c2: null });
   });
 
   it('offers the element, not the word, while Cmd is held over glyphs', async () => {
@@ -921,6 +952,28 @@ describe('the page bridge picks several parts for one comment', () => {
     key('keydown');
     key('keyup');
     expect(sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ held: true, next: false }, { held: false, next: false }]);
+  });
+
+  it('keeps the add key held through a pointerover that reports no keys, as Chrome sends off a Mac when the box fades', () => {
+    const { w, sent } = laidOutPage(ROW, { platform: 'Win32' });
+    sent.length = 0;
+    w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    const tile = w.document.querySelector('.tile')!;
+    tile.dispatchEvent(new w.PointerEvent('pointerover', { bubbles: true, clientX: 20, clientY: 44, pointerType: 'mouse' }));
+    expect(sent.filter((m) => m.type === 'page:adding')).toMatchObject([{ held: true }]);
+  });
+
+  it('holds the add key as Ctrl off a Mac and Cmd on one, never both', () => {
+    const holds = (platform: string, key: string, hintPlatform?: string) => {
+      const { w, sent } = laidOutPage(ROW, { platform, hintPlatform });
+      sent.length = 0;
+      w.dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true }));
+      return sent.some((m) => m.type === 'page:adding');
+    };
+    expect([holds('Win32', 'Control'), holds('Win32', 'Meta')]).toEqual([true, false]);
+    expect([holds('MacIntel', 'Meta'), holds('MacIntel', 'Control')]).toEqual([true, false]);
+    // The client hints win over navigator.platform, as the app reads them.
+    expect([holds('MacIntel', 'Control', 'Windows'), holds('MacIntel', 'Meta', 'Windows')]).toEqual([true, false]);
   });
 });
 

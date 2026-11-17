@@ -16,6 +16,8 @@ export interface TreeNode {
 export type FileQuoteAnchor = (SelectionAnchor | RectAnchor) & {
   lineStart?: number | null;
   lineEnd?: number | null;
+  /** The file the words are in, where it is not the tab's: a framed page a link moved to. */
+  path?: string;
 };
 
 export interface ContextMenuData {

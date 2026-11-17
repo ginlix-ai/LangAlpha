@@ -2975,6 +2975,7 @@
       "toolbar": "选中的文本",
       "blockToolbar": "文本操作",
       "quoteAction": "引用",
+      "askInChat": "在对话中提问",
       "copy": "复制",
       "copied": "已复制",
       "copyFailed": "无法复制文本",
@@ -3053,7 +3054,8 @@
     "pages": "页面",
     "contents": "目录",
     "pageNumber": "页码",
-    "goToPage": "第 {{page}} 页"
+    "goToPage": "第 {{page}} 页",
+    "goToPageWithComments_other": "第 {{page}} 页，{{count}} 条评论"
   },
   "filePanel": {
     "tabs": {
@@ -3282,6 +3284,11 @@
       "comment": "评论",
       "modeTitle": "在网页上评论（C）",
       "modeHint": "点击任意位置添加评论",
+      "modeTitleFile": "在文件上评论（C）",
+      "modeHintMarkdown": "点击段落、表格行或标题，或选中文字",
+      "modeHintCode": "点击一行，或选中文字",
+      "modeHintPdf": "选中文字即可评论",
+      "modeHintCells": "点击单元格，或拖选一片区域",
       "modeHintParts": "按住 {{key}} 点击可再选几处",
       "modeHintAdding": "点一下要加进来的部分",
       "exitMode": "退出",
@@ -3301,6 +3308,9 @@
       "onLabel": "位于：{{label}}",
       "onElement": "位于此处",
       "onText": "位于所选文字",
+      "onPage": "位于第 {{page}} 页",
+      "onLine": "位于第 {{line}} 行",
+      "onLines": "位于第 {{lines}} 行",
       "onQuote": "位于：“{{quote}}”",
       "placeholder": "添加评论",
       "replyPlaceholder": "回复",
@@ -3333,6 +3343,7 @@
       "keepWriting": "继续编辑",
       "discard": "放弃",
       "pinPreview": "#{{number}} · {{words}}",
+      "partsTitle_other": "{{count}} 处",
       "areaTitle_other": "所选区域 · {{count}} 个元素",
       "partsLabel": "这条评论针对的部分",
       "dropPart": "从所选中移除：{{label}}",

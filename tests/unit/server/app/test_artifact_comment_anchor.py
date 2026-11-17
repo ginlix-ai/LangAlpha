@@ -144,3 +144,79 @@ def test_half_a_surrogate_pair_cannot_reach_the_database():
     assert request.body == "words\ufffd"
     assert request.title == "title\ufffd"
     request.model_dump_json().encode("utf-8")
+
+
+_BLOCK = {
+    "kind": "block",
+    "lines": "14-15",
+    "label": "Margin outlook",
+    "quote": "We model",
+}
+_CELLS = {
+    "kind": "cells",
+    "sheet": "Model",
+    "ranges": [{"range": "D3:D6", "values": "338, 231"}, {"range": "D10"}],
+}
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        _BLOCK,
+        {"kind": "block", "lines": "7"},
+        _CELLS,
+        {"kind": "cells", "ranges": [{"range": "B2", "values": "41%"}]},
+        {"kind": "cells", "ranges": [{"range": "XFD1048576"}]},
+        {"kind": "text", "quote": "61.5%", "lines": "7-9", "prefix": "We"},
+        {"kind": "text", "quote": "net revenue", "page": 3},
+        {
+            "kind": "area",
+            "label": "Revenue",
+            "elements": [{"lines": "11", "quote": "Revenue"}, {"lines": "12"}],
+            "count": 2,
+        },
+    ],
+)
+def test_the_text_viewers_anchors_are_kept_as_sent(anchor):
+    assert CommentAnchor.model_validate(anchor).model_dump(exclude_none=True) == anchor
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        {"kind": "block"},
+        {"kind": "block", "lines": "14 to 15"},
+        {"kind": "block", "lines": "1" * 9},
+        {"kind": "block", "lines": "0"},
+        {"kind": "block", "lines": "0-3"},
+        {"kind": "text", "quote": "a", "lines": "4-0"},
+        {"kind": "block", "lines": "14-7"},
+        {"kind": "area", "elements": [{"lines": "9-8"}, {"lines": "11"}], "count": 2},
+        {**_BLOCK, "path": "#a"},
+        {**_BLOCK, "prefix": "a"},
+        {**_BLOCK, "page": 2},
+        {"kind": "element", "path": "#a", "lines": "3"},
+        {"kind": "text", "quote": "a", "page": 0},
+        {"kind": "element", "path": "#a", "page": 1},
+        {"kind": "cells"},
+        {"kind": "cells", "ranges": []},
+        {"kind": "cells", "ranges": [{"range": "D3:D6"}] * 65},
+        {"kind": "cells", "ranges": [{"range": "d3"}]},
+        {"kind": "cells", "ranges": [{"range": "A0"}]},
+        {"kind": "cells", "ranges": [{"range": "XFE1"}]},
+        {"kind": "cells", "ranges": [{"range": "A1:A1048577"}]},
+        {"kind": "cells", "ranges": [{"range": "D3", "values": "x" * 2001}]},
+        {**_CELLS, "label": "Model"},
+        {**_CELLS, "quote": "338"},
+        {"kind": "text", "quote": "a", "sheet": "Model"},
+        {"kind": "text", "quote": "a", "ranges": [{"range": "A1"}]},
+        {
+            "kind": "area",
+            "elements": [{"lines": "1-2-3"}, {"lines": "4"}],
+            "count": 2,
+        },
+    ],
+)
+def test_a_text_viewers_anchor_out_of_bounds_is_refused(anchor):
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate(anchor)

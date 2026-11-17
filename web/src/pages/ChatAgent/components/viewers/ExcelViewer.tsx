@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, 
 import { Trans, useTranslation } from 'react-i18next';
 import { FunctionSquare } from 'lucide-react';
 import { integer } from '@/lib/format';
+import { useElement } from '@/hooks/useElement';
 import { useLocale } from '@/hooks/useLocale';
 import {
   boxOf,
@@ -21,6 +22,9 @@ import { parseWorkbook, withEquals, type GridCell, type SheetData } from './exce
 import { GridRow } from './excel/GridRow';
 import { precedentsOf } from './excel/precedents';
 import { buildRangeSnippet, buildWholeSnippet, withinSheet } from './excel/snippet';
+import type { ViewerCommentsTarget } from './comments/ViewerComments';
+import { SheetComments } from './comments/sheet/SheetComments';
+import type { SheetView } from './comments/sheet/cellSpots';
 import './ExcelViewer.css';
 
 /** Rows a Page Up / Page Down step covers. */
@@ -89,6 +93,8 @@ export interface ExcelViewerProps {
   onAddContext?: (chip: ChipContext) => void;
   /** The page around the viewer offers this file as a download, so a note can send the reader there. */
   canDownload?: boolean;
+  /** The owner's comments on the cells, in the owner's panel; left out, the workbook shows alone. */
+  comments?: ViewerCommentsTarget | null;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -116,7 +122,7 @@ function resolveBox(sheet: SheetData, box: CellBox): CellBox {
   return boxOf(master, master);
 }
 
-export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAddContext, canDownload = false }: ExcelViewerProps) {
+export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAddContext, canDownload = false, comments = null }: ExcelViewerProps) {
   // Cell text is formatted once in parseWorkbook, in the locale of that
   // moment, and re-parsed only when `data` changes; a language switch reaches
   // the chrome around the grid, not the cells, so it cannot reset the sheet
@@ -133,6 +139,9 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
   // user made, and nothing once they have added it.
   const [offer, setOffer] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  // The grid as state too: the comment layer is drawn over it once it is up.
+  const [grid, placeGrid] = useElement(gridRef);
+  const tabsRef = useRef<HTMLDivElement>(null);
   const focusCellRef = useRef<HTMLTableCellElement>(null);
   // Only the active cell carries an id, so one per viewer is enough for
   // `aria-activedescendant`; useId keeps two open workbooks apart.
@@ -163,6 +172,27 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
 
   // Null before the parse lands, and for a workbook with no sheets at all.
   const sheet = sheets && sheets.length > 0 ? (sheets[activeSheet] ?? sheets[0]) : null;
+
+  // What the comment layer reads of the sheet drawn.
+  const sheetView = useMemo<SheetView | null>(() => sheet && sheets ? {
+    sheet: sheet.name,
+    sheets: sheets.map((s) => s.name),
+    rows: sheet.rows.length,
+    cols: sheet.colCount,
+    text: (r, c) => cellAt(sheet, { row: r, col: c })?.text ?? '',
+    isText: (r, c) => !!cellAt(sheet, { row: r, col: c })?.isText,
+  } : null, [sheet, sheets]);
+  const sheetTab = (name: string) => [...(tabsRef.current?.querySelectorAll<HTMLElement>('[data-sheet-tab]') ?? [])]
+    .find((tab) => tab.dataset.sheetTab === name) ?? null;
+  // A comment on another sheet, scrolled to from the list: its sheet, with
+  // its range selected, which the grid scrolls into view as it draws.
+  const revealRange = (name: string, box: CellBox) => {
+    const index = sheetView?.sheets.indexOf(name) ?? -1;
+    if (index < 0) return;
+    setActiveSheet(index);
+    setSel(selectionFor(box));
+    setOffer(null);
+  };
 
   useEffect(() => {
     if (!focusCell || !sheets) return;
@@ -408,60 +438,69 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
         </div>
       )}
 
-      {isEmpty ? (
-        <div className="excel-viewer-empty">{t('excelViewer.emptySheet')}</div>
-      ) : (
+      {/* The grid's own box, which the comment layer covers; kept through an
+          empty sheet, so the comments on the others stay listed. */}
+      <div className="excel-grid-host">
+        {/* One element either way: a new one would start the comment page over. */}
         <div
-          className="excel-table-wrapper"
-          ref={gridRef}
-          role="grid"
-          tabIndex={0}
-          onKeyDown={handleKeyDown}
-          aria-label={t('excelViewer.cellsOf', { sheet: sheet.name })}
-          aria-activedescendant={sel ? focusId : undefined}
+          className={`excel-table-wrapper${isEmpty ? ' is-empty' : ''}`}
+          ref={placeGrid}
+          data-shows={sheet?.name}
+          {...(isEmpty ? {} : {
+            role: 'grid',
+            tabIndex: 0,
+            onKeyDown: handleKeyDown,
+            'aria-label': t('excelViewer.cellsOf', { sheet: sheet.name }),
+            'aria-activedescendant': sel ? focusId : undefined,
+          })}
         >
-          <table className="excel-table excel-grid" onMouseDown={handleTableMouseDown} onKeyDown={handleTableKeyDown}>
-            <thead>
-              <tr role="row">
-                <th className="excel-row-num excel-corner" aria-label={t('excelViewer.rowHeader')} />
-                {columns.map((c) => (
-                  <th
-                    key={c}
-                    role="columnheader"
-                    tabIndex={-1}
-                    data-c={c}
-                    className={selBox && c >= selBox.left && c <= selBox.right ? 'is-active' : undefined}
-                    title={t('excelViewer.selectColumn', { name: columnName(c) })}
-                  >
-                    {columnName(c)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sheet.rows.map((cells, ri) => {
-                const r = ri + 1;
-                const crosses = selBox !== null && r >= selBox.top && r <= selBox.bottom;
-                return (
-                  <GridRow
-                    key={r}
-                    r={r}
-                    cells={cells}
-                    showFormulas={showFormulas}
-                    selLeft={crosses ? selBox.left : 0}
-                    selRight={crosses ? selBox.right : 0}
-                    precedents={rowPrecedents.get(r) ?? NO_BOXES}
-                    focusCol={sel && sel.focus.row === r ? sel.focus.col : null}
-                    focusId={focusId}
-                    focusRef={focusCellRef}
-                    t={t}
-                  />
-                );
-              })}
-            </tbody>
-          </table>
+          {isEmpty ? (
+            <div className="excel-viewer-empty">{t('excelViewer.emptySheet')}</div>
+          ) : (
+            <table className="excel-table excel-grid" onMouseDown={handleTableMouseDown} onKeyDown={handleTableKeyDown}>
+              <thead>
+                <tr role="row">
+                  <th className="excel-row-num excel-corner" aria-label={t('excelViewer.rowHeader')} />
+                  {columns.map((c) => (
+                    <th
+                      key={c}
+                      role="columnheader"
+                      tabIndex={-1}
+                      data-c={c}
+                      className={selBox && c >= selBox.left && c <= selBox.right ? 'is-active' : undefined}
+                      title={t('excelViewer.selectColumn', { name: columnName(c) })}
+                    >
+                      {columnName(c)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sheet.rows.map((cells, ri) => {
+                  const r = ri + 1;
+                  const crosses = selBox !== null && r >= selBox.top && r <= selBox.bottom;
+                  return (
+                    <GridRow
+                      key={r}
+                      r={r}
+                      cells={cells}
+                      showFormulas={showFormulas}
+                      selLeft={crosses ? selBox.left : 0}
+                      selRight={crosses ? selBox.right : 0}
+                      precedents={rowPrecedents.get(r) ?? NO_BOXES}
+                      focusCol={sel && sel.focus.row === r ? sel.focus.col : null}
+                      focusId={focusId}
+                      focusRef={focusCellRef}
+                      t={t}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
-      )}
+        {comments && <SheetComments grid={grid} view={sheetView} tabOf={sheetTab} reveal={revealRange} target={comments} />}
+      </div>
 
       {onAddContext && !isEmpty && offerable && (
         <div className="excel-selchip">
@@ -476,11 +515,12 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
 
       <div className="excel-footer rule-t">
         {sheets.length > 1 && (
-          <div className="excel-sheet-tabs">
+          <div className="excel-sheet-tabs" ref={tabsRef}>
             {sheets.map((s, idx) => (
               <button
                 type="button"
                 key={s.name}
+                data-sheet-tab={s.name}
                 className={`excel-sheet-tab${idx === activeSheet ? ' active' : ''}`}
                 onClick={() => {
                   setActiveSheet(idx);

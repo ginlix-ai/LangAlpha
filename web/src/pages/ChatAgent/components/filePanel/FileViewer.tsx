@@ -1,8 +1,6 @@
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '@/contexts/ThemeContext';
 import { Loader } from '@/components/ui/loader';
-import SyntaxHighlighter, { oneDark, oneLight } from '../SyntaxHighlighter';
 import Markdown from '../Markdown';
 import ImageLightbox from '../ImageLightbox';
 import DocumentErrorBoundary from '../viewers/DocumentErrorBoundary';
@@ -11,13 +9,16 @@ import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ContextPayload } from '@/components/ui/chat-input.types';
 import type { FrameLinkHandler } from '../viewers/html/liveFrame';
 import type { EditorTextSelectData } from './types';
-import { EXT_TO_LANG, LARGE_TOOL_RESULTS_PREFIX, getFileExtension } from './fileMeta';
+import { EXT_TO_LANG, getFileExtension, viewerFor } from './fileMeta';
 import { imageMime, type FileBody } from './fileBody';
 import { FileErrorDisplay, type FileError } from './fileErrors';
 import { DocumentErrorFallback, DocumentLoadingFallback } from './fallbacks';
 import type { useFileFocus } from './useFileFocus';
 import type { DownloadState } from '../../utils/downloadNotice';
 import type { HtmlArtifactView } from '../viewers/html/ArtifactFrames';
+import type { ViewerCommentsTarget } from '../viewers/comments/ViewerComments';
+import { MarkdownFile } from '../viewers/comments/markdown/MarkdownFile';
+import { CodeFile } from '../viewers/comments/code/CodeFile';
 
 const PdfViewer = React.lazy(() => import('../viewers/PdfViewer'));
 const CsvViewer = React.lazy(() => import('../viewers/CsvViewer'));
@@ -31,14 +32,6 @@ type FileViewerFocus = Pick<ReturnType<typeof useFileFocus>, 'lineRange' | 'focu
 
 const NO_FOCUS: FileViewerFocus = { lineRange: null, focusPage: null, htmlAnchor: null, focusCell: null, seq: null };
 
-// The highlighter re-tokenizes the whole file on every render it gets, so
-// its element is reused only while every prop, these included, is the same.
-const CODE_STYLE: React.CSSProperties = { margin: 0, padding: 0, backgroundColor: 'transparent', fontSize: '0.75rem', lineHeight: '1.6' };
-const CODE_TAG_PROPS = { style: { backgroundColor: 'transparent' } };
-const LINE_NUMBER_STYLE: React.CSSProperties = {
-  minWidth: '2.5em', paddingRight: '1em', color: 'var(--color-text-tertiary)', userSelect: 'none', fontSize: '0.6875rem', opacity: 0.5,
-};
-
 export interface FileViewerProps {
   path: string;
   body: FileBody | null;
@@ -49,6 +42,8 @@ export interface FileViewerProps {
   onFileChanged?: (path: string) => void;
   /** Offered where the viewer failed; a toast reports its own failure. */
   onDownloadInFallback?: () => void;
+  /** Whether a document viewer failed and its fallback stands in, with the comment layer it drew. */
+  onDocumentFailed?: (failed: boolean) => void;
   onDownload?: () => void;
   /** A save of this file is being prepared. */
   downloadState?: DownloadState;
@@ -83,6 +78,8 @@ export interface FileViewerProps {
   servePrefix?: string;
   /** The owner's comments and versions on an HTML file. Left out, the file shows alone. */
   htmlArtifact?: HtmlArtifactView | null;
+  /** The owner's comments on a file a viewer in the app draws (Markdown, code, PDF, a sheet). Left out, the file shows alone. */
+  comments?: ViewerCommentsTarget | null;
 }
 
 /** The open file, rendered by whichever viewer its bytes belong to. */
@@ -91,11 +88,12 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
   // Out of `focus` so the highlighter's line props follow the range alone, not every focus change.
   const { lineRange } = focus;
   const { t } = useTranslation();
-  const { theme } = useTheme();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   // Bumped by Retry on a large PDF that failed, so its viewer starts over.
   const [pdfAttempt, setPdfAttempt] = useState(0);
   const ext = getFileExtension(path);
+  const viewer = viewerFor(path, body?.mime ?? null);
+  const comments = props.comments ?? null;
   const fileName = path.split('/').pop() || path;
 
   // An image is cached as bytes, not as a blob URL: a URL minted into the
@@ -140,10 +138,10 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
     return <FileErrorDisplay error={error} onRetry={props.onRetry} onDownload={props.onDownload} downloadState={props.downloadState} />;
   }
 
-  if (body?.mime === 'pdf') {
+  if (viewer === 'pdf' && body) {
     return (
       <Suspense fallback={<DocumentLoadingFallback />}>
-        <DocumentErrorBoundary
+        <DocumentErrorBoundary onFailedChange={props.onDocumentFailed}
           // A newer copy of the same file keeps the reader's place; another
           // file starts over, and a failed one does not fail the next.
           key={`${path}#${pdfAttempt}`}
@@ -162,16 +160,17 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
             focusPage={focus.focusPage}
             focusSeq={focus.seq}
             onPageCount={props.onPageCount}
+            comments={comments}
           />
         </DocumentErrorBoundary>
       </Suspense>
     );
   }
 
-  if (body?.mime === 'excel') {
+  if (viewer === 'excel' && body) {
     return (
       <Suspense fallback={<DocumentLoadingFallback />}>
-        <DocumentErrorBoundary fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
+        <DocumentErrorBoundary onFailedChange={props.onDocumentFailed} fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
           <ExcelViewer
             // The parse is async and keeps the last workbook's cells until it
             // lands, so a second workbook gets its own instance rather than
@@ -183,26 +182,27 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
             focusCell={focus.focusCell}
             focusSeq={focus.seq ?? undefined}
             canDownload={!!props.onDownload}
+            comments={comments}
           />
         </DocumentErrorBoundary>
       </Suspense>
     );
   }
 
-  if (ext === 'csv') {
+  if (viewer === 'csv') {
     return isEditing ? editor : (
       <Suspense fallback={<DocumentLoadingFallback />}>
-        <DocumentErrorBoundary fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
-          <CsvViewer content={body?.content ?? ''} />
+        <DocumentErrorBoundary onFailedChange={props.onDocumentFailed} fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
+          <CsvViewer content={body?.content ?? ''} comments={comments} />
         </DocumentErrorBoundary>
       </Suspense>
     );
   }
 
-  if (ext === 'html' || ext === 'htm') {
+  if (viewer === 'html') {
     return (
       <Suspense fallback={<DocumentLoadingFallback />}>
-        <DocumentErrorBoundary fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
+        <DocumentErrorBoundary onFailedChange={props.onDocumentFailed} fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
           <HtmlViewer
             content={body?.content ?? ''}
             fileName={fileName}
@@ -224,42 +224,24 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
 
   return (
     <div className="p-4">
-      {body?.mime === 'image' && imageUrl ? (
+      {viewer === 'image' && imageUrl ? (
         <>
           <img src={imageUrl} alt={fileName} className="max-w-full rounded cursor-pointer" onClick={() => setLightboxOpen(true)} />
           <ImageLightbox src={imageUrl} alt={fileName} open={lightboxOpen} onClose={() => setLightboxOpen(false)} />
         </>
-      ) : path.startsWith(LARGE_TOOL_RESULTS_PREFIX) ? (
+      ) : viewer === 'other' ? (
         <div className="markdown-print-content">
           <Markdown variant="panel" content={stripLineNumbers(body?.content ?? null) ?? ''} className="text-sm" />
         </div>
-      ) : body?.mime?.includes('markdown') || ext === 'md' ? (
-        <div className="markdown-print-content">
-          <Markdown
-            variant="panel"
-            content={body?.content ?? ''}
-            className="text-sm"
-            onOpenFile={props.onViewerLink}
-            onAnchorLink={props.onAnchorLink}
-          />
-        </div>
-      ) : body?.content != null ? (
-        <SyntaxHighlighter
-          language={EXT_TO_LANG[ext] || 'text'}
-          style={theme === 'light' ? oneLight : oneDark}
-          customStyle={CODE_STYLE}
-          codeTagProps={CODE_TAG_PROPS}
-          showLineNumbers
-          lineNumberStyle={LINE_NUMBER_STYLE}
-          wrapLines
-          lineProps={(lineNumber: number) => {
-            const focused = !!lineRange && lineNumber >= lineRange[0] && lineNumber <= lineRange[1];
-            return { 'data-line': lineNumber, ...(focused ? { className: 'file-focus-line' } : {}) } as React.HTMLProps<HTMLElement>;
-          }}
-          wrapLongLines
-        >
-          {body.content}
-        </SyntaxHighlighter>
+      ) : viewer === 'markdown' ? (
+        <MarkdownFile
+          content={body?.content ?? ''}
+          comments={comments}
+          onOpenFile={props.onViewerLink}
+          onAnchorLink={props.onAnchorLink}
+        />
+      ) : viewer === 'code' && body?.content != null ? (
+        <CodeFile content={body.content} language={EXT_TO_LANG[ext] || 'text'} lineRange={lineRange} comments={comments} />
       ) : (
         <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.emptyFile')}</p>
       )}
