@@ -57,6 +57,18 @@ def test_contents_index_runs_items_to_the_next_row_and_cuts_out_headed_items():
     assert "9" not in fs.items and "10" not in fs.items
 
 
+def test_an_item_the_index_cuts_down_to_a_pointer_is_a_stub():
+    doc = html(
+        p("ANNUAL REPORT ON FORM 10-K"), p("CROSS REFERENCE INDEX"),
+        "<table>", row("PART I", "", "PAGE"), row("ITEM 1", "Business", "1"),
+        row("ITEM 7", "Management's Discussion and Analysis", "2"), row("ITEM 8", "Financial Statements and Supplementary Data", "3"),
+        row("ITEM 9A", "Controls and Procedures", "4"), "</table>",
+        *pages("ITEM 1. BUSINESS</p><p>" + BODY, "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS</p><p>See Financial Review on page 3.",
+               "Financial Review. " + " ".join([BODY] * 30), "ITEM 9A. CONTROLS AND PROCEDURES</p><p>Our disclosure controls are effective."))
+    fs = extract_sections(submission("10-K", "2006-03-01", ("10-K", doc)))
+    assert fs["7"].status == "stub" and fs["8"].status == "xref"
+
+
 def test_item_headings_with_numbers_are_not_an_index_without_a_title():
     lines = ["ITEM 16C. Principal Accountant Fees 77, 864", "Audit fees were paid.", "ITEM 16D. Exemptions 3, 4",
              "None.", "ITEM 16E. Purchases 5-6", "None.", "ITEM 16F. Change in accountant 7, 9", "None."]

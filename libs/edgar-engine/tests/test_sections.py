@@ -152,6 +152,122 @@ def test_pointer_into_exhibit_13_resolves_by_caption_and_pages():
     assert "Report of Independent Auditors" not in md.target.text
 
 
+def test_a_pointer_to_pages_of_another_exhibit_does_not_resolve_to_this_documents_pages():
+    main = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"),
+                p("The information required by this item is included on pages 2 through 3 of Exhibit 99.1 hereto and is "
+                  "incorporated herein by reference."), p("1"),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("2"), p("Balance sheet. " + BODY), p("3"),
+                p("Notes. " + BODY), p("4"), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2004-03-30", ("10-K", main)))
+    md = fs["7"]
+    assert md.status == "stub" and md.target.kind == "exhibit" and not md.target.spans
+
+
+def test_a_pointer_to_a_note_in_another_exhibit_stays_external():
+    main = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"),
+                p("See Note 7 in Exhibit 99.1 hereto, which is incorporated herein by reference."),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("Note 7. Commitments and Contingencies"),
+                p("We lease our offices."), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2004-03-30", ("10-K", main)))
+    md = fs["7"]
+    assert md.status == "stub" and md.target.kind == "exhibit" and not md.target.spans
+
+
+def test_an_item_numeral_outside_the_forms_numbering_is_not_a_heading():
+    doc = html(p("PART I"), p("ITEM 1. BUSINESS"), p(BODY), p("ITEM XXI. OTHER MATTERS"), p(BODY),
+               p("ITEM 2. PROPERTIES"), p(BODY), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2004-03-30", ("10-K", doc)))
+    assert "2" in fs.items and "21" not in fs.items
+
+
+def test_a_pointer_to_a_note_keeps_its_numbered_subsections():
+    doc = html(p("PART I. FINANCIAL INFORMATION"), p("Item 1. Financial Statements"), p(BODY),
+               p("NOTES TO CONDENSED CONSOLIDATED FINANCIAL STATEMENTS"), p("Note 6. Debt"), p("We have a revolving credit facility."),
+               p("Note 7. Commitments and Contingencies"), p("We are a defendant in a patent lawsuit filed in 2014."),
+               p("1. Significant Estimates"), p("We accrue for losses we can estimate."),
+               p("Note 8. Subsequent Events"), p("None."),
+               p("Item 2. Management's Discussion and Analysis"), p(BODY), p("PART II. OTHER INFORMATION"),
+               p("Item 1. Legal Proceedings"), p("See Note 7, Commitments and Contingencies, of the notes to the financial statements."),
+               p("Item 6. Exhibits"), p("31.1 Certification"), p("SIGNATURES"))
+    fs = extract_sections(submission("10-Q", "2015-05-01", ("10-Q", doc)))
+    assert fs["II-1"].target.text.endswith("1. Significant Estimates\nWe accrue for losses we can estimate.")
+
+
+def test_a_ten_q_item_pointer_without_a_part_stays_in_its_own_part():
+    doc = html(p("PART I. FINANCIAL INFORMATION"), p("Item 1. Financial Statements"), p(BODY),
+               p("Item 2. Management's Discussion and Analysis"), p(BODY), p("PART II. OTHER INFORMATION"),
+               p("Item 1. Legal Proceedings"), p("We are a defendant in a patent lawsuit filed in 2014."),
+               p("Item 1A. Risk Factors"), p("See Item 1 for the lawsuit that could affect our results."),
+               p("Item 6. Exhibits"), p("31.1 Certification"), p("SIGNATURES"))
+    fs = extract_sections(submission("10-Q", "2015-05-01", ("10-Q", doc)))
+    assert fs["II-1A"].status == "stub" and "patent lawsuit" in fs["II-1A"].target.text
+
+
+def test_a_ten_q_heading_keeps_its_inline_part():
+    doc = html(p("FORM 10-Q/A"), p("EXPLANATORY NOTE"), p("This amendment restates the legal proceedings disclosure."),
+               p("PART II, ITEM 1. LEGAL PROCEEDINGS"), p("We are a defendant in a patent lawsuit filed in 2014."), p("SIGNATURES"))
+    fs = extract_sections(submission("10-Q/A", "2015-06-01", ("10-Q/A", doc)))
+    assert list(fs.items) == ["II-1"]
+
+
+def test_a_pointer_to_pages_resolves_only_when_every_page_is_found():
+    main = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"),
+                p("The information required by this item appears on pages 2 and 4 of the Annual Report to Shareholders "
+                  "and is incorporated herein by reference."),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("SIGNATURES"))
+    ex13 = html(p("Letter to Shareholders. " + BODY), p("1"), p("Results of operations. " + BODY), p("2"),
+                p("Report of Independent Auditors. " + BODY), p("3"))
+    fs = extract_sections(submission("10-K", "1998-03-30", ("10-K", main), ("EX-13", ex13)))
+    assert fs["7"].status == "stub" and not fs["7"].target.spans
+
+
+def test_a_ten_q_item_pointer_honors_a_part_named_after_the_item():
+    doc = html(p("PART I. FINANCIAL INFORMATION"), p("Item 1. Financial Statements"), p(BODY),
+               p("Item 2. Management's Discussion and Analysis"), p("Liquidity improved this quarter. " + BODY),
+               p("PART II. OTHER INFORMATION"), p("Item 1. Legal Proceedings"), p("None."),
+               p("Item 1A. Risk Factors"), p("See Item 2 of Part I of this report for the risks that could affect our results."),
+               p("Item 2. Unregistered Sales of Equity Securities"), p("None."),
+               p("Item 6. Exhibits"), p("31.1 Certification"), p("SIGNATURES"))
+    fs = extract_sections(submission("10-Q", "2015-05-01", ("10-Q", doc)))
+    assert fs["II-1A"].status == "stub" and "Liquidity improved" in fs["II-1A"].target.text
+
+
+def test_a_page_numbered_in_its_header_and_footer_ends_at_the_footer():
+    main = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"),
+                p("The information required by this item appears on page 2 of the Annual Report to Shareholders "
+                  "and is incorporated herein by reference."),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("SIGNATURES"))
+    ex13 = html(p("ACME 1"), p("Letter to Shareholders. " + BODY), p("1"),
+                p("ACME 2"), p("Management's Discussion and Analysis. " + BODY), p("2"),
+                p("ACME 3"), p("Report of Independent Auditors. " + BODY), p("3"))
+    fs = extract_sections(submission("10-K", "1998-03-30", ("10-K", main), ("EX-13", ex13)))
+    text = fs["7"].target.text
+    assert "Management's Discussion and Analysis" in text and "Letter to Shareholders" not in text
+
+
+def test_a_statements_pointer_naming_a_note_resolves_to_the_note():
+    doc = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"), p(BODY),
+               p("ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"),
+               p("Quarterly results are presented in Note 7 to the consolidated financial statements."),
+               p("ITEM 9A. CONTROLS AND PROCEDURES"), p("Our disclosure controls are effective."), p("SIGNATURES"),
+               p("INDEX TO CONSOLIDATED FINANCIAL STATEMENTS"), p("Consolidated Balance Sheets"), p(BODY),
+               p("Note 6. Debt"), p("We have a revolving credit facility."),
+               p("Note 7. Quarterly Results"), p("Fourth-quarter sales rose."), p("Note 8. Subsequent Events"), p("None."))
+    fs = extract_sections(submission("10-K", "2015-03-01", ("10-K", doc)))
+    assert fs["8"].status == "stub"
+    assert fs["8"].target.text == "Note 7. Quarterly Results\nFourth-quarter sales rose."
+
+
+def test_an_abbreviated_f_page_range_keeps_its_prefix():
+    main = html(p("PART II"), p("ITEM 7A. QUANTITATIVE AND QUALITATIVE DISCLOSURES ABOUT MARKET RISK"),
+                p("The information required by this item appears on pages F-1-3 of this report."), p("1"),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("2"), p("Selected data. " + BODY), p("3"),
+                p("Interest rate risk. " + BODY), p("F-1"), p("Currency risk. " + BODY), p("F-2"),
+                p("Commodity risk. " + BODY), p("F-3"), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2004-03-30", ("10-K", main)))
+    assert fs["7A"].target.text.startswith("Interest rate risk") and "Commodity risk" in fs["7A"].target.text
+
+
 def test_twenty_f_lettered_sub_items_without_the_word_item():
     doc = html(p("ITEM 15. CONTROLS AND PROCEDURES"), p(BODY), p("ITEM 16."), p("16.A. AUDIT COMMITTEE FINANCIAL EXPERT"),
                p("Our board has determined that one member is an expert."), p("16.B. CODE OF ETHICS"), p("We have adopted a code."),
@@ -307,3 +423,56 @@ def test_an_addressing_sentence_with_a_dotted_number_names_only_the_forms_items(
                 p("ITEM 12. SECURITY OWNERSHIP"), p(BODY), p("SIGNATURES"))
     fs = extract_sections(submission("10-K", "2024-02-01", ("10-K", body)))
     assert fs["10"].status == "stub" and "11.01" not in fs.items and "11" not in fs.items
+
+
+def test_a_note_pointer_resolves_to_the_note_heading_not_a_sentence_naming_the_note():
+    body = html(p("PART II"), p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"), p(BODY),
+                p("Note 7 to the consolidated financial statements provides more information about our borrowings."),
+                p("ITEM 7A. QUANTITATIVE AND QUALITATIVE DISCLOSURES ABOUT MARKET RISK"),
+                p("See Note 7, Debt, to the consolidated financial statements."),
+                p("ITEM 8. FINANCIAL STATEMENTS"), p(BODY), p("NOTE 6 - LEASES"), p(BODY), p("NOTE 7 - DEBT"),
+                p("We borrowed under a revolving credit facility."), p("NOTE 8 - TAXES"), p(BODY),
+                p("ITEM 9. CHANGES IN AND DISAGREEMENTS"), p("None."), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2015-02-01", ("10-K", body)))
+    assert fs["7A"].status == "stub" and fs["7A"].target.text.startswith("NOTE 7 - DEBT")
+
+
+def test_pages_joined_by_and_are_those_pages_not_a_range():
+    annual = html(*[p(b) + p(str(k)) for k, b in enumerate(
+        ["Letter to shareholders. " + BODY, "Market data. " + BODY, "Selected data. " + BODY, "Dividends. " + BODY], 1)])
+    body = html(p("PART II"), p("ITEM 5. MARKET FOR REGISTRANT'S COMMON EQUITY"),
+                p("The information required by this item appears on pages 2 and 4 of the Annual Report to Shareholders "
+                  "and is incorporated herein by reference."), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2005-03-01", ("10-K", body), ("EX-13", annual)))
+    target = fs["5"].target.text
+    assert "Market data" in target and "Dividends" in target and "Selected data" not in target
+
+
+def test_a_quarterly_amendment_restating_only_item_2_has_no_item_1():
+    body = html(p("FORM 10-Q/A"), p("For the quarterly period ended March 31, 2024"), p("EXPLANATORY NOTE"),
+                p("This Amendment No. 1 amends Item 2 of our Quarterly Report on Form 10-Q originally filed on May 2, 2024."),
+                p("PART I"), p("ITEM 2. MANAGEMENT'S DISCUSSION AND ANALYSIS"), p(BODY), p("SIGNATURES"))
+    assert set(extract_sections(submission("10-Q/A", "2024-06-01", ("10-Q/A", body))).items) == {"I-2"}
+    original = html(p("PART I"), p("CONDENSED CONSOLIDATED BALANCE SHEETS"), p("Total assets 1,234"),
+                    p("ITEM 2. MANAGEMENT'S DISCUSSION AND ANALYSIS"), p(BODY), p("SIGNATURES"))
+    fs = extract_sections(submission("10-Q", "2024-05-01", ("10-Q", original)))
+    assert fs["I-1"].text.startswith("CONDENSED CONSOLIDATED BALANCE SHEETS")
+
+
+def test_a_pointer_to_an_item_of_this_report_resolves_inside_it():
+    body = html(p("PART I"), p("ITEM 1. BUSINESS"), p(BODY), p("ITEM 2. PROPERTIES"),
+                p("See Item 7 of this Annual Report on Form 10-K."), p("PART II"),
+                p("ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS"), p("We own three plants. " + BODY), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K", "2024-02-01", ("10-K", body)))
+    assert fs["2"].status == "stub" and fs["2"].target.kind == "in_document"
+    assert fs["2"].target.text.startswith("ITEM 7.")
+
+
+def test_an_addressing_sentence_wrapped_over_two_lines_is_a_stub():
+    body = ("PART I\n\nITEM 1. BUSINESS\n\n" + BODY + "\n\nPART III\n\n"
+            "The information required by Items 10 through 13 will be contained in\n"
+            "our definitive proxy statement for the 1999 annual meeting.\n\nPART IV\n\n"
+            "ITEM 14. EXHIBITS, FINANCIAL STATEMENT SCHEDULES AND REPORTS ON FORM 8-K\n\n27 Financial Data Schedule\n\nSIGNATURES\n")
+    fs = extract_sections(submission("10-K", "1999-03-01", ("10-K", body)))
+    assert {fs[i].status for i in ("10", "11", "12", "13")} == {"stub"}
+    assert fs["10"].target.kind == "proxy"

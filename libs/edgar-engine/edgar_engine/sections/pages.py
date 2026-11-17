@@ -19,7 +19,8 @@ class Pagination:
 
     def footers(self, d: int) -> dict[str, int]:
         """Printed page number -> its footer line in document d. A footer is a short line that is a page number
-        alone or a number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37")."""
+        alone or a number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37"). A page
+        number printed twice on a page (a header and a footer) ends the page at the later one."""
         if d in self._footers:
             return self._footers[d]
         lines = self.rendering.lines
@@ -44,6 +45,8 @@ class Pagination:
             for v, ln in seq:
                 if not chain or 0 < v - chain[-1][0] <= 3:
                     chain.append((v, ln))
+                elif v == chain[-1][0]:
+                    chain[-1] = (v, ln)
                 elif v == 1 or (len(chain) < 3 and v > chain[-1][0]):
                     chain = [(v, ln)] if len(chain) < 3 else chain
             if len(chain) >= 3:

@@ -19,9 +19,13 @@ from .rendering import Rendering
 from .text import CONTENTS, SENTENCE, SIGNATURE_PARAGRAPH, SIGNATURES, STATEMENTS_MARKER, normalize
 from .vocab import PART_NUMERAL, ROMAN, FormSpec
 
+_STATEMENT_TITLE = re.compile(r"\b(?:BALANCE SHEETS?|STATEMENTS? OF (?:CONDITION|FINANCIAL (?:POSITION|CONDITION)|"
+                              r"(?:CONSOLIDATED )?(?:OPERATIONS|INCOME|EARNINGS|CASH FLOWS?|COMPREHENSIVE))|FINANCIAL STATEMENTS)\b", re.I)
 
-_ITEM = re.compile(r"(?:PART\s*(?:IV|I{1,3}|[1-4])\s*[,.:\-]?\s*)?(?P<kw>ITEMS?)\s*"
-                   r"(?P<num>\d{1,2}|[IVX]{1,5}(?![A-Za-z]))(?:(?P<sp>\s?|\.)(?P<let>[A-Za-z])(?![A-Za-z]))?", re.I)
+
+_NUMERAL = "|".join(sorted(ROMAN, key=len, reverse=True))
+_ITEM = re.compile(r"(?:PART\s*(?P<part>IV|I{1,3}|[1-4])\s*[,.:\-]?\s*)?(?P<kw>ITEMS?)\s*"
+                   rf"(?P<num>\d{{1,2}}|(?:{_NUMERAL})(?![A-Za-z]))(?:(?P<sp>\s?|\.)(?P<let>[A-Za-z])(?![A-Za-z]))?", re.I)
 _ITEM_8K = re.compile(r"(?P<kw>ITEMS?)\s*(?P<a>\d{1,2})\s*\.\s*(?P<b>\d{2})(?!\d)", re.I)
 _MORE = re.compile(r"\s*(?P<conn>,|and|&|through|thru|to|-)\s*(?:and\s+)?(?:items?\s*)?"
                    r"(?P<num>\d{1,2}(?:\.\d{2})?)(?:(?P<sp>\s?)(?P<let>[A-Za-z])(?![A-Za-z]))?(?!\d)", re.I)
@@ -140,8 +144,9 @@ def classify(line: str, spec: FormSpec) -> Heading | None:
             if _rest_ok(s[pos:]) and not (len(ids) > 1 and _OMITTED.match(s[pos:])):
                 upper = m.group("kw").isupper()
                 known = _expand(spec.headings, ids, ranges)
+                part = m.groupdict().get("part")
                 if known:
-                    return Heading(0, "item", known, upper=upper)
+                    return Heading(0, "item", known, part=PART_NUMERAL[part.upper()] if part else None, upper=upper)
                 return Heading(0, "other_item", tuple(ids), upper=upper)
     m = _PART.match(s)
     if m and len(s) <= 150 and _rest_ok(s[m.end():]):
@@ -346,7 +351,7 @@ class _Doc:
 
 
 def _tenq_split(doc: _Doc, r0: int, r1: int) -> tuple[tuple[int, int], tuple[int, int] | None]:
-    parts = [h for h in doc.heads if h.kind == "part" and h.line not in doc.toc and r0 <= h.line < r1]
+    parts = [h for h in doc.heads if h.part and h.kind in ("part", "item") and h.line not in doc.toc and r0 <= h.line < r1]
     p1 = [h.line for h in parts if h.part == "I"]
     p2 = [h.line for h in parts if h.part == "II"]
     sigs = [h.line for h in doc.heads if h.kind == "sig" and h.line not in doc.toc]
@@ -449,11 +454,14 @@ def _addressed(lines: list[str], doc: _Doc, spans: dict[str, ItemSpan], order: l
 
 def _untitled_part1_item1(doc: _Doc, spans: dict[str, ItemSpan], a0: int) -> None:
     """A 10-Q that prints its statements with no Item 1 heading: Part I Item 1 is what precedes Item 2, after any
-    contents, page number or PART line."""
+    contents, page number or PART line, when a statement title shows the statements are there (an amendment
+    restating only Item 2 prints its cover and explanatory note there instead)."""
     start = max([a0] + [ln + 1 for ln in doc.toc if a0 <= ln < spans["I-2"].start])
     start = next((ln for ln in range(start, spans["I-2"].start) if not _paged(doc.lines, ln, strict=True)
                   and not (doc.markers.get(ln) and doc.markers[ln].kind == "part")), start)
-    if start < spans["I-2"].start:
+    titled = any(len(s := normalize(doc.lines[ln])) <= 120 and _STATEMENT_TITLE.search(s) and not s.endswith(".")
+                 for ln in range(start, spans["I-2"].start))
+    if start < spans["I-2"].start and titled:
         spans["I-1"] = ItemSpan("I-1", start, spans["I-2"].start, -1, [], "xref")
 
 

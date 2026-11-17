@@ -28,13 +28,19 @@ _OWN_ANSWER = re.compile(r"\bno material changes?\b|\bthere (?:have|has) been no
                          r"\bnot applicable\b|\bwe lease\b|\b(?:is|are) not (?:a )?party\b", re.I)
 _PROXY = re.compile(r"proxy statement|information statement|proxy materials", re.I)
 _ANNUAL = re.compile(r"annual report to (?:share|stock)holders|exhibit 13|annual report\b(?! on form)", re.I)
-_OTHER_FILING = re.compile(r"(?:annual|quarterly) report on form 10-[KQ]|form 10-K for the (?:fiscal )?year|previously filed|registration statement", re.I)
+_OTHER_FILING = re.compile(r"(?<!this )(?<!our )(?:(?:annual|quarterly) report on form 10-[KQ]|form 10-K for the (?:fiscal )?year)"
+                           r"|previously filed|registration statement", re.I)
 _EXHIBIT = re.compile(r"\bexhibits? (?:99|13|1\d|\d)[\d.]*\b|filed (?:herewith )?as (?:an )?exhibit|attached (?:hereto )?as exhibit", re.I)
 _ITEM_REF = re.compile(r"\b(?:Part\s+(?P<part>IV|I{1,3})\s*,?\s*)?Items?\s+(?P<num>\d{1,2}(?:\.\d{2})?[A-K]?)\b", re.I)
+_TRAILING_PART = re.compile(r"\s*,?\s*(?:of|in)\s+(?:this\s+)?Part\s+(IV|I{1,3})\b", re.I)
 _NOTE_REF = re.compile(r"\b(?:Notes?|Footnotes?)\s+(?P<n>\d{1,2})\b", re.I)
 _SUB_REF = re.compile(r"\bItems?\s+\d{1,2}[A-K]?\s*\.\s*[A-Z]\b|\bItems?\s+\d{1,2}\([a-z]\)", re.I)
 _CAPTION = re.compile(r"[\"\u201c\u201d](?P<c>[^\"\u201c\u201d]{3,120})[\"\u201c\u201d]|(?:caption|captioned|heading|headings|section|entitled)\s+(?P<d>[A-Z][\w,&'\u2019\- ]{3,100}?)(?=\s+(?:on|in|of|at|beginning)\b|[.;,]|$)")
-_PAGES = re.compile(r"\bpages?\s+(?P<a>F-\s?\d{1,3}|\d{1,3})(?:\s*(?:-|\u2013|\u2014|to|through|and)\s*(?P<b>F-\s?\d{1,3}|\d{1,3}))?", re.I)
+_PAGE_ONE = r"(?:F-\s?\d{1,3}|\d{1,3})(?!\d)"
+_PAGE_TO = r"\s*(?:-|\u2013|\u2014|to|through)\s*"
+_PAGE_SPAN = re.compile(rf"(?P<a>{_PAGE_ONE})(?:{_PAGE_TO}(?P<b>{_PAGE_ONE}))?", re.I)
+_ANY_SPAN = rf"{_PAGE_ONE}(?:{_PAGE_TO}{_PAGE_ONE})?"
+_PAGES = re.compile(rf"\bpages?\s+(?P<list>{_ANY_SPAN}(?:\s*(?:,|and|&)\s*{_ANY_SPAN})*)", re.I)
 _EXHIBIT_INDEX_REF = re.compile(r"exhibit index|index to exhibits|exhibits index", re.I)
 _FS_REF = re.compile(r"page F-\s?\d|pages F-|index to (?:the )?(?:consolidated )?financial statements|financial statements (?:and (?:the )?notes thereto )?(?:beginning|commencing|which begin|that begin|appear|included|filed)", re.I)
 _SENT = re.compile(r"[.;:]\s*$")
@@ -82,6 +88,12 @@ def is_stub(body: str) -> bool:
     return other <= 80
 
 
+def _note_style(line: str) -> str:
+    """How a note heading is numbered: "Note 7.", "(7)" or "7.". A heading numbered another way and lower
+    than the note is one of its own subsections ("1. Significant Estimates" inside Note 7)."""
+    return "worded" if re.match(r"NOTE", line, re.I) else "paren" if line.startswith("(") else "plain"
+
+
 class Resolver:
     def __init__(self, rendering: Rendering, pages: Pagination, spans: dict[str, ItemSpan], spec: FormSpec,
                  toc: set[int]):
@@ -107,6 +119,8 @@ class Resolver:
             return t
         finders = (self.located,) if index_row else (
             self._statements, self._note, self._exhibit_index, self._item, self.located)
+        if kind == "exhibit":
+            finders = (self._exhibit_index,)
         for finder in finders:
             rng = finder(iid, pointer, own)
             if rng:
@@ -127,8 +141,11 @@ class Resolver:
             num = m.group("num").upper()
             key = num
             if self.spec.parts_split:
-                key = f"{m.group('part').upper()}-{num}" if m.group("part") else next(
-                    (k for k in (f"I-{num}", f"II-{num}") if k in self.spans and k != iid), None)
+                after = _TRAILING_PART.match(pointer, m.end())
+                part = m.group("part") or (after and after.group(1))
+                parts = ("II", "I") if iid.startswith("II-") else ("I", "II")
+                key = f"{part.upper()}-{num}" if part else next(
+                    (k for k in (f"{p}-{num}" for p in parts) if k in self.spans and k != iid), None)
             sp = self.spans.get(key)
             if not sp or key == iid or sp.start == own[0]:
                 continue
@@ -147,15 +164,21 @@ class Resolver:
         any_note = re.compile(r"(?:NOTE\s*(\d{1,2}|[A-Z])\b|\(\s*\d{1,2}\s*\)\s*[A-Z]|(\d{1,2})\s*[.:\-\u2013\u2014)]\s*[A-Z][A-Za-z ,&'\u2019\-]{3,90}$)", re.I)
         for d in self._docs_for(pointer):
             a, b = self.rendering.doc_range(d)
-            strong = [ln for ln in range(a, b) if self._outside(ln, own) and re.match(rf"NOTE\s*{n}\s*[.:\-\u2013\u2014)]?\s*[A-Z]", normalize(self.lines[ln]), re.I)]
+            strong = [ln for ln in range(a, b) if self._outside(ln, own) and re.match(rf"(?:NOTE\s*{n}\s*[.:\-\u2013\u2014)]?|[Nn]ote\s*{n}\s*[.:\-\u2013\u2014)])\s*[A-Z]", normalize(self.lines[ln]))]
             hits = strong or [ln for ln in range(a, b) if self._outside(ln, own) and len(self.lines[ln]) <= 150
                               and head.match(normalize(self.lines[ln])) and _heading_like(re.sub(r"^\W*\d+\W*", "", normalize(self.lines[ln])))]
             if not hits:
                 continue
             s = hits[0]
             cap = next((sp.end for sp in self.spans.values() if sp.start <= s < sp.end), b)
-            e = next((ln for ln in range(s + 1, cap) if len(self.lines[ln]) <= 150 and any_note.match(normalize(self.lines[ln]))
-                      and not head.match(normalize(self.lines[ln]))), cap)
+            style = _note_style(normalize(self.lines[s]))
+
+            def next_note(line: str) -> bool:
+                if not any_note.match(line) or head.match(line):
+                    return False
+                num = re.match(r"\W*(?:NOTE\s*)?(\d{1,2})\b", line, re.I)
+                return _note_style(line) == style or num is None or int(num.group(1)) > int(n)
+            e = next((ln for ln in range(s + 1, cap) if len(self.lines[ln]) <= 150 and next_note(normalize(self.lines[ln]))), cap)
             return [(s, e)]
         return None
 
@@ -171,8 +194,9 @@ class Resolver:
 
     def _statements(self, iid, pointer, own):
         """The financial-statement pages: from their opener to the last F-page footer, else to the exhibit
-        index, SIGNATURES or the end of the document."""
-        if iid not in self.spec.statement_items or (_PAGES.search(pointer) and not _FS_REF.search(pointer)):
+        index, SIGNATURES or the end of the document. A pointer that names a note and no pages means the note."""
+        if iid not in self.spec.statement_items or (_PAGES.search(pointer) and not _FS_REF.search(pointer)) or (
+                _NOTE_REF.search(pointer) and not _PAGES.search(pointer)):
             return None
         back = max(sp.end for sp in self.spans.values())
         docs = self.ex13 if self.ex13 and _ANNUAL.search(pointer) else [0] + self.ex13
@@ -192,15 +216,19 @@ class Resolver:
         a caption with no pages runs to the next heading of the same style."""
         caps = [(m.group("c") or m.group("d") or "").strip(" .,;") for m in _CAPTION.finditer(pointer)]
         caps = [c for c in caps if len(_words(c).split()) >= 2 and not re.match(r"(?i)item\s+\d", c)]
-        pages = [(m.group("a").replace(" ", "").upper(), (m.group("b") or m.group("a")).replace(" ", "").upper())
-                 for m in _PAGES.finditer(pointer)]
+        pages = [(s["a"].replace(" ", "").upper(), (s["b"] or s["a"]).replace(" ", "").upper())
+                 for m in _PAGES.finditer(pointer) for s in _PAGE_SPAN.finditer(m["list"])]
+        pages = [(a, f"F-{b}" if a.startswith("F-") and b.isdigit() else b) for a, b in pages]
         for d in self._docs_for(pointer):
             out = []
             confirmed = not (caps and pages)
+            missing = False
             for lo, hi in pages:
                 rng = self.pages.page_range(d, lo, hi)
                 if rng:
                     out.append(rng)
+                else:
+                    missing = True
             for cap in caps:
                 w = _words(cap)
                 a, b = self.rendering.doc_range(d)
@@ -219,6 +247,6 @@ class Resolver:
                             and sum(ch.isalpha() for ch in self.lines[ln]) >= 8 and not normalize(self.lines[ln]).startswith("(")
                             and any(len(x) >= 80 and " | " not in x for x in self.lines[ln + 1:ln + 3])), b)
                 out.append((hit, end))
-            if out and confirmed:
+            if out and confirmed and not missing:
                 return sorted(set(out))
         return None

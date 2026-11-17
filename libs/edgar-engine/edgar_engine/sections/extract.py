@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _OPEN = re.compile(r"<DOCUMENT>", re.I)
 _CLOSE = re.compile(r"</DOCUMENT>", re.I)
+_ITEM_HEADING = re.compile(r"\W*(?:PART\s+[IV]+\W*)?ITEMS?\b", re.I)
 _SUBMISSION_OPEN = re.compile(r"<SEC-DOCUMENT>", re.I)
 _SUBMISSION_CLOSE = re.compile(r"</SEC-DOCUMENT>", re.I)
 
@@ -60,8 +61,7 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
         span = rendering.span(sp.start, sp.end)
         text = full[span.start:span.end].rstrip("\n")
         status, target = sp.status, None
-        body = "\n".join(lines[sp.start + 1:sp.end]) or lines[sp.start]
-        if status == "present" and spec.stubs and is_stub(body):
+        if status == "present" and spec.stubs and is_stub(_body(lines, sp.start, sp.end, spec)):
             status, target = "stub", resolver.resolve(iid, text, (sp.start, sp.end)).to_target(rendering)
         items[iid] = Section(item=iid, status=status, text=text, start=span.start, end=span.end,
                              heading=lines[sp.heading_line] if sp.heading_line >= 0 else "",
@@ -74,15 +74,26 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
                           items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
 
 
+def _body(lines: list[str], start: int, end: int, spec) -> str:
+    """An item's text below its heading, which is what makes it a stub or not."""
+    headed = spec.titled or _ITEM_HEADING.match(lines[start])
+    return "\n".join(lines[start + (1 if headed else 0):end]) or lines[start]
+
+
 def _retarget(items: dict[str, Section], resolved: list[str], rendering, layout, resolver: Resolver) -> None:
     """Stub targets resolved before a cross-reference index cut short the items they point at, resolved again
-    over the items as cut, so a target never carries the next item's pages."""
+    over the items as cut, so a target never carries the next item's pages. An item the index cut down to a
+    pointer becomes a stub."""
     cut = {iid: rendering.line_at(s.end) for iid, s in items.items() if iid in layout.spans and s.status == "present"
            and s.end < rendering.offsets[layout.spans[iid].end]}
     if not cut:
         return
+    spec = resolver.spec
     for iid, line in cut.items():
         layout.spans[iid].end = line
+        if spec.stubs and is_stub(_body(rendering.lines, layout.spans[iid].start, line, spec)):
+            items[iid].status = "stub"
+            resolved.append(iid)
     for iid in resolved:
         s, sp = items.get(iid), layout.spans[iid]
         if s is not None and s.status == "stub":
