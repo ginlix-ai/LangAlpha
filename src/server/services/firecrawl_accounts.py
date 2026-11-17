@@ -180,8 +180,8 @@ def warn_if_discovery_keyless(config: Any) -> None:
     The host lists a built-in's tools once at startup, before any user
     exists, with the headers its ``mcp.json`` names, which for Firecrawl is
     ``FIRECRAWL_API_KEY``. Without a key Firecrawl lists only some of its
-    tools (2 of the 6 offered, missing ``firecrawl_find_tools``, checked
-    2026-11-15), so the server is offered without the rest, though every
+    tools (2 of the 7 offered, missing both catalog tools, checked
+    2026-11-16), so the server is offered without the rest, though every
     call would go out on a per-user key.
     """
     if not env.FIRECRAWL_PLATFORM_KEY or os.getenv("FIRECRAWL_API_KEY"):

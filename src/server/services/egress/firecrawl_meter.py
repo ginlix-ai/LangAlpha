@@ -3,7 +3,7 @@ cost before it runs, what it cost from its reply, and the sources it carries.
 
 Each kind of call is one class holding all three, so a tool's pricing and its
 reply's shape are read side by side. Replies were probed on 2026-10-27:
-catalog calls (``alexandria``) report ``data.creditsCost``; a page scrape
+catalog calls (``alexandria_library_read``) report ``data.creditsCost``; a page scrape
 ``metadata.creditsUsed``; search and crawl a top-level ``creditsUsed``, a
 crawl's being the job's total so far; map reports nothing and costs one credit
 a call.
@@ -53,6 +53,8 @@ MIN_ESTIMATE = 1.0
 CRAWL_PAGE_CAP = 100
 #: Runs one catalog call may carry, as Firecrawl takes them.
 _MAX_RUNS = 10
+#: The free tool that finds a catalog capability, named in refusals.
+_DISCOVERY = "alexandria_library_search"
 # Scalar inputs shown in a catalog source's identifier, so two runs of one
 # capability (two tickers) stay two sources rather than one deck.
 _IDENT_OPTIONS_MAX = 6
@@ -234,28 +236,41 @@ class _Call:
 
 
 class _Catalog(_Call):
-    """``firecrawl_scrape`` with ``alexandria``: one run or a list of 1 to 10,
-    each priced by the catalog, some per record returned."""
+    """``alexandria_library_read``: a list of 1 to 10 runs in ``calls``, each
+    priced by the catalog, some per record returned."""
 
     @staticmethod
     def _runs(arguments: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        runs = arguments.get("alexandria")
-        if isinstance(runs, Mapping):
-            return [runs]
+        runs = arguments.get("calls")
         return [r for r in runs if isinstance(r, Mapping)] if isinstance(runs, list) else []
 
     def refusal(self, arguments):
         # Before any catalog lookup: each run names a provider fetched on its
         # own, so a long or junk list would fan out over the relay's shared
-        # connections. Firecrawl takes at most 10 runs a call.
-        runs = arguments.get("alexandria")
-        if isinstance(runs, list) and len(runs) > _MAX_RUNS:
+        # connections. Firecrawl takes at most 10 runs a call. A frame whose
+        # runs the meter cannot all read is refused rather than held at the
+        # minimum, since the vendor would run what it can read of it.
+        runs = arguments.get("calls")
+        if (
+            not isinstance(runs, list)
+            or not 0 < len(runs) <= _MAX_RUNS
+            or len(self._runs(arguments)) != len(runs)
+            or "alexandria" in arguments
+        ):
             return RelayRejection(
                 400,
                 RelayError.BAD_REQUEST,
-                f"firecrawl_scrape takes at most {_MAX_RUNS} catalog runs in one call",
+                f"alexandria_library_read takes calls: a list of 1 to {_MAX_RUNS} "
+                "{provider, capability, options} runs",
             )
-        for run in self._runs(arguments):
+        for run in runs:
+            if run.get("version") is not None:
+                # The catalog prices a capability's current version only.
+                return RelayRejection(
+                    400,
+                    RelayError.BAD_REQUEST,
+                    "a catalog run's version cannot be priced; omit it to run the latest",
+                )
             provider = run.get("provider")
             if not isinstance(provider, str) or not firecrawl_catalog.PROVIDER_ID.fullmatch(
                 provider
@@ -264,7 +279,7 @@ class _Catalog(_Call):
                     400,
                     RelayError.BAD_REQUEST,
                     "a catalog run's provider is not a catalog id; "
-                    "find it with firecrawl_find_tools",
+                    f"find it with {_DISCOVERY}",
                 )
         return None
 
@@ -307,7 +322,7 @@ class _Catalog(_Call):
                     400,
                     RelayError.BAD_REQUEST,
                     f"{_shown(provider)}/{_shown(name)} is not in Firecrawl's catalog; "
-                    "find its exact provider and capability with firecrawl_find_tools",
+                    f"find its exact provider and capability with {_DISCOVERY}",
                 )
             options = _mapping(run.get("options"))
             option = capability.records_option or "limit"
@@ -502,7 +517,24 @@ class _Crawl(_Call):
         return [s for page in pages for s in _page_source(page, arguments, share)]
 
 
+class _ScrapeCatalog(_Call):
+    """``firecrawl_scrape`` with ``alexandria`` runs, the catalog's frame
+    until Firecrawl moved it to ``alexandria_library_read`` (2026-11-16) and
+    took the field off scrape's schema. Its server still runs such a frame,
+    but how it bills one sent beside a url was never checked, so it is
+    refused rather than priced as either."""
+
+    def refusal(self, arguments):
+        return RelayRejection(
+            400,
+            RelayError.BAD_REQUEST,
+            "firecrawl_scrape no longer takes catalog runs; "
+            "run them with alexandria_library_read(calls=[...])",
+        )
+
+
 _CALLS: dict[str, _Call] = {
+    "alexandria_library_read": _Catalog(),
     "firecrawl_search": _Search(),
     "firecrawl_map": _Map(),
     "firecrawl_crawl": _Crawl(starts=True),
@@ -520,7 +552,7 @@ class _Unpriced(_Call):
         )
 
 
-_CATALOG, _PAGE, _UNPRICED = _Catalog(), _Page(), _Unpriced()
+_SCRAPE_CATALOG, _PAGE, _UNPRICED = _ScrapeCatalog(), _Page(), _Unpriced()
 
 
 class FirecrawlMeter:
@@ -538,16 +570,16 @@ class FirecrawlMeter:
     @staticmethod
     def _call(tool: str, arguments: Mapping[str, Any]) -> _Call:
         if tool == "firecrawl_scrape":
-            # A catalog call only with runs to make. An empty or falsy
+            # Catalog runs only when there are runs to make. An empty or falsy
             # ``alexandria`` beside a url is priced as the page scrape it
-            # otherwise is, never at the nothing an empty catalog run costs
-            # (Firecrawl refused each such shape when checked, 2026-11-15).
+            # otherwise is (Firecrawl refused each such shape when checked,
+            # 2026-11-15).
             runs = arguments.get("alexandria")
-            return _CATALOG if isinstance(runs, (Mapping, list)) and runs else _PAGE
+            return _SCRAPE_CATALOG if isinstance(runs, (Mapping, list)) and runs else _PAGE
         return _CALLS.get(tool, _UNPRICED)
 
     def is_paid(self, tool: str) -> bool:
-        return tool != "firecrawl_find_tools"
+        return tool != _DISCOVERY
 
     def refusal(self, tool: str, arguments: Mapping[str, Any]) -> RelayRejection | None:
         """Why a call cannot be priced, or None: a crawl needs a page limit,

@@ -21,12 +21,13 @@
       "servers": {
         "firecrawl": {
           "description": "Catalog of structured data providers (transcripts, segment KPIs, analyst ratings, options activity, filing sections, FedWatch, positioning, alternative data) plus web search, scrape, map and crawl from code. Paid per call.",
-          "instruction": "For data: firecrawl_find_tools(query=...) finds a provider tool and shows its inputs and creditsCost (free); firecrawl_scrape(alexandria={\"provider\", \"capability\", \"options\"}) runs it (paid; a list of up to 10 runs several in one call). Prefer the built-in market data servers when they cover the request; use this catalog for what they do not. Read skills/data-catalog/ before first use. For web pages in code: firecrawl_scrape(url=...), firecrawl_search, firecrawl_map, firecrawl_crawl. Every call except find_tools is charged to the user, and the run's result reports the cost.",
+          "instruction": "For data: alexandria_library_search(command=...) runs read-only shell commands (ls, grep, cat) over the catalog, one contract per capability at /library/<category>/<provider>/<capability>.md naming its inputs (free); alexandria_library_read(calls=[{\"provider\", \"capability\", \"options\"}]) runs up to 10 of them (paid). Prefer the built-in market data servers when they cover the request; use this catalog for what they do not. Read skills/data-catalog/ before first use, for prices. For web pages in code: firecrawl_scrape(url=...), firecrawl_search, firecrawl_map, firecrawl_crawl. Every call except alexandria_library_search is charged to the user, and the run's result reports the cost.",
           "tool_exposure_mode": "summary",
           "icon": "firecrawl.dev",
           "auth": "firecrawl_account",
           "tools": [
-            "firecrawl_find_tools",
+            "alexandria_library_search",
+            "alexandria_library_read",
             "firecrawl_scrape",
             "firecrawl_search",
             "firecrawl_map",

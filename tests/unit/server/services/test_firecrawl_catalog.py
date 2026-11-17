@@ -127,12 +127,36 @@ def test_a_long_or_junk_run_list_is_refused_before_any_lookup():
     from src.server.services.egress.firecrawl_meter import FirecrawlMeter
 
     meter = FirecrawlMeter()
-    many = {"alexandria": [{"provider": f"p{i}", "capability": "c"} for i in range(11)]}
-    junk = {"alexandria": [{"provider": "../../x?y", "capability": "c"}]}
+    many = {"calls": [{"provider": f"p{i}", "capability": "c"} for i in range(11)]}
+    junk = {"calls": [{"provider": "../../x?y", "capability": "c"}]}
 
     for arguments in (many, junk):
-        refusal = meter.refusal("firecrawl_scrape", arguments)
+        refusal = meter.refusal("alexandria_library_read", arguments)
         assert refusal is not None and refusal.code is RelayError.BAD_REQUEST
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"calls": []},
+        {"calls": {"provider": "acme", "capability": "c"}},
+        {"calls": [{"provider": "acme", "capability": "c"}, "junk"]},
+        {"calls": [{"provider": "acme", "capability": "c"}],
+         "alexandria": [{"provider": "acme", "capability": "big"}]},
+        {"calls": [{"provider": "acme", "capability": "c", "version": "v1"}]},
+    ],
+    ids=["no-calls", "empty", "not-a-list", "unreadable-run", "second-key", "pinned-version"],
+)
+def test_a_catalog_frame_the_meter_cannot_fully_price_is_refused(arguments):
+    """Each was held at the one-credit minimum while Firecrawl could run
+    more than the meter read: a run it skipped, runs under a key it does
+    not read, or a pinned version priced at the current one's price."""
+    from src.server.services.egress import RelayError
+    from src.server.services.egress.firecrawl_meter import FirecrawlMeter
+
+    refusal = FirecrawlMeter().refusal("alexandria_library_read", arguments)
+    assert refusal is not None and refusal.code is RelayError.BAD_REQUEST
 
 
 @pytest.mark.asyncio
@@ -232,13 +256,13 @@ def test_a_runs_identifier_is_redacted_as_its_args_are():
 
     catalog = {"acme": Provider(name="Acme", domain="acme.example", capabilities={
         "quotes": Capability(name="Quotes", credits_cost=1.0, per_record=False)})}
-    arguments = {"alexandria": {"provider": "acme", "capability": "quotes",
-                                "options": {"ticker": "AAPL", "api_key": "sk-live-123"}}}
+    arguments = {"calls": [{"provider": "acme", "capability": "quotes",
+                            "options": {"ticker": "AAPL", "api_key": "sk-live-123"}}]}
     result = {"data": {"alexandria": [
         {"provider": "acme", "capability": "quotes", "data": {"px": 1}}]}}
 
     sources, _ = FirecrawlMeter().sources(
-        "firecrawl_scrape", arguments, result, catalog=catalog, call_cost=1.0
+        "alexandria_library_read", arguments, result, catalog=catalog, call_cost=1.0
     )
 
     assert "sk-live-123" not in sources[0].identifier
@@ -253,7 +277,7 @@ def test_a_catalog_calls_sources_add_up_to_its_rounded_charge():
     catalog = {"acme": Provider(name="Acme", domain="acme.example", capabilities={
         "quotes": Capability(name="Quotes", credits_cost=0.5, per_record=False),
         "news": Capability(name="News", credits_cost=0.25, per_record=False)})}
-    arguments = {"alexandria": [
+    arguments = {"calls": [
         {"provider": "acme", "capability": "quotes", "options": {"ticker": "AAPL"}},
         {"provider": "acme", "capability": "news", "options": {"ticker": "AAPL"}},
     ]}
@@ -263,7 +287,7 @@ def test_a_catalog_calls_sources_add_up_to_its_rounded_charge():
     ]}}
 
     sources, _ = FirecrawlMeter().sources(
-        "firecrawl_scrape", arguments, result, catalog=catalog, call_cost=1.0
+        "alexandria_library_read", arguments, result, catalog=catalog, call_cost=1.0
     )
 
     assert [s.vendor_credits for s in sources] == pytest.approx([2 / 3, 1 / 3])
