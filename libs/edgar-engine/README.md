@@ -83,8 +83,9 @@ entries and is not cached itself.
 
 `edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks an
 original filing for any period, not only the latest; its amendments are read with `get_sections`. Fiscal
-labels come from the filer's own XBRL facts where they exist
-and from the report date and fiscal year end otherwise. `edgar_engine.cache` keys parsed sections and raw
+labels come from the filer's own XBRL facts where they exist, and otherwise from the report date and fiscal
+year end, moved to the filer's XBRL convention (a January year end is the prior fiscal year for some filers and
+the same one for others). `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
 `~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
 Cached sections are keyed by `SECTIONS_VERSION`, so an engine change never serves stale results. Pass

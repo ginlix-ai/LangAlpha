@@ -123,25 +123,73 @@ def refs_from_rows(
     fiscal_year_end: str | None = None,
 ) -> list[FilingRef]:
     """Newest-first refs for the rows of a filings table (accession_number, form, filing_date, reportDate). An annual
-    report the table gives no period of report covers the last fiscal year end before it was filed."""
+    report the table gives no period of report covers the last fiscal year end before it was filed. A quarter is
+    counted from the year end of the next annual report in the table within a year, so a filer that moved its year
+    end keeps its old quarters, and from fiscal_year_end when no annual report follows it. A filing with no
+    XBRL label is labeled by the period rule, moved by the years the filer's own XBRL labels differ from it on
+    filings with the same year-end month (a January year end is the prior fiscal year for some filers and the
+    same one for others, and a filer that moved its year end may label each convention differently)."""
     wanted = set(forms)
     if amendments:
         wanted |= {f"{f}/A" for f in wanted}
     fiscal_labels = fiscal_labels or {}
-    refs = []
+    rows = list(rows)
+    dated_annual = sorted((str(r["filing_date"]), str(r["reportDate"])) for r in rows if r.get("reportDate")
+                          and not is_amendment(r["form"]) and base_form(r["form"]) in ("10-K", "20-F", "40-F"))
+    annual_ends = sorted({end for _, end in dated_annual})
+
+    def undated_year_end(filing_date: str) -> str | None:
+        """The year end of the annual report filed nearest to filing_date when it ends in another month than
+        fiscal_year_end, so a filer that moved its year end keeps its old years."""
+        if not dated_annual:
+            return fiscal_year_end
+        filed = date.fromisoformat(filing_date)
+        _, end = min(dated_annual, key=lambda d: abs((date.fromisoformat(d[0]) - filed).days))
+        if fiscal_year_end and fiscal_year_end[:2] == end[5:7]:
+            return fiscal_year_end
+        return f"{end[5:7]}{end[8:10]}"
+
+    def year_end_for(form: str, report_date: str | None) -> str | None:
+        if not report_date or form.startswith(("10-K", "20-F", "40-F")):
+            return fiscal_year_end
+        within = (date.fromisoformat(report_date) + timedelta(days=380)).isoformat()
+        end = next((e for e in annual_ends if report_date <= e <= within), None)
+        return f"{end[5:7]}{end[8:10]}" if end else fiscal_year_end
+
+    picked = []
     for row in rows:
         form, accession = row["form"], row["accession_number"]
         filing_date = str(row["filing_date"])
         if form not in wanted or (filed_on_or_before and filing_date > filed_on_or_before):
             continue
         report_date = str(row.get("reportDate") or "") or None
-        if report_date is None and base_form(form) in ("10-K", "20-F", "40-F") and fiscal_year_end:
-            report_date = _last_year_end(filing_date, fiscal_year_end)
-        label = fiscal_labels.get((accession, form))
-        source = "xbrl" if label else None
-        if label is None and report_date:
-            label, source = period_rule(form, report_date, fiscal_year_end), "period_rule"
-        year, period = label or (None, None)
+        if report_date is None and not is_amendment(form) and base_form(form) in ("10-K", "20-F", "40-F") \
+                and (year_end := undated_year_end(filing_date)):
+            report_date = _last_year_end(filing_date, year_end)
+        rule = period_rule(form, report_date, year_end_for(form, report_date)) if report_date else None
+        picked.append((form, accession, filing_date, report_date, fiscal_labels.get((accession, form)), rule))
+
+    def year_end_month(form: str, report_date: str | None) -> int | None:
+        fye = year_end_for(form, report_date)
+        if form.startswith(("10-K", "20-F", "40-F")) and report_date:
+            end = date.fromisoformat(report_date)
+        elif fye:
+            end = _on(2001, int(fye[:2]), int(fye[2:]))
+        else:
+            return None
+        return (end - timedelta(days=21)).month
+
+    shifts: dict[int | None, int] = {}
+    for key in {year_end_month(form, report_date) for form, _, _, report_date, label, rule in picked if rule and not label}:
+        labeled = [(form, label[0] - rule[0]) for form, _, _, report_date, label, rule in picked
+                   if label and rule and year_end_month(form, report_date) == key]
+        counts = Counter(s for form, s in labeled if not is_amendment(form)) or Counter(s for _, s in labeled)
+        shifts[key] = counts.most_common(1)[0][0] if counts else 0
+    refs = []
+    for form, accession, filing_date, report_date, label, rule in picked:
+        source = "xbrl" if label else "period_rule" if rule else None
+        shift = shifts.get(year_end_month(form, report_date), 0)
+        year, period = label or ((rule[0] + shift, rule[1]) if rule else (None, None))
         refs.append(FilingRef(cik, accession, form, filing_date, report_date, year, period, source))
     return sorted(link_amendments(refs), key=filing_order, reverse=True)
 
@@ -213,7 +261,8 @@ def list_filings(
     """Filings of a form, newest first. company is a ticker, a CIK (int or str) or an edgar.Company."""
     company = _company(company)
     forms = filed_forms(form)
-    filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms)] if amendments else list(forms))
+    annual = filed_forms("10-K") if base_form(form) == "10-Q" else ()
+    filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms), *annual] if amendments else [*forms, *annual])
     if filings is None or filings.data.num_rows == 0:
         return []
     fiscal_year_end = getattr(company, "fiscal_year_end", None)

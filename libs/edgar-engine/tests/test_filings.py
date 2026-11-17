@@ -64,12 +64,47 @@ def test_unlabelled_filing_falls_back_to_period_rule():
     assert (old.fiscal_year, old.fiscal_period, old.fiscal_source) == (2022, "FY", "period_rule")
 
 
+def test_unlabelled_years_follow_the_filers_own_xbrl_convention():
+    rows = [row("0001234567-11-000001", "10-K", "2011-03-25", "2011-01-29"),
+            row("0001234567-10-000001", "10-K", "2010-03-26", "2010-01-30"),
+            row("0001234567-09-000001", "10-K", "2009-03-27", "2009-01-31")]
+    labels = {("0001234567-11-000001", "10-K"): (2010, "FY"), ("0001234567-10-000001", "10-K"): (2009, "FY")}
+    got = refs_from_rows(rows, CIK, ["10-K"], fiscal_labels=labels, fiscal_year_end="0131")
+    assert [(r.fiscal_year, r.fiscal_source) for r in got] == [(2010, "xbrl"), (2009, "xbrl"), (2008, "period_rule")]
+    assert pick_ref(got, fiscal_year=2008).accession == "0001234567-09-000001"
+
+
+def test_a_moved_year_end_shifts_only_unlabelled_years_with_the_same_year_end_month():
+    rows = [row("0001234567-11-000001", "10-K", "2011-03-25", "2011-01-29"),
+            row("0001234567-10-000001", "10-K", "2010-03-26", "2010-01-30"),
+            row("0001234567-01-000001", "10-K", "2001-03-27", "2000-12-31")]
+    labels = {("0001234567-11-000001", "10-K"): (2010, "FY"), ("0001234567-10-000001", "10-K"): (2009, "FY")}
+    got = refs_from_rows(rows, CIK, ["10-K"], fiscal_labels=labels, fiscal_year_end="0131")
+    assert [(r.fiscal_year, r.fiscal_source) for r in got] == [(2010, "xbrl"), (2009, "xbrl"), (2000, "period_rule")]
+
+
+def test_an_old_quarter_counts_from_the_year_end_of_its_own_annual_report():
+    rows = [row("0001234567-09-000001", "10-K", "2008-09-10", "2008-06-30"),
+            row("0001234567-06-000001", "10-K", "2006-03-10", "2005-12-31"),
+            row("0001234567-05-000002", "10-Q", "2005-05-10", "2005-03-31")]
+    got = refs_from_rows(rows, CIK, ["10-Q"], fiscal_year_end="0630")
+    assert [(r.accession, r.fiscal_year, r.fiscal_period) for r in got] == [("0001234567-05-000002", 2005, "Q1")]
+
+
 def test_annual_report_without_report_date_covers_the_last_fiscal_year_end_before_it():
     got = refs_from_rows([row("0001234567-09-000001", "40-F", "2009-03-30", ""),
                           row("0001234567-09-000002", "40-F/A", "2009-04-15", "2008-12-31")],
                          CIK, ["40-F"], amendments=True, fiscal_year_end="1231")
     assert [(r.report_date, r.fiscal_year, r.amends) for r in got] == [
         ("2008-12-31", 2008, "0001234567-09-000001"), ("2008-12-31", 2008, None)]
+
+
+def test_undated_annual_report_takes_the_year_end_of_the_annual_report_filed_nearest_it():
+    got = refs_from_rows([row("0001234567-01-000001", "10-K", "2001-03-20", ""),
+                          row("0001234567-02-000001", "10-K", "2002-03-25", "2001-12-31"),
+                          row("0001234567-10-000001", "10-K", "2010-09-10", "2010-06-30")],
+                         CIK, ["10-K"], fiscal_year_end="0630")
+    assert [r.report_date for r in got] == ["2010-06-30", "2001-12-31", "2000-12-31"]
 
 
 def test_filing_without_report_date_has_no_label():
@@ -185,3 +220,15 @@ def test_select_filing_live_uses_companyfacts():
     assert ref is not None
     assert (ref.accession, ref.fiscal_year, ref.fiscal_period, ref.fiscal_source) == ("0000320193-23-000106", 2023, "FY", "xbrl")
     assert ref.report_date == "2023-09-30"
+
+
+def test_the_year_shift_is_learned_from_originals_before_amendments():
+    rows = [row("0001234567-11-000001", "10-K", "2011-03-25", "2011-01-29"),
+            row("0001234567-11-000002", "10-K/A", "2011-06-01", "2011-01-29"),
+            row("0001234567-10-000001", "10-K", "2010-03-26", "2010-01-30"),
+            row("0001234567-10-000002", "10-K/A", "2010-06-01", "2010-01-30"),
+            row("0001234567-09-000001", "10-K", "2009-03-27", "2009-01-31")]
+    labels = {("0001234567-11-000001", "10-K"): (2010, "FY"), ("0001234567-11-000002", "10-K/A"): (2011, "FY"),
+              ("0001234567-10-000002", "10-K/A"): (2010, "FY")}
+    got = refs_from_rows(rows, CIK, ["10-K"], amendments=True, fiscal_labels=labels, fiscal_year_end="0131")
+    assert next(r for r in got if r.accession == "0001234567-09-000001").fiscal_year == 2008
