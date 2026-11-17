@@ -327,13 +327,21 @@ def _parse_sse_string(raw: str) -> tuple[str, dict] | None:
         return None
 
 
+_TRUNCATED = "\n\n[truncated — full output available in workspace]"
+
+
 def _truncate_single(text: str) -> str:
     """Head-truncate one turn's text to ``MAX_OUTPUT_CHARS`` (keeps the start)."""
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    return text[:MAX_OUTPUT_CHARS] + (
-        "\n\n[truncated — full output available in workspace]"
-    )
+    return text[:MAX_OUTPUT_CHARS] + _TRUNCATED
+
+
+def _truncate_within(text: str, size: int) -> str:
+    """``text`` head-truncated so that it, marker included, fits ``size``."""
+    if len(text) <= size:
+        return text
+    return text[: max(size - len(_TRUNCATED), 0)] + _TRUNCATED
 
 
 def _join_recent_turns(turn_texts: list[str]) -> str:
@@ -445,14 +453,21 @@ async def extract_text_from_thread(
         )
     else:
         runs = await _runs_to_read(thread_id, turns)
-        text = _join_recent_turns([
+        blocks = [
             _run_block(
                 run,
                 _qualify_file_paths(run["main_text"], workspace_id, *where),
                 zone,
             )
             for run in runs
-        ])
+        ]
+        if turns == 1 and len(blocks) == 2:
+            # A newest run with no text, read with the last run that had some:
+            # that run's text is what the read is for, so it is cut to the
+            # room the newest run's label leaves rather than dropped whole.
+            room = MAX_OUTPUT_CHARS - len(blocks[1]) - len(_TURN_SEPARATOR)
+            blocks[0] = _truncate_within(blocks[0], room)
+        text = _join_recent_turns(blocks)
 
     return ThreadOutput(workspace_id=workspace_id or None, status=status, text=text)
 
