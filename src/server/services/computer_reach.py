@@ -32,6 +32,7 @@ from ptc_agent.core.project_context import (
     MachinePaths,
     ProjectContext,
     context_without_project,
+    current_project,
     project_bound,
 )
 from ptc_agent.core.sandbox.files import FileOverCap
@@ -246,6 +247,25 @@ class TurnComputers:
             return None
         target, _ = await self._at(row)
         return target
+
+    async def target(self, computer: str | None) -> ComputerTarget:
+        if computer and computer.strip() and (reached := await self.reach(computer)):
+            return reached
+        return await self._here()
+
+    async def _here(self) -> ComputerTarget:
+        """The turn's own computer, read from Home's folder as its tools read it."""
+        sandbox = self._own_session.sandbox
+        assert sandbox is not None, "the turn's own computer has no sandbox"
+        rows = await get_computer_roster(self._user_id)
+        own = next((r for r in rows if str(r["computer_id"]) == self._own), None)
+        return ComputerTarget(
+            computer_id=self._own or "",
+            name=_label(own) if own is not None else "this computer",
+            session=self._own_session,
+            project=current_project() or ProjectContext(workspace_id="", dir_name=None),
+            root=sandbox.layout.root,
+        )
 
     async def _at(self, row: Mapping[str, Any]) -> tuple[ComputerTarget, dict[str, str]]:
         """``row``'s computer, awake, as a call from Home reaches it, and the
