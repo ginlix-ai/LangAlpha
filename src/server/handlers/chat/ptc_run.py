@@ -495,7 +495,7 @@ async def astream_ptc_workflow(
                 turn_attachments = await resolve_turn_attachments(
                     request.additional_context, user_id
                 )
-                await refuse_too_large(turn_attachments, user_id, workspace_id)
+                await refuse_too_large(turn_attachments, user_id, runs_in)
                 # A retry writes no query row, so a second upload would be
                 # stored for nothing.
                 if turn_attachments and not request.retry_of_run_id:

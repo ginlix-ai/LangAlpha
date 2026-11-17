@@ -528,3 +528,21 @@ async def test_a_relay_upload_starts_with_time_for_its_bytes_to_arrive():
 
     ttl = created.await_args.kwargs["ttl"]
     assert ttl >= svc.IDLE_TTL + timedelta(hours=2)
+
+
+async def test_a_home_turn_in_a_cloud_stand_in_is_judged_by_the_stand_in_not_home():
+    """Home is on ssh, which cannot pull a large file; the stand-in a Home turn
+    runs in is on a cloud kind, which can. ``computer_takes_large`` reads the
+    row it is given, so ptc_run must hand it the workspace the turn runs in."""
+    from src.server.services import chat_attachments as svc
+
+    rows = {
+        "home-ws": {"user_id": USER, "computer_kind": "ssh"},
+        "stand-in-ws": {"user_id": USER, "computer_kind": "daytona"},
+    }
+    with (
+        patch.object(svc, "get_workspace", AsyncMock(side_effect=lambda wid: rows[wid])),
+        patch.object(svc, "kind_pulls_from_store", MagicMock(side_effect=lambda k: k != "ssh")),
+    ):
+        assert await svc.computer_takes_large(USER, "home-ws") is False
+        assert await svc.computer_takes_large(USER, "stand-in-ws") is True
