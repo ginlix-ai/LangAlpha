@@ -34,7 +34,7 @@ class TestGetInputModalities:
         assert "image" in result
 
     def test_glm_text_only(self, model_config):
-        result = model_config.get_input_modalities("glm-5.2")
+        result = model_config.get_input_modalities("glm-5.3")
         assert result == ["text"]
 
     def test_minimax_m3_supports_image(self, model_config):

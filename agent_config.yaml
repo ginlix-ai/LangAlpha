@@ -13,7 +13,7 @@ llm:
   fetch: ""         # blank → the background model
   fallback:
     - "deepseek-flash"
-    - "glm-5.2"
+    - "glm-5.3"
 
 sandbox:
   # Provider selection: "daytona" or "e2b" (cloud), or "docker" (local).

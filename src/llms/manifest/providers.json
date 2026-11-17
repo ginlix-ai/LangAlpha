@@ -448,10 +448,45 @@
         "max_output": 500000
       },
       {
+        "id": "grok-build-0.1",
+        "name": "Grok Build",
+        "is_reasoning": true,
+        "description": "SpaceXSI's coding model; a request of 200k tokens or more bills at twice the rate",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 200000,
+              "rate": 1.0,
+              "cached_input": 0.2
+            },
+            {
+              "max_tokens": null,
+              "rate": 2.0,
+              "cached_input": 0.4
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 200000,
+              "rate": 2.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 4.0
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        },
+        "context_window": 256000,
+        "max_output": 256000
+      },
+      {
         "id": "grok-4.5",
         "name": "Grok 4.5",
         "is_reasoning": true,
-        "description": "SpaceXSI reasoning model; a request of 200k tokens or more bills at twice the rate",
+        "description": "Retired 2026-11-17, superseded by grok-4.7. Kept until the next retirement so a custom model on this id still bills.",
         "pricing": {
           "input_tiers": [
             {
@@ -486,7 +521,7 @@
         "id": "grok-4.3",
         "name": "Grok 4.3",
         "is_reasoning": true,
-        "description": "SpaceXSI's lower-cost 1M-context reasoning model; a request of 200k tokens or more bills at twice the rate",
+        "description": "Retired 2026-11-17, superseded by grok-4.7. Kept until the next retirement so a custom model on this id still bills.",
         "pricing": {
           "input_tiers": [
             {
@@ -516,41 +551,6 @@
         },
         "context_window": 1000000,
         "max_output": 1000000
-      },
-      {
-        "id": "grok-build-0.1",
-        "name": "Grok Build",
-        "is_reasoning": true,
-        "description": "SpaceXSI's coding model; a request of 200k tokens or more bills at twice the rate",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 1.0,
-              "cached_input": 0.2
-            },
-            {
-              "max_tokens": null,
-              "rate": 2.0,
-              "cached_input": 0.4
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 2.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 4.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 256000,
-        "max_output": 256000
       }
     ],
     "lm-studio": [],
@@ -602,18 +602,6 @@
     "vllm": [],
     "z-ai": [
       {
-        "id": "glm-5.2",
-        "name": "GLM-5.2",
-        "is_reasoning": true,
-        "description": "Z.AI's flagship GLM-5.2 model with 1M context and extended thinking",
-        "pricing": {
-          "input": 1.4,
-          "cached_input": 0.26,
-          "output": 4.4,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
         "id": "glm-5.3",
         "name": "GLM-5.3",
         "is_reasoning": true,
@@ -648,21 +636,21 @@
           "output": 2.2,
           "unit": "per_1m_tokens"
         }
-      }
-    ],
-    "z-ai-cn": [
+      },
       {
         "id": "glm-5.2",
         "name": "GLM-5.2",
         "is_reasoning": true,
-        "description": "Z.AI's flagship GLM-5.2 model with 1M context, flat domestic pricing",
+        "description": "Retired 2026-11-17, superseded by glm-5.3. Kept until the next retirement so a custom model on this id still bills.",
         "pricing": {
-          "input": 1.14,
-          "cached_input": 0.29,
-          "output": 4.0,
+          "input": 1.4,
+          "cached_input": 0.26,
+          "output": 4.4,
           "unit": "per_1m_tokens"
         }
-      },
+      }
+    ],
+    "z-ai-cn": [
       {
         "id": "glm-5.3",
         "name": "GLM-5.3",
@@ -718,6 +706,18 @@
               "cached_input": 0.11
             }
           ],
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "is_reasoning": true,
+        "description": "Retired 2026-11-17, superseded by glm-5.3. Kept until the next retirement so a custom model on this id still bills.",
+        "pricing": {
+          "input": 1.14,
+          "cached_input": 0.29,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -980,7 +980,7 @@
           "output": 15.0,
           "unit": "per_1m_tokens"
         },
-        "description": "Kimi K3 on a Kimi Code plan"
+        "description": "Retired 2026-11-17, superseded by k3.1-pro. Kept until the next retirement so a custom model on this id still bills."
       }
     ],
     "cerebras": [

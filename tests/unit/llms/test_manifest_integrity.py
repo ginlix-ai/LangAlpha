@@ -20,9 +20,7 @@ _REPO = Path(__file__).resolve().parents[3]
 #: Keys that ship with no price card today. Leaving this set means gaining a
 #: card; joining it is a decision, which is the point: a retirement that drops
 #: a card some key still points at lands here instead of billing that key at $0.
-_UNPRICED_KEYS = frozenset({
-    "gpt-5.3-codex-spark-oauth",
-})
+_UNPRICED_KEYS: frozenset[str] = frozenset()
 
 
 def _shipped_default_models() -> list[tuple[str, str]]:

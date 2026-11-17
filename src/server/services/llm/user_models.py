@@ -270,7 +270,7 @@ async def classify_model(
 
     Custom is checked first. When a user's ``custom_models`` entry shadows a
     built-in of the same name, the custom entry wins — lets users route a
-    built-in model name (e.g. ``glm-5.2``) through a variant's own key.
+    built-in model name (e.g. ``glm-5.3``) through a variant's own key.
     ``_pref_cache`` keeps the chat hot path free of extra DB reads.
     """
     from src.llms.llm import LLM as LLMFactory

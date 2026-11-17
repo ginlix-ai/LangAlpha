@@ -8,7 +8,7 @@ from src.llms.model_spec import profile_overrides
 from src.llms.vendor.langchain_zai import ChatZai
 
 
-def _build_glm_client(model: str = "glm-5.2") -> ChatZai:
+def _build_glm_client(model: str = "glm-5.3") -> ChatZai:
     """Construct the GLM client from the real manifest with a fake key (no network)."""
     return LLM(model, api_key="test-key").get_llm()
 
@@ -47,10 +47,10 @@ class TestGlmSdkDispatch:
     """get_llm() with sdk="glm" must build the vendored ChatZai client."""
 
     def test_glm_model_builds_chatzai(self):
-        """glm-5.2 (provider z-ai, sdk glm) dispatches to ChatZai."""
+        """glm-5.3 (provider z-ai, sdk glm) dispatches to ChatZai."""
         client = _build_glm_client()
         assert isinstance(client, ChatZai)
-        assert client.model_name == "glm-5.2"
+        assert client.model_name == "glm-5.3"
 
 
 class TestGlmParameterPlumbThrough:
@@ -58,7 +58,7 @@ class TestGlmParameterPlumbThrough:
 
     def test_manifest_max_tokens_reaches_client(self):
         """parameters.max_tokens from models.json lands on the client."""
-        model_info = LLM.get_model_config().get_model_config("glm-5.2")
+        model_info = LLM.get_model_config().get_model_config("glm-5.3")
         client = _build_glm_client()
         assert client.max_tokens == model_info["parameters"]["max_tokens"]
 
@@ -74,7 +74,7 @@ class TestGlmProfileOverlay:
 
     def test_profile_matches_manifest_limits(self):
         """profile max_input/max_output tokens come from manifest context/parameters."""
-        model_info = LLM.get_model_config().get_model_config("glm-5.2")
+        model_info = LLM.get_model_config().get_model_config("glm-5.3")
         client = _build_glm_client()
         assert client.profile["max_input_tokens"] == model_info["context"]
         assert client.profile["max_output_tokens"] == model_info["parameters"]["max_tokens"]
@@ -134,9 +134,9 @@ class TestManifestIsolation:
 
     def test_reasoning_effort_does_not_contaminate_manifest(self):
         """A reasoning_effort override mutates the instance copy, not the manifest."""
-        manifest_entry = LLM.get_model_config().get_model_config("glm-5.2")
+        manifest_entry = LLM.get_model_config().get_model_config("glm-5.3")
         before = copy.deepcopy(manifest_entry.get("extra_body"))
 
-        LLM("glm-5.2", api_key="test-key", reasoning_effort="low")
+        LLM("glm-5.3", api_key="test-key", reasoning_effort="low")
 
         assert manifest_entry.get("extra_body") == before

@@ -394,13 +394,13 @@ class TestResolveModalities:
         mw = MultimodalStripMiddleware(model_name="gpt-6.2-sol")
         # Configured for a vision model, but resilience substituted a text-only
         # client; judging on the configured name would replay image blocks at it.
-        assert mw._resolve_target(_request("glm-5.2"))[1] == ["text"]
+        assert mw._resolve_target(_request("glm-5.3"))[1] == ["text"]
 
     def test_custom_modalities_apply_only_to_the_configured_model(self):
         mw = MultimodalStripMiddleware(model_name="my-custom-vlm", custom_modalities=["text", "image"])
         assert mw._resolve_target(_request("my-custom-vlm"))[1] == ["text", "image"]
         # A fallback is a different model — the override must not follow it over.
-        assert mw._resolve_target(_request("glm-5.2"))[1] == ["text"]
+        assert mw._resolve_target(_request("glm-5.3"))[1] == ["text"]
 
     def test_an_unstamped_client_is_text_only_even_under_a_vision_parent(self):
         """Regression: a bare-string subagent resolves via ``init_chat_model`` and
@@ -436,7 +436,7 @@ class TestReceives:
     IMAGE = {"type": "image", "base64": "iVBORw0KGgo=", "mime_type": "image/png"}
 
     def test_a_text_only_model_is_sent_neither(self):
-        receives = MultimodalStripMiddleware().receives(_request("glm-5.2").model)
+        receives = MultimodalStripMiddleware().receives(_request("glm-5.3").model)
         assert not receives(self.PDF) and not receives(self.IMAGE)
         assert receives({"type": "text", "text": "x"})
 
@@ -446,8 +446,8 @@ class TestReceives:
         assert not receives({**self.PDF, "pages": 142})  # over its 100 pages
 
     def test_an_override_applies_to_the_configured_model_only(self):
-        mw = MultimodalStripMiddleware(model_name="glm-5.2", custom_modalities=["text", "image"])
-        assert mw.receives(_request("glm-5.2").model)(self.IMAGE)
+        mw = MultimodalStripMiddleware(model_name="glm-5.3", custom_modalities=["text", "image"])
+        assert mw.receives(_request("glm-5.3").model)(self.IMAGE)
         assert not mw.receives(_request(None).model)(self.IMAGE)
 
 
@@ -508,7 +508,7 @@ class TestAwrapModelCall:
             return "ok"
 
         history = self._image_history()
-        request = _ModelCallRequest("glm-5.2", history)
+        request = _ModelCallRequest("glm-5.3", history)
         await MultimodalStripMiddleware().awrap_model_call(request, handler)
 
         forwarded = seen["request"]
@@ -526,7 +526,7 @@ class TestAwrapModelCall:
             seen["request"] = request
             return "ok"
 
-        request = _ModelCallRequest("glm-5.2", [HumanMessage(content="plain text")])
+        request = _ModelCallRequest("glm-5.3", [HumanMessage(content="plain text")])
         await MultimodalStripMiddleware().awrap_model_call(request, handler)
         assert seen["request"] is request
 
@@ -542,7 +542,7 @@ class TestManifestModelStampRoundTrip:
 
         # Configured for a text-only model, handed a vision client: the stamp is
         # what must win, which only works if both sides name the same key.
-        mw = MultimodalStripMiddleware(model_name="glm-5.2")
+        mw = MultimodalStripMiddleware(model_name="glm-5.3")
         _, modalities = mw._resolve_target(types.SimpleNamespace(model=client))
         assert "image" in modalities
 
@@ -562,7 +562,7 @@ class TestTheGuidanceRidesInThePlaceholder:
     untouched so the cached prefix does not move on that call."""
 
     def _request(self):
-        return _ModelCallRequest("glm-5.2", [
+        return _ModelCallRequest("glm-5.3", [
             HumanMessage(content=[
                 {"type": "text", "text": "Look at this"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},

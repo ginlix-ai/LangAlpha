@@ -112,7 +112,7 @@ class TestValidateCustomModels:
         """Custom model name may collide with a built-in — the resolver
         checks custom first, so the user's entry shadows the built-in. This
         is the normal path for routing built-in model names (e.g.
-        ``glm-5.2``) through a user's variant-specific key."""
+        ``glm-5.3``) through a user's variant-specific key."""
         mc = _mock_model_config(system_models={"gpt-4o": {"model_id": "gpt-4o"}})
         # Should not raise.
         self._validate(
