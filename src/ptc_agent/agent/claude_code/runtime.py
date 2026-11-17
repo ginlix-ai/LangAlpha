@@ -29,9 +29,10 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from functools import partial
 from itertools import pairwise
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -69,7 +70,7 @@ from ptc_agent.agent.claude_code.compaction import (
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
 from ptc_agent.agent.claude_code.plan import PlanWatch
-from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
+from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, DeltaJoin, anthropic_content
 from ptc_agent.agent.claude_code.session import (
     ENDED,
     RULES_KEY,
@@ -200,7 +201,12 @@ class ClaudeCodeState(StandingApprovalState, MainAgentState):
     _claude_code_rules: NotRequired[dict[str, Any]]
 
 
-_END = object()
+class _End(Enum):
+    END = auto()
+
+
+#: The run's end, after its last event.
+_END = _End.END
 
 
 @dataclass(frozen=True)
@@ -210,6 +216,11 @@ class _Compacting:
 
     boundary: str | None = None
     error: str | None = None
+
+
+#: What the run's queue carries: the CLI's raw stream events, a compaction
+#: it makes, and the run's end.
+_Event = dict[str, Any] | _Compacting | Literal[_End.END]
 
 
 class _Message:
@@ -223,10 +234,12 @@ class _Message:
         self.restarted = False
         self._first = first
         self._run = run
+        self._join = DeltaJoin(run)
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         item = self._first
         while True:
+            item = await self._join.grow(item)
             yield item
             if item.get("type") == "message_stop":
                 self.stopped = True
@@ -279,8 +292,8 @@ class _Run:
         #: seconds to a minute of prompt processing that a stamp taken at the
         #: response's start would err by.
         self.last_request_at: float | None = None
-        self._events: asyncio.Queue[Any] = asyncio.Queue()
-        self._held: dict[str, Any] | None = None
+        self._events: asyncio.Queue[_Event] = asyncio.Queue()
+        self._held: _Event | None = None
         self._streamed: set[str] = set()
         self._assistant: dict[str, list[str]] = {}
         self._closing: asyncio.Future[None] | None = None
@@ -434,14 +447,27 @@ class _Run:
         finally:
             task.cancel()
 
-    async def next_event(self) -> Any:
+    async def next_event(self, *, within: float | None = None) -> _Event | None:
+        """The next event, waiting for it at most ``within`` seconds where
+        given, None where none came by then."""
         if self._held is not None:
             item, self._held = self._held, None
             return item
-        return await self._events.get()
+        if within is None:
+            return await self._events.get()
+        try:
+            return self._events.get_nowait()
+        except asyncio.QueueEmpty:
+            if within <= 0:
+                return None
+        try:
+            async with asyncio.timeout(within):
+                return await self._events.get()
+        except TimeoutError:
+            return None
 
-    def hold(self, item: dict[str, Any]) -> None:
-        """Keep an event read past the end of one message for the next."""
+    def hold(self, item: _Event) -> None:
+        """Keep an event read past the end of what it was read for, for the next read."""
         self._held = item
 
     async def next_message(self, compacting: Callable[[_Compacting], Awaitable[None]]) -> _Message | _Compacting | None:

@@ -17,9 +17,10 @@ unit suite, is what fails on a release that changes it.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from functools import lru_cache
-from typing import Any
+from typing import Any, Protocol
 
 from anthropic._models import construct_type
 from anthropic.types.beta import BetaRawMessageStreamEvent
@@ -30,6 +31,86 @@ from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from pydantic import PrivateAttr
 
+from src.utils.stream_coalescing import COALESCE_MAX_CHARS, COALESCE_WINDOW_S
+
+#: How long a delta waits for the ones continuing it before it goes on. Half
+#: the SSE coalescer's window: the text is held twice, here and there, so this
+#: bounds what joining adds to how late it shows.
+JOIN_WINDOW_S = COALESCE_WINDOW_S / 2
+
+#: The deltas one CLI event can carry several of, by the field each grows.
+_JOINABLE = {"text_delta": "text", "thinking_delta": "thinking", "input_json_delta": "partial_json"}
+
+
+def joinable(event: Any) -> bool:
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "content_block_delta"
+        and (event.get("delta") or {}).get("type") in _JOINABLE
+    )
+
+
+def joined(event: dict[str, Any], more: Any) -> dict[str, Any] | None:
+    """``event`` grown by ``more`` where ``more`` continues it, the next
+    delta of the same block and kind; None where it does not, or the two
+    would pass ``COALESCE_MAX_CHARS``, past which the client shows a frame
+    whole instead of typing it out. Each joined delta is one chunk fewer
+    through the callbacks and the ``messages`` stream, which cost far more
+    per chunk than the text does; the message they add up to is the same."""
+    if not joinable(more) or more.get("index") != event.get("index"):
+        return None
+    delta, next_delta = event["delta"], more["delta"]
+    if next_delta["type"] != delta["type"]:
+        return None
+    field = _JOINABLE[delta["type"]]
+    head, tail = delta.get(field), next_delta.get(field)
+    if not isinstance(head, str) or not isinstance(tail, str) or len(head) + len(tail) > COALESCE_MAX_CHARS:
+        return None
+    return {**event, "delta": {**delta, field: head + tail}}
+
+
+class EventSource(Protocol):
+    """Where a message's raw events are read from (``_Run``), with what was
+    read past what it was read for held for the next read."""
+
+    async def next_event(self, *, within: float | None = None) -> Any: ...
+
+    def hold(self, item: Any) -> None: ...
+
+
+class DeltaJoin:
+    """Joins the token deltas a message's events carry, so a reply costs a
+    chunk per batch through the callbacks rather than per delta. The first
+    delta of a block goes on at once, so the reply starts as soon as it
+    would; each one after waits up to ``JOIN_WINDOW_S`` for the ones
+    continuing it. What does not continue it is held for the next read and
+    ends the wait, so no other event is delayed. The wait is what lets
+    deltas join at all: the event loop moves every stage between the CLI
+    and here one event per turn, so the CLI's backlog never gathers in the
+    run's queue on its own."""
+
+    def __init__(self, source: EventSource) -> None:
+        self._source = source
+        #: The block and kind of the delta given last, while deltas run on.
+        self._open: tuple[Any, str] | None = None
+
+    async def grow(self, item: Any) -> Any:
+        if not joinable(item):
+            self._open = None
+            return item
+        block = (item.get("index"), item["delta"]["type"])
+        if block != self._open:
+            self._open = block
+            return item
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + JOIN_WINDOW_S
+        while (more := await self._source.next_event(within=deadline - loop.time())) is not None:
+            grown = joined(item, more)
+            if grown is None:
+                self._source.hold(more)
+                return item
+            item = grown
+        return item
 
 
 def anthropic_content(message: BaseMessage) -> str | list[dict[str, Any]]:
