@@ -12,8 +12,8 @@ from src.llms.pricing_utils import find_model_pricing
 #: new model joins both structural checks below in a single line.
 _TIERED_OPENAI_IDS = (
     "gpt-6.1-terra",
-    "gpt-6-astra",
-    "gpt-6.1-sol",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-luna",
 )
 

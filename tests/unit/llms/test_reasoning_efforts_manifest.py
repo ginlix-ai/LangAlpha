@@ -216,11 +216,11 @@ class TestWhoWinsWhenTwoThingsNameTheLevel:
     """
 
     def test_an_override_beats_the_manifest_default(self):
-        client = LLM("gpt-6.1-sol", reasoning={"effort": "high"})
+        client = LLM("gpt-6.2-sol", reasoning={"effort": "high"})
         assert client.parameters["reasoning"]["effort"] == "high"
 
     def test_a_requested_level_beats_an_override(self):
-        client = LLM("gpt-6.1-sol", reasoning_effort="low", reasoning={"effort": "high"})
+        client = LLM("gpt-6.2-sol", reasoning_effort="low", reasoning={"effort": "high"})
         assert client.parameters["reasoning"]["effort"] == "low"
         assert client.resolved_reasoning_effort == "low"
 

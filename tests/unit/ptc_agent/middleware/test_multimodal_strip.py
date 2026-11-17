@@ -391,7 +391,7 @@ class TestResolveModalities:
     """
 
     def test_reads_the_stamped_model_not_the_configured_one(self):
-        mw = MultimodalStripMiddleware(model_name="gpt-6.1-sol")
+        mw = MultimodalStripMiddleware(model_name="gpt-6.2-sol")
         # Configured for a vision model, but resilience substituted a text-only
         # client; judging on the configured name would replay image blocks at it.
         assert mw._resolve_target(_request("glm-5.2"))[1] == ["text"]
@@ -807,7 +807,7 @@ class TestPDFPageCeilingIsPerTarget:
 
     @pytest.mark.asyncio
     async def test_a_provider_documenting_no_page_limit_keeps_the_block(self):
-        blocks, _ = await _blocks_reaching("gpt-6.1-sol", _pdf_block(900))
+        blocks, _ = await _blocks_reaching("gpt-6.2-sol", _pdf_block(900))
         assert [b["type"] for b in blocks] == ["text", "file"]
 
     @pytest.mark.asyncio
