@@ -21,7 +21,8 @@ import {
 } from '../../hooks/utils/messageFinalizers';
 import { handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
 import { applyCallUsage } from '../tokenUsage';
-import { handlePlanBilled, handleProvenance } from '../stream/mainEventHandlers';
+import { handleCliQueue, handlePlanBilled, handleProvenance } from '../stream/mainEventHandlers';
+import { eventOrder } from '../eventOrder';
 import {
   handleHistoryUserMessage,
   handleHistoryReasoningSignal,
@@ -206,6 +207,12 @@ export async function loadConversationHistory(
     // not render can be left to the page that holds the call.
     const seenToolCallIds = new Set<string>();
     const carryEvents: SSEEvent[] = [];
+    // The reply of the turn the replay is in, which a frame with no turn of
+    // its own (an artifact, a notice) belongs to.
+    const activeReplyId = (): string | null => (currentActivePairIndex !== null
+      ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null);
+    // That turn's next order, for a frame that carries no id of its own.
+    const nextCount = (): number => (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0);
     try {
       const onEvent = (_rawEvent: Record<string, unknown>): void => {
       stripHistory();
@@ -269,17 +276,8 @@ export async function loadConversationHistory(
       // Subagent context_window events are routed through the isSubagent block below.
       if (eventType === 'context_window' && !isSubagent) {
         handleContextWindowEvent(event, {
-          getMsgId: () => currentActivePairIndex !== null
-            ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null,
-          nextOrder: () => {
-            const eventId = event._eventId;
-            if (eventId != null) return Number(eventId);
-            if (currentActivePairState) {
-              currentActivePairState.contentOrderCounter++;
-              return currentActivePairState.contentOrderCounter;
-            }
-            return 0;
-          },
+          getMsgId: activeReplyId,
+          nextOrder: () => eventOrder(event, nextCount),
           setMessages: rt.setMessages,
           setTokenUsage: rt.setTokenUsage,
           live: false,
@@ -299,12 +297,9 @@ export async function loadConversationHistory(
         // so the last turn's fallbacks win (user_message boundaries and
         // replayed error events clear it along the way).
         deps.applyFallbackSuggestion(event);
-        const msgId = currentActivePairIndex !== null
-          ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+        const msgId = activeReplyId();
         if (msgId) {
-          const order = event._eventId != null
-            ? Number(event._eventId)
-            : (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0);
+          const order = eventOrder(event, nextCount);
           const segment = buildModelFallbackSegment(event, rt.t, order);
           rt.setMessages((prev) => updateMessage(prev, msgId, (msg) => {
             if (msg.role !== 'assistant') return msg;
@@ -317,17 +312,26 @@ export async function loadConversationHistory(
       // A reply whose last request was billed to usage credits replays its
       // notice under it, as the live stream drew it. Main agent only.
       if (eventType === 'claude_code_plan') {
-        const msgId = currentActivePairIndex !== null
-          ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+        const msgId = activeReplyId();
         if (!isSubagent && msgId) {
           handlePlanBilled({
             assistantMessageId: msgId,
-            event: event as Record<string, unknown>,
-            order: event._eventId != null
-              ? Number(event._eventId)
-              : (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0),
+            event,
+            order: eventOrder(event, nextCount),
             setMessages: setMessagesForHandlers,
           });
+        }
+        return;
+      }
+
+      // A turn that waited for a Claude Code CLI replays the wait's notice
+      // where it happened, as the live stream's `admitted` drew it: the
+      // server sends the frame there. The live line has no replay: a reload
+      // finds the wait over or not yet recorded. Main agent only.
+      if (eventType === 'claude_code_queue') {
+        const msgId = activeReplyId();
+        if (!isSubagent && msgId) {
+          handleCliQueue({ assistantMessageId: msgId, event, order: eventOrder(event, nextCount), setMessages: setMessagesForHandlers });
         }
         return;
       }
@@ -338,8 +342,7 @@ export async function loadConversationHistory(
       // as the live stream did, which is what offers its Retry.
       if (eventType === 'error' && !isSubagent) {
         rt.setFallbackSuggestion(null);
-        const msgId = currentActivePairIndex !== null
-          ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+        const msgId = activeReplyId();
         if (msgId) {
           // A failure the server classified carries only the text it chose to
           // show, none for its own (internal) faults; an older row's raw text

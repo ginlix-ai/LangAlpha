@@ -14,6 +14,7 @@ import type { StreamRefs, UpdateSubagentCard } from './streamRefs';
 import type { RetryNotice } from './stream/autoRetry';
 import type { NextSummary, ThreadTokenTotals } from '../utils/api/messages';
 import type { TokenUsage } from './tokenUsage';
+import type { CliQueueWait } from '@/lib/claudeCodeQueue';
 
 // --- Internal types for useChatMessages ---
 
@@ -113,6 +114,24 @@ interface SSEEvent {
 export type ModelStatus =
   | { kind: 'retrying'; model: string; attempt: number; maxRetries: number }
   | { kind: 'fallback'; fromModel: string; toModel: string; paidBy?: string; provider?: string };
+
+/**
+ * What a turn waits on before its answer can go on, each drawn as a line
+ * under the transcript (`TranscriptStatus`) and gone when the wait ends or
+ * the stream does: the workspace starting, `false` when it is not or
+ * `'archived'` on the slow restore from cold storage (widen the union when
+ * the backend adds a `sandbox_state`); a send held on a thread mutation (the
+ * `turn_held` reason: 'compact', 'offload', 'handoff', or another or empty),
+ * null when it is not held; a Claude Code turn waiting for one of its
+ * computer's CLIs, null when it waits for none.
+ */
+export interface TurnStatus {
+  workspaceStarting: false | 'starting' | 'archived';
+  turnHeld: string | null;
+  cliQueue: CliQueueWait | null;
+}
+
+export const NO_TURN_STATUS: TurnStatus = { workspaceStarting: false, turnHeld: null, cliQueue: null };
 
 /**
  * Suggestion surfaced as a pill above the chat input after a turn was

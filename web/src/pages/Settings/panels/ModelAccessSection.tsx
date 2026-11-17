@@ -15,7 +15,7 @@ import { useClaudeSignInEnd, useClaudeSignInLifecycle } from '@/hooks/useClaudeS
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import {
   CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
-  CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM, claudeCodeChoice, claudeCodeConnected, computerTokenWorks,
+  CLAUDE_CODE_COMPUTER_PARAM, CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM, claudeCodeChoice, claudeCodeConnected, computerTokenWorks,
 } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import type { ProviderCatalogEntry } from '@/components/model/types';
@@ -154,16 +154,29 @@ export function ModelAccessSection() {
     ? { kind: 'claude-code-token', target: linkedRow.target, action: linkedAction }
     : searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE && (setup || setupUnread) ? { kind: 'claude-code' } : null;
   const sheet: Sheet | null = opened ?? linkedSheet;
+  // A link to Claude Code's sheet may name a computer: its row's setting of
+  // how many agents it runs at once (a turn that waited for one there).
+  const linkedComputerId = searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE
+    ? searchParams.get(CLAUDE_CODE_COMPUTER_PARAM) : null;
   const dropLink = () => {
     if (searchParams.has(CLAUDE_CODE_TOKEN_PARAM)) setSearchParams((params) => {
       params.delete(CLAUDE_CODE_TOKEN_PARAM);
       params.delete(CLAUDE_CODE_WORKSPACE_PARAM);
+      params.delete(CLAUDE_CODE_COMPUTER_PARAM);
       return params;
     }, { replace: true });
   };
   const closeSheet = () => {
     setSheet(null);
     dropLink();
+  };
+  // Once its setting has taken focus, the link's computer is spent: the sheet
+  // stays open on the rest of the link, and a remount does not refocus it.
+  const dropLinkedComputer = () => {
+    if (searchParams.has(CLAUDE_CODE_COMPUTER_PARAM)) setSearchParams((params) => {
+      params.delete(CLAUDE_CODE_COMPUTER_PARAM);
+      return params;
+    }, { replace: true });
   };
   // Kept here, not in the list, so Back from a provider returns to the same narrowed list.
   const [keyFilter, setKeyFilter] = useState<KeyFilter>(NO_FILTER);
@@ -470,6 +483,8 @@ export function ModelAccessSection() {
               tokenRows={tokenRows}
               onRemoveToken={setRemovingToken}
               onCover={setChoiceCovered}
+              locateComputerId={linkedComputerId}
+              onLocated={dropLinkedComputer}
             />
           ) : <StatusLabel status="working" />)}
           {sheet.kind === 'claude-code-token' && <ClaudeCodeTokenSheet target={sheet.target} onSaved={closeSheet} onCancel={closeSheet} />}

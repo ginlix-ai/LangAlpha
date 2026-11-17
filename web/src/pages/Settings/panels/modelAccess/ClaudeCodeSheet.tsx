@@ -251,11 +251,16 @@ const ROWS = 'grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 gap-y-5';
  * it; what opens is portaled out of its panel, which goes inert and fades
  * while covered.
  */
-export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLeave }: {
+export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLeave, locateComputerId, onLocated }: {
   setup: ClaudeCodeSetup | null;
   tokenRows: TokenRow[];
   onRemoveToken: (target: TokenTarget) => void;
   onCover: (covered: boolean) => void;
+  /** A computer the view was opened for: its row's setting of how many
+   *  agents it runs at once is scrolled to and takes focus. */
+  locateComputerId?: string | null;
+  /** Called once that setting has taken focus, to drop the link to it. */
+  onLocated?: () => void;
   /** Called before a computer action leaves for the computers panel in the
    *  app: setup passes its exit, so the user is not sent back to it. */
   onLeave?: () => void;
@@ -331,7 +336,9 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   // Code is on and the server offers the setting.
   const clisOf = (computerId: string) => {
     const clis = computers.find((c) => c.computer_id === computerId)?.clis;
-    return on && clisMax && clis != null ? <ComputerClis computerId={computerId} clis={clis} max={clisMax} /> : undefined;
+    return on && clisMax && clis != null
+      ? <ComputerClis computerId={computerId} clis={clis} max={clisMax} located={computerId === locateComputerId} onLocated={onLocated} />
+      : undefined;
   };
   const now = useNow();
   const headline = setup && claudeCodeHeadline(t, setup, now, cliComputer);

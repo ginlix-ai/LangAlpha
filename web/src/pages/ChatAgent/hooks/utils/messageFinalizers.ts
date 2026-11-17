@@ -51,7 +51,7 @@ function buildModelFallbackSegment(
   // pays for the model it moved to.
   if (typeof event.to_paid_by === 'string') fallback.paidBy = event.to_paid_by;
   if (typeof event.to_provider === 'string') fallback.provider = event.to_provider;
-  const segment: NotificationSegment = { type: 'notification', fallback, order };
+  const segment: NotificationSegment = { type: 'notification', notice: { kind: 'fallback', ...fallback }, order };
   if (detail) {
     segment.detail = detail;
     segment.detailKind = 'error';

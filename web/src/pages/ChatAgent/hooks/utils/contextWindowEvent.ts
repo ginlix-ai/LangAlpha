@@ -70,7 +70,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
     if (!msgId || typeof to !== 'string') return;
     const from = typeof event.from_model === 'string' ? event.from_model : undefined;
     const detail = (event.summary_text as string | undefined) || undefined;
-    appendNotification(setMessages, msgId, { handoff: { from, to }, order: nextOrder(), detail, detailKind: 'brief' });
+    appendNotification(setMessages, msgId, { notice: { kind: 'handoff', from, to }, order: nextOrder(), detail, detailKind: 'brief' });
     return;
   }
 

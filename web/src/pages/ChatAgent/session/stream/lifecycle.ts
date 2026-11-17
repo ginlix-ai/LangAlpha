@@ -192,7 +192,13 @@ export const reconnectToStream = async (
   // A held send's `released` frame rides only the stream that sent it, so a
   // send that dropped before it would keep the line up through the answer.
   // The reconnect's own status stands in for it from here.
-  rt.setTurnHeld(null);
+  rt.setTurnStatus({ turnHeld: null });
+  // A CLI wait's line stays up through a resume: the run's stream sends the
+  // wait's end, so a resume from the cursor always hears its `admitted` or
+  // `cleared` frame or reaches the stream's end, which clears it. One that
+  // attaches afresh replays the run from its start, which draws the line
+  // again while the wait goes on.
+  if (resetCursor) rt.setTurnStatus({ cliQueue: null });
 
   console.log('[Reconnect] Starting reconnection for thread:', tid);
 
@@ -1039,8 +1045,7 @@ export const cleanupAfterStreamEnd = (
   bubbles: string | Iterable<string>,
 ) => {
   rt.setIsLoading(false);
-  rt.setWorkspaceStarting(false);
-  rt.setTurnHeld(null);
+  rt.clearTurnStatus();
   rt.setIsCompacting(false);
   deps.clearModelStatus();
   // A settled turn is the cheapest moment to learn the edge has moved on: the

@@ -11,6 +11,7 @@ import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, 
 import type { ProvenanceEvent } from '@/types/sse';
 import type { AssistantMessage, ContentSegment, PendingToolCallChunk, ProvenanceRecord, SubagentTaskRecord, TextSegment } from '@/types/chat';
 import { readPlanBilled } from '@/lib/claudeCodePlan';
+import { readCliQueue, type CliQueueFrame, type CliQueueSignal } from '@/lib/claudeCodeQueue';
 import { appendNotificationSegmentOnce } from '../../hooks/utils/messageFinalizers';
 import { provenanceEventToRecord, provenanceRecordKey } from './provenance';
 import { appendTextChunk } from './textChunks';
@@ -501,10 +502,38 @@ export function handlePlanBilled({ assistantMessageId, event, order, setMessages
   setMessages((prev: MessageRecord[]) => prev.map((msg: MessageRecord) => {
     if (msg.id !== assistantMessageId || msg.role !== 'assistant') return msg;
     return appendNotificationSegmentOnce(
-      msg as AssistantMessage, { type: 'notification', planBilled, order }, (s) => !!s.planBilled,
+      msg as AssistantMessage, { type: 'notification', notice: { kind: 'planBilled', ...planBilled }, order },
+      (s) => s.notice?.kind === 'planBilled',
     );
   }));
   return true;
+}
+
+/**
+ * Handles a `claude_code_queue` frame on both the live-stream and
+ * history-replay paths: a wait long enough to note (`admitted`) gets its
+ * notice where in the reply it happened, once on a reply however often the
+ * frame is delivered. Returns the frame read, null for one this client
+ * cannot read, so the live path can show or clear the wait's line. Callers
+ * keep it to the main agent's reply.
+ */
+export function handleCliQueue({ assistantMessageId, event, order, setMessages }: {
+  assistantMessageId: string;
+  event: CliQueueFrame;
+  order: number;
+  setMessages: SetMessages;
+}): CliQueueSignal | null {
+  const queue = readCliQueue(event);
+  if (queue?.signal !== 'admitted') return queue;
+  const { wait } = queue;
+  setMessages((prev: MessageRecord[]) => prev.map((msg: MessageRecord) => {
+    if (msg.id !== assistantMessageId || msg.role !== 'assistant') return msg;
+    return appendNotificationSegmentOnce(
+      msg as AssistantMessage, { type: 'notification', notice: { kind: 'cliWait', ...wait }, order },
+      (s) => s.notice?.kind === 'cliWait' && s.notice.waitId === wait.waitId,
+    );
+  }));
+  return queue;
 }
 
 /**

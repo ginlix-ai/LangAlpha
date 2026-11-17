@@ -67,17 +67,24 @@ function PageLink({ url, label, labelKey, external, console: consolePage, resize
   );
 }
 
-/** The quiet line a notice reads as: nothing failed, so no error colors. */
-export function NoticeLine({ message, className, style }: { message: string; className?: string; style?: React.CSSProperties }): React.ReactElement {
+/** The quiet line a notice reads as: nothing failed, so no error colors.
+ *  An `action` follows the message in its flow, so a narrow line wraps it
+ *  with the words rather than squeezing them, and stays out of what is
+ *  announced: only the message is read out. */
+export function NoticeLine({ message, action, className, style }: {
+  message: string; action?: React.ReactNode; className?: string; style?: React.CSSProperties;
+}): React.ReactElement {
+  const live = { role: 'status', 'aria-live': 'polite' as const };
   return (
     <div
       className={`flex items-center gap-2 text-xs ${className ?? ''}`}
-      role="status"
-      aria-live="polite"
+      {...(action ? {} : live)}
       style={{ backgroundColor: 'var(--color-bg-page)', color: 'var(--color-text-tertiary)', ...style }}
     >
       <Info aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 wrap-break-word">{message}</span>
+      <span className="min-w-0 wrap-break-word">
+        {action ? <><span {...live}>{message}</span> {action}</> : message}
+      </span>
     </div>
   );
 }

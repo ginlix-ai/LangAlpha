@@ -36,8 +36,9 @@ import { BUSY_REPLY_KEYS, isBusyCode } from '../../hooks/utils/forkRefusal';
 import {
   handleReasoningSignal, handleReasoningContent, handleTextContent,
   handleToolCalls, handleToolCallResult, handleToolCallChunks,
-  handleTodoUpdate, handleHtmlWidget, handleProvenance, handlePlanBilled,
+  handleTodoUpdate, handleHtmlWidget, handleProvenance, handlePlanBilled, handleCliQueue,
 } from './mainEventHandlers';
+import { eventOrder } from '../eventOrder';
 import {
   isSubagentEvent, handleSubagentMessageChunk, handleSubagentToolCallChunks,
   handleSubagentToolCalls, handleSubagentToolCallResult, handleTaskSteeringAccepted,
@@ -172,6 +173,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
 
   // Those calls still to answer, by call id.
   const pendingRefreshCalls = new Map<string, RefreshOnResult>();
+
+  // The main lane's next order, for a frame that carries no id of its own.
+  const nextCount = (): number => ++refs.contentOrderCounterRef.current;
 
   // Append a notification segment to a task card's latest assistant message
   // (transcript notice inside the subagent detail view). No-ops before the
@@ -341,9 +345,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     if (eventType === 'workspace_status') {
       if (event.status === 'starting') {
         const state = event.sandbox_state === 'archived' ? 'archived' : 'starting';
-        rt.setWorkspaceStarting(state);
+        rt.setTurnStatus({ workspaceStarting: state });
       } else {
-        rt.setWorkspaceStarting(false);
+        rt.setTurnStatus({ workspaceStarting: false });
       }
       return;
     }
@@ -364,7 +368,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     // model-switch handoff). `released` ends the wait; the stream's end clears
     // it too, so an error frame in between cannot leave the line up.
     if (eventType === 'turn_held') {
-      rt.setTurnHeld(event.status === 'held' ? String(event.reason ?? '') : null);
+      rt.setTurnStatus({ turnHeld: event.status === 'held' ? String(event.reason ?? '') : null });
       return;
     }
 
@@ -582,10 +586,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       }
       handleContextWindowEvent(event, {
         getMsgId: () => rt.currentMessageRef.current,
-        nextOrder: () => {
-          const eventId = event._eventId;
-          return eventId != null ? Number(eventId) : ++refs.contentOrderCounterRef.current;
-        },
+        nextOrder: () => eventOrder(event, nextCount),
         setMessages: rt.setMessages,
         setTokenUsage: rt.setTokenUsage,
         live: true,
@@ -624,9 +625,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         deps.applyFallbackSuggestion(event);
         // Persistent transcript notification — survives reload via the
         // persisted model_fallback replay in loadConversationHistory.
-        const order = event._eventId != null
-          ? Number(event._eventId)
-          : ++refs.contentOrderCounterRef.current;
+        const order = eventOrder(event, nextCount);
         const segment = buildModelFallbackSegment(event, rt.t, order);
         rt.setMessages((prev) => updateMessage(prev, assistantMessageId, (msg) => {
           if (msg.role !== 'assistant') return msg;
@@ -643,10 +642,28 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         const billed = handlePlanBilled({
           assistantMessageId,
           event,
-          order: event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current,
+          order: eventOrder(event, nextCount),
           setMessages: setMessagesForHandlers,
         });
         if (billed) deps.refreshClaudeCode();
+      }
+      return;
+    }
+
+    // A Claude Code turn waiting for one of its computer's CLIs: the live
+    // line while it waits, and once it gets one, the line goes and a wait
+    // long enough to note leaves its notice where it happened, as a reload
+    // replays it. The stream's end clears the line too, so a turn that times
+    // out waiting cannot leave it up.
+    if (eventType === 'claude_code_queue') {
+      if (!isSubagent) {
+        const queue = handleCliQueue({
+          assistantMessageId,
+          event,
+          order: eventOrder(event, nextCount),
+          setMessages: setMessagesForHandlers,
+        });
+        if (queue) rt.setTurnStatus({ cliQueue: queue.signal === 'waiting' ? queue.wait : null });
       }
       return;
     }

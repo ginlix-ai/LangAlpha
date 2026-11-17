@@ -2723,6 +2723,15 @@
       "briefNoModel": "正在把上下文交接给新模型...",
       "other": "正在等待此对话上的当前操作完成..."
     },
+    "cliQueue": {
+      "waiting_other": "正在等待 {{name}} 上的 Claude Code：那里已有 {{count}} 个 Agent 在运行。",
+      "waitingHere_other": "正在等待你电脑上的 Claude Code：那里已有 {{count}} 个 Agent 在运行。",
+      "waitingAtMost_other": "正在等待 {{name}} 上的 Claude Code：那里已有 {{count}} 个 Agent 在运行，已达同时运行的上限。",
+      "waitingHereAtMost_other": "正在等待你电脑上的 Claude Code：那里已有 {{count}} 个 Agent 在运行，已达同时运行的上限。",
+      "runMore": "调高同时运行数",
+      "waited": "等待了 {{duration}} 才在 {{name}} 上启动 Claude Code。",
+      "waitedHere": "等待了 {{duration}} 才在你的电脑上启动 Claude Code。"
+    },
     "compactionStopped": "压缩已停止",
     "queuedSend": "消息已排队 — 压缩完成后将自动发送",
     "automationWaiting": "“{{name}}”已到运行时间，将在本轮结束后运行。",

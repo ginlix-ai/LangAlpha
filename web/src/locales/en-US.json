@@ -2691,6 +2691,19 @@
       "briefNoModel": "Handing off context to the new model...",
       "other": "Waiting for the current operation on this conversation to finish..."
     },
+    "cliQueue": {
+      "waiting_one": "Waiting for Claude Code on {{name}}: {{count}} agent already running there.",
+      "waiting_other": "Waiting for Claude Code on {{name}}: {{count}} agents already running there.",
+      "waitingHere_one": "Waiting for Claude Code on your computer: {{count}} agent already running there.",
+      "waitingHere_other": "Waiting for Claude Code on your computer: {{count}} agents already running there.",
+      "waitingAtMost_one": "Waiting for Claude Code on {{name}}: {{count}} agent already running there. That's the most it runs at once.",
+      "waitingAtMost_other": "Waiting for Claude Code on {{name}}: {{count}} agents already running there. That's the most it runs at once.",
+      "waitingHereAtMost_one": "Waiting for Claude Code on your computer: {{count}} agent already running there. That's the most it runs at once.",
+      "waitingHereAtMost_other": "Waiting for Claude Code on your computer: {{count}} agents already running there. That's the most it runs at once.",
+      "runMore": "Run more at once",
+      "waited": "Waited {{duration}} for Claude Code on {{name}}.",
+      "waitedHere": "Waited {{duration}} for Claude Code on your computer."
+    },
     "compactionStopped": "Compaction stopped",
     "queuedSend": "Message queued — sends when compaction finishes",
     "automationWaiting": "{{name}} is due. It runs when this turn ends.",
