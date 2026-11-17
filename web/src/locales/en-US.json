@@ -7190,7 +7190,8 @@
         "addOwn": "Add its own token",
         "checking": "Asking Claude whether its token works",
         "clis": "Claude Code agents at once",
-        "clisHelp": "How many Claude Code agents this computer runs at the same time, subagents included. Above 4, LangAlpha opens a second connection to it."
+        "clisAutomatic": "Automatic ({{count}})",
+        "clisHelp": "How many Claude Code agents this computer runs at the same time, subagents included. Each takes about 150 to 300 MB of its memory. Automatic runs one for every 2 GB of its memory."
       },
       "optOut": {
         "saved": "Claude Code is off, but your setup token is still saved.",

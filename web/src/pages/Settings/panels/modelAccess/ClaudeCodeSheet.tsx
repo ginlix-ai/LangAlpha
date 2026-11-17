@@ -335,9 +335,19 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   // How many agents each computer runs at once, set on its row once Claude
   // Code is on and the server offers the setting.
   const clisOf = (computerId: string) => {
-    const clis = computers.find((c) => c.computer_id === computerId)?.clis;
-    return on && clisMax && clis != null
-      ? <ComputerClis computerId={computerId} clis={clis} max={clisMax} located={computerId === locateComputerId} onLocated={onLocated} />
+    const entry = computers.find((c) => c.computer_id === computerId);
+    return on && clisMax && entry?.clis != null
+      ? (
+        <ComputerClis
+          computerId={computerId}
+          clis={entry.clis}
+          automatic={entry.clis_automatic}
+          chosen={entry.clis_chosen}
+          max={clisMax}
+          located={computerId === locateComputerId}
+          onLocated={onLocated}
+        />
+      )
       : undefined;
   };
   const now = useNow();
