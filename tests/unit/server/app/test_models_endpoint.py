@@ -237,7 +237,7 @@ class TestListModelsResponse:
             if "native_compaction" in entry
         }
         assert kinds["claude-opus-5-5"] == "anthropic"
-        assert kinds["gpt-6-astra"] == "openai"
+        assert kinds["gpt-6.2-astra"] == "openai"
         # The subscription twins serve it as their key routes do.
         assert kinds["claude-opus-5-5-oauth"] == "anthropic"
         assert kinds["gpt-6-luna-oauth"] == "openai"

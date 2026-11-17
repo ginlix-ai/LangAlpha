@@ -11,7 +11,7 @@ def gateway_slug(model_id: str) -> str:
 
     How a gateway's id meets a manifest one: manifest ids go through the same
     mapping, so ``anthropic/claude-sonnet-5.5`` meets ``claude-sonnet-5-5`` and
-    ``openai/gpt-6.1-sol`` meets ``gpt-6.1-sol``.
+    ``openai/gpt-6.2-sol`` meets ``gpt-6.2-sol``.
     """
     return model_id.split(":", 1)[0].rsplit("/", 1)[-1].lower().replace(".", "-")
 

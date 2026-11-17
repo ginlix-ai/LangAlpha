@@ -35,13 +35,13 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "gpt-6-astra": {
+  "gpt-6.2-astra": {
     "prompt_guidance": "lean",
-    "model_id": "gpt-6-astra",
+    "model_id": "gpt-6.2-astra",
     "provider": "openai",
-    "display_name": "GPT-6 Astra",
+    "display_name": "GPT-6.2 Astra",
     "visible": true,
-    "speed": 2,
+    "speed": 4,
     "intelligence": 5,
     "context": 1050000,
     "compaction_profile": "expansive",
@@ -70,11 +70,11 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "gpt-6.1-sol": {
+  "gpt-6.2-sol": {
     "prompt_guidance": "lean",
-    "model_id": "gpt-6.1-sol",
+    "model_id": "gpt-6.2-sol",
     "provider": "openai",
-    "display_name": "GPT-6.1 Sol",
+    "display_name": "GPT-6.2 Sol",
     "visible": true,
     "speed": 3,
     "intelligence": 5,
@@ -1056,13 +1056,13 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "gpt-6-astra-oauth": {
+  "gpt-6.2-astra-oauth": {
     "prompt_guidance": "lean",
-    "model_id": "gpt-6-astra",
+    "model_id": "gpt-6.2-astra",
     "provider": "codex-oauth",
-    "display_name": "GPT-6 Astra",
+    "display_name": "GPT-6.2 Astra",
     "visible": true,
-    "speed": 2,
+    "speed": 4,
     "intelligence": 5,
     "context": 1050000,
     "compaction_profile": "expansive",
@@ -1092,11 +1092,11 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "gpt-6.1-sol-oauth": {
+  "gpt-6.2-sol-oauth": {
     "prompt_guidance": "lean",
-    "model_id": "gpt-6.1-sol",
+    "model_id": "gpt-6.2-sol",
     "provider": "codex-oauth",
-    "display_name": "GPT-6.1 Sol",
+    "display_name": "GPT-6.2 Sol",
     "visible": true,
     "speed": 3,
     "intelligence": 5,

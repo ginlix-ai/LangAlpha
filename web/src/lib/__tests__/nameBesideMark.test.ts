@@ -11,7 +11,7 @@ describe('nameBesideMark', () => {
 
   it('drops it before a version, whether a space, a hyphen or nothing comes between', () => {
     expect(nameBesideMark('Grok 4.7', 'grok-oauth').shown).toBe('4.7');
-    expect(nameBesideMark('GPT-6.1 Sol', 'codex-oauth').shown).toBe('6.1 Sol');
+    expect(nameBesideMark('GPT-6.2 Sol', 'codex-oauth').shown).toBe('6.2 Sol');
     expect(nameBesideMark('DeepSeek-V4.1-Flash', 'deepseek').shown).toBe('V4.1-Flash');
     expect(nameBesideMark('Qwen3.8 Max', 'dashscope-intl').shown).toBe('3.8 Max');
     expect(nameBesideMark('GLM-5.3 (CN)', 'z-ai-cn').shown).toBe('5.3 (CN)');

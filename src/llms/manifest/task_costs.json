@@ -29,6 +29,18 @@
       "url": "https://artificialanalysis.ai/models/qwen4-max",
       "metric": "v5.0.1 cost per task (3.27 USD, at Alibaba's default effort) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
       "retrieved": "2026-11-16"
+    },
+    "gpt-6.2-sol": {
+      "name": "Artificial Analysis, Intelligence Index v5.0.1",
+      "url": "https://artificialanalysis.ai/models/gpt-6-2-sol",
+      "metric": "v5.0.1 cost per task (low 0.18, medium 0.41, high 0.56, xhigh 0.65, max 1.01 USD) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
+      "retrieved": "2026-11-17"
+    },
+    "gpt-6.2-astra": {
+      "name": "Artificial Analysis, Intelligence Index v5.0.1",
+      "url": "https://artificialanalysis.ai/models/gpt-6-2-astra",
+      "metric": "v5.0.1 cost per task (low 0.66, medium 1.62, high 2.07, xhigh 2.52, max 4.00 USD) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
+      "retrieved": "2026-11-17"
     }
   },
   "baseline": {
@@ -71,19 +83,19 @@
       "xhigh": 0.042184,
       "max": 0.067823
     },
-    "gpt-6.1-sol": {
-      "low": 0.130752,
-      "medium": 0.213701,
-      "high": 0.319144,
-      "xhigh": 0.392861,
-      "max": 0.724167
+    "gpt-6.2-sol": {
+      "low": 0.107838,
+      "medium": 0.238524,
+      "high": 0.331032,
+      "xhigh": 0.380604,
+      "max": 0.59581
     },
-    "gpt-6-astra": {
-      "low": 0.817514,
-      "medium": 1.540649,
-      "high": 1.725253,
-      "xhigh": 2.308796,
-      "max": 3.2575
+    "gpt-6.2-astra": {
+      "low": 0.388651,
+      "medium": 0.95016,
+      "high": 1.21811,
+      "xhigh": 1.480774,
+      "max": 2.348176
     },
     "gpt-6.1-terra": {
       "none": 0.1069,

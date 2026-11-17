@@ -131,7 +131,7 @@ class TestPriceTier:
 class TestTaskCostOnSubscriptions:
     @pytest.mark.parametrize(
         ("subscription", "keyed"),
-        [("claude-opus-5-5-oauth", "claude-opus-5-5"), ("gpt-6.1-sol-oauth", "gpt-6.1-sol")],
+        [("claude-opus-5-5-oauth", "claude-opus-5-5"), ("gpt-6.2-sol-oauth", "gpt-6.2-sol")],
     )
     def test_a_subscription_shows_its_keyed_twins_task_cost(self, metadata, subscription, keyed):
         """A subscription runs the same model on the same tokens as its keyed

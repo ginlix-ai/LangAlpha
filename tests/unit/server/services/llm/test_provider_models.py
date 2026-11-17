@@ -23,7 +23,7 @@ def mc():
 class TestNormalize:
     def test_openai_shape_reads_the_optional_fields_vendors_add(self):
         payload = {"object": "list", "data": [
-            {"id": "gpt-6.1-sol", "object": "model", "owned_by": "system"},
+            {"id": "gpt-6.2-sol", "object": "model", "owned_by": "system"},
             {"id": "deepseek-flash", "name": "DeepSeek-V4.1-Flash", "context_window": 1048576,
              "input_modalities": ["text", "image"]},
             {"id": "kimi-k3.1-pro", "context_length": 1048576,
@@ -33,7 +33,7 @@ class TestNormalize:
              "modalities": {"input_modalities": ["text", "image", "video"]}},
         ]}
         assert pm.normalize(pm.OPENAI, payload) == [
-            {"id": "gpt-6.1-sol", "display_name": "gpt-6.1-sol"},
+            {"id": "gpt-6.2-sol", "display_name": "gpt-6.2-sol"},
             {"id": "deepseek-flash", "display_name": "DeepSeek-V4.1-Flash", "context_window": 1048576,
              "input_modalities": ["text", "image"]},
             {"id": "kimi-k3.1-pro", "display_name": "kimi-k3.1-pro", "context_window": 1048576,
@@ -74,13 +74,13 @@ class TestNormalize:
 
     def test_codex_shape_keeps_listed_api_models(self):
         payload = {"models": [
-            {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list",
+            {"slug": "gpt-6.2-sol", "display_name": "GPT-6.2-Sol", "visibility": "list",
              "supported_in_api": True, "context_window": 500000, "input_modalities": ["text", "image"]},
             {"slug": "codex-auto-review", "visibility": "hide", "supported_in_api": True},
             {"slug": "gpt-internal", "visibility": "list", "supported_in_api": False},
         ]}
         assert pm.normalize(pm.CODEX, payload) == [{
-            "id": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "context_window": 500000,
+            "id": "gpt-6.2-sol", "display_name": "GPT-6.2-Sol", "context_window": 500000,
             "input_modalities": ["text", "image"],
         }]
 
@@ -154,7 +154,7 @@ class TestChatFilter:
         assert not pm.is_chat_model(model_id)
 
     @pytest.mark.parametrize("model_id", [
-        "gpt-6.1-sol", "gpt-5-mini", "o4-mini", "gpt-5.1-codex", "chat-latest", "claude-haiku-5-5",
+        "gpt-6.2-sol", "gpt-5-mini", "o4-mini", "gpt-5.1-codex", "chat-latest", "claude-haiku-5-5",
         "gemini-4-argon", "gemma-4-31b-it", "qwen3.8-max", "qwen3.5-omni-plus", "qwen3-vl-plus",
         "glm-5.3", "kimi-k3", "MiniMax-M3", "deepseek-flash", "qwen-flash-character",
         "moonshotai/kimi-k3.1-pro", "openrouter/auto",
@@ -166,8 +166,8 @@ class TestChatFilter:
 class TestOpenRouterMatching:
     @pytest.mark.parametrize("listed,manifest_id", [
         ("anthropic/claude-sonnet-5.5", "claude-sonnet-5-5"),
-        ("openai/gpt-6.1-sol", "gpt-6.1-sol"),
-        ("openai/gpt-6.1-sol:batch", "gpt-6.1-sol"),
+        ("openai/gpt-6.2-sol", "gpt-6.2-sol"),
+        ("openai/gpt-6.2-sol:batch", "gpt-6.2-sol"),
         ("minimax/minimax-m3", "MiniMax-M3"),
         ("qwen/qwen3.8-max", "qwen3.8-max"),
     ])
@@ -178,7 +178,7 @@ class TestOpenRouterMatching:
         index = pm.manifest_slug_index(mc)
         assert index[pm.gateway_slug("anthropic/claude-sonnet-5.5")] == "claude-sonnet-5-5"
         # Not the subscription copy, nor the regional variant.
-        assert index[pm.gateway_slug("openai/gpt-6.1-sol")] == "gpt-6.1-sol"
+        assert index[pm.gateway_slug("openai/gpt-6.2-sol")] == "gpt-6.2-sol"
         assert index[pm.gateway_slug("z-ai/glm-5.3")] == "glm-5.3"
 
     def test_results_carry_known_and_the_manifest_key(self, mc):
@@ -212,10 +212,10 @@ class TestOpenRouterMatching:
 
 class TestFallbackRule:
     def test_listed_manifest_models_are_ready_and_the_rest_others(self, mc):
-        models = [{"id": "gpt-6.1-sol", "display_name": "x"}, {"id": "gpt-4o", "display_name": "y"}]
+        models = [{"id": "gpt-6.2-sol", "display_name": "x"}, {"id": "gpt-4o", "display_name": "y"}]
         result = pm.build_result("openai", pm.OPENAI, models, mc, fetched_at="t")
         assert result["status"] == "ok"
-        assert result["ready"] == ["gpt-6.1-sol"]
+        assert result["ready"] == ["gpt-6.2-sol"]
         assert "gpt-6-luna" in result["missing"]
         assert [m["id"] for m in result["others"]] == ["gpt-4o"]
         assert result["total"] == 2
@@ -224,7 +224,7 @@ class TestFallbackRule:
         result = pm.build_result("openai", pm.OPENAI, None, mc, reason=pm.UNAUTHORIZED)
         assert result["status"] == "fallback"
         assert result["reason"] == pm.UNAUTHORIZED
-        assert set(result["ready"]) >= {"gpt-6.1-sol", "gpt-6-luna"}
+        assert set(result["ready"]) >= {"gpt-6.2-sol", "gpt-6-luna"}
         assert result["others"] == []
 
     def test_a_list_naming_no_manifest_model_falls_back_but_keeps_its_models(self, mc):
@@ -232,7 +232,7 @@ class TestFallbackRule:
         result = pm.build_result("openai", pm.OPENAI, models, mc, fetched_at="t")
         assert result["status"] == "fallback"
         assert result["reason"] == pm.NO_MATCH
-        assert "gpt-6.1-sol" in result["ready"]
+        assert "gpt-6.2-sol" in result["ready"]
         assert result["others"] == models
 
     def test_a_provider_the_manifest_tunes_nothing_for_is_ok_with_others(self, mc):
@@ -248,10 +248,10 @@ class TestFallbackRule:
         assert result["reason"] == pm.EMPTY_LIST
 
     def test_a_subscription_matches_its_own_entries_and_reports_live_context(self, mc):
-        models = [{"id": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "context_window": 500000}]
+        models = [{"id": "gpt-6.2-sol", "display_name": "GPT-6.2-Sol", "context_window": 500000}]
         result = pm.build_result("codex-oauth", pm.CODEX, models, mc, fetched_at="t")
-        assert result["ready"] == ["gpt-6.1-sol-oauth"]
-        assert result["context_windows"] == {"gpt-6.1-sol-oauth": 500000}
+        assert result["ready"] == ["gpt-6.2-sol-oauth"]
+        assert result["context_windows"] == {"gpt-6.2-sol-oauth": 500000}
 
     def test_a_coding_plan_with_its_own_key_lists_its_brands_models_as_ready(self, mc):
         # Its key cannot reach the brand's rows, but the picker offers them,

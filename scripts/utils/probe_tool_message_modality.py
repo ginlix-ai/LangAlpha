@@ -10,7 +10,7 @@ pixels or the page rather than merely tolerating the request. That distinction i
 the whole point: several routes accept a PDF in a tool result, return 200, and
 answer from the filename.
 
-    uv run python scripts/utils/probe_tool_message_modality.py -m gpt-6.1-sol
+    uv run python scripts/utils/probe_tool_message_modality.py -m gpt-6.2-sol
     uv run python scripts/utils/probe_tool_message_modality.py -m glm-5.3-flash -m qwen3.8-flash-intl --kind pdf
     uv run python scripts/utils/probe_tool_message_modality.py -m gemini-3-pro --json
 

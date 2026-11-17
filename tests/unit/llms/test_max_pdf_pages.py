@@ -39,7 +39,7 @@ class TestGetMaxPdfPages:
     def test_a_provider_with_no_documented_page_limit_reports_none(self):
         """None means 'not bounded by pages', which is a different claim from
         'we don't know' — the latter has to fail closed instead."""
-        assert get_max_pdf_pages("gpt-6.1-sol") is None
+        assert get_max_pdf_pages("gpt-6.2-sol") is None
 
     def test_an_unknown_model_fails_closed(self):
         """This gates transmission, so an over-generous guess becomes a 400 the

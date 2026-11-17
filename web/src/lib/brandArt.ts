@@ -44,8 +44,8 @@ export type BrandArt = {
    *  rounded box would only cut off whatever reaches its corners. */
   bare?: boolean;
   /** The word a model's name opens with that the mark says already, dropped
-   *  where room is short (`nameBesideMark`): "GPT-6.1 Sol" beside the OpenAI
-   *  mark reads "6.1 Sol". A host whose models come from many makers
+   *  where room is short (`nameBesideMark`): "GPT-6.2 Sol" beside the OpenAI
+   *  mark reads "6.2 Sol". A host whose models come from many makers
    *  (OpenRouter, a local server) has none. */
   brand?: string;
 };

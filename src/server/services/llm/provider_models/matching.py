@@ -189,8 +189,8 @@ def _tuned_ladder(block: dict, manifest_entry: dict | None) -> dict:
 def match_endpoint_models(models: list[dict], mc, *, route_api: str) -> dict:
     """Split a custom endpoint's list into the manifest models it serves and the rest.
 
-    A gateway names a model its own way (``openai/gpt-6.1-sol``,
-    ``GPT-6.1-Sol``), so ids meet the manifest by ``gateway_slug``. A matched
+    A gateway names a model its own way (``openai/gpt-6.2-sol``,
+    ``GPT-6.2-Sol``), so ids meet the manifest by ``gateway_slug``. A matched
     model keeps the endpoint's id, which is what that endpoint is called with,
     and the manifest key as its name, so it inherits what the manifest declares
     for it. The rest are chat models the manifest does not know, offered for
