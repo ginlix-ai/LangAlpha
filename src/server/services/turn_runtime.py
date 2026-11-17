@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import HTTPException
 
-from src.server.database.home_workspace import get_home_workspace_id, is_home_id, is_home_row
+from src.server.database.home_workspace import (
+    get_home_workspace_id,
+    is_home_id,
+    is_home_row,
+    is_home_stand_in_row,
+)
 
 if TYPE_CHECKING:
     from ptc_agent.agent.agent import AgentRole
@@ -125,6 +130,11 @@ async def requested_workspace(
     workspace = await get_workspace(workspace_id)
     if workspace is None and is_home_id(user_id, workspace_id):
         return None
+    # The stand-in is Home's to run in, never a client's to open a thread in:
+    # it would run as an analyst workspace with no away mark, so its files
+    # would never be owed to Home. Its files stay readable by workspace routes.
+    if is_home_stand_in_row(workspace):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     # A fresh thread id must not run inside another user's workspace. The
     # report-back dispatch sets X-User-Id to the owner, so it passes.
     require_workspace_owner(workspace, user_id=user_id)

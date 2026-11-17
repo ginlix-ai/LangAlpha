@@ -61,6 +61,26 @@ async def test_a_hand_off_into_home_is_refused_before_the_user_is_asked(args):
 
 
 @pytest.mark.asyncio
+async def test_a_hand_off_into_the_home_stand_in_is_refused_before_the_user_is_asked():
+    from src.server.database.home_workspace import HOME_STAND_IN_KEY
+
+    stand_in_id = "44444444-4444-4444-4444-444444444444"
+    confirm = MagicMock(side_effect=AssertionError("the user must not be asked"))
+    with patch(
+        "src.server.database.workspace.get_workspace",
+        AsyncMock(return_value={"user_id": USER_ID, "name": "stand-in", "config": {HOME_STAND_IN_KEY: True}}),
+    ), patch("src.tools.secretary.dispatch.hitl_confirm", confirm):
+        result = await delegate_to_analyst.ainvoke(
+            _call({"question": "Value NVDA", "workspace_id": stand_in_id}),
+            config={"configurable": {"user_id": USER_ID, "workspace_id": HOME_ID}},
+        )
+
+    payload = json.loads(result.update["messages"][0].content)
+    assert payload["success"] is False
+    assert "workspace you are working in" in payload["error"]
+
+
+@pytest.mark.asyncio
 async def test_a_hand_off_without_a_workspace_is_refused_before_anything_is_created():
     confirm = MagicMock(side_effect=AssertionError("the user must not be asked"))
     create = AsyncMock(side_effect=AssertionError("no workspace may be created"))

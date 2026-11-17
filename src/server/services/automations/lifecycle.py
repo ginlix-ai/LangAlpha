@@ -26,7 +26,11 @@ from src.llms.preferences import custom_model_names
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database import conversation as conversation_db
-from src.server.database.home_workspace import get_home_workspace_id, is_home_id
+from src.server.database.home_workspace import (
+    get_home_workspace_id,
+    is_home_id,
+    is_home_stand_in_id,
+)
 from src.server.database.workspace import (
     HomeWorkspaceTaken,
     get_or_create_home_workspace,
@@ -152,6 +156,13 @@ async def _placement(user_id: str, workspace_id: UUID | str | None, conn) -> str
     if is_home_id(user_id, workspace_id):
         return await _home(user_id, conn)
     workspace_id = str(workspace_id).lower()
+    # Home's stand-in is hidden: a run there would be an analyst's, with no
+    # away mark, so its files would never be owed to Home.
+    if is_home_stand_in_id(user_id, workspace_id):
+        raise TargetRefused(
+            HTTPException(status_code=404, detail="Workspace not found"),
+            field="workspace_id",
+        )
     await require_target_ownership(user_id, workspace_id, None, conn=conn)
     return workspace_id
 

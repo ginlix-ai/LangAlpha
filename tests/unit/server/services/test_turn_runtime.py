@@ -151,3 +151,26 @@ async def test_a_new_thread_naming_no_workspace_is_refused():
     assert refused.value.detail.startswith(
         "workspace_id is required to start a thread"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_client_cannot_open_a_thread_in_the_home_stand_in():
+    """The stand-in is where a Home turn runs, not a workspace to open threads
+    in; naming it would run an analyst with no away mark."""
+    from src.server.database.home_workspace import HOME_STAND_IN_KEY, get_home_stand_in_id
+
+    row = {
+        "workspace_id": get_home_stand_in_id(USER),
+        "user_id": USER,
+        "config": {HOME_STAND_IN_KEY: True},
+    }
+    with patch("src.server.database.workspace.get_workspace", AsyncMock(return_value=row)):
+        with pytest.raises(HTTPException) as refused:
+            await requested_workspace(USER, row["workspace_id"])
+    assert (refused.value.status_code, refused.value.detail) == (404, "Workspace not found")
+
+
+@pytest.mark.asyncio
+async def test_home_with_no_row_is_still_accepted():
+    with patch("src.server.database.workspace.get_workspace", AsyncMock(return_value=None)):
+        assert await requested_workspace(USER, HOME) is None

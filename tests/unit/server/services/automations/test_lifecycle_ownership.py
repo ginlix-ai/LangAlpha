@@ -485,3 +485,37 @@ class TestHome:
 
         assert (exc.value.status_code, exc.value.field) == (403, "workspace_id")
         mock_auto_db.create_automation.assert_not_called()
+
+
+class TestHomeStandInIsNotATarget:
+    """A run in Home's stand-in would be an analyst's, with no away mark."""
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.automations.lifecycle.auto_db")
+    @patch("src.server.services.automations.lifecycle.get_workspace")
+    async def test_create_refuses_the_stand_in(self, mock_get_workspace, mock_auto_db):
+        from src.server.database.home_workspace import get_home_stand_in_id
+
+        with pytest.raises(TargetRefused) as exc:
+            await create_automation(
+                OWNER, _create_data(workspace_id=get_home_stand_in_id(OWNER).upper()),
+            )
+
+        assert (exc.value.status_code, exc.value.field) == (404, "workspace_id")
+        mock_auto_db.create_automation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.automations.lifecycle.auto_db")
+    @patch("src.server.services.automations.lifecycle.get_workspace")
+    async def test_update_refuses_the_stand_in(self, mock_get_workspace, mock_auto_db):
+        from src.server.database.home_workspace import get_home_stand_in_id
+
+        mock_auto_db.get_automation = AsyncMock(return_value=_current_row())
+
+        with pytest.raises(TargetRefused) as exc:
+            await update_automation(
+                AUTOMATION_ID, OWNER, {"workspace_id": get_home_stand_in_id(OWNER)},
+            )
+
+        assert (exc.value.status_code, exc.value.field) == (404, "workspace_id")
+        mock_auto_db.update_automation.assert_not_called()
