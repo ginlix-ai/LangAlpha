@@ -22,6 +22,12 @@ def make_sections(accession="0001234567-24-000001"):
     )
 
 
+def _bad_deflate() -> bytes:
+    data = bytearray(gzip.compress(bytes(range(256)) * 50, mtime=0))
+    data[40:60] = bytes(20)
+    return bytes(data)
+
+
 def test_store_round_trip_and_delete(tmp_path):
     store = LocalDirStore(tmp_path)
     assert store.get("a/b.bin") is None
@@ -122,7 +128,7 @@ def test_sections_cache_get_or_compute_computes_once(tmp_path):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("junk", [b"not gzip", gzip.compress(b"not json"), gzip.compress(b'{"items": 3}')])
+@pytest.mark.parametrize("junk", [b"not gzip", gzip.compress(b"not json"), gzip.compress(b'{"items": 3}'), _bad_deflate()])
 def test_sections_cache_corrupt_entry_is_a_miss_and_is_overwritten(tmp_path, junk):
     store = LocalDirStore(tmp_path)
     cache = SectionsCache(store)
@@ -148,9 +154,10 @@ def test_submission_cache_round_trip_and_fetch_once(tmp_path):
     assert store.get("submissions/0001234567-24-000001.txt.gz") is not None
 
 
-def test_submission_cache_corrupt_entry_is_refetched(tmp_path):
+@pytest.mark.parametrize("junk", [b"junk", gzip.compress(b"", mtime=0), _bad_deflate()], ids=["junk", "empty", "bad deflate"])
+def test_submission_cache_corrupt_entry_is_refetched(tmp_path, junk):
     store = LocalDirStore(tmp_path)
-    store.put("submissions/0001234567-24-000001.txt.gz", b"junk")
+    store.put("submissions/0001234567-24-000001.txt.gz", junk)
     assert SubmissionCache(store).get_or_fetch("0001234567-24-000001", lambda: "fresh") == b"fresh"
     assert SubmissionCache(store).get("0001234567-24-000001") == b"fresh"
 

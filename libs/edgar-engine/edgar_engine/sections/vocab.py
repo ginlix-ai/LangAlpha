@@ -119,16 +119,17 @@ def filed_forms(form: str) -> tuple[str, ...]:
     return FORM_VARIANTS.get(form, (form,))
 
 
+_FAMILIES = {"10-K": "10-K", "10-K405": "10-K", "10-KT": "10-K", "10-KT405": "10-K", "10-Q": "10-Q", "10-QT": "10-Q",
+             "8-K": "8-K", "8-K12B": "8-K", "8-K12G3": "8-K", "8-K15D5": "8-K", "20-F": "20-F", "40-F": "40-F"}
+
+
 def form_family(form: str) -> str:
-    f = form.upper().replace("/A", "")
-    if f.startswith("10-K"):
-        return "10-K"
-    if f.startswith("10-Q"):
-        return "10-Q"
-    for fam in ("8-K", "20-F", "40-F"):
-        if f.startswith(fam):
-            return fam
-    raise ValueError(f"unsupported form {form!r}")
+    """The form whose items a filing has: a variant (10-K405, a transition 10-KT, a successor's 8-K12B) reads as
+    its form, and a small-business 10-KSB, whose items differ, is refused."""
+    family = _FAMILIES.get(form.upper().removesuffix("/A"))
+    if family is None:
+        raise ValueError(f"unsupported form {form!r}")
+    return family
 
 
 def spec_for(form: str, filing_date: str | None = None) -> FormSpec:

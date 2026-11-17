@@ -223,6 +223,62 @@ def test_truncated_submission_is_refused():
         extract_sections(full[: full.rindex("</DOCUMENT>")])
 
 
+def test_a_submission_cut_between_documents_or_holding_none_is_refused():
+    full = "<SEC-DOCUMENT>0000000000-00-000001.txt\n" + submission(
+        "10-K", "2024-02-01", ("10-K", TENK), ("EX-13", "Annual report.")) + "\n</SEC-DOCUMENT>\n"
+    assert extract_sections(full)["1"].status == "present"
+    with pytest.raises(ValueError, match="truncated"):
+        extract_sections(full[: full.rindex("<DOCUMENT>")])
+    with pytest.raises(ValueError, match="truncated"):
+        extract_sections(b"")
+
+
+def test_a_submission_naming_no_form_reads_its_first_text_document():
+    fs = extract_sections(submission("10-K", "2004-03-01", ("GRAPHIC", "begin 644 logo.gif\nM1234\nend"), ("EX-99", TENK)))
+    assert fs.items and not fs.text.startswith("begin 644")
+
+
+def test_an_unsupported_form_family_is_refused():
+    from edgar_engine.sections.vocab import form_family
+    assert [form_family(f) for f in ("10-K405/A", "10-KT", "8-K12B", "10-Q/A")] == ["10-K", "10-K", "8-K", "10-Q"]
+    with pytest.raises(ValueError):
+        form_family("10-KSB")
+
+
+def test_a_filing_too_deep_to_parse_reads_as_text_with_its_entities_and_paragraphs():
+    from edgar_engine.sections.rendering import html_lines
+    body = "<html><body>" + "<div>" * 300 + "<p>Item&nbsp;1.&nbsp;Business<p>We make widgets &amp; gadgets.</body></html>"
+    lines = [ln.strip() for ln in html_lines(body)]
+    assert "Item 1. Business" in lines and "We make widgets & gadgets." in lines
+
+
+def test_an_amendment_reads_its_own_document_before_a_copy_typed_as_the_original():
+    copy = html(p("PART I"), p("ITEM 1. BUSINESS"), p("The original text. " + BODY), p("SIGNATURES"))
+    amended = html(p("PART III"), p("ITEM 10. DIRECTORS"), p("The amended text. " + BODY), p("SIGNATURES"))
+    fs = extract_sections(submission("10-K/A", "2024-04-29", ("10-K", copy), ("10-K/A", amended)))
+    assert list(fs.items) == ["10"] and "The amended text" in fs["10"].text
+
+
+def test_paragraphs_that_never_close_their_font_tags_are_read_to_the_end():
+    paras = "".join(f"<P><FONT SIZE=2>{BODY} {i}" for i in range(400))
+    body = f"<html><body><P><FONT SIZE=2>ITEM 1. BUSINESS{paras}<P><FONT SIZE=2>ITEM 7. MANAGEMENT'S DISCUSSION{paras}</body></html>"
+    fs = extract_sections(submission("10-K", "2024-02-01", ("10-K", body)))
+    assert fs["7"].status == "present" and fs["7"].text.endswith(f"{BODY} 399")
+
+
+def test_a_compact_filing_date_reads_as_iso_and_a_malformed_one_is_refused():
+    raw = submission("10-K", "2024-02-01", ("10-K", TENK))
+    assert extract_sections(raw, filing_date="20240201").filing_date == "2024-02-01"
+    with pytest.raises(ValueError, match="filing_date"):
+        extract_sections(raw, filing_date="02/01/2024")
+
+
+def test_the_main_document_stays_first_when_an_exhibit_has_a_lower_sequence():
+    from edgar_engine.sections.documents import main_documents, split
+    sub = submission("10-K", "2005-03-01", ("EX-13", html(p("Annual report."))), ("10-K", TENK))
+    assert [d.type for d in main_documents(split(sub), "10-K")] == ["10-K", "EX-13"]
+
+
 def test_header_supplies_form_and_date_and_offsets_index_the_text():
     fs = extract_sections(submission("10-K", "2024-02-01", ("10-K", TENK)))
     assert (fs.form, fs.filing_date, fs.accession) == ("10-K", "2024-02-01", "0000000000-00-000001")

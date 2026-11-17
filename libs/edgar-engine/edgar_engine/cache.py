@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 import tempfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -70,7 +71,7 @@ class SectionsCache:
             return None
         try:
             return FilingSections.from_dict(json.loads(gzip.decompress(data)))
-        except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError, AttributeError):
             return None
 
     def put(self, sections: FilingSections) -> None:
@@ -105,8 +106,8 @@ class SubmissionCache:
         if data is None:
             return None
         try:
-            return gzip.decompress(data)
-        except (OSError, EOFError):
+            return gzip.decompress(data) or None
+        except (OSError, EOFError, zlib.error):
             return None
 
     def put(self, accession: str, raw: bytes) -> None:

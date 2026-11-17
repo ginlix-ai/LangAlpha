@@ -10,6 +10,7 @@ reads "$ 1,234" or "(56)" rather than "$ | 1,234".
 from __future__ import annotations
 
 import bisect
+import html
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ _SGML_LAYOUT = re.compile(r"</?(PAGE|S|C|TABLE|CAPTION|FN|F\d+|R\d*)>", re.I)
 _WS = re.compile(r"\s+")
 _OPENS = re.compile(r"[$€£¥]*\(?|[$€£¥]+")
 _CLOSES = re.compile(r"\)?%?\)?")
+_INLINE = re.compile(r"</?(?:font|basefont|a|span|strong|em|b|i|u|small|big|strike|s|tt)\b[^>]*>", re.I)
 
 
 @dataclass
@@ -100,13 +102,27 @@ def _hidden(el) -> bool:
     return "display:none" in (el.get("style") or "").replace(" ", "").lower()
 
 
+def _parse(body: str):
+    """The document tree, and whether libxml2 cut it short: past nesting depth 256 it stops reading and
+    reports the limit only in its error log."""
+    parser = lxml.html.HTMLParser(encoding="utf-8", remove_comments=True)
+    root = lxml.html.document_fromstring(body.encode("utf-8", "surrogatepass"), parser=parser)
+    return root, any(e.type_name == "ERR_RESOURCE_LIMIT" for e in parser.error_log)
+
+
 def html_lines(body: str) -> list[str]:
+    """Old filings that open a <FONT> on every paragraph and never close it nest past libxml2's depth limit;
+    they are parsed again without their inline formatting tags, and read as plain text if still too deep."""
     body = re.sub(r"</?XBRL>", "", body, flags=re.I)
     try:
-        root = lxml.html.document_fromstring(body.encode("utf-8", "surrogatepass"),
-                                             parser=lxml.html.HTMLParser(encoding="utf-8", remove_comments=True))
+        root, cut = _parse(body)
+        if cut:
+            root, cut = _parse(_INLINE.sub("", body))
     except (etree.ParserError, ValueError):
-        return text_lines(re.sub(r"<[^>]+>", " ", body))
+        cut = True
+    if cut:
+        flat = re.sub(r"<[^>]+>", " ", re.sub(r"<(?:p|br|div|tr|li|h[1-6]|table)\b[^>]*>", "\n", body, flags=re.I))
+        return text_lines(html.unescape(flat))
     out: list[str] = []
     cur: list[str] = []
 

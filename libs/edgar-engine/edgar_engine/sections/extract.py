@@ -21,24 +21,33 @@ if TYPE_CHECKING:
 
 _OPEN = re.compile(r"<DOCUMENT>", re.I)
 _CLOSE = re.compile(r"</DOCUMENT>", re.I)
+_SUBMISSION_OPEN = re.compile(r"<SEC-DOCUMENT>", re.I)
+_SUBMISSION_CLOSE = re.compile(r"</SEC-DOCUMENT>", re.I)
 
 
 def extract_sections(submission: bytes | str, *, form: str | None = None, filing_date: str | None = None,
                      accession: str | None = None) -> FilingSections:
     """Items of one filing from its full-text submission (the accession's .txt file).
 
-    form, filing_date and accession default to the submission's SEC header. A submission with a
-    <DOCUMENT> left open is refused: a partial download, or an HTTP cache that kept one, would
-    otherwise parse into items cut short with no sign of it.
+    form, filing_date and accession default to the submission's SEC header; filing_date is YYYY-MM-DD or
+    YYYYMMDD. A submission with no document, a <DOCUMENT> left open, or an <SEC-DOCUMENT> never closed is
+    refused: a partial download, or an HTTP cache that kept one, would otherwise parse into items cut short
+    or missing with no sign of it.
     """
     text = decode(submission)
-    if len(_OPEN.findall(text)) != len(_CLOSE.findall(text)):
-        raise ValueError("the submission is truncated: a <DOCUMENT> is not closed")
+    opened = len(_OPEN.findall(text))
+    if not opened or opened != len(_CLOSE.findall(text)) or (
+            _SUBMISSION_OPEN.search(text[:1000]) and not _SUBMISSION_CLOSE.search(text[-1000:])):
+        raise ValueError("the submission is truncated or holds no document")
     head = header(text)
     form = form or head.get("form")
     if not form:
         raise ValueError("form is not given and the submission header does not name it")
     filing_date = filing_date or head.get("filing_date")
+    if filing_date and re.fullmatch(r"\d{8}", filing_date):
+        filing_date = f"{filing_date[:4]}-{filing_date[4:6]}-{filing_date[6:]}"
+    if filing_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date):
+        raise ValueError(f"filing_date {filing_date!r} is not YYYY-MM-DD")
     spec = spec_for(form, filing_date)
     rendering = render_documents(main_documents(split(text), form))
     lines, full = rendering.lines, rendering.text
