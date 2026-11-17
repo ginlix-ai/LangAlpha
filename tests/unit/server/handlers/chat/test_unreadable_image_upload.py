@@ -72,7 +72,7 @@ _HEIC = _data_url("image/heic", b"\0\0\0\x18ftypheic\0\0\0\0mif1heic" + b"\0" * 
     ("data", "model"),
     [
         (UNREADABLE["svg"], "deepseek-flash"),
-        (UNREADABLE["svg"], "glm-5.2"),
+        (UNREADABLE["svg"], "glm-5.3"),
         (UNREADABLE["truncated png"], "deepseek-flash"),
     ],
     ids=["svg-vision", "svg-text-only", "truncated png-vision"],

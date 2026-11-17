@@ -416,7 +416,7 @@ class TestThroughTheStripMiddleware:
     @pytest.mark.asyncio
     async def test_a_text_only_target_still_gets_the_strip_not_a_fit(self):
         history = [HumanMessage(content=[_image_url(_encode((10, 9000)))])]
-        forwarded = await _forwarded("glm-5.2", history)
+        forwarded = await _forwarded("glm-5.3", history)
         assert len(forwarded[0].content) == 1
         assert "not visible to the current model" in forwarded[0].content[0]["text"]
 

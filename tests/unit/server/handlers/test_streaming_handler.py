@@ -232,7 +232,7 @@ class TestRunSSEProducerFormatting:
 
     def test_without_a_recorded_payer_the_source_answers_and_names_nothing(self, monkeypatch):
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        frame = self._frame(self._upstream(401), credential_source="oauth", model="gpt-5.3-codex-spark-oauth")
+        frame = self._frame(self._upstream(401), credential_source="oauth", model="gpt-6-luna-oauth")
         assert frame["payer"] == "subscription"
         assert "account" not in frame
 

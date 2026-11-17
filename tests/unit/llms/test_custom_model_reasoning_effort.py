@@ -169,11 +169,11 @@ class TestASurfaceComesWholeFromOneSide:
     ``off`` with no off rung beside it failed validation on every turn."""
 
     def test_an_entry_naming_its_own_write_takes_none_of_the_built_ins_switches(self):
-        """The block the provider list writes for GLM-5.2 on OpenRouter."""
+        """The block the provider list writes for DeepSeek Flash on OpenRouter."""
         client = _build(
             {
-                "name": "glm-5.2",
-                "model_id": "z-ai/glm-5.2",
+                "name": "deepseek-flash",
+                "model_id": "deepseek/deepseek-flash",
                 "provider": "openrouter",
                 "reasoning": {"efforts": ["low", "medium", "high"], "write": "parameters.reasoning.effort"},
             },
@@ -186,11 +186,11 @@ class TestASurfaceComesWholeFromOneSide:
         """Borrowing the surface is still right for a flat ladder, which names
         none of its own; only the ``off`` none of its rungs can apply goes."""
         client = _build(
-            {"name": "glm-5.2", "model_id": "glm-5.2", "provider": "z-ai", "reasoning_efforts": ["high", "max"]},
+            {"name": "deepseek-flash", "model_id": "deepseek-flash", "provider": "deepseek", "reasoning_efforts": ["high", "max"]},
             reasoning_effort="max",
         )
-        assert client.extra_body["reasoning_effort"] == "max"
-        assert client.extra_body["thinking"]["type"] == "enabled"
+        assert client.output_config == {"effort": "max"}
+        assert client.thinking == {"type": "enabled"}
 
 
 class TestAnEmptyBlockDoesNotAnswerForTheEntry:

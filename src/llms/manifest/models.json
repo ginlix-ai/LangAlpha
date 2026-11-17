@@ -451,38 +451,6 @@
       }
     }
   },
-  "glm-5.2": {
-    "prompt_guidance": "lean",
-    "model_id": "glm-5.2",
-    "provider": "z-ai",
-    "display_name": "GLM-5.2",
-    "visible": true,
-    "speed": 3,
-    "intelligence": 2,
-    "context": 1000000,
-    "parameters": {
-      "max_tokens": 128000
-    },
-    "input_modalities": [
-      "text"
-    ],
-    "reasoning": {
-      "efforts": [
-        "none",
-        "high",
-        "max"
-      ],
-      "default": "high",
-      "write": "extra_body.reasoning_effort",
-      "on": {
-        "extra_body.thinking.clear_thinking": false,
-        "extra_body.thinking.type": "enabled"
-      },
-      "off": {
-        "extra_body.thinking.type": "disabled"
-      }
-    }
-  },
   "glm-5.3": {
     "prompt_guidance": "lean",
     "model_id": "glm-5.3",
@@ -545,38 +513,6 @@
       ],
       "default": "high",
       "write": "extra_body.reasoning_effort"
-    }
-  },
-  "glm-5.2-cn": {
-    "prompt_guidance": "lean",
-    "model_id": "glm-5.2",
-    "provider": "z-ai-cn",
-    "display_name": "GLM-5.2 (CN)",
-    "visible": true,
-    "speed": 3,
-    "intelligence": 2,
-    "context": 1000000,
-    "parameters": {
-      "max_tokens": 128000
-    },
-    "input_modalities": [
-      "text"
-    ],
-    "reasoning": {
-      "efforts": [
-        "none",
-        "high",
-        "max"
-      ],
-      "default": "high",
-      "write": "extra_body.reasoning_effort",
-      "on": {
-        "extra_body.thinking.clear_thinking": false,
-        "extra_body.thinking.type": "enabled"
-      },
-      "off": {
-        "extra_body.thinking.type": "disabled"
-      }
     }
   },
   "glm-5.3-cn": {
@@ -955,70 +891,6 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "kimi-k3-coding": {
-    "prompt_guidance": "lean",
-    "model_id": "k3",
-    "provider": "moonshot-coding",
-    "display_name": "Kimi K3",
-    "visible": true,
-    "speed": 1,
-    "intelligence": 4,
-    "context": 262144,
-    "input_modalities": [
-      "text",
-      "image"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      }
-    },
-    "reasoning": {
-      "efforts": [
-        "low",
-        "high",
-        "max"
-      ],
-      "default": "high",
-      "write": "parameters.reasoning.effort"
-    }
-  },
-  "gpt-5.3-codex-spark-oauth": {
-    "model_id": "gpt-5.3-codex-spark",
-    "provider": "codex-oauth",
-    "display_name": "GPT-5.3 Codex Spark",
-    "oauth_plans": [
-      "pro",
-      "prolite"
-    ],
-    "visible": true,
-    "speed": 5,
-    "intelligence": 3,
-    "context": 400000,
-    "input_modalities": [
-      "text",
-      "image",
-      "pdf"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false
-    },
-    "reasoning": {
-      "efforts": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "default": "medium",
-      "write": "parameters.reasoning.effort"
-    }
-  },
   "gpt-6.1-terra-oauth": {
     "prompt_guidance": "lean",
     "model_id": "gpt-6.1-terra",
@@ -1230,74 +1102,6 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "grok-4.5": {
-    "model_id": "grok-4.5",
-    "provider": "xai",
-    "display_name": "Grok 4.5",
-    "visible": true,
-    "speed": 3,
-    "intelligence": 4,
-    "context": 500000,
-    "input_modalities": [
-      "text",
-      "image"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false
-    },
-    "reasoning": {
-      "efforts": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "default": "medium",
-      "write": "parameters.reasoning.effort"
-    }
-  },
-  "grok-4.3": {
-    "model_id": "grok-4.3",
-    "provider": "xai",
-    "display_name": "Grok 4.3",
-    "visible": true,
-    "speed": 4,
-    "intelligence": 3,
-    "context": 1000000,
-    "compaction_profile": "expansive",
-    "input_modalities": [
-      "text",
-      "image"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false
-    },
-    "reasoning": {
-      "efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "default": "medium",
-      "write": "parameters.reasoning.effort"
-    }
-  },
   "grok-build": {
     "model_id": "grok-build-0.1",
     "provider": "xai",
@@ -1376,74 +1180,6 @@
     },
     "reasoning": {
       "efforts": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "default": "medium",
-      "write": "parameters.reasoning.effort"
-    }
-  },
-  "grok-4.5-oauth": {
-    "model_id": "grok-4.5",
-    "provider": "grok-oauth",
-    "display_name": "Grok 4.5",
-    "visible": true,
-    "speed": 3,
-    "intelligence": 4,
-    "context": 500000,
-    "input_modalities": [
-      "text",
-      "image"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false
-    },
-    "reasoning": {
-      "efforts": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
-      "default": "medium",
-      "write": "parameters.reasoning.effort"
-    }
-  },
-  "grok-4.3-oauth": {
-    "model_id": "grok-4.3",
-    "provider": "grok-oauth",
-    "display_name": "Grok 4.3",
-    "visible": true,
-    "speed": 4,
-    "intelligence": 3,
-    "context": 1000000,
-    "compaction_profile": "expansive",
-    "input_modalities": [
-      "text",
-      "image"
-    ],
-    "parameters": {
-      "reasoning": {
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false
-    },
-    "reasoning": {
-      "efforts": [
-        "none",
         "minimal",
         "low",
         "medium",
