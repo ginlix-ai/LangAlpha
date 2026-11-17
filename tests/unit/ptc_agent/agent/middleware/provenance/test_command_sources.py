@@ -369,7 +369,7 @@ async def test_a_handed_off_commands_paid_calls_bring_the_relays_sources():
 async def test_a_free_call_to_a_paid_server_keeps_its_trace_source():
     """Dropped by server, a run that called a free tool and a paid one of the
     same server lost the free call's source: the relay holds none for it."""
-    free_entry = {**_ENTRY, "server": "firecrawl", "tool": "firecrawl_find_tools"}
+    free_entry = {**_ENTRY, "server": "firecrawl", "tool": "alexandria_library_search"}
     paid_entry = {**_ENTRY, "server": "firecrawl", "tool": "firecrawl_scrape"}
     held = RelayedSource(source_type="web_fetch", identifier="https://example.com/a")
     middleware = ProvenanceMiddleware(
@@ -387,7 +387,7 @@ async def test_a_free_call_to_a_paid_server_keeps_its_trace_source():
 
     assert [e["identifier"] for e in emitted] == [
         "https://example.com/a",
-        "firecrawl:firecrawl_find_tools",
+        "firecrawl:alexandria_library_search",
     ]
 
 

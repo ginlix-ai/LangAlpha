@@ -247,6 +247,29 @@ def test_a_scrape_with_no_catalog_runs_is_priced_as_a_page(runs):
     ).credits == 1
 
 
+def test_catalog_runs_are_priced_on_library_read_and_refused_on_scrape():
+    """Firecrawl moved catalog runs from ``firecrawl_scrape(alexandria=)`` to
+    ``alexandria_library_read(calls=)``. Unpriced, the new tool was refused.
+    The old frame is still run by Firecrawl, but how it bills one sent beside
+    a url is unknown, so it is refused rather than priced as a catalog run."""
+    from src.server.services.egress import RelayError
+    from src.server.services.egress.firecrawl_catalog import Capability
+
+    meter = FirecrawlMeter()
+    catalog = _catalog(lookup=Capability("L", 15.0, False))
+    run = {"provider": "p", "capability": "lookup", "options": {"ticker": "NVDA"}}
+    reply = {"data": {"creditsCost": 15, "alexandria": [{**run, "data": {"x": 1}}]}}
+    read = "alexandria_library_read"
+
+    assert meter.is_paid(read)
+    assert meter.refusal(read, {"calls": [run]}) is None
+    assert meter.estimate(read, {"calls": [run]}, catalog) == 15.0
+    assert meter.charge(read, {"calls": [run]}, reply).credits == 15
+    legacy = {"url": "https://x.com/a/status/1", "alexandria": run}
+    assert meter.refusal("firecrawl_scrape", legacy).code is RelayError.BAD_REQUEST
+    assert not meter.is_paid("alexandria_library_search")
+
+
 def test_every_paid_call_is_held_at_least_one_credit():
     meter = FirecrawlMeter()
 
@@ -578,20 +601,21 @@ def test_a_per_record_run_is_priced_at_its_declared_count_or_refused():
     meter = FirecrawlMeter()
 
     def run(capability, options=None):
-        return {"alexandria": {"provider": "p", "capability": capability, "options": options or {}}}
+        return {"calls": [{"provider": "p", "capability": capability, "options": options or {}}]}
 
+    read = "alexandria_library_read"
     catalog = _catalog(
         search=Capability("S", 5.0, True, records_option="limit", records_default=2),
         size=Capability("Z", 5.0, True, records_option="size", records_default=None),
         lookup=Capability("L", 10.0, True),
     )
-    assert meter.estimate("firecrawl_scrape", run("search"), catalog) == 10.0
-    assert meter.estimate("firecrawl_scrape", run("search", {"limit": 6}), catalog) == 30.0
-    assert meter.estimate("firecrawl_scrape", run("size", {"size": 3}), catalog) == 15.0
-    assert meter.estimate("firecrawl_scrape", run("lookup"), catalog) == 10.0
+    assert meter.estimate(read, run("search"), catalog) == 10.0
+    assert meter.estimate(read, run("search", {"limit": 6}), catalog) == 30.0
+    assert meter.estimate(read, run("size", {"size": 3}), catalog) == 15.0
+    assert meter.estimate(read, run("lookup"), catalog) == 10.0
     for unpriceable in (run("size"), run("missing")):
         with pytest.raises(RelayRejection) as refused:
-            meter.estimate("firecrawl_scrape", unpriceable, catalog)
+            meter.estimate(read, unpriceable, catalog)
         assert refused.value.code is RelayError.BAD_REQUEST
     assert meter.refusal("firecrawl_extract", {}).code is RelayError.TOOL_BLOCKED
 
@@ -691,8 +715,8 @@ def test_a_count_that_is_not_a_number_is_refused():
                                          records_default=2))
     with pytest.raises(RelayRejection) as refused:
         FirecrawlMeter().estimate(
-            "firecrawl_scrape",
-            {"alexandria": {"provider": "p", "capability": "search", "options": {"limit": "50"}}},
+            "alexandria_library_read",
+            {"calls": [{"provider": "p", "capability": "search", "options": {"limit": "50"}}]},
             catalog,
         )
     assert refused.value.code is RelayError.BAD_REQUEST

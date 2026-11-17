@@ -156,7 +156,7 @@ async def test_staged_sources_name_their_tool_and_collect_names_the_calls_as_tra
         [
             {"server": "firecrawl", "tool": "firecrawl_scrape"},
             {"server": "firecrawl", "tool": long_tool},
-            {"server": "firecrawl", "tool": "firecrawl_find_tools"},
+            {"server": "firecrawl", "tool": "alexandria_library_search"},
         ]
     )
     assert [s.identifier in batch.calls for s in trace] == [True, True, False]
