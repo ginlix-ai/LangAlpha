@@ -8,8 +8,10 @@ time hands it back under an advisory lock. ``last_handback`` is the last
 hand-back, for the user's notice until ``handback_seen_at``; which files each
 hand-back carried is in ``home_handbacks`` (134). A failed hand-back waits
 until ``next_handback_at`` and counts ``handback_attempts`` until it gives up.
-``home_id`` is Home's workspace, whose computer the sweep asks after. One row
-per user, written only by an upsert or a guarded update.
+One row per user, written only by an upsert or a guarded update. ``user_id``
+references ``users`` with ``ON UPDATE CASCADE``, so the row follows
+``migrate_user_id`` to the user's new id; Home's id is derived from it where
+it is read, never stored, so nothing is left naming the old one.
 
 A new table, so nothing existing is locked. Rollback: the previous build never
 reads it, so ``alembic downgrade 132`` drops it once no process of this build
@@ -28,8 +30,8 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS home_away (
-            user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-            home_id UUID NOT NULL,
+            user_id TEXT PRIMARY KEY
+                REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
             away_since TIMESTAMPTZ,
             last_away_at TIMESTAMPTZ,
             handed_back_through TIMESTAMPTZ,

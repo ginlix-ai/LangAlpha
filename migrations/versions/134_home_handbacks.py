@@ -9,7 +9,9 @@ one carried them (``kept``), each with the folder the latest of those filled,
 so a row may copy nothing and fill no folder. A card of such a turn reads
 them to open the copy that came back with it (the first hand-back after the
 turn that carried or kept it), and the next hand-back carries only what
-differs from every earlier one.
+differs from every earlier one. ``user_id`` references ``users`` with
+``ON UPDATE CASCADE``, so the rows follow ``migrate_user_id`` to the user's
+new id.
 
 A new table, so nothing existing is locked. Rollback: the previous build never
 reads it, so ``alembic downgrade 133`` drops it once no process of this build
@@ -29,7 +31,8 @@ def upgrade() -> None:
         """
         CREATE TABLE IF NOT EXISTS home_handbacks (
             handback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL
+                REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
             through TIMESTAMPTZ NOT NULL,
             folder TEXT,
             files JSONB NOT NULL,

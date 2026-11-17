@@ -265,3 +265,16 @@ async def test_a_failing_hand_back_waits_and_then_gives_up(seed_user):
     await home_away.mark_away(user_id)
     again = await home_away.get_home_away(user_id)
     assert home_away.is_owed(again) and again["handback_attempts"] == 0
+
+
+async def test_the_rows_follow_migrate_user_id_to_the_users_new_id():
+    from src.server.database.pool import get_db_connection
+
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT conrelid::regclass::text AS tbl, confupdtype FROM pg_constraint"
+            " WHERE contype = 'f' AND confrelid = 'users'::regclass"
+            " AND conrelid IN ('home_away'::regclass, 'home_handbacks'::regclass)"
+        )
+        rows = await cur.fetchall()
+    assert {r["tbl"]: r["confupdtype"] for r in rows} == {"home_away": "c", "home_handbacks": "c"}

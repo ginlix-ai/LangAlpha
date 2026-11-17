@@ -22,6 +22,7 @@ from psycopg.types.json import Json
 from src.server.database.home_workspace import (
     get_home_stand_in_id,
     get_home_workspace_id,
+    home_id_sql,
 )
 from src.server.database.pool import get_db_connection
 
@@ -162,8 +163,8 @@ async def mark_away(
             raise StandInGone()
         await cur.execute(
             """
-            INSERT INTO home_away (user_id, home_id, away_since, last_away_at)
-            VALUES (%(user_id)s, %(home_id)s, clock_timestamp(), clock_timestamp())
+            INSERT INTO home_away (user_id, away_since, last_away_at)
+            VALUES (%(user_id)s, clock_timestamp(), clock_timestamp())
             ON CONFLICT (user_id) DO UPDATE SET
                 away_since = COALESCE(home_away.away_since, clock_timestamp()),
                 last_away_at = clock_timestamp(),
@@ -172,7 +173,7 @@ async def mark_away(
                 updated_at = NOW()
             RETURNING last_away_at
             """,
-            {"user_id": user_id, "home_id": get_home_workspace_id(user_id)},
+            {"user_id": user_id},
         )
         return (await cur.fetchone())["last_away_at"]
 
@@ -215,7 +216,7 @@ async def list_owed(limit: int = 50) -> List[Dict[str, Any]]:
         await cur.execute(
             f"""
             SELECT ha.user_id FROM home_away ha
-            LEFT JOIN workspaces w ON w.workspace_id = ha.home_id
+            LEFT JOIN workspaces w ON w.workspace_id = {home_id_sql("ha.user_id")}
             WHERE {OWED_SQL}
               AND (ha.next_handback_at IS NULL OR ha.next_handback_at <= NOW())
               AND NOT {computer_tunnel_down_sql("w.computer_id::text")}

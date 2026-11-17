@@ -97,9 +97,8 @@ async def test_a_stand_in_whose_computer_is_gone_is_placed_again(seed_user, db_c
 
 async def _owed(db_conn, user_id):
     await db_conn.execute(
-        "INSERT INTO home_away (user_id, home_id, away_since, last_away_at) "
-        "VALUES (%s, %s, NOW(), NOW())",
-        (user_id, get_home_workspace_id(user_id)),
+        "INSERT INTO home_away (user_id, away_since, last_away_at) VALUES (%s, NOW(), NOW())",
+        (user_id,),
     )
 
 
@@ -108,11 +107,10 @@ async def _left(db_conn, user_id):
     import json
 
     await db_conn.execute(
-        "INSERT INTO home_away (user_id, home_id, last_away_at, handed_back_through,"
-        " last_handback) VALUES (%s, %s, NOW(), NOW(), %s::jsonb)",
+        "INSERT INTO home_away (user_id, last_away_at, handed_back_through,"
+        " last_handback) VALUES (%s, NOW(), NOW(), %s::jsonb)",
         (
             user_id,
-            get_home_workspace_id(user_id),
             json.dumps(
                 {
                     "handback_id": str(uuid.uuid4()),
