@@ -8,6 +8,13 @@ import { resolveWorkspace } from "./workspaces.js";
 const WAIT = { type: "bool", help: "print only the answer, once the turn ends" } as const;
 const DETACH = { type: "bool", help: "return once the turn has started, with its thread and run" } as const;
 
+/** What ``threads output`` says on stderr after ``Thread <id>`` when the
+ *  thread is still running, with ``--json`` too. An agent polling from a
+ *  shell reads it, and its loop guard counts each such read as a poll
+ *  (``LA_STILL_RUNNING`` in src/ptc_agent/agent/limits.py, held to this line
+ *  by a test): reword both together. */
+export const STILL_RUNNING = "is still running; this is its text so far.";
+
 const answer = (verdict: "approve" | "reject") =>
   command({
     words: ["threads", verdict],
@@ -48,21 +55,35 @@ export const threads: Command[] = [
       workspace: WORKSPACE,
       archived: { type: "bool", help: "archived threads instead (needs --workspace)" },
       limit: { type: "int", value: "N", help: "at most this many (default 20)" },
+      offset: { type: "int", value: "N", help: "skip the N newest, for the next page" },
     },
     async run({ api, args, json }) {
       const ref = args.str("workspace");
+      const offset = args.int("offset") ?? 0;
       // The server keeps no list of archived threads across workspaces.
       if (args.has("archived") && !ref) throw usage("--archived lists one workspace's threads: name it with --workspace");
-      const page = await api.json<{ threads: Row[] }>("GET", "/api/v1/threads", {
+      const page = await api.json<{ threads: Row[]; total?: number }>("GET", "/api/v1/threads", {
         query: {
           workspace_id: ref ? await resolveWorkspace(api, ref) : undefined,
           archived: args.has("archived") || undefined,
           limit: args.int("limit") ?? 20,
+          offset: offset || undefined,
         },
       });
+      // The thread's own llm_model is empty while it follows the account
+      // default, so the model shown is the one its latest turn ran on.
+      const rows = page.threads.map((t) => ({ ...t, model: t.latest_run_model }));
       print(json, page.threads, () =>
-        table(page.threads, ["thread_id", "title", "current_status", "workspace_id", "updated_at"]),
+        table(rows, ["thread_id", "title", "current_status", "model", "workspace_id", "updated_at"]),
       );
+      // On stderr, so --json stays the rows: a page is not every thread, and
+      // a thread looked for and not on it may be on the next.
+      const shown = offset + page.threads.length;
+      if (typeof page.total === "number" && page.threads.length > 0 && shown < page.total) {
+        process.stderr.write(
+          `Showing threads ${offset + 1}-${shown} of ${page.total}, newest first; pass --offset ${shown} for the next ones.\n`,
+        );
+      }
     },
   }),
   command({
@@ -93,7 +114,7 @@ export const threads: Command[] = [
         p`/api/v1/threads/${id}/output`,
         { query: { turns: args.int("turns") } },
       );
-      if (out.status === "running" && !json) process.stderr.write(`Thread ${id} is still running; this is its text so far.\n`);
+      if (out.status === "running") process.stderr.write(`Thread ${id} ${STILL_RUNNING}\n`);
       print(json, out, () => out.text);
     },
   }),
@@ -157,9 +178,23 @@ export const threads: Command[] = [
     words: ["threads", "cancel"],
     summary: "stop the turn a thread is running",
     operands: ["id"],
+    flags: {
+      run: { type: "string", value: "RUN_ID", help: "stop only this turn, so a stop meant for it never ends a later one" },
+    },
     async run({ api, args, json }) {
-      const result = await api.json<Row>("POST", p`/api/v1/threads/${args.op("id")}/cancel`);
-      print(json, result, () => "Cancel requested.");
+      const run = args.str("run");
+      // The server reads an empty id as none named, which stops whatever runs.
+      if (run === "") throw usage("--run needs a run id");
+      const result = await api.json<Row>("POST", p`/api/v1/threads/${args.op("id")}/cancel`, {
+        query: { run_id: run },
+      });
+      // Said here, not only in the prompt: an agent told to wait for the report
+      // read the thread at once and reported the stop twice. A stop that found
+      // nothing to stop has no report coming, and the server says why.
+      print(json, result, () =>
+        result.cancelled === false
+          ? String(result.message ?? "Nothing was cancelled.")
+          : "Cancel requested. A report-back, if one is coming, says how far the turn got.");
     },
   }),
   command({

@@ -308,14 +308,11 @@ async def test_a_claude_code_turn_refuses_the_order_cards_a_later_run_cut_off():
     ledger.abandon.assert_awaited_once_with("m1", "c1")
 
 
-def test_a_chief_of_staff_call_waits_for_the_user_only_with_an_action_that_puts_a_card_to_them():
+def test_a_chief_of_staff_call_waits_for_the_user_only_when_it_puts_a_card_to_them():
+    """A hand-off asks on its card; ``la``'s requests wait in the app, not on the turn."""
     waits = waits_for_user(frozenset())
     assert waits("AskUserQuestion", {}) and waits("delegate_to_analyst", {})
-    assert waits("manage_workspaces", {"action": "create"}) and not waits("manage_workspaces", {"action": "list"})
-    assert waits("manage_threads", {"action": "delete"}) and not waits("manage_threads", {"action": "list"})
-    assert not waits("manage_workspaces", {"action": ["create"]}) and not waits("manage_threads", {"action": {"x": 1}})
-    assert waits("delegate_to_analyst", {"action": ["create"]})
-    assert not waits("Bash", {})
+    assert not waits("Bash", {"command": "la workspaces create Research"})
 
 
 def test_a_claude_code_turn_takes_reports_steers_and_task_resumes_in():
@@ -443,8 +440,9 @@ def test_a_subagent_is_admitted_on_the_credential_its_turn_was_let_to_sign_in_wi
     with patch.object(BackgroundSubagentMiddleware, "__init__", init):
         _built(saved=saved)
     [middleware] = made
-    assert middleware.claude_code_types
-    assert middleware.claude_code_stored is (saved is not None)
+    on_claude_code = [run_on for run_on in middleware.run_on.values() if run_on.claude_code is not None]
+    assert on_claude_code
+    assert all(run_on.admission_kwargs()["stored_token"] is (saved is not None) for run_on in on_claude_code)
 
 
 def test_a_claude_code_pin_on_a_turn_of_another_model_runs_each_run_in_a_cli_of_its_own(monkeypatch):
@@ -492,8 +490,9 @@ def test_a_claude_code_pin_on_a_turn_of_another_model_runs_each_run_in_a_cli_of_
     sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
     assert launched == [(Admitted("stored_token", "stored_token", "c-9"), {"slot_wait_s": 30})]
     [middleware] = made
-    assert middleware.claude_code_types == {"general-purpose"} and middleware.claude_code_stored
-    assert middleware.cli_computer == "c-9"
+    [(name, run_on)] = [(name, r) for name, r in middleware.run_on.items() if r.claude_code is not None]
+    assert (name, run_on.claude_code) == ("general-purpose", Admitted("stored_token", "stored_token", "c-9"))
+    assert run_on.admission_kwargs()["stored_token"] and run_on.admission_kwargs()["cli_computer"] == "c-9"
     with pytest.raises(RuntimeError, match="claude_code_launcher"):
         build(claude_code_launcher=None)
 
@@ -526,6 +525,7 @@ async def test_a_task_another_model_last_answered_is_not_resumed_on_claude_code(
     )
     from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTask, BackgroundTaskRegistry
     from ptc_agent.agent.middleware.background_subagent.spawn import TaskRunRefused
+    from ptc_agent.config.agent import RunOn
     from src.llms.claude_code import MESSAGE_ID_KEY
 
     saver = InMemorySaver()
@@ -542,8 +542,10 @@ async def test_a_task_another_model_last_answered_is_not_resumed_on_claude_code(
 
     registry = BackgroundTaskRegistry("t-1")
     registry.run_ledger = SimpleNamespace(start_task_run=AsyncMock(return_value="tr-3"))
-    mw = BackgroundSubagentMiddleware(subagent_types=["research"], registry=registry, checkpointer=saver)
-    mw.claude_code_types = frozenset({"research"} if on_claude_code else ())
+    mw = BackgroundSubagentMiddleware(
+        subagent_types=["research"], registry=registry, checkpointer=saver,
+        run_on={"research": RunOn(claude_code=Admitted() if on_claude_code else None)},
+    )
     task = BackgroundTask(tool_call_id="c", task_id="k1", description="d", prompt="p", subagent_type="research")
 
     async def resume():

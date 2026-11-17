@@ -147,6 +147,8 @@ class SubagentContext:
     skills: BlockReader | None = None
     #: The thread's scratchpad folder; each task writes a folder inside it.
     scratchpad: str | None = None
+    #: The parent turn's model label, for a subagent that runs the turn's model.
+    model: str = ""
 
     @classmethod
     def build(
@@ -158,6 +160,7 @@ class SubagentContext:
         sources: BaselineSources | None,
         skills: BlockReader | None,
         scratchpad: str | None,
+        model: str,
     ) -> SubagentContext:
         return cls(
             timezone=(turn_context or TurnContext()).timezone,
@@ -174,6 +177,7 @@ class SubagentContext:
             ),
             skills=skills,
             scratchpad=scratchpad,
+            model=model,
         )
 
     def baseline(
@@ -185,16 +189,19 @@ class SubagentContext:
         files: bool,
         writes_files: bool,
         guidance: str | None,
+        model: str | None,
     ) -> tuple[dict[str, bool], BaselineContextMiddleware]:
         """One definition's baseline, and the prompt sections that point at it.
 
         Decided together, so a section never names a block the baseline lacks.
         ``memory`` is the definition's switch, ``files`` whether it can open
         what the memory index points to, and ``writes_files`` whether it
-        writes files at all.
+        writes files at all. ``model`` is the label of the model the
+        definition runs, None for the turn's.
         """
         sources = self.sources if memory else None
-        blocks: dict[str, BlockReader] = {}
+        label = self.model if model is None else model
+        blocks: dict[str, BlockReader] = {"model": lambda _state: label}
         if mcp_servers is not None:
             blocks["mcp_servers"] = lambda _state: mcp_servers
         if self.skills is not None:

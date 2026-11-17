@@ -9,6 +9,7 @@ import { ToolIcon } from '../ToolIcon';
 import { getDisplayName, getToolIcon, getPreparingText } from '../toolDisplayConfig';
 import { liveToolLabel, completedToolTitle, completedToolSummary } from './activitySummary';
 import { TWEEN } from '@/lib/motion';
+import { useLaNames } from '../../hooks/useLaNames';
 import { FailedIconBadge, RunningIcon } from './ActivityRowParts';
 import { SwapCell } from '@/components/ui/crossfade';
 import type { ToolActivityItem, LiveState, PreparingCall } from './activityTypes';
@@ -43,7 +44,8 @@ export const ToolCallLiveRow = memo(function ToolCallLiveRow({ tc, liveState }: 
   const activeLabel = isInProgress ? liveToolLabel(tc, t) : null;
   const artifact = tc.toolCallResult?.artifact;
   const completedTitle = !isInProgress ? completedToolTitle(tc, t) : null;
-  const summary = !isInProgress ? completedToolSummary(tc, t) : null;
+  const laNames = useLaNames([{ toolName, args }]);
+  const summary = !isInProgress ? completedToolSummary(tc, t, laNames) : null;
 
   return (
     <motion.div

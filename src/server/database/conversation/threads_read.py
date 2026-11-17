@@ -121,7 +121,8 @@ _LATEST_ATTEMPT_LATERAL = """
                cr.cancel_requested_at AS latest_cancel_requested_at,
                cr.interrupt_reason AS latest_interrupt_reason,
                cr.run_seq AS latest_run_seq,
-               cr.created_at AS latest_run_started_at
+               cr.created_at AS latest_run_started_at,
+               cr.metadata->>'llm_model' AS latest_run_model
         FROM conversation_responses cr
         WHERE cr.conversation_thread_id = t.conversation_thread_id
         ORDER BY cr.run_seq DESC
@@ -131,7 +132,8 @@ _LATEST_ATTEMPT_LATERAL = """
 
 _LATEST_ATTEMPT_LATERAL_COLS = (
     "la.latest_run_id, la.latest_run_status, la.latest_cancel_requested_at, "
-    "la.latest_interrupt_reason, la.latest_run_seq, la.latest_run_started_at"
+    "la.latest_interrupt_reason, la.latest_run_seq, la.latest_run_started_at, "
+    "la.latest_run_model"
 )
 
 # Exact turn count for a paged row: conversation_queries is one-row-per-turn

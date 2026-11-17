@@ -114,6 +114,7 @@ from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_replied_last, last_reply_index
+from src.llms.model_identity import CATALOG_MODEL_KEY
 from src.tools.secretary.approvals import StandingApprovalState
 
 TURN_KEY = "claude_turn"
@@ -771,7 +772,7 @@ class ClaudeTurn:
             update[BRIEF_KEY] = kept(brief)
             if "text" in brief:
                 self._brief_text = (brief["through"], brief["text"])
-        mark = handoff_mark(brief, to=self.spec.billing.get("manifest_model") or self.spec.model)
+        mark = handoff_mark(brief, to=self.spec.catalog_model)
         if all(record.get("id") != mark["id"] for record in state.get("ui") or []):
             update["ui"] = [mark]
             get_stream_writer()({"type": "context_window", "action": "brief", "signal": "complete", **mark["props"]})
@@ -1189,6 +1190,9 @@ def build_claude_code_graph(
         if ai.invalid_tool_calls:
             raise ClaudeTurnFailed("api_error", f"tool calls that did not parse: {[c.get('name') for c in ai.invalid_tool_calls]}")
         ai.response_metadata.setdefault("model_name", turn.spec.model)
+        # The resilience middleware stamps this on every other turn; a Claude
+        # Code turn never passes through it.
+        ai.response_metadata[CATALOG_MODEL_KEY] = turn.spec.catalog_model
         ai.response_metadata[CLAUDE_MESSAGE_ID] = message.id
         report_usage(ai, turn.compaction.threshold)
         uuids = run.assistant_records(message.id)

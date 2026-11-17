@@ -8,6 +8,7 @@ import { PILL_ROW_CLASS } from '../charts/pillArtifacts';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import UserQuestionCard from '../UserQuestionCard';
 import CreateWorkspaceCard from '../CreateWorkspaceCard';
+import { WorkspaceCreatedSlip } from './WorkspaceCreatedSlip';
 import StartQuestionCard from '../StartQuestionCard';
 import SecretaryConfirmCard from '../SecretaryConfirmCard';
 import CreditPauseCard from '../CreditPauseCard';
@@ -492,7 +493,19 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
 
         if (block.type === 'create_workspace') {
           if (readOnly) return null;
-          const wd = (block as CreateWorkspaceRenderBlock).proposal ?? workspaceProposals[(block as CreateWorkspaceRenderBlock).segment.proposalId!];
+          const made = (block as CreateWorkspaceRenderBlock).proposal;
+          // Made without a card in the chat: the workspace, on a line of its own.
+          if (made && made.workspace_name) {
+            return (
+              <WorkspaceCreatedSlip
+                key={block.key}
+                name={String(made.workspace_name ?? '')}
+                workspaceId={typeof made.workspace_id === 'string' ? made.workspace_id : undefined}
+                description={typeof made.workspace_description === 'string' ? made.workspace_description : undefined}
+              />
+            );
+          }
+          const wd = made ?? workspaceProposals[(block as CreateWorkspaceRenderBlock).segment.proposalId!];
           if (!wd) return null;
           return (
             <CreateWorkspaceCard

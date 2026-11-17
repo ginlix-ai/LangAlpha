@@ -190,6 +190,17 @@ describe('A hand-off: awaiting an answer', () => {
     renderPending();
     expect(screen.queryByRole('button', { name: 'chat.ptcCard.briefMore' })).toBeNull();
   });
+
+  it('names the model only when the hand-off names one', () => {
+    const { unmount } = renderWithProviders(
+      <Handoff proposal={{ status: 'pending', question: 'Q', report_back: true, model: 'gpt-6.1-terra' }} />,
+    );
+    expect(screen.getByText('chat.ptcCard.onModel')).toBeInTheDocument();
+    unmount();
+
+    renderPending();
+    expect(screen.queryByText('chat.ptcCard.onModel')).toBeNull();
+  });
 });
 
 describe('A hand-off: a handed-off run', () => {

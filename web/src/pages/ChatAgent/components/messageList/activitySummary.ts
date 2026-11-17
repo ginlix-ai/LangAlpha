@@ -3,9 +3,11 @@ import {
   getActiveLabel,
   getCompletedRowTitle,
   getCompletedSummary,
+  isFailedCall,
   type ToolCategory,
 } from '../toolDisplayConfig';
 import { formatThoughtFor, type TFn } from '@/lib/elapsed';
+import type { LaNames } from '../laStepLabels';
 
 import type { ActivityItem, ToolActivityItem } from './activityTypes';
 export type { ActivityItem, LiveState } from './activityTypes';
@@ -121,7 +123,7 @@ function fragmentLabel(f: SummaryFragment, t: TFn): string {
 }
 
 function failedCall(item: ActivityItem): boolean {
-  return item.type === 'tool_call' && (item.isFailed === true || item._liveState === 'failed');
+  return item.type === 'tool_call' && isFailedCall(item);
 }
 
 /**
@@ -178,10 +180,11 @@ export function liveToolLabel(item: ToolActivityItem, t: TFn): string {
 
 /** Past tense, for a settled row: "Read memory", "Activated skill". */
 export function completedToolTitle(item: ToolActivityItem, t: TFn): string {
-  return getCompletedRowTitle(item.toolName || '', item.toolCall, t, { artifact: item.toolCallResult?.artifact, root: item.root });
+  return getCompletedRowTitle(item.toolName || '', item.toolCall, t, { record: item, root: item.root });
 }
 
-/** The object a settled row names, rendered as its pill; null when there is none. */
-export function completedToolSummary(item: ToolActivityItem, t: TFn): string | null {
-  return getCompletedSummary(item.toolName || '', item.toolCall, t, { artifact: item.toolCallResult?.artifact, root: item.root });
+/** The object a settled row names, rendered as its pill; null when there is none.
+ *  `names` are the app's names for the ids an `la` step gives (`useLaNames`). */
+export function completedToolSummary(item: ToolActivityItem, t: TFn, names?: LaNames): string | null {
+  return getCompletedSummary(item.toolName || '', item.toolCall, t, { record: item, root: item.root, names });
 }

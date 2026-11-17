@@ -19,6 +19,8 @@ import { TWEEN } from '@/lib/motion';
 import { useTranscriptReads, type TranscriptReader } from './useTranscript';
 import { focusToggleWhenRendered } from './panelToggleFocus';
 import { useWorkspaceFolders, useWorkspaceId } from '../../contexts/WorkspaceContext';
+import { useLaNames } from '../../hooks/useLaNames';
+import type { LaNames } from '../laStepLabels';
 import type { NewTabMenu, PanelLauncher } from './panelLaunchers';
 import './TabStrip.css';
 
@@ -87,13 +89,13 @@ interface TabReading {
 
 // A call's record is replaced, never edited, when the call changes, so a tool
 // tab's reading is kept per record rather than worked out on every render.
-const toolReadings = new WeakMap<ToolCallProcessRecord, { t: TFunction; root: string | null | undefined; reading: TabReading }>();
+const toolReadings = new WeakMap<ToolCallProcessRecord, { t: TFunction; root: string | null | undefined; names: LaNames | undefined; reading: TabReading }>();
 
-function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | null | undefined): TabReading {
+function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | null | undefined, names: LaNames | undefined): TabReading {
   const toolName = proc.toolName || '';
   const call = proc.toolCall ? { ...proc.toolCall } : undefined;
   const artifact = proc.toolCallResult?.artifact;
-  const title = isTaskTool(toolName) ? t('toolArtifact.subagentTask') : getCompletedRowTitle(toolName, call, t, { artifact, root });
+  const title = isTaskTool(toolName) ? t('toolArtifact.subagentTask') : getCompletedRowTitle(toolName, call, t, { record: proc, root });
   if (toolName === 'send_message') {
     // The app's favicon names where it went; its name moves to the hint. A
     // send that did not go is marked as a failed call is.
@@ -109,7 +111,7 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
       };
     }
   }
-  const summary = getCompletedSummary(toolName, call, t, { artifact, root });
+  const summary = getCompletedSummary(toolName, call, t, { record: proc, root, names });
   const short = summary && summary.length > TOOL_SUMMARY_MAX ? `${summary.slice(0, TOOL_SUMMARY_MAX - 1)}…` : summary;
   return {
     name: short ? `${title} · ${short}` : title,
@@ -119,7 +121,7 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
   };
 }
 
-function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | null | undefined): TabReading {
+function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | null | undefined, names: LaNames | undefined): TabReading {
   switch (tab.kind) {
     case 'empty':
       return { name: t('filePanel.openFile'), Glyph: FolderOpen, detail: null };
@@ -145,9 +147,9 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
       const proc = source as ToolCallProcessRecord | undefined;
       if (!proc) return { name: t('toolArtifact.toolCall'), Glyph: getToolIcon('', undefined), detail: null };
       const kept = toolReadings.get(proc);
-      if (kept?.t === t && kept.root === root) return kept.reading;
-      const reading = readToolCall(proc, t, root);
-      toolReadings.set(proc, { t, root, reading });
+      if (kept?.t === t && kept.root === root && kept.names === names) return kept.reading;
+      const reading = readToolCall(proc, t, root, names);
+      toolReadings.set(proc, { t, root, names, reading });
       return reading;
     }
     case 'sources':
@@ -298,6 +300,12 @@ export function TabStrip({
   // button, so a click while the menu is open is that release, not a new tab.
   const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
   const sources = useTranscriptReads(transcript, tabs, readTabSource);
+  const laNames = useLaNames(
+    tabs.flatMap((tab, i) => {
+      const proc = tab.kind === 'tool' ? (sources[i] as ToolCallProcessRecord | undefined) : undefined;
+      return proc ? [{ toolName: proc.toolName, args: proc.toolCall?.args }] : [];
+    }),
+  );
   const overflow = useTabRowScroll(listRef, activeId, tabs.map((tab) => `${tab.id}:${tab.kind}`).join(' '));
 
   /**
@@ -349,7 +357,7 @@ export function TabStrip({
         data-more-end={overflow.end || undefined}
       >
         {tabs.map((tab, i) => {
-          const { name, Glyph, detail, failed } = describe(tab, t, sources[i], root);
+          const { name, Glyph, detail, failed } = describe(tab, t, sources[i], root, laNames);
           const hasHint = detail != null || tab.kind === 'file';
           const active = tab.id === activeId;
           const onLoan = isOnLoan(tab);

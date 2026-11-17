@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
-import { Args, type Flag, type Flags, type Parsed, parse } from "../args.js";
+import { Args, asUsage, type Flag, type Flags, type Parsed, parse } from "../args.js";
 import { CliError, Exit, usage } from "../errors.js";
+import { bind as bindOperands, flagName, type Selection as GrammarSelection, select as selectIn } from "../grammar.js";
 import type { Api, Query } from "../http.js";
 import { print } from "../output.js";
 
@@ -49,56 +50,20 @@ export const WORKSPACE: Flag = { type: "string", short: "w", value: "WS", help: 
 export const MODEL: Flag = { type: "string", short: "m", value: "MODEL", help: "the model to run the turn on" };
 export const YES: Flag = { type: "bool", short: "y", help: "skip the confirmation" };
 
-export interface Selection {
-  command?: Command;
-  /** Everything after the leading global options. */
-  words: readonly string[];
-  /** What is left to parse against the command's flags and GLOBAL. */
-  rest: readonly string[];
-}
+export type Selection = GrammarSelection<Command>;
 
 /** Find the command ``argv`` names. Its words come first; only global
  *  options may precede them. */
 export function select(commands: readonly Command[], argv: readonly string[]): Selection {
-  let i = 0;
-  while (i < argv.length && argv[i]!.startsWith("-") && argv[i] !== "--") i += takesValue(argv[i]!) ? 2 : 1;
-  const words = argv.slice(i);
-  const command = commands.find((c) => c.words.every((w, k) => words[k] === w));
-  const rest = command ? words.slice(command.words.length) : [];
-  return { command, words, rest: [...argv.slice(0, i), ...rest] };
+  return selectIn(commands, GLOBAL, argv);
 }
 
 export function parseFor(command: Command | undefined, argv: readonly string[]): Parsed {
   return parse(argv, { ...GLOBAL, ...command?.flags });
 }
 
-function takesValue(arg: string): boolean {
-  const name = arg.slice(2);
-  return arg.startsWith("--") && Object.hasOwn(GLOBAL, name) && (GLOBAL as Flags)[name]!.type !== "bool";
-}
-
 export function bind(command: Command, parsed: Parsed): Args {
-  const specs = command.operands ?? [];
-  const operands = new Map<string, string>();
-  specs.forEach((spec, i) => {
-    const rest = spec.endsWith("...");
-    const name = rest ? spec.slice(0, -3) : spec;
-    const value = rest ? parsed.operands.slice(i).join(" ").trim() : parsed.operands[i];
-    if (!value) throw usage(`Missing <${name}>`);
-    operands.set(name, value);
-  });
-  if (parsed.values.has("wait") && parsed.values.has("detach")) throw usage("Pass --wait or --detach, not both");
-  const extra = parsed.operands[specs.length];
-  if (extra !== undefined && !specs.at(-1)?.endsWith("...")) throw usage(`Unexpected argument "${extra}"`);
-  for (const [name, flag] of Object.entries(command.flags ?? {})) {
-    if (flag.required && !parsed.values.has(name)) throw usage(`Missing ${flagName(name, flag)}`);
-  }
-  return new Args(parsed.values, operands);
-}
-
-function flagName(name: string, flag: Flag): string {
-  const text = flag.short ? `-${flag.short}` : `--${name}`;
-  return flag.type === "bool" ? text : `${text} ${flag.value ?? "VALUE"}`;
+  return new Args(parsed.values, asUsage(() => bindOperands(command, parsed)));
 }
 
 export function synopsis(c: Command): string {

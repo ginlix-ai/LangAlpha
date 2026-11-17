@@ -1,4 +1,4 @@
-"""Regression coverage for the secretary's active-thread Redis reader.
+"""Regression coverage for a thread output's live-run Redis reader.
 
 The reader consumes the per-run Redis Stream
 ``workflow:stream:{tid}:{run_id}`` for the caller-resolved run_id — the
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.tools.secretary.utils import _extract_from_redis
+from src.server.services.thread_output import _extract_from_redis
 
 
 def _sse(seq: int, text: str) -> bytes:
@@ -44,7 +44,7 @@ async def test_reads_text_chunks_from_stream_in_chronological_order():
     )
 
     with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        "src.server.services.thread_output.get_cache_client", return_value=cache
     ):
         text = await _extract_from_redis("thread-1", "run-1")
 
@@ -68,7 +68,7 @@ async def test_skips_entries_without_event_field():
     )
 
     with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        "src.server.services.thread_output.get_cache_client", return_value=cache
     ):
         text = await _extract_from_redis("thread-1", "run-1")
 
@@ -89,7 +89,7 @@ async def test_filters_non_text_events():
     )
 
     with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        "src.server.services.thread_output.get_cache_client", return_value=cache
     ):
         text = await _extract_from_redis("thread-1", "run-1")
 
@@ -103,7 +103,7 @@ async def test_cache_disabled_returns_empty():
     cache.client = None
 
     with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        "src.server.services.thread_output.get_cache_client", return_value=cache
     ):
         text = await _extract_from_redis("thread-1", "run-1")
 
@@ -118,7 +118,7 @@ async def test_xrevrange_failure_returns_empty():
     cache.client.xrevrange = AsyncMock(side_effect=RuntimeError("redis down"))
 
     with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        "src.server.services.thread_output.get_cache_client", return_value=cache
     ):
         text = await _extract_from_redis("thread-1", "run-1")
 

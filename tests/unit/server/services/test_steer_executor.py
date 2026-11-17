@@ -208,3 +208,16 @@ async def test_the_users_own_steer_is_posted_for_them_to_see():
 
     mocks["away"].assert_not_awaited()
     mocks["post"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", ["deepseek-flash", None])
+async def test_a_hand_off_no_turn_read_starts_its_turn_on_the_model_it_named(named):
+    """The thread's model may have changed since the hand-off was admitted
+    into a turn on its model; an unnamed one runs the thread's own."""
+    extra = {"llm_model": named} if named else {}
+    payload = _payload(sender="chief_of_staff", origin={"id": "home-1"}, **extra)
+    mocks = await _execute(payload)
+
+    body = mocks["post"].await_args.kwargs["body"]
+    assert body.get("llm_model") == named

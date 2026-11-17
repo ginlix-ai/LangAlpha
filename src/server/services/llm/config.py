@@ -31,8 +31,8 @@ from .availability import (
     cleanup_stale_model_preferences,
     drop_dead_models,
     drop_off_plan_models,
-    model_on_plan,
     on_subscription,
+    plan_covers,
     raise_byok_key_required,
     raise_model_not_on_plan,
     raise_model_removed,
@@ -51,6 +51,7 @@ from .subagents import (
     subagent_models,
     subagent_roles,
 )
+from .task_model import TaskModelGate
 from . import user_models
 
 # ---------------------------------------------------------------------------
@@ -324,19 +325,16 @@ async def gate_models_by_plan(
     named_exempt = plan_exempt_models(llm, slot)
     byok_cache: dict[str, dict | None] = {}
 
-    async def on_plan(name: str) -> bool:
-        return await model_on_plan(
-            user_id, name, model_pref=model_pref, permits=permits,
+    if request_model and request_model not in named_exempt:
+        covered = await plan_covers(
+            user_id, request_model, model_pref=model_pref, permits=permits,
             is_byok=is_byok, byok_cache=byok_cache,
         )
+        if covered is None:
+            from src.server.dependencies.usage_limits import quota_service_unavailable
 
-    if request_model and request_model not in named_exempt and not await on_plan(request_model):
-        await permits.refresh()
-        if not await on_plan(request_model):
-            if await permits.tier() is None:
-                from src.server.dependencies.usage_limits import quota_service_unavailable
-
-                raise quota_service_unavailable()
+            raise quota_service_unavailable()
+        if not covered:
             raise_model_not_on_plan(request_model)
 
     view, dropped = await drop_off_plan_models(
@@ -659,6 +657,12 @@ async def resolve_llm_config(
     if slot == "primary":
         config.subagent_models = subagent_models(
             config, model_pref, selection.effective_model, role=role,
+        )
+        config.task_models = TaskModelGate(
+            config, user_id=user_id, workspace_id=workspace_id, thread_id=thread_id,
+            model_pref=model_pref, permits=permits, is_byok=is_byok,
+            turn_model=selection.effective_model,
+            plan_exempt=plan_exempt_models(base_config.llm, "primary"),
         )
 
     return config

@@ -3,7 +3,7 @@ import { SPRING_FOLD } from '@/lib/motion';
 import { motion } from '@/lib/framer';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { categorizeTool, getToolIcon, getCompletedRowTitle, getCompletedSummary } from '../toolDisplayConfig';
+import { categorizeTool, getToolIcon, getCompletedRowTitle, getCompletedSummary, isFailedCall } from '../toolDisplayConfig';
 import { classifyAgentPath, ranElsewhere } from '../../utils/agentPaths';
 import { RunningLine } from './ToolCallRow';
 import { RowIcon, FailedIconBadge } from './ActivityRowParts';
@@ -35,7 +35,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
   const { root } = items[0];
   const toolName = items[0].toolName || 'Read';
   const IconComponent = getToolIcon(toolName, items[0].toolCall?.args, root);
-  const isFailed = items.some((item) => item.isFailed === true || item._liveState === 'failed');
+  const isFailed = items.some(isFailedCall);
   const single = items.length === 1;
   const item = items[0];
   const failedLabel = t('toolArtifact.a11y.toolCallFailed');

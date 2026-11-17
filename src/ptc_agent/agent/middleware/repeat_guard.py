@@ -11,7 +11,10 @@ missing:
 - a status read after three rounds in a row made only of reads that found
   their work still running. Those reads never come back identical (elapsed
   time, growing output), so the tool marks each one on its artifact
-  (``limits.pending_read``) and the guard counts the marks.
+  (``limits.pending_read``) and the guard counts the marks. A Bash or
+  ExecuteCode command is marked when its output carries what
+  ``la threads output`` prints for a thread still running
+  (``limits.read_a_running_thread``).
 
 A model that keeps calling after three rounds in a row had every call
 refused, by this guard or by the turn's clock, is no longer reading its
@@ -58,6 +61,12 @@ POLL_REFUSAL = (
 )
 
 
+# A command's label, which changes nothing it runs: an agent polling with
+# ``la threads output`` from Bash words it anew on each call, and the same
+# command is the same read whatever it is called.
+_LABEL_ARGS = {"Bash": "description", "ExecuteCode": "description"}
+
+
 def _call_key(name: str, args: Any) -> str:
     # Through the parse argument parsing applies, on both sides. That
     # middleware rewrites a call's args in place on the AIMessage, so live
@@ -65,6 +74,9 @@ def _call_key(name: str, args: Any) -> str:
     # (outer to the parser) and a thread reloaded from its checkpoint hold the
     # form the model wrote. Parsing is idempotent, so either order matches.
     args = parse_tool_args(args, name)
+    label = _LABEL_ARGS.get(name)
+    if label is not None and isinstance(args, dict) and label in args:
+        args = {k: v for k, v in args.items() if k != label}
     try:
         return name + "\x00" + json.dumps(args, sort_keys=True, default=str)
     except (TypeError, ValueError):

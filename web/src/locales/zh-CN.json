@@ -2559,6 +2559,7 @@
     "ptcCard": {
       "handOffTo": "交给<ws> {{name}} 的</ws>分析师",
       "handOffToAnalyst": "交给分析师",
+      "onModel": "使用 {{model}}",
       "waitingForYou": "等待你确认",
       "briefMore": "阅读完整任务说明",
       "briefLess": "收起",
@@ -2914,6 +2915,7 @@
       "create": "创建",
       "decline": "拒绝",
       "created": "已创建工作区：{{name}}",
+      "createdStatus": "已创建工作区",
       "declined": "已拒绝创建工作区",
       "alwaysApprove": "始终允许",
       "alwaysApproveHint": "这次及以后创建工作区都不再询问，可在设置中关闭。"
@@ -4000,7 +4002,26 @@
       "read_user": "已读取账号",
       "updated_user": "已更新账号",
       "read_automations": "已读取自动化",
-      "updated_automations": "已更新自动化"
+      "updated_automations": "已更新自动化",
+      "la": {
+        "listWorkspaces": "已列出工作区",
+        "createWorkspace": "已创建工作区",
+        "archiveComputer": "已归档工作区所在的计算机",
+        "deleteWorkspace": "已删除工作区",
+        "listThreads": "已列出对话",
+        "showThread": "已查看对话详情",
+        "readThread": "已读取对话内容",
+        "startThread": "已新建对话",
+        "sendToThread": "已向对话发送消息",
+        "followThread": "已跟踪对话进展",
+        "retryThread": "已重试失败的一轮",
+        "cancelThread": "已取消对话运行",
+        "archiveThread": "已归档对话",
+        "deleteThread": "已删除对话",
+        "listComputers": "已列出计算机",
+        "listModels": "已列出模型",
+        "listAutomations": "已列出自动化"
+      }
     },
     "inProgress": {
       "callingServer": "正在调用 {{server}}...",
@@ -4079,7 +4100,26 @@
       "fetchingSymbolOptions": "获取 {{symbol}} 期权...",
       "fetchingOptions": "获取期权...",
       "fetchingGainers": "获取涨幅榜...",
-      "fetchingLosers": "获取跌幅榜..."
+      "fetchingLosers": "获取跌幅榜...",
+      "la": {
+        "listWorkspaces": "列出工作区...",
+        "createWorkspace": "创建工作区...",
+        "archiveComputer": "归档工作区所在的计算机...",
+        "deleteWorkspace": "删除工作区...",
+        "listThreads": "列出对话...",
+        "showThread": "查看对话详情...",
+        "readThread": "读取对话内容...",
+        "startThread": "新建对话...",
+        "sendToThread": "向对话发送消息...",
+        "followThread": "跟踪对话进展...",
+        "retryThread": "重试失败的一轮...",
+        "cancelThread": "取消对话运行...",
+        "archiveThread": "归档对话...",
+        "deleteThread": "删除对话...",
+        "listComputers": "列出计算机...",
+        "listModels": "列出模型...",
+        "listAutomations": "列出自动化..."
+      }
     },
     "preparing": {
       "writingCode": "编写代码{{size}}...",

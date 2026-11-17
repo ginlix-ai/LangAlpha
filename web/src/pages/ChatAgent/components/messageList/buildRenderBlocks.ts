@@ -241,7 +241,8 @@ export function buildRenderBlocks(
   },
 ): { blocks: RenderBlock[]; nextExpiry: number | null; pinnedLive: boolean; pinnedSettledAt: number | null } {
     // A hidden secretary call the user approved in advance has no proposal
-    // segment, so it draws its card where the call sits.
+    // segment, so it draws its card where the call sits, as does a workspace
+    // `la` created, which leaves its Bash row for that card.
     const preapproved = new Map<string, PreapprovedCard>();
     const filtered = groupedSegments.filter((s) => {
         if (s.type === 'text' || s.type === 'reasoning') return true;
@@ -261,11 +262,9 @@ export function buildRenderBlocks(
           const proc = toolCallProcesses[s.toolCallId!];
           const toolName = proc?.toolName as string | undefined;
           const args = (proc?.toolCall as ToolCallData | undefined)?.args;
-          if (HIDDEN_TOOL_CALL_NAMES.has(toolName || '')) {
-            const card = preapprovedCardOf(proc);
-            if (card) preapproved.set(s.toolCallId!, card);
-            return card !== null;
-          }
+          const card = preapprovedCardOf(proc);
+          if (card) preapproved.set(s.toolCallId!, card);
+          if (HIDDEN_TOOL_CALL_NAMES.has(toolName || '')) return card !== null;
           const path = args?.file_path || args?.filePath || args?.path || args?.filename;
           if (toolName === 'Read' && typeof path === 'string' && isUserDataReadmePath(path, root)) return false;
           return true;

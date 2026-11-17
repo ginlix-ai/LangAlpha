@@ -7,9 +7,10 @@ Use src.config.loaders for file-based loading.
 """
 
 import os
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -370,6 +371,91 @@ class Admitted(NamedTuple):
     cli_computer: str | None = None
 
 
+@dataclass(frozen=True)
+class RunOn:
+    """What one subagent run is admitted on: its subagent type's, or the
+    model its Task named (``TaskModel.run_on``).
+
+    ``model`` is what the run's card shows, None on its launcher's model.
+    ``claude_code`` is where admission placed its CLI, set only for a run on
+    a Claude Code row, and ``claude_code_model`` the model that CLI runs.
+    ``model_override`` is the catalog name a Task named, which the run's row
+    keeps for a resume that names none.
+    """
+
+    model: SubagentModel | None = None
+    claude_code: Admitted | None = None
+    claude_code_model: str | None = None
+    model_override: str | None = None
+
+    def admission_kwargs(self) -> dict[str, Any]:
+        """The run ledger's ``start_task_run`` facts."""
+        admitted = self.claude_code
+        return {
+            "model": self.model,
+            "claude_code": admitted is not None,
+            "stored_token": bool(admitted is not None and admitted.saved),
+            "claude_code_model": self.claude_code_model,
+            "cli_computer": admitted.cli_computer if admitted is not None else None,
+            **({"model_override": self.model_override} if self.model_override else {}),
+        }
+
+
+@dataclass(frozen=True)
+class TaskModel:
+    """The model one Task runs on in place of its subagent's own, resolved
+    and gated as a turn's own model is.
+
+    ``name`` is the catalog name, which the run's ledger row keeps so a
+    resume can run the task on it again. ``model`` is what the run's card
+    shows, None where it is the turn's own model. ``claude_code`` is what
+    admission let the run's CLI run on, set only for a Claude Code row.
+    """
+
+    name: str
+    display_name: str
+    client: Any
+    guidance: str
+    model: SubagentModel | None = None
+    claude_code: Admitted | None = None
+
+    @property
+    def on_claude_code(self) -> bool:
+        return self.claude_code is not None
+
+    @property
+    def run_on(self) -> RunOn:
+        return RunOn(
+            model=self.model,
+            claude_code=self.claude_code,
+            claude_code_model=self.client.model if self.on_claude_code else None,
+            model_override=self.name,
+        )
+
+
+class TaskModelRefused(NamedTuple):
+    """Why a Task cannot run on the model it names: ``message`` is the whole
+    reply to the agent, ``reason`` the short form a resume of a task that
+    ran on it quotes."""
+
+    message: str
+    reason: str
+
+
+@runtime_checkable
+class TaskModelResolver(Protocol):
+    """The models one turn's Tasks name, gated as the turn's own model was."""
+
+    async def resolve(
+        self, name: str, subagent_type: str, *, keep: bool = False
+    ) -> "TaskModel | TaskModelRefused | None":
+        """``name`` for a task of ``subagent_type``, or why it cannot run
+        there; None where it is that subagent's own model, unless ``keep``:
+        a model a resume carries over stays the task's even while it is the
+        subagent's own, which follows the chat's model."""
+        ...
+
+
 class AgentConfig(BaseModel):
     """Agent-specific configuration.
 
@@ -467,6 +553,10 @@ class AgentConfig(BaseModel):
     # On a turn of another model, what admission let its subagents' Claude
     # Code pins run on; None where they run the turn's model.
     claude_code_pins: Admitted | None = Field(default=None, exclude=True)
+    # Resolves the model a Task names for one task, gated as this turn's own
+    # model was; None on a build that never went through the resolver, where
+    # a Task cannot name one.
+    task_models: TaskModelResolver | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``

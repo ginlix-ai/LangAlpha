@@ -38,6 +38,13 @@ describe('preapprovedCard', () => {
     });
   });
 
+  it('carries the model the call named, and none when it named none', () => {
+    const named = preapprovedCard('delegate_to_analyst', { question: 'Q', model: 'gpt-6.1-terra' }, ptcTool());
+    expect(named?.proposal).toMatchObject({ model: 'gpt-6.1-terra' });
+    const unnamed = preapprovedCard('delegate_to_analyst', { question: 'Q' }, ptcTool());
+    expect(unnamed?.proposal).not.toHaveProperty('model');
+  });
+
   it('reads report_back false when the result does not say true', () => {
     const card = preapprovedCard('ptc_agent', { question: 'Q' }, ptcTool({ report_back: false }));
     expect(card?.proposal.report_back).toBe(false);
@@ -208,5 +215,62 @@ describe('preapprovedCardOf', () => {
   it('returns null when there is no result', () => {
     expect(preapprovedCardOf(undefined)).toBeNull();
     expect(preapprovedCardOf({ toolName: 'ptc_agent' })).toBeNull();
+  });
+});
+
+describe('preapprovedCardOf: a workspace `la` created', () => {
+  const create = (command: string, record: Record<string, unknown> = {}) => ({
+    toolName: 'Bash',
+    toolCall: { id: 'tc1', args: { command, description: 'Create a workspace' } },
+    toolCallResult: { content: 'Created workspace Lithium (0f1e2d3c-4b5a-4968-8776-655443322110).', artifact: { mcp_trace: [] } },
+    ...record,
+  });
+
+  it('draws the created workspace, named and described as the command gave it, with the id it printed', () => {
+    expect(preapprovedCardOf(create(`la workspaces create Lithium --description 'Lithium miners'`))).toEqual({
+      type: 'create_workspace',
+      proposal: {
+        status: 'approved', workspace_name: 'Lithium', workspace_description: 'Lithium miners', workspace_id: '0f1e2d3c-4b5a-4968-8776-655443322110',
+      },
+    });
+  });
+
+  it('reads the id off a --json row too, and draws the card without one it cannot read', () => {
+    const json = create('la workspaces create Lithium --json', {
+      toolCallResult: { content: JSON.stringify({ workspace_id: '0f1e2d3c-4b5a-4968-8776-655443322110', name: 'Lithium' }), artifact: {} },
+    });
+    const bare = create('la workspaces create Lithium', { toolCallResult: { content: 'done', artifact: {} } });
+    expect(preapprovedCardOf(json)?.proposal).toMatchObject({ workspace_id: '0f1e2d3c-4b5a-4968-8776-655443322110' });
+    expect(preapprovedCardOf(bare)?.proposal).not.toHaveProperty('workspace_id');
+  });
+
+  it('leaves a failed create, a decline in the app included, to its row', () => {
+    const declined = create('la workspaces create Lithium', {
+      toolCallResult: { content: 'ERROR: Command failed (exit code 3)\nla: The user declined this in the app; nothing was done' },
+      isFailed: true,
+    });
+    expect(preapprovedCardOf(declined)).toBeNull();
+  });
+
+  it('leaves a create that exited nonzero to its row, though Bash never marks it failed', () => {
+    const declined = create('la workspaces create Lithium', {
+      toolCallResult: {
+        content: 'ERROR: Command failed (exit code 3)\nla: The user declined this in the app; nothing was done',
+        artifact: {},
+      },
+    });
+    expect(preapprovedCardOf(declined)).toBeNull();
+  });
+
+  it('leaves one moved to the background to its row: the workspace did not exist yet', () => {
+    const moved = create('la workspaces create Lithium', {
+      toolCallResult: { content: 'Moved to the background.', artifact: { command_id: 'bg-1' } },
+    });
+    expect(preapprovedCardOf(moved)).toBeNull();
+  });
+
+  it('draws nothing for another `la` step or a command it cannot read exactly', () => {
+    expect(preapprovedCardOf(create('la workspaces list'))).toBeNull();
+    expect(preapprovedCardOf(create('la workspaces create Lithium && la workspaces list'))).toBeNull();
   });
 });

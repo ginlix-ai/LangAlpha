@@ -105,7 +105,7 @@ _WORKSPACE_OWN = (WorkspaceLayout.MEMORY_DIR, WorkspaceLayout.TRANSCRIPTS_DIR)
 
 _WORKSPACE_KEPT_ELSEWHERE = (
     "A workspace's memory and past threads are kept by the server, not on its "
-    "computer: read its threads with `agent_output`, and hand a change to its "
+    "computer: read its threads with `la threads output`, and hand a change to its "
     "memory to its analyst."
 )
 

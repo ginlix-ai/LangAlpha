@@ -246,6 +246,7 @@ export function projectHistoryInterrupt(
                 workspace_name: proposalData.workspace_name,
                 question: proposalData.question ?? '',
                 report_back: proposalData.report_back ?? true,
+                model: proposalData.model ?? null,
                 interruptId: event.interrupt_id,
                 tool_call_id: proposalData.tool_call_id,
                 status: 'pending',

@@ -149,6 +149,7 @@ async def start_task_run(
     stored_token: bool = False,
     cli_cap: Optional[tuple[str, int]] = None,
     cli_computer: Optional[str] = None,
+    model_override: Optional[str] = None,
     conn=None,
 ) -> Dict[str, Any]:
     """The task-run START transaction: task upsert + in_progress run row +
@@ -170,10 +171,14 @@ async def start_task_run(
 
     ``model`` lands in ``replay_facts`` with the row, since the checkpoint
     never records which model ran and the build that knew is gone by replay.
+    ``model_override``, the catalog name a Task named for the run, lands
+    there too: a resume that names none runs the task on it again, on
+    whichever worker takes it.
     """
     conflict: Optional[str] = None
     facts = {
         **({"model": model} if model else {}),
+        **({"model_override": model_override} if model_override else {}),
         **({"claude_code": True} if claude_code else {}),
         **(STORED_TURN if stored_token else {}),
         **({CLI_COMPUTER: cli_computer} if cli_computer else {}),

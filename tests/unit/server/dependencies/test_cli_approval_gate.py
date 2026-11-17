@@ -526,7 +526,7 @@ def rows(monkeypatch) -> SimpleNamespace:
     monkeypatch.setattr(cli_approval, "run_named_by_key", keyed)
     monkeypatch.setattr(cli_approval, "get_workspace", workspace)
     monkeypatch.setattr(cli_approval, "get_live_workspace_ids_for_computer", live)
-    monkeypatch.setattr(cli_approval, "get_user_preferences", prefs)
+    monkeypatch.setattr("src.server.database.user.get_user_preferences", prefs)
     monkeypatch.setattr("src.server.database.turn_targets.turn_sender", sender)
 
     async def bind_home(user_id):

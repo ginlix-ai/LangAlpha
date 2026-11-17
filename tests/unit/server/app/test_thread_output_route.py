@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
+from src.server.services.thread_output import ThreadOutput
 from tests.conftest import create_test_app
 
 THREAD = "b2200000-0000-4000-8000-000000000001"
@@ -21,11 +22,11 @@ def _app():
 @pytest.mark.asyncio
 async def test_output_reads_the_latest_turns_in_the_users_zone():
     extract = AsyncMock(
-        return_value={"text": "Margins rose.", "status": "completed", "thread_id": THREAD, "workspace_id": "ws-1"}
+        return_value=ThreadOutput(workspace_id="ws-1", status="completed", text="Margins rose.")
     )
     with (
         patch("src.server.utils.api.require_thread_owner", new=AsyncMock()) as owner,
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch(
             "src.server.services.wakeups.message.user_timezone",
             new=AsyncMock(return_value="Asia/Tokyo"),
@@ -49,10 +50,10 @@ async def test_output_reads_the_latest_turns_in_the_users_zone():
 
 @pytest.mark.asyncio
 async def test_output_defaults_to_the_latest_turn_and_takes_zero_for_history():
-    extract = AsyncMock(return_value={"text": "", "status": "running", "workspace_id": "ws-1"})
+    extract = AsyncMock(return_value=ThreadOutput(workspace_id="ws-1", status="running", text=""))
     with (
         patch("src.server.utils.api.require_thread_owner", new=AsyncMock()),
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:
@@ -74,7 +75,7 @@ async def test_output_of_a_thread_the_caller_does_not_own_is_refused():
             "src.server.utils.api.require_thread_owner",
             new=AsyncMock(side_effect=HTTPException(status_code=404, detail="Thread not found")),
         ),
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:
             resp = await c.get(f"/api/v1/threads/{THREAD}/output")
@@ -84,14 +85,27 @@ async def test_output_of_a_thread_the_caller_does_not_own_is_refused():
 
 
 @pytest.mark.asyncio
+async def test_output_of_a_thread_deleted_after_the_owner_check_is_not_found():
+    with (
+        patch("src.server.utils.api.require_thread_owner", new=AsyncMock()),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=AsyncMock(return_value=None)),
+        patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:
+            resp = await c.get(f"/api/v1/threads/{THREAD}/output")
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_output_of_a_thread_taken_by_another_account_mid_read_is_refused():
     # A deleted thread's id can be taken again; the text read is then not
     # the caller's.
     owner = AsyncMock(side_effect=[None, HTTPException(status_code=404, detail="Thread not found")])
-    extract = AsyncMock(return_value={"workspace_id": "w", "status": "completed", "text": "x"})
+    extract = AsyncMock(return_value=ThreadOutput(workspace_id="w", status="completed", text="x"))
     with (
         patch("src.server.utils.api.require_thread_owner", new=owner),
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:

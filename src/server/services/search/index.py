@@ -1,7 +1,7 @@
 """Fill ``thread_search_turns``: each settled turn's message and answer.
 
 The answer is the main agent's committed text (``committed_texts``), the same
-reading the Chief of Staff's ``agent_output`` takes, so tool output, code and
+reading a thread's output (``la threads output``) takes, so tool output, code and
 subagent work are left out by construction. A failed or cancelled turn keeps
 whatever text it committed. The user's side is the turn's message, except for
 a turn the server started (a report-back, a wakeup, a price watch), whose

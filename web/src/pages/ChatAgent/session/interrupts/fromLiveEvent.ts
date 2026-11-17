@@ -148,6 +148,7 @@ export function projectLiveInterrupt(
             workspace_name: proposalData.workspace_name,
             question: proposalData.question ?? '',
             report_back: proposalData.report_back ?? true,
+            model: proposalData.model ?? null,
             interruptId: event.interrupt_id,
             // Persist tool_call_id ON the proposal so the clicked card
             // self-identifies for backfill — never read from

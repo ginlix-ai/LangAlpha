@@ -310,9 +310,9 @@ describe('messaging tools: a named step, not a bare wrench', () => {
 
 describe('schedule_wakeup row summary', () => {
   const call = (args: Record<string, unknown>) => ({ args });
-  const listed = (set: number, cancelled: number, quiet = false) => ({
-    artifact: { quiet, changed: set + cancelled > 0, set: Array(set).fill({}), cancelled: Array(cancelled).fill({}) },
-  });
+  const answered = (artifact: Record<string, unknown>) => ({ record: { toolCallResult: { artifact } } });
+  const listed = (set: number, cancelled: number, quiet = false) =>
+    answered({ quiet, changed: set + cancelled > 0, set: Array(set).fill({}), cancelled: Array(cancelled).fill({}) });
 
   it('says what the result lists, so a refused entry is not counted', () => {
     const args = { triggers: [{ at: 'x' }, { at: 'y' }], cancel: 'all', quiet: 'flat' };
@@ -322,12 +322,12 @@ describe('schedule_wakeup row summary', () => {
   });
 
   it('falls back to what the call asked for on a result that lists nothing', () => {
-    const old = { artifact: { quiet: true, changed: true } };
+    const old = answered({ quiet: true, changed: true });
     expect(getCompletedSummary('schedule_wakeup', call({ triggers: '[{"at":"x"},{"at":"y"}]', quiet: 'flat' }), undefined, old))
       .toBe('set 2 · ended the check');
     expect(getCompletedSummary('schedule_wakeup', call({ cancel: 'all' }))).toBe('cancelled all');
     // An older result still says the tool refused the quiet.
-    expect(getCompletedSummary('schedule_wakeup', call({ quiet: 'flat' }), undefined, { artifact: { quiet: false, changed: false } }))
+    expect(getCompletedSummary('schedule_wakeup', call({ quiet: 'flat' }), undefined, answered({ quiet: false, changed: false })))
       .toBeNull();
     expect(getCompletedSummary('schedule_wakeup', call({}))).toBeNull();
   });

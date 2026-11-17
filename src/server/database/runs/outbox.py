@@ -1959,7 +1959,9 @@ _STEER_TAKER_SQL = (
 # writes then miss). A chat-app steer belongs to the gateway, which resubmits
 # what its run missed, so only the run it was sent into takes it.
 # A hand-off from one Home thread is never taken by a run that reports back
-# to another: that run's report would go to the wrong Home.
+# to another: that run's report would go to the wrong Home. Nor is a hand-off
+# naming a model taken by a run on another, which keeps the model it started
+# on; left untaken, it starts a turn of its own on its model.
 _TAKEABLE_STEER_SQL = (
     "(" + _LIVE_STEER_SQL + " AND NOT " + _STEER_HELD_SQL
     + " AND NOT ({a}.payload ? 'dispatched_run_id')"
@@ -1968,7 +1970,11 @@ _TAKEABLE_STEER_SQL = (
     " AND NOT EXISTS (SELECT 1 FROM conversation_responses fr"
     " WHERE fr.conversation_response_id = %(run_id)s::uuid"
     " AND fr.metadata->>'origin_home_thread_id'"
-    " <> {a}.payload->'origin'->>'origin_home_thread_id'))"
+    " <> {a}.payload->'origin'->>'origin_home_thread_id')"
+    " AND NOT (({a}.payload ? 'llm_model') AND EXISTS ("
+    "SELECT 1 FROM conversation_responses mr"
+    " WHERE mr.conversation_response_id = %(run_id)s::uuid"
+    " AND mr.metadata->>'llm_model' IS DISTINCT FROM {a}.payload->>'llm_model')))"
 )
 
 

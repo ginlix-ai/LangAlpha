@@ -1,4 +1,4 @@
-"""Hand-offs and new workspaces the user approved in advance.
+"""Hand-offs the user approved in advance.
 
 The setting is read when the model proposes the call, not when the tool runs:
 a tool that paused for its card re-runs from the top on resume, so reading it
@@ -26,16 +26,14 @@ from src.tools.secretary._commands import InjectedToolCallId, hitl_confirm
 from src.server.models.user import OtherPreference
 from src.tools.secretary.approvals import (
     AUTO_APPROVE_HANDOFFS,
-    AUTO_APPROVE_KEYS,
     AUTO_APPROVE_WORKSPACE_CREATION,
     StandingApprovalMiddleware,
     preapproved,
 )
 from src.tools.secretary.chief_of_staff import delegate_to_analyst
-from src.tools.secretary.tools import workspaces_create
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache
 
-from .conftest import FakeResp, FakeSession, workspace_manager
+from .conftest import FakeResp, FakeSession
 
 USER_ID = "user-1"
 
@@ -45,7 +43,10 @@ def other_preference(monkeypatch) -> dict:
     """The user's ``other_preference``; tests set approval keys on it."""
     other: dict = {}
 
-    async def get_user_preferences(user_id):
+    async def get_user_preferences(user_id, *, cached=True):
+        # A cached read racing the write that turned a setting off could
+        # keep the old yes.
+        assert cached is False
         return {"other_preference": other}
 
     monkeypatch.setattr(
@@ -159,8 +160,9 @@ async def test_parallel_cards_are_each_answered_by_the_user(other_preference, ra
 def test_the_keys_read_are_the_keys_settings_save():
     """The web saves these names and the validator accepts them; a key the
     middleware reads under another name leaves every card asking."""
-    assert AUTO_APPROVE_KEYS == ("auto_approve_handoffs", "auto_approve_workspace_creation")
-    assert set(AUTO_APPROVE_KEYS) <= set(OtherPreference.model_fields)
+    keys = (AUTO_APPROVE_HANDOFFS, AUTO_APPROVE_WORKSPACE_CREATION)
+    assert keys == ("auto_approve_handoffs", "auto_approve_workspace_creation")
+    assert set(keys) <= set(OtherPreference.model_fields)
 
 
 # --- Which calls the middleware records --------------------------------------
@@ -176,27 +178,31 @@ def _call(tool_name: str, call_id: str, **args) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_each_setting_covers_only_its_own_action(other_preference):
+async def test_the_workspace_setting_approves_no_tool_call(other_preference):
+    """New workspaces are made with ``la``, whose approval reads that setting
+    itself; no tool the agent calls is skipped for it."""
     other_preference[AUTO_APPROVE_WORKSPACE_CREATION] = True
     update = await _recorded([
-        _call("manage_workspaces", "create", action="create", name="Research"),
-        _call("manage_workspaces", "list", action="list"),
+        _call("Bash", "b", command="la workspaces create Research"),
         _call("delegate_to_analyst", "handoff", question="q", workspace_id="ws-1"),
     ])
 
-    assert update == {"preapproved_calls": ["create"]}
+    assert update == {"preapproved_calls": []}
 
 
 @pytest.mark.asyncio
 async def test_a_card_is_recorded_once_the_rest_of_its_batch_has_results(other_preference):
     """A Claude Code turn runs this after the calls beside the card are answered."""
-    other_preference[AUTO_APPROVE_WORKSPACE_CREATION] = True
+    other_preference[AUTO_APPROVE_HANDOFFS] = True
     ai = AIMessage(content="", tool_calls=[
-        _call("manage_workspaces", "create", action="create", name="Research"), _call("Bash", "b", command="ls"),
+        _call("delegate_to_analyst", "handoff", question="q", workspace_id="ws-1"),
+        _call("Bash", "b", command="ls"),
     ])
     state = {"messages": [ai, ToolMessage("ok", tool_call_id="b")]}
 
-    assert await StandingApprovalMiddleware(USER_ID).aafter_model(state, None) == {"preapproved_calls": ["create"]}
+    assert await StandingApprovalMiddleware(USER_ID).aafter_model(state, None) == {
+        "preapproved_calls": ["handoff"]
+    }
 
 
 @pytest.mark.asyncio
@@ -244,7 +250,7 @@ async def test_a_turn_without_a_user_or_an_approvable_call_records_nothing(
     assert await _recorded(
         [_call("delegate_to_analyst", "h", question="q", workspace_id="ws-1")], None
     ) is None
-    assert await _recorded([_call("manage_threads", "t", action="list")]) is None
+    assert await _recorded([_call("Bash", "t", command="la threads list")]) is None
 
 
 # --- The tools skip the card only on the recorded call ------------------------
@@ -288,40 +294,6 @@ async def test_the_real_handoff_tool_asks_unless_its_call_was_recorded(
 
 
 _NEVER_ASK = MagicMock(side_effect=AssertionError("must not ask"))
-
-
-@pytest.mark.asyncio
-async def test_a_workspace_created_without_asking_carries_its_card():
-    mgr = workspace_manager({"workspace_id": "ws-1", "name": "Research"})
-    with patch("src.tools.secretary.tools.hitl_confirm", _NEVER_ASK), patch(
-        "src.server.services.workspace_manager.WorkspaceManager.get_instance",
-        return_value=mgr,
-    ):
-        result = await workspaces_create(
-            USER_ID, "Research", "Q3 notes", "call-1", preapproved=True
-        )
-
-    assert _payload(result) == {
-        "success": True,
-        "workspace_id": "ws-1",
-        "workspace_name": "Research",
-        "preapproved": True,
-        "workspace_description": "Q3 notes",
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_workspace_the_user_approved_on_its_card_is_not_marked():
-    mgr = workspace_manager({"workspace_id": "ws-1", "name": "Research"})
-    with patch(
-        "src.tools.secretary.tools.hitl_confirm", return_value=(True, {})
-    ), patch(
-        "src.server.services.workspace_manager.WorkspaceManager.get_instance",
-        return_value=mgr,
-    ):
-        result = await workspaces_create(USER_ID, "Research", None, "call-1")
-
-    assert "preapproved" not in _payload(result)
 
 
 @pytest.mark.asyncio
@@ -373,7 +345,13 @@ def _fill_thread_cap(cache: FakeCache) -> None:
 
 
 async def _handoff_that_fails(
-    monkeypatch, *, session, approved_in_advance=True, thread_id=None, cache=None
+    monkeypatch,
+    *,
+    session,
+    approved_in_advance=True,
+    thread_id=None,
+    cache=None,
+    model=None,
 ) -> dict:
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "test-internal-service-token")
     cache = cache or FakeCache()
@@ -403,6 +381,7 @@ async def _handoff_that_fails(
                 "args": {
                     "question": "analyze this",
                     **target,
+                    **({"model": model} if model else {}),
                     "state": (
                         {"preapproved_calls": ["call-1"]} if approved_in_advance else {}
                     ),
@@ -481,6 +460,32 @@ async def test_a_continuation_approved_in_advance_that_fails_names_its_thread(
 
 
 @pytest.mark.asyncio
+async def test_a_handoff_approved_in_advance_names_its_model_when_it_fails(
+    monkeypatch,
+):
+    """No card showed the model, so the result the card is drawn from does;
+    a busy thread refuses it with the reason a model cannot join a turn."""
+    from src.tools.secretary.dispatch import _THREAD_BUSY_MODEL
+
+    payload = await _handoff_that_fails(
+        monkeypatch,
+        session=FakeSession(FakeResp(status=409)),
+        thread_id=_PTC_THREAD,
+        model="gpt-6.1-terra",
+    )
+
+    assert payload == {
+        "success": False,
+        "error": _THREAD_BUSY_MODEL,
+        "preapproved": True,
+        "workspace_id": _WORKSPACE,
+        "workspace_name": "Research",
+        "model": "gpt-6.1-terra",
+        "thread_id": _PTC_THREAD,
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_handoff_approved_in_advance_with_an_unknown_outcome_is_marked(
     monkeypatch,
 ):
@@ -512,17 +517,15 @@ def test_a_declined_hand_off_keeps_the_work_unrouted_and_the_users_reason():
     as leave to build it in Home, and quotes only what the user wrote: the
     resume path's no-feedback sentence is not theirs. The web reads it by its
     prefix."""
-    from src.tools.secretary._commands import decline_routing_command
+    from src.tools.secretary._commands import decline_handoff_command
 
     from src.server.models.chat import _format_rejection_message
 
-    bare = decline_routing_command(
-        "the hand-off",
+    bare = decline_handoff_command(
         {"decisions": [{"type": "reject", "message": _format_rejection_message(None)}]},
         "c1",
     )
-    said = decline_routing_command(
-        "workspace creation",
+    said = decline_handoff_command(
         {
             "decisions": [
                 {"type": "reject", "message": _format_rejection_message(" use my NVDA one ")}
@@ -536,5 +539,5 @@ def test_a_declined_hand_off_keeps_the_work_unrouted_and_the_users_reason():
         "do not do it yourself instead: ask them where they want it."
     )
     assert said.update["messages"][0].content.startswith(
-        'User declined workspace creation, saying: "use my NVDA one". Unless'
+        'User declined the hand-off, saying: "use my NVDA one". Unless'
     )

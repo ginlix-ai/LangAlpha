@@ -379,6 +379,7 @@ async def astream_ptc_workflow(
                 ),
                 artifact_comments=request.artifact_comments,
                 checked_computer_id=request.checked_computer_id,
+                on_model=(request.llm_model or None) if dispatched else None,
             )
             if held_by is None:
                 ready, steering_event = await admit()
@@ -388,6 +389,11 @@ async def astream_ptc_workflow(
                 yield _turn_held({"status": "released"})
             if not ready:
                 # Steered: the running turn, or the turn it becomes, has it.
+                # A hand-off naming a model steers only a turn running on
+                # it, so the thread keeps that model as a turn it started
+                # would.
+                if dispatched and steering_event:
+                    await keep_named_model(thread_id, named_model)
                 await comments.admitted()
                 await scope.release_slot()
                 # Release admission immediately — no workflow will register
@@ -588,6 +594,9 @@ async def astream_ptc_workflow(
                     # watched, and a run without it predates the stamp.
                     UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
+                    # Per attempt, since a retry or an automation's turn may
+                    # run another model than the turn's query row recorded.
+                    **({"llm_model": effective_model} if effective_model else {}),
                     **firing,
                     **home.run_metadata(),
                     **(run_metadata or {}),

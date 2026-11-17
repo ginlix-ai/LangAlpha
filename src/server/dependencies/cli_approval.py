@@ -61,7 +61,6 @@ from src.server.database.conversation.threads_read import (
 from src.server.database.home_workspace import is_home_row
 from src.server.database.runs import lifecycle as runs_db
 from src.server.database.turn_targets import Place, turn_place
-from src.server.database.user import get_user_preferences
 from src.server.database.workspace import (
     free_workspace_name,
     get_live_workspace_ids_for_computer,
@@ -96,7 +95,7 @@ from src.server.services.automations.lifecycle import (
     resume_refusal,
 )
 from src.server.services.turn_runtime import ensure_home, named_workspace_id
-from src.tools.secretary.approvals import AUTO_APPROVE_WORKSPACE_CREATION
+from src.tools.secretary.approvals import AUTO_APPROVE_WORKSPACE_CREATION, standing_approval
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +392,7 @@ async def workspace_create(
     """
 
     async def build(call: CliCall | None) -> Ask | None:
-        if await _auto_approves_workspaces(principal.user_id):
+        if await standing_approval(principal.user_id, AUTO_APPROVE_WORKSPACE_CREATION):
             return None
         name = await free_workspace_name(principal.user_id, body.name)
         requested = str(body.computer_id) if body.computer_id else None
@@ -423,19 +422,6 @@ async def workspace_create(
     approved: list[str] = []
     await gate(request, principal, build)
     return approved[0] if approved else None
-
-
-async def _auto_approves_workspaces(user_id: str) -> bool:
-    try:
-        # Uncached: a read racing the write that turned it off could cache
-        # the old yes.
-        prefs = await get_user_preferences(user_id, cached=False)
-    except Exception:
-        # Asking is the default, so a setting that cannot be read asks.
-        logger.warning("Could not read approval settings for %s; asking", user_id, exc_info=True)
-        return False
-    other = (prefs or {}).get("other_preference") or {}
-    return other.get(AUTO_APPROVE_WORKSPACE_CREATION) is True
 
 
 async def automation_delete(request: Request, principal: Principal, automation_id: str) -> None:

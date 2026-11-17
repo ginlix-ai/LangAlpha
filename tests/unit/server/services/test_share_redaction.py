@@ -4,7 +4,7 @@ A share link is readable by anyone who has it, so these pin each owner-only
 mark the policy takes out: the owner's account ids at any depth, an order's
 identifiers (its call's arguments, the receipt on its artifact, the vendor's
 answer, the verdict the owner's resume recorded), the account tools' calls and
-answers, and the user_id the user data tools' stored answers still spell out.
+answers and those of a command or code run calling `la`, and the user_id the user data tools' stored answers still spell out.
 """
 
 from __future__ import annotations
@@ -405,6 +405,68 @@ def test_shows_nothing_of_an_answer_whose_call_the_stored_stream_lacks():
         ]
     )
     assert _answers(shown) == ["", "", "NVDA 181.20"]
+
+
+# --- The `la` CLI, run from Bash or code -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("Bash", {"command": "la threads output 7c1f2e3d", "description": "Read"}),
+        ("Bash", {"command": "langalpha workspaces list --json"}),
+        ("Bash", {"command": "cd /tmp && la threads list -w Research"}),
+        ("Bash", {"command": "/usr/local/bin/la threads show 7c1f2e3d"}),
+        ("Bash", {"command": "\\la threads output 7c1f2e3d"}),
+        ("Bash", {"command": "la</dev/null threads output 7c1f2e3d"}),
+        ("Bash", {"command": "la>out.txt threads output 7c1f2e3d"}),
+        # Arguments the stream could not parse arrive as their raw JSON text.
+        ("ExecuteCode", '{"code": "subprocess.run([\\"la\\", \\"threads\\", \\"list\\"])"}'),
+        ("Bash", {"command": "out=$(la threads output 7c1f2e3d); echo \"$out\""}),
+        ("Bash", {"command": "LANGALPHA_URL=http://x la computers list"}),
+        ("Bash", {"command": "la"}),
+        ("ExecuteCode", {"code": 'import subprocess\nsubprocess.run(["la", "threads", "list"])'}),
+        ("ExecuteCode", {"code": "import os\nos.system('la threads output 7c1f2e3d')"}),
+        ("ExecuteCode", {"code": 'subprocess.run("cd x; langalpha threads list", shell=True)'}),
+        # Arguments the stream could not parse arrive as their text.
+        ("Bash", '{"command": "la threads output 7c1f'),
+    ],
+)
+def test_sends_an_la_run_as_its_name_and_id_alone(name, args):
+    rows = f"Thread 7c1f2e3d in workspace {_OWNER_WS} is still running."
+    shown = _shown([_call(name, args), _answer(rows)])
+    assert [(c["name"], c["id"], c["args"]) for c in _calls(shown)] == [
+        (name, "call_abc", {})
+    ]
+    assert _answers(shown) == [""]
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("Bash", {"command": "ls -la /home/workspace"}),
+        ("Bash", {"command": "python plot.py --label lab"}),
+        ("Bash", {"command": "cat salary.csv"}),
+        ("ExecuteCode", {"code": "df['la_ratio'] = df.a / df.b\nprint(df.tail())"}),
+        ("Read", {"file_path": "la"}),
+    ],
+)
+def test_keeps_a_run_that_does_not_call_la(name, args):
+    shown = _shown([_call(name, args), _answer("a.csv b.csv")])
+    assert _calls(shown)[0]["args"] == args
+    assert _answers(shown) == ["a.csv b.csv"]
+
+
+def test_keeps_the_answer_of_a_call_that_reuses_an_la_run_id():
+    shown = _shown(
+        [
+            _call("Bash", {"command": "la threads list"}, "msg-1", "call_0"),
+            _answer("7c1f2e3d  NVDA deep dive", call_id="call_0"),
+            _call("Bash", {"command": "ls"}, "msg-2", "call_0"),
+            _answer("a.csv", call_id="call_0"),
+        ]
+    )
+    assert _answers(shown) == ["", "a.csv"]
 
 
 # --- The user_id a stored answer spells out ----------------------------------

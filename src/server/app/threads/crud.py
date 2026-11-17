@@ -157,6 +157,7 @@ async def list_threads(
                 is_pinned=bool(thread.get("is_pinned", False)),
                 archived_at=thread.get("archived_at"),
                 llm_model=thread.get("llm_model"),
+                latest_run_model=thread.get("latest_run_model") or None,
                 subagents_allowed=thread["subagents_allowed"],
                 reasoning_effort=thread.get("reasoning_effort"),
                 fast_mode=thread.get("fast_mode"),
@@ -213,25 +214,23 @@ async def get_thread_output(
     ),
 ):
     """The text each of the thread's latest turns committed, as the Chief of
-    Staff reads an analyst's output: one labeled block per run, times in the
-    user's zone. While a turn runs, only that turn's text so far, and
-    ``status`` says it is still running."""
+    Staff reads an analyst's output with ``la threads output``: one labeled
+    block per run, times in the user's zone. While a turn runs, only that
+    turn's text so far, and ``status`` says it is still running."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
     from src.server.services.wakeups.message import user_timezone
-    from src.tools.secretary.utils import extract_text_from_thread
+    from src.server.services.thread_output import extract_text_from_thread
 
-    result = await extract_text_from_thread(
+    output = await extract_text_from_thread(
         thread_id, turns=turns, timezone=await user_timezone(x_user_id)
     )
+    if output is None:
+        # Deleted after the owner check.
+        raise HTTPException(status_code=404, detail="Thread not found")
     # The read is by id alone, and a deleted thread's id can be taken again,
     # so it is the caller's only if the thread still is.
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    return ThreadOutputResponse(
-        thread_id=thread_id,
-        workspace_id=result["workspace_id"] or None,
-        status=result["status"],
-        text=result["text"],
-    )
+    return ThreadOutputResponse(thread_id=thread_id, **output._asdict())
 
 
 class ThreadSeenRequest(BaseModel):

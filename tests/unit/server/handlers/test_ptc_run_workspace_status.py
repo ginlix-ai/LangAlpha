@@ -118,7 +118,8 @@ def _make_workspace_manager(
 
 
 async def _run_to_sentinel(
-    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None, config=None
+    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None, config=None,
+    admit=(True, None), dispatched=False,
 ):
     """``stamps``, when given, gets each event's delay from the first pull.
 
@@ -145,7 +146,7 @@ async def _run_to_sentinel(
         patch(
             f"{PTC}.wait_or_steer",
             new_callable=AsyncMock,
-            return_value=(True, None),
+            return_value=admit,
         ),
         patch(
             f"{PTC}.get_user_profile_for_prompt",
@@ -178,6 +179,7 @@ async def _run_to_sentinel(
             is_byok=False,
             config=config or _make_config(),
             named_model=named_model,
+            dispatched=dispatched,
         )
 
         collected: list[str] = []
@@ -362,6 +364,32 @@ async def test_a_named_model_is_kept_only_once_the_turn_is_admitted(admitted):
     )
 
     if admitted:
+        keep.assert_awaited_once_with("t-1", named)
+    else:
+        keep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dispatched", [True, False])
+async def test_a_hand_off_steered_into_a_turn_on_its_model_keeps_it_on_the_thread(dispatched):
+    """A hand-off naming a model steers only a turn running on it, so the
+    thread keeps the model as a turn it started would. Only a hand-off: a
+    send of the user's own is not held to the running turn's model."""
+    from src.server.handlers.chat.request_prep import HandOffSteered
+    from src.server.services.llm.thread_model import NamedModel
+
+    keep = AsyncMock()
+    named = NamedModel("m-a", seen="m-pin")
+    await _run_to_sentinel(
+        _make_request(),
+        _make_workspace_manager(has_ready=True, observed_state=None),
+        named_model=named,
+        keep=keep,
+        admit=(False, HandOffSteered("run-live", "job-1")),
+        dispatched=dispatched,
+    )
+
+    if dispatched:
         keep.assert_awaited_once_with("t-1", named)
     else:
         keep.assert_not_awaited()

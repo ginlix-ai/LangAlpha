@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 
-from ptc_agent.agent.middleware.compaction.summarize import model_label
+from src.llms.model_identity import api_model_id
 from ptc_agent.agent.middleware.compaction.types import TokenCounter
 from ptc_agent.agent.middleware.compaction.utils import (
     attachment_tokens,
@@ -35,7 +35,7 @@ class Estimate:
     """What messages no call measured cost a model: their text by
     ``counter``, their attachments as the model is charged for them
     (``cost``, see ``attachment_tokens``). ``model`` names it
-    (``model_label``), so a growth measured on another is not taken for its
+    (``api_model_id``), so a growth measured on another is not taken for its
     count (``context_growth``). A market-watch stamp a later user message
     followed counts nothing (``spent_stamps``)."""
 
@@ -52,7 +52,7 @@ class Estimate:
 def is_claude(model: Any) -> bool:
     """Whether ``model`` counts with Claude's tokenizer, on whichever route
     serves it: the tokenizer goes with the model, not the host."""
-    return "claude" in (model_label(model) or "").lower()
+    return "claude" in (api_model_id(model) or "").lower()
 
 
 def counter_for(model: Any, default: TokenCounter) -> TokenCounter:
@@ -66,7 +66,7 @@ def estimate_for(
 ) -> Estimate:
     """How what no call to ``model`` measured is counted (``counter_for``),
     its attachments at ``cost``."""
-    return Estimate(counter_for(model, default), cost, model_label(model))
+    return Estimate(counter_for(model, default), cost, api_model_id(model))
 
 
 def keep_tokens_for(

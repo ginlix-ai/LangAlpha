@@ -587,9 +587,10 @@ async def keep_named_model(thread_id: str, named_model: NamedModel | None) -> No
     """Keep the model a client named on its thread, once the turn is admitted.
 
     Called after START commits and the run is attached, so a send refused
-    before admission, or a steer that never ran on the model it carried,
-    leaves the thread as it was, and the committed run always has an owner
-    when this waits on the database.
+    before admission leaves the thread as it was, and the committed run
+    always has an owner when this waits on the database. A hand-off steered
+    into a running turn calls it too: it steers only a turn on the model it
+    named (``wait_or_steer``'s ``on_model``).
     """
     if named_model:
         await remember_thread_llm_model(

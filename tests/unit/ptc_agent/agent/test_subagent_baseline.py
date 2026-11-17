@@ -3,6 +3,7 @@ definition, and a frozen baseline after it holding what is theirs."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -168,3 +169,57 @@ class TestBaseline:
         with _in_task():
             text = baseline_text(_compile(_context(memory_index="- [Style](style.md)"), memory=False))
         assert "<memory" not in text
+
+
+class _Config:
+    """A turn config whose only resolved client is the one a test pins."""
+
+    llm = None
+
+    def __init__(self, client=None) -> None:
+        self._client = client
+
+    def client_for_role(self, role, *, fallback_to_main=False):
+        return self._client
+
+    def prompt_guidance_for_role(self, role):
+        return "detailed"
+
+    def feature_enabled(self, key):
+        return False
+
+
+class TestTheModel:
+    """A subagent states the model it runs, which is not always the turn's."""
+
+    def _text(self, *, client=None, turn="Claude Opus 5.5, reasoning effort high", **fields):
+        context = replace(_context(), model=turn)
+        defn = SubagentDefinition(
+            name="helper", description="d", role_prompt="Do the task.",
+            tools=["execute_code"], **fields,
+        )
+        compiler = SubagentCompiler(
+            tool_sets={"execute_code": [SimpleNamespace(name="execute_code")]},
+            user_profile=PROFILE, context=context, config=_Config(client),
+        )
+        with _in_task():
+            return baseline_text(compiler.compile(defn))
+
+    def test_inheriting_the_turn_s_model_states_the_turn_s(self):
+        text = self._text()
+        assert "<model>\nYou run on Claude Opus 5.5, reasoning effort high.\n</model>" in text
+        # It cannot pick its model, so it is not told who does.
+        assert "la models list" not in text
+
+    def test_its_own_client_states_the_model_that_client_calls(self):
+        client = SimpleNamespace(
+            metadata={"manifest_model": "my-own-model", "reasoning_effort": "low"}
+        )
+        text = self._text(client=client)
+        assert "You run on my-own-model, reasoning effort low." in text
+        assert "Claude Opus 5.5" not in text
+
+    def test_a_pinned_name_with_no_client_states_that_name(self):
+        text = self._text(model="my-own-model")
+        assert "You run on my-own-model." in text
+        assert "Claude Opus 5.5" not in text

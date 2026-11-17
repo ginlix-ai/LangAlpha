@@ -5,8 +5,8 @@
 # rebuild. A thread pinned below rebuild_before rebuilds at its next turn
 # start, whatever its size; a build below a thread's pinned version, a
 # rollback, never forces one. When to bump: templates/AGENTS.md.
-prompt_version: 1
-rebuild_before: 1
+prompt_version: 2
+rebuild_before: 2
 
 defaults:
   # Runtime variables (set at render time, these are just documentation)
@@ -217,6 +217,15 @@ envelope:
       Trust preface for the baseline file blocks, rendered once above the first
       <agentmd>/<memory> block. Byte-deterministic.
     kwargs: []
+
+  baseline_model:
+    template: envelope/baseline_model.md.j2
+    description: >-
+      The model the thread runs on wrapped in <model>: its display name and
+      reasoning effort, and for the main agent one line on who picks it and
+      where the choices are listed. Empty content renders nothing.
+      Byte-deterministic.
+    kwargs: [content, subagent]
 
   baseline_mcp_servers:
     template: envelope/baseline_mcp_servers.md.j2

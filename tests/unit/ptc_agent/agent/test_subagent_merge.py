@@ -332,7 +332,9 @@ NARROWED = "Your tools here are narrower than this role was written for"
 
 def _prompt(defn: SubagentDefinition) -> str:
     compiler = SubagentCompiler(skill_registry=build_effective_skill_registry())
-    return compiler._resolve_prompt(defn, compiler._compute_sections(defn))
+    return compiler._resolve_prompt(
+        defn, compiler._compute_sections(defn), guidance=compiler._guidance(defn)
+    )
 
 
 @pytest.mark.parametrize(

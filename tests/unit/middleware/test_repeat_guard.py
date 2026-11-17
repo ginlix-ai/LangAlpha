@@ -2,6 +2,8 @@
 and a status read once three rounds in a row found the work still running, and
 ends the run once three rounds in a row had every call refused."""
 
+from pathlib import Path
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware
@@ -14,10 +16,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from ptc_agent.agent.limits import (
+    LA_STILL_RUNNING,
     REFUSAL_KEY,
     is_pending_read,
     is_refusal,
     pending_read,
+    read_a_running_thread,
 )
 from ptc_agent.agent.middleware import repeat_guard
 from ptc_agent.agent.middleware.repeat_guard import (
@@ -32,6 +36,8 @@ from ptc_agent.agent.middleware.repeat_guard import (
     refused_streak,
     repeat_streak,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 POLL = {"name": "agent_output", "args": {"thread": "t1"}}
 KEY = _call_key(POLL["name"], POLL["args"])
@@ -299,6 +305,97 @@ class TestPollGuard:
         guard = RepeatCallGuardMiddleware()
         result = await guard.awrap_tool_call(_Request(_read_rounds(POLL_LIMIT), call=call), _ran)
         assert result.content == "ran"
+
+
+def _la_poll(description):
+    return {
+        "name": "Bash",
+        "args": {"command": "la threads output t1", "description": description},
+    }
+
+
+class TestPollingThroughLa:
+    """``la threads output`` from Bash, the Chief of Staff's read of an
+    analyst since ``agent_output`` went: the tool marks the result when the
+    thread was running, and the model words each call's label anew."""
+
+    def _rounds(self, n):
+        messages = [HumanMessage("go")]
+        for i in range(n):
+            call = _la_poll(f"Check the analyst, attempt {i}")
+            messages += [
+                AIMessage(content="", tool_calls=[{**call, "id": f"b{i}"}]),
+                _read(f"b{i}", call=call),
+            ]
+        return messages
+
+    @pytest.mark.asyncio
+    async def test_three_rounds_of_reads_refuse_the_next(self):
+        guard = RepeatCallGuardMiddleware()
+        result = await guard.awrap_tool_call(
+            _Request(self._rounds(POLL_LIMIT), call=_la_poll("Check once more")), _ran
+        )
+        assert result.content == POLL_REFUSAL.format(count=POLL_LIMIT)
+        assert result.additional_kwargs == {REFUSAL_KEY: "poll"}
+
+    @pytest.mark.asyncio
+    async def test_runs_until_the_limit(self):
+        guard = RepeatCallGuardMiddleware()
+        result = await guard.awrap_tool_call(
+            _Request(self._rounds(POLL_LIMIT - 1), call=_la_poll("Check once more")), _ran
+        )
+        assert result.content == "ran"
+
+    @pytest.mark.asyncio
+    async def test_another_command_still_runs(self):
+        other = {"name": "Bash", "args": {"command": "la threads output t2"}}
+        guard = RepeatCallGuardMiddleware()
+        result = await guard.awrap_tool_call(_Request(self._rounds(POLL_LIMIT), call=other), _ran)
+        assert result.content == "ran"
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_read_of_a_settled_thread_ends_the_streak(self):
+        messages = self._rounds(POLL_LIMIT - 1)
+        messages += _round("done", "Margins rose.", call=_la_poll("Read the result"))
+        assert poll_streak(messages)[0] == 0
+
+
+class TestWhatMarksAnLaRead:
+    """The output that tells the tool its ``la`` read a running thread: the
+    line the CLI writes to stderr, with ``--json`` too."""
+
+    def test_the_line_the_cli_writes_is_the_one_matched(self):
+        source = (REPO_ROOT / "cli/src/commands/threads.ts").read_text()
+        assert f'export const STILL_RUNNING = "{LA_STILL_RUNNING}";' in source
+        assert (
+            'if (out.status === "running") '
+            "process.stderr.write(`Thread ${id} ${STILL_RUNNING}\\n`);"
+        ) in source
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            f"Thread 7c1f2e3d {LA_STILL_RUNNING}\nMargins are up so far.",
+            f"Margins are up so far.\nThread 7c1f2e3d {LA_STILL_RUNNING}\n",
+            # Under --json, beside the route's response on stdout.
+            f'Thread 7c1f2e3d {LA_STILL_RUNNING}\n{{"thread_id":"7c1f2e3d","status":"running"}}\n',
+        ],
+    )
+    def test_the_line_marks(self, output):
+        assert read_a_running_thread(output)
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "Margins rose 4%.",
+            # Quoted inside other text, not the line itself.
+            f"> Thread 7c1f2e3d {LA_STILL_RUNNING}",
+            # A running status with no line, as another listing's row.
+            '{"workspace_id":"ws-1","name":"Research","status":"running"}',
+        ],
+    )
+    def test_other_output_does_not(self, output):
+        assert not read_a_running_thread(output)
 
 
 class TestEndOfRun:

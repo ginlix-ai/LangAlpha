@@ -1780,6 +1780,114 @@ class TestTheHarnessBlocks:
         assert epoch.cursor.observed["skills"] == sha256_text(self.MANIFEST)
 
 
+class TestTheModelBlock:
+    """The model a thread runs on is frozen like any block, and a switch
+    between turns arrives as a row that states the new model whole."""
+
+    OPUS = "Claude Opus 5.5, reasoning effort high"
+
+    def _middleware(self, label: dict):
+        return _middleware(
+            _session("# Notes"), blocks={"model": lambda _state: label["model"]}
+        )
+
+    async def _switch(self, mw, state: dict, label: dict, to: str) -> list:
+        label["model"] = to
+        update = await mw.abefore_agent(state, None) or {}
+        return [runtime_update_from_message(m) for m in _rows(update)], update
+
+    @staticmethod
+    def _states(rows: list, label: str) -> bool:
+        """One model row, which states ``label`` as what the thread runs on now."""
+        return [r.kind for r in rows] == ["model_changed"] and (
+            f"From this turn on you run on {label}." in rows[0].text
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_block_states_the_model_first_among_the_harness_blocks(self):
+        mw = _middleware(
+            _session("# Notes"),
+            blocks={
+                "model": lambda _state: self.OPUS,
+                "mcp_servers": lambda _state: "- yfinance: quotes",
+            },
+        )
+        state = await mw.abefore_agent({}, None)
+
+        text = _text(await _render(mw, state))
+        assert f"<model>\nYou run on {self.OPUS}." in text
+        assert text.index("<model>") < text.index("<mcp-servers>")
+
+    @pytest.mark.asyncio
+    async def test_a_switch_files_one_row_stating_the_new_model(self):
+        label = {"model": self.OPUS}
+        mw = self._middleware(label)
+        state = await mw.abefore_agent({}, None)
+
+        rows, second = await self._switch(mw, state, label, "GPT-6 Astra")
+
+        assert self._states(rows, "GPT-6 Astra")
+        assert "frozen copy" not in rows[0].text
+        assert rows[0].provenance == {"source": "harness"}
+        assert second[STATE_BASELINE]["epoch"] == 1
+        assert second[STATE_BASELINE]["blocks"]["model"]["text"] == self.OPUS
+        # The same model on the next turn files nothing more.
+        assert await mw.abefore_agent({**state, **second}, None) is None
+
+    @pytest.mark.asyncio
+    async def test_an_effort_change_alone_is_a_switch(self):
+        label = {"model": self.OPUS}
+        mw = self._middleware(label)
+        state = await mw.abefore_agent({}, None)
+
+        rows, _ = await self._switch(
+            mw, state, label, "Claude Opus 5.5, reasoning effort low"
+        )
+
+        assert self._states(rows, "Claude Opus 5.5, reasoning effort low")
+
+    @pytest.mark.asyncio
+    async def test_switching_back_states_the_frozen_model_rather_than_a_match(self):
+        """The row says what the thread runs on; the earlier row is now wrong."""
+        label = {"model": self.OPUS}
+        mw = self._middleware(label)
+        state = await mw.abefore_agent({}, None)
+        _, second = await self._switch(mw, state, label, "GPT-6 Astra")
+
+        rows, _ = await self._switch(
+            mw, {**state, **second}, label, self.OPUS
+        )
+
+        assert self._states(rows, self.OPUS)
+        assert "matches its frozen copy" not in rows[0].text
+
+    @pytest.mark.asyncio
+    async def test_the_same_model_files_no_row(self):
+        label = {"model": self.OPUS}
+        mw = self._middleware(label)
+        state = await mw.abefore_agent({}, None)
+
+        assert await mw.abefore_agent(state, None) is None
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_rebuild_freezes_the_new_model_into_the_block(self):
+        label = {"model": self.OPUS}
+        mw = self._middleware(label)
+        state = await mw.abefore_agent({}, None)
+        _, second = await self._switch(mw, state, label, "GPT-6 Astra")
+
+        rebuilt = await mw.abefore_agent(
+            {**state, **second, "_summarization_event": _compaction_event("m1")},
+            None,
+        )
+
+        assert rebuilt[STATE_BASELINE]["reason"] == "compaction"
+        assert rebuilt[STATE_BASELINE]["blocks"]["model"]["text"] == "GPT-6 Astra"
+        text = _text(await _render(mw, rebuilt))
+        assert "You run on GPT-6 Astra." in text
+        assert self.OPUS not in text
+
+
 # ---------------------------------------------------------------------------
 # Breakpoint budget
 # ---------------------------------------------------------------------------

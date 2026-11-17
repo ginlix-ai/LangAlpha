@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ptc_agent.agent.limits import LA_STILL_RUNNING, PENDING_READ_KEY, is_pending_read
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_DEADLINE_KEY, TURN_TIME_LIMIT_KEY
 from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.agent.tools.bash import bash_description, create_execute_bash_tool
@@ -854,3 +855,57 @@ def test_a_hand_off_in_homes_stand_in_names_the_log_whole_on_its_computer():
         "/home/daytona/.home-stand-in/.agents/threads/6a7c8021/commands/c1.log "
         'on computer "Cloud" (computer_id 33333333-3333-3333-3333-333333333333)'
     )
+
+
+class TestAReadOfARunningThread:
+    """``la threads output`` on a thread still running, as its output says:
+    the result is marked for the loop guard, as ``agent_output``'s was, since
+    its text differs every read."""
+
+    @pytest.mark.asyncio
+    async def test_a_command_that_read_a_running_thread_is_marked(self):
+        output = f"Thread abc {LA_STILL_RUNNING}\nMargins are up so far."
+        msg = await _main(_backend(outcome(output=output))).ainvoke(
+            tool_call("Bash", command="la threads output abc | tail -5"), _CONFIG
+        )
+        assert msg.content == output
+        assert is_pending_read(msg)
+        assert msg.artifact == {"mcp_trace": [], PENDING_READ_KEY: True}
+
+    @pytest.mark.asyncio
+    async def test_a_command_that_read_a_settled_thread_is_not(self):
+        msg = await _main(_backend(outcome(output="Margins rose 4%."))).ainvoke(
+            tool_call("Bash", command="la threads output abc"), _CONFIG
+        )
+        assert not is_pending_read(msg)
+        assert msg.artifact == {"mcp_trace": []}
+
+    @pytest.mark.asyncio
+    async def test_a_handed_off_command_read_nothing_and_is_not(self):
+        running = f"Thread abc {LA_STILL_RUNNING}"
+        backend = _backend(outcome(done=False, duration_s=300.4, output=running))
+        with patch(_RECORD, new=AsyncMock()):
+            msg = await _main(backend).ainvoke(
+                tool_call("Bash", command="while true; do la threads output abc; done"), _CONFIG
+            )
+        assert msg.content == HANDED_OFF
+        assert not is_pending_read(msg)
+
+    @pytest.mark.asyncio
+    async def test_one_that_ended_at_its_deadline_is_marked_as_it_ended(self):
+        running = f"Thread abc {LA_STILL_RUNNING}"
+        backend = _backend(outcome(done=False, duration_s=90))
+        backend.stop_job_with_trace.return_value = StoppedJob(
+            was_running=False, had_ended=True, mcp_trace=[]
+        )
+        backend.read_ended_job.return_value = outcome(output=running)
+        config = {
+            "configurable": {TURN_DEADLINE_KEY: time.time() + 90, TURN_TIME_LIMIT_KEY: 90}
+        }
+
+        msg = await create_execute_bash_tool(backend).ainvoke(
+            tool_call("Bash", command="la threads output abc"), config
+        )
+
+        assert msg.content == running
+        assert is_pending_read(msg)

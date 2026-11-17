@@ -41,7 +41,7 @@ from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddlewar
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.middleware.wakeups import WakeupCancelNoticeMiddleware
 from src.llms.claude_code import ClaudeCodeTarget
-from src.tools.secretary._commands import puts_card
+from src.tools.secretary._commands import HANDOFF_TOOL_NAME
 from src.tools.secretary.approvals import StandingApprovalMiddleware
 from src.tools.wakeups import quiet
 
@@ -55,10 +55,10 @@ _OPENING_ROWS = (WakeupCancelNoticeMiddleware,)
 
 def waits_for_user(orders: frozenset[str]):
     """Which calls may wait for the user: a question, an order (``orders``
-    names the tools that place one) or a Chief of Staff card."""
+    names the tools that place one) or a hand-off's card."""
 
     def waits(name: str, args: Mapping[str, Any]) -> bool:
-        return name == ask_user.TOOL_NAME or name in orders or puts_card(name, args)
+        return name in (ask_user.TOOL_NAME, HANDOFF_TOOL_NAME) or name in orders
 
     return waits
 

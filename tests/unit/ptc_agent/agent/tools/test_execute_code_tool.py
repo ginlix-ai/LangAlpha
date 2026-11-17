@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ptc_agent.agent.limits import LA_STILL_RUNNING, is_pending_read
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_DEADLINE_KEY, TURN_TIME_LIMIT_KEY
 from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.agent.tools.code_execution import code_description, create_execute_code_tool
@@ -90,6 +91,16 @@ class TestEndedWithinTheWait:
         assert msg.content == "SUCCESS\n42\n"
         assert _without_call_id(msg.artifact) == {"mcp_trace": trace}
         assert backend.start_code_job.await_args.kwargs["wait_s"] == 300
+
+    @pytest.mark.asyncio
+    async def test_a_run_whose_la_read_a_running_thread_is_marked(self):
+        output = f"Thread abc {LA_STILL_RUNNING}\nMargins are up so far."
+        backend = _backend(outcome(output=output))
+
+        msg = await _main(backend).ainvoke(tool_call("ExecuteCode", code="run_la()"), _CONFIG)
+
+        assert msg.content == "SUCCESS\n" + output
+        assert is_pending_read(msg)
 
     @pytest.mark.asyncio
     async def test_a_failure_carries_its_output(self):

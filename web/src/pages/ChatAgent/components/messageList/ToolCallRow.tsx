@@ -2,7 +2,7 @@ import React, { memo } from 'react';
 import { Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { categorizeTool, getDisplayName, getToolIcon, getPreparingText } from '../toolDisplayConfig';
+import { categorizeTool, getDisplayName, getToolIcon, getPreparingText, isFailedCall } from '../toolDisplayConfig';
 import { ToolIcon } from '../ToolIcon';
 import { completedToolTitle, completedToolSummary, liveToolLabel } from './activitySummary';
 import { filePathOf } from './groupFileToolRuns';
@@ -12,6 +12,7 @@ import { SwapCell } from '@/components/ui/crossfade';
 import type { ToolActivityItem, PreparingCall } from './activityTypes';
 import { ToolCallCommandState } from '../commands/CommandState';
 import { isCommandTool } from '../commands/commandWords';
+import { useLaNames } from '../../hooks/useLaNames';
 
 const RUNNING_VERB_KEY: Record<string, string> = { Read: 'read', Edit: 'edit', Write: 'write' };
 
@@ -79,8 +80,9 @@ export const ToolCallRow = memo(function ToolCallRow({ item, onClick, running = 
   const args = item.toolCall?.args;
   const artifact = item.toolCallResult?.artifact;
   const title = completedToolTitle(item, t);
-  const summary = completedToolSummary(item, t);
-  const isFailed = item.isFailed === true || item._liveState === 'failed';
+  const laNames = useLaNames([{ toolName, args }]);
+  const summary = completedToolSummary(item, t, laNames);
+  const isFailed = isFailedCall(item);
   const failedLabel = t('toolArtifact.a11y.toolCallFailed');
 
   // Decide the destination tab label for the pill tooltip.

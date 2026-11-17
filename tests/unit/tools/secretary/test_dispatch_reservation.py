@@ -356,7 +356,7 @@ async def test_foreign_marker_on_fresh_pair_is_not_success(cache, ledger):
 async def test_ambiguous_loss_with_probe_down_retains_unknown(cache, ledger):
     """When the marker probe itself fails, the outcome stays unknown — keep
     the reservation (TTL-bounded) and surface the retained thread id so the
-    model can check agent_output instead of blind-re-dispatching."""
+    model can read the thread instead of blind-re-dispatching."""
     _ledger_probe_raises(ledger)
     with patch(
         "src.tools.secretary.dispatch.hitl_confirm", return_value=(True, {})

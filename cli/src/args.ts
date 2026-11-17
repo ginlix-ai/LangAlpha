@@ -1,66 +1,25 @@
 import { usage } from "./errors.js";
+import { type FlagSpec, GrammarError, type Parsed, parse as parseWords } from "./grammar.js";
 
-export interface Flag {
-  type: "bool" | "string" | "int";
-  short?: string;
-  /** The value's placeholder in help: ``--name N``. */
-  value?: string;
-  required?: boolean;
+export type { Parsed } from "./grammar.js";
+
+export interface Flag extends FlagSpec {
   help?: string;
 }
 
 export type Flags = Record<string, Flag>;
 
-export interface Parsed {
-  operands: string[];
-  values: Map<string, string | number | true>;
+/** ``read``, with the grammar's refusal reported as a usage error. */
+export function asUsage<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (e) {
+    throw e instanceof GrammarError ? usage(e.message) : e;
+  }
 }
 
-/** Only the flags given are accepted, so a typo is refused rather than
- *  taken as a value-less flag that swallows the next word. */
 export function parse(argv: readonly string[], flags: Flags): Parsed {
-  const operands: string[] = [];
-  const values = new Map<string, string | number | true>();
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--") {
-      operands.push(...argv.slice(i + 1));
-      break;
-    }
-    let name: string;
-    let value: string | undefined;
-    if (arg.startsWith("--")) {
-      const eq = arg.indexOf("=");
-      name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-      value = eq === -1 ? undefined : arg.slice(eq + 1);
-      if (!Object.hasOwn(flags, name)) throw usage(`Unknown option --${name}`);
-    } else if (arg.length > 1 && arg.startsWith("-") && !/^-\d/.test(arg)) {
-      const short = Object.keys(flags).find((k) => flags[k]!.short === arg.slice(1));
-      if (!short) throw usage(`Unknown option ${arg}`);
-      name = short;
-    } else {
-      operands.push(arg);
-      continue;
-    }
-    const flag = flags[name]!;
-    if (flag.type === "bool") {
-      if (value !== undefined) throw usage(`--${name} takes no value`);
-      values.set(name, true);
-      continue;
-    }
-    if (value === undefined) {
-      value = argv[++i];
-      if (value === undefined) throw usage(`--${name} needs a value`);
-    }
-    if (flag.type === "int") {
-      const n = Number(value);
-      if (value.trim() === "" || !Number.isInteger(n)) throw usage(`--${name} must be a whole number`);
-      values.set(name, n);
-    } else {
-      values.set(name, value);
-    }
-  }
-  return { operands, values };
+  return asUsage(() => parseWords(argv, flags));
 }
 
 /** A command's parsed arguments. The type parameters are the names its spec

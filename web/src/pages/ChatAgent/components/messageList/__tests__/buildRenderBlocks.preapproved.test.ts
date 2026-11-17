@@ -111,4 +111,19 @@ describe('buildRenderBlocks: preapproved secretary calls', () => {
     expect(card(first)).toBeDefined();
     expect(card(second)).toBe(card(first));
   });
+
+  it('draws a workspace `la` created as its card, out of the activity group', () => {
+    const { blocks } = run({
+      tc1: {
+        toolName: 'Bash',
+        toolCall: { args: { command: 'la workspaces create Lithium', description: 'Create a workspace' } },
+        toolCallResult: { content: 'workspace_id  name\nws-1          Lithium' },
+        isComplete: true,
+      },
+    });
+
+    expect(blocks).toMatchObject([
+      { type: 'create_workspace', key: 'workspace-tc1', proposal: { status: 'approved', workspace_name: 'Lithium' } },
+    ]);
+  });
 });

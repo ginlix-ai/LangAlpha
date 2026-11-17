@@ -1942,6 +1942,29 @@ async def test_deleting_home_is_refused(client, bound):
 
 
 @pytest.mark.asyncio
+async def test_deleting_homes_stand_in_is_refused_before_the_user_is_asked(client):
+    """The stand-in is Home to the user and the agent, and an agent's `la`
+    reaches this route, so it is refused before any approval card."""
+    from src.server.database.home_workspace import HOME_STAND_IN_KEY, get_home_stand_in_id
+
+    ws = _ws(
+        workspace_id=get_home_stand_in_id("test-user-123"),
+        name="Home",
+        config={HOME_STAND_IN_KEY: True},
+    )
+    ask = AsyncMock(side_effect=AssertionError("the user must not be asked"))
+    with patch(
+        "src.server.app.workspaces.db_get_workspace",
+        new_callable=AsyncMock,
+        return_value=ws,
+    ), patch("src.server.app.workspaces.cli_approval.workspace_delete", ask):
+        resp = await client.delete(f"/api/v1/workspaces/{ws['workspace_id']}")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Cannot delete Home"
+
+
+@pytest.mark.asyncio
 async def test_delete_workspace_not_found(client):
     with patch(
         "src.server.app.workspaces.db_get_workspace",

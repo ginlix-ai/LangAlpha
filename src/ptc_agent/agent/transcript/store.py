@@ -111,6 +111,7 @@ def _entry(segment: Segment, unit: str, shape: str, through: str) -> dict[str, A
         "file": segment_file(unit, segment.number),
         unit: segment.number,
         "at": segment.at,
+        "model": segment.model,
         "events": len(segment.lines),
         "first_id": segment.first_id,
         "last_id": segment.last_id,

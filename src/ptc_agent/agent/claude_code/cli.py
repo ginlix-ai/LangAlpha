@@ -97,6 +97,13 @@ class RuntimeSpec:
     #: The results that end the turn (a quiet wake turn's), after which the CLI stops.
     ends_turn: Callable[[ToolMessage], bool] = _never
 
+    @property
+    def catalog_model(self) -> str:
+        """The thread's catalog row, which ``model`` (the CLI's model id) can
+        sit behind more than one of; the id for a spec the LLM layer never
+        stamped."""
+        return self.billing.get("manifest_model") or self.model
+
 
 def is_haiku(model: str) -> bool:
     """Whether ``model``, a session's model by its API id, is a Claude Haiku

@@ -10,6 +10,7 @@ from ptc_agent.agent.middleware.model_resilience import (
     ModelResilienceMiddleware,
     build_fallback_pairs,
 )
+from src.llms.model_identity import CATALOG_MODEL_KEY
 
 
 class _FakeModel:
@@ -189,8 +190,31 @@ class TestRetryBehavior:
         down = False
         by_primary = await mw.awrap_model_call(_FakeRequest(client), handler)
 
-        assert by_fallback.result[0].response_metadata == {"model_name": "x", FALLBACK_KEY: "fallback-a"}
-        assert by_primary.result[0].response_metadata == {"model_name": "x"}
+        assert by_fallback.result[0].response_metadata == {
+            "model_name": "x", FALLBACK_KEY: "fallback-a", CATALOG_MODEL_KEY: "fallback-a",
+        }
+        assert by_primary.result[0].response_metadata == {
+            "model_name": "x", CATALOG_MODEL_KEY: "primary-model",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_answer_names_the_catalog_model_of_the_client_that_wrote_it(self, events):
+        """A subagent on its own model shares the turn's middleware: its
+        answer names its own catalog row, not the turn's model, and one from
+        a client with no catalog name is left unstamped."""
+        client = _FakeModel("primary-model")
+        sub = _FakeModel("sub-model-id")
+        sub.metadata = {"manifest_model": "sub-model"}
+        mw = _make_middleware(client)
+
+        async def handler(req):
+            return ModelResponse(result=[AIMessage("ok")])
+
+        by_sub = await mw.awrap_model_call(_FakeRequest(sub), handler)
+        unknown = await mw.awrap_model_call(_FakeRequest(_FakeModel("raw-id")), handler)
+
+        assert by_sub.result[0].response_metadata[CATALOG_MODEL_KEY] == "sub-model"
+        assert CATALOG_MODEL_KEY not in unknown.result[0].response_metadata
 
 
 class TestProgrammingErrors:

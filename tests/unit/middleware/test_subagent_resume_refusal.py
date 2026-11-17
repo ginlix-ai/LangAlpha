@@ -12,6 +12,7 @@ from ptc_agent.agent.middleware.background_subagent import subagent as sa
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     current_background_tool_call_id,
 )
+from ptc_agent.config.agent import TaskModel
 
 
 def _graphs() -> dict[str, MagicMock]:
@@ -88,3 +89,47 @@ async def test_a_resume_infers_the_tasks_own_type_and_refuses_it_once_gone():
 
     assert reply.status == "error"
     assert reply.content == sa._unknown_type_refusal("gone-desk", graphs, resuming=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True])
+async def test_a_task_runs_the_graph_of_the_model_it_runs_on(monkeypatch, named):
+    """The task's ``runs_on`` says which graph: the background middleware
+    resolved and gated the model the call named before admitting the run, so
+    the call's own ``model`` argument is never read here."""
+    graphs = _graphs()
+    on_model = MagicMock()
+    runs_on = TaskModel(name="other-model", display_name="Other", client=MagicMock(), guidance="") if named else None
+    registry = MagicMock()
+    registry.get_by_tool_call_id.return_value = SimpleNamespace(
+        completed=False, task_id="task-1", subagent_type="research", task_run_id=None, runs_on=runs_on,
+    )
+    asked: list = []
+
+    def graph_on(subagent_type, on):
+        asked.append((subagent_type, on))
+        return on_model
+
+    ran: list = []
+
+    async def run(subagent, _state, _config, **_kwargs):
+        ran.append(subagent)
+        return {"messages": []}
+
+    monkeypatch.setattr(sa, "arun_subagent_streaming", run)
+    monkeypatch.setattr(sa, "get_config", lambda: {"configurable": {"thread_id": "t"}})
+    tool = sa._create_task_tool(
+        subagent_graphs=graphs, registry=registry, checkpointer=MagicMock(), graph_on=graph_on,
+    )
+
+    token = current_background_tool_call_id.set("tc-bg")
+    try:
+        await tool.coroutine(
+            description="d", prompt="p", action="resume", task_id="task-1", model="unresolved",
+            runtime=_runtime(),
+        )
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    assert ran == ([on_model] if named else [graphs["research"]])
+    assert asked == ([("research", runs_on)] if named else [])

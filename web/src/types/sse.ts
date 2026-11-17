@@ -471,6 +471,8 @@ export interface ActionRequest {
   workspace_id?: string;
   thread_id?: string;
   report_back?: boolean;
+  /** ptc_agent: the model the hand-off names, or null for the thread's own. */
+  model?: string | null;
   tool_call_id?: string;
   /**
    * The order attempt this request answers for. Its presence is what makes a
