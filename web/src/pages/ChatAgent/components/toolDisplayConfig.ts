@@ -4,7 +4,7 @@ import {
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
   Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
-  Layers, ArrowUpDown,
+  Layers, ArrowUpDown, Copy,
 } from 'lucide-react';
 import {
   classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type UserDataEntity,
@@ -102,6 +102,7 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   Write:                    { displayName: 'Write',                i18nKey: 'write',               icon: FilePlus },
   Read:                     { displayName: 'Read',                 i18nKey: 'read',                icon: FileText },
   Edit:                     { displayName: 'Edit',                 i18nKey: 'edit',                icon: FilePen },
+  CopyFile:                 { displayName: 'Copy File',            i18nKey: 'copyFile',            icon: Copy },
   ExecuteCode:              { displayName: 'Execute Code',         i18nKey: 'executeCode',         icon: SquareChevronRight },
   think_tool:               { displayName: 'Thinking',             i18nKey: 'thinking',            icon: Brain },
   // Background subagent management
@@ -448,6 +449,12 @@ function inProgressTextOf(info: CallInfo | null, rawToolName: string, args: Tool
       return name
         ? (tr?.('editingFile', { name }) ?? `editing ${name}...`)
         : (tr?.('editing') ?? 'editing...');
+    }
+    case 'CopyFile': {
+      const name = typeof args?.source === 'string' ? args.source.split('/').pop() : '';
+      return name
+        ? (tr?.('copyingFile', { name }) ?? `copying ${name}...`)
+        : (tr?.('copying') ?? 'copying...');
     }
     case 'Bash':
       return args?.description ? `${args.description}...` : (tr?.('runningCommand') ?? 'running command...');
