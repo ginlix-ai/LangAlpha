@@ -353,14 +353,27 @@ def test_a_computer_runs_a_cli_per_800_mb_of_its_smallest_size_and_an_own_one_as
 
 @pytest.mark.parametrize(
     ("config", "cap"),
-    [({"claude_code_clis": 6}, 6), ({"claude_code_clis": 8}, 8), ({"claude_code_clis": 1}, 1), ({}, 4), (None, 4),
-     ({"claude_code_clis": 9}, 4), ({"claude_code_clis": 0}, 4), ({"claude_code_clis": "6"}, 4),
+    [({"claude_code_clis": 6}, 6), ({"claude_code_clis": 16}, 16), ({"claude_code_clis": 1}, 1), ({}, 4), (None, 4),
+     ({"claude_code_clis": 17}, 4), ({"claude_code_clis": 0}, 4), ({"claude_code_clis": "6"}, 4),
      ({"claude_code_clis": True}, 4)],
 )
 def test_an_own_computer_runs_as_many_clis_as_its_owner_set_for_it(config, cap):
     """A count that is not one Settings could have saved reads as the default."""
     with platform():
         assert hosted_module.cli_cap({**OWN, "config": config}) == cap
+
+
+@pytest.mark.parametrize(
+    ("memory", "cap"),
+    [(128 * 1024**3, 16), (32 * 1024**3, 16), (16 * 1024**3, 8), (15_500_000_000, 7), (8 * 1024**3, 4),
+     (4 * 1024**3, 4), (None, 4), ("16G", 4)],
+)
+def test_an_own_computer_its_owner_set_no_count_for_runs_one_cli_per_2_gib(memory, cap):
+    """Between the default and the most; the owner's own count wins over it."""
+    with platform():
+        assert hosted_module.cli_cap({**OWN, "config": {"machine": {"memory_bytes": memory}}}) == cap
+        set_three = {"machine": {"memory_bytes": memory}, "claude_code_clis": 3}
+        assert hosted_module.cli_cap({**OWN, "config": set_three}) == 3
 
 
 @pytest.mark.parametrize(("memory", "cap"), [(400, 10), (1600, 2), (8192, 1)], ids=["400", "1600", "past-its-memory"])

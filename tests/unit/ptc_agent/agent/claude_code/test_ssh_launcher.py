@@ -342,14 +342,15 @@ async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signall
     second = local_link(HOME=str(tmp_path))
     dials = []
 
-    async def spill():
-        dials.append(1)
+    async def spill(want):
+        dials.append(want)
         return second
 
     link.spill = spill
+    link.peers = lambda: [second] if dials else []
     running = [await _started(launcher(slot_wait_s=5)) for _ in range(2 * CLI_SLOTS)]
     assert (link.cli_slots._value, second.cli_slots._value) == (0, 0)
-    assert len(dials) == CLI_SLOTS and link.slots._value == 2
+    assert dials == ["cli"] and link.slots._value == 2
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(2 * CLI_SLOTS))}$"):
         await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)

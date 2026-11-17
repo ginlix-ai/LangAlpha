@@ -56,6 +56,22 @@ describe('ComputerClis', () => {
     await waitFor(() => expect(onLocated).toHaveBeenCalledTimes(1));
   });
 
+  it('offers Automatic with what memory allows, shows it while no number is set, and saves it as null', async () => {
+    h.setClis.mockResolvedValue({ ...mac(16), clis_automatic: 16, clis_chosen: false });
+    const { unmount } = renderWithProviders(
+      <ComputerClis computerId="mac" clis={6} automatic={16} chosen max={16} />, { queryClient: new QueryClient() },
+    );
+    const select = screen.getByLabelText<HTMLSelectElement>('Claude Code agents at once');
+    expect(select.options[0].textContent).toBe('Automatic (16)');
+    expect(select.value).toBe('6');
+    fireEvent.change(select, { target: { value: 'automatic' } });
+    await waitFor(() => expect(h.setClis).toHaveBeenCalledWith('mac', null));
+    unmount();
+
+    renderWithProviders(<ComputerClis computerId="mac" clis={16} automatic={16} chosen={false} max={16} />, { queryClient: new QueryClient() });
+    expect(screen.getByLabelText<HTMLSelectElement>('Claude Code agents at once').value).toBe('automatic');
+  });
+
   it('keeps the focus through a save and takes no second change until it lands', async () => {
     let land: (entry: ClaudeCodeComputer) => void = () => {};
     h.setClis.mockReset();
@@ -71,6 +87,12 @@ describe('ComputerClis', () => {
     expect(h.setClis).toHaveBeenCalledTimes(1);
     land(mac(6));
     await waitFor(() => expect(select).toHaveAttribute('aria-busy', 'false'));
+  });
+
+  it('offers no Automatic where the server does not say what memory allows', () => {
+    renderWithProviders(<ComputerClis computerId="mac" clis={4} max={8} />, { queryClient: new QueryClient() });
+    const select = screen.getByLabelText<HTMLSelectElement>('Claude Code agents at once');
+    expect([...select.options].map((o) => o.value)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
   });
 
   it('cancels a list read in flight, so it cannot land after the save with the old number', async () => {
