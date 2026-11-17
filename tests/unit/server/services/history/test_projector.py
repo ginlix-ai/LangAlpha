@@ -1061,7 +1061,7 @@ def test_a_fallback_notice_sits_after_the_message_its_call_followed():
     from src.server.services.history.projector import (
         history_events_to_sse,
         messages_to_history_events,
-        with_model_fallbacks,
+        with_notices,
     )
 
     def fallback(n: int, after: str | None) -> dict:
@@ -1093,7 +1093,7 @@ def test_a_fallback_notice_sits_after_the_message_its_call_followed():
         ],
     )
 
-    items = with_model_fallbacks(
+    items = with_notices(
         "t-1",
         turn,
         lambda messages: history_events_to_sse(

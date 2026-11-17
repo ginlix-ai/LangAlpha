@@ -121,10 +121,19 @@ async def test_musl_found_at_a_turns_start_reads_as_unsupported_and_relays_nothi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("runs", "reason", "file"), [("none", "needs_perl", "no_perl"), ("musl", "computer_unsupported", "unsupported")])
-async def test_a_turn_first_to_find_claude_code_cannot_run_there_is_refused_as_admission_refuses_it(runs, reason, file):
+async def test_a_turn_first_to_find_claude_code_cannot_run_there_is_refused_as_admission_refuses_it(
+    runs, reason, file, monkeypatch,
+):
     """With nothing kept of the machine, admission let the turn run: it ends
     with the refusal admission gives from then on, and what it keeps still
     names the token file there, so Settings offers to remove it."""
+    from src.server.services.claude_code import launchers
+
+    @contextlib.asynccontextmanager
+    async def free(computer_id, wait_s, queue=None):
+        yield
+
+    monkeypatch.setattr(launchers, "computer_cli_slot", free)
     machine = SimpleNamespace(
         host="studio",
         run=AsyncMock(return_value=SimpleNamespace(exit_code=0, stdout=f"\n1\n{runs}\n".encode(), stderr=b"")),
@@ -297,8 +306,9 @@ def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
     with patch("src.server.services.claude_code.launchers.turn_launcher", return_value="launcher") as picked:
         assert inputs.claude_code_launcher(sandbox, admitted) == "launcher"
         assert inputs.claude_code_launcher(sandbox, admitted, slot_wait_s=30) == "launcher"
-        assert inputs.claude_code_launcher(sandbox, picked_on) == "launcher"
+        assert inputs.claude_code_launcher(sandbox, picked_on, queue := MagicMock()) == "launcher"
     assert [c.kwargs["slot_wait_s"] for c in picked.call_args_list] == [None, 30, None]
+    assert [c.kwargs["queue"] for c in picked.call_args_list] == [None, None, queue]
     assert [c.kwargs["admitted"] for c in picked.call_args_list] == [admitted, admitted, picked_on]
     assert {(c.kwargs["computer_id"], c.kwargs["workspace_id"], c.kwargs["user_id"]) for c in picked.call_args_list} == {
         ("c-1", "ws-1", "user-1"),
@@ -358,17 +368,17 @@ async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_i
 @pytest.mark.parametrize("slot_wait_s", [None, 30], ids=["turn", "subagent"])
 async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_computer_runs(monkeypatch, slot_wait_s):
     """Turns as well as subagents, so the computer's size bounds its turns too;
-    one none frees for in time is refused before anything starts in the sandbox."""
-    from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
+    one none frees for in time is refused before anything runs in the sandbox."""
+    from claude_agent_sdk import CLIConnectionError
 
-    from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHTransport, cli_slots_full
+    from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, cli_slots_full
     from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
     from src.server.services.claude_code import launchers
 
     asked = []
 
     @contextlib.asynccontextmanager
-    async def full(computer_id, wait_s):
+    async def full(computer_id, wait_s, queue=None):
         asked.append((computer_id, wait_s))
         raise SlotWaitTimeout("cli", 1)
         yield
@@ -376,19 +386,18 @@ async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_c
     monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox")
     monkeypatch.setattr(launchers, "computer_cli_slot", full)
     sandbox = SimpleNamespace(
-        provider=MagicMock(), wait_ready=AsyncMock(), runtime=SimpleNamespace(open_stream=AsyncMock()),
-        working_dir="/home/workspace",
+        provider=MagicMock(), wait_ready=AsyncMock(),
+        runtime=SimpleNamespace(open_stream=AsyncMock(), exec=AsyncMock()), working_dir="/home/workspace",
     )
     launcher = turn_launcher(
         sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(hosted="api_key"),
         slot_wait_s=slot_wait_s,
     )
-    link = await launcher.machine.link()
-    assert isinstance(link, SandboxLink)
-    transport = SSHTransport(launcher, link, ClaudeAgentOptions(cwd="/home/workspace", cli_path="/opt/claude"))
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(cli_slots_full(1))}$"):
-        await transport.connect()
+        await launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s")
     assert asked == [(CID, CLI_SLOT_WAIT_S if slot_wait_s is None else 30)]
+    sandbox.wait_ready.assert_not_awaited()
+    sandbox.runtime.exec.assert_not_awaited()
     sandbox.runtime.open_stream.assert_not_awaited()
 
 

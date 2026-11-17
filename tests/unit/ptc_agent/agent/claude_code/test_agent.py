@@ -221,7 +221,7 @@ def _built(*, saved: str | None = None, **kwargs) -> ClaudeCodeGraph:
     )
     config.claude_code_admitted = Admitted(saved=saved)
     target = create_llm("claude-haiku-5-5-code")
-    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, admitted: LocalLauncher(), **kwargs}
+    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, admitted, queue: LocalLauncher(), **kwargs}
     with patch.object(AgentConfig, "get_llm_client", return_value=target):
         graph = PTCAgent(config).create_agent(
             llm=target, thread_id="t-1", user_id="u-1", mcp_registry=MagicMock(), **kwargs
@@ -352,10 +352,10 @@ def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox(
     seen = []
     graph = _built(
         saved="saved_token", sandbox=sandbox,
-        claude_code_launcher=lambda s, admitted: seen.append((s, admitted)) or launcher,
+        claude_code_launcher=lambda s, admitted, queue: seen.append((s, admitted, queue)) or launcher,
     )
     turn = graph.turn(_RUN)
-    assert seen == [(sandbox, Admitted(saved="saved_token"))] and turn.launcher is launcher
+    assert seen == [(sandbox, Admitted(saved="saved_token"), turn.waits)] and turn.launcher is launcher
 
 
 def test_a_claude_code_turn_built_with_no_launcher_is_refused():
@@ -413,7 +413,7 @@ def test_a_subagent_of_a_claude_code_turn_runs_each_run_in_a_cli_of_its_own():
 
     with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
          patch.object(cc_agent, "build_claude_code_graph", side_effect=build):
-        main = _built(claude_code_launcher=lambda sandbox, admitted, **kw: launched.append(kw) or LocalLauncher())
+        main = _built(claude_code_launcher=lambda sandbox, admitted, *queue, **kw: launched.append(kw) or LocalLauncher())
     [(kw, sub, built)] = [(kw, g, b) for (kw, g), b in zip(graphs, builds, strict=True) if g is not main]
     turn = sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
     assert turn.run_key == "t-1-k1" and launched == [{"slot_wait_s": 30}]

@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 
 from ptc_agent.agent.claude_code.launcher import Credential
 from ptc_agent.config.core import SandboxConfig
+from ptc_agent.core.claude_code_clis import CliCount
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.app import claude_code as route
 from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLI_COMPUTER, CLOUD_TURN, Custody
@@ -372,14 +373,16 @@ def test_a_cloud_computer_runs_as_many_clis_as_the_memory_the_operator_counts_ea
 @pytest.mark.parametrize(
     ("computer", "clis"),
     [
-        ({**CLOUD, "resource_tier": "performance"}, 5),
-        ({**OWN, "config": {"claude_code_clis": 6}}, 6),
-        ({**CLOUD, "resource_tier": "retired"}, 4),
-        (None, 4),
+        ({**CLOUD, "resource_tier": "performance"}, CliCount(5, False, "Research")),
+        ({**OWN, "config": {"claude_code_clis": 6}}, CliCount(6, True, None)),
+        ({**CLOUD, "resource_tier": "retired"}, CliCount(4, False, "Research")),
+        (None, CliCount(4, False, None)),
     ],
     ids=["cloud", "own", "size-unknown", "gone"],
 )
 async def test_a_cli_starting_on_a_computer_is_held_to_its_cap_and_one_unsized_or_gone_to_the_default(computer, clis):
+    """Read once, with what a CLI that has to wait tells the user: whether
+    the count is theirs to raise, and the computer's name."""
     with platform(computer=computer):
         assert await hosted_module.computer_clis("c-x") == clis
 

@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from ptc_agent.core.claude_code_clis import CLIS_DEFAULT
+from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount
 from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
 from src.server.services.claude_code import cli_slots
 
@@ -86,7 +86,7 @@ def count(monkeypatch):
 
     async def computer_clis(computer_id):
         await asyncio.sleep(counts["read_s"])
-        return counts.get(computer_id, counts["n"])
+        return CliCount(counts.get(computer_id, counts["n"]), True, "Studio")
 
     monkeypatch.setattr(cli_slots, "computer_clis", computer_clis)
     return counts
@@ -326,3 +326,66 @@ async def test_a_renewal_under_way_as_the_cli_ends_lands_before_its_slot_is_free
         await sent.wait()
     await asyncio.sleep(0.1)
     assert _held(redis) == {}
+
+
+class _Queue:
+    def __init__(self):
+        self.told: list[tuple[str, object]] = []
+
+    def waiting(self, wait):
+        self.told.append(("waiting", wait))
+
+    def admitted(self, waited_s):
+        self.told.append(("admitted", waited_s))
+
+    def gave_up(self, waited_s):
+        self.told.append(("gave_up", waited_s))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["worker", "redis"])
+async def test_a_cli_that_waits_tells_its_turn_once_as_it_queues_and_once_as_it_gets_in(redis, count, where):
+    count["n"] = 1
+    queue, first = _Queue(), _Queue()
+    if where == "redis":
+        # Another worker holds the computer's one CLI.
+        redis.zsets[cli_slots.slots_key(CID)] = {"other": time.time()}
+        holder = contextlib.nullcontext()
+    else:
+        holder = cli_slots.computer_cli_slot(CID, 1, first)
+
+    async def free_soon():
+        await asyncio.sleep(0.2)
+        if where == "redis":
+            redis.zsets[cli_slots.slots_key(CID)].clear()
+
+    async with holder:
+        freeing = asyncio.ensure_future(free_soon())
+        waiter = asyncio.ensure_future(_enter(cli_slots.computer_cli_slot(CID, 5, queue)))
+        await asyncio.sleep(0.3)
+    stack = await waiter
+    await freeing
+    await stack.aclose()
+
+    assert first.told == []
+    assert [kind for kind, _ in queue.told] == ["waiting", "admitted"]
+    wait = queue.told[0][1]
+    assert (wait.computer_id, wait.name, wait.running, wait.cap, wait.settable, wait.max) == (CID, "Studio", 1, 1, True, CLIS_MAX)
+    assert queue.told[1][1] >= 0.15
+
+
+@pytest.mark.asyncio
+async def test_a_cli_that_times_out_waiting_is_told_it_gave_up_and_never_that_it_got_in(redis, count):
+    count["n"] = 1
+    queue = _Queue()
+    async with cli_slots.computer_cli_slot(CID, 1):
+        with pytest.raises(SlotWaitTimeout):
+            async with cli_slots.computer_cli_slot(CID, 0.2, queue):
+                pass
+    assert [kind for kind, _ in queue.told] == ["waiting", "gave_up"]
+
+
+async def _enter(cm):
+    stack = contextlib.AsyncExitStack()
+    await stack.enter_async_context(cm)
+    return stack

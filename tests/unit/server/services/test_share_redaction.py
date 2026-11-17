@@ -97,8 +97,13 @@ def _answers(shown: list[dict]) -> list[str]:
                 "action_requests": [{"type": "ask_user_question", "question": "Which?"}],
             },
         },
+        {
+            "event": "claude_code_queue",
+            "data": {"signal": "admitted", "wait_id": "w1", "computer_id": "c-1", "name": "Alex's MacBook",
+                     "running": 4, "cap": 4, "settable": True, "max": 8, "waited_s": 329},
+        },
     ],
-    ids=["provenance", "tool_call_chunks", "interrupt"],
+    ids=["provenance", "tool_call_chunks", "interrupt", "claude_code_queue"],
 )
 def test_drops_the_events_no_share_carries(event):
     assert ShareRedaction([event]).event(event["event"], event["data"]) is None

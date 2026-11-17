@@ -40,9 +40,10 @@ EXCLUDED: dict[str, tuple[frozenset[str], str]] = {
     ),
     "src/server/database/pool.py": (ANY, "Connections."),
     "src/llms/claude_code.py": (
-        frozenset({"PLAN_NOTICE_KEY"}),
+        frozenset({"PLAN_NOTICE_KEY", "QUEUE_EVENT_TYPE"}),
         "Names the response_metadata key a Claude Code reply's plan notice is "
-        "stamped under, which the stamps already saved carry.",
+        "stamped under, and the ui record name a wait for a CLI is kept "
+        "under, which the stamps and records already saved carry.",
     ),
     "src/server/database/runs/subagent_runs.py": (
         ANY,
