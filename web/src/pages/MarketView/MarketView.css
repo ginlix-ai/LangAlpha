@@ -35,36 +35,23 @@
   overflow: hidden;
 }
 
-/* First rows sit at the shared page depth (--page-top, tokens.css) in every
-   build: the offsets below are what each panel's own first row needs on top of
-   its normal padding to centre at --page-top + 14px.
+/* The market page gives its chart the height the shared page depth
+   (--page-top) would take: its first rows sit at the chart toolbar's own 8px
+   instead, and every panel beside it centres its first row on the same line,
+   22px down (the toolbar's 28px buttons centre it).
 
-   The chart's toolbar row is the left column's first row (its 28px buttons
-   centre it), and the company overview opens beside the chart with its header
-   on the same line. In the desktop shell this band lies under the page-wide
-   drag strip; the toolbar's controls are buttons and declare `no-drag`
-   (chrome.css), and its text stays a handle for the window. */
+   In the desktop shell this band lies under the page-wide drag strip; the
+   toolbar's controls are buttons and declare `no-drag` (chrome.css), and its
+   text stays a handle for the window. */
 @media (min-width: 768px) {
-  .market-left-panel .market-chart-container .chart-tools {
-    padding-top: var(--page-top);
-  }
-
   .market-left-panel .company-overview-panel {
-    padding-top: var(--page-top);
+    padding-top: 8px;
   }
 }
 
+/* The chat header's own row centres 20px down its box. */
 .market-content-wrapper > .market-right-panel {
-  padding-top: calc(var(--page-top) - 7px);
-}
-
-/* The watchlist / portfolio tab strip and the collapsed strip's toggle. */
-.market-content-wrapper > .market-sidebar {
-  padding-top: calc(var(--page-top) - 6px);
-}
-
-.market-content-wrapper > .market-sidebar--collapsed {
-  padding-top: calc(var(--page-top) - 3px);
+  padding-top: 2px;
 }
 
 .market-right-panel {

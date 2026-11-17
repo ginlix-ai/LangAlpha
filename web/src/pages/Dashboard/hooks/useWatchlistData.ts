@@ -130,7 +130,7 @@ export function useWatchlistData() {
   }, [refetchItems, refetchQuotes]);
 
   const handleAdd = useCallback(
-    async (itemData: WatchlistItemData, watchlistId?: string | null) => {
+    async (itemData: WatchlistItemData, watchlistId?: string | null): Promise<boolean> => {
       try {
         let targetWatchlistId = watchlistId || currentWatchlistId;
         if (!targetWatchlistId) {
@@ -146,12 +146,15 @@ export function useWatchlistData() {
           title: 'Stock added',
           description: `${itemData.symbol} has been added to your watchlist.`,
         });
+        return true;
       } catch (e: unknown) {
         const err = e as ApiError;
         console.error('Add watchlist item failed:', err?.response?.status, err?.response?.data, err?.message);
 
         const status = err?.response?.status;
-        const msg = err?.response?.data?.detail || err?.response?.data?.message || '';
+        // A 422's detail is a list, not text; only a string can be shown or matched.
+        const raw = err?.response?.data?.detail || err?.response?.data?.message;
+        const msg = typeof raw === 'string' ? raw : '';
 
         if (status === 409 || msg.toLowerCase().includes('already exists')) {
           toast({
@@ -166,6 +169,7 @@ export function useWatchlistData() {
             description: msg || 'Failed to add to watchlist. Please try again.',
           });
         }
+        return false;
       }
     },
     [currentWatchlistId, queryClient, toast]

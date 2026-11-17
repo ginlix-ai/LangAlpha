@@ -1,0 +1,599 @@
+/* The watchlist and holdings table. Columns are one grid template shared by
+   the headings and the rows, so every figure sits under its heading. */
+.quote-list {
+  --ql-cols: minmax(0, 1fr) 4.75rem 3.75rem;
+  --ql-gap: 6px;
+  --ql-pad: 12px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  padding-bottom: 4px;
+  color: var(--color-text-primary);
+}
+
+/* Four figures leave the symbol too little room at the same gaps: a figure
+   column is held to the widest it prints (`$184,320`, `-10.25%`). */
+.quote-list--holdings {
+  --ql-cols: minmax(0, 1fr) 3.75rem 3.25rem 3.5rem;
+  --ql-gap: 4px;
+  --ql-pad: 10px;
+}
+
+.quote-list-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 6px var(--ql-pad);
+}
+
+.quote-list-tabs {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  background: var(--color-bg-hover);
+}
+
+.quote-list-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out), background var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-tab:hover {
+  color: var(--color-text-primary);
+}
+
+.quote-list-tab--on {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.quote-list-count {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-spacer {
+  flex: 1;
+}
+
+.quote-list-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out), background var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-icon-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+/* The session, said once for every row under it. */
+.quote-list-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+  padding: 0 var(--ql-pad) 6px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.quote-list-session--pre svg {
+  color: var(--color-ext-pre);
+}
+
+.quote-list-session--post svg {
+  color: var(--color-ext-post);
+}
+
+.quote-list-live {
+  width: 5px;
+  height: 5px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--color-profit);
+  /* motion-exempt: live-dot pulse loop, its period is its own pace */
+  animation: quote-list-pulse 2s ease-in-out infinite;
+}
+
+@keyframes quote-list-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.quote-list-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 var(--ql-pad) 8px;
+  font-size: 0.8125rem;
+}
+
+.quote-list-summary-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.quote-list-summary-label {
+  margin-left: 2px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-cols {
+  display: grid;
+  grid-template-columns: var(--ql-cols);
+  gap: var(--ql-gap);
+  height: 24px;
+  padding: 0 var(--ql-pad);
+  border-bottom: 1px solid var(--color-border-muted);
+  /* Reserves the gutter a classic scrollbar takes from the body below, so the
+     headings keep over their figures; an overlay scrollbar reserves nothing. */
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+.quote-list-col {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-col:first-child {
+  justify-content: flex-start;
+}
+
+.quote-list-col:hover,
+.quote-list-col--sorted {
+  color: var(--color-text-primary);
+}
+
+.quote-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.quote-list-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quote-list-row {
+  position: relative;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.quote-list-row-main {
+  display: grid;
+  grid-template-columns: var(--ql-cols);
+  gap: var(--ql-gap);
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--ql-pad);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-row-main:hover {
+  background: var(--color-bg-hover);
+}
+
+/* The one sanctioned edge marker: the chart's own symbol. */
+.quote-list-row--active .quote-list-row-main {
+  background: var(--color-bg-hover);
+  box-shadow: inset 2px 0 0 var(--color-accent-primary);
+}
+
+.quote-list-sym {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quote-list-logo {
+  --ticker-logo-size: 16px;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-ticker {
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.quote-list-num {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.quote-list-up { color: var(--color-profit); }
+.quote-list-down { color: var(--color-loss); }
+.quote-list-flat { color: var(--color-text-secondary); }
+
+/* Remove takes the logo's place on hover, so no figure moves or hides. Until
+   then it takes no clicks, or a click on the logo would remove the row; a
+   screen without hover never shows it, since a tap would arm it there. */
+.quote-list-remove {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--ql-pad) - 1px);
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  cursor: pointer;
+  transition: opacity var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out), background var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-remove:focus-visible {
+  opacity: 1;
+}
+
+.quote-list-row:has(.quote-list-remove:focus-visible) .quote-list-logo {
+  opacity: 0;
+}
+
+@media (hover: hover) {
+  .quote-list-row:hover .quote-list-remove {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .quote-list-row:hover .quote-list-logo {
+    opacity: 0;
+  }
+}
+
+@media (hover: none) {
+  .quote-list-remove {
+    display: none;
+  }
+}
+
+.quote-list-remove:hover {
+  color: var(--color-loss);
+  background: var(--color-loss-soft);
+}
+
+.quote-list-empty {
+  margin: 0;
+  padding: 28px 16px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.quote-list-skeleton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 var(--ql-pad);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.quote-list-skeleton span {
+  height: 10px;
+  border-radius: 3px;
+  background: var(--color-border-muted);
+  /* motion-exempt: skeleton pulse loop, its period is its own pace */
+  animation: quote-list-skeleton 1.5s ease-in-out infinite;
+}
+
+@keyframes quote-list-skeleton {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* A finger needs taller rows and headings, so these follow the rules they
+   override; side by side, a tab's box keeps to its own width. */
+@media (pointer: coarse) {
+  .quote-list-row-main,
+  .quote-list-cols {
+    height: 44px;
+  }
+
+  .quote-list-tab {
+    --tap-target-w: 100%;
+  }
+}
+
+.quote-list-icon-btn--on {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+/* The row just added, said once as it arrives and then gone. */
+.quote-list-row--fresh .quote-list-row-main {
+  /* motion-exempt: a marker that holds long enough to be seen, not a transition */
+  animation: quote-list-fresh 1.6s var(--ease-out);
+}
+
+@keyframes quote-list-fresh {
+  0%, 40% { background: var(--color-bg-subtle); }
+  100% { background: transparent; }
+}
+
+/* Adding: a search where the rows were. */
+.quote-list-add {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.quote-list-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 var(--ql-pad) 6px;
+  padding: 0 9px;
+  height: 30px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius);
+  background: var(--color-bg-input);
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-search input,
+.quote-list-field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.quote-list-search input::placeholder,
+.quote-list-field input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-hit {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--ql-pad);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quote-list-hit--active {
+  background: var(--color-bg-hover);
+}
+
+.quote-list-hit:disabled {
+  cursor: default;
+}
+
+/* The last query's hits, held while the next one loads; they take no pick. */
+.quote-list-rows[aria-busy='true'] .quote-list-hit {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.quote-list-hit-symbol {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.quote-list-hit-name {
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.quote-list-hit-exchange {
+  margin-left: 6px;
+  font-size: 0.625rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-hit-add {
+  padding: 1px 7px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-hit--active .quote-list-hit-add {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+
+.quote-list-hit-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+/* A holding asks only what it cannot be valued without. */
+.quote-list-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 var(--ql-pad);
+  padding: 10px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+}
+
+.quote-list-form-head {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.quote-list-form-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.quote-list-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--color-bg-input);
+}
+
+.quote-list-field span {
+  font-size: 0.625rem;
+  color: var(--color-text-tertiary);
+}
+
+.quote-list-field input {
+  width: 100%;
+  padding: 0;
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.75rem;
+}
+
+.quote-list-form-error {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--color-loss);
+}
+
+.quote-list-form-submit {
+  height: 30px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+
+.quote-list-form-submit:hover {
+  opacity: 0.9;
+}
+
+.quote-list-form-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.quote-list-form-back {
+  align-self: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.6875rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.quote-list-form-back:hover {
+  color: var(--color-text-primary);
+}
+
+@media (pointer: coarse) {
+  .quote-list-hit,
+  .quote-list-search,
+  .quote-list-form-submit {
+    height: 44px;
+  }
+
+  .quote-list-field {
+    min-height: 44px;
+  }
+}

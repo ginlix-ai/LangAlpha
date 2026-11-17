@@ -12,7 +12,8 @@ import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
 import type { ComposerScope, ComposerSend, ReadyAttachment } from '../../components/ui/chat-input.types';
 import MarketChatPanel from './components/MarketChatPanel';
-import MarketSidebarPanel from './components/MarketSidebarPanel';
+import { QuoteList } from './components/quoteList/QuoteList';
+import { QuoteListDrawer } from './components/quoteList/QuoteListDrawer';
 import { INTERVALS } from './utils/chartConstants';
 import { MARKET_VIEW_ROUTE_PARAMS, readMarketViewRoute } from './utils/marketRoute';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
@@ -376,16 +377,7 @@ function MarketViewInner() {
     detail: 'full',
   });
   const toggleOverview = useCallback(() => setShowOverview((v) => !v), []);
-  const overviewButton = useMemo(() => (
-    <ChartToolButton
-      onClick={toggleOverview}
-      title={t('marketView.companyOverview')}
-      aria-pressed={showOverview}
-      className={showOverview ? 'chart-tool-btn-active' : undefined}
-    >
-      <Info size={14} />
-    </ChartToolButton>
-  ), [toggleOverview, showOverview, t]);
+
 
   // A confirmed chart selection for the live chart rides on send (even with an
   // empty box), so let the mobile input treat it as sendable content.
@@ -529,12 +521,27 @@ function MarketViewInner() {
     setChartImageDesc(null);
   }, [navigate, toast, t, queryClient, chartImage, chartImageDesc, scope, selectedWorkspaceId, selectedStock, selectedInterval, subagents.toSend, tuning.toSend, collectViews]);
 
-  const handleSidebarSymbolClick = useCallback((symbol: string) => {
+  const handleListPick = useCallback((symbol: string) => {
     setSelectedStock(displaySpelling(symbol));
     setSelectedStockDisplay(null);
     setChartMeta(null);
     setShowOverview(false);
   }, []);
+
+  // The chart toolbar's own end: the watchlist and holdings, then the company overview.
+  const toolbarTrail = useMemo(() => (
+    <>
+      <QuoteListDrawer symbol={selectedStock} onPick={handleListPick} />
+      <ChartToolButton
+        onClick={toggleOverview}
+        title={t('marketView.companyOverview')}
+        aria-pressed={showOverview}
+        className={showOverview ? 'chart-tool-btn-active' : undefined}
+      >
+        <Info size={14} />
+      </ChartToolButton>
+    </>
+  ), [selectedStock, handleListPick, toggleOverview, showOverview, t]);
 
   const handleQuickQuery = useCallback(async (queryText: string) => {
     await handleCaptureChartForContext();
@@ -697,13 +704,12 @@ function MarketViewInner() {
                     borderColor: 'var(--color-border-muted)',
                   }}
                 >
-                  <MarketSidebarPanel
+                  <QuoteList
                     activeSymbol={selectedStock}
-                    onSymbolClick={(symbol) => {
-                      handleSidebarSymbolClick(symbol);
+                    onPick={(symbol) => {
+                      handleListPick(symbol);
                       setMobileTab(null);
                     }}
-                    marketStatus={marketStatus}
                   />
                 </motion.div>
               </>
@@ -762,16 +768,11 @@ function MarketViewInner() {
                   toolbarLead={legend.toolbarLead}
                   toolbarLeadKey={legend.toolbarLeadKey}
                   measureToolbarLead={legend.measureToolbarLead}
-                  toolbarTrail={overviewButton}
+                  toolbarTrail={toolbarTrail}
                   toolbarSubrow={legend.toolbarSubrow}
                 />
               </div>
             </div>
-            <MarketSidebarPanel
-              activeSymbol={selectedStock}
-              onSymbolClick={handleSidebarSymbolClick}
-              marketStatus={marketStatus}
-            />
             <div className="market-resize-handle" onMouseDown={handleDragStart} />
             <div className="market-right-panel" style={{ width: chatPanelWidth }}>
               <div className="market-right-panel-inner">

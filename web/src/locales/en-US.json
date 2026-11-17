@@ -4668,15 +4668,41 @@
     },
     "sidebar": {
       "remove": "Remove",
-      "show": "Show watchlist and portfolio",
-      "collapse": "Collapse",
-      "portfolio": "Portfolio",
       "livePrices": "Live prices",
       "addToWatchlist": "Add to watchlist",
       "addHolding": "Add holding",
       "emptyWatchlist": "No stocks in your watchlist yet. Click + to add one.",
-      "emptyPortfolio": "No holdings in your portfolio yet. Click + to add one.",
-      "viewAll": "View all"
+      "emptyPortfolio": "No holdings in your portfolio yet. Click + to add one."
+    },
+    "quoteList": {
+      "holdings": "Holdings",
+      "openList": "Watchlist and holdings",
+      "sortBy": "Sort by {{column}}",
+      "closeTip": "Close {{price}} {{pct}}",
+      "session": {
+        "pre": "Pre-market",
+        "post": "After hours"
+      },
+      "col": {
+        "symbol": "Symbol",
+        "last": "Last",
+        "chg": "Chg%",
+        "value": "Value",
+        "today": "Today",
+        "pl": "P/L"
+      },
+      "add": {
+        "placeholder": "Symbol or company",
+        "results": "Search results",
+        "add": "Add",
+        "watching": "Watching",
+        "back": "Back to results",
+        "close": "Close search"
+      },
+      "sorted": {
+        "asc": "sorted ascending",
+        "desc": "sorted descending"
+      }
     },
     "quickQuery": {
       "q1": "Analyze the technical setup of {{symbol}}",

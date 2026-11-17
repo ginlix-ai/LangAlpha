@@ -10,6 +10,7 @@ export interface PortfolioHoldingPayload {
   quantity: number;
   average_cost?: number;
   exchange?: string;
+  name?: string;
   currency?: string;
   account_name?: string;
   notes?: string;

@@ -68,7 +68,8 @@ vi.mock('../components/MarketChart', async () => {
   };
 });
 vi.mock('../components/MarketChatPanel', () => ({ default: () => <div data-testid="desktop-chat-panel" /> }));
-vi.mock('../components/MarketSidebarPanel', () => ({ default: () => <div data-testid="sidebar" /> }));
+vi.mock('../components/quoteList/QuoteList', () => ({ QuoteList: () => <div data-testid="sidebar" /> }));
+vi.mock('../components/quoteList/QuoteListDrawer', () => ({ QuoteListDrawer: () => null }));
 vi.mock('../components/CompanyOverviewPanel', () => ({ default: () => <div data-testid="overview" /> }));
 vi.mock('@/components/ui/mobile-bottom-sheet', () => ({
   MobileBottomSheet: ({ open, children }: { open: boolean; children?: React.ReactNode }) => (open ? <>{children}</> : null),
