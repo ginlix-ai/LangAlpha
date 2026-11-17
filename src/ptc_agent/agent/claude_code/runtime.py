@@ -55,6 +55,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
+from ptc_agent.agent.claude_code.cli_waits import CliWaits
 from ptc_agent.agent.claude_code.compaction import (
     NO_RULES,
     CompactionRules,
@@ -599,13 +600,16 @@ class ClaudeTurn:
     when the session compacts and moves to this build's prompt and tools.
     ``steering`` takes in what is sent into the thread while the turn runs
     (``TurnSteering``), or into the task for a subagent's run (``TaskSteering``).
+    ``waits`` keeps the marks of its waits for one of its computer's CLIs,
+    which each step commits.
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
                  checkpoint_ns: str = "", baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
                  steering: SteeringMiddleware | TaskSteering | None = None,
-                 alert_senders: frozenset[str] = frozenset()) -> None:
+                 alert_senders: frozenset[str] = frozenset(), waits: CliWaits | None = None) -> None:
         self.spec = spec
+        self.waits = waits if waits is not None else CliWaits()
         self.launcher = launcher
         self.identity = identity
         self.thread_key = thread_key
@@ -974,7 +978,8 @@ class ClaudeTurn:
 
     def commit(self, session: list[SessionWrite]) -> dict[str, Any]:
         """A step's session records, the first of its own carrying what the
-        session holds from then on that it did not before."""
+        session holds from then on that it did not before, and the marks of
+        the waits for a CLI ahead of it."""
         for write in session:
             if write["session_id"] != self._session:
                 self._session, self._owed = write["session_id"], self._fresh
@@ -982,7 +987,9 @@ class ClaudeTurn:
                 write.update(self._owed)
                 self._owed = {}
         pin = self._fresh.get("pinned")
-        return {"claude_session": _pinned_after(session, pin, due=bool(pin) and not same_pin(pin, self.current_pin()))}
+        waited = self.waits.drain()
+        return {"claude_session": _pinned_after(session, pin, due=bool(pin) and not same_pin(pin, self.current_pin())),
+                **({"ui": waited} if waited else {})}
 
     def _baseline_due(self, state: ClaudeCodeState) -> tuple[str, str | None]:
         """The thread's baseline, unless Claude's session already holds its epoch."""
@@ -1149,13 +1156,16 @@ def build_claude_code_graph(
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
+        turn.waits.after = state["messages"][-1].id if state["messages"] else None
         opening = not turn.started
         if opening and (handed := await turn.hand_off(state, config)):
             return Command(update=handed, goto="model")
         if opening and (compacted := await turn._repin(state)):
             asked = state["messages"][-1].model_copy()
             turn.stamp(asked)
-            return Command(update={"claude_session": compacted, "messages": [asked]}, goto="model")
+            waited = turn.waits.drain()
+            return Command(update={"claude_session": compacted, "messages": [asked], **({"ui": waited} if waited else {})},
+                           goto="model")
         run = await turn.run(state)
         if opening:
             turn.steering.opened(state, config)

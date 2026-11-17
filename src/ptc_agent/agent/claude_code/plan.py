@@ -18,8 +18,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from langchain_core.messages import AIMessage
-from langgraph.config import get_stream_writer
 
+from ptc_agent.agent.claude_code.signals import emit
 from src.llms.claude_code import PLAN_NOTICE_KEY, ClaudeTurnFailed, PlanLimit, PlanOut, PlanReading, PlanStopped
 
 if TYPE_CHECKING:
@@ -218,8 +218,5 @@ class PlanWatch:
         notice: dict[str, str | None] = {"reason": "billed_credits"}
         if self.limit.known:
             notice.update(window=self.limit.window, until=self.limit.until.isoformat())
-        try:
-            get_stream_writer()({"type": "claude_code_plan", **notice})
-        except Exception:  # noqa: BLE001 - the stamp still shows it on reload
-            logger.debug("[ClaudeCode] plan notice not emitted", exc_info=True)
+        emit({"type": "claude_code_plan", **notice})
         return reply.model_copy(update={"response_metadata": {**reply.response_metadata, PLAN_NOTICE_KEY: notice}})

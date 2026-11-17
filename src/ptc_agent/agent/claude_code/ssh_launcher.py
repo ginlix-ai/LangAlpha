@@ -148,7 +148,7 @@ class SSHLauncher:
     so the run's credential is the relayed one or nothing. ``slot_wait_s`` is
     how long the CLI waits for a free CLI slot on the computer's connection;
     a check passes a short one. ``cli_slot(wait_s)`` holds one of the CLIs
-    the computer runs at once before that, within the same wait.
+    the computer runs at once, from the run's layout to its release.
 
     ``credential``, given only where the deployment relays one, is read only
     once the machine has said it has no token of its own, and told if
@@ -187,6 +187,8 @@ class SSHLauncher:
     _link: ShellLink | None = field(default=None, init=False, repr=False)
     _cli: str | None = field(default=None, init=False)
     _root: str | None = field(default=None, init=False)
+    #: The run's hold on one of the computer's CLIs, from its layout to its release.
+    _slot: contextlib.AsyncExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.token_file is not None:
@@ -308,27 +310,56 @@ class SSHLauncher:
         """
         if not _THREAD_KEY.fullmatch(thread_key):
             raise ValueError(f"thread key {thread_key!r} is not a plain id")
-        link = await self.ready()
-        device = device_id(identity)
-        prepared = await self._lay_out(link, thread_key)
-        files = [
-            (posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device})),
-            (prepared.system_prompt_file, system_prompt),
-        ]
-        if session_id:
-            files.append((remote_session_path(prepared.config_dir, prepared.cwd, session_id), session_jsonl(entries)))
-        await self._write(link, prepared, files)
-        return prepared
+        async with self._holding():
+            link = await self.ready()
+            device = device_id(identity)
+            prepared = await self._lay_out(link, thread_key)
+            files = [
+                (posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device})),
+                (prepared.system_prompt_file, system_prompt),
+            ]
+            if session_id:
+                files.append((remote_session_path(prepared.config_dir, prepared.cwd, session_id), session_jsonl(entries)))
+            await self._write(link, prepared, files)
+            return prepared
 
     async def scratch(self) -> Prepared:
-        link = await self.ready()
-        device = device_id(self.identity)
-        prepared = await self._lay_out(link, None)
-        await self._write(link, prepared, [(posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device}))])
-        return prepared
+        async with self._holding():
+            link = await self.ready()
+            device = device_id(self.identity)
+            prepared = await self._lay_out(link, None)
+            await self._write(link, prepared, [(posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device}))])
+            return prepared
+
+    @contextlib.asynccontextmanager
+    async def _holding(self) -> AsyncIterator[None]:
+        """Take one of the computer's CLIs (``cli_slot``) before anything
+        runs on the machine, and keep it for ``release`` unless the layout
+        fails. Taken first, a turn on a full computer waits where its wait
+        is told, rather than first queueing its setup scripts for channels
+        that the running CLIs and their commands hold."""
+        if self.cli_slot is not None and self._slot is None:
+            slot = contextlib.AsyncExitStack()
+            try:
+                await slot.enter_async_context(self.cli_slot(self.slot_wait_s))
+            except SlotWaitTimeout as e:
+                raise CLIConnectionError(cli_slots_full(e.n)) from None
+            self._slot = slot
+        try:
+            yield
+        except BaseException:
+            await asyncio.shield(self._free_slot())
+            raise
+
+    async def _free_slot(self) -> None:
+        slot, self._slot = self._slot, None
+        if slot is not None:
+            await slot.aclose()
 
     async def release(self, prepared: Prepared) -> None:
-        """Remove the turn's config dir; one that cannot be reached now is swept by a later turn."""
+        """Give back the run's CLI and remove the turn's config dir; one that
+        cannot be reached now is swept by a later turn."""
+        await asyncio.shield(self._free_slot())
         if not prepared.config_dir.startswith(self.base + "/config/"):
             raise ValueError(f"{prepared.config_dir} is not a turn's config dir")
         try:
@@ -395,8 +426,8 @@ class SSHTransport(Transport):
     ends the CLI: its input is closed, then it is signalled by pid until it
     goes, then the channel is closed.
 
-    The CLI holds one of the computer's CLIs (``cli_slot``) and a CLI slot
-    on one of the login's connections, where it is signalled, and keeps the
+    The CLI runs on the computer's CLI its launcher took for the run, and
+    holds a CLI slot on one of the login's connections, where it is signalled, and keeps the
     link in use from its start to the end of its shutdown, so commands always find a slot and
     a link shed from the pool closes only once the turn is over.
     """
@@ -423,12 +454,8 @@ class SSHTransport(Transport):
         if self._process is not None:
             return
         script = self._launcher.command(self._options)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._launcher.slot_wait_s
         try:
-            if self._launcher.cli_slot is not None:
-                await self._holds.enter_async_context(self._launcher.cli_slot(self._launcher.slot_wait_s))
-            hold = await self._holds.enter_async_context(self._link.cli_hold(max(0.0, deadline - loop.time())))
+            hold = await self._holds.enter_async_context(self._link.cli_hold(self._launcher.slot_wait_s))
         except BaseException as e:
             await self.close()
             if isinstance(e, SlotWaitTimeout):

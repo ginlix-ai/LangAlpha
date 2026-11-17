@@ -17,6 +17,7 @@ from ptc_agent.agent.claude_code.machine_token import token_name
 from ptc_agent.agent.claude_code.sandbox_launcher import sandbox_launcher
 from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHLauncher
 from ptc_agent.config.agent import Admitted
+from ptc_agent.core.claude_code_clis import CliQueue
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.llms.claude_code import ClaudeTurnFailed
@@ -83,7 +84,7 @@ class HostedCredential:
 
 def turn_launcher(
     sandbox: PTCSandbox, *, computer_id: str | None, workspace_id: str | None, user_id: str, admitted: Admitted,
-    slot_wait_s: float | None = None,
+    slot_wait_s: float | None = None, queue: CliQueue | None = None,
 ) -> Launcher:
     """The launcher of a turn in ``sandbox``, in the workspace
     ``workspace_id`` on the computer ``computer_id``, by what admission let it
@@ -109,7 +110,8 @@ def turn_launcher(
     Either way the launcher keeps what the CLI reports of the Claude plan
     behind the credential it signed in with (``UserPlan``). ``slot_wait_s``
     is how long the CLI on a computer waits for a slot there, by default a
-    turn's, or a background one's under ``attach_only``.
+    turn's, or a background one's under ``attach_only``, and ``queue`` is
+    told while it waits.
     """
     from src.server.services.computer_manager import attaching_only
 
@@ -119,7 +121,7 @@ def turn_launcher(
         picked = _PickedComputer(admitted.cli_computer, user_id, workspace_id)
         return _ssh_launcher(
             Machine(picked.link, picked.root), user_id=user_id, computer_id=admitted.cli_computer, saved=admitted.saved,
-            slot_wait_s=slot_wait_s,
+            slot_wait_s=slot_wait_s, queue=queue,
         )
     if not isinstance(sandbox.provider, SSHProvider):
         plan = UserPlan(user_id)
@@ -127,7 +129,7 @@ def turn_launcher(
         if cloud_runs_in() == "sandbox":
             return sandbox_launcher(
                 sandbox, identity=user_id, credential=credential, plan=plan,
-                cli_slot=partial(computer_cli_slot, computer_id) if computer_id is not None else None,
+                cli_slot=partial(computer_cli_slot, computer_id, queue=queue) if computer_id is not None else None,
                 slot_wait_s=slot_wait_s,
             )
         return LocalLauncher(saved=credential, plan=plan)
@@ -140,19 +142,20 @@ def turn_launcher(
 
     return _ssh_launcher(
         Machine(link, lambda: sandbox.working_dir), user_id=user_id, computer_id=computer_id, saved=admitted.saved,
-        slot_wait_s=slot_wait_s,
+        slot_wait_s=slot_wait_s, queue=queue,
     )
 
 
 def _ssh_launcher(
     machine: Machine[Link], *, user_id: str, computer_id: str, saved: str | None, slot_wait_s: float,
+    queue: CliQueue | None,
 ) -> SSHLauncher:
     """The CLI on the own computer ``computer_id``'s ``machine``, signed in with
     the token kept there, or relayed the saved one where admission let it
     (``saved``), and telling the backend what it found of either."""
     token = ComputerToken(user_id, computer_id)
     return SSHLauncher(
-        machine, identity=user_id, token_file=token_name(computer_id), cli_slot=partial(computer_cli_slot, computer_id),
+        machine, identity=user_id, token_file=token_name(computer_id), cli_slot=partial(computer_cli_slot, computer_id, queue=queue),
         credential=token if saved else None, on_announced=token.announced, on_file_refused=token.file_refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
         plan=UserPlan(user_id, computer_id),

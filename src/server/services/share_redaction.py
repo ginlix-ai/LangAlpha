@@ -33,7 +33,10 @@ from src.utils.nested import without_keys
 # closing ``error`` event is nothing but that text, so it goes whole; a run's
 # lifecycle frame and a model fallback keep their status and lose the text.
 # No share renders either.
-_DROPPED_EVENTS = frozenset({"provenance", "tool_call_chunks", "interrupt", "error"})
+#
+# A wait for a Claude Code CLI names the owner's computer, how many agents
+# they ran on it and how to raise that; no share renders it.
+_DROPPED_EVENTS = frozenset({"provenance", "tool_call_chunks", "interrupt", "error", "claude_code_queue"})
 _ERROR_TEXT_EVENTS = frozenset({"workflow_lifecycle", "model_fallback"})
 _PRIVATE_ARTIFACT_KEYS = (RECEIPT_KEY, "provenance")
 # The owner's own turn, and the resume that answers an approval names every

@@ -92,7 +92,7 @@ def project_turn(
     # A stopped or failed run's last step never committed the fallback
     # notices it streamed, so its row keeps them.
     fallbacks = replay_facts.unsaved_fallbacks(response, turn)
-    turn_items = projector.with_model_fallbacks(
+    turn_items = projector.with_notices(
         thread_id,
         replace(turn, new_ui_records=[*turn.new_ui_records, *fallbacks]),
         lambda messages: history_events_to_sse(

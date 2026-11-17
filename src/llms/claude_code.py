@@ -12,8 +12,9 @@ SDK is an optional extra that only a Claude Code turn loads.
 from __future__ import annotations
 
 import importlib.util
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
@@ -87,6 +88,59 @@ _UNKNOWN_CREDITS = ("fetch_error", "unknown")
 #: the account's usage credits under Stop: the notice under it, as the
 #: ``claude_code_plan`` event that showed it live carried it.
 PLAN_NOTICE_KEY = "claude_plan_notice"
+#: The ``claude_code_queue`` event that shows a turn's wait for one of its
+#: computer's CLIs live, and the ``ui`` record that keeps it for replay.
+QUEUE_EVENT_TYPE = "claude_code_queue"
+#: A wait shorter than this ends with ``cleared`` and leaves no notice: the
+#: turn barely waited, and a "waited 0s" line would only be noise.
+NOTED_WAIT_S = 5
+
+
+@dataclass(frozen=True)
+class CliWait:
+    """A turn's wait for one of its computer's CLIs, as the user is shown it:
+    the computer, the CLIs it ran of the most it runs at once, and whether
+    they set that and up to what. ``wait_id`` ties the wait's events and its
+    notice together."""
+
+    computer_id: str
+    name: str | None
+    running: int
+    cap: int
+    settable: bool
+    max: int
+    wait_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+    def event(self, signal: str, waited_s: int | None = None) -> dict[str, Any]:
+        """Its ``claude_code_queue`` event: ``waiting``, then ``admitted`` once
+        let in after ``NOTED_WAIT_S`` or more, else ``cleared``, as also when
+        it ends with no slot."""
+        return {"type": QUEUE_EVENT_TYPE, **self._fields(signal, waited_s)}
+
+    def mark(self, waited_s: int, after: str | None) -> dict[str, Any]:
+        """The ``ui`` record replay shows it from, as its ``admitted`` event,
+        placed after the message ``after`` that its CLI went on from."""
+        return {"type": "ui", "id": _queue_record_id(self.wait_id), "name": QUEUE_EVENT_TYPE,
+                "props": self._fields("admitted", waited_s), "metadata": {"after_message_id": after}}
+
+    def _fields(self, signal: str, waited_s: int | None) -> dict[str, Any]:
+        return {"signal": signal, **asdict(self), **({} if waited_s is None else {"waited_s": waited_s})}
+
+
+#: What the event carries, which the SSE producer passes on.
+QUEUE_FIELDS = ("signal", "waited_s", *(f.name for f in fields(CliWait)))
+
+
+def _queue_record_id(wait_id: str) -> str:
+    return f"cli-queue-{wait_id}"
+
+
+def queue_record(event: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``ui`` record of an ``admitted`` wait as its event carried it, which
+    a stopped or failed run's row keeps in case the step that waited never
+    committed its own (``CliWait.mark``): the same id, so replay shows one."""
+    return {"type": "ui", "id": _queue_record_id(event["wait_id"]), "name": QUEUE_EVENT_TYPE,
+            "props": {k: event[k] for k in QUEUE_FIELDS if k in event}, "metadata": {}}
 
 
 @dataclass(frozen=True)

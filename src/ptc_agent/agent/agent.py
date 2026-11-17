@@ -1116,7 +1116,9 @@ class PTCAgent:
                 return claude_code_graph(
                     compiled, system_prompt=spec["system_prompt"], target=target,
                     user_id=user_id, checkpointer=checkpointer,
-                    launcher=partial(launcher_for, slot_wait_s=SUBAGENT_CLI_SLOT_WAIT_S),
+                    # Not told of its waits: a subagent waits briefly, under the
+                    # count its launch was admitted by, and shows none.
+                    launcher=lambda _waits: launcher_for(slot_wait_s=SUBAGENT_CLI_SLOT_WAIT_S),
                     entry=(subagent_skill_middleware, subagent_turn_context, *own),
                     middleware=[*subagent_middleware, *own],
                     baseline=baseline.frozen_block if baseline is not None else None,

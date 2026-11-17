@@ -17,8 +17,9 @@ import weakref
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ptc_agent.core.claude_code_clis import CLIS_DEFAULT
+from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount, CliQueue
 from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
+from src.llms.claude_code import CliWait
 from src.server.utils.slot_guard import SlotAdmission, acquire_slot_member, release_slot_member, renew_slot_member
 from src.utils.cache.redis_cache import get_cache_client
 
@@ -56,38 +57,80 @@ def _redis() -> Any | None:
     return cache.client if cache.enabled and cache.client else None
 
 
+class _WaitNotice:
+    """Tells a CLI's ``CliQueue`` that it waits, once, as it first finds the
+    slots full, then how long it waited; from what the count read had, so
+    nothing between finding them full and waiting for one awaits."""
+
+    def __init__(self, computer_id: str, queue: CliQueue | None) -> None:
+        self.computer_id = computer_id
+        self.queue = queue
+        self.since: float | None = None
+
+    def full(self, running: int, count: CliCount) -> None:
+        if self.queue is None or self.since is not None:
+            return
+        self.since = asyncio.get_running_loop().time()
+        wait = CliWait(computer_id=self.computer_id, name=count.name, running=running, cap=count.cap,
+                       settable=count.settable, max=CLIS_MAX)
+        try:
+            self.queue.waiting(wait)
+        except Exception:  # noqa: BLE001 - a notice is never worth failing a turn's start for
+            logger.debug("[claude_code] queue notice not sent", exc_info=True)
+
+    def ended(self, *, admitted: bool) -> None:
+        """Tell the queue the wait ended, once, whether or not it got a slot,
+        so a wait that timed out or was cancelled takes its line down too."""
+        if self.queue is None or self.since is None:
+            return
+        waited = asyncio.get_running_loop().time() - self.since
+        self.since = None
+        logger.info(f"[claude_code] a CLI waited {waited:.0f}s for a slot on computer_id={self.computer_id}"
+                    f"{'' if admitted else ' and gave up'}")
+        try:
+            (self.queue.admitted if admitted else self.queue.gave_up)(waited)
+        except Exception:  # noqa: BLE001
+            logger.debug("[claude_code] queue notice not sent", exc_info=True)
+
+
 @contextlib.asynccontextmanager
-async def computer_cli_slot(computer_id: str, wait_s: float) -> AsyncIterator[None]:
+async def computer_cli_slot(computer_id: str, wait_s: float, queue: CliQueue | None = None) -> AsyncIterator[None]:
     """Hold one of the CLIs the computer ``computer_id`` runs at once, in this
     worker and then across every worker, waiting up to ``wait_s`` in all,
     reading the count included, for one to free. The count is read as this
     one starts and again before each try after a wait, so one lowered
-    meanwhile holds the CLIs already waiting. Its renewal ends before its
-    slot is freed, so none still under way lands after and holds the slot
-    again.
+    meanwhile holds the CLIs already waiting, and one raised lets them in.
+    ``queue`` is told once the slots are found full and once the wait ends,
+    with a slot or without one. Its renewal ends before its slot is freed,
+    so none still under way lands after and holds the slot again.
 
     Raises:
         SlotWaitTimeout: None freed in time, naming the count last read.
     """
     deadline = asyncio.get_running_loop().time() + wait_s
-    async with _in_worker(computer_id, deadline) as clis:
-        client = _redis()
-        key = slots_key(computer_id)
-        slot_id = await _take(client, computer_id, key, clis, deadline) if client is not None else None
-        renewing = asyncio.ensure_future(_renew(client, key, slot_id)) if slot_id else None
-        try:
-            yield
-        finally:
-            if renewing is not None:
-                renewing.cancel()
-                await asyncio.wait({renewing})
-                try:
-                    await release_slot_member(client, key, slot_id)
-                except Exception as e:  # noqa: BLE001 - the slot is reaped once it goes stale
-                    logger.warning(f"[claude_code] could not free a CLI slot of computer_id={computer_id}: {e}")
+    told = _WaitNotice(computer_id, queue)
+    try:
+        async with _in_worker(computer_id, deadline, told) as count:
+            client = _redis()
+            key = slots_key(computer_id)
+            slot_id = await _take(client, computer_id, key, count, deadline, told) if client is not None else None
+            told.ended(admitted=True)
+            renewing = asyncio.ensure_future(_renew(client, key, slot_id)) if slot_id else None
+            try:
+                yield
+            finally:
+                if renewing is not None:
+                    renewing.cancel()
+                    await asyncio.wait({renewing})
+                    try:
+                        await release_slot_member(client, key, slot_id)
+                    except Exception as e:  # noqa: BLE001 - the slot is reaped once it goes stale
+                        logger.warning(f"[claude_code] could not free a CLI slot of computer_id={computer_id}: {e}")
+    finally:
+        told.ended(admitted=False)
 
 
-async def _count(computer_id: str, deadline: float, last: int) -> int:
+async def _count(computer_id: str, deadline: float, last: int) -> CliCount:
     """The computer's count as it stands now, read by ``deadline``.
 
     Raises:
@@ -101,32 +144,33 @@ async def _count(computer_id: str, deadline: float, last: int) -> int:
 
 
 @contextlib.asynccontextmanager
-async def _in_worker(computer_id: str, deadline: float) -> AsyncIterator[int]:
+async def _in_worker(computer_id: str, deadline: float, told: _WaitNotice) -> AsyncIterator[CliCount]:
     """One of the computer's CLIs in this worker, by ``deadline``, its count
     read again on each wake, as one here frees or every ``POLL_S``; it yields
     the count it was let in on."""
     loop = asyncio.get_running_loop()
     held = _held.setdefault(loop, {}).setdefault(computer_id, _Held())
-    clis = await _count(computer_id, deadline, CLIS_DEFAULT)
-    while held.n >= clis:
+    count = await _count(computer_id, deadline, CLIS_DEFAULT)
+    while held.n >= count.cap:
+        told.full(held.n, count)
         if loop.time() >= deadline:
-            raise SlotWaitTimeout("cli", clis)
+            raise SlotWaitTimeout("cli", count.cap)
         held.freed.clear()
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout_at(min(loop.time() + POLL_S, deadline)):
                 await held.freed.wait()
-        clis = await _count(computer_id, deadline, clis)
+        count = await _count(computer_id, deadline, count.cap)
     held.n += 1
     try:
-        yield clis
+        yield count
     finally:
         held.n -= 1
         held.freed.set()
 
 
-async def _take(client: Any, computer_id: str, key: str, clis: int, deadline: float) -> str | None:
+async def _take(client: Any, computer_id: str, key: str, count: CliCount, deadline: float, told: _WaitNotice) -> str | None:
     """A slot's id once one is free by ``deadline``, of the computer's count
-    ``clis``, read again before each try after the first; None where Redis
+    ``count``, read again before each try after the first; None where Redis
     fails, or answers no admission by then, before it ever answered, which
     holds nothing. Once it has found the slots full, a failure is a try like
     any other: the slots were full when last read, so the CLI waits on.
@@ -139,7 +183,7 @@ async def _take(client: Any, computer_id: str, key: str, clis: int, deadline: fl
     while True:
         try:
             async with asyncio.timeout_at(deadline):
-                admitted = await _admit(client, key, clis)
+                admitted = await _admit(client, key, count.cap)
         except Exception as e:  # noqa: BLE001 - coordination only; each worker still holds its own CLIs
             if not full:
                 if isinstance(e, TimeoutError):
@@ -154,11 +198,12 @@ async def _take(client: Any, computer_id: str, key: str, clis: int, deadline: fl
             if admitted.allowed:
                 return admitted.slot_id
             full = True
+            told.full(admitted.current, count)
         left = deadline - loop.time()
         if left <= 0:
-            raise SlotWaitTimeout("cli", clis)
+            raise SlotWaitTimeout("cli", count.cap)
         await asyncio.sleep(min(POLL_S, left))
-        clis = await _count(computer_id, deadline, clis)
+        count = await _count(computer_id, deadline, count.cap)
 
 
 async def _admit(client: Any, key: str, clis: int) -> SlotAdmission:
