@@ -14,7 +14,7 @@ from src.llms.claude_code import MESSAGE_ID_KEY
 from src.server.handlers import handoff_brief
 # Imported before any test patches ``thread_agent.thread_route``: a first
 # import under that patch binds the mock into the module for every later test.
-from src.server.handlers import thread_maintenance  # noqa: F401
+from src.server.handlers import thread_maintenance
 from src.server.handlers.handoff_brief import brief_kept_at_head
 from src.server.services.llm import thread_model
 
@@ -56,7 +56,7 @@ async def test_a_switch_made_back_off_claude_code_while_the_brief_waited_writes_
             AsyncMock(return_value=({"workspace_id": "ws-1", "llm_model": "gpt-6.1-terra"}, None)),
         ),
         patch.object(thread_model, "next_turn_runs_claude_code", AsyncMock(return_value=False)) as runs,
-        patch("src.server.handlers.thread_maintenance._resolver", writers),
+        patch.object(thread_maintenance, "_resolver", writers),
     ):
         await handoff_brief._write_held("t-1", USER, "sonnet-code", mutation=None)
     runs.assert_awaited_once_with(USER, "ws-1", "gpt-6.1-terra")

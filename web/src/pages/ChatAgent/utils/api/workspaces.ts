@@ -71,6 +71,95 @@ export async function getHomeWorkspace(): Promise<Workspace> {
   return data;
 }
 
+/** The user's cloud computer Home's turns use while Home's own machine can't be reached. */
+export interface HomeStandIn {
+  computer_id: string;
+  name: string;
+  status: string;
+}
+
+/** The last hand-back of files written on the stand-in, until the user dismisses it. */
+export interface HomeHandback {
+  handback_id: string;
+  /** Relative to Home, e.g. `From the cloud/2026-11-15 2`; null when nothing was copied. */
+  folder: string | null;
+  files: number;
+  /** Paths too large to copy, still only on the cloud computer. */
+  left_on_cloud: string[];
+  /** Paths that couldn't be read there, still only on the cloud computer. */
+  unreadable: string[];
+  /** The copy kept failing and was given up: every file is still only on the cloud computer. */
+  failed: boolean;
+  computer_name: string;
+  cloud_name: string;
+  created_at: string;
+}
+
+/** What the last hand-back left on the stand-in's computer and Home lacks. */
+export interface HomeLeftOnStandIn {
+  failed: boolean;
+  paths: string[];
+  /** The computer holding them, the one whose removal deletes them. */
+  computer_id: string;
+}
+
+/**
+ * Where Home lives and where its next turn runs. `stand_in` is named whether
+ * or not Home's machine answers; null means the user has no cloud computer,
+ * so a turn waits for the machine. A pure read: polling it starts nothing.
+ */
+export interface HomePlacement {
+  computer_id: string | null;
+  computer_name: string | null;
+  /** `ssh` for a machine the user brought. */
+  computer_kind: string | null;
+  unreachable: boolean;
+  stand_in: HomeStandIn | null;
+  handback_owed: boolean;
+  handback: HomeHandback | null;
+  /**
+   * Files the last hand-back left on the stand-in's computer (`stand_in`),
+   * kept after its notice is dismissed: removing that computer deletes them.
+   * `failed` when it gave up, so which files is not known.
+   */
+  left_on_stand_in: HomeLeftOnStandIn | null;
+  /** Home's latest move. */
+  move: WorkspaceMove | null;
+}
+
+export async function getHomePlacement(): Promise<HomePlacement> {
+  const { data } = await api.get<HomePlacement>('/api/v1/workspaces/home/placement', {
+    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
+  });
+  return data;
+}
+
+/** Dismiss the hand-back notice. */
+export async function markHomeHandbackSeen(handbackId: string): Promise<void> {
+  await api.post('/api/v1/workspaces/home/placement/seen', { handback_id: handbackId });
+}
+
+/**
+ * Where Home's cloud turns' files are now: each hand-back's folder in Home
+ * (null when it copied nothing), the paths, relative to the stand-in's
+ * folder, it carried there, and those it found as an earlier one carried
+ * them, each with that one's folder (oldest first). A path none carried yet
+ * is only in the stand-in workspace.
+ */
+export interface HomeHandbacks {
+  stand_in_workspace_id: string;
+  handbacks: { through: string; folder: string | null; files: string[]; kept: Record<string, string> }[];
+}
+
+/** The hand-backs reaching `since` or later: all a turn placed then or after can need. */
+export async function getHomeHandbacks(since: string): Promise<HomeHandbacks> {
+  const { data } = await api.get<HomeHandbacks>('/api/v1/workspaces/home/handbacks', {
+    params: { since },
+    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
+  });
+  return data;
+}
+
 export async function updateWorkspace(workspaceId: string, updates: Record<string, unknown>) {
   if (!workspaceId) throw new Error('Workspace ID is required');
   const { data } = await api.put(`/api/v1/workspaces/${workspaceId}`, updates);

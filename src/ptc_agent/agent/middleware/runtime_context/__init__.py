@@ -86,7 +86,7 @@ from .turn import (
     TimeUpToolStopMiddleware,
     TurnContextMiddleware,
 )
-from .turn_context import TurnContext
+from .turn_context import HomeAway, TurnContext
 
 __all__ = [
     "AGENT_MD_PATH",
@@ -121,6 +121,7 @@ __all__ = [
     "DurableUpdate",
     "FrozenPromptMiddleware",
     "HarnessBlock",
+    "HomeAway",
     "MemoSource",
     "MemoryTierSource",
     "Observations",

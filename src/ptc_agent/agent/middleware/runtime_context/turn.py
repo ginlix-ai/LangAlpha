@@ -61,6 +61,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
 from ptc_agent.agent.middleware.runtime_context.state import STATE_BASELINE, state_get
 from ptc_agent.agent.middleware.runtime_context.surface import Surface, parse_surface
 from ptc_agent.agent.middleware.runtime_context.templates import render_template
+from ptc_agent.agent.middleware.runtime_context.turn_context import HomeAway
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,11 @@ class TurnContextMiddleware(AgentMiddleware):
             when it is low enough that the agent should work around it.
         disk_known: Whether a current reading stands behind ``disk_free_mb``
             being None, as opposed to no reading at all.
+        home_away: For a Home turn in Home's stand-in on a cloud computer,
+            where it runs and why.
+        home_back: For a Home turn on Home's own computer, what came back from
+            the stand-in; stated after a row that said Home was away, and once
+            more, naming the folder, after one that said the copy was not done.
         is_subagent: Whether this stack belongs to a subagent.
     """
 
@@ -286,6 +292,8 @@ class TurnContextMiddleware(AgentMiddleware):
         inherits_rules: bool = False,
         disk_free_mb: int | None = None,
         disk_known: bool = False,
+        home_away: HomeAway | None = None,
+        home_back: dict[str, Any] | None = None,
         is_subagent: bool = False,
     ) -> None:
         super().__init__()
@@ -300,6 +308,8 @@ class TurnContextMiddleware(AgentMiddleware):
         self._inherits_rules = inherits_rules
         self._disk_free_mb = disk_free_mb
         self._disk_known = disk_known
+        self._home_away = home_away
+        self._home_back = home_back
         self._is_subagent = is_subagent
         # Set once the turn-open hook has run on this instance; see
         # ``abefore_model``.
@@ -413,6 +423,22 @@ class TurnContextMiddleware(AgentMiddleware):
                 elif self._disk_known:
                     provenance["disk_low"] = False
                     disk_recovered = _last_disk_low(state)
+            # Where a Home turn runs is a fact of this turn, stated while it is
+            # in the stand-in and taken back once, on the first turn home again.
+            # A copy still running then is recorded as "pending", so the turn
+            # that first finds it done names the folder it filled.
+            home_back = None
+            if not self._is_subagent:
+                if self._home_away is not None:
+                    provenance["home_away"] = True
+                elif self._home_back is not None:
+                    pending = bool(self._home_back.get("pending"))
+                    provenance["home_away"] = "pending" if pending else False
+                    last = last_stated(state, TURN_ROW_KIND, "home_away", False)
+                    if last is True:
+                        home_back = self._home_back
+                    elif last == "pending" and not pending and self._home_back.get("folder"):
+                        home_back = {**self._home_back, "settled": True}
             row = DurableUpdate(
                 kind=TURN_ROW_KIND,
                 schema_version=TURN_SCHEMA_VERSION,
@@ -424,6 +450,7 @@ class TurnContextMiddleware(AgentMiddleware):
                     market,
                     _last_turn_market(state),
                     disk_recovered=disk_recovered,
+                    home_back=home_back,
                 ),
                 provenance=provenance,
                 created_at=now,
@@ -548,6 +575,7 @@ class TurnContextMiddleware(AgentMiddleware):
         last_market: LastSession | None,
         *,
         disk_recovered: bool = False,
+        home_back: dict[str, Any] | None = None,
     ) -> str:
         from ptc_agent.agent.prompts import format_current_time
 
@@ -571,6 +599,8 @@ class TurnContextMiddleware(AgentMiddleware):
             "surface_rules": surface_rules,
             "disk_free_mb": self._disk_free_mb,
             "disk_recovered": disk_recovered,
+            "home_away": None if self._is_subagent else self._home_away,
+            "home_back": home_back,
         }
         return render_template("envelope/turn.md.j2", **fields)
 

@@ -66,6 +66,16 @@ class ProjectContext:
     #: Set for a call made from another computer, which knows this one only
     #: by the machine's own paths; None for a turn's own virtual spelling.
     machine: MachinePaths | None = None
+    #: The workspace this folder stands in for, when it is not its own: Home's
+    #: turn in Home's stand-in while the machine Home lives on can't be
+    #: reached. Memory, new automations and the turn's records go by it; the
+    #: folder, its commands and previews stay the stand-in's.
+    acting_for: str | None = None
+
+    @property
+    def owner_id(self) -> str:
+        """The workspace the turn works for: ``acting_for``, else this one."""
+        return self.acting_for or self.workspace_id
 
     @property
     def claim(self) -> str:

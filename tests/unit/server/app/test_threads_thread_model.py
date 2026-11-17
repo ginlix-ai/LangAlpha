@@ -190,11 +190,16 @@ async def test_home_is_bound_only_once_the_admission_gates_pass(admitted):
         patch("src.server.dependencies.usage_limits.enforce_credit_limit", new=credit),
         patch("src.server.services.turn_runtime.turn_route", new=route),
         patch("src.server.services.turn_runtime.ensure_home", new=bind),
+        patch(
+            "src.server.services.home_placement.place_home_turn",
+            new=AsyncMock(return_value=None),
+        ) as place,
     ):
         resp = await _send()
 
     assert resp.status_code == (200 if admitted else 402)
     assert bind.await_count == (1 if admitted else 0)
+    assert place.await_count == (1 if admitted else 0)
 
 
 @pytest.mark.asyncio

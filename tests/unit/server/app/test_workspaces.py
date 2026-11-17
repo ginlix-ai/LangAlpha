@@ -214,6 +214,49 @@ async def test_create_without_a_computer_asks_for_none(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    ["no_computer", "backup_off"],
+)
+async def test_a_user_with_no_computer_for_home_is_answered_once_by_the_app(refusal):
+    """The route lets the refusal through its catch-all, and the app's one
+    handler answers 409 with the body the client reads."""
+    from src.server.app.setup import _needs_computer_handler
+    from src.server.app.workspaces import router
+    from src.server.services.computer_errors import NeedsComputer
+
+    mac = {"computer_id": COMPUTER_ID, "name": "MacBook Pro"}
+    exc = (
+        NeedsComputer.no_computer()
+        if refusal == "no_computer"
+        else NeedsComputer.backup_off(mac)
+    )
+    app = create_test_app(router)
+    app.add_exception_handler(NeedsComputer, _needs_computer_handler)
+    with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:
+        mock_manager = AsyncMock()
+        mock_manager.create_workspace = AsyncMock(side_effect=exc)
+        MockWM.get_instance.return_value = mock_manager
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as c:
+            resp = await c.post("/api/v1/workspaces", json={"name": "W"})
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    if refusal == "no_computer":
+        assert detail == {"code": "needs_computer", "message": str(exc)}
+    else:
+        assert detail == {
+            "code": "needs_backup",
+            "message": str(exc),
+            "computer_id": COMPUTER_ID,
+            "computer_name": "MacBook Pro",
+        }
+        assert "MacBook Pro" in detail["message"]
+
+
+@pytest.mark.asyncio
 async def test_create_on_a_chosen_computer_passes_it_to_the_manager(client):
     computer_id = str(uuid.uuid4())
     with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:
@@ -332,75 +375,6 @@ async def test_create_workspace_validation_empty_name(client):
         json={"name": ""},
     )
     assert resp.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# POST /api/v1/workspaces/home
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_home_workspace(client):
-    ws = _ws(name="Home", status="unbound", computer_id=None)
-    with patch(
-        "src.server.app.workspaces.get_or_create_home_workspace",
-        new_callable=AsyncMock,
-        return_value=ws,
-    ):
-        resp = await client.post("/api/v1/workspaces/home")
-
-    assert resp.status_code == 200
-    assert resp.json()["workspace_id"] == ws["workspace_id"]
-    assert resp.json()["is_home"] is True
-
-
-@pytest.mark.asyncio
-async def test_get_home_workspace_error(client):
-    with patch(
-        "src.server.app.workspaces.get_or_create_home_workspace",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("db down"),
-    ):
-        resp = await client.post("/api/v1/workspaces/home")
-
-    assert resp.status_code == 500
-
-
-@pytest.mark.asyncio
-async def test_a_home_id_another_account_holds_is_forbidden(client):
-    """An account merge carries the merged account's Home onto the account it
-    joins. Every app load asks for it, and no retry makes it the caller's."""
-    from src.server.database.workspace import HomeWorkspaceTaken
-
-    with patch(
-        "src.server.app.workspaces.get_or_create_home_workspace",
-        new_callable=AsyncMock,
-        side_effect=HomeWorkspaceTaken("home-ws", "test-user-123"),
-    ):
-        resp = await client.post("/api/v1/workspaces/home")
-
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_gets_home_like_the_user():
-    """Every computer's token reaches Home, wherever Home sits."""
-    from src.server.app.workspaces import router
-    from tests.unit.server.dependencies.reach_world import OTHER_COMPUTER, act_as_computer
-
-    app = create_test_app(router)
-    act_as_computer(app, computer=OTHER_COMPUTER)
-    ws = _ws(name="Home", status="unbound", computer_id=None)
-    with patch(
-        "src.server.app.workspaces.get_or_create_home_workspace",
-        new_callable=AsyncMock,
-        return_value=ws,
-    ) as ensure:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.post("/api/v1/workspaces/home")
-
-    assert resp.status_code == 200
-    ensure.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

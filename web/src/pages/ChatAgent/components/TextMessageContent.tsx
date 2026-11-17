@@ -9,7 +9,7 @@ import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage';
 import type { OpenFileHandler } from '../utils/fileLocation';
-import type { StructuredError } from '@/utils/rateLimitError';
+import { errorLinkKey, type StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useWorkspaceId } from '../contexts/WorkspaceContext';
@@ -231,7 +231,7 @@ function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.Rea
         {err.links && err.links.length > 0 && (
           <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
             {err.links.map((l, i) => (
-              <React.Fragment key={`${l.url}|${l.label}`}>
+              <React.Fragment key={errorLinkKey(l)}>
                 {i > 0 && <span aria-hidden="true"> · </span>}
                 <ErrorLink {...l} />
               </React.Fragment>

@@ -35,6 +35,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLI_COMPUTER, STORED_TURN
+from src.server.database.home_workspace import STAND_IN_COMPUTER
 
 from ptc_agent.config.agent import SubagentModel
 from src.server.database import pool
@@ -197,6 +198,10 @@ async def start_task_run(
                 if cli_cap is not None:
                     await _require_cli_room(conn, *cli_cap, thread_id)
 
+                if parent_run_id:
+                    # It runs where the turn that started it does.
+                    facts.update(await _stand_in_fact(conn, parent_run_id))
+
                 async with conn.cursor() as cur:
                     await cur.execute(
                         """
@@ -286,6 +291,20 @@ async def start_task_run(
     raise PredecessorClaimedError(
         str(predecessor_run_id), await find_successor_run(str(predecessor_run_id))
     )
+
+
+async def _stand_in_fact(conn, run_id: str) -> Dict[str, Any]:
+    """The stand-in's computer a turn ran on (``STAND_IN_COMPUTER``), as
+    its run row names it; empty for a turn anywhere else."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT metadata ->> %s AS computer_id FROM conversation_responses"
+            " WHERE conversation_response_id = %s",
+            (STAND_IN_COMPUTER, run_id),
+        )
+        row = await cur.fetchone()
+    computer_id = row["computer_id"] if row else None
+    return {STAND_IN_COMPUTER: computer_id} if computer_id else {}
 
 
 async def _live_clis(cur, computer_id: str) -> int:
@@ -852,7 +871,8 @@ async def count_open_runs_for_workspace(workspace_id: str) -> int:
 async def count_open_runs_for_computer(computer_id: str) -> int:
     """Live task runs across every workspace bound to the computer, and
     those whose Claude Code CLI runs on it for a workspace on another
-    (``CLI_COMPUTER``).
+    (``CLI_COMPUTER``), or that run in Home's stand-in on it
+    (``STAND_IN_COMPUTER``).
 
     The machine-scoped twin of ``count_open_runs_for_workspace``. A join, never
     a denormalised counter: this gates tearing a computer down, so the count has
@@ -869,9 +889,14 @@ async def count_open_runs_for_computer(computer_id: str) -> int:
                   ON t.conversation_thread_id = r.thread_id
                 JOIN workspaces w ON w.workspace_id = t.workspace_id
                 WHERE r.status = 'in_progress'
-                  AND (w.computer_id = %s OR r.replay_facts @> %s)
+                  AND (w.computer_id = %s OR r.replay_facts @> %s
+                       OR r.replay_facts @> %s)
                 """,
-                (computer_id, Jsonb({CLI_COMPUTER: computer_id})),
+                (
+                    computer_id,
+                    Jsonb({CLI_COMPUTER: computer_id}),
+                    Jsonb({STAND_IN_COMPUTER: computer_id}),
+                ),
             )
             return (await cur.fetchone())["open"]
 

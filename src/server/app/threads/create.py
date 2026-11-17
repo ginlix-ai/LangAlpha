@@ -120,7 +120,7 @@ async def create_thread_endpoint(
     # Decided where the message path decides it, so the thread is born in the
     # workspace its runs will actually use.
     route = turn_route(x_user_id, workspace)
-    await route.bind(x_user_id, workspace)
+    route = await route.bind(x_user_id, workspace, place=False)
     workspace_id = route.workspace_id
 
     # A title the caller named is the thread's own: nothing generates over it,

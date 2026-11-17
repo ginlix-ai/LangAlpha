@@ -8,6 +8,7 @@ while both paths are live.
 """
 
 import contextlib
+import functools
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ USER = "test-user-123"
 OTHER_USER = "someone-else"
 COMPUTER_ID = "11111111-1111-4111-8111-111111111111"
 WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
+OTHER_COMPUTER_ID = "66666666-6666-4666-8666-666666666666"
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +51,15 @@ def sandbox_config():
     config = SandboxConfig()
     with patch("src.server.app.computers._sandbox_config", return_value=config):
         yield config
+
+
+@pytest.fixture(autouse=True)
+def stand_in_host():
+    """No computer is kept for Home's stand-in unless a test says one is."""
+    with patch(
+        "src.server.app.computers._stand_in_host", AsyncMock(return_value=None)
+    ) as host:
+        yield host
 
 
 @pytest.fixture(autouse=True)
@@ -182,6 +193,58 @@ async def test_create_computer_returns_the_new_machine(
     assert kwargs["resource_tier"] == "performance"
     assert kwargs["prepare"] is True
     prepares.assert_awaited_once_with(COMPUTER_ID)
+
+
+@pytest.mark.asyncio
+async def test_a_create_asked_to_make_it_primary_keeps_that_on_the_row(
+    client, computer, entitled, prepares
+):
+    """Applied once its first start completes, so a client that goes away
+    meanwhile leaves nothing half done; the details show it pending."""
+    manager = MagicMock()
+    manager.create_computer_for_user = AsyncMock(
+        side_effect=lambda user_id, **kw: {
+            **computer,
+            "status": "creating",
+            "is_primary": False,
+            "config": kw.get("config"),
+        }
+    )
+    with patch("src.server.app.computers._computer_manager", return_value=manager):
+        resp = await client.post("/api/v1/computers", json={"make_primary": True})
+        plain = await client.post("/api/v1/computers", json={})
+
+    assert resp.status_code == 201
+    config = manager.create_computer_for_user.call_args_list[0].kwargs["config"]
+    assert config == {"make_primary": {"state": "pending"}}
+    assert resp.json()["make_primary"] == {"state": "pending", "error": None}
+    assert "config" not in manager.create_computer_for_user.call_args_list[1].kwargs
+    assert plain.json()["make_primary"] is None
+
+
+def test_a_dropped_make_primary_and_a_removal_read_from_the_row(sample_computer_dict):
+    from src.server.app.computers import computer_to_response
+
+    row = sample_computer_dict(
+        computer_id=COMPUTER_ID,
+        config={
+            "make_primary": {
+                "state": "dropped",
+                "error": {"code": "not_backed_up", "message": "Turn on file backup.", "files": []},
+            },
+            "removal": {
+                "state": "home_did_not_move",
+                "move_id": "m-1",
+                "error": {"code": "busy", "message": "The computer is busy."},
+            },
+        },
+    )
+    response = computer_to_response(row)
+    assert response.make_primary.state == "dropped"
+    assert response.make_primary.error.code == "not_backed_up"
+    assert response.removal.state == "home_did_not_move"
+    assert response.removal.move_id == "m-1"
+    assert computer_to_response({**row, "config": {"removal": "bad"}}).removal is None
 
 
 @pytest.mark.asyncio
@@ -1217,6 +1280,28 @@ async def test_list_computers_returns_the_callers_own(client, computer):
 
 
 @pytest.mark.asyncio
+async def test_the_list_says_which_computer_is_kept_for_homes_stand_in(
+    client, computer, stand_in_host
+):
+    """Its card says why an empty cloud computer stays."""
+    stand_in_host.return_value = COMPUTER_ID
+    with (
+        patch(
+            "src.server.app.computers.get_computers_for_user",
+            AsyncMock(return_value=[computer]),
+        ),
+        patch(
+            "src.server.app.computers.count_live_workspaces_by_computer",
+            AsyncMock(return_value={}),
+        ),
+    ):
+        resp = await client.get("/api/v1/computers")
+
+    assert resp.json()["computers"][0]["stands_in_for_home"] is True
+    stand_in_host.assert_awaited_once_with(USER)
+
+
+@pytest.mark.asyncio
 async def test_a_machine_with_no_live_project_counts_zero(client, computer):
     """A machine absent from the count is zero, not missing."""
     with (
@@ -1938,6 +2023,13 @@ async def test_stop_forbidden_for_another_user(
 def _removing(row, manager):
     # A bare mock would answer a truthy refusal; no code means nothing holds it.
     manager.removal_refusal = AsyncMock(return_value=None)
+    # The removal itself runs as the manager runs it, over the mocked steps.
+    from src.server.services.workspace_manager import WorkspaceManager
+
+    manager.remove_computer_for_owner = functools.partial(
+        WorkspaceManager.remove_computer_for_owner, manager
+    )
+    manager.config = MagicMock()
     return (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=row)),
         patch("src.server.app.computers._computer_manager", return_value=manager),
@@ -1950,7 +2042,7 @@ async def test_remove_of_a_hosted_computer_has_no_key_to_report(
 ):
     leave = AsyncMock()
     get_row, get_manager = _removing(computer, mock_computer_manager)
-    with get_row, get_manager, patch("src.server.app.computers.leave_machine", leave):
+    with get_row, get_manager, patch("src.server.services.ssh_removal.leave_machine", leave):
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
 
     assert resp.status_code == 200
@@ -1959,6 +2051,7 @@ async def test_remove_of_a_hosted_computer_has_no_key_to_report(
         "files": None,
         "token": None,
         "workspaces_deleted": [],
+        "move_id": None,
     }
     # Naming none, the computer must be empty: nothing on it is deleted.
     mock_computer_manager.remove_computer_with_workspaces.assert_awaited_once_with(
@@ -2033,7 +2126,7 @@ async def test_remove_asked_to_delete_files_passes_it_on_and_reports_them(
     files = ComputerFilesRemoval(outcome="deleted", runtime_kept=True)
     leave = AsyncMock(return_value=MachineLeft(key=None, tunnel_released=False, files=files))
     get_row, get_manager = _removing(_ssh_row(computer), mock_computer_manager)
-    with get_row, get_manager, patch("src.server.app.computers.leave_machine", leave):
+    with get_row, get_manager, patch("src.server.services.ssh_removal.leave_machine", leave):
         resp = await client.delete(
             f"/api/v1/computers/{COMPUTER_ID}",
             params=[("delete_workspaces", "ws-a"), ("delete_files", "true")],
@@ -2061,7 +2154,7 @@ async def test_remove_reports_a_claude_code_token_left_on_the_machine(
         return_value=MachineLeft(key=None, tunnel_released=False, token=token)
     )
     get_row, get_manager = _removing(_ssh_row(computer), mock_computer_manager)
-    with get_row, get_manager, patch("src.server.app.computers.leave_machine", leave):
+    with get_row, get_manager, patch("src.server.services.ssh_removal.leave_machine", leave):
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
 
     assert resp.status_code == 200
@@ -2092,7 +2185,7 @@ async def test_remove_of_an_ssh_computer_reports_its_key_after_the_delete(
 
     row = _ssh_row(computer)
     get_row, get_manager = _removing(row, mock_computer_manager)
-    with get_row, get_manager, patch("src.server.app.computers.leave_machine", _leave):
+    with get_row, get_manager, patch("src.server.services.ssh_removal.leave_machine", _leave):
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}{query}")
 
     assert resp.status_code == 200
@@ -2114,8 +2207,8 @@ async def test_a_tunnel_not_released_on_the_deletes_connection_is_released_later
     with (
         get_row,
         get_manager,
-        patch("src.server.app.computers.leave_machine", leave),
-        patch("src.server.app.computers.schedule_start", schedule),
+        patch("src.server.services.ssh_removal.leave_machine", leave),
+        patch("src.server.services.background_starts.schedule_start", schedule),
     ):
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
 
@@ -2123,6 +2216,206 @@ async def test_a_tunnel_not_released_on_the_deletes_connection_is_released_later
     assert schedule.called is not released
     if not released:
         assert schedule.call_args.args[0] == f"tunnel-release:{COMPUTER_ID}"
+
+
+@pytest.mark.asyncio
+async def test_removing_the_primary_with_home_to_moves_home_first_and_answers_202(
+    client, computer, mock_computer_manager
+):
+    """The owner's checks run with Home leaving, then Home's move; the
+    computer goes once the move commits, not in this request."""
+    move = {"move_id": "44444444-4444-4444-8444-444444444444"}
+    mock_computer_manager.move_home_then_remove = AsyncMock(return_value=move)
+    get_row, get_manager = _removing(computer, mock_computer_manager)
+    with get_row, get_manager:
+        resp = await client.request(
+            "DELETE",
+            f"/api/v1/computers/{COMPUTER_ID}",
+            params={"home_to": OTHER_COMPUTER_ID, "delete_files": "true"},
+            json={"delete_workspaces": ["ws-a"]},
+        )
+
+    assert resp.status_code == 202
+    assert resp.json()["move_id"] == move["move_id"]
+    assert mock_computer_manager.removal_refusal.await_args.kwargs["home_leaves"] is True
+    mock_computer_manager.move_home_then_remove.assert_awaited_once_with(
+        computer, OTHER_COMPUTER_ID, ["ws-a"], delete_files=True, remove_key=True
+    )
+    mock_computer_manager.remove_computer_with_workspaces.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_removing_the_primary_whose_home_need_not_move_removes_it_now(
+    client, computer, mock_computer_manager
+):
+    mock_computer_manager.move_home_then_remove = AsyncMock(return_value=None)
+    get_row, get_manager = _removing(computer, mock_computer_manager)
+    with get_row, get_manager:
+        resp = await client.delete(
+            f"/api/v1/computers/{COMPUTER_ID}", params={"home_to": OTHER_COMPUTER_ID}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["move_id"] is None
+    mock_computer_manager.remove_computer_with_workspaces.assert_awaited_once_with(
+        COMPUTER_ID, [], delete_files=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_removing_the_primary_is_refused_with_make_primary_s_codes(
+    client, computer, mock_computer_manager
+):
+    from src.server.database.workspace_move import MoveRefused
+
+    mock_computer_manager.move_home_then_remove = AsyncMock(
+        side_effect=MoveRefused("not_backed_up")
+    )
+    get_row, get_manager = _removing(computer, mock_computer_manager)
+    with get_row, get_manager:
+        resp = await client.delete(
+            f"/api/v1/computers/{COMPUTER_ID}", params={"home_to": OTHER_COMPUTER_ID}
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "not_backed_up"
+    mock_computer_manager.remove_computer_with_workspaces.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_home_to_is_read_only_for_the_primary(
+    client, sample_computer_dict, mock_computer_manager
+):
+    spare = sample_computer_dict(computer_id=COMPUTER_ID, is_primary=False)
+    mock_computer_manager.move_home_then_remove = AsyncMock()
+    get_row, get_manager = _removing(spare, mock_computer_manager)
+    with get_row, get_manager:
+        resp = await client.delete(
+            f"/api/v1/computers/{COMPUTER_ID}", params={"home_to": OTHER_COMPUTER_ID}
+        )
+
+    assert resp.status_code == 200
+    assert mock_computer_manager.removal_refusal.await_args.kwargs["home_leaves"] is False
+    mock_computer_manager.move_home_then_remove.assert_not_awaited()
+
+
+@pytest_asyncio.fixture
+async def pat_client():
+    """A client whose every request comes with a personal access token
+    holding ``computer:write``, not an app session."""
+    from src.server.app.computers import router
+    from src.server.dependencies.principal import Principal, get_principal
+
+    app = create_test_app(router)
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        "test-user-123", "pat", scopes=("computer:write", "computer:read")
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+@pytest.mark.asyncio
+async def test_only_the_app_moves_home_off_the_primary(pat_client, mock_computer_manager):
+    """Moving Home makes ``home_to`` primary, which Make primary keeps to the app."""
+    mock_computer_manager.move_home_then_remove = AsyncMock()
+    resp = await pat_client.delete(
+        f"/api/v1/computers/{COMPUTER_ID}", params={"home_to": OTHER_COMPUTER_ID}
+    )
+
+    assert resp.status_code == 403
+    mock_computer_manager.move_home_then_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_only_the_app_asks_a_new_computer_to_be_primary(pat_client):
+    with patch("src.server.app.computers._computer_manager") as manager:
+        resp = await pat_client.post(
+            "/api/v1/computers", json={"kind": "docker", "make_primary": True}
+        )
+
+    assert resp.status_code == 403
+    manager.assert_not_called()
+
+
+_MOVE_ID = "44444444-4444-4444-8444-444444444444"
+
+
+def _taken(minutes: int) -> str:
+    """A removal's claim stamp as Postgres writes it, ``minutes`` ago."""
+    from datetime import datetime, timedelta, timezone
+
+    taken = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    return taken.strftime("%Y-%m-%d %H:%M:%S.%f+00")
+
+
+@pytest.mark.parametrize(
+    ("status", "removal", "answer"),
+    [
+        (
+            "running",
+            {"state": "waiting_for_home", "move_id": _MOVE_ID},
+            {"state": "waiting_for_home", "removed": None},
+        ),
+        (
+            "deleted",
+            {
+                "state": "removed",
+                "move_id": _MOVE_ID,
+                "removed": {"key": {"outcome": "unreached", "fingerprint": "SHA256:abc"}},
+            },
+            {"state": "removed", "removed": {"key": {"outcome": "unreached"}}},
+        ),
+        # Gone before the removal recorded what it left: removed, nothing said.
+        (
+            "deleted",
+            {"state": "waiting_for_home", "move_id": _MOVE_ID},
+            {"state": "removed", "removed": None},
+        ),
+        # Still leaving the machine: waiting, so what it left is told.
+        (
+            "deleted",
+            {"state": "waiting_for_home", "move_id": _MOVE_ID, "taken_at": _taken(minutes=1)},
+            {"state": "waiting_for_home", "removed": None},
+        ),
+        # Its worker went midway: removed, nothing said.
+        (
+            "deleted",
+            {"state": "waiting_for_home", "move_id": _MOVE_ID, "taken_at": _taken(minutes=31)},
+            {"state": "removed", "removed": None},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_removal_waiting_on_home_is_read_even_once_the_computer_is_gone(
+    client, sample_computer_dict, status, removal, answer
+):
+    row = sample_computer_dict(
+        computer_id=COMPUTER_ID, status=status, config={"removal": removal}
+    )
+    with patch(
+        "src.server.app.computers.get_computer", AsyncMock(return_value=row)
+    ) as get_row:
+        resp = await client.get(f"/api/v1/computers/{COMPUTER_ID}/removal")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == answer["state"] and body["move_id"] == _MOVE_ID
+    if answer["removed"] is None:
+        assert body["removed"] is None
+    else:
+        assert body["removed"]["key"]["outcome"] == "unreached"
+    assert get_row.await_args.kwargs == {"include_deleted": True}
+
+
+@pytest.mark.asyncio
+async def test_a_computer_no_removal_waited_on_has_none_to_read(
+    client, sample_computer_dict
+):
+    row = sample_computer_dict(computer_id=COMPUTER_ID)
+    with patch("src.server.app.computers.get_computer", AsyncMock(return_value=row)):
+        resp = await client.get(f"/api/v1/computers/{COMPUTER_ID}/removal")
+
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -2710,7 +3003,7 @@ async def test_the_file_backup_switch_answers_with_the_machine(
     client, sample_computer_dict, kind, enabled
 ):
     """Nothing on the machine changes, so the write is the whole answer."""
-    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind)
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind, is_primary=False)
     write = AsyncMock(return_value={**before, "files_backup": enabled})
     with (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
@@ -2728,6 +3021,29 @@ async def test_the_file_backup_switch_answers_with_the_machine(
     assert resp.json()["files_backup"] is enabled
     assert resp.json()["workspace_count"] == 2
     write.assert_awaited_once_with(COMPUTER_ID, enabled)
+
+
+@pytest.mark.asyncio
+async def test_file_backup_stays_on_for_a_primary_machine_of_the_users_own(
+    client, sample_computer_dict
+):
+    """Home lives on the primary, and its backup is what restores Home if the
+    machine is lost."""
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="ssh", is_primary=True)
+    # The write refuses a primary itself, so a flip that lands between a
+    # read and the write cannot slip past it.
+    write = AsyncMock(return_value=None)
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
+        patch("src.server.app.computers.set_computer_files_backup", write),
+    ):
+        resp = await client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/files-backup", json={"enabled": False}
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "primary_backup_required"
+    write.assert_awaited_once_with(COMPUTER_ID, False)
 
 
 @pytest.mark.asyncio
@@ -3164,24 +3480,35 @@ def make_primary_patches(computer, mock_computer_manager):
     """The owner's computer, the flip, the Home claim and the background runner."""
     from types import SimpleNamespace
 
+    from src.server.services.workspace_manager import WorkspaceManager
+
     mock_computer_manager.run_accepted_move = AsyncMock()
+    # Make primary runs as the manager runs it, over the mocked flip and claim.
+    mock_computer_manager.make_primary = functools.partial(
+        WorkspaceManager.make_primary, mock_computer_manager
+    )
+    move = "src.server.services.computer_manager._move"
     with (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=computer)),
+        patch(f"{move}.get_computer", AsyncMock(return_value=computer)) as target,
+        patch(f"{move}.get_home_computer", AsyncMock(return_value=None)) as home,
         patch(
             "src.server.app.computers._computer_manager",
             return_value=mock_computer_manager,
         ),
+        patch(f"{move}.set_primary_computer", AsyncMock(return_value=True)) as flip,
         patch(
-            "src.server.app.computers.set_primary_computer", AsyncMock(return_value=True)
-        ) as flip,
-        patch(
-            "src.server.app.computers.claim_workspace_move",
-            AsyncMock(return_value=_home_move()),
+            f"{move}.claim_workspace_move", AsyncMock(return_value=_home_move())
         ) as claim,
-        patch("src.server.app.computers.schedule_start", MagicMock()) as schedule,
+        patch(f"{move}.schedule_start", MagicMock()) as schedule,
     ):
         yield SimpleNamespace(
-            flip=flip, claim=claim, schedule=schedule, manager=mock_computer_manager
+            flip=flip,
+            claim=claim,
+            schedule=schedule,
+            manager=mock_computer_manager,
+            target=target,
+            home=home,
         )
 
 
@@ -3193,7 +3520,9 @@ async def test_make_primary_flips_now_when_home_need_not_move(
 
     assert resp.status_code == 200
     assert resp.json() == {"computer_id": COMPUTER_ID, "is_primary": True, "move": None}
-    make_primary_patches.flip.assert_awaited_once_with(USER, COMPUTER_ID)
+    make_primary_patches.flip.assert_awaited_once_with(
+        USER, COMPUTER_ID, intent_taken_at=None
+    )
     make_primary_patches.claim.assert_not_awaited()
     make_primary_patches.schedule.assert_not_called()
 
@@ -3226,6 +3555,9 @@ async def test_make_primary_moves_home_first_and_answers_202_with_the_move(
         target_computer_id=COMPUTER_ID,
         make_primary=True,
         from_backup=False,
+        removal=None,
+        expected_source=None,
+        intent_taken_at=None,
     )
     make_primary_patches.schedule.assert_called_once()
     key, start = make_primary_patches.schedule.call_args.args
@@ -3262,6 +3594,105 @@ async def test_make_primary_refusals_answer_in_the_move_outcome_shape(
     assert isinstance(detail["message"], str) and detail["message"]
     assert detail["files"] == []
     make_primary_patches.schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_primary_from_the_backup_moves_home_from_it(
+    client, make_primary_patches
+):
+    """Home's computer is a machine that can't be reached, so Home is laid on
+    the new primary from its last backup."""
+    make_primary_patches.flip.return_value = False
+
+    resp = await client.post(
+        f"/api/v1/computers/{COMPUTER_ID}/make-primary", json={"from_backup": True}
+    )
+
+    assert resp.status_code == 202
+    assert make_primary_patches.claim.await_args.kwargs["from_backup"] is True
+
+
+@pytest.mark.asyncio
+async def test_make_primary_left_unsaid_lays_home_from_backup_when_its_machine_is_away(
+    client, make_primary_patches
+):
+    """A client that does not say where Home comes from gets the server's
+    judgement: from its backup, since the machine it is on can't hand over."""
+    make_primary_patches.flip.return_value = False
+    away = {"computer_id": "mac", "kind": "ssh", "status": "running"}
+    make_primary_patches.home.return_value = away
+
+    with patch(
+        "src.server.services.ssh_computers.computer_unreachable",
+        AsyncMock(side_effect=lambda computer: computer is away),
+    ):
+        resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/make-primary")
+
+    assert resp.status_code == 202
+    assert make_primary_patches.claim.await_args.kwargs["from_backup"] is True
+
+
+@pytest.mark.asyncio
+async def test_make_primary_refuses_a_machine_whose_tunnel_is_down(
+    client, make_primary_patches
+):
+    """It could hold neither Home nor new workspaces until it connects."""
+    with patch(
+        "src.server.services.ssh_computers.computer_unreachable",
+        AsyncMock(side_effect=lambda computer: computer is make_primary_patches.target.return_value),
+    ):
+        resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/make-primary")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "target_unreachable"
+    make_primary_patches.flip.assert_not_awaited()
+    make_primary_patches.claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_make_primary_is_the_apps_alone(pat_client, make_primary_patches):
+    resp = await pat_client.post(f"/api/v1/computers/{COMPUTER_ID}/make-primary")
+
+    assert resp.status_code == 403
+    make_primary_patches.flip.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_make_primary_refuses_a_computer_whose_files_are_not_backed_up(
+    client, make_primary_patches
+):
+    from src.server.database.workspace_move import MoveRefused
+
+    make_primary_patches.flip.side_effect = MoveRefused("not_backed_up")
+
+    resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/make-primary")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "not_backed_up"
+    make_primary_patches.claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_make_primary_can_turn_backup_on_in_the_same_request(
+    client, make_primary_patches, sample_computer_dict
+):
+    mac = sample_computer_dict(
+        computer_id=COMPUTER_ID, kind="ssh", is_primary=False, files_backup=False
+    )
+    order = []
+    turn_on = AsyncMock(side_effect=lambda *a: order.append("backup") or {**mac})
+    make_primary_patches.flip.side_effect = lambda *a, **k: order.append("flip") or True
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=mac)),
+        patch("src.server.app.computers.set_computer_files_backup", turn_on),
+    ):
+        resp = await client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/make-primary", json={"turn_on_backup": True}
+        )
+
+    assert resp.status_code == 200
+    turn_on.assert_awaited_once_with(COMPUTER_ID, True)
+    assert order == ["backup", "flip"]
 
 
 @pytest.mark.asyncio

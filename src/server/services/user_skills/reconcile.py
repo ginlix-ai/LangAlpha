@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -46,6 +47,7 @@ from src.server.services.workspace_layout import (
     resolve_workspace_layout,
 )
 from src.server.database.workspace import files_restore_incomplete
+from src.server.database.home_workspace import acting_for
 from src.server.database.user_skills import (
     SkillSyncLockBusy,
     create_user_skill,
@@ -152,6 +154,10 @@ class _Pass:
     sandbox: "PTCSandbox"
     user_id: str
     workspace_id: str
+    #: Whose rows this pass reads and writes: the workspace itself, or Home
+    #: when the folder is Home's stand-in. The ledger and the restore flag stay
+    #: on ``workspace_id``, the folder's own id.
+    scope_id: str
     report: dict[str, Any]
     ws_rows: dict[str, dict[str, Any]]
     user_rows: dict[str, dict[str, Any]]
@@ -208,8 +214,15 @@ async def reconcile_workspace_skills(
         return None
     try:
         resolved = await _resolve_layout(sandbox, workspace_id, project)
-        async with workspace_skill_sync_lock(workspace_id):
-            # Inside the lock on purpose. wait_for cancels only the inner
+        # Both ids, one lock each: the rows' id serializes against API writers
+        # of those rows, the folder's own id against a restore of this folder.
+        # Sorted so two passes that share an id never wait on each other in
+        # opposite orders; each lock stays try-only.
+        scope = acting_for(user_id, workspace_id)
+        async with AsyncExitStack() as locks:
+            for lock_id in sorted({workspace_id, scope}):
+                await locks.enter_async_context(workspace_skill_sync_lock(lock_id))
+            # Inside the locks on purpose. wait_for cancels only the inner
             # coroutine, so the lock's finally closes its session on a live,
             # uncancelled task instead of absorbing the cancellation.
             return await asyncio.wait_for(
@@ -260,10 +273,10 @@ async def _run_pass(
     layout: WorkspaceLayout,
 ) -> ReconcileStats:
     base = layout.skills
+    scope_id = acting_for(user_id, workspace_id)
     report = await skill_sync.report(sandbox, base=base)
     ws_rows = {
-        r["name"]: r
-        for r in await list_user_skills(user_id, workspace_id=workspace_id)
+        r["name"]: r for r in await list_user_skills(user_id, workspace_id=scope_id)
     }
     user_rows = {r["name"]: r for r in await list_user_skills(user_id)}
     ctx = _Pass(
@@ -271,6 +284,7 @@ async def _run_pass(
         base=base,
         user_id=user_id,
         workspace_id=workspace_id,
+        scope_id=scope_id,
         report=report,
         ws_rows=ws_rows,
         user_rows=user_rows,
@@ -368,7 +382,7 @@ async def _link_shared(ctx: _Pass) -> None:
     if ctx.base.rstrip("/") == user_base.rstrip("/"):
         return
     try:
-        disabled = await list_workspace_skill_disables(ctx.workspace_id)
+        disabled = await list_workspace_skill_disables(ctx.scope_id)
         result = await skill_sync.link_shared_skills(
             ctx.sandbox,
             base=ctx.base,
@@ -810,7 +824,7 @@ async def _create_linked_row(
         row = await create_user_skill(
             ctx.user_id,
             name,
-            workspace_id=ctx.workspace_id,
+            workspace_id=ctx.scope_id,
             command=command,
             description=validated.description,
             license=validated.license,

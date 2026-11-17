@@ -50,7 +50,10 @@ from src.config.settings import (
     get_cli_approval_pending_ttl,
 )
 from src.server.database.automation import get_automation
-from src.server.database.computer import get_computer, get_primary_computer
+from src.server.database.computer import (
+    get_computer,
+    get_primary_computer,
+)
 from src.server.database.conversation.threads_read import (
     get_thread_auth_meta,
     get_thread_by_id,
@@ -81,6 +84,7 @@ from src.server.models.computer import ComputerRemoveRequest
 from src.server.models.workflow import RetryRequest
 from src.server.models.workspace import WorkspaceCreate
 from src.server.services import cli_approvals as store
+from src.server.services.home_placement import home_turn_computer
 from src.server.services.runs.admission import run_named_by_key
 from src.server.services.runs.pending_input import can_retry
 from src.server.services.automations.lifecycle import (
@@ -464,7 +468,10 @@ async def computer_remove(
     computer_id = str(computer["computer_id"])
 
     async def build(call: CliCall | None) -> Ask:
-        on_it = [str(w) for w in await get_live_workspace_ids_for_computer(computer_id)]
+        on_it = [
+            str(w)
+            for w in await get_live_workspace_ids_for_computer(computer_id, exclude_stand_in=True)
+        ]
         names = [(await get_workspace(w) or {}).get("name") for w in on_it]
         # Both act only on an ssh machine, so the user is told of them only there.
         ssh = computer.get("kind") == "ssh"
@@ -499,12 +506,23 @@ async def _turn_place(
     user is asked, as its first turn would: a Home on none follows the
     primary, which could change between the user's OK and the turn, and a
     bound one never moves. A failure refuses the request rather than ask
-    about a computer the turn might not use."""
+    about a computer the turn might not use.
+
+    A Home turn is judged on the computer it runs on, which the user is shown
+    (``home_placement.home_turn_computer``). Read only: the turn's bind places
+    the stand-in, and its START refuses one that then runs anywhere else
+    (``admission.refuse_moved_off``)."""
     place = await turn_place(user_id, workspace_id=workspace_id, thread_id=thread_id)
     if place is None or not place.in_home:
         return place
     await ensure_home(user_id)
-    return await turn_place(user_id, workspace_id=workspace_id, thread_id=thread_id)
+    place = await turn_place(user_id, workspace_id=workspace_id, thread_id=thread_id)
+    if place is None:
+        return None
+    cloud, stand_in = await home_turn_computer(user_id)
+    if not stand_in:
+        return place
+    return replace(place, computer_id=str(cloud["computer_id"]), computer_name=cloud.get("name"))
 
 
 def _checked(checked: list[str], place: Place | None) -> None:

@@ -29,6 +29,7 @@ import { ThreadLifecycleFeed } from './lib/threadLifecycle/ThreadLifecycleFeed';
 import { CliApprovalHost } from './components/CliApproval/CliApprovalHost';
 import { VendorTermsHost } from './components/VendorTerms/VendorTermsHost';
 import { WarmHome } from './components/WarmHome';
+import { ThisMacFirstRunGate } from './pages/ThisMac/ThisMacFirstRunGate';
 import { HostedSignInGate } from './components/HostedSignInGate';
 import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/hostedSignIn';
 import { markBooted, reloadIfStale, watchStaleBuild } from './lib/staleBuild';
@@ -360,7 +361,10 @@ function AuthenticatedShell() {
     return <Navigate to="/setup/method" replace />;
   }
 
+  // The desktop app's first run on a Mac asks where the agents work before
+  // anything warms Home, which would build a cloud computer.
   return (
+    <ThisMacFirstRunGate>
     <OnboardingProvider>
       <ThreadLifecycleFeed />
       {/* One prompt at a time: the agent's command requests first, then vendor terms. */}
@@ -400,6 +404,7 @@ function AuthenticatedShell() {
       <ConnectConsentHost />
       <ConnectLandingHost />
     </OnboardingProvider>
+    </ThisMacFirstRunGate>
   );
 }
 

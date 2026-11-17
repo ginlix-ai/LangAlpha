@@ -10,6 +10,7 @@ import { opensTurn } from '../../components/messageList/messagePredicates';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import { reportRow, senderProvenance, type SenderMetadata } from '../provenance';
 import { deliveredEntryRow, steeringDeliveredEntries } from '../stream/steeringDelivery';
+import { readHomeFallback } from '../stream/turnPlacement';
 import type { ReportSource } from '@/types/api';
 import { isDeliveredNotice, isDeliveredSteer, type DeliveredSteer } from '@/types/sse';
 import type { SubagentTaskRecord, TextSegment } from '@/types/chat';
@@ -259,14 +260,16 @@ export function handleHistoryUserMessage({
     // The live turn was counted on the client; the replay names it. Every
     // live bubble that count stamped moves with it: the reply, its user
     // bubble (the turn's only one, as the replay's is dropped) and any
-    // steering stamped from the reply.
+    // steering stamped from the reply. The user bubble also takes where a
+    // Home turn ran, which a stream joined past its first frame never said.
+    const homeFallback = readHomeFallback(event.metadata?.home_fallback);
     setMessages((prev: MessageRecord[]) => {
       const counted = prev.find((m) => m.id === liveId)?.turnIndex;
-      return prev.map((m) =>
-        m.id === liveId || (!m.isHistory && counted !== undefined && m.turnIndex === counted)
-          ? { ...m, turnIndex: pairIndex }
-          : m,
-      );
+      return prev.map((m) => {
+        if (!(m.id === liveId || (!m.isHistory && counted !== undefined && m.turnIndex === counted))) return m;
+        const placed = homeFallback && m.role === 'user' ? { homeFallback } : null;
+        return { ...m, turnIndex: pairIndex, ...placed };
+      });
     });
     return true;
   } else {
@@ -302,6 +305,10 @@ export function handleHistoryUserMessage({
       if (chartSelections && chartSelections.length > 0) {
         userMessage.chartSelections = event.metadata!.chart_selections;
       }
+
+      // A Home turn that ran on the cloud stand-in, as the live frame says it.
+      const homeFallback = readHomeFallback(event.metadata?.home_fallback);
+      if (homeFallback) userMessage.homeFallback = homeFallback;
 
       if (artifactComments) {
         userMessage.content = artifactComments.note;

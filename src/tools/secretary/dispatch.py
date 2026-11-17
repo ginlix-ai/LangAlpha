@@ -188,7 +188,7 @@ async def dispatch(
         )
         return error_command("internal_service_token_missing", tool_call_id)
 
-    from src.server.database.home_workspace import is_home_row
+    from src.server.database.home_workspace import is_reserved_row
     from src.server.utils.pg_sanitize import normalize_uuid
 
     is_continuation = thread_id is not None
@@ -221,11 +221,11 @@ async def dispatch(
     workspace = await _owned_workspace(workspace_id, user_id)
     workspace_name = workspace.get("name") if workspace else None
 
-    # Any Home row, not only the dispatcher's: a turn there is never a
-    # workspace's analyst.
+    # Any Home row or its stand-in, not only the dispatcher's: a turn there is
+    # never a workspace's analyst.
     if (
         workspace_id == normalize_uuid(configurable.get("workspace_id"))
-        or is_home_row(workspace)
+        or is_reserved_row(workspace)
     ):
         return error_command(
             "That is the workspace you are working in: do it here, or "

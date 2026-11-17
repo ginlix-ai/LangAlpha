@@ -6,6 +6,7 @@
 
 import { settleFailedBubble, settleStoppedBubble } from './stopBubble';
 import { readStreamFailure } from './streamFailure';
+import { readHomeFallback, stampHomeFallback } from './turnPlacement';
 import { continuationChain } from './continuedBubbles';
 import { readRetryNotice } from './autoRetry';
 import { noteLiveRun } from '../latestRun';
@@ -343,6 +344,18 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         rt.setWorkspaceStarting(state);
       } else {
         rt.setWorkspaceStarting(false);
+      }
+      return;
+    }
+
+    // turn_placement: a Home turn running on the user's cloud computer while
+    // the machine Home lives on can't be reached. Put on the row the turn
+    // answers, where a replay puts it from the turn's metadata. A retry back
+    // on Home sends null, which takes its first attempt's off.
+    if (eventType === 'turn_placement') {
+      const fallback = event.home_fallback === null ? null : readHomeFallback(event.home_fallback);
+      if (fallback || event.home_fallback === null) {
+        setMessagesForHandlers((prev) => stampHomeFallback(prev, assistantMessageId, fallback));
       }
       return;
     }

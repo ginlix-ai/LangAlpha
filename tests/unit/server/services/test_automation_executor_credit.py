@@ -487,3 +487,11 @@ def _setup_auto_db(mock_adb):
     )
     mock_adb.record_delivery = AsyncMock()
     mock_adb.update_automation = AsyncMock()
+
+
+@pytest.fixture(autouse=True)
+def _home_runs_at_home():
+    """Home's turn runs on Home's own computer here; where it runs while that
+    computer can't be reached is ``test_home_placement``'s."""
+    with patch("src.server.services.home_placement.place_home_turn", new=AsyncMock(return_value=None)):
+        yield

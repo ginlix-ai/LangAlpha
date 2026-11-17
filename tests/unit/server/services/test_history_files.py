@@ -241,10 +241,10 @@ class TestComputerHistory:
         from src.server.database import workspace
 
         rows = [
-            {"workspace_id": "w1", "dir_name": "Home"},
-            {"workspace_id": "w2", "dir_name": ""},
-            {"workspace_id": "w3", "dir_name": None},
-            {"workspace_id": "w4", "dir_name": "_internal/Staged"},
+            {"workspace_id": "w1", "user_id": "u-1", "dir_name": "Home"},
+            {"workspace_id": "w2", "user_id": "u-1", "dir_name": ""},
+            {"workspace_id": "w3", "user_id": "u-1", "dir_name": None},
+            {"workspace_id": "w4", "user_id": "u-1", "dir_name": "_internal/Staged"},
         ]
         monkeypatch.setattr(
             workspace, "get_live_workspace_folders_for_computer", AsyncMock(return_value=rows)
@@ -263,6 +263,23 @@ class TestComputerHistory:
 
         assert [type(r) for r in routes] == [TranscriptFiles, TranscriptFiles, IndexFile]
         assert routes[0].root_prefix != routes[1].root_prefix
+
+    def test_home_stand_in_folder_serves_homes_transcripts(self):
+        """Home's turn in its stand-in saves its transcript under Home, so the
+        folder it reads through lists Home's, and still counts as its own."""
+        from src.server.database.home_workspace import (
+            get_home_stand_in_id,
+            get_home_workspace_id,
+        )
+
+        stand_in = get_home_stand_in_id("u-1")
+        history = ComputerHistory("c-1", [(stand_in, ".home-stand-in")], user_id="u-1")
+        sandbox = type("S", (), {"computer_root": "/home/workspace/"})()
+
+        (transcripts, _index) = history.routes(sandbox)
+
+        assert transcripts._workspace_id == get_home_workspace_id("u-1")
+        assert history.serves(stand_in)
 
     @pytest.mark.asyncio
     async def test_a_save_goes_through_the_transcript_store(self, monkeypatch):

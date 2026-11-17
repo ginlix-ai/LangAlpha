@@ -304,7 +304,10 @@ async def update_current_user(
         locale=request.locale,
         onboarding_completed=request.onboarding_completed,
         personalization_completed=request.personalization_completed,
+        computer_choice=request.computer_choice,
     )
+    if request.computer_choice is not None:
+        logger.info(f"User {user_id} chose to work on {request.computer_choice}")
 
     await invalidate_user_profile_cache(user_id)
 

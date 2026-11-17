@@ -38,11 +38,14 @@ export function providerManagesSpec(kind: string): boolean {
 }
 
 /**
- * Home lives on the primary, which is never removed, so it has to be a machine
- * the deployment can build again; one the user brings may be wiped or gone.
+ * A machine the user brings. Any computer may be primary, this one included,
+ * but Home on it needs a cloud computer to stand in while it can't be reached,
+ * so making it primary says so. A primary the user brings can be removed,
+ * Home moving to another computer first; a hosted primary is kept, so
+ * nothing is offered on it.
  */
-export function providerCanBePrimary(kind: string): boolean {
-  return !providerUi(kind)?.ownMachine;
+export function providerIsOwnMachine(kind: string): boolean {
+  return !!providerUi(kind)?.ownMachine;
 }
 
 /**

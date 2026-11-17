@@ -22,12 +22,12 @@ import type { Computer } from '@/types/api';
 
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
-import { isComputerPreparing, isComputerStatusTransitional, takesWorkspaces } from '../utils/computerStatus';
+import { homeEligibility, isComputerPreparing, isComputerStatusTransitional } from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
 import { MakePrimaryButton } from './MakePrimaryDialog';
-import { providerCanBePrimary, providerManagesSpec } from './providerUi';
+import { providerIsOwnMachine, providerManagesSpec } from './providerUi';
 import { ComputerFacts } from './computerFacts';
 import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
@@ -66,12 +66,20 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   const disk = computer.disk ?? null;
   const specChange = activeSpecChange(computer);
   const managesSpec = providerManagesSpec(computer.kind);
-  // The primary is kept, so it offers no Remove at all. Every other computer
-  // offers it, held while the server would refuse, with the reason under it.
-  // Workspaces on it do not hold it: the confirmation offers to delete them.
-  const removeHeld = computer.is_primary ? null : removeBlock(computer, actions.powerBusy);
+  // A hosted primary is kept, so it offers no Remove at all. Every other
+  // computer offers it, held while the server would refuse, with the reason
+  // under it; on a primary the user brings the confirmation asks where Home
+  // goes. Workspaces on it do not hold it: the confirmation offers to delete them.
+  const removable = !computer.is_primary || providerIsOwnMachine(computer.kind);
+  const removeHeld = removable ? removeBlock(computer, actions.powerBusy) : null;
   const removeHint = removeHeld ? removeBlockHint(t, removeHeld) : null;
-  const canBePrimary = !computer.is_primary && providerCanBePrimary(computer.kind);
+  // Backup off is not held here: the confirmation offers to turn it on.
+  const home = homeEligibility(computer);
+  const primaryUnreachable = !computer.is_primary && home.held === 'unreachable';
+  // Make primary asked with the create, which the server could not apply:
+  // said here, beside the button that asks again.
+  const primaryDropped = !computer.is_primary && computer.make_primary?.state === 'dropped' ? computer.make_primary : null;
+  const primaryHintId = useId();
   const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
 
   // The view replaced the button that opened it, so focus starts on the way back.
@@ -100,31 +108,43 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
           <div className="computer-details-actions">
             <StartFailureAction computer={computer} actions={actions} />
             <PowerButton computer={computer} actions={actions} />
-            {(canBePrimary || !computer.is_primary) && (
+            {removable && (
               <div className="computer-details-rarer">
-                {canBePrimary && (
+                {!computer.is_primary && (
                   <MakePrimaryButton
                     movingHome={actions.movingHome}
-                    disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer)}
+                    disabled={actions.makePrimaryHeld || !!specChange || home.held !== null}
                     onClick={actions.makePrimary}
+                    describedBy={primaryUnreachable && !actions.movingHome ? primaryHintId : undefined}
                   />
                 )}
-                {!computer.is_primary && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="ml-auto"
-                    onClick={actions.remove}
-                    disabled={!!removeHeld}
-                    // A preparing computer already says why, in its own hint.
-                    aria-describedby={removeHeld === 'preparing' ? prepareHintId : removeHint ? removeHintId : undefined}
-                  >
-                    {t('computer.remove', 'Remove')}
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={actions.remove}
+                  disabled={!!removeHeld}
+                  // A preparing computer already says why, in its own hint.
+                  aria-describedby={removeHeld === 'preparing' ? prepareHintId : removeHint ? removeHintId : undefined}
+                >
+                  {t('computer.remove', 'Remove')}
+                </Button>
               </div>
             )}
             {/* Under the buttons, so its arriving moves none of them. */}
+            {removable && primaryUnreachable && !actions.movingHome && (
+              <p id={primaryHintId} className="computer-details-hint">
+                {t('computer.makePrimary.unreachable', "You can make it primary once it's connected.")}
+              </p>
+            )}
+            {primaryDropped && (
+              <p className="computer-details-hint" data-testid="computer-primary-dropped">
+                {t('computer.makePrimary.dropped', "{{name}} wasn't made primary. {{reason}}", {
+                  name: computer.name,
+                  reason: primaryDropped.error?.message ?? '',
+                }).trim()}
+              </p>
+            )}
             {removeHint && (
               <p id={removeHintId} className="computer-details-hint">
                 {removeHint}

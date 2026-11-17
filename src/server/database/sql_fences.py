@@ -21,16 +21,33 @@ FENCE_NOT_DELETED = "status <> 'deleted'"
 # write must not reach it and overwrite the 'unbound' marker.
 FENCE_LIVE_WORKSPACE = "status NOT IN ('deleted', 'unbound')"
 
+
+def _takes_workspaces(c: str) -> str:
+    return (
+        f"({c}is_primary OR NOT COALESCE({c}config, '{{}}'::jsonb)"
+        " @> '{\"retire_when_empty\": true}'::jsonb)"
+    )
+
+
 # A computer whose retirement is being decided takes no workspace: the decision
 # reads it empty, and its tombstone would take a newcomer down with it. The
 # marker goes on before that read and the row lock orders the two, so a
 # workspace either lands first and is counted, or meets the marker here. A
 # primary is never retired, so the marker a workspace delete writes on one
 # before reading the flag refuses nothing.
-FENCE_TAKES_WORKSPACES = (
-    "(is_primary OR NOT COALESCE(config, '{}'::jsonb)"
-    " @> '{\"retire_when_empty\": true}'::jsonb)"
-)
+FENCE_TAKES_WORKSPACES = _takes_workspaces("")
+
+
+def takes_a_workspace_sql(alias: str = "") -> str:
+    """Whether computer row ``alias`` can take a workspace now: live, not
+    failed, not being retired (``FENCE_TAKES_WORKSPACES``), and past its
+    first build, before which it has no sandbox to hold a folder."""
+    c = f"{alias}." if alias else ""
+    return (
+        f"({c}{FENCE_NOT_DELETED} AND {_takes_workspaces(c)} AND {c}status <> 'error'"
+        f" AND ({c}provider_ref IS NOT NULL OR {c}status NOT IN ('creating', 'starting')))"
+    )
+
 
 # A listing of the user's workspaces leaves Home out by its id, since bound it
 # reads its computer's status, and leaves out by status an unbound former Home
@@ -108,15 +125,20 @@ _COMPUTER_COLUMNS = (
 )
 
 
-def computer_cols(alias: str = "") -> str:
+def computer_cols(alias: str = "", *, named: str = "") -> str:
     """The computers select list, optionally qualified for a join.
 
     Ends with the derived ``spec_change_stale``, so every reader of a row gets
-    staleness from the same clock without asking for it.
+    staleness from the same clock without asking for it. ``named`` prefixes
+    each output name, for a row read beside another table's columns of the
+    same names.
     """
     prefix = f"{alias}." if alias else ""
-    cols = ", ".join(f"{prefix}{col}" for col in _COMPUTER_COLUMNS)
-    return f"{cols}, {spec_change_stale(prefix)} AS spec_change_stale"
+    cols = ", ".join(
+        f"{prefix}{col}" + (f" AS {named}{col}" if named else "")
+        for col in _COMPUTER_COLUMNS
+    )
+    return f"{cols}, {spec_change_stale(prefix)} AS {named}spec_change_stale"
 
 
 # One column list keeps every dict_row result shape consistent.

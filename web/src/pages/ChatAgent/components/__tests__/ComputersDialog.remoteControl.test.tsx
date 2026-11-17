@@ -47,6 +47,7 @@ vi.mock('../../utils/api', async () => {
     connectSshPairing: vi.fn(),
     probeSsh: vi.fn(),
     getSshKey: vi.fn(),
+    getHomePlacement: vi.fn(),
     streamComputerEvents: vi.fn(async () => {}),
     streamWorkspaceEvents: vi.fn(async () => {}),
     apiErrorObject: errors.apiErrorObject,

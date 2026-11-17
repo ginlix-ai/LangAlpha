@@ -8,6 +8,7 @@ import { vi } from 'vitest';
  */
 export async function computersApi() {
   const errors = await vi.importActual<typeof import('@/api/errors')>('@/api/errors');
+  const workspaces = await vi.importActual<typeof import('../../utils/api/workspaces')>('../../utils/api/workspaces');
   return {
     getComputers: vi.fn(),
     getComputerProviders: vi.fn(),
@@ -18,6 +19,7 @@ export async function computersApi() {
     startComputer: vi.fn(),
     stopComputer: vi.fn(),
     deleteComputer: vi.fn(),
+    getComputerRemoval: vi.fn(),
     setComputerAlwaysOn: vi.fn(),
     setComputerFilesBackup: vi.fn(),
     reinstallComputer: vi.fn(),
@@ -27,6 +29,12 @@ export async function computersApi() {
     connectSshPairing: vi.fn(),
     probeSsh: vi.fn(),
     getSshKey: vi.fn(),
+    makeComputerPrimary: vi.fn(),
+    getHomePlacement: vi.fn(),
+    getHomeWorkspace: vi.fn(),
+    getWorkspace: vi.fn(),
+    getWorkspaceMove: vi.fn(),
+    moveRefusal: workspaces.moveRefusal,
     apiErrorObject: errors.apiErrorObject,
     apiErrorReason: errors.apiErrorReason,
     getWorkspaceQuota: vi.fn(async () => ({ performance: null, max: null, always_on: null })),

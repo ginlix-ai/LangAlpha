@@ -44,6 +44,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from ptc_agent.core.sandbox.livefs_runtime.protocol import PREFIX as LIVEFS_PREFIX
 from ptc_agent.core.sandbox.platform_secrets import PlatformSecretError
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from src.server.services.computer_errors import NeedsComputer
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.app.logos import LOGOS_PREFIX, router as logos_router
 from src.server.preview_proxy import install_preview_proxy
@@ -162,6 +163,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Indexes for conversation search the turns their settle missed, and
     # backfills older ones; an advisory lock keeps it to one worker a pass.
     ("ThreadSearchSweeper", "src.server.services.search.sweep"),
+    # Copies what Home's stand-in wrote into Home once Home's computer is
+    # back; a per-user advisory lock and a guarded watermark dedup it.
+    ("HomeHandbackSweeper", "src.server.services.home_handback"),
 )
 
 
@@ -1469,6 +1473,14 @@ app.add_exception_handler(SandboxTransientError, _sandbox_failure_handler)
 app.add_exception_handler(SSHConnectError, _sandbox_failure_handler)
 
 
+async def _needs_computer_handler(request: Request, exc: NeedsComputer) -> JSONResponse:
+    """The one answer to a user with no computer Home can live on: every
+    route lets the refusal through to here, and the client offers a way out."""
+    return JSONResponse(status_code=409, content={"detail": exc.detail})
+
+
+app.add_exception_handler(NeedsComputer, _needs_computer_handler)
+
 
 # ============================================================================
 # Router Registration
@@ -1480,6 +1492,7 @@ from src.server.app.utilities import health_router
 from src.server.app.computers import router as computers_router
 from src.server.app.computers_ssh import router as computers_ssh_router
 from src.server.app.workspaces import router as workspaces_router
+from src.server.app.home import router as home_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_files import wsfiles_router
 from src.server.app.attachments import router as attachments_router
@@ -1559,6 +1572,7 @@ else:
 app.include_router(threads_router)  # /api/v1/threads/* - Thread CRUD, messages, control
 app.include_router(search_router)  # /api/v1/search - Conversation search (command palette)
 app.include_router(sessions_router)  # /api/v1/sessions - Active session stats
+app.include_router(home_router)  # /api/v1/workspaces/home* - Home and its stand-in
 app.include_router(workspaces_router)  # /api/v1/workspaces/* - Workspace CRUD
 app.include_router(
     computers_ssh_router

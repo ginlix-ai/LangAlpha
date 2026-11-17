@@ -31,7 +31,8 @@ import { NameRefusal } from './computerParts';
 import { SshSetup } from './sshSetup';
 import { useSshSetup } from './sshSetupState';
 import { RemoteControlActionButton, RemoteControlSetup } from './remoteControlSetup';
-import { useRemoteControlSetup } from './remoteControlSetupState';
+import { CreateRefusal, ownMachineCreate } from './addComputer';
+import { useAddThisMac } from './addThisMac';
 import { PlanUpgradeHint } from './planUpgradeHint';
 import {
   computerCapReached,
@@ -174,7 +175,8 @@ function CreateComputerDialog({
   const tier: ResourceTier =
     offer.tiers.includes(pickedTier) && !isTierBlocked(tierCapacity(quota, pickedTier)) ? pickedTier : 'standard';
   const ssh = useSshSetup(source === 'ssh');
-  const mac = useRemoteControlSetup(source === 'thisMac');
+  const addThisMac = useAddThisMac(source === 'thisMac');
+  const mac = addThisMac.setup;
   // A machine the user brings is sized by them, so its tier is never a pick,
   // and left unnamed it goes by its hostname once it has answered.
   const own = source === 'thisMac' ? mac : source === 'ssh' ? ssh : null;
@@ -209,16 +211,20 @@ function CreateComputerDialog({
   // numbering past a computer that took it meanwhile, where a name sent is
   // refused when one of them has it.
   const trimmedName = (typed ?? '').trim();
-  const fields: ComputerCreate | null = own
-    ? own.create && { ...own.create, ...(trimmedName ? { name: trimmedName } : {}), resource_tier: 'standard', kind: 'ssh' }
-    : {
-      ...(trimmedName ? { name: trimmedName } : {}),
-      resource_tier: tier,
-      ...(choosesProvider && hosted ? { kind: hosted } : {}),
-    };
+  const fields: ComputerCreate | null = source === 'thisMac'
+    ? addThisMac.body({ name: trimmedName })
+    : source === 'ssh'
+      ? ssh.create && ownMachineCreate(ssh.create, { name: trimmedName })
+      : {
+        ...(trimmedName ? { name: trimmedName } : {}),
+        resource_tier: tier,
+        ...(choosesProvider && hosted ? { kind: hosted } : {}),
+      };
   // Every provider on offer locked leaves nothing to create on. The cap locks
   // even a lone provider, which the form shows no choice for.
   const blocked = ((choosesProvider || atCap) && !own && hosted === null) || !fields;
+  // The same body taking over the folder a computer of another account holds.
+  const takeOverBody = takeOver && fields?.ssh ? { ...fields, ssh: { ...fields.ssh, take_over: takeOver } } : null;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -400,24 +406,11 @@ function CreateComputerDialog({
         {upgradeLead && <PlanUpgradeHint lead={upgradeLead} testId="create-computer-plan-cta" />}
 
         {error && !busy && (
-          <div ref={errorRef} role="alert" className="flex flex-col gap-1.5">
-            <p className="text-sm" style={{ color: 'var(--color-icon-danger)' }}>
-              {error}
-            </p>
-            {takeOver && fields?.ssh && (
-              <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                {t('computer.takeOverFolderNote', 'The other computer stops working in it. The files in it stay.')}{' '}
-                <button
-                  type="button"
-                  className="underline font-medium"
-                  style={{ color: 'var(--color-text-primary)' }}
-                  onClick={() => onSubmit({ ...fields, ssh: { ...fields.ssh!, take_over: takeOver } })}
-                >
-                  {t('computer.takeOverFolder', 'Take over this folder')}
-                </button>
-              </p>
-            )}
-          </div>
+          <CreateRefusal
+            ref={errorRef}
+            message={error}
+            onTakeOver={takeOverBody ? () => onSubmit(takeOverBody) : undefined}
+          />
         )}
       </form>
     </ModalShell>

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
 from ptc_agent.agent.middleware.provenance.command_trace import REPORT_COMMAND_KEY
-from ptc_agent.agent.middleware.runtime_context import TurnContext, parse_surface
+from ptc_agent.agent.middleware.runtime_context import HomeAway, TurnContext, parse_surface
 from ptc_agent.agent.tools.command_handoff import JOB_ENV_KEY
 from src.config.settings import (
     get_langsmith_metadata,
@@ -607,6 +607,8 @@ def build_turn_context(
     inherits_rules: bool = False,
     sent_at: float | None = None,
     carried_unwatched: bool | None = None,
+    home_away: HomeAway | None = None,
+    home_back: dict[str, Any] | None = None,
 ) -> TurnContext:
     """What this turn knows about itself: the request's surface plus the prior row.
 
@@ -622,6 +624,8 @@ def build_turn_context(
     the turn a restart stopped that this one resumes (``carried_unwatched``,
     from ``carry.carried_unwatched``). ``sent_at`` is when the server
     received the request, ahead of admission and the workspace's start.
+    ``home_away`` and ``home_back`` say where a Home turn runs
+    (``home_placement``).
 
     The zone is the profile's before the request's: a channel or an
     automation's own request names none, and the request alone would put
@@ -645,6 +649,8 @@ def build_turn_context(
         ),
         disk_free_mb=disk_free_mb,
         disk_known=disk_known,
+        home_away=home_away,
+        home_back=home_back,
         timezone=zone,
         tool_timezone=zone
         or get_locale_config(request.locale or "en-US", "en").get("timezone", "UTC"),

@@ -9,7 +9,7 @@ import type {
   ProvenanceEnvelopeKey,
   ProvenanceEvent,
 } from './sse';
-import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
+import type { PageLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import type { PlanBilled } from '@/api/model';
 import type { DispatchingAgent, ReportOutcome } from './api';
 import type { CommandFailureReason, CommandTool } from './commands';
@@ -455,7 +455,7 @@ export interface CreditPauseState {
   message?: string;
   /** Where the user resolves the denial, built by ``buildRateLimitError`` so a
    *  pause and a 429 banner offer the same destinations. */
-  links?: ErrorLinkSpec[];
+  links?: PageLinkSpec[];
   interruptId: string;
 }
 
@@ -545,6 +545,9 @@ export type UserMessage = {
   /** On a report-back's row only: the run it opened. History and a live
    *  attach can both draw that row, and know it by this. */
   runId?: string;
+  /** On a Home turn that ran on the cloud stand-in while Home's own machine
+   *  could not be reached: drawn as a quiet line under the message. */
+  homeFallback?: import('./sse').HomeFallback;
   steeringDelivered?: boolean;
   steering?: boolean;
   /** The request key this view sent the message under. A delivery that

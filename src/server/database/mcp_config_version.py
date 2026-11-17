@@ -11,12 +11,28 @@ from src.server.database.pool import get_db_connection
 
 
 async def bump_workspace_version(cur, workspace_id: str) -> None:
-    """Atomically increment a workspace's mcp_config_version (same txn)."""
+    """Atomically increment a workspace's mcp_config_version (same txn).
+
+    A change to Home's selection bumps Home's stand-in too, which runs with
+    Home's selection (``home_workspace.acting_for``)."""
+    from src.server.database.home_workspace import (
+        get_home_stand_in_id,
+        get_home_workspace_id,
+    )
+
     await cur.execute(
         "UPDATE workspaces SET mcp_config_version = mcp_config_version + 1 "
-        "WHERE workspace_id = %s",
+        "WHERE workspace_id = %s RETURNING user_id",
         (workspace_id,),
     )
+    row = await cur.fetchone()
+    user_id = (row.get("user_id") if isinstance(row, dict) else row[0]) if row else None
+    if user_id and str(workspace_id).lower() == get_home_workspace_id(str(user_id)):
+        await cur.execute(
+            "UPDATE workspaces SET mcp_config_version = mcp_config_version + 1 "
+            "WHERE workspace_id = %s",
+            (get_home_stand_in_id(str(user_id)),),
+        )
 
 
 async def bump_user_versions(cur, user_id: str) -> None:

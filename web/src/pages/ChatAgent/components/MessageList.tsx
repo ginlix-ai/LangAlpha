@@ -23,6 +23,7 @@ import { ProseTyping, ProseTypingContext } from './messageList/proseTyping';
 import { useLiveMessages, type LiveMessages } from '../session/stream/liveMessages';
 import type { ChatMessage, WakeupArrival } from '@/types/chat';
 import { turnFilesByTurn } from '../utils/turnFiles';
+import { useCloudTurnFiles } from '../hooks/useCloudTurnFiles';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import type { FeedbackResult, FoldState, MessageRecord } from './messageList/types';
 
@@ -209,10 +210,12 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
 
   // The deliverables strip reads the RAW projection: a turn's files are named
   // across its whole span, including a bubble the list never paints.
-  const filesByTurn = React.useMemo(
+  const ownFilesByTurn = React.useMemo(
     () => turnFilesByTurn(turned, folders),
     [turned, folders],
   );
+  // A Home turn that ran on the cloud names its files where they were then.
+  const filesByTurn = useCloudTurnFiles(turned, ownFilesByTurn, { enabled: !readOnly });
 
   // Only the newest turn can still be running. A bubble's own `isStreaming`
   // is per model call, not per turn: the text handler drops it on every

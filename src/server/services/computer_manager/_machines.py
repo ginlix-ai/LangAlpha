@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from ptc_agent.core.sandbox.providers import (
     PROVIDER_KINDS,
-    may_be_primary,
+    builds_computers,
     provider_class,
 )
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
@@ -21,6 +21,7 @@ from ptc_agent.core.session import Session, SessionManager
 
 
 from src.server.database.computer import (
+    MAKE_PRIMARY_INTENT,
     computer_advisory_key,
     computer_capacity_lock,
     create_computer,
@@ -36,8 +37,13 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.computer_names import insert_under_free_name
+from src.server.database.user import get_user
 from src.server.database.home_workspace import get_home_workspace_id, is_home_row
 from src.server.database.workspace_folders import folder_allocation, takes_name_folders
+from src.server.database.workspace_move import (
+    primary_candidate,
+    promote_primary_computer,
+)
 from src.server.database.workspace_names import HOME_FOLDER, candidate_dir_names
 from src.server.database.workspace import (
     bind_workspace_to_computer,
@@ -50,6 +56,7 @@ from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_errors import (
+    NeedsComputer,
     ProviderNotOffered,
     UnknownResourceTier,
 )
@@ -154,7 +161,7 @@ class MachineLifecycleMixin:
                 user_id,
                 kind=kind,
                 name=chosen,
-                is_primary=is_primary and may_be_primary(kind),
+                is_primary=is_primary,
                 status=ComputerStatus.CREATING if prepare else ComputerStatus.STOPPED,
                 resource_tier=resource_tier or "standard",
                 root_dir=root_dir or self.config.filesystem.working_directory,
@@ -177,6 +184,13 @@ class MachineLifecycleMixin:
     ) -> Dict[str, Any]:
         """Reuse the primary computer to avoid paying for a sandbox per project.
 
+        A user with none has one of their own computers promoted (Home's
+        first, then the oldest) before anything is built, so a user whose
+        computers are all machines they brought keeps them and gets no cloud
+        computer. With none at all, one is built unless the user chose to work
+        on their own machine or the deployment builds none: then
+        ``NeedsComputer`` until they connect one.
+
         Creation is stopped until first start. A concurrent primary insert can
         return a non-primary loser; tombstone that row rather than hand it out.
         ``default_name`` (the first project's) is numbered past the user's
@@ -184,6 +198,16 @@ class MachineLifecycleMixin:
         computer = await get_primary_computer(user_id)
         if computer is not None:
             return computer
+        computer = await promote_primary_computer(user_id)
+        if computer is not None:
+            return computer
+        if not builds_computers(self.config.sandbox) or (
+            (await get_user(user_id) or {}).get("computer_choice") == "own_machine"
+        ):
+            candidate = await primary_candidate(user_id)
+            if candidate is not None and not candidate["files_backup"]:
+                raise NeedsComputer.backup_off(candidate)
+            raise NeedsComputer.no_computer()
 
         computer = await self.create_computer_for_user(
             user_id,
@@ -359,7 +383,9 @@ class MachineLifecycleMixin:
                     platform_secret_version=int(
                         workspace.get("platform_secret_version") or 0
                     ),
-                    is_primary=may_be_primary(kind),
+                    # As a create's: taken only while the user has none,
+                    # and its files backed up.
+                    is_primary=True,
                     root_dir=root_dir,
                     computer_id=candidate_id,
                     origin_workspace_id=workspace_id if adopt_ref else None,
@@ -830,6 +856,15 @@ class MachineLifecycleMixin:
                 f"({'reconnected' if reconnected else 'built'})"
             )
             self._read_machine_facts_soon(computer_id, binding.kind, runtime)
+            if (published.get("config") or {}).get(MAKE_PRIMARY_INTENT):
+                # Its create asked for it to be primary once it is up; never
+                # a reason to fail the start it follows.
+                try:
+                    await self.apply_make_primary_intent(computer_id, str(user_id))
+                except Exception:
+                    logger.exception(
+                        "Could not make computer %s primary after its start", computer_id
+                    )
             return session
         except (Exception, asyncio.CancelledError):
             if reconnected:

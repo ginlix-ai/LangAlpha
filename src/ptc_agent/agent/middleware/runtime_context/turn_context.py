@@ -10,7 +10,41 @@ adding one meant editing every signature between them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime
+
+
+@dataclass(frozen=True, slots=True)
+class HomeAway:
+    """A Home turn running in Home's stand-in rather than on Home's own
+    computer. The thread, its admission and its records stay Home's."""
+
+    #: The stand-in's workspace, whose computer and folder the turn runs in.
+    workspace_id: str
+    #: The computer Home lives on.
+    computer_id: str
+    computer_name: str
+    #: The cloud computer the stand-in is on.
+    cloud_computer_id: str
+    cloud_name: str
+    #: When the turn was admitted, ISO 8601: a file card of the turn finds the
+    #: hand-back that carried its file by it (the first one after).
+    at: str = ""
+    #: ``unreachable`` (Home's computer can't be reached) or ``command`` (the
+    #: turn reports on a background command that ran in the stand-in, whose log
+    #: and files are there, though Home's computer is back).
+    reason: str = "unreachable"
+
+    def as_metadata(self) -> dict[str, str]:
+        """What the run and query rows, and the client, record of it."""
+        return {
+            "computer_id": self.computer_id,
+            "computer_name": self.computer_name,
+            "cloud_computer_id": self.cloud_computer_id,
+            "cloud_name": self.cloud_name,
+            "at": self.at,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +89,14 @@ class TurnContext:
     # Whether a current reading backs disk_free_mb being None; only then may a
     # turn take back an earlier low-disk line.
     disk_known: bool = False
+    # A Home turn in Home's stand-in on a cloud computer, rather than on the
+    # machine Home lives on. None on every other turn.
+    home_away: HomeAway | None = None
+    # On a Home turn back on Home's own computer: that computer's name, and
+    # the last hand-back of what the stand-in's turns wrote (``folder``,
+    # ``files``), or ``pending`` while it is still owed. Stated only after a
+    # row that said Home was away.
+    home_back: dict[str, Any] | None = None
     # The zone the profile or the request names. The stamp, the identity block
     # and a subagent's row state it, so "9am tomorrow" means the same thing to
     # the model and a tool. None when neither names one: the stamp then keeps

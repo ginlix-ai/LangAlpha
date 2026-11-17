@@ -84,12 +84,17 @@ class HandOff:
     #: rename meanwhile leaves reaching it.
     computer: str | None = None
     computer_id: str | None = None
+    #: Name the log by its whole path: a Home turn in Home's stand-in runs in
+    #: a folder Home's own turns never start in, so a later turn reaching the
+    #: stand-in's computer from its root needs the whole path there.
+    whole: bool = False
 
     def log_path(self, ref: JobRef) -> str:
         if self.computer is None:
             return ref.log_relpath
+        path = ref.log_path if self.whole else ref.log_relpath
         held = f" (computer_id {self.computer_id})" if self.computer_id else ""
-        return f'{ref.log_relpath} on computer "{self.computer}"{held}'
+        return f'{path} on computer "{self.computer}"{held}'
 
 
 def log_of(ref: JobRef, hand_off: HandOff | None) -> str:

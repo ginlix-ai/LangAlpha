@@ -25,6 +25,7 @@ from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.computer_manager import ComputerNotRunning, attaching_only
 from src.server.services.history.projector import context_window_record
+from src.server.services.home_placement import runs_in as home_runs_in
 from src.server.services.thread_agent import thread_route
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
@@ -166,20 +167,23 @@ async def _thread_agent(
     # The row holds a uuid.UUID; the session and its asset sync key on the str
     # the request paths pass.
     workspace_id = str(workspace_id)
+    # Built where its next turn would run, so nothing waits on a machine that
+    # can't be reached; attaching only places no stand-in.
+    runs_in = await home_runs_in(user_id, workspace_id, make=not attaching_only())
 
     # Session
     workspace_manager = WorkspaceManager.get_instance()
     try:
         if attaching_only():
             session = await workspace_manager.get_session_if_running(
-                workspace_id, user_id=user_id
+                runs_in, user_id=user_id
             )
             if session is None:
-                raise ComputerNotRunning(f"workspace {workspace_id} is not running")
+                raise ComputerNotRunning(f"workspace {runs_in} is not running")
         else:
             with computer_cause("compact"):
                 session = await workspace_manager.get_session_for_workspace(
-                    workspace_id, user_id=user_id
+                    runs_in, user_id=user_id
                 )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -195,15 +199,15 @@ async def _thread_agent(
     backend = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
         try:
-            await held.enter_async_context(workspace_folder_in_use(workspace_id))
+            await held.enter_async_context(workspace_folder_in_use(runs_in))
         except WorkspaceFolderMoving as e:
             raise HTTPException(status_code=503, detail=sandbox_unreachable_detail(e)) from None
-        row = await get_workspace(workspace_id) or {}
+        row = await get_workspace(runs_in) or {}
         dir_name = row.get("dir_name")
         if dir_name and not is_top_level(dir_name):
             raise HTTPException(
                 status_code=503,
-                detail=sandbox_unreachable_detail(WorkspaceFolderMoving(workspace_id)),
+                detail=sandbox_unreachable_detail(WorkspaceFolderMoving(runs_in)),
             )
         layout = SandboxLayout(session.sandbox.working_dir).for_workspace(dir_name)
         backend = SandboxBackend(session.sandbox, layout.workspace)
@@ -221,10 +225,11 @@ async def _thread_agent(
     inputs = await AgentInputs.read(
         session,
         user_id=user_id,
-        workspace_id=workspace_id,
+        workspace_id=runs_in,
         thread_id=thread_id,
         role=role,
         user_profile=await get_user_profile_for_prompt(user_id) if user_id else None,
+        acting_for=workspace_id,
     )
     graph = await build_ptc_graph_with_session(
         session=session,
@@ -480,7 +485,8 @@ async def _summarize(agent: ThreadAgent, config):
         config,
         thread_id=agent.thread_id,
         backend=agent.backend,
-        workspace_id=agent.workspace_id,
+        # The folder a transcript pointer is read from.
+        workspace_id=agent.project.workspace_id if agent.project else agent.workspace_id,
         notes_dir=scratchpad.notes_dir if scratchpad is not None else None,
     )
 
@@ -789,7 +795,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     settings,
                     thread_id=thread_id,
                     backend=agent.backend,
-                    workspace_id=agent.workspace_id,
+                    workspace_id=agent.project.workspace_id if agent.project else agent.workspace_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))

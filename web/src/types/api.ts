@@ -24,10 +24,18 @@ export interface User {
   personalization_completed?: boolean;
   /** Completed the legacy first-run onboarding flow. */
   onboarding_completed?: boolean;
+  /** Where the user chose to work, asked once by the desktop app's first run; null when never asked. */
+  computer_choice?: ComputerChoice | null;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
 }
+
+/**
+ * `own_machine` keeps a cloud computer from being built for a user with no
+ * computer Home can live on; `cloud` keeps the default.
+ */
+export type ComputerChoice = 'own_machine' | 'cloud';
 
 export interface UserPreferences {
   [key: string]: unknown;
@@ -243,6 +251,8 @@ export interface Computer {
   /** How many workspaces live on the machine, counted by the server: a list
    *  page a caller happens to hold is not that number. */
   workspace_count?: number;
+  /** Home's turns run here while an own-machine primary is away, so it stays with no workspaces. */
+  stands_in_for_home?: boolean;
   root_dir: string;
   /** The user's own machine, for an `ssh` computer; null for every other kind. */
   ssh: ComputerSsh | null;
@@ -265,6 +275,39 @@ export interface Computer {
   /** Why the last start failed, kept until a start succeeds or a reinstall or
    *  reconnect is accepted. Absent from an older server. */
   start_failure?: ComputerStartFailure | null;
+  /** Make primary, asked with the create (`ComputerCreate.make_primary`);
+   *  null once applied, or when none was asked. */
+  make_primary?: ComputerMakePrimaryIntent | null;
+  /** A remove waiting on Home's move off it (`home_to`), or how one ended
+   *  without the computer going. */
+  removal?: ComputerRemoval | null;
+}
+
+/** Why the server did not carry out what its owner asked of a computer, in its own sentence. */
+export interface ComputerIntentError {
+  /** A move refusal code, or a removal refusal code. */
+  code: string;
+  message: string;
+}
+
+/** `pending` until the first start completes; `dropped` with Make primary's refusal. */
+export interface ComputerMakePrimaryIntent {
+  state: 'pending' | 'dropped';
+  error: ComputerIntentError | null;
+}
+
+/**
+ * `waiting_for_home` while Home's move `move_id` runs; `home_did_not_move`
+ * when it failed or was cancelled, and the computer stays primary;
+ * `not_removed` when Home moved but the remove was then refused; `removed`
+ * once the computer is gone, `removed` saying what it left behind (null when
+ * that was not recorded).
+ */
+export interface ComputerRemoval {
+  state: 'waiting_for_home' | 'home_did_not_move' | 'not_removed' | 'removed';
+  move_id: string;
+  error: ComputerIntentError | null;
+  removed?: ComputerRemoveResponse | null;
 }
 
 /** What fixes a failed start, decided by the server from its code. */
@@ -402,6 +445,9 @@ export interface ComputerRemoveResponse {
   token?: ComputerTokenRemoval | null;
   /** The named workspaces it deleted, not one moved off it meanwhile; absent from an older backend. */
   workspaces_deleted?: string[];
+  /** On a 202: Home is moving to `home_to` first, and the computer is
+   *  removed once it has. `GET /computers/{id}/removal` says how it ended. */
+  move_id?: string | null;
 }
 
 export interface ComputerFilesRemoval {
@@ -529,6 +575,9 @@ export interface ComputerCreate {
   /** Keep a backup of each workspace's files. Omitted means on; the server
    *  refuses off for a machine it runs. */
   files_backup?: boolean;
+  /** Make it primary, moving Home onto it, once its first start completes;
+   *  one the server can't apply shows in the computer's `make_primary`. */
+  make_primary?: boolean;
 }
 
 export interface SshTarget {

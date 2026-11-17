@@ -144,6 +144,39 @@ export function takesWorkspaces(computer: Pick<Computer, 'status' | 'provider_re
   return computer.status !== 'deleted' && computer.status !== 'error' && !isComputerPreparing(computer);
 }
 
+/**
+ * A machine the user brought whose tunnel is down: asleep or offline, so
+ * nothing can be laid on it, Home included, until it connects again.
+ */
+export function tunnelDown(computer: Pick<Computer, 'ssh'>): boolean {
+  return computer.ssh?.tunnel_connected === false;
+}
+
+/**
+ * Whether a computer can hold Home now, as every surface that offers it Home
+ * reads it (Make primary, and where Home goes when its computer is removed).
+ * `held` is what the user can only wait out: a machine whose tunnel is down
+ * has nowhere for Home's files to land, and one that can't take workspaces
+ * has none either; unreachable is named first, whatever else holds it.
+ * `backupOff` is what the user can change: Home would live only on that disk,
+ * which Make primary offers to fix by turning backup on first.
+ */
+export interface HomeEligibility {
+  held: 'unreachable' | 'notReady' | null;
+  backupOff: boolean;
+  /** It can hold Home as it stands. */
+  ok: boolean;
+}
+
+export function homeEligibility(
+  computer: Pick<Computer, 'status' | 'provider_ref' | 'ssh' | 'files_backup'>,
+): HomeEligibility {
+  const held = tunnelDown(computer) ? 'unreachable' : takesWorkspaces(computer) ? null : 'notReady';
+  // Only a machine the user brings can turn backup off.
+  const backupOff = computer.files_backup === false;
+  return { held, backupOff, ok: !held && !backupOff };
+}
+
 export const PREPARING_UI: ComputerStatusUi = {
   labelKey: 'computer.statusPreparing',
   fallback: 'Preparing',

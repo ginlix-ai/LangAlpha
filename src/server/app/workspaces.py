@@ -50,7 +50,7 @@ from src.server.app.status_stream import (
     sse_status_event,
     status_event_stream,
 )
-from src.server.database.workspace import HomeWorkspaceTaken, WorkspaceBusyError
+from src.server.database.workspace import WorkspaceBusyError
 from src.server.database.workspace_folders import WorkspaceFolderMoving
 from src.server.database.workspace_names import (
     WorkspaceNameInvalid,
@@ -58,6 +58,7 @@ from src.server.database.workspace_names import (
 )
 from src.server.database.home_workspace import (
     is_home_row,
+    is_reserved_row,
     is_unbound,
 )
 from src.server.database.workspace_move import (
@@ -68,7 +69,6 @@ from src.server.database.workspace import (
     get_workspace as db_get_workspace,
     get_workspaces_for_user,
     update_workspace as db_update_workspace,
-    get_or_create_home_workspace,
     batch_update_sort_order,
 )
 from src.server.models.workspace import (
@@ -90,6 +90,7 @@ from src.server.services.workspace_move import move_error_detail, move_from_row
 from src.server.services.computer_errors import (
     ComputerNotFoundError,
     ComputerPreparingError,
+    NeedsComputer,
     UnknownResourceTier,
 )
 from ptc_agent.core.sandbox.providers.ssh_errors import connect_failure
@@ -129,12 +130,12 @@ async def _workspace_action_errors(action: str, workspace_id: str):
     """Shared error mapping for workspace action routes.
 
     Re-raises HTTPException so ``require_workspace_owner``'s 403/404 pass
-    through, maps ValueError→404 and RuntimeError→400, and turns anything
+    through, and NeedsComputer for the app's one answer to it, maps ValueError→404 and RuntimeError→400, and turns anything
     else into a logged 500.
     """
     try:
         yield
-    except HTTPException:
+    except (HTTPException, NeedsComputer):
         raise
     except (SandboxGoneError, SandboxTransientError) as e:
         # Before the RuntimeError arm, which these subclass. An unreachable
@@ -258,7 +259,7 @@ async def create_workspace(
         )
         return _workspace_to_response(workspace)
 
-    except HTTPException:
+    except (HTTPException, NeedsComputer):
         raise
     except (WorkspaceNameTaken, WorkspaceNameInvalid) as e:
         raise _name_error(e) from None
@@ -273,27 +274,6 @@ async def create_workspace(
     except Exception as e:
         logger.exception(f"Error creating workspace: {e}")
         raise HTTPException(status_code=500, detail="Failed to create workspace")
-
-
-@router.post("/home", response_model=WorkspaceResponse)
-async def get_home_workspace(principal: ReadPrincipal):
-    """Get or create the user's Home, where work in no particular workspace runs.
-
-    Its id derives from the user id, so it never changes and a client may keep
-    it. Idempotent, and safe to call on every app load. The row is made here;
-    Home joins the user's computer on its first start or turn.
-    """
-    x_user_id = principal.user_id
-    try:
-        workspace = await get_or_create_home_workspace(x_user_id)
-        return _workspace_to_response(workspace)
-    except HomeWorkspaceTaken:
-        # The owner check's answer for a row another account holds; no retry
-        # makes this one the caller's.
-        raise HTTPException(status_code=403, detail="Forbidden") from None
-    except Exception as e:
-        logger.exception(f"Error ensuring Home: {e}")
-        raise HTTPException(status_code=500, detail="Failed to ensure Home")
 
 
 @router.post("/reorder", status_code=204)
@@ -497,7 +477,7 @@ async def update_workspace(
         workspace = await db_get_workspace(workspace_id)
         require_workspace_owner(workspace, user_id=x_user_id)
         if (
-            is_home_row(workspace)
+            is_reserved_row(workspace)
             and request.name is not None
             and request.name != workspace.get("name")
         ):
@@ -631,9 +611,20 @@ async def start_workspace(
                 # its threads are there now, and the id is gone for every read.
                 raise HTTPException(status_code=404, detail="Workspace not found")
 
+        # Opening Home warms the computer its next turn would run on: Home's
+        # stand-in while the machine Home lives on can't be reached. Placing
+        # its row is cheap and builds nothing; the response still names Home.
+        from src.server.services.home_placement import runs_in
+
+        warm_id = await runs_in(x_user_id, workspace_id, make=True)
+        if warm_id != workspace_id:
+            workspace = await db_get_workspace(warm_id)
+            if not workspace:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
         if workspace["status"] == "stopping":
             await manager.reconcile_stopping_computer(str(workspace["computer_id"]))
-            workspace = await db_get_workspace(workspace_id)
+            workspace = await db_get_workspace(warm_id)
             require_workspace_owner(workspace, user_id=x_user_id)
 
         if lazy and workspace["status"] in {"stopped", "running"}:
@@ -641,7 +632,7 @@ async def start_workspace(
             # that is asleep or offline it could only fail, show a start beside
             # the card saying the machine is away, and record that failure on
             # the computer. The machine connects by itself once awake.
-            if await computer_away(workspace_id):
+            if await computer_away(warm_id):
                 return WorkspaceActionResponse(
                     workspace_id=workspace_id,
                     status=workspace["status"],
@@ -655,9 +646,9 @@ async def start_workspace(
             attaches whichever live sibling it finds, and this project would
             still have no folder when the caller came back."""
             _schedule_warm_restart(
-                manager, workspace_id, x_user_id, detail=warm_reason(reason)
+                manager, warm_id, x_user_id, detail=warm_reason(reason)
             )
-            logger.info(f"Scheduled warm restart for workspace {workspace_id}")
+            logger.info(f"Scheduled warm restart for workspace {warm_id}")
             payload = WorkspaceActionResponse(
                 workspace_id=workspace_id,
                 status="starting",
@@ -677,7 +668,7 @@ async def start_workspace(
             if lazy:
                 return _warm_in_background()
             with computer_cause(_blocking_start_cause(reason)):
-                await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+                await manager.get_session_for_workspace(warm_id, user_id=x_user_id)
             return WorkspaceActionResponse(
                 workspace_id=workspace_id,
                 status="running",
@@ -707,7 +698,7 @@ async def start_workspace(
         # machine up as the computer route would and materialises this project
         # on it.
         with computer_cause(_blocking_start_cause(reason)):
-            await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+            await manager.get_session_for_workspace(warm_id, user_id=x_user_id)
 
         logger.info(f"Started workspace {workspace_id}")
         return WorkspaceActionResponse(
@@ -1066,7 +1057,7 @@ async def delete_workspace(
     """
     try:
         workspace = await db_get_workspace(workspace_id)
-        if is_home_row(workspace):
+        if is_reserved_row(workspace):
             raise HTTPException(status_code=400, detail="Cannot delete Home")
         require_workspace_owner(workspace, user_id=principal.user_id)
         await cli_approval.workspace_delete(

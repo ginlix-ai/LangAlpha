@@ -525,6 +525,32 @@ async def test_every_file_lists_the_size_version_and_content_its_read_returns(
 
 
 @pytest.mark.asyncio
+async def test_homes_stand_in_folder_serves_homes_transcripts(tree, history, monkeypatch):
+    """Home's turn in its stand-in saves its transcript under Home, so the
+    pointer compaction leaves in the stand-in's folder must read Home's."""
+    from src.server.database.home_workspace import get_home_stand_in_id
+
+    stand_in = get_home_stand_in_id(USER)
+    rows = {
+        **WORKSPACES,
+        stand_in: {
+            "workspace_id": stand_in,
+            "user_id": USER,
+            "computer_id": COMPUTER,
+            "dir_name": ".home-stand-in",
+        },
+    }
+    monkeypatch.setattr(
+        workspace_db, "get_workspace_placement", AsyncMock(side_effect=rows.get)
+    )
+    monkeypatch.setitem(THREADS, get_home_workspace_id(USER), T1)
+
+    listing = await tree.list(f"workspaces/{stand_in}/transcripts")
+
+    assert [e["name"] for e in listing.entries] == [SHORT]
+
+
+@pytest.mark.asyncio
 async def test_a_transcript_listing_carries_every_folder_below_it_whole(tree, history):
     # The daemon answers the rest of the command from these, so a folder
     # missing a file hides it, and carried content stands in for its read.

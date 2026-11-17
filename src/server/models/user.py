@@ -253,6 +253,13 @@ class UserCreate(UserBase):
     )
 
 
+# Where a user chose to work, asked once by the desktop app's first run and
+# read only while they have no computer Home can live on: ``own_machine``
+# keeps a cloud computer from being built for them. None is a user never
+# asked, who gets the cloud as before.
+ComputerChoice = Literal["own_machine", "cloud"]
+
+
 class UserUpdate(UserBase):
     """Request model for updating user profile."""
 
@@ -261,6 +268,13 @@ class UserUpdate(UserBase):
     )
     personalization_completed: Optional[bool] = Field(
         None, description="Whether personalization wizard is completed"
+    )
+    computer_choice: Optional[ComputerChoice] = Field(
+        None,
+        description=(
+            "Where the user works. It moves nothing; making a computer "
+            "primary does"
+        ),
     )
 
 
@@ -293,6 +307,9 @@ class UserResponse(UserBase):
     )
     auth_provider: Optional[str] = Field(
         None, description="Authentication provider (e.g. google, github, email)"
+    )
+    computer_choice: Optional[ComputerChoice] = Field(
+        None, description="Where the user chose to work; null when never asked"
     )
     created_at: datetime = Field(description="Creation timestamp")
     updated_at: datetime = Field(description="Last update timestamp")

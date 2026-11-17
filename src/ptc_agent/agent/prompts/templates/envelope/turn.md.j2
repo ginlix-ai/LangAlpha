@@ -19,7 +19,11 @@
    rules are not the last ones still on the wire, which is why it is a whole
    paragraph rather than a line. `disk_recovered` is set on the first turn
    after a row that stated the low-disk line, since that line stays in history
-   in the present tense and would otherwise still read as standing. #}
+   in the present tense and would otherwise still read as standing.
+   `home_away` is set on a Home turn that runs in Home's stand-in on a cloud
+   computer; `home_back` on the first Home turn back on Home's own computer
+   after a row that said it was away, for the same reason, and with `settled`
+   on the first one after a row that said the copy was still running. #}
 {% if opened %}
 {{ opened }}{% if local_tz %} ({{ local_tz }}){% endif %}
 
@@ -45,6 +49,23 @@ The computer's disk is nearly full: {{ disk_free_mb }} MB free, shared by every 
 {% elif disk_recovered %}
 
 The computer's disk is no longer reported as nearly full, so the low-disk limits from an earlier turn no longer apply.
+{% endif %}
+{% if home_away %}
+{% set mac = home_away.computer_name or "the user's own computer" %}
+{% set cloud = home_away.cloud_name or "a cloud computer" %}
+{% if home_away.reason == "command" %}
+
+This turn runs in the separate Home folder on {{ cloud }} where the command it reports on ran while {{ mac }} couldn't be reached: the command's log and the files it wrote are here. {{ mac }} was back when this turn started, but this folder's files are not on it yet; what is new here is copied into Home on {{ mac }}, in a folder of its own, after this turn ends. Bring this up only where it changes your answer, such as a file the user expects on {{ mac }}.
+{% else %}
+
+Home lives on {{ mac }}, which couldn't be reached when this turn started, so this turn runs in a separate Home folder on {{ cloud }}. That folder holds only what turns run there wrote. Home's files, and the folders of the workspaces on {{ mac }}, stay there and can't be read until it is back; the workspaces' threads can. What you write here is copied into Home on {{ mac }}, in a folder of its own, once it is back. The user is shown that this turn runs on {{ cloud }}: bring it up only where it changes your answer, such as a file they expect from Home.
+{% endif %}
+{% elif home_back and home_back.settled %}
+
+What turns wrote while {{ home_back.computer_name or "Home's own computer" }} was away has since been copied into `{{ home_back.folder }}` in Home ({{ home_back.files }} file{{ "" if home_back.files == 1 else "s" }}), beside the files already there; nothing was overwritten.
+{% elif home_back %}
+
+{{ home_back.computer_name or "Home's own computer" }} is back, and this turn runs in Home there as usual.{% if home_back.folder %} What turns wrote while it was away was copied into `{{ home_back.folder }}` in Home ({{ home_back.files }} file{{ "" if home_back.files == 1 else "s" }}), beside the files already there; nothing was overwritten.{% elif home_back.pending %} When this turn started, what turns wrote while it was away was still being copied into a folder of its own in Home, beside the files already there.{% endif %}
 {% endif %}
 {% if surface_rules %}
 

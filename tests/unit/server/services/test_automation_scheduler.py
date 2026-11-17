@@ -335,6 +335,7 @@ def _parked_row(automation_id, **verdict):
         "parked_status": "active",
         "superseded": False,
         "reachable": False,
+        "stand_in": False,
         "expired": False,
         **verdict,
     }
@@ -433,6 +434,43 @@ class TestSweep:
         execution_id = parked["automation_execution_id"]
         mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)
         executor.execute.assert_awaited_once_with(automation, execution_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stand_in", "released"), [(True, True), (False, False)])
+    @patch(f"{_WAIT}.exec_db")
+    @patch(f"{_WAIT}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_home_firing_runs_in_homes_stand_in_once_there_is_one(
+        self, mock_executor_cls, mock_auto_db, mock_exec_db, stand_in, released
+    ):
+        """Parked while the user had no cloud computer, a Home firing need not
+        wait the night for the machine once one can run it (``stand_in``, the
+        listing's verdict, which the release checks again)."""
+        from src.server.database.home_workspace import get_home_workspace_id
+
+        executor = AsyncMock()
+        mock_executor_cls.get_instance.return_value = executor
+        parked = _parked_row("auto-1", stand_in=stand_in)
+        automation = _make_automation(
+            automation_id="auto-1",
+            status="active",
+            user_id="user-1",
+            workspace_id=get_home_workspace_id("user-1"),
+        )
+        mock_exec_db.list_parked_executions = AsyncMock(return_value=[parked])
+        mock_exec_db.release_parked_execution = AsyncMock(return_value=True)
+        mock_auto_db.get_automation = AsyncMock(return_value=automation)
+
+        scheduler = AutomationScheduler()
+        await scheduler._sweep_parked_firings()
+        await asyncio.gather(*scheduler._running_tasks)
+
+        execution_id = parked["automation_execution_id"]
+        if released:
+            mock_exec_db.release_parked_execution.assert_awaited_once_with(execution_id)
+            executor.execute.assert_awaited_once_with(automation, execution_id)
+        else:
+            mock_exec_db.release_parked_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch(f"{_WAIT}.exec_db")

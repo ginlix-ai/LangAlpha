@@ -201,17 +201,22 @@ export function RemoteControlSetup({
 }
 
 /** The footer's button where the flow waits on the user; elsewhere the dialog shows Add computer. */
+/** What the setup's next step is called, where a button offers it. */
+export function remoteControlActionLabel(
+  t: ReturnType<typeof useTranslation>['t'],
+  action: NonNullable<RemoteControlSetupState['action']>,
+): string {
+  if (action === 'turnOn') return t('computer.remoteControl.turnOn', 'Turn on remote control');
+  if (action === 'continue') return t('computer.remoteControl.continue', 'Continue');
+  return t('computer.remoteControl.tryAgain', 'Try again');
+}
+
 export function RemoteControlActionButton({ state, busy }: { state: RemoteControlSetupState; busy: boolean }) {
   const { t } = useTranslation();
   if (!state.action) return null;
-  const label = state.action === 'turnOn'
-    ? t('computer.remoteControl.turnOn', 'Turn on remote control')
-    : state.action === 'continue'
-      ? t('computer.remoteControl.continue', 'Continue')
-      : t('computer.remoteControl.tryAgain', 'Try again');
   return (
     <Button type="button" onClick={state.start} disabled={busy || !state.acknowledged}>
-      {label}
+      {remoteControlActionLabel(t, state.action)}
     </Button>
   );
 }

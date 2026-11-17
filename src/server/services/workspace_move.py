@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Mapping, Optional
 
-from ptc_agent.core.sandbox.providers import may_be_primary, provider_class
+from ptc_agent.core.sandbox.providers import provider_class
 from src.server.database import workspace_move as db
 from src.server.database.workspace_move import MoveRefused
 from src.server.models.workspace_move import WorkspaceMoveError, WorkspaceMoveOut
@@ -25,9 +25,10 @@ MOVE_MESSAGES: Dict[str, str] = {
     "not_movable": "This workspace can't be moved.",
     "same_computer": "This workspace is already on that computer.",
     "target_unavailable": "That computer can't take workspaces right now.",
-    "not_primary": (
-        "A computer you added yourself can't be primary, since Home lives on "
-        "the primary."
+    "target_unreachable": "That computer isn't connected right now. Try again once it is.",
+    "not_backed_up": (
+        "Turn on file backup for that computer first. Home lives on the "
+        "primary, and its backup is what restores Home if the computer is lost."
     ),
     "turn_active": (
         "This workspace has work running. Wait for it to finish or stop it, "
@@ -42,6 +43,7 @@ MOVE_MESSAGES: Dict[str, str] = {
     ),
     "not_cancellable": "This move is too far along to cancel.",
     "no_backup": "This workspace has no backup to restore from.",
+    "superseded": "Another computer was made primary since.",
     "source_unavailable": (
         "The computer this workspace is on couldn't start, so its files "
         "couldn't be copied. Try again once it is running."
@@ -105,9 +107,11 @@ async def claim_workspace_move(
     target_computer_id: str,
     make_primary: bool = False,
     from_backup: bool = False,
+    removal: Optional[tuple[str, Dict[str, Any]]] = None,
+    expected_source: Optional[str] = None,
+    intent_taken_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a move (``database.workspace_move.claim_workspace_move``), only
-    a computer the providers let hold Home taking it as the primary, and only
     one the server cannot rebuild left behind by a move from the backup."""
     return await db.claim_workspace_move(
         user_id=user_id,
@@ -115,15 +119,10 @@ async def claim_workspace_move(
         target_computer_id=target_computer_id,
         make_primary=make_primary,
         from_backup=from_backup,
-        may_be_primary=may_be_primary,
         may_be_left=lambda kind: not provider_class(kind).recreatable,
-    )
-
-
-async def set_primary_computer(user_id: str, computer_id: str) -> bool:
-    """``database.workspace_move.set_primary_computer``, by the same rule."""
-    return await db.set_primary_computer(
-        user_id, computer_id, may_be_primary=may_be_primary
+        removal=removal,
+        expected_source=expected_source,
+        intent_taken_at=intent_taken_at,
     )
 
 

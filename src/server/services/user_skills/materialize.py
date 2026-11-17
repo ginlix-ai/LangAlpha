@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from src.server.database.account_disables import list_account_disables
+from src.server.database.home_workspace import acting_for
 from src.server.database.user_skills import (
     archive_key_unused_guard,
     get_user_skill_archive_blob,
@@ -363,7 +364,7 @@ async def load_user_skill_bundle(
         # scope is a second query, so it rides alongside the disables read
         # rather than after it.
         ws_disabled, all_ws_rows = await asyncio.gather(
-            list_workspace_skill_disables(workspace_id),
+            list_workspace_skill_disables(acting_for(user_id, workspace_id)),
             list_user_skills(user_id, workspace_id=workspace_id),
         )
         workspace_disabled = frozenset(ws_disabled)

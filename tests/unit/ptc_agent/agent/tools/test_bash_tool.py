@@ -833,3 +833,24 @@ def test_a_hand_off_on_another_computer_names_it_beside_the_log():
         '/home/user/langalpha/logs/c1.log on computer "Studio Mac" '
         "(computer_id 22222222-2222-2222-2222-222222222222)"
     )
+
+
+def test_a_hand_off_in_homes_stand_in_names_the_log_whole_on_its_computer():
+    # Home's later turns reach the stand-in's computer from its root.
+    ref = SimpleNamespace(
+        log_relpath=".agents/threads/6a7c8021/commands/c1.log",
+        log_path="/home/daytona/.home-stand-in/.agents/threads/6a7c8021/commands/c1.log",
+    )
+    in_stand_in = HandOff(
+        thread_id=THREAD,
+        user_id="user-1",
+        workspace_id=WORKSPACE,
+        wakeups=True,
+        computer="Cloud",
+        computer_id="33333333-3333-3333-3333-333333333333",
+        whole=True,
+    )
+    assert in_stand_in.log_path(ref) == (
+        "/home/daytona/.home-stand-in/.agents/threads/6a7c8021/commands/c1.log "
+        'on computer "Cloud" (computer_id 33333333-3333-3333-3333-333333333333)'
+    )

@@ -144,6 +144,7 @@ async def sweep_one(
     automation = await auto_db.get_automation(str(row["automation_id"]), row["user_id"])
     if automation is None:
         return
+    reachable = row["reachable"] or row["stand_in"]
     # Past its deadline it is given up even with the computer back, as when
     # no sweep looked at the deadline itself (a deploy, the scheduler down).
     if row["superseded"] or row["expired"]:
@@ -152,7 +153,7 @@ async def sweep_one(
             skip_reason="computer_unreachable", parked=True,
         )
         return
-    if not row["reachable"] or stopping():
+    if not reachable or stopping():
         return
     if stopped_meanwhile(automation, row["parked_status"] or automation["status"]):
         await settle(

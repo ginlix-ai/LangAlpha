@@ -141,6 +141,23 @@ describe('ComputersDialog', () => {
     expect(screen.getAllByText('Primary')).toHaveLength(1);
   });
 
+  it("badges the computer kept for Home's stand-in, and says why it stays", async () => {
+    mockGetComputers.mockResolvedValue({
+      ...LIVE_LIST,
+      computers: LIVE_LIST.computers.map((computer) =>
+        computer.computer_id === SECOND_ID ? { ...computer, stands_in_for_home: true } : computer),
+    });
+    open();
+
+    const [primary, second] = await screen.findAllByTestId('computer-card');
+    const badge = within(second).getByText('Stands in for Home');
+    expect(badge.closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('even with no workspaces'),
+    );
+    expect(within(primary).queryByText('Stands in for Home')).not.toBeInTheDocument();
+  });
+
   it("says how many workspaces a machine holds, from the machine's own count", async () => {
     open();
     const cards = await screen.findAllByTestId('computer-card');
@@ -505,13 +522,13 @@ describe('ComputersDialog: removing a computer', () => {
     expect(screen.getByRole('button', { name: 'Make primary' })).toBeInTheDocument();
   });
 
-  it('never offers Make primary on a machine its owner brought', async () => {
+  it('offers Make primary on a machine its owner brought too', async () => {
     mockGetComputers.mockResolvedValue(
       withSecond({ kind: 'ssh', ssh: { host: 'box.example.com', port: 22, username: 'dev', fingerprint: 'SHA256:x' } }),
     );
     open();
     await openDetails(userEvent.setup(), 'Second machine');
-    expect(screen.queryByRole('button', { name: 'Make primary' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Make primary' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
   });
 
@@ -858,7 +875,7 @@ describe('ComputersDialog: removing a computer', () => {
   it.each([
     ['busy', 'This computer is busy. Try again in a moment.'],
     ['has_workspaces', 'A workspace not listed here is on it now. Check the list and try again.'],
-    ['primary', "Your primary computer can't be removed."],
+    ['primary', 'This is your primary computer. Make another computer primary first, and Home moves there.'],
   ])('keeps the confirm open and words a %s refusal itself', async (code, copy) => {
     const user = userEvent.setup();
     mockDelete.mockRejectedValue(conflict(code, 'Computer cannot be removed right now'));

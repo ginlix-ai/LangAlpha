@@ -52,3 +52,22 @@ def test_no_user_has_no_home():
 def test_a_home_row_is_home_by_id_or_unbound_by_status(row, home_row, unbound):
     assert is_home_row(row) is home_row
     assert is_unbound(row) is unbound
+
+
+def test_the_stand_in_has_a_fixed_id_of_its_own():
+    from src.server.database.home_workspace import (
+        get_home_stand_in_id,
+        get_home_workspace_id,
+        is_home_id,
+        is_home_stand_in_id,
+        acting_for,
+    )
+
+    stand_in = get_home_stand_in_id("user-1")
+
+    assert stand_in == get_home_stand_in_id("user-1") != get_home_stand_in_id("user-2")
+    assert is_home_stand_in_id("user-1", stand_in.upper())
+    # Never Home itself: callers that mean it name it.
+    assert not is_home_id("user-1", stand_in)
+    assert acting_for("user-1", stand_in) == get_home_workspace_id("user-1")
+    assert acting_for("user-1", "ws-a") == "ws-a"

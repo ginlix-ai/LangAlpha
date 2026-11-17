@@ -28,6 +28,11 @@ _RESERVED_FOLDERS = frozenset(
 
 #: The folder of the user's Home, the agent that works across every workspace.
 HOME_FOLDER = "Home"
+#: The folder of Home's stand-in on a cloud computer. A workspace's folder never
+#: starts with a dot (``_folder_spelling``), so no workspace, Home included, can
+#: take it should that computer become primary, and a listing of the computer's
+#: root does not show it as one.
+HOME_STAND_IN_FOLDER = ".home-stand-in"
 # Names a new workspace may not take, though the folder is an ordinary one:
 # Home is placed under its own name, and a workspace already holding it keeps
 # Home on a placeholder until that workspace is renamed or deleted.

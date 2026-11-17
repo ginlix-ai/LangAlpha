@@ -18,7 +18,7 @@ from src.server.database.computer import (
     set_computer_always_on as db_set_computer_always_on,
     set_computer_resource_tier as db_set_computer_resource_tier,
 )
-from src.server.database.home_workspace import is_home_row
+from src.server.database.home_workspace import is_reserved_row
 from src.server.database.workspace import (
     SANDBOX_STAMP_KEYS,
     duplicate_workspace_on_computer,
@@ -332,7 +332,7 @@ class WorkspaceEntitlementsMixin:
         source = await db_get_workspace(source_id)
         if not source or source.get("user_id") != user_id:
             raise ValueError(f"Workspace {source_id} not found")
-        if is_home_row(source):
+        if is_reserved_row(source):
             raise ValueError("Cannot duplicate Home")
 
         # Files only persist to the DB on stop/delete, so flush a running source

@@ -83,6 +83,23 @@ _STUB_COMPUTER = {
 
 
 @pytest.fixture(autouse=True)
+def _no_stand_in():
+    """Home's stand-in is on no computer here; the cases it keeps a computer
+    for are pinned in test_home_handback and the removals below."""
+    with (
+        patch(
+            "src.server.services.computer_manager._retirement.stand_in_on",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.server.services.workspace_manager.stand_in_on",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _stub_computer_minting():
     """Creating a project resolves the user's machine and reads it back.
 
@@ -99,6 +116,8 @@ def _stub_computer_minting():
             f"{_MACHINES}.create_computer",
             new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
         ),
+        patch(f"{_MACHINES}.promote_primary_computer", new=AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}.get_user", new=AsyncMock(return_value=None)),
         patch(
             "src.server.services.computer_manager._sessions.get_computer_for_workspace",
             new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
@@ -2065,6 +2084,33 @@ class TestDeleteKeepsTheFolderOnTheOwnersMachine:
         return ws_id, db_delete, wm._remove_workspace_folder
 
     @pytest.mark.asyncio
+    async def test_homes_stand_in_goes_only_with_its_computer(self):
+        """An agent's tool and the routes delete through here too; the
+        stand-in goes only with its computer's teardown."""
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, kind="daytona")
+        ws_id = str(uuid.uuid4())
+        wm = WorkspaceManager(_make_config())
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.db_delete_workspace", new_callable=AsyncMock
+            ) as db_delete,
+            cm_patch(
+                "db_get_workspace",
+                AsyncMock(
+                    return_value=_make_workspace(
+                        workspace_id=ws_id,
+                        computer_id=_STUB_COMPUTER_ID,
+                        config={"home_stand_in": True},
+                    )
+                ),
+            ),
+            _patch_resolve(computer),
+        ):
+            with pytest.raises(ValueError, match="Cannot delete Home"):
+                await wm.delete_workspace(ws_id)
+        db_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_delete_leaves_the_folder_by_default(self):
         """The default is what an agent's tool and any API caller without the
         flag get, so it is the one that must not lose files."""
@@ -2131,15 +2177,17 @@ class TestRemoveComputerWithWorkspaces:
         self, named, *, primary=False, moving=(), working=(), on=("ws-a", "ws-b")
     ):
         computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=primary)
+        other = _make_computer(computer_id="22222222-2222-2222-2222-222222222222")
         with (
             patch(
                 f"{_WORKSPACE_MANAGER}.get_computer",
                 AsyncMock(side_effect=lambda _id: None if self.retired else computer),
             ),
+            patch(f"{_RETIREMENT}.primary_candidate", AsyncMock(return_value=other)),
             patch(
                 f"{_WORKSPACE_MANAGER}.get_live_workspace_ids_for_computer",
                 AsyncMock(return_value=list(on)),
-            ),
+            ) as self.listed,
             patch(
                 f"{_WORKSPACE_MANAGER}.workspace_is_moving",
                 AsyncMock(side_effect=lambda ws_id: ws_id in moving),
@@ -2242,6 +2290,35 @@ class TestRemoveComputerWithWorkspaces:
         assert refused.value.code == code
         self.wm.delete_workspace.assert_not_awaited()
         self.wm.remove_computer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("owed", "code"), [(False, None), (True, "handback_owed")])
+    async def test_homes_stand_in_goes_with_it_unless_home_is_owed_its_files(
+        self, owed, code
+    ):
+        """Never shown to the owner, so never named or deleted on its own: it
+        goes with its computer (pinned in test_home_handback). What it wrote
+        while their own computer was away is nowhere else until handed back,
+        so that refuses before anything is deleted."""
+        from src.server.database.home_stand_in import StandIn
+        from src.server.services.computer_errors import ComputerRemovalRefused
+
+        stand_in = StandIn(
+            row={}, computer={}, kept=True, runs=True, owed=owed, left=False
+        )
+        with patch(f"{_WORKSPACE_MANAGER}.stand_in_on", AsyncMock(return_value=stand_in)):
+            if code:
+                with pytest.raises(ComputerRemovalRefused) as refused:
+                    await self._remove(["ws-a"], on=("ws-a",))
+                assert refused.value.code == code
+                self.wm.delete_workspace.assert_not_awaited()
+            else:
+                await self._remove(["ws-a"], on=("ws-a",))
+                assert [c.args for c in self.wm.delete_workspace.await_args_list] == [
+                    ("ws-a",)
+                ]
+                self.wm.remove_computer.assert_awaited_once()
+        assert self.listed.await_args.kwargs == {"exclude_stand_in": True}
 
 
 # ---------------------------------------------------------------------------

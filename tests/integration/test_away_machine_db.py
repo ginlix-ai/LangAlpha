@@ -519,7 +519,7 @@ async def _parked_verdict(execution_id: str) -> dict | None:
     if not rows:
         return None
     (row,) = rows
-    return {k: row[k] for k in ("superseded", "reachable", "expired")}
+    return {k: row[k] for k in ("superseded", "reachable", "stand_in", "expired")}
 
 
 async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_is_back(
@@ -555,6 +555,183 @@ async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_i
         )
         row = await cur.fetchone()
     assert (row["status"], row["conversation_thread_id"], row["beating"]) == ("pending", None, True)
+
+
+async def _home_on_machine(pool, machine) -> str:
+    """The user's Home, on the machine's computer; its id."""
+    from src.server.database.workspace import get_or_create_home_workspace
+
+    home_id = str((await get_or_create_home_workspace(machine.user_id))["workspace_id"])
+    await _bind(pool, home_id, machine.computer_id)
+    return home_id
+
+
+async def test_a_parked_home_firing_its_stand_in_runs_is_released_with_the_machine_away(
+    machine, test_db_pool
+):
+    """Once the user has a cloud computer for Home's stand-in, a Home firing
+    need not wait for the machine: the sweep is shown it, though the machine
+    is still away, and it is still released only once."""
+    from src.server.database.computer import create_computer
+
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    home_id = await _home_on_machine(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automations SET workspace_id = %s WHERE automation_id = %s",
+            (home_id, automation_id),
+        )
+    assert await _parked_verdict(execution_id) is None
+    assert await ex.release_parked_execution(execution_id) is False
+
+    await create_computer(machine.user_id, kind="daytona", name="cloud", status="running",
+                          provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    assert (await _parked_verdict(execution_id))["stand_in"] is True
+    assert await ex.release_parked_execution(execution_id) is True
+    assert await ex.release_parked_execution(execution_id) is False
+
+
+async def test_a_home_job_its_stand_in_runs_is_released_with_the_machine_away(
+    machine, test_db_pool
+):
+    """A wake parked for the machine Home lives on is due again once the
+    user has a computer Home's stand-in can run on; a job of any other
+    workspace on the machine keeps waiting for it."""
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    home_thread = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+    )
+    await _bind(test_db_pool, machine.workspace_id, machine.computer_id)
+    home_wake = await _parked(test_db_pool, machine, "wakeup_fire", thread_id=home_thread)
+    other_wake = await _parked(test_db_pool, machine, "wakeup_fire")
+    try:
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        assert not {home_wake, other_wake} & released
+
+        # One being retired takes no stand-in.
+        await create_computer(machine.user_id, kind="daytona", name="old", status="running",
+                              provider_ref="sb-old", config={"retire_when_empty": True})
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        assert not {home_wake, other_wake} & released
+
+        await create_computer(machine.user_id, kind="daytona", name="cloud", status="running",
+                              provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        assert home_wake in released
+        assert other_wake not in released
+    finally:
+        await _bind(test_db_pool, machine.workspace_id, None)
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM hook_outbox WHERE conversation_thread_id = %s", (home_thread,))
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM workspaces WHERE workspace_id = %s", (home_id,))
+
+
+async def test_home_and_its_stand_in_are_told_apart_by_their_ids_in_sql(test_db_pool):
+    from src.server.database.home_workspace import (
+        get_home_stand_in_id,
+        get_home_workspace_id,
+        home_id_sql,
+        stand_in_id_sql,
+    )
+
+    users = ["user-1", f"away-test-{uuid.uuid4().hex}", "ünïcode@example.com"]
+    async with test_db_pool.connection() as conn:
+        for user_id in users:
+            cur = await conn.execute(
+                f"SELECT {home_id_sql('%(u)s')}::text AS home_id,"
+                f" {stand_in_id_sql('%(u)s')}::text AS stand_in_id",
+                {"u": user_id},
+            )
+            row = await cur.fetchone()
+            assert row["home_id"] == get_home_workspace_id(user_id)
+            assert row["stand_in_id"] == get_home_stand_in_id(user_id)
+
+
+async def test_home_work_waits_while_owed_files_keep_the_stand_in_on_a_failed_computer(
+    machine, test_db_pool
+):
+    """A turn keeps the stand-in on its computer while files Home is owed are
+    there, however that computer fares, and runs nowhere while it has failed.
+    Parked Home work is released onto the same computer a turn would run on,
+    so it stays parked rather than failing every sweep. A hand-back that gives
+    up leaves the files there, so it stays until that computer runs again."""
+    from src.server.database import home_away
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+    from src.server.database.home_stand_in import (
+        place_home_stand_in,
+        read_stand_in,
+        stand_in_computer,
+    )
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    first = await create_computer(machine.user_id, kind="daytona", name="first",
+                                  status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    second = await create_computer(machine.user_id, kind="daytona", name="second",
+                                   status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    first_id = str(first["computer_id"])
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE computers SET last_activity_at = NOW() WHERE computer_id = %s", (first_id,)
+        )
+    assert str((await place_home_stand_in(machine.user_id)).computer["computer_id"]) == first_id
+    await home_away.mark_away(machine.user_id)
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    home_thread = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automations SET workspace_id = %s WHERE automation_id = %s",
+            (home_id, automation_id),
+        )
+        await conn.execute(
+            "UPDATE computers SET status = 'error' WHERE computer_id = %s", (first_id,)
+        )
+    home_wake = await _parked(test_db_pool, machine, "wakeup_fire", thread_id=home_thread)
+    try:
+        stand_in = await read_stand_in(machine.user_id)
+        assert (stand_in.kept, stand_in.runs) == (True, False)
+        assert await stand_in_computer(machine.user_id) is None
+        assert await _parked_verdict(execution_id) is None
+        assert await ex.release_parked_execution(execution_id) is False
+        assert home_wake not in {
+            str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()
+        }
+
+        # Given up, the files are no longer owed but are still only there.
+        await home_away.fail_handback(
+            machine.user_id, max_attempts=1, given_up={"failed": True, "cloud_computer_id": first_id}
+        )
+        assert await stand_in_computer(machine.user_id) is None
+        assert await _parked_verdict(execution_id) is None
+
+        # Its computer running again, work goes there, not to the other.
+        async with test_db_pool.connection() as conn:
+            await conn.execute(
+                "UPDATE computers SET status = 'running' WHERE computer_id = %s", (first_id,)
+            )
+        assert str((await stand_in_computer(machine.user_id))["computer_id"]) == first_id
+        assert str((await place_home_stand_in(machine.user_id)).computer["computer_id"]) != str(
+            second["computer_id"]
+        )
+        assert (await _parked_verdict(execution_id))["stand_in"] is True
+        assert home_wake in {
+            str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()
+        }
+    finally:
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM hook_outbox WHERE conversation_thread_id = %s", (home_thread,))
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM home_away WHERE user_id = %s", (machine.user_id,))
+            await conn.execute("DELETE FROM automations WHERE user_id = %s", (machine.user_id,))
+            await conn.execute("DELETE FROM workspaces WHERE user_id = %s", (machine.user_id,))
 
 
 async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, test_db_pool):
@@ -933,3 +1110,43 @@ async def test_a_parked_firing_stays_parked_while_a_new_gateway_settles(
 
     await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(seconds=1))
     assert await ex.release_parked_execution(execution_id) is True
+
+
+async def test_the_stand_ins_computer_lists_homes_threads_at_the_stand_ins_folder(
+    machine, test_db_pool
+):
+    """The stand-in's folder serves Home's transcripts, so its computer's
+    thread index lists Home's threads there, where the agent finds them."""
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+    from src.server.database.conversation.threads_read import list_computer_threads
+    from src.server.database.home_stand_in import place_home_stand_in
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    cloud = await create_computer(machine.user_id, kind="daytona", name="cloud",
+                                  status="running", provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    cloud_id = str(cloud["computer_id"])
+    home_thread = str(uuid.uuid4())
+    try:
+        await create_thread(
+            conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+        )
+        before, rows = await list_computer_threads(cloud_id)
+        assert rows == []
+
+        stand_in = await place_home_stand_in(machine.user_id)
+        assert str(stand_in.computer["computer_id"]) == cloud_id
+        after, rows = await list_computer_threads(cloud_id)
+
+        assert after != before
+        [row] = rows
+        assert str(row["conversation_thread_id"]) == home_thread
+        assert str(row["workspace_id"]) == home_id
+        assert row["dir_name"] == stand_in.row["dir_name"]
+        # Home's own computer lists it once, at Home's folder.
+        _, on_machine = await list_computer_threads(machine.computer_id)
+        assert [str(r["conversation_thread_id"]) for r in on_machine].count(home_thread) == 1
+    finally:
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM workspaces WHERE user_id = %s", (machine.user_id,))

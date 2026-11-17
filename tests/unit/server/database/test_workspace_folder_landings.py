@@ -163,7 +163,8 @@ async def test_a_new_folder_is_never_one_a_staged_row_may_have_landed_on():
 @pytest.mark.asyncio
 async def test_a_config_replace_keeps_the_rows_server_owned_keys():
     """The client writes ``config`` whole; the settle's list, its block on a
-    rename, a delete's folder markers and the sandbox stamp are not its to set."""
+    rename, a delete's folder markers, Home's stand-in mark and the sandbox
+    stamp are not its to set."""
     from src.server.database.workspace import update_workspace
 
     cur = _Cursor()
@@ -179,6 +180,7 @@ async def test_a_config_replace_keeps_the_rows_server_owned_keys():
         "folder_move_blocked",
         "folder_cleanup_pending",
         "folder_kept",
+        "home_stand_in",
         "sandbox_config_hash",
         "sandbox_provider",
         "sandbox_working_dir",

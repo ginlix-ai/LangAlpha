@@ -8,16 +8,18 @@
  * the workspace rows, which repeat the machine's values.
  */
 import { useCallback } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { toast } from '@/components/ui/use-toast';
+import { homeWorkspaceQuery } from '@/hooks/useHomeWorkspace';
 import { queryKeys } from '@/lib/queryKeys';
 import type {
   Computer,
   ComputerCreate,
   ComputerReconnectTarget,
   ComputerReinstall,
+  ComputerRemoval,
   ComputerRemoveResponse,
   ComputersResponse,
   ResourceTier,
@@ -26,6 +28,7 @@ import type {
 import {
   createComputer,
   deleteComputer,
+  getComputerRemoval,
   makeComputerPrimary,
   reconnectComputer,
   reinstallComputer,
@@ -45,6 +48,7 @@ import { closeComputerSpec } from './computerPanelStore';
 import {
   addComputerRow,
   CREATE_COMPUTER_MUTATION_KEY,
+  fetchComputerList,
   invalidateMachine,
   invalidateMachineStorage,
   patchComputerRow,
@@ -52,7 +56,7 @@ import {
   RECONNECT_COMPUTER_MUTATION_KEY,
   removeComputerRow,
 } from './useComputers';
-import { seedWorkspaceMove, watchMove } from './useWorkspaceMove';
+import { isMoveShown, seedWorkspaceMove, waitForMoveEnd, watchMove, WORKSPACE_MOVE_POLL_MS } from './useWorkspaceMove';
 import { forgetDeletedWorkspace, invalidateWorkspaceMembership } from './workspaceRowActions';
 
 export type PowerAction = 'start' | 'stop';
@@ -68,6 +72,17 @@ export interface RemoveComputerVariables {
   /** Its root folder, named when the files' outcome is told. */
   folder?: string | null;
   fingerprint?: string | null;
+  /** For the primary: the computer Home moves to first, the removal following once it has. */
+  homeTo?: string;
+}
+
+/**
+ * How a removal went. `kept` says why the computer stays once Home's move
+ * off it ended, with the computer Home is on by then; null when it went.
+ */
+export interface RemoveOutcome extends ComputerRemoveResponse {
+  workspaces_deleted: string[];
+  kept: { removal: ComputerRemoval; home: string; homeId: string } | null;
 }
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -166,6 +181,84 @@ function tokenRemovalNote(token: ComputerRemoveResponse['token'], t: Translate):
   }
 }
 
+/**
+ * A refused remove, in this app's words for the refusals the route names,
+ * else the server's own sentence, else a plain line. `homeMachine` names the
+ * machine Home lives on, for a hand-back still owed.
+ */
+export function removeRefusalMessage(
+  code: string | undefined,
+  serverMessage: string | null | undefined,
+  t: Translate,
+  homeMachine: string | null | undefined,
+): string {
+  switch (code) {
+    case 'primary':
+      return t(
+        'computer.removeRefused.primary',
+        'This is your primary computer. Make another computer primary first, and Home moves there.',
+      );
+    case 'only_computer':
+      return t(
+        'computer.removeRefused.onlyComputer',
+        "This is your only computer, so it can't be removed. Add another computer first.",
+      );
+    case 'handback_owed':
+      // Named by the machine Home is on; the server's own sentence where that is unknown.
+      if (homeMachine) {
+        return t(
+          'computer.removeRefused.handbackOwed',
+          "Files written on this computer while {{mac}} was away haven't been copied back into Home yet. Try again once {{mac}} is back.",
+          { mac: homeMachine },
+        );
+      }
+      break;
+    case 'has_workspaces':
+      // Only a workspace the confirmation did not name keeps it now.
+      return t('computer.removeRefused.hasWorkspaces', 'A workspace not listed here is on it now. Check the list and try again.');
+    case 'busy':
+      return t('computer.removeRefused.busy', 'This computer is busy. Try again in a moment.');
+  }
+  return serverMessage || t('computer.removeFailed', "Couldn't remove this computer. Try again.");
+}
+
+/**
+ * Why a removal that waited on Home's move off the computer did not happen;
+ * null while it still waits. `home` is the computer Home is on now.
+ */
+export function removalEndedMessage(
+  removal: ComputerRemoval,
+  { name, home }: { name: string; home: string },
+  t: Translate,
+): string | null {
+  switch (removal.state) {
+    case 'home_did_not_move':
+      return removal.error?.message || t('computer.removeHome.failed', "Couldn't move Home, so nothing was removed. Try again.");
+    case 'not_removed':
+      return `${t('computer.removeHome.movedNotRemoved', "Home moved to {{home}}, but {{name}} wasn't removed.", { home, name })} ${removeRefusalMessage(removal.error?.code, removal.error?.message, t, home)}`;
+    default:
+      return null;
+  }
+}
+
+/** The primary's name on `computers`, which is where Home is. */
+export function primaryName(computers: readonly Computer[] | undefined): string {
+  return computers?.find((c) => c.is_primary && c.status !== 'deleted')?.name ?? '';
+}
+
+/**
+ * Read the removal waiting on Home's move off `computerId` until it has
+ * settled. Home's move has ended by now, and its runner settles the removal
+ * as it ends, so this waits seconds, not the move.
+ */
+async function removalSettled(computerId: string): Promise<ComputerRemoval> {
+  for (;;) {
+    const removal = await getComputerRemoval(computerId);
+    if (removal.state !== 'waiting_for_home') return removal;
+    await new Promise((resolve) => setTimeout(resolve, WORKSPACE_MOVE_POLL_MS));
+  }
+}
+
 export function useComputerActions() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -234,20 +327,23 @@ export function useComputerActions() {
   // A 200 flipped the primary now. A 202 moves Home first and flips when that
   // move commits, so the move is seeded for the row to follow and watched, so
   // its ending is told wherever the user is by then. The name rides in the
-  // variables for that toast.
+  // variables for that toast. Backup turned on in the same request shows on
+  // the row however the rest went, so the list re-reads either way; a refusal
+  // can also mean the rows moved under the dialog (a spec change began, the
+  // machine was removed).
   const makePrimary = useMutation({
-    mutationFn: ({ computerId }: { computerId: string; name: string }) => makeComputerPrimary(computerId),
+    mutationFn: ({ computerId, fromBackup = false, turnOnBackup = false }: {
+      computerId: string;
+      name: string;
+      fromBackup?: boolean;
+      turnOnBackup?: boolean;
+    }) => makeComputerPrimary(computerId, { fromBackup, turnOnBackup }),
     onSuccess: async (res, { name }) => {
-      if (!res.move) {
-        invalidateMachine(queryClient);
-        return;
-      }
+      if (!res.move) return;
       await seedWorkspaceMove(queryClient, res.move);
       watchMove(res.move, name);
     },
-    // A refusal can mean the rows moved under the dialog (a spec change began,
-    // the machine was removed), so the list re-reads to show why.
-    onError: () => invalidateMachine(queryClient),
+    onSettled: () => invalidateMachine(queryClient),
   });
 
   // Always-on is no longer offered, so turning it off is all that is left.
@@ -318,12 +414,43 @@ export function useComputerActions() {
   // drop it. The workspaces it deleted first leave with it, and only those: one
   // moved off it meanwhile still exists. An older backend does not say which,
   // and there every one named went.
+  //
+  // Removing the primary moves Home first, and the server removes the
+  // computer once Home has moved: the removal follows Home's move here and
+  // reads how it ended off the row. All on the hook, not on `mutate`, so it
+  // still settles once the dialog is gone: a removal that did not happen is
+  // told by the dialog showing Home's move, or else by a toast.
   const remove = useMutation({
-    mutationFn: async ({ computerId, removeKey, workspaceIds, deleteFiles }: RemoveComputerVariables) => {
-      const res = await deleteComputer(computerId, { removeKey, deleteWorkspaces: workspaceIds, deleteFiles });
-      return { ...res, workspaces_deleted: res.workspaces_deleted ?? [...workspaceIds] };
+    mutationFn: async ({ computerId, removeKey, workspaceIds, deleteFiles, homeTo }: RemoveComputerVariables): Promise<RemoveOutcome> => {
+      const res = await deleteComputer(computerId, { removeKey, deleteWorkspaces: workspaceIds, deleteFiles, homeTo });
+      const removed = { ...res, workspaces_deleted: res.workspaces_deleted ?? [...workspaceIds], kept: null };
+      if (!res.move_id) return removed;
+      const homeId = (await queryClient.ensureQueryData(homeWorkspaceQuery(queryClient))).workspace_id;
+      await waitForMoveEnd(queryClient, { workspace_id: homeId, move_id: res.move_id });
+      const removal = await removalSettled(computerId);
+      if (removal.state === 'removed') {
+        // What it left behind, as a removal answering at once would have said.
+        return { ...removed, ...removal.removed, workspaces_deleted: removal.removed?.workspaces_deleted ?? [...workspaceIds] };
+      }
+      const { computers } = await fetchComputerList(queryClient);
+      return { ...removed, workspaces_deleted: [], kept: { removal, home: primaryName(computers), homeId } };
     },
     onSuccess: (res, { computerId, name, fingerprint, workspaceIds, folder }) => {
+      if (res.kept) {
+        // Some of the workspaces named may have gone before a refusal.
+        if (workspaceIds.length) invalidateWorkspaceMembership(queryClient);
+        invalidateMachine(queryClient);
+        const { removal, home, homeId } = res.kept;
+        const message = removalEndedMessage(removal, { name, home }, t);
+        if (message && !isMoveShown(homeId)) {
+          toast({
+            variant: 'destructive',
+            title: t('computer.removeFailedNamed', "Couldn't remove {{name}}", { name }),
+            description: message,
+          });
+        }
+        return;
+      }
       removeComputerRow(queryClient, computerId);
       queryClient.removeQueries({ queryKey: queryKeys.computers.storage(computerId) });
       for (const id of res.workspaces_deleted) forgetDeletedWorkspace(queryClient, id);

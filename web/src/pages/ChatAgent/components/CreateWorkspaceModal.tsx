@@ -10,6 +10,9 @@ import { useLocale } from '@/hooks/useLocale';
 import { formatBytes } from '@/lib/format';
 import type { Computer, Workspace } from '@/types/api';
 import { startWorkspace, uploadWorkspaceFile } from '../utils/api';
+import { isNeedsComputer, needsBackupOf } from '../utils/needsComputer';
+import { useOpenComputers } from '../hooks/useOpenComputers';
+import { ComputerRefusal, type ComputerRefusalKind } from './ComputerRefusal';
 import { createWorkspaceDenialMessage, denialMessage } from '../utils/denialMessage';
 import { clampWorkspaceName } from '../utils/workspaceName';
 import type { NewWorkspace } from '../hooks/useCreateWorkspace';
@@ -29,6 +32,9 @@ interface CreateWorkspaceModalProps {
 type Phase = 'form' | 'progress';
 type CreationStep = 'uploading' | 'done' | 'error';
 type FileUploadStatus = 'pending' | 'uploading' | 'done' | 'failed';
+
+/** Why the form can't go on: in words, or for want of a computer Home can live on. */
+type FormRefusal = { kind: 'message'; message: string } | Exclude<ComputerRefusalKind, { kind: 'onlyComputer' }>;
 
 /**
  * CreateWorkspaceModal.
@@ -56,7 +62,11 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Why the form can't go on: in words, or for want of a computer (none is
+  // built for this user, or the one they have can't hold Home with its
+  // backup off), whose way out leads to the Computers dialog.
+  const [refusal, setRefusal] = useState<FormRefusal | null>(null);
+  const openComputers = useOpenComputers();
   const [pickedComputerId, setPickedComputerId] = useState<string | null>(null);
   const computerFieldId = useId();
 
@@ -96,7 +106,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   const addFiles = useCallback((fileList: FileList) => {
     const incoming = Array.from(fileList);
-    setError(null);
+    setRefusal(null);
 
     setQueuedFiles((prev) => {
       const existingNames = new Set(prev.map((f) => f.name));
@@ -192,12 +202,12 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const handleSubmit = async (e: React.FormEvent | Event) => {
     e.preventDefault();
     if (!name.trim() || submitting || preparingTarget) {
-      if (!name.trim()) setError(t('workspace.workspaceNameRequired'));
+      if (!name.trim()) setRefusal({ kind: 'message', message: t('workspace.workspaceNameRequired') });
       return;
     }
 
     setSubmitting(true);
-    setError(null);
+    setRefusal(null);
 
     let workspace: Workspace;
     try {
@@ -210,7 +220,10 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
       // A refusal keeps the user on the form with their input intact. On a 429
       // the sentence is the quota service's, relayed as it arrived.
       setSubmitting(false);
-      setError(createWorkspaceDenialMessage(err, t));
+      const backupOff = needsBackupOf(err);
+      if (isNeedsComputer(err)) setRefusal({ kind: 'needsComputer' });
+      else if (backupOff) setRefusal({ kind: 'needsBackup', ...backupOff });
+      else setRefusal({ kind: 'message', message: createWorkspaceDenialMessage(err, t) });
       return;
     }
 
@@ -241,7 +254,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     setName('');
     setDescription('');
     setQueuedFiles([]);
-    setError(null);
+    setRefusal(null);
     setPickedComputerId(null);
     setPhase('form');
     setCreationStep('uploading');
@@ -504,7 +517,24 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           </div>
 
           {/* Error */}
-          {error && <div className="cwm-error">{error}</div>}
+          {refusal?.kind === 'message' && <div className="cwm-error">{refusal.message}</div>}
+          {refusal && refusal.kind !== 'message' && (
+            <ComputerRefusal
+              refusal={refusal}
+              message={refusal.kind === 'needsComputer'
+                ? t(
+                  'computer.needsComputer.body',
+                  "Workspaces live on a computer, and you don't have one yet. Add a computer, then create the workspace.",
+                )
+                : t('homePlacement.needsBackup', { name: refusal.name })}
+              onOpen={(panel) => {
+                resetAndClose();
+                openComputers(panel);
+              }}
+              alert
+              className="mb-2"
+            />
+          )}
 
           {/* Actions */}
           <div className="cwm-actions">

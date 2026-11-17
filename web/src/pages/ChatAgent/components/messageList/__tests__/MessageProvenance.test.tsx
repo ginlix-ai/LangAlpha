@@ -16,6 +16,7 @@ import MessageList from '../../MessageList';
 import type { MessageProvenance } from '@/types/chat';
 import { deliveredEntryRow } from '../../../session/stream/steeringDelivery';
 import type { MessageRecord } from '../types';
+import { renderWithProviders } from '@/test/utils';
 
 vi.mock('@/hooks/useUser', () => ({
   useUser: () => ({ user: null }),
@@ -248,12 +249,10 @@ describe('MessageList report row', () => {
         provenance: { kind: 'task_report', taskId: 'k7Xm2p', displayId: 'Task-k7Xm2p', description: null, failed: true },
       },
     ];
-    const { container } = render(
-      <MemoryRouter>
-        <MessageActionsProvider actions={{ onEditMessage: vi.fn(), onOpenSubagentTask: vi.fn() }}>
-          <MessageList messages={messages} />
-        </MessageActionsProvider>
-      </MemoryRouter>,
+    const { container } = renderWithProviders(
+      <MessageActionsProvider actions={{ onEditMessage: vi.fn(), onOpenSubagentTask: vi.fn() }}>
+        <MessageList messages={messages} />
+      </MessageActionsProvider>,
     );
     expect(screen.getByRole('button', { name: 'Open' })).toHaveAccessibleDescription('Task-k7Xm2p failed');
     // The typed message above keeps its actions; the report row has none.
@@ -278,12 +277,10 @@ describe('MessageList report row', () => {
         provenance: { kind: 'analyst_report', threadId: 'th-ws', workspaceId: 'ws-1', workspaceName: 'Semis', outcome: 'completed' },
       },
     ];
-    const { container } = render(
-      <MemoryRouter>
-        <MessageActionsProvider actions={{ onEditMessage: vi.fn() }}>
-          <MessageList messages={messages} />
-        </MessageActionsProvider>
-      </MemoryRouter>,
+    const { container } = renderWithProviders(
+      <MessageActionsProvider actions={{ onEditMessage: vi.fn() }}>
+        <MessageList messages={messages} />
+      </MessageActionsProvider>,
     );
     const report = container.querySelector<HTMLElement>('[data-message-id="history-user-3"]');
     expect(report?.textContent).toBe('Semis analyst reported backOpen');
@@ -299,15 +296,13 @@ describe('MessageList report row', () => {
     const row = (id: string, provenance: MessageProvenance): MessageRecord => ({
       id, role: 'user', content: '', contentType: 'text', timestamp: at, isStreaming: false, isHistory: true, turnIndex: 1, provenance,
     });
-    const { container } = render(
-      <MemoryRouter>
-        <MessageList
-          messages={[
-            row('r-1', { kind: 'analyst_report', threadId: 'th-ws', workspaceId: 'ws-1', workspaceName: 'Semis', outcome: 'completed' }),
-            row('r-2', { kind: 'task_report', taskId: 'k7Xm2p', displayId: 'Task-k7Xm2p', description: 'Pull filings', failed: false }),
-          ]}
-        />
-      </MemoryRouter>,
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={[
+          row('r-1', { kind: 'analyst_report', threadId: 'th-ws', workspaceId: 'ws-1', workspaceName: 'Semis', outcome: 'completed' }),
+          row('r-2', { kind: 'task_report', taskId: 'k7Xm2p', displayId: 'Task-k7Xm2p', description: 'Pull filings', failed: false }),
+        ]}
+      />,
     );
     const first = container.querySelector<HTMLElement>('[data-message-id="r-1"]');
     const second = container.querySelector<HTMLElement>('[data-message-id="r-2"]');
@@ -377,12 +372,10 @@ describe('MessageList: a steered message', () => {
   });
 
   it('marks a message the running turn took in, and not the one that opened it', () => {
-    const { container } = render(
-      <MemoryRouter>
-        <MessageActionsProvider actions={{ onEditMessage: vi.fn() }}>
-          <MessageList messages={[user('opener'), user('steer', { steeringDelivered: true })]} />
-        </MessageActionsProvider>
-      </MemoryRouter>,
+    const { container } = renderWithProviders(
+      <MessageActionsProvider actions={{ onEditMessage: vi.fn() }}>
+        <MessageList messages={[user('opener'), user('steer', { steeringDelivered: true })]} />
+      </MessageActionsProvider>,
     );
     const marked = (id: string) => container.querySelector(`[data-message-id="${id}"] [title="${HINT}"]`);
     expect(marked('steer')).toHaveTextContent('Steered');

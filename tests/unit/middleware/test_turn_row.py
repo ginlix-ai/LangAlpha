@@ -10,6 +10,7 @@ anywhere in it costs the row, never the turn.
 """
 
 import re
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -21,6 +22,7 @@ from ptc_agent.agent.middleware.runtime_context import (
     RUNTIME_UPDATE_SOURCE,
     TURN_ROW_KIND,
     TURN_SCHEMA_VERSION,
+    HomeAway,
     TurnContextMiddleware,
     render_update_row,
     runtime_update_from_message,
@@ -926,6 +928,88 @@ class TestTheLowDiskLineIsTakenBack:
 
         assert self.RECOVERED not in sub.content
         assert "disk_low" not in _provenance(sub)
+
+
+class TestWhereAHomeTurnRuns:
+    """A Home turn in its stand-in on a cloud computer says so, and the first
+    turn back on Home's own computer takes it back, as the disk line does."""
+
+    AWAY = HomeAway(
+        workspace_id="stand-in",
+        computer_id="mac-1",
+        computer_name="MacBook Pro",
+        cloud_computer_id="cloud-1",
+        cloud_name="Cloud computer",
+    )
+    BACK = {"computer_name": "MacBook Pro", "folder": "From the cloud/2026-11-15", "files": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_turn_in_the_stand_in_says_where_it_runs_and_what_it_holds(self):
+        away = await _row(home_away=self.AWAY)
+
+        assert "Home lives on MacBook Pro, which couldn't be reached" in away.content
+        assert "a separate Home folder on Cloud computer." in away.content
+        assert "holds only what turns run there wrote" in away.content
+        assert _provenance(away)["home_away"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_report_on_a_command_there_says_why_it_runs_there(self):
+        report = await _row(home_away=replace(self.AWAY, reason="command"))
+
+        assert "where the command it reports on ran" in report.content
+        assert "Home lives on" not in report.content
+
+    @pytest.mark.asyncio
+    async def test_the_first_turn_back_says_where_the_files_went_once(self):
+        away = await _row(home_away=self.AWAY)
+
+        back = await _row(home_back=self.BACK, state=_state([away]))
+        again = await _row(home_back=self.BACK, state=_state([away, back]))
+
+        assert "MacBook Pro is back" in back.content
+        assert "`From the cloud/2026-11-15` in Home (3 files)" in back.content
+        assert "nothing was overwritten" in back.content
+        assert "is back" not in again.content
+
+    @pytest.mark.asyncio
+    async def test_a_copy_still_running_on_the_way_back_is_named_once_it_is_done(self):
+        away = await _row(home_away=self.AWAY)
+        pending = {"computer_name": "MacBook Pro", "pending": True}
+
+        back = await _row(home_back=pending, state=_state([away]))
+        still = await _row(home_back=pending, state=_state([away, back]))
+        done = await _row(home_back=self.BACK, state=_state([away, back, still]))
+        after = await _row(home_back=self.BACK, state=_state([away, back, still, done]))
+
+        assert "was still being copied" in back.content
+        assert _provenance(back)["home_away"] == "pending"
+        assert "copied" not in still.content
+        assert "has since been copied into `From the cloud/2026-11-15` in Home (3 files)" in done.content
+        assert "is back" not in done.content
+        assert _provenance(done)["home_away"] is False
+        assert "copied" not in after.content
+
+    @pytest.mark.asyncio
+    async def test_a_copy_that_carried_nothing_is_not_announced(self):
+        away = await _row(home_away=self.AWAY)
+        back = await _row(home_back={"computer_name": "MacBook Pro", "pending": True}, state=_state([away]))
+
+        done = await _row(home_back={"computer_name": "MacBook Pro"}, state=_state([away, back]))
+
+        assert "copied" not in done.content
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_was_never_away_says_nothing(self):
+        home = await _row(home_back=self.BACK)
+
+        assert "is back" not in home.content
+
+    @pytest.mark.asyncio
+    async def test_a_subagent_says_nothing_of_it(self):
+        sub = await _row(is_subagent=True, home_away=self.AWAY)
+
+        assert "Home lives on" not in sub.content
+        assert "home_away" not in _provenance(sub)
 
 
 class TestTheRowIsRenderedOnce:

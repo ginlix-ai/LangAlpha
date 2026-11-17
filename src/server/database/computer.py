@@ -258,18 +258,20 @@ async def get_computer_for_thread(thread_id: str, *, conn=None) -> Optional[Dict
 async def get_computer(
     computer_id: str,
     *,
+    include_deleted: bool = False,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
     computer_id = normalize_uuid(computer_id)
     if computer_id is None:
         return None
 
+    status_filter = "" if include_deleted else f"AND {FENCE_NOT_DELETED}"
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
             SELECT {_COMPUTER_COLS}
             FROM computers
-            WHERE computer_id = %s AND {FENCE_NOT_DELETED}
+            WHERE computer_id = %s {status_filter}
             """,
             (computer_id,),
         )
@@ -543,6 +545,217 @@ async def set_computer_setting(
         return cur.rowcount > 0
 
 
+# What a computer's owner asked of it that the server carries out later, in
+# its config, so every worker reads the same and it outlives a restart.
+# ``make_primary``: make it primary once its first start completes
+# (``{"state": "pending"}``, with ``taken_at`` while a worker applies it and
+# ``tried_at`` once one tried and must try again, or ``"dropped"`` with the
+# refusal's ``error``).
+# ``removal``: remove it once Home's move off it commits
+# (``{"state": "waiting_for_home", "move_id", ...}``, then
+# ``"home_did_not_move"`` or ``"not_removed"`` with an ``error``).
+MAKE_PRIMARY_INTENT = "make_primary"
+REMOVAL_INTENT = "removal"
+
+# How long a worker applying a make-primary holds it before another may: past
+# the flip or the move's claim it applies, which are short database writes,
+# so one held this long is a worker that went midway.
+_MAKE_PRIMARY_LEASE = "make_interval(mins => 5)"
+_MAKE_PRIMARY_FREE = (
+    f"config->'{MAKE_PRIMARY_INTENT}'->>'state' = 'pending'"
+    f" AND COALESCE((config->'{MAKE_PRIMARY_INTENT}'->>'taken_at')::timestamptz, '-infinity')"
+    f" < NOW() - {_MAKE_PRIMARY_LEASE}"
+)
+
+
+async def take_make_primary_intent(computer_id: str) -> Optional[str]:
+    """Claim a pending make-primary for this worker to apply, answering the
+    claim's stamp for ``end_make_primary_intent``; None when none is pending
+    or another worker holds it.
+
+    The intent stays on the row while it is applied, so a worker that goes
+    midway leaves it to the next start or sweep once its lease lapses.
+    """
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = jsonb_set(
+                config, '{{{MAKE_PRIMARY_INTENT},taken_at}}', to_jsonb(clock_timestamp()::text)
+            )
+            WHERE computer_id = %s AND {FENCE_NOT_DELETED} AND {_MAKE_PRIMARY_FREE}
+            RETURNING config->'{MAKE_PRIMARY_INTENT}'->>'taken_at' AS taken_at
+            """,
+            (computer_id,),
+        )
+        row = await cur.fetchone()
+        return row["taken_at"] if row else None
+
+
+async def end_make_primary_intent(
+    computer_id: str, taken_at: str, intent: Optional[Dict[str, Any]] = None
+) -> bool:
+    """End the make-primary this worker took at ``taken_at``: cleared once
+    applied, or replaced by ``intent`` (pending again, or dropped with why).
+    One pending again is stamped ``tried_at``, so the sweep reaches the
+    untried first and one that keeps waiting never holds the others back.
+    Never over one another worker has taken since."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = CASE WHEN %(intent)s::jsonb IS NULL
+                THEN config - '{MAKE_PRIMARY_INTENT}'
+                ELSE jsonb_set(
+                    config,
+                    '{{{MAKE_PRIMARY_INTENT}}}',
+                    %(intent)s::jsonb || CASE
+                        WHEN %(intent)s::jsonb->>'state' = 'pending'
+                        THEN jsonb_build_object('tried_at', clock_timestamp())
+                        ELSE '{{}}'::jsonb END)
+            END
+            WHERE computer_id = %(computer_id)s
+              AND config->'{MAKE_PRIMARY_INTENT}'->>'taken_at' = %(taken_at)s
+            """,
+            {
+                "intent": Json(intent) if intent is not None else None,
+                "computer_id": computer_id,
+                "taken_at": taken_at,
+            },
+        )
+        return cur.rowcount > 0
+
+
+async def list_pending_make_primary(limit: int = 50) -> List[Dict[str, Any]]:
+    """Running computers whose make-primary is still pending and held by no
+    worker: one whose start completed on a worker that went before applying
+    it, or that went midway, or one that had to wait. Not one behind a tunnel
+    that is down, which would only be refused again; the untried first, then
+    the longest since tried."""
+    from src.server.database.ssh_tunnels import computer_tunnel_down_sql
+
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT {_COMPUTER_COLS} FROM computers
+            WHERE status = 'running' AND {_MAKE_PRIMARY_FREE}
+              AND NOT {computer_tunnel_down_sql("computers.computer_id::text")}
+            ORDER BY (config->'{MAKE_PRIMARY_INTENT}'->>'tried_at')::timestamptz
+                     NULLS FIRST, updated_at
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def list_removals_after_home_moves(
+    computer_id: Optional[str] = None, limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Computers waiting on Home's move off them whose move has ended, with
+    its ``move_phase`` and ``move_error``; only ``computer_id`` when named."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT {computer_cols("c")}, m.phase AS move_phase, m.error AS move_error
+            FROM computers c
+            JOIN workspace_moves m
+              ON m.move_id = (c.config->'{REMOVAL_INTENT}'->>'move_id')::uuid
+            WHERE c.{FENCE_NOT_DELETED}
+              AND c.config->'{REMOVAL_INTENT}'->>'state' = 'waiting_for_home'
+              AND {_removal_free("c.")}
+              AND m.phase IN ('done', 'failed', 'cancelled')
+              AND (%(computer_id)s::uuid IS NULL OR c.computer_id = %(computer_id)s::uuid)
+            ORDER BY m.finished_at
+            LIMIT %(limit)s
+            """,
+            {"computer_id": normalize_uuid(computer_id) if computer_id else None, "limit": limit},
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+# How long a worker settling a removal holds it before another may: past
+# the workspaces it deletes, each backed up first, and the machine it dials,
+# so one held this long is a worker that went midway.
+REMOVAL_LEASE = timedelta(minutes=30)
+
+
+def _removal_free(prefix: str = "") -> str:
+    return (
+        f"COALESCE(({prefix}config->'{REMOVAL_INTENT}'->>'taken_at')::timestamptz, '-infinity')"
+        f" < NOW() - make_interval(secs => {REMOVAL_LEASE.total_seconds()})"
+    )
+
+
+def removal_held(intent: Dict[str, Any]) -> bool:
+    """Whether a worker is settling this removal now. Its computer is marked
+    deleted before the machine is left and what that left is recorded, so a
+    removal still held there has not finished saying how it ended."""
+    taken_at = intent.get("taken_at")
+    if not taken_at:
+        return False
+    try:
+        taken = datetime.fromisoformat(taken_at)
+    except ValueError:
+        return False
+    return datetime.now(taken.tzinfo) - taken < REMOVAL_LEASE
+
+
+async def take_removal_intent(computer_id: str, move_id: str) -> Optional[str]:
+    """Claim the removal waiting on Home's move ``move_id`` for this worker to
+    settle, answering the claim's stamp for ``end_removal_intent``; None when
+    it no longer waits on that move or another worker holds it. The move's
+    runner and every worker's sweep reach the same row."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = jsonb_set(
+                config, '{{{REMOVAL_INTENT},taken_at}}', to_jsonb(clock_timestamp()::text)
+            )
+            WHERE computer_id = %s AND {FENCE_NOT_DELETED}
+              AND config->'{REMOVAL_INTENT}'->>'state' = 'waiting_for_home'
+              AND config->'{REMOVAL_INTENT}'->>'move_id' = %s
+              AND {_removal_free()}
+            RETURNING config->'{REMOVAL_INTENT}'->>'taken_at' AS taken_at
+            """,
+            (computer_id, move_id),
+        )
+        row = await cur.fetchone()
+        return row["taken_at"] if row else None
+
+
+async def end_removal_intent(
+    computer_id: str, taken_at: str, ended: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Record how the removal this worker took at ``taken_at`` ended, or,
+    with nothing ``ended``, let it go for a later pass; False when another
+    worker has taken it since. A removed computer's row is kept, deleted, so
+    its owner can still read what the removal left behind."""
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = CASE WHEN %(ended)s::jsonb IS NULL
+                THEN config #- '{{{REMOVAL_INTENT},taken_at}}'
+                ELSE jsonb_set(
+                    config, '{{{REMOVAL_INTENT}}}',
+                    %(ended)s::jsonb || jsonb_build_object(
+                        'move_id', config->'{REMOVAL_INTENT}'->'move_id')
+                )
+            END
+            WHERE computer_id = %(computer_id)s
+              AND config->'{REMOVAL_INTENT}'->>'taken_at' = %(taken_at)s
+            """,
+            {
+                "ended": Json(ended) if ended is not None else None,
+                "computer_id": computer_id,
+                "taken_at": taken_at,
+            },
+        )
+        return cur.rowcount > 0
+
+
 async def record_machine_facts(
     computer_id: str, shown: Dict[str, Any], *, conn=None
 ) -> bool:
@@ -684,6 +897,9 @@ async def create_computer(
             )
             return dict(await cur.fetchone())
 
+    # Home lives on the primary and is restored from its backup, so a
+    # computer whose files are not backed up is never made primary here.
+    is_primary = is_primary and files_backup
     try:
         row = await _insert(is_primary)
     except UniqueViolation:
@@ -1035,15 +1251,22 @@ async def set_computer_always_on(
 async def set_computer_files_backup(
     computer_id: str, enabled: bool, *, conn=None
 ) -> Optional[Dict[str, Any]]:
-    """No workspace shadow, unlike the scalars below: no platform count reads it."""
+    """None when the computer is gone, or is the primary and ``enabled`` is
+    off: Home lives there and is restored from its backup. Guarded in the
+    write, so a flip of the primary (``workspace_move._flip_primary``) and
+    this land in either order and never leave a primary unbacked.
+
+    No workspace shadow, unlike the scalars below: no platform count reads it.
+    """
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
-            UPDATE computers SET files_backup = %s, updated_at = NOW()
-            WHERE computer_id = %s AND {FENCE_NOT_DELETED}
+            UPDATE computers SET files_backup = %(enabled)s, updated_at = NOW()
+            WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
+              AND (%(enabled)s OR NOT is_primary)
             RETURNING {_COMPUTER_COLS}
             """,
-            (enabled, normalize_uuid(computer_id)),
+            {"enabled": enabled, "computer_id": normalize_uuid(computer_id)},
         )
         row = await cur.fetchone()
     return dict(row) if row else None

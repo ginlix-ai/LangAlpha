@@ -6,11 +6,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useLocation } from 'react-router';
 
 import { renderWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
+
+vi.mock('../../hooks/computerPanelStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../hooks/computerPanelStore')>()),
+  openComputersPanel: vi.fn(),
+}));
 
 vi.mock('../../utils/api', () => ({
   getComputers: vi.fn(),
@@ -22,6 +28,7 @@ vi.mock('../../utils/api', () => ({
 }));
 
 import { getComputerProviders, getComputers, startWorkspace, uploadWorkspaceFile } from '../../utils/api';
+import { openComputersPanel } from '../../hooks/computerPanelStore';
 import CreateWorkspaceModal from '../CreateWorkspaceModal';
 
 const mockUpload = uploadWorkspaceFile as Mock;
@@ -74,14 +81,22 @@ beforeEach(() => {
   mockProviders.mockResolvedValue({ providers: [{ kind: 'daytona', is_default: true, allowed: null }] });
 });
 
+/** The route the page is on, for a way out that leaves it. */
+function Path() {
+  return <span data-testid="path">{useLocation().pathname}</span>;
+}
+
 function setup(onCreate: Mock, onComplete = vi.fn(), onClose = vi.fn()) {
   const { queryClient } = renderWithProviders(
-    <CreateWorkspaceModal
-      isOpen
-      onClose={onClose}
-      onCreate={onCreate}
-      onComplete={onComplete}
-    />,
+    <>
+      <Path />
+      <CreateWorkspaceModal
+        isOpen
+        onClose={onClose}
+        onCreate={onCreate}
+        onComplete={onComplete}
+      />
+    </>,
   );
   return { onComplete, onClose, queryClient };
 }
@@ -400,5 +415,59 @@ describe('CreateWorkspaceModal, a computer still being prepared', () => {
       await screen.findByText("This computer is still being prepared. Try again once it's ready."),
     ).toBeInTheDocument();
     expect(screen.queryByText('Computer is still being prepared')).not.toBeInTheDocument();
+  });
+
+  it('offers to add a computer when the user has none and none is built for them', async () => {
+    const user = userEvent.setup();
+    mockGetComputers.mockResolvedValue({ computers: [], total: 0 });
+    const onCreate = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 409'), {
+        response: {
+          status: 409,
+          data: { detail: { code: 'needs_computer', message: 'Add a computer first.' } },
+        },
+      }),
+    );
+    const { onClose } = setup(onCreate);
+
+    await user.type(screen.getByPlaceholderText(/name/i), 'First');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+
+    const card = await screen.findByRole('alert');
+    expect(card).toHaveTextContent("Workspaces live on a computer, and you don't have one yet.");
+    expect(screen.queryByText('Add a computer first.')).not.toBeInTheDocument();
+    await user.click(within(card).getByRole('button', { name: 'Add a computer' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'create' });
+    // No page here shows the Computers dialog, so it opens on chat's now
+    // rather than unasked on whichever page shows one next.
+    expect(screen.getByTestId('path')).toHaveTextContent('/chat');
+  });
+
+  it("offers the computer whose backup is off when that is why Home can't live anywhere", async () => {
+    const user = userEvent.setup();
+    mockGetComputers.mockResolvedValue({ computers: [], total: 0 });
+    const onCreate = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 409'), {
+        response: {
+          status: 409,
+          data: {
+            detail: { code: 'needs_backup', message: 'Turn on backup.', computer_id: SECOND_ID, computer_name: 'Office Mac' },
+          },
+        },
+      }),
+    );
+    const { onClose } = setup(onCreate);
+
+    await user.type(screen.getByPlaceholderText(/name/i), 'First');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+
+    const card = await screen.findByRole('alert');
+    expect(card).toHaveTextContent(
+      "Backup is off on Office Mac, so Home can't live there. Turn backup on, and Office Mac can be Home's computer.",
+    );
+    await user.click(within(card).getByRole('button', { name: 'Open Office Mac' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'details', computerId: SECOND_ID });
   });
 });

@@ -229,6 +229,26 @@ async def test_a_turn_that_loses_its_thread_runs_as_the_automation_now_stands(lo
 
 
 @pytest.mark.asyncio
+async def test_a_home_turn_that_waited_for_its_thread_is_placed_again():
+    """The wait can outlast where Home's turn was placed: Home back, or gone."""
+    from ptc_agent.agent.middleware.runtime_context import HomeAway
+
+    away = HomeAway("stand-in", "mac-1", "Mac", "cloud-1", "Cloud", at="t")
+    lost = HTTPException(status_code=409, detail=admission_conflict_detail("running"))
+    with (
+        patch(
+            "src.server.services.home_placement.place_home_turn",
+            new=AsyncMock(side_effect=[away, None]),
+        ),
+        _firing([_loses(lost), _streams], fresh=_automation()) as fx,
+    ):
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    first, second = (c.kwargs["route"] for c in fx.astream.call_args_list)
+    assert first.away == away and second.away is None
+
+
+@pytest.mark.asyncio
 async def test_a_wait_ends_skipped_when_the_automation_was_paused():
     lost = HTTPException(status_code=409, detail=admission_conflict_detail("running"))
     with _firing([_loses(lost)], fresh=_automation(status="paused")) as fx:
@@ -973,6 +993,7 @@ def _parked(automation_id="auto-1", **verdict):
         "parked_status": "active",
         "superseded": False,
         "reachable": False,
+        "stand_in": False,
         "expired": False,
         **verdict,
     }
@@ -1057,7 +1078,8 @@ async def test_a_wait_for_the_computer_gives_way_to_the_next_firing():
 
 @pytest.mark.asyncio
 async def test_a_wait_for_the_computer_ends_at_its_cap():
-    with _firing([_streams], fresh=_automation()) as fx:
+    # Home's machine still away, and no cloud computer for its stand-in.
+    with _firing([_streams], fresh=_automation(), away=(_MAC,)) as fx:
         await _sweep_parked(fx, _parked(expired=True))
 
     fx.astream.assert_not_called()
@@ -1182,3 +1204,11 @@ class TestARunReleasedLate:
 
         row = self._row(timedelta(minutes=due_ago_min), wait_reason)
         assert await computer_wait.late_note({}, row) is None
+
+
+@pytest.fixture(autouse=True)
+def _home_runs_at_home():
+    """Home's turn runs on Home's own computer here; where it runs while that
+    computer can't be reached is ``test_home_placement``'s."""
+    with patch("src.server.services.home_placement.place_home_turn", new=AsyncMock(return_value=None)):
+        yield

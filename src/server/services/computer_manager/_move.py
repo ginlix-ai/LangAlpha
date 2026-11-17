@@ -33,7 +33,11 @@ from ptc_agent.core.sandbox.providers import provider_class
 
 from src.server.database.computer import (
     DEFAULT_ROOT_DIR,
+    end_make_primary_intent,
     get_computer,
+    get_home_computer,
+    list_pending_make_primary,
+    take_make_primary_intent,
     update_computer_activity,
 )
 from src.server.database.sql_fences import MOVE_EARLY_PHASES, MOVE_HEARTBEAT_SECONDS
@@ -46,6 +50,7 @@ from src.server.database.workspace_folders import (
 )
 from src.server.database.workspace_move import (
     LEFT_FOLDER_RETRY_S,
+    MoveRefused,
     advance_workspace_move,
     claim_folders_left_in_place,
     commit_workspace_move,
@@ -59,17 +64,21 @@ from src.server.database.workspace_move import (
     mark_leftovers_removed,
     mark_move_restored,
     set_left_folder_aside,
+    set_primary_computer,
     stage_workspace_move,
     take_over_stale_moves,
 )
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.computer_errors import ComputerBusyError
 from src.server.services.computer_manager._folders import _run_folder_script
 from src.server.services.persistence.transfer import SYNC_MARKER_NAME
+from src.server.services.background_starts import schedule_start
 from src.server.services.workspace_move import (
     MoveNoRoom,
     MoveSourceUnavailable,
+    claim_workspace_move,
     move_error,
     move_error_detail,
 )
@@ -100,6 +109,10 @@ _NO_ROOM = object()
 # and passes included, leaving room for a cancelled pass to be outlasted. Under
 # the claim's retry, so no other worker claims the row while this one is at it.
 _LEFT_FOLDER_TRY_S = LEFT_FOLDER_RETRY_S * 2 // 3
+# Refusals of a make-primary its create asked for that pass on their own.
+_MAKE_PRIMARY_RETRIED = frozenset(
+    {"turn_active", "command_running", "busy", "move_in_progress", "target_unreachable"}
+)
 
 
 @asynccontextmanager
@@ -220,6 +233,138 @@ class WorkspaceMoveMixin:
             return False
         task.result()
         return True
+
+    async def make_primary(
+        self,
+        user_id: str,
+        computer_id: str,
+        *,
+        from_backup: Optional[bool] = None,
+        then: Optional[Callable[[], Awaitable[Any]]] = None,
+        removal: Optional[tuple[str, Dict[str, Any]]] = None,
+        intent_taken_at: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Make the computer the user's primary, where Home lives.
+
+        None when the flip landed now: Home on no computer yet, or already on
+        it. Otherwise Home's move onto it is claimed and run here in the
+        background, the flip landing as it commits, and its row is returned;
+        ``then`` runs once the run ends, however it ended. ``removal`` is
+        recorded with the move's claim (``claim_workspace_move``). Home comes
+        from its last backup when ``from_backup`` says so, or, left unsaid,
+        when the machine it lives on can't be reached, as Home's placement
+        judges it, since that machine cannot hand its files over; the claim
+        then holds Home to that machine. ``intent_taken_at`` is the stamp of
+        the create's intent this applies, which a Make primary since ends.
+
+        Raises:
+            MoveRefused: as either would refuse, ``not_backed_up`` included,
+                ``target_unreachable`` for a machine whose tunnel is down,
+                which could hold neither Home nor new workspaces, or
+                ``superseded`` for an intent another choice ended.
+        """
+        from src.server.services.ssh_computers import computer_unreachable
+
+        if await computer_unreachable(await get_computer(computer_id)):
+            raise MoveRefused("target_unreachable")
+        if await set_primary_computer(
+            user_id, computer_id, intent_taken_at=intent_taken_at
+        ):
+            logger.info("Made computer %s primary for user %s", computer_id, user_id)
+            return None
+        expected_source = None
+        if from_backup is None:
+            home_computer = await get_home_computer(user_id)
+            from_backup = await computer_unreachable(home_computer)
+            expected_source = home_computer["computer_id"] if home_computer else None
+        move = await claim_workspace_move(
+            user_id=user_id,
+            workspace_id=get_home_workspace_id(user_id),
+            target_computer_id=computer_id,
+            make_primary=True,
+            from_backup=from_backup,
+            removal=removal,
+            expected_source=expected_source,
+            intent_taken_at=intent_taken_at,
+        )
+
+        async def run() -> None:
+            await self.run_accepted_move(move)
+            if then is not None:
+                await then()
+
+        schedule_start(f"workspace-move:{move['move_id']}", run)
+        logger.info(
+            "Accepted Home's move %s to computer %s for user %s",
+            move["move_id"],
+            computer_id,
+            user_id,
+        )
+        return move
+
+    async def apply_make_primary_intent(self, computer_id: str, user_id: str) -> None:
+        """Make the computer primary as its create asked, once it has started.
+
+        One worker takes the intent; a refusal that passes (a turn or command
+        running, a move under way) puts it back for the next start or sweep,
+        and any other drops it, recorded on the computer for its owner to
+        read, as Make primary would have refused.
+        """
+        taken_at = await take_make_primary_intent(computer_id)
+        if taken_at is None:
+            return
+        try:
+            move = await self.make_primary(
+                user_id, computer_id, intent_taken_at=taken_at
+            )
+        except MoveRefused as e:
+            if e.code == "superseded":
+                # Ended by the choice that superseded it; nothing to write.
+                logger.info(
+                    "Making computer %s primary was superseded by a later choice",
+                    computer_id,
+                )
+                return
+            if e.code in _MAKE_PRIMARY_RETRIED:
+                logger.info(
+                    "Making computer %s primary waits: %s; trying again later",
+                    computer_id, e.code,
+                )
+                await end_make_primary_intent(computer_id, taken_at, {"state": "pending"})
+                return
+            logger.warning(
+                "Dropped making computer %s primary for user %s: %s",
+                computer_id, user_id, e.code,
+            )
+            await end_make_primary_intent(
+                computer_id,
+                taken_at,
+                {"state": "dropped", "error": move_error_detail(e.code)},
+            )
+            return
+        except Exception:
+            await end_make_primary_intent(computer_id, taken_at, {"state": "pending"})
+            raise
+        # Applied: the flip landed, or Home's move is claimed and its own
+        # recovery finishes it. Taken again after a worker went before this,
+        # it lands at once, Home being there by then.
+        await end_make_primary_intent(computer_id, taken_at)
+        if move is not None:
+            logger.info(
+                "Moving Home onto computer %s as its create asked (move %s)",
+                computer_id, move["move_id"],
+            )
+
+    async def apply_pending_make_primary(self) -> None:
+        """Apply a make-primary whose computer started on a worker that went
+        before applying it."""
+        try:
+            for computer in await list_pending_make_primary():
+                await self.apply_make_primary_intent(
+                    str(computer["computer_id"]), str(computer["user_id"])
+                )
+        except Exception:
+            logger.exception("Could not apply pending make-primary requests")
 
     async def run_accepted_move(self, move: Mapping[str, Any]) -> None:
         """Run a move accepted behind a 202; the row is its only report."""

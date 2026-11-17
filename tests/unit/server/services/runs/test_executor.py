@@ -127,6 +127,24 @@ class TestCancelStaleWorkflowRunning:
         assert task_info.explicit_cancel is True
         mock_inner.cancel.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_a_run_is_judged_stale_where_it_runs(self):
+        """A Home turn in its stand-in runs in a workspace other than its
+        thread's; a follow-up routed back to Home must not cancel it."""
+        btm = _make_btm()
+        task_info = _make_task_info(status=LocalRunStatus.RUNNING)
+        task_info.metadata = {"workspace_id": "home", "runs_in": "stand-in"}
+        btm.executions[("thread-1", "run-1")] = task_info
+        judged: list[str] = []
+
+        def is_stale(workspace_id: str) -> bool:
+            judged.append(workspace_id)
+            return workspace_id == "home"
+
+        assert await btm.cancel_stale_workflow("thread-1", is_stale=is_stale) is False
+        assert judged == ["stand-in"]
+        assert not task_info.cancel_event.is_set()
+
 
 # ---------------------------------------------------------------------------
 # signal_cancel — user stop force-cancels inner_task (immediacy)

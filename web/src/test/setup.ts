@@ -4,6 +4,8 @@ import enUS from '@/locales/en-US.json';
 import zhCN from '@/locales/zh-CN.json';
 import enUSIntros from '@/locales/intros/en-US.json';
 import zhCNIntros from '@/locales/intros/zh-CN.json';
+import enUSFirstRun from '@/locales/thisMacFirstRun/en-US.json';
+import zhCNFirstRun from '@/locales/thisMacFirstRun/zh-CN.json';
 import { installBrowserTraps } from './browserTraps';
 import { installJsdomShims } from './jsdomShims';
 
@@ -11,8 +13,8 @@ import { installJsdomShims } from './jsdomShims';
 // returns real strings and a language switch lands before the next line. The
 // app loads catalogs on demand, which would make every switch in a test async.
 const catalogs = {
-  'en-US': { translation: enUS, intros: enUSIntros },
-  'zh-CN': { translation: zhCN, intros: zhCNIntros },
+  'en-US': { translation: enUS, intros: enUSIntros, thisMacFirstRun: enUSFirstRun },
+  'zh-CN': { translation: zhCN, intros: zhCNIntros, thisMacFirstRun: zhCNFirstRun },
 };
 
 // Node's BroadcastChannel reaches every worker thread in the process, so under

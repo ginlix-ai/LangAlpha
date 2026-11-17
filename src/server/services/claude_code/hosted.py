@@ -366,14 +366,21 @@ async def cli_placement(user_id: str, workspace_id: str | None, *, conn=None, to
     computer it binds to, and a refusal for a computer too small says whether
     it is Home's. ``conn`` reads on a caller's connection, as an automation
     file save that holds the user's locks passes it, so the check never
-    waits on a second pool slot."""
-    from src.server.database.computer import get_computer_for_workspace, get_home_computer
-    from src.server.database.home_workspace import is_home_id
+    waits on a second pool slot. A Home turn is judged on the computer it
+    runs on (``home_placement.home_turn_computer``), as is the stand-in
+    named by its own id."""
+    from src.server.database.computer import get_computer_for_workspace
+    from src.server.database.home_workspace import is_home_id, is_home_stand_in_id
     from src.server.services.ssh_computers import is_own_computer
 
-    home = bool(workspace_id) and is_home_id(user_id, workspace_id)
-    if home:
-        computer = await get_home_computer(user_id, conn=conn)
+    stand_in = bool(workspace_id) and is_home_stand_in_id(user_id, workspace_id)
+    home = stand_in or (bool(workspace_id) and is_home_id(user_id, workspace_id))
+    if stand_in:
+        computer = await get_computer_for_workspace(workspace_id, conn=conn)
+    elif home:
+        from src.server.services.home_placement import home_turn_computer
+
+        computer, _ = await home_turn_computer(user_id, conn=conn)
     else:
         computer = await get_computer_for_workspace(workspace_id, conn=conn) if workspace_id else None
     if is_own_computer(computer):

@@ -585,6 +585,7 @@ class TestOneWriterOfTheBinding:
     _ALLOWED = {
         "src/server/database/computer.py",  # builds the one bind statement
         "src/server/database/workspace.py",  # the workspace-entry wrapper
+        "src/server/database/home_stand_in.py",  # Home's stand-in, placed bound
     }
     # Deliberately newline-insensitive: these statements are multi-line
     # f-strings, so a line-based search walks straight past

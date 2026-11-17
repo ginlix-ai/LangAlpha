@@ -1595,6 +1595,8 @@
     "stop": "Stop",
     "primaryBadge": "Primary",
     "primaryBadgeTitle": "New workspaces are created on this computer",
+    "standInBadge": "Stands in for Home",
+    "standInBadgeTitle": "The Chief of Staff works here while your primary computer can't be reached, so this computer stays even with no workspaces. You can still remove it.",
     "badge": {
       "mac": "Mac",
       "ssh": "SSH"
@@ -1604,10 +1606,18 @@
       "title": "Make {{name}} primary?",
       "body": "New workspaces will be created on {{name}}.",
       "bodyHomeMoves": "New workspaces will be created on {{name}}, and Home, where the Chief of Staff keeps its files, moves there too.",
+      "ownMachineStandIn": "New workspaces will be created on {{name}}, and Home moves there too. While {{name}} can't be reached, the Chief of Staff works on {{cloud}}, starting it if it's stopped, and copies what it writes back into Home when {{name}} returns.",
+      "ownMachineWaits": "New workspaces will be created on {{name}}, and Home moves there too. While {{name}} can't be reached, the Chief of Staff waits for it.",
+      "fromBackup": "{{from}} can't be reached, so Home is restored on {{name}} from its last backup.",
+      "backupTitle": "Turn on backup for {{name}}?",
+      "backupBody": "Home will live on this computer. With backup on, Home can be restored if it's lost.",
+      "backupConfirm": "Turn on and make primary",
       "movingHome": "Moving Home…",
       "done": "{{name}} is now your primary computer",
       "failedTitle": "Couldn't make {{name}} primary",
-      "failed": "Couldn't make this computer primary. Try again."
+      "failed": "Couldn't make this computer primary. Try again.",
+      "unreachable": "You can make it primary once it's connected.",
+      "dropped": "{{name}} wasn't made primary. {{reason}}"
     },
     "workspaceCount_one": "{{count}} workspace",
     "workspaceCount_other": "{{count}} workspaces",
@@ -1661,15 +1671,22 @@
     "tokenRemoveFailed": "We could not remove its Claude Code token from the machine. To remove it yourself, delete {{path}} on it.",
     "removed": "{{name}} removed",
     "removeFailed": "Couldn't remove this computer. Try again.",
+    "removeFailedNamed": "Couldn't remove {{name}}",
     "removeBlocked": {
       "specChange": "You can remove it once the spec change finishes.",
       "starting": "You can remove it once it has started.",
       "stopping": "You can remove it once it has stopped."
     },
+    "removeHomeFiles": {
+      "failed": "Files written here while {{mac}} was away couldn't be copied into Home. Removing this computer deletes them.",
+      "left": "Left here and not in Home: {{files}}. Removing this computer deletes them."
+    },
     "removeRefused": {
-      "primary": "Your primary computer can't be removed.",
+      "primary": "This is your primary computer. Make another computer primary first, and Home moves there.",
       "hasWorkspaces": "A workspace not listed here is on it now. Check the list and try again.",
-      "busy": "This computer is busy. Try again in a moment."
+      "busy": "This computer is busy. Try again in a moment.",
+      "onlyComputer": "This is your only computer, so it can't be removed. Add another computer first.",
+      "handbackOwed": "Files written on this computer while {{mac}} was away haven't been copied back into Home yet. Try again once {{mac}} is back."
     },
     "manageComputer": "Manage {{name}}",
     "alwaysOn": "Always-on",
@@ -1949,6 +1966,17 @@
       "keepBothNote": "To keep both, add this machine as a computer of its own, and reconnect {{name}} to the machine it was on.",
       "addThisMac": "Add this Mac as a new computer",
       "addThisMachine": "Add this machine as a new computer"
+    },
+    "removeHome": {
+      "label": "Home moves to",
+      "becomesPrimary": "The computer you pick becomes your primary computer.",
+      "backupOff": "Backup off",
+      "unreachable": "Can't be reached",
+      "failed": "Couldn't move Home, so nothing was removed. Try again.",
+      "movedNotRemoved": "Home moved to {{home}}, but {{name}} wasn't removed."
+    },
+    "needsComputer": {
+      "body": "Workspaces live on a computer, and you don't have one yet. Add a computer, then create the workspace."
     }
   },
   "thread": {
@@ -6880,6 +6908,25 @@
       "handoff": "handed to an analyst",
       "taskHandoff": "task handed to an analyst"
     }
+  },
+  "homePlacement": {
+    "onCloud": "{{mac}} can't be reached, so the Chief of Staff is working on {{cloud}} for now. What it writes is copied into Home on {{mac}} once it's back.",
+    "waiting": "{{mac}} can't be reached, so the Chief of Staff is waiting for it. Messages sent now won't run.",
+    "handedBack_one": "{{count}} file written on {{cloud}} is now in Home/{{folder}} on {{mac}}.",
+    "handedBack_other": "{{count}} files written on {{cloud}} are now in Home/{{folder}} on {{mac}}.",
+    "leftOnCloud": "Too large to copy, so left on {{cloud}}: {{files}}.",
+    "unreadable": "Couldn't be read, so left on {{cloud}}: {{files}}.",
+    "handbackFailed": "The files written on {{cloud}} while {{mac}} was away couldn't be copied into Home. They're still on {{cloud}}.",
+    "andMore_one": "{{count}} more",
+    "andMore_other": "{{count}} more",
+    "dismiss": "Dismiss",
+    "homeComputer": "Home's computer",
+    "ranOn": "Ran on {{cloud}}",
+    "needsComputer": "You don't have a computer for your agents to work on yet.",
+    "needsBackup": "Backup is off on {{name}}, so Home can't live there. Turn backup on, and {{name}} can be Home's computer.",
+    "addComputer": "Add a computer",
+    "setUpThisMac": "Set up this Mac",
+    "openComputer": "Open {{name}}"
   },
   "payer": {
     "subscription": "Subscription",

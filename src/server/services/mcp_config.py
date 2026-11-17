@@ -379,7 +379,11 @@ async def resolve_mcp_config(
     # version and stick. See get_workspace_servers_and_version. User-level
     # mutations fan the bump out to every workspace of the user, so the same
     # ordering argument covers the user reads below.
-    rows, version = await get_workspace_servers_and_version(workspace_id)
+    from src.server.database.home_workspace import acting_for
+
+    rows, version = await get_workspace_servers_and_version(
+        workspace_id, rows_of=acting_for(user_id, workspace_id)
+    )
     # A switched-off bundle is not a tier of its own: it expands into the
     # names of the built-ins it ships, and every rule below applies to them
     # unchanged. That expansion is what account_disabled_builtins does.

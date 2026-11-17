@@ -32,6 +32,7 @@ _SCAN_ROOTS = (
     SRC / "server" / "services" / "history",
     SRC / "server" / "services" / "runs",
     SRC / "server" / "services" / "report_back",
+    SRC / "server" / "services" / "home_placement.py",
     SRC / "server" / "app" / "threads",
 )
 
@@ -58,6 +59,8 @@ CHECKPOINT_PROJECTED = {
 
 TABLE_SOURCED = {
     "user_message",  # conversation_queries
+    "turn_placement",  # a Home turn on its stand-in: the turn's
+    # conversation_queries.metadata.home_fallback, read back on user_message
     "provenance",  # provenance_records
     "credit_usage",  # conversation_usages
     "error",  # conversation_responses.errors + metadata (terminal event)

@@ -18,6 +18,8 @@ from ptc_agent.core.sandbox.providers import (
     ALLOCATION_KINDS,
     METRIC_KINDS,
     PROVIDER_KINDS,
+    RECREATABLE_KINDS,
+    is_own_machine,
     provider_class,
 )
 
@@ -50,6 +52,7 @@ def test_the_registry_agrees_with_each_class(kind):
     assert (kind in METERED_KINDS) is cls.metered
     assert (kind in METRIC_KINDS) is (cls.metered and cls.reports_metrics)
     assert (kind in ALLOCATION_KINDS) is (cls.metered and cls.reports_allocation)
+    assert (kind in RECREATABLE_KINDS) is not is_own_machine(kind)
 
 
 def test_the_ledgers_kinds_load_no_provider_module():
@@ -63,3 +66,16 @@ def test_the_ledgers_kinds_load_no_provider_module():
     )
     (line,) = [ln for ln in done.stdout.splitlines() if ln.startswith("LOADED=")]
     assert line == "LOADED=", line
+
+
+@pytest.mark.parametrize(
+    ("kinds", "builds"),
+    [(("daytona",), True), (("ssh",), False), (("ssh", "docker"), True), ((), False)],
+)
+def test_a_deployment_builds_computers_only_on_a_kind_it_can_rebuild(kinds, builds):
+    from types import SimpleNamespace
+
+    from ptc_agent.core.sandbox.providers import builds_computers
+
+    sandbox = SimpleNamespace(creatable_providers=lambda: kinds)
+    assert builds_computers(sandbox) is builds

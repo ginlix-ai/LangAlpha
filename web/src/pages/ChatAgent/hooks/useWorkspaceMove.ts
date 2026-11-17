@@ -106,6 +106,25 @@ export async function seedWorkspaceMove(queryClient: QueryClient, move: Workspac
   noticeEnding(queryClient, before, move);
 }
 
+/**
+ * Resolves once `move` has ended, read afresh every {@link WORKSPACE_MOVE_POLL_MS}
+ * whoever else is following it, so a caller that waits on the move (a
+ * removal waiting for Home to leave the computer) does not depend on a
+ * mounted reader. Null when the workspace's latest move is another one by then.
+ */
+export async function waitForMoveEnd(
+  queryClient: QueryClient,
+  move: Pick<WorkspaceMove, 'workspace_id' | 'move_id'>,
+): Promise<WorkspaceMove | null> {
+  const query = workspaceMoveQuery(queryClient, move.workspace_id);
+  for (;;) {
+    const current = await queryClient.fetchQuery(query);
+    if (current?.move_id !== move.move_id) return null;
+    if (!isMoveActive(current)) return current;
+    await new Promise((resolve) => setTimeout(resolve, WORKSPACE_MOVE_POLL_MS));
+  }
+}
+
 // --- Moves whose ending is still to be told ---
 
 /** A move this tab asked for. `label` is what its outcome names. */
@@ -157,14 +176,20 @@ export function useWatchedMoves(): Readonly<Record<string, WatchedMove>> {
   return useSyncExternalStore(watched.subscribe, watched.get);
 }
 
-/** Whether a dialog is showing this workspace's move. */
-export function useMoveShowing(workspaceId: string): boolean {
-  return useSyncExternalStore(showing.subscribe, () => (showing.get()[workspaceId] ?? 0) > 0);
+/** Whether a dialog is showing this workspace's move now. */
+export function isMoveShown(workspaceId: string): boolean {
+  return (showing.get()[workspaceId] ?? 0) > 0;
 }
 
-/** Mark this workspace's move as shown for as long as the caller is mounted. */
-export function useShowMove(workspaceId: string): void {
+/** Whether a dialog is showing this workspace's move. */
+export function useMoveShowing(workspaceId: string): boolean {
+  return useSyncExternalStore(showing.subscribe, () => isMoveShown(workspaceId));
+}
+
+/** Mark this workspace's move as shown for as long as the caller is mounted with it named. */
+export function useShowMove(workspaceId: string | null | undefined): void {
   useEffect(() => {
+    if (!workspaceId) return;
     const bump = (by: number) => {
       const current = showing.get();
       showing.set({ ...current, [workspaceId]: (current[workspaceId] ?? 0) + by });

@@ -124,6 +124,7 @@ import { ThreadOffers } from './chatView/ThreadNotices';
 import { ClaudeCodePlanRow } from './chatView/ClaudeCodePlanRow';
 import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
+import { HomePlacementNotice } from './chatView/HomePlacementNotice';
 import { ChatRestoreOffer } from './chatView/ChatRestoreOffer';
 import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
 import { MobileNavDrawer } from './chatView/MobileNavDrawer';
@@ -1814,6 +1815,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         reportThreadId={currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined}
                       />
                     )}
+                    {isHome && <HomePlacementNotice />}
                     {workspaceRecord?.computer_id && (
                       <ChatRestoreOffer
                         workspaceId={workspaceId}

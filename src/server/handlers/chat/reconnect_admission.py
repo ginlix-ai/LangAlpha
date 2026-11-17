@@ -163,8 +163,15 @@ async def reconnect_to_workflow_stream(
 
     ``run_id`` should be the classifier's effective run id; this generator
     makes no admission decisions (the response is already committed by the
-    time it runs).
+    time it runs). A turn that ran in Home's stand-in says so first, since
+    its live frame is sent before the run's log exists.
     """
+    if run_id:
+        from src.server.services.home_placement import placement_frame
+
+        frame = await placement_frame(run_id)
+        if frame:
+            yield frame
     async for event in stream_from_log(thread_id, run_id, last_event_id):
         yield event
 

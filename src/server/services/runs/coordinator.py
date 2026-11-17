@@ -856,8 +856,17 @@ class RunCoordinator:
 
     def _schedule_activity_stamp(self, run: Optional[Dict[str, Any]]) -> None:
         # Only a turn's start stamps the idle clock otherwise, so a turn longer
-        # than the idle timeout ends on a machine the next sweep stops.
-        workspace_id = ((run or {}).get("metadata") or {}).get("workspace_id")
+        # than the idle timeout ends on a machine the next sweep stops. A Home
+        # turn in Home's stand-in ran in the stand-in, on its computer.
+        from src.server.database.home_workspace import (
+            STAND_IN_COMPUTER,
+            get_home_stand_in_id,
+        )
+
+        meta = (run or {}).get("metadata") or {}
+        workspace_id = meta.get("workspace_id")
+        if meta.get(STAND_IN_COMPUTER) and meta.get("user_id"):
+            workspace_id = get_home_stand_in_id(str(meta["user_id"]))
         if not workspace_id:
             return
         try:

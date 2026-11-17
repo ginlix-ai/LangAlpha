@@ -79,7 +79,32 @@ async def test_start_holds_only_a_stamped_turn_to_its_computer():
             _say(checked_computer_id=CHECKED), "conn", thread_id=THREAD, run_id="r"
         )
 
-    refuse.assert_awaited_once_with("conn", THREAD, CHECKED)
+    refuse.assert_awaited_once_with("conn", THREAD, CHECKED, runs_in=None)
+
+
+@pytest.mark.asyncio
+async def test_a_home_turn_in_the_stand_in_is_held_to_the_stand_ins_computer():
+    # Read after the turn's mark, which takes the lock a removal of the
+    # stand-in's computer holds.
+    order: list[str] = []
+
+    async def refuse(*args, **kwargs):
+        order.append(f"refuse:{kwargs['runs_in']}")
+
+    async def mark(conn):
+        order.append("mark")
+
+    with patch("src.server.database.workspace.refuse_moved_off", refuse):
+        await admission._start_checks(
+            _say(checked_computer_id=CHECKED),
+            "conn",
+            thread_id=THREAD,
+            run_id="r",
+            then=mark,
+            runs_in=WORKSPACE,
+        )
+
+    assert order == ["mark", f"refuse:{WORKSPACE}"]
 
 
 def test_a_parked_send_keeps_the_computer_it_was_checked_on():

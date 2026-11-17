@@ -201,3 +201,28 @@ async def test_a_detached_finalize_confirms_checkpointed_holds_before_its_cas():
         )
 
     assert order == [("confirm", "thread-1", "run-1"), "finalize"]
+
+
+@pytest.mark.parametrize(
+    "stamp, stamped",
+    [
+        ({}, "ws-1"),
+        # A Home turn in Home's stand-in ran there, on the stand-in's computer.
+        ({"user_id": "u-1", "stand_in_computer": "c-cloud"}, "stand-in"),
+    ],
+)
+def test_the_turn_end_stamps_activity_where_the_turn_ran(stamp, stamped):
+    from src.server.database.home_workspace import get_home_stand_in_id
+
+    row = _row("completed")
+    row["metadata"].update(stamp)
+    with (
+        patch(
+            "src.server.database.workspace.update_workspace_activity",
+            new=MagicMock(return_value="stamp"),
+        ) as stamp_activity,
+        patch("src.server.services.runs.coordinator.spawn_protected"),
+    ):
+        RunCoordinator()._schedule_activity_stamp(row)
+    expected = get_home_stand_in_id("u-1") if stamped == "stand-in" else stamped
+    stamp_activity.assert_called_once_with(expected)

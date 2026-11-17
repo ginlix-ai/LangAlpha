@@ -46,7 +46,8 @@ async def test_the_chief_of_staff_reads_activity_in_the_users_timezone():
         blocks, _ = await _read_harness_blocks("u", SESSION, HOME, "t", turn, "chief_of_staff")
     assert blocks == {"activity": "Recent threads, this one aside:"}
     reader.assert_awaited_once_with(
-        "u", home_id=HOME, thread_id="t", timezone="Asia/Shanghai", computers=ROSTER
+        "u", home_id=HOME, thread_id="t", timezone="Asia/Shanghai",
+        computers=[{**c, "is_home": c["computer_id"] == "c-home"} for c in ROSTER],
     )
 
 
@@ -59,7 +60,9 @@ async def test_activity_and_the_tools_read_one_roster():
         _, reach = await _read_harness_blocks("u", SESSION, HOME, "t", None, "chief_of_staff")
     assert reach is not None
     assert roster.await_count == 1
-    assert reader.await_args.kwargs["computers"] is ROSTER
+    assert [c["computer_id"] for c in reader.await_args.kwargs["computers"]] == [
+        c["computer_id"] for c in ROSTER
+    ]
 
 
 @pytest.mark.asyncio
@@ -88,3 +91,22 @@ async def test_a_roster_that_did_not_answer_is_a_hole_and_no_reach():
             "u", SESSION, HOME, "t", None, "chief_of_staff"
         ) == ({"activity": None}, None)
     reader.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_home_turn_in_its_stand_in_runs_on_the_cloud_computer_not_homes():
+    """Home's machine can't be reached, so the turn runs on a cloud computer:
+    the block says that is where the agent runs, and lists Home's machine as
+    one of the others."""
+    roster = [
+        {"computer_id": "c-mac", "is_home": True},
+        {"computer_id": "c-cloud", "is_home": False},
+    ]
+    reader, _, roster_patch = _reads(roster=roster)
+    stand_in = SimpleNamespace(computer_id="c-cloud")
+    with patch("src.tools.secretary.activity.read_activity", reader), roster_patch:
+        await _read_harness_blocks("u", stand_in, HOME, "t", None, "chief_of_staff")
+    assert reader.await_args.kwargs["computers"] == [
+        {"computer_id": "c-mac", "is_home": False},
+        {"computer_id": "c-cloud", "is_home": True},
+    ]

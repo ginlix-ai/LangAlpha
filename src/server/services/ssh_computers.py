@@ -816,11 +816,22 @@ async def computer_away(workspace_id: str, *, conn=None) -> Optional[Dict[str, A
 
     For work nobody is watching (an automation's firing, a wake, a
     report-back), which waits for the machine rather than fail at its
-    connect. A read: nothing is started or placed.
+    connect. Home's work waits only where its turn would not run in the
+    stand-in instead (``home_placement.home_turn_computer``). A read:
+    nothing is started or placed.
     """
+    from src.server.database.home_workspace import is_home_id
+
     computer = await get_computer_for_workspace(workspace_id, conn=conn)
     if not await computer_unreachable(computer, conn=conn):
         return None
+    user_id = str(computer.get("user_id") or "")
+    if is_home_id(user_id, workspace_id):
+        from src.server.services.home_placement import home_turn_computer
+
+        _, stand_in = await home_turn_computer(user_id, conn=conn)
+        if stand_in:
+            return None
     return dict(computer)
 
 

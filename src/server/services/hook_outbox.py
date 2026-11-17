@@ -198,7 +198,7 @@ async def _log_closed_alert(row: Dict[str, Any]) -> None:
 async def _log_released_for_computer(row: Dict[str, Any]) -> None:
     logger.info(
         f"[HookOutbox] released job={row.get('hook_outbox_id')} "
-        f"type={row.get('hook_type')}: its computer can be reached again"
+        f"type={row.get('hook_type')}: its turn can run now"
     )
 
 

@@ -118,3 +118,33 @@ async def test_whose_machine_it_is_is_told_with_one_computer_too(
     # The folder goes with a machine of theirs, and a hosted one's is no rule.
     root = "/Users/me/langalpha" if machine else ""
     assert (workspace.computer, workspace.machine, workspace.root) == ("", machine, root)
+
+
+@pytest.mark.asyncio
+async def test_a_home_turn_in_its_stand_in_names_the_computer_it_runs_on():
+    """Home's machine can't be reached, so the turn runs in Home's stand-in on
+    a cloud computer: the block names that computer, not the away Mac and its
+    root, while Home's own name stands."""
+    from src.server.database.workspace_names import HOME_FOLDER
+
+    stand_in = "a0000001-0000-4000-8000-000000000002"
+    rows = {
+        WS: {
+            "name": "Home", "description": None, "computer_name": "Studio Mac",
+            "computer_kind": "ssh",
+            "provider_config": {"tunnel": "tun-1", "platform": "darwin"},
+            "root_dir": "/Users/me/langalpha", "computers": 2,
+        },
+        stand_in: {
+            "name": "Home stand-in", "description": None, "computer_name": "Cloud computer",
+            "computer_kind": "docker", "provider_config": None, "root_dir": "/home/workspace",
+            "computers": 2,
+        },
+    }
+    mock = AsyncMock(side_effect=lambda workspace_id: rows[workspace_id])
+    with patch("src.server.database.workspace.get_workspace_naming", mock):
+        workspace = await _read_workspace_naming(WS, "chief_of_staff", runs_in=stand_in)
+
+    assert workspace == Workspace(
+        HOME_FOLDER, workspace.description, "Cloud computer", machine="", root=""
+    )

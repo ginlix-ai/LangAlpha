@@ -27,12 +27,17 @@ const CATALOGS: Record<Locale, Catalog> = {
 };
 
 // The page intros' copy is a namespace of its own, so only someone opening an
-// intro downloads it: useTranslation('intros') fetches it on first use.
+// intro downloads it: useTranslation('intros') fetches it on first use. The
+// desktop app's first run is one too, read only by its own lazy page.
 const NAMESPACES: Record<string, Record<Locale, Catalog>> = {
   translation: CATALOGS,
   intros: {
     'en-US': () => import('./locales/intros/en-US.json'),
     'zh-CN': () => import('./locales/intros/zh-CN.json'),
+  },
+  thisMacFirstRun: {
+    'en-US': () => import('./locales/thisMacFirstRun/en-US.json'),
+    'zh-CN': () => import('./locales/thisMacFirstRun/zh-CN.json'),
   },
 };
 
