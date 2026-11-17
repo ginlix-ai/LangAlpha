@@ -5,28 +5,28 @@ description: "Structured data the market data servers don't carry, from a catalo
 
 # Data catalog
 
-A catalog of data providers reached through the `firecrawl` MCP server, in code. Each provider exposes typed tools ("capabilities") with published inputs and a price. Finding and reading them is free; running one is charged to the user.
+A catalog of data providers reached through the `firecrawl` MCP server, in code. Each provider exposes typed tools ("capabilities"), each with a published contract and a price. Finding and reading contracts is free; running a capability is charged to the user.
 
 Check the built-in market data servers first (prices, fundamentals, ownership, macro, options chains, Yahoo analyst data). Use the catalog for what they don't cover.
 
 ## Find, read, run
 
 ```python
-from tools.firecrawl import firecrawl_find_tools, firecrawl_scrape
+from tools.firecrawl import alexandria_library_search, alexandria_library_read
 
-# 1. Find a tool by what you need (free).
-found = firecrawl_find_tools(query="earnings call transcript with speaker labels", includeCosts=True)
-for t in found["data"]["alexandria"][0]["data"]["items"]:
-    print(t["provider"], t["capability"], t.get("creditsCost"), t["description"][:100])
+# 1. Find a capability (free). The catalog is a read-only filesystem with one
+#    contract per capability at /library/<category>/<provider>/<capability>.md.
+found = alexandria_library_search(command='grep -ril "transcript" /library/companies | head -20')
+print(found["stdout"])
 
-# 2. Read its inputs and output before calling (free).
-spec = firecrawl_find_tools(providers=["fiscal-ai"], capabilities=["events/transcript"],
-                            level="tools", expand=["options", "response"])
+# 2. Read its contract before calling (free): when to use it, inputs, output.
+spec = alexandria_library_search(command="cat /library/companies/fiscal-ai/events/transcript.md")
+print(spec["stdout"])
 
-# 3. Run it (paid). A list of up to 10 runs several in one call.
-res = firecrawl_scrape(objective="NVDA Q3 FY27 call: guidance and gross margin",
-                       alexandria={"provider": "fiscal-ai", "capability": "events/transcript",
-                                   "options": {...}})
+# 3. Run it (paid). Up to 10 calls in one request.
+res = alexandria_library_read(objective="NVDA Q3 FY27 call: guidance and gross margin",
+                              calls=[{"provider": "fiscal-ai", "capability": "events/transcript",
+                                      "options": {...}}])
 for item in res["data"]["alexandria"]:
     if item.get("error"):
         print(item["capability"], item["error"]["code"], item["error"]["message"])
@@ -34,7 +34,8 @@ for item in res["data"]["alexandria"]:
         rows = item.get("data") or item.get("records")
 ```
 
-- Call only capabilities that `find_tools` returned, with the inputs its contract marks required. Don't guess option names.
+- The path is the address: `/library/companies/fiscal-ai/events/transcript.md` is provider `fiscal-ai`, capability `events/transcript`. `ls /library` lists the categories; each category and provider folder has a `README.md`.
+- Call only capabilities whose contract you read, with the inputs it marks required. Don't guess option names.
 - One item in a batch can fail while the others succeed, so check each item's `error`.
 - Load results into pandas and print only what the answer needs.
 - `firecrawl_crawl` needs `limit` set to 100 pages or fewer.
@@ -42,15 +43,15 @@ for item in res["data"]["alexandria"]:
 
 ## Providers that matter
 
-Prices are Firecrawl credits per call, checked 2026-10-27. Before running anything not listed here, read its `creditsCost` from `find_tools` with `includeCosts=True` (without it no price comes back); `perRecord` means that price is per record returned.
+Prices are Firecrawl credits per call, checked 2026-11-16. Contracts don't show a price, so for a provider not listed here, run one call and read its cost from the result before running more.
 
 | Need | Provider | Credits |
 |---|---|---|
-| Transcripts with speakers, segment revenue and KPIs, as-reported and adjusted statements, fund letters, institutional and insider holders | `fiscal-ai` | 15-30 |
+| Transcripts with speakers, segment revenue and KPIs, as-reported and adjusted statements, fund letters, institutional and insider holders | `fiscal-ai` | 0-30 |
 | Analyst ratings and consensus, options activity, why a stock is moving, M&A calendar, press releases | `benzinga` | 15-45 |
 | 10-K/10-Q item text, 13F holdings, 13D/13G, Form 4, XBRL facts | `sec-gov` | 5 |
 | FedWatch FOMC probabilities, SOFR | `cmegroup-com` | 5 |
-| Commitments of Traders positioning | `cftc-gov`, `cftc` | see `find_tools` |
+| Commitments of Traders positioning | `cftc-gov`, `cftc` | 5, 1 |
 | Senators' financial disclosures and trades | `efdsearch-senate-gov` | 5 |
 | Federal contract awards by recipient | `usaspending-gov` | 5 |
 | Private company funding rounds and investors | `fireround` | 5 |
