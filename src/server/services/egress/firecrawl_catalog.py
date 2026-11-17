@@ -2,7 +2,11 @@
 and what to call it and its provider when it becomes a source.
 
 Read from Firecrawl's own ``find_tools`` (free) and kept in Redis for an hour
-so every worker shares one copy. A provider's whole listing is fetched at once:
+so every worker shares one copy. Its library contracts carry no price, so this
+stays the one source of prices, though Firecrawl stopped listing the tool to
+agents on 2026-11-16 (it still answers a call). If it ever stops answering,
+a catalog call whose provider is not already cached is refused, never run
+unpriced. A provider's whole listing is fetched at once:
 the next call usually wants another of its capabilities. Providers are fetched
 one per request and side by side, because ``find_tools`` refuses a whole batch
 over one name it does not list (checked 2026-11-15).
