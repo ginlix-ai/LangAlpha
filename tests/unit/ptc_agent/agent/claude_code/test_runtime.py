@@ -1025,7 +1025,6 @@ async def test_a_compactions_summary_request_is_metered_as_a_turns_requests_are(
     monkeypatch.setattr(compaction_module, "launch", launched)
     monkeypatch.setattr(compaction_module, "received", received)
     tracker = TokenTrackingManager.initialize_tracking(thread_id="t")
-    tracker.run_inline = True
     ambient = var_child_runnable_config.set({"callbacks": [tracker, Tags()]})
     try:
         with pytest.raises(ClaudeTurnFailed):

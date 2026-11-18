@@ -228,10 +228,16 @@ class PerCallTokenTracker(BaseCallbackHandler):
         >>> costs = calculate_cost_from_per_call_records(tracker.get_per_call_records())
 
     ``per_call_records`` is the private buffer; ``get_per_call_records()`` is the
-    reader-facing snapshot. Under an async run this sync handler's callbacks
-    fire on executor threads, so anything that iterates the buffer has to go
-    through the accessor.
+    reader-facing snapshot. A sync run still fires these callbacks on its own
+    thread, so anything that iterates the buffer has to go through the accessor.
     """
+
+    # Called on the event loop, as LangChain's own tracer is, rather than through
+    # the default executor: the hop cost a thread round trip per streamed token,
+    # and let a Stop or a timeout read the tracker before a call's record landed.
+    # The handlers run on the loop, so they have to stay cheap: no I/O, and
+    # nothing slow under the lock.
+    run_inline = True
 
     def __init__(self) -> None:
         """Initialize the tracker with empty per-call records and aggregated metadata."""
@@ -433,9 +439,9 @@ class PerCallTokenTracker(BaseCallbackHandler):
     def get_per_call_records(self) -> List[CallRecord]:
         """Snapshot of the per-call records, never the live buffer.
 
-        Appends land on executor threads while readers such as the credit gate
-        run on the loop, so every reader needs its own copy taken under the
-        lock.
+        A sync run appends from its own thread while readers such as the
+        credit gate run on the loop, so every reader needs its own copy taken
+        under the lock.
         """
         with self._lock:
             return self.per_call_records.copy()
