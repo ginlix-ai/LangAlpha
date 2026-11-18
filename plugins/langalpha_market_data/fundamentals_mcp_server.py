@@ -15,6 +15,9 @@ Tools:
 - get_financial_ratios: Raw ratios and key metrics (multi-year)
 - get_growth_metrics: Raw growth rates (multi-year)
 - get_historical_valuation: Raw DCF and enterprise value (multi-year)
+- get_analyst_ratings: Consensus target, rating counts, rating changes, price targets
+- get_analyst_estimates: Consensus estimates by fiscal period
+- get_earnings_surprises: Reported EPS and revenue against consensus
 - get_insider_trades: Insider trading transactions and aggregate stats
 - get_dividends_and_splits: Dividend history and stock split history
 - get_shares_float: Shares float, outstanding shares, and float percentage
@@ -36,11 +39,19 @@ except ModuleNotFoundError:  # imported as a package module (tests)
 
 import asyncio
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
 from data_client.fmp import close_fmp_client, get_fmp_client
+from data_client.fmp.analyst import (
+    estimate_rows,
+    price_targets,
+    rating_actions,
+    rating_counts,
+    surprise_rows,
+    target_consensus,
+)
 from data_client.lifespan import closing_lifespan
 from data_client.market_data_provider import symbol_market
 from data_client.normalize import (
@@ -65,6 +76,7 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
+from market_protocol import InstrumentRef
 from market_protocol.enums import AssetClass
 from market_protocol.symbology import (
     is_family_index,
@@ -106,17 +118,24 @@ def _canonical(symbol: str) -> str:
         return symbol
 
 
+def _equity_ref(symbol: str) -> InstrumentRef | None:
+    """*symbol* resolved as an equity, so a company ticker that collides with
+    an index alias (COMP) stays the company; None when it does not resolve."""
+    try:
+        return to_canonical(symbol, asset_class=AssetClass.EQUITY)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _fmp_symbol(symbol: str) -> str:
     """FMP's spelling for an input ticker (``^GSPC``, ``AAPL``, ``600519.SH``).
 
     Not the display spelling: FMP reads an index as ``^GSPC``, never ``SPX``, and
-    a canonical key (``AAPL.XNAS``) not at all. Resolved as an equity so a company
-    ticker that collides with an index alias (COMP) stays the company; the FMP
-    client respells ``.SH`` itself.
+    a canonical key (``AAPL.XNAS``) not at all. The FMP client respells
+    ``.SH`` itself.
     """
-    try:
-        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
-    except Exception:  # noqa: BLE001
+    ref = _equity_ref(symbol)
+    if ref is None:
         return symbol
     legacy = to_legacy_api(ref)
     return f"^{legacy}" if is_family_index(ref) else legacy
@@ -142,23 +161,46 @@ def _http_miss(exc: httpx.HTTPError) -> str:
     return type(exc).__name__
 
 
-async def _from_fmp(disp: str, read, *, data_type: str, **extra) -> dict:
-    """Answer a tool from FMP: *read* takes the client and returns the payload.
+async def _fmp_read(disp: str, read) -> tuple[Any, dict | None]:
+    """*read*'s answer from the FMP client, or the error envelope in its place.
 
-    The one place an FMP read gets its client, its envelope and its error, so a
-    tool passes only what it reads.
+    The one place an FMP read gets its client and its error, so a tool passes
+    only what it reads.
     """
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
+        return None, make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
     try:
-        payload = await read(client)
+        return await read(client), None
     except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+        return None, error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+
+
+async def _labels(read, what: str, disp: str) -> list:
+    """A read that only labels an answer: its failure is logged and reads as no rows."""
+    try:
+        return await read or []
+    except Exception as exc:  # noqa: BLE001 - the answer still stands without its labels
+        logger.warning("FMP %s unavailable for %s: %s", what, disp, type(exc).__name__)
+        return []
+
+
+async def _from_fmp(disp: str, read, *, data_type: str, **extra) -> dict:
+    """Answer a tool from FMP: *read* takes the client and returns the payload."""
+    payload, error = await _fmp_read(disp, read)
+    if error:
+        return error
     return make_response(
         payload or [], source=_SOURCE, symbol=disp, data_type=data_type, **extra
     )
+
+
+def _limit_error(disp: str, limit: int, most: int | None = None) -> dict | None:
+    if limit >= 1 and (most is None or limit <= most):
+        return None
+    span = f"between 1 and {most}" if most else "at least 1"
+    return make_error("invalid_argument", f"limit must be {span}, not {limit}", symbol=disp)
 
 
 async def _cn_first(disp: str, cn_read, fmp_read, *, data_type: str, **extra) -> dict:
@@ -454,22 +496,12 @@ async def get_historical_valuation(
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
 
-    try:
-        key_metrics = await client.get_key_metrics(api, period=period, limit=limit)
-    except Exception as exc:  # noqa: BLE001 - it only labels the rows, which still answer
-        logger.warning("FMP key metrics unavailable for %s: %s", disp, type(exc).__name__)
-        key_metrics = []
+    key_metrics = await _labels(client.get_key_metrics(api, period=period, limit=limit), "key metrics", disp)
 
     # FMP prices the DCF row in the listing's trading currency (in pence on a
     # pence venue) and the enterprise-value rows in the filings' currency, which
     # only the key-metrics row for the same period names.
-    try:
-        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
-    except Exception:  # noqa: BLE001
-        ref = None
-    # A venue the protocol does not know resolves to a USD default, not its currency.
-    currency = listing_currency(ref) if ref else None
-    places = minor_unit_places(symbol)
+    currency, places = listing_currency(_equity_ref(symbol)), minor_unit_places(symbol)
     reported = {row.get("date"): row.get("reportedCurrency") for row in key_metrics or []}
     return make_response(
         {
@@ -492,6 +524,207 @@ async def get_historical_valuation(
         currency=currency,
         data_type="historical_valuation",
         period=period,
+    )
+
+
+_MAX_RATING_ROWS = 100
+_OUT_GET_ANALYST_RATINGS = output_model(
+    "GetAnalystRatingsOut",
+    envelope_schema(
+        RECORDS_BY_KEY,
+        frame=("symbol",),
+        echo={
+            "currency": described(
+                STR,
+                "ISO 4217 currency of the price targets; omitted when the"
+                " listing's venue is unknown.",
+            ),
+            "data_type": STR,
+        },
+    ),
+)
+
+
+@mcp.tool()
+async def get_analyst_ratings(
+    symbol: str,
+    limit: int = 50,
+) -> _OUT_GET_ANALYST_RATINGS:
+    """Fetch analyst views: consensus price target, monthly rating counts, and
+    each firm's rating changes and price targets. Firm lists are mostly US
+    listings.
+
+    Args:
+        symbol: Ticker, e.g. "AAPL", "TSM".
+        limit: Rows per list, 1 to 100.
+
+    Returns:
+        dict: {symbol, currency?, count, data, source, data_type}. data is
+        {target_consensus, rating_counts, rating_actions, price_targets}, lists
+        newest first; count sums them. target_consensus: at most one row
+        {high, low, median, mean}. rating_counts, monthly: date, strongBuy,
+        buy, hold, sell, strongSell. rating_actions: date, gradingCompany,
+        previousGrade, newGrade, action. price_targets: date, analystCompany,
+        priceTarget, priceWhenPosted, newsTitle, newsURL.
+        Prices in currency, dates "YYYY-MM-DD". On error: {error: <code>,
+        detail, symbol}.
+    """
+    disp = _canonical(symbol)
+    if refused := _limit_error(disp, limit, _MAX_RATING_ROWS):
+        return refused
+    api = _fmp_symbol(symbol)
+    places = minor_unit_places(symbol)
+    ref = _equity_ref(symbol)
+
+    def cut(rows):
+        return (rows or [])[:limit]
+
+    async def _views(client):
+        consensus, counts, actions, targets = await asyncio.gather(
+            client.get_price_target_consensus(api),
+            client.get_grades_historical(api, limit=limit),
+            client.get_stock_grades(api, limit=limit),
+            client.get_price_target_news(api, limit=limit),
+        )
+        return {
+            "target_consensus": target_consensus(consensus or [], places),
+            # FMP answers every grade whatever limit asks for, so each list is cut here.
+            "rating_counts": rating_counts(cut(counts)),
+            "rating_actions": rating_actions(cut(actions)),
+            "price_targets": price_targets(cut(targets), places, ref.tz if ref else None),
+        }
+
+    return await _from_fmp(
+        disp,
+        _views,
+        data_type="analyst_ratings",
+        currency=listing_currency(ref),
+    )
+
+
+_OUT_GET_ANALYST_ESTIMATES = output_model(
+    "GetAnalystEstimatesOut",
+    envelope_schema(
+        RECORDS,
+        frame=("symbol",),
+        echo={
+            "currency": described(
+                STR,
+                "ISO 4217 currency of every estimate: the issuer's reporting"
+                " currency; omitted when no statement names it.",
+            ),
+            "data_type": STR,
+            "period": STR,
+        },
+    ),
+)
+
+
+@mcp.tool()
+async def get_analyst_estimates(
+    symbol: str,
+    period: Literal["annual", "quarter"] = "annual",
+    limit: int = 10,
+) -> _OUT_GET_ANALYST_ESTIMATES:
+    """Fetch consensus analyst estimates by fiscal period for revenue, EBITDA,
+    EBIT, net income, SG&A and EPS. Past periods keep their final consensus.
+
+    Args:
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
+        period: "annual" | "quarter" (a half-yearly reporter's are half-years).
+        limit: Periods back from the furthest one estimated, often years out
+            (default 10).
+
+    Returns:
+        dict: {symbol, currency?, count, data, source, data_type, period}. data:
+        list, latest period end first, of date (period end, "YYYY-MM-DD"),
+        revenueAvg, revenueLow, revenueHigh, the same for ebitda, ebit,
+        netIncome, sgaExpense and eps, numAnalystsRevenue, numAnalystsEps.
+        Figures are in currency (the filings') and EPS on the statements'
+        per-share basis; null means no estimate. On error: {error: <code>,
+        detail, symbol}.
+    """
+    disp = _canonical(symbol)
+    if refused := _limit_error(disp, limit):
+        return refused
+    api = _fmp_symbol(symbol)
+    answer, error = await _fmp_read(disp, lambda client: asyncio.gather(
+        client.get_analyst_estimates(api, period=period, limit=limit),
+        _labels(client.get_income_statement(api, period="annual", limit=1), "income statement", disp),
+    ))
+    if error:
+        return error
+    rows, statements = answer
+    return make_response(
+        estimate_rows(rows or []),
+        source=_SOURCE,
+        symbol=disp,
+        currency=(statements or [{}])[0].get("reportedCurrency"),
+        data_type="analyst_estimates",
+        period=period,
+    )
+
+
+_OUT_GET_EARNINGS_SURPRISES = output_model(
+    "GetEarningsSurprisesOut",
+    envelope_schema(
+        RECORDS,
+        frame=("symbol",),
+        echo={
+            "currency": described(
+                STR,
+                "ISO 4217 currency of the EPS and revenue figures; present"
+                " only for a US listing that files in US dollars.",
+            ),
+            "data_type": STR,
+        },
+    ),
+)
+
+
+@mcp.tool()
+async def get_earnings_surprises(
+    symbol: str,
+    limit: int = 12,
+) -> _OUT_GET_EARNINGS_SURPRISES:
+    """Fetch each report's EPS and revenue against the consensus estimate
+    before it, and the next scheduled report.
+
+    Args:
+        symbol: Ticker, e.g. "AAPL", "0700.HK".
+        limit: Reports, the next scheduled one included (default 12).
+
+    Returns:
+        dict: {symbol, currency?, count, data, source, data_type}. data: list,
+        newest first, of date (announcement day), fiscalDateEnding (end of
+        the quarter or half-year reported; null if still to come or
+        unmatched), epsActual, epsEstimated, revenueActual, revenueEstimated;
+        actuals are null for a report to come. EPS is the consensus basis,
+        which often leaves out one-time items, unlike statement epsDiluted.
+        currency is present only for a US listing that files in US dollars.
+        Dates are "YYYY-MM-DD". On error: {error: <code>, detail, symbol}.
+    """
+    disp = _canonical(symbol)
+    if refused := _limit_error(disp, limit):
+        return refused
+    api = _fmp_symbol(symbol)
+    answer, error = await _fmp_read(disp, lambda client: asyncio.gather(
+        client.get_earnings_report(api, limit=limit),
+        # Two periods past the oldest report, so each finds its period end.
+        _labels(client.get_income_statement(api, period="quarter", limit=limit + 2), "income statement", disp),
+    ))
+    if error:
+        return error
+    reports, statements = answer
+    # FMP gives a US listing's figures in US dollars only when it also files in
+    # them: a foreign issuer's rows mix dollar estimates with home-currency actuals.
+    files_in_usd = bool(statements) and statements[0].get("reportedCurrency") == "USD"
+    return make_response(
+        surprise_rows(reports or [], statements),
+        source=_SOURCE,
+        symbol=disp,
+        currency="USD" if symbol_market(disp) == "us" and files_in_usd else None,
+        data_type="earnings_surprises",
     )
 
 
@@ -734,10 +967,7 @@ async def get_technical_indicator(
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
-    try:
-        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
-    except Exception:  # noqa: BLE001
-        ref = None
+    ref = _equity_ref(symbol)
     try:
         data = await client.get_technical_indicator(
             api, indicator=indicator, period=period, timeframe=timeframe

@@ -153,6 +153,64 @@
     ],
     "required": []
   },
+  "mcp:fundamentals:get_analyst_estimates": {
+    "doc_lines": [
+      "Fetch consensus analyst estimates by fiscal period for revenue, EBITDA,",
+      "EBIT, net income, SG&A and EPS. Past periods keep their final consensus.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".",
+      "    period: \"annual\" | \"quarter\" (a half-yearly reporter's are half-years).",
+      "    limit: Periods back from the furthest one estimated, often years out",
+      "        (default 10).",
+      "",
+      "Returns:",
+      "    dict: {symbol, currency?, count, data, source, data_type, period}. data:",
+      "    list, latest period end first, of date (period end, \"YYYY-MM-DD\"),",
+      "    revenueAvg, revenueLow, revenueHigh, the same for ebitda, ebit,",
+      "    netIncome, sgaExpense and eps, numAnalystsRevenue, numAnalystsEps.",
+      "    Figures are in currency (the filings') and EPS on the statements'",
+      "    per-share basis; null means no estimate. On error: {error: <code>,",
+      "    detail, symbol}."
+    ],
+    "params": [
+      "limit",
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_analyst_ratings": {
+    "doc_lines": [
+      "Fetch analyst views: consensus price target, monthly rating counts, and",
+      "each firm's rating changes and price targets. Firm lists are mostly US",
+      "listings.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\", \"TSM\".",
+      "    limit: Rows per list, 1 to 100.",
+      "",
+      "Returns:",
+      "    dict: {symbol, currency?, count, data, source, data_type}. data is",
+      "    {target_consensus, rating_counts, rating_actions, price_targets}, lists",
+      "    newest first; count sums them. target_consensus: at most one row",
+      "    {high, low, median, mean}. rating_counts, monthly: date, strongBuy,",
+      "    buy, hold, sell, strongSell. rating_actions: date, gradingCompany,",
+      "    previousGrade, newGrade, action. price_targets: date, analystCompany,",
+      "    priceTarget, priceWhenPosted, newsTitle, newsURL.",
+      "    Prices in currency, dates \"YYYY-MM-DD\". On error: {error: <code>,",
+      "    detail, symbol}."
+    ],
+    "params": [
+      "limit",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
   "mcp:fundamentals:get_dividends_and_splits": {
     "doc_lines": [
       "Fetch historical dividend payments and stock splits.",
@@ -171,6 +229,33 @@
       "    {error: <code>, detail, symbol}."
     ],
     "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_earnings_surprises": {
+    "doc_lines": [
+      "Fetch each report's EPS and revenue against the consensus estimate",
+      "before it, and the next scheduled report.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\".",
+      "    limit: Reports, the next scheduled one included (default 12).",
+      "",
+      "Returns:",
+      "    dict: {symbol, currency?, count, data, source, data_type}. data: list,",
+      "    newest first, of date (announcement day), fiscalDateEnding (end of",
+      "    the quarter or half-year reported; null if still to come or",
+      "    unmatched), epsActual, epsEstimated, revenueActual, revenueEstimated;",
+      "    actuals are null for a report to come. EPS is the consensus basis,",
+      "    which often leaves out one-time items, unlike statement epsDiluted.",
+      "    currency is present only for a US listing that files in US dollars.",
+      "    Dates are \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+    ],
+    "params": [
+      "limit",
       "symbol"
     ],
     "required": [

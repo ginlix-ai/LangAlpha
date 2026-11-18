@@ -27,8 +27,8 @@
           "tool_exposure_mode": "detailed"
         },
         "fundamentals": {
-          "description": "Raw fundamental data, ownership, and technical indicators for multi-year analysis",
-          "instruction": "Use for financial statements, ratios, growth metrics, valuation data, insider trades, dividends/splits, shares float, key executives, and technical indicators. Returns raw JSON for programmatic analysis, charting, and model building.",
+          "description": "Raw fundamental data, analyst estimates and ratings, ownership, and technical indicators for multi-year analysis",
+          "instruction": "Use for financial statements, ratios, growth metrics, valuation data, analyst estimates, ratings and price targets, earnings surprises, insider trades, dividends/splits, shares float, key executives, and technical indicators. Returns raw JSON for programmatic analysis, charting, and model building.",
           "tool_exposure_mode": "summary"
         },
         "macro": {
