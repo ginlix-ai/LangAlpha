@@ -1,3 +1,5 @@
+import { toast } from '@/components/ui/use-toast';
+
 /**
  * `navigator.clipboard` is restricted to secure contexts (HTTPS or localhost):
  * it is `undefined` when the app is opened over plain HTTP from another device
@@ -63,4 +65,13 @@ function copyBySelection(text: string): boolean {
     holder.remove();
     field?.focus({ preventScroll: true });
   }
+}
+
+/** Copy with the toast every copy control shows: `copied` once it is on the
+ *  clipboard and `failed` when it is not, so a copy never fails silently. */
+export function copyWithToast(text: string, copied: string, failed: string): void {
+  copyText(text).then(
+    () => toast({ title: copied }),
+    () => toast({ variant: 'destructive', title: failed }),
+  );
 }

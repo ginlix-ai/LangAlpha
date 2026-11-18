@@ -19,7 +19,8 @@ import { copyText } from '@/lib/clipboard';
 import WorkspaceImage from './WorkspaceImage';
 import { isFilePath, isImagePath, normalizeFilePath, parseFolderHref, parseWsPath } from '../utils/filePaths';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
-import { useShareLinkOpener } from '../contexts/ShareLinkOpenerContext';
+import { useLinkActions } from '../contexts/LinkActionsContext';
+import { isWebAddress, WebLinkMenu } from './WebLinkMenu';
 import { onOtherComputer, parseAgentHref, parseAgentPath } from '../utils/agentPaths';
 import { prepareMarkdownSource } from '../utils/markdownSource';
 import { splitFileLocation, type OpenFileHandler } from '../utils/fileLocation';
@@ -377,10 +378,11 @@ const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
 // A page of this app opens in place, through the router and past the host's
 // leave guard; anything else opens in a new tab so the conversation survives
 // the detour, unless the chat around it takes the click (an app or file link
-// it opens as a panel tab). A modified click is always the new tab.
+// it opens as a panel tab). A modified click is always the new tab. Where the
+// chat has a computer's browser, a web link's right-click menu offers it too.
 function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
   const route = useInRouterContext() ? appRoutePath(href) : null;
-  const openShareLink = useShareLinkOpener();
+  const { openShareLink, openInBrowser } = useLinkActions();
   if (isFootnoteLink(props)) return <FootnoteLink href={href} {...props} />;
   if (route !== null) return <GuardedLink to={route} {...props} />;
   const onClick = openShareLink && href
@@ -389,7 +391,9 @@ function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
         if (openShareLink(href)) e.preventDefault();
       }
     : undefined;
-  return <a href={href} target="_blank" rel="noopener noreferrer" onClick={onClick} {...props} />;
+  const link = <a href={href} target="_blank" rel="noopener noreferrer" onClick={onClick} {...props} />;
+  if (!openInBrowser || !isWebAddress(href)) return link;
+  return <WebLinkMenu href={href} openInBrowser={openInBrowser}>{link}</WebLinkMenu>;
 }
 const chatA = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <MarkdownLink className="underline hover:opacity-80 transition-opacity [overflow-wrap:anywhere] [word-break:normal]" style={{ color: 'var(--color-accent-primary)' }} {...props} />

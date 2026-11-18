@@ -89,6 +89,11 @@ export function usePanelTarget({
         tabs.openStatus();
         onTargetHandled?.(target.seq);
         return;
+      case 'browser':
+        if (target.front) cancelPending();
+        tabs.openBrowser({ focus: target.front });
+        onTargetHandled?.(target.seq);
+        return;
       // The entry a memory or memo target names is read by the tab's body,
       // which clears the target once its list has resolved and selected it.
       case 'memory':

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState, Suspense } from 'react';
-import { CandlestickChart, FolderTree, LayoutDashboard, Upload } from 'lucide-react';
+import { BookMarked, CandlestickChart, FolderTree, Globe, LayoutDashboard, ScrollText, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   memoMimeForName,
@@ -50,7 +50,7 @@ import { useTreeInteraction, useTreeOpen } from './filePanel/useTreeInteraction'
 import { useFileRefOpen } from './filePanel/useFileRefOpen';
 import { PanelNotices } from './filePanel/PanelNotices';
 import { RestoreOffer } from './RestoreOffer';
-import { useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
+import { useSharedEntry, useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import { FileContextMenu, type FileMenuAction } from './filePanel/FileContextMenu';
 import { useFileDownloads } from './filePanel/useFileDownloads';
 import { useFileBodyCache, useFileBody } from './filePanel/useFileBody';
@@ -60,15 +60,20 @@ import { TabStrip } from './filePanel/TabStrip';
 import { AnimatePresence } from '@/lib/framer';
 import { TreeColumn } from './filePanel/TreeColumn';
 import { FileCrumbs } from './filePanel/FileCrumbs';
+import { BrowserCrumbs } from './filePanel/BrowserCrumbs';
 import { PreviewCrumbs } from './filePanel/PreviewCrumbs';
 import { SiblingCrumbs } from './filePanel/SiblingCrumbs';
 import { PreviewPanes } from './filePanel/PreviewPanes';
 import { commentViewer, useFileComments } from './filePanel/useFileComments';
+import { useBrowserView } from './filePanel/useBrowserView';
+import { useBrowserGone, useBrowserHere } from '../hooks/useBrowserHere';
+import type { BrowserViewSession } from './filePanel/browserStream';
+import { useComputer } from '../hooks/useComputers';
 import { usePreviews } from './filePanel/usePreviews';
 import { usePanelTarget } from './filePanel/usePanelTarget';
 import { useCommentUi } from './viewers/html/comments/useCommentUi';
 import { ActiveTabBody } from './filePanel/ActiveTabBody';
-import type { NewTabMenu } from './filePanel/panelLaunchers';
+import type { NewTabMenu, PanelLauncher } from './filePanel/panelLaunchers';
 import { useWatchTab } from './filePanel/useWatchTab';
 import type { MarketWatchState } from '../session/marketWatchEvents';
 import { useThreadWakeups } from '../hooks/useWakeups';
@@ -159,6 +164,9 @@ interface FilePanelProps {
   onReturnHome?: (() => void) | null;
   /** What the way back is labelled with; Home when unset. */
   returnLabel?: string | null;
+  /** The browser view of the workspace shown, held by the host so it follows the
+   *  workspace rather than the mount. None offers no Browser tab. */
+  browserView?: BrowserViewSession | null;
 }
 
 function FilePanel({
@@ -197,6 +205,7 @@ function FilePanel({
   onActiveTabKindChange = null,
   onReturnHome = null,
   returnLabel = null,
+  browserView = null,
 }: FilePanelProps): React.ReactElement {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -275,6 +284,18 @@ function FilePanel({
   const selectedFile = activeTab.kind === 'file' ? activeTab.path : null;
 
   const previews = usePreviews(workspaceId);
+  const { data: computer } = useComputer(wsData?.computer_id ?? null);
+  const sharedWorkspace = useSharedEntry(workspaceId) != null;
+  const browserHere = useBrowserHere(computer, sharedWorkspace);
+  useBrowserView(browserView, workspaceId, wsData?.computer_id ?? null, isActive && activeTab.kind === 'browser' && browserHere);
+  // A Browser tab kept from a computer that had one, or from before the reader
+  // turned the browser off, closes once it is known there is none here.
+  const browserGone = useBrowserGone(computer);
+  const browserTabId = tabs.tabs.find((t) => t.kind === 'browser')?.id ?? null;
+  const closeBrowserTab = tabs.closeTab;
+  useEffect(() => {
+    if (browserGone && browserTabId) closeBrowserTab(browserTabId);
+  }, [browserGone, browserTabId, closeBrowserTab]);
   // Publishing, comments, versions and a file's record are the owner's: a
   // read-only panel, or a share's, shows a file alone. Decided here once, and
   // what acts on it reads this rather than deciding again.
@@ -741,16 +762,30 @@ function FilePanel({
     previews.ensure(port);
   }, [previews, tabs, cancelPending]);
 
-  const openChart = readOnly ? null : () => { cancelPending(); tabs.openChart({ symbol: lastChartSymbol(workspaceId, { persist: persistStrip }) }); };
+  // The live views a tab can show besides files, each only where it has a place:
+  // a chart not on a share, the browser only beside a computer that has one.
+  const liveViews: PanelLauncher[] = readOnly ? [] : [
+    {
+      key: 'chart',
+      label: t('filePanel.chartTab'),
+      icon: CandlestickChart,
+      open: () => { cancelPending(); tabs.openChart({ symbol: lastChartSymbol(workspaceId, { persist: persistStrip }) }); },
+    },
+    ...(browserView && workspaceId && browserHere ? [{ key: 'browser', label: t('filePanel.browserTab'), icon: Globe, open: () => { cancelPending(); tabs.openBrowser(); } }] : []),
+  ];
+
+  // Pinned above the tree's listing: the reader's stores, then the live views.
+  const pinned: PanelLauncher[] = [
+    ...(stores ? [{ key: 'memory', label: t('filePanel.tabs.memory'), icon: BookMarked, open: openMemory }] : []),
+    ...(viewInMemo ? [{ key: 'memo', label: t('filePanel.tabs.memo'), icon: ScrollText, open: viewInMemo }] : []),
+    ...liveViews,
+  ];
 
   // A right click on the new tab button picks what the tab opens on: the
-  // files, as a plain click gives, a chart, or a running app's tab. Each one
-  // opens beside the tab in front, or on the tab it already has.
+  // files, as a plain click gives, a live view, or a running app's tab. Each
+  // one opens beside the tab in front, or on the tab it already has.
   const newTabMenu: NewTabMenu = {
-    kinds: [
-      { key: 'files', label: t('filePanel.files'), icon: FolderTree, open: newTab },
-      ...(openChart ? [{ key: 'chart', label: t('filePanel.chartTab'), icon: CandlestickChart, open: openChart }] : []),
-    ],
+    kinds: [{ key: 'files', label: t('filePanel.files'), icon: FolderTree, open: newTab }, ...liveViews],
     apps: previews.previews.map((app) => ({
       key: `app:${app.port}`, label: app.title || `:${app.port}`, icon: LayoutDashboard, open: () => openPreviewTab(app.port),
     })),
@@ -811,6 +846,8 @@ function FilePanel({
           readOnly={readOnly}
         />
       )}
+
+      {activeTab.kind === 'browser' && browserView && <BrowserCrumbs view={browserView} computer={capabilities.machineSettings ? computer ?? null : null} />}
 
       {selectedFile && (
         <FileCrumbs
@@ -937,6 +974,7 @@ function FilePanel({
               {!treeFull && (
               <ActiveTabBody
                 activeTab={activeTab}
+                browser={browserView}
                 tabs={tabs}
                 workspaceId={workspaceId}
                 apiAdapter={apiAdapter}
@@ -1020,9 +1058,7 @@ function FilePanel({
               onCancelUpload={uploadProgress !== null ? cancelUpload : null}
               previews={previews.previews}
               onOpenPreview={openPreviewTab}
-              onOpenMemory={stores ? openMemory : null}
-              onOpenMemo={viewInMemo}
-              onOpenChart={openChart}
+              pinned={pinned}
               onOpenSettings={!readOnly && !isHome && capabilities.machineSettings ? openSettings : null}
               workspaceName={wsData?.name}
               filesRestoreIncomplete={filesRestoreIncomplete}

@@ -23,10 +23,11 @@ import { PREVIEW_PORT_MAX, PREVIEW_PORT_MIN, type ChartTabSpec, type PreviewSpec
  * the transcript and are never stored: each carries an id and reads the live
  * record at render.
  *
- * Settings, memory, memo and status are each the one tab of their kind, and
- * carry nothing: the body is the store itself, or the live watch. The first
- * three are kept across reloads like a file; status depends on a watch that
- * may be over by then, so it is not.
+ * Settings, memory, memo, status and browser are each the one tab of their
+ * kind, and carry nothing: the body is the store itself, the live watch, or the
+ * computer's browser. All but status are kept across reloads like a file; status
+ * depends on a watch that may be over by then, so it is not. A browser tab that
+ * comes back only looks: it starts nothing.
  */
 type TabBody =
   | { kind: 'empty' }
@@ -43,6 +44,7 @@ type TabBody =
   | { kind: 'memory' }
   | { kind: 'memo' }
   | { kind: 'status' }
+  | { kind: 'browser' }
   | {
     kind: 'preview';
     /** The sandbox port the dev server listens on. Identifies the tab. */
@@ -83,7 +85,7 @@ type EphemeralKind = (typeof EPHEMERAL_KINDS)[number];
 type PersistableTab = Exclude<FileTab, { kind: 'empty' | EphemeralKind }>;
 
 /** The kinds with one tab each, reopened by focusing it. */
-type SingletonKind = 'settings' | 'memory' | 'memo' | 'status';
+type SingletonKind = 'settings' | 'memory' | 'memo' | 'status' | 'browser';
 
 /** A tab the file tree can sit beside: the listing belongs to files and the empty tab, not to a chart, a tool result or an app. */
 export function isListingTab(tab: FileTab): boolean {
@@ -142,6 +144,7 @@ const persistedTabSchemas = {
   settings: z.object({ kind: z.literal('settings') }),
   memory: z.object({ kind: z.literal('memory') }),
   memo: z.object({ kind: z.literal('memo') }),
+  browser: z.object({ kind: z.literal('browser') }),
   preview: z.object({
     kind: z.literal('preview'),
     // Outside the served range the tab would restore as a permanent error
@@ -592,22 +595,22 @@ export function useFileTabs(
   }, []);
 
   /** A second open of a singleton kind comes back to the tab it already has. */
-  const openSingleton = useCallback((kind: SingletonKind) => {
-    setState((prev) => place(prev, (t) => t.kind === kind, () => ({ kind })));
+  /**
+   * `focus: false` is for what the agent starts, a watch or browsing, with the
+   * reader on something else: the tab joins the end of the strip and the reader
+   * stays on what they were reading.
+   */
+  const openSingleton = useCallback((kind: SingletonKind, { focus = true }: { focus?: boolean } = {}) => {
+    setState((prev) => {
+      if (focus) return place(prev, (t) => t.kind === kind, () => ({ kind }));
+      return prev.tabs.some((t) => t.kind === kind) ? prev : { ...prev, tabs: [...prev.tabs, { id: newId(), kind }] };
+    });
   }, []);
   const openSettings = useCallback(() => openSingleton('settings'), [openSingleton]);
   const openMemory = useCallback(() => openSingleton('memory'), [openSingleton]);
   const openMemo = useCallback(() => openSingleton('memo'), [openSingleton]);
-  /**
-   * `focus: false` is for a watch the agent started: the tab joins the end of
-   * the strip and the reader stays on what they were reading.
-   */
-  const openStatus = useCallback(({ focus = true }: { focus?: boolean } = {}) => {
-    if (focus) return openSingleton('status');
-    setState((prev) => (prev.tabs.some((t) => t.kind === 'status')
-      ? prev
-      : { ...prev, tabs: [...prev.tabs, { id: newId(), kind: 'status' }] }));
-  }, [openSingleton]);
+  const openStatus = useCallback((options?: { focus?: boolean }) => openSingleton('status', options), [openSingleton]);
+  const openBrowser = useCallback((options?: { focus?: boolean }) => openSingleton('browser', options), [openSingleton]);
 
   /**
    * One tab per port: a second open of a running app comes back to the tab it
@@ -751,6 +754,7 @@ export function useFileTabs(
     openMemory,
     openMemo,
     openStatus,
+    openBrowser,
     openPreview,
     openChart,
     retargetChart,
@@ -763,7 +767,7 @@ export function useFileTabs(
     forgetPaths,
   }), [
     state.tabs, activeTab, openPaths,
-    activate, openFile, pinTab, closeTab, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus,
+    activate, openFile, pinTab, closeTab, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
     openPreview, openChart, retargetChart, openTool, openSources, patchTab, clearLocation, historyTarget, stepHistory, forgetPaths,
   ]);
 }

@@ -282,6 +282,24 @@ export async function setComputerAlwaysOn(computerId: string, enabled: boolean):
   return data;
 }
 
+/** How sharply the computer's live browser view is drawn. */
+export type BrowserQuality = 'light' | 'standard' | 'sharp' | 'retina';
+
+/**
+ * Choose the live view's quality, or with null go back to the one the
+ * computer's size gets. The open browser keeps the one it started with, since
+ * changing it would restart the browser, so it applies the next time it opens.
+ */
+export async function setComputerBrowserQuality(computerId: string, quality: BrowserQuality | null): Promise<Computer> {
+  if (!computerId) throw new Error('Computer ID is required');
+  const { data } = await api.post<Computer>(
+    `/api/v1/computers/${computerId}/browser-quality`,
+    { quality },
+    { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
+  );
+  return data;
+}
+
 /**
  * Turn the file backup of a machine the user brings on or off. Off keeps each
  * workspace's last backup but stops updating it. The server refuses a hosted

@@ -56,6 +56,7 @@ import type {
 } from '../types';
 import { setCardFields, settleProposalFromResult } from '../interrupts/buckets';
 import { projectLiveInterrupt } from '../interrupts/fromLiveEvent';
+import { BrowserUseWatch } from './browserUse';
 import type { StreamRuntime } from '../runtime';
 import { preapprovedReportBack } from '../../utils/preapprovedCards';
 import { dispatchResultFields } from '../../utils/dispatchResult';
@@ -177,6 +178,8 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
 
   // Those calls still to answer, by call id.
   const pendingRefreshCalls = new Map<string, RefreshOnResult>();
+
+  const browserUse = new BrowserUseWatch();
 
   // The main lane's next order, for a frame that carries no id of its own.
   const nextCount = (): number => ++refs.contentOrderCounterRef.current;
@@ -705,6 +708,10 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       });
       return;
     }
+
+    // The agent or any of its subagents may drive the browser.
+    const use = browserUse.seen(eventType, event);
+    if (use) rt.onBrowserUse?.(use);
 
     // Handle subagent message events (filter them out from main chat view)
     if (isSubagent) {

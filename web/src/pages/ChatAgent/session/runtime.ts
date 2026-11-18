@@ -30,6 +30,7 @@
 
 import type React from 'react';
 import type { QueryClient } from '@tanstack/react-query';
+import type { BrowserUse } from './stream/browserUse';
 import type {
   SetMessages, TokenUsage, OffloadBatch, SSEEvent,
   TaskRefs, HistoryInterruptInfo, FallbackSuggestion, TurnStatus,
@@ -141,6 +142,8 @@ export interface StreamRuntime {
   onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null;
   onFileArtifact: ((event: SSEEvent) => void) | null;
   onPreviewUrl: ((data: PreviewData) => void) | null;
+  /** A shell command drove the computer's browser. */
+  onBrowserUse: ((use: BrowserUse) => void) | null;
   // stable
   /** The app's query cache, which a stored chart layer is written to. */
   queryClient: QueryClient;
