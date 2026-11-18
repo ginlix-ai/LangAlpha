@@ -281,3 +281,19 @@ def test_a_stub_target_follows_the_item_as_the_index_cuts_it():
     assert "Balance sheet" not in fs["7"].text
     assert fs["2"].status == "stub" and "Results of operations" in fs["2"].target.text
     assert "Balance sheet" not in fs["2"].target.text
+
+def test_pages_numbered_before_a_running_text_that_opens_with_a_year_are_found():
+    footer = ("2025 ANNUAL REPORT {}", "{} 2025 ANNUAL REPORT")
+    doc = html(
+        p("ANNUAL REPORT ON FORM 10-K"), p("FORM 10-K CROSS REFERENCE INDEX"),
+        "<table>", row("PART I", "", "Page(s)"), row("Item 1.", "Business", "2-3, 5"),
+        row("Item 1A.", "Risk Factors", "4"), row("Item 7.", "Management's Discussion and Analysis", "3-4"),
+        row("Item 8.", "Financial Statements and Supplementary Data", "6"), "</table>",
+        *(p(b) + p(footer[k % 2].format(k)) for k, b in enumerate(
+            ["Contents. " + BODY, "About the company. " + BODY, "Segments. " + BODY, "Risks. " + BODY,
+             "Legal matters. " + BODY, "Consolidated balance sheet. " + BODY], 1)))
+    fs = extract_sections(submission("10-K", "2026-01-29", ("10-K", doc)))
+    business = fs["1"]
+    assert business.status == "xref"
+    assert business.text.startswith("About the company") and "Legal matters" in business.text
+    assert fs["1A"].status == "xref" and fs["1A"].text.startswith("Risks")

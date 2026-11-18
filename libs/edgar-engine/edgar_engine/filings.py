@@ -16,7 +16,7 @@ for amendments filed years later and for several amendments to one original. An 
 period matches no original gets amends=None here; edgar_engine.amendments reads the amendment's own
 cover page and explanatory note, which place it and correct a period of report typed wrong.
 
-refs_from_rows, link_amendments, period_rule, pick_ref and companyfacts_labels are the steps list_filings and
+refs_from_rows, link_amendments, period_rule and pick_ref are the steps list_filings and
 select_filing are built from, exposed as test seams, not as API.
 
 Only APIs that edgartools 5.62 and 6.0 share are used. A company with no filings of the form
@@ -28,7 +28,6 @@ import calendar
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Iterable, Literal, Mapping
 
@@ -37,7 +36,7 @@ from .sections.vocab import base_form, filed_forms, is_amendment
 
 FiscalSource = Literal["xbrl", "period_rule"]
 
-__all__ = ["FilingRef", "base_form", "list_filings", "select_filing"]
+__all__ = ["FilingRef", "base_form", "companyfacts_labels", "get_filing", "list_filings", "select_filing"]
 
 
 @dataclass(frozen=True)
@@ -226,21 +225,15 @@ def pick_ref(
 
 def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:
     """(accession, form) -> (fiscal year, fiscal period), by majority vote over the companyfacts facts of that filing.
-    Cached for the day, so a long-lived process sees later filings' labels, and read-only, because every caller
-    shares the cached result. A company with no companyfacts yet is not cached."""
+    Read from SEC on every call and kept nowhere, since a new filing adds labels; a caller that lists several forms
+    reads them once and passes them to list_filings as fiscal_labels. Read-only, so callers can share one result."""
+    from edgar.entity.entity_facts import download_company_facts_from_sec
     from edgar.exceptions import CompanyFactsNotFoundError
 
     try:
-        return _companyfacts_labels(cik, date.today())
+        facts = download_company_facts_from_sec(cik)
     except CompanyFactsNotFoundError:
         return MappingProxyType({})
-
-
-@lru_cache(maxsize=64)
-def _companyfacts_labels(cik: int, day: date) -> Mapping[tuple[str, str], tuple[int, str]]:
-    from edgar.entity.entity_facts import download_company_facts_from_sec
-
-    facts = download_company_facts_from_sec(cik)
     votes: dict[tuple[str, str], Counter] = defaultdict(Counter)
     for concepts in (facts or {}).get("facts", {}).values():
         for concept in concepts.values():
@@ -267,12 +260,19 @@ def list_filings(
     *,
     amendments: bool = False,
     filed_on_or_before: str | None = None,
+    full_history: bool = True,
+    fiscal_labels: Mapping[tuple[str, str], tuple[int, str]] | None = None,
 ) -> list[FilingRef]:
-    """Filings of a form, newest first. company is a ticker, a CIK (int or str) or an edgar.Company."""
+    """Filings of a form, newest first. company is a ticker, a CIK (int or str) or an edgar.Company.
+
+    full_history=False reads only the filings an edgar.Company loads first, EDGAR's recent page (at least the
+    last year, or the last 1,000 filings), unless that Company has already loaded the rest. A filer with tens of
+    thousands of filings (a bank issuing notes) spreads the rest over dozens of further requests."""
     company = _company(company)
     forms = filed_forms(form)
     annual = filed_forms("10-K") if base_form(form) == "10-Q" else ()
-    filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms), *annual] if amendments else [*forms, *annual])
+    filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms), *annual] if amendments else [*forms, *annual],
+                                  trigger_full_load=full_history)
     if filings is None or filings.data.num_rows == 0:
         return []
     fiscal_year_end = getattr(company, "fiscal_year_end", None)
@@ -282,7 +282,7 @@ def list_filings(
         forms,
         amendments=amendments,
         filed_on_or_before=filed_on_or_before,
-        fiscal_labels=companyfacts_labels(int(company.cik)),
+        fiscal_labels=companyfacts_labels(int(company.cik)) if fiscal_labels is None else fiscal_labels,
         fiscal_year_end=fiscal_year_end,
     )
 
@@ -295,12 +295,35 @@ def select_filing(
     fiscal_period: str | None = None,
     period_end: str | None = None,
     filed_on_or_before: str | None = None,
+    full_history: bool = True,
+    fiscal_labels: Mapping[tuple[str, str], tuple[int, str]] | None = None,
 ) -> FilingRef | None:
     """One original filing: the latest, or the one for a fiscal year/period or for a report period ending on
     period_end (YYYY-MM-DD or YYYY-MM). Its amendments are read with edgar_engine.get_sections, which checks each
-    one's own text."""
-    refs = list_filings(company, form, filed_on_or_before=filed_on_or_before)
-    return pick_ref(refs, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
+    one's own text.
+
+    EDGAR's recent page is read first, and the whole history (full_history) only when the filing can be older than
+    that page: nothing on it matches, and the period asked for is not later than every period its XBRL labels on
+    it. A match labeled by the period rule is also read again from the whole history, since older filings can move
+    the years that rule infers (refs_from_rows)."""
+    company = _company(company)
+    listing = dict(filed_on_or_before=filed_on_or_before, fiscal_labels=fiscal_labels)
+    period = dict(fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
+    recent = list_filings(company, form, full_history=False, **listing)
+    ref = pick_ref(recent, **period)
+    settled = ref is not None and (ref.fiscal_source != "period_rule" or fiscal_year is None and fiscal_period is None)
+    if settled or not full_history or _later_than_all(recent, fiscal_year, period_end):
+        return ref
+    return pick_ref(list_filings(company, form, **listing), **period)
+
+
+def _later_than_all(refs: list[FilingRef], fiscal_year: int | None, period_end: str | None) -> bool:
+    """The period asked for is later than every period refs cover, so no older page can hold it. Only XBRL labels
+    count for years: a year the period rule inferred can move once older filings are read."""
+    years = [r.fiscal_year for r in refs if r.fiscal_year is not None and r.fiscal_source == "xbrl"]
+    ends = [r.report_date for r in refs if r.report_date]
+    return bool((fiscal_year is not None and years and fiscal_year > max(years))
+                or (period_end and ends and period_end > max(ends)[:len(period_end)]))
 
 
 def get_filing(ref: FilingRef):

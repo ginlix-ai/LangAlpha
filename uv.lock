@@ -2375,6 +2375,7 @@ dependencies = [
     { name = "json-repair" },
     { name = "jsonschema" },
     { name = "langalpha-chartkit" },
+    { name = "langalpha-edgar-engine" },
     { name = "langalpha-market-protocol" },
     { name = "langchain", extra = ["mcp"] },
     { name = "langchain-anthropic" },
@@ -2493,6 +2494,7 @@ requires-dist = [
     { name = "json-repair", specifier = ">=0.7.0" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "langalpha-chartkit", editable = "libs/chartkit" },
+    { name = "langalpha-edgar-engine", editable = "libs/edgar-engine" },
     { name = "langalpha-market-protocol", editable = "libs/market-protocol" },
     { name = "langchain", extras = ["mcp"], specifier = ">=1.4.0" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },
@@ -2570,6 +2572,24 @@ dev = [
     { name = "pytest-socket", specifier = ">=0.7.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]
+
+[[package]]
+name = "langalpha-edgar-engine"
+version = "0.1.0"
+source = { editable = "libs/edgar-engine" }
+dependencies = [
+    { name = "edgartools" },
+    { name = "lxml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "edgartools", specifier = ">=5.62.1,<7" },
+    { name = "lxml", specifier = ">=5.3" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0.0" }]
 
 [[package]]
 name = "langalpha-market-protocol"

@@ -80,7 +80,7 @@ class FormSpec:
     def lists_exhibits(self, item: str, heading: str) -> bool:
         """The item listing the report's exhibits: its heading names exhibits (a 10-K's Item 14 in the numbering
         before 2003, Item 15 since), or with no such heading its number (10-K Item 15, 10-Q Part II Item 6,
-        20-F Item 19)."""
+        20-F Item 19, 8-K Item 9.01, Item 7 before August 2004)."""
         return item in self.exhibit_items or bool(_EXHIBIT_HEADING.search(heading))
 
 
@@ -93,8 +93,10 @@ _TENQ = FormSpec("10-Q", tuple(TENQ), required_parts=frozenset({"I", "II"}), par
 _TWENTYF = FormSpec("20-F", tuple(TWENTYF), PART_OF_20F, required_parts=frozenset({"I", "II", "III"}), lettered_16=True,
                     statement_pages=True, xref_index=True, statement_items=frozenset({"17", "18"}),
                     exhibit_items=frozenset({"19"}))
-_EIGHTK = FormSpec("8-K", tuple(EIGHTK), dotted_items=True, section_dividers=True, stacked_headings=True, stubs=False)
-_EIGHTK_OLD = replace(_EIGHTK, order=tuple(EIGHTK_OLD), dotted_items=False, undotted_items=True)
+_EIGHTK = FormSpec("8-K", tuple(EIGHTK), dotted_items=True, section_dividers=True, stacked_headings=True, stubs=False,
+                   exhibit_items=frozenset({"9.01"}))
+_EIGHTK_OLD = replace(_EIGHTK, order=tuple(EIGHTK_OLD), dotted_items=False, undotted_items=True,
+                      exhibit_items=frozenset({"7"}))
 _FORTYF_DOCUMENTS = frozenset({"AIF", "AFS", "MDA"})
 _FORTYF = FormSpec("40-F", part_of={d: "documents" for d in _FORTYF_DOCUMENTS}, default_part="form",
                    required_parts=frozenset({"documents", "form"}), principal_documents=_FORTYF_DOCUMENTS,

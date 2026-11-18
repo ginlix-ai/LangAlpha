@@ -6,8 +6,9 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from ..submission import parse_submission
 from .boundaries import find_items
-from .documents import decode, header, main_documents, split
+from .documents import decode, header, main_documents, require_complete, split
 from .model import FilingSections, Section
 from .pages import Pagination
 from .rendering import render_documents
@@ -19,11 +20,7 @@ from .version import SECTIONS_VERSION
 if TYPE_CHECKING:
     from ..cache import SectionsCache, SubmissionCache
 
-_OPEN = re.compile(r"<DOCUMENT>", re.I)
-_CLOSE = re.compile(r"</DOCUMENT>", re.I)
 _ITEM_HEADING = re.compile(r"\W*(?:PART\s+[IV]+\W*)?ITEMS?\b", re.I)
-_SUBMISSION_OPEN = re.compile(r"<SEC-DOCUMENT>", re.I)
-_SUBMISSION_CLOSE = re.compile(r"</SEC-DOCUMENT>", re.I)
 
 
 def extract_sections(submission: bytes | str, *, form: str | None = None, filing_date: str | None = None,
@@ -31,20 +28,18 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
     """Items of one filing from its full-text submission (the accession's .txt file).
 
     form, filing_date and accession default to the submission's SEC header; filing_date is YYYY-MM-DD or
-    YYYYMMDD. A submission with no document, a <DOCUMENT> left open, or an <SEC-DOCUMENT> never closed is
+    YYYYMMDD. Each item names the accession as its source. A submission with no document, a <DOCUMENT> left open, or an <SEC-DOCUMENT> never closed is
     refused: a partial download, or an HTTP cache that kept one, would otherwise parse into items cut short
     or missing with no sign of it.
     """
     text = decode(submission)
-    opened = len(_OPEN.findall(text))
-    if not opened or opened != len(_CLOSE.findall(text)) or (
-            _SUBMISSION_OPEN.search(text[:1000]) and not _SUBMISSION_CLOSE.search(text[-1000:])):
-        raise ValueError("the submission is truncated or holds no document")
+    require_complete(text)
     head = header(text)
     form = form or head.get("form")
     if not form:
         raise ValueError("form is not given and the submission header does not name it")
     filing_date = filing_date or head.get("filing_date")
+    accession = accession or head.get("accession")
     if filing_date and re.fullmatch(r"\d{8}", filing_date):
         filing_date = f"{filing_date[:4]}-{filing_date[4:6]}-{filing_date[6:]}"
     if filing_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date):
@@ -70,8 +65,9 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
         resolved = [iid for iid, s in items.items() if s.target is not None]
         xref.apply(items, rendering, pages, resolver, layout, list(spec.order))
         _retarget(items, resolved, rendering, layout, resolver)
-    return FilingSections(accession=accession or head.get("accession"), form=form, filing_date=filing_date,
-                          items=items, text=full, engine_version=SECTIONS_VERSION, documents=rendering.documents)
+    return FilingSections(accession=accession, form=form, filing_date=filing_date,
+                          items={k: replace(s, source=accession) for k, s in items.items()}, text=full,
+                          engine_version=SECTIONS_VERSION, documents=rendering.documents)
 
 
 def _body(lines: list[str], start: int, end: int, spec) -> str:
@@ -103,17 +99,21 @@ def _retarget(items: dict[str, Section], resolved: list[str], rendering, layout,
 def sections_for_filing(filing, cache: SectionsCache | None = None,
                         submissions: SubmissionCache | None = None) -> FilingSections:
     """Items of an edgartools Filing as filed, each labeled with the filing's accession as its source, read
-    through cache (a SectionsCache) when one is given. With submissions (a SubmissionCache), the raw submission is
-    kept by accession and read from there; one that does not parse (a truncated download) is not kept."""
+    through cache (a SectionsCache) when one is given. With
+    submissions (a SubmissionCache), the raw submission is kept by accession and read from there; one that does not
+    parse (a truncated download) is not kept. Without it, a download that does not parse is fetched once more
+    (submission.parse_submission)."""
+    def extract(raw):
+        return extract_sections(raw, form=filing.form, filing_date=str(filing.filing_date), accession=filing.accession_no)
+
     def compute():
-        acc = filing.accession_no
-        raw = filing.full_text_submission() if submissions is None else submissions.get_or_fetch(
-            acc, filing.full_text_submission)
+        if submissions is None:
+            return parse_submission(filing, extract)
+        raw = submissions.get_or_fetch(filing.accession_no, filing.full_text_submission)
         try:
-            return extract_sections(raw, form=filing.form, filing_date=str(filing.filing_date), accession=acc)
+            return extract(raw)
         except ValueError:
-            if submissions is not None:
-                submissions.delete(acc)
+            submissions.delete(filing.accession_no)
             raise
     sections = compute() if cache is None else cache.get_or_compute(filing.accession_no, compute)
     return replace(sections, items={k: replace(s, source=s.source or sections.accession) for k, s in sections.items.items()})

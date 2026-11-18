@@ -153,7 +153,7 @@ from src.llms.claude_code import ClaudeCodeTarget
 from src.tools.web.search import get_web_search_tool
 from src.tools.web.fetch import web_fetch_tool
 from src.tools.web.crawl import create_crawl_tools
-from src.tools.sec.tool import get_sec_filing
+from src.tools.sec.tool import create_sec_filing_tool
 from src.tools.market_data.tool import (
     get_daily_prices,
     get_company_overview,
@@ -580,7 +580,7 @@ class PTCAgent:
             shared_tools.extend(crawl_tools)
 
         finance_tools = [
-            get_sec_filing,  # SEC filing extraction (10-K, 10-Q, 8-K)
+            create_sec_filing_tool(filesystem_backend),  # SEC filings; full text to data/sec/
             get_quote,  # Real-time quotes (cheap — price freshness)
             get_daily_prices,  # Stock OHLCV price data
             get_company_overview,  # Company investment analysis (includes real-time quote)

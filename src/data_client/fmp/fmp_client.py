@@ -118,7 +118,12 @@ class FMPClient:
     STABLE_BASE = "https://financialmodelingprep.com/stable"
     DEFAULT_VERSION = "stable"
 
-    def __init__(self, api_key: Optional[str] = None, cache_ttl: int = 300):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        cache_ttl: int = 300,
+        event_hooks: Optional[Dict[str, List[Any]]] = None,
+    ):
         self.api_key = api_key or os.getenv("FMP_API_KEY")
         if not self.api_key:
             raise ValueError(
@@ -126,6 +131,7 @@ class FMPClient:
             )
 
         self.cache_ttl = cache_ttl
+        self._event_hooks = event_hooks
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: OrderedDict[str, Any] = OrderedDict()
         self._cache_timestamps: Dict[str, datetime] = {}
@@ -136,6 +142,7 @@ class FMPClient:
                 http2=True,
                 timeout=30.0,
                 limits=httpx.Limits(max_keepalive_connections=10),
+                event_hooks=self._event_hooks,
             )
         return self._client
 

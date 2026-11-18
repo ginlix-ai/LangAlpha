@@ -31,7 +31,7 @@ from .sections import sections_for_filing
 from .sections.model import FilingSections, Scope, Section, Span
 from .sections.vocab import spec_for
 
-__all__ = ["amendment_scope", "merge"]
+__all__ = ["amended_sections", "amendment_scope", "merge", "read", "restates_statements"]
 
 T = TypeVar("T")
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
@@ -176,22 +176,42 @@ def read(ref: FilingRef, cache: SectionsCache | None = None, submissions: Submis
 
 
 def amended_sections(original: FilingRef, refs: list[FilingRef], cache: SectionsCache | None = None,
-                     submissions: SubmissionCache | None = None, limit: int | None = None) -> list[FilingSections]:
+                     submissions: SubmissionCache | None = None, limit: int | None = None,
+                     unreadable: list[FilingRef] | None = None) -> list[FilingSections]:
     """The amendments of original as filed, in filing order: every amendment of its form filed after it, kept
     when its own text names original (or, when the text places it nowhere, the filing list does), so a period
     of report typed wrong on the list cannot hide an amendment from its original. With limit, reading stops
-    at the first limit amendments, so a later submission that cannot be read does not fail them."""
+    at the first limit amendments, so a later submission that cannot be read does not fail them.
+
+    A candidate that cannot be read raises, unless unreadable is given: then it is appended there and the rest are
+    still read, so one amendment EDGAR serves cut short, or fails to serve, does not hide the others or the
+    original."""
     candidates = [r for r in refs if r.filing_status == "amendment" and base_form(r.form) == base_form(original.form)
                   and (r.amends == original.accession or r.filing_date >= original.filing_date)]
     found = []
     for ref in sorted(candidates, key=filing_order):
-        sections = read(ref, cache, submissions)
+        try:
+            sections = read(ref, cache, submissions)
+        except Exception:
+            if unreadable is None:
+                raise
+            unreadable.append(ref)
+            continue
         sections = replace(sections, amends=resolve_amends(sections, refs) or ref.amends)
         if sections.amends == original.accession:
             found.append(sections)
             if len(found) == limit:
                 break
     return found
+
+
+def restates_statements(amendment: FilingSections) -> bool:
+    """The amendment restates the financial statements: it refiles the whole report, or prints an item that holds
+    the statements (10-K Item 8, 10-Q Part I Item 1, 20-F Items 17 and 18, a 40-F's audited statements)."""
+    scope = amendment.scope or amendment_scope(amendment)
+    spec = spec_for(amendment.form, amendment.filing_date)
+    held = spec.statement_items | ({"AFS"} & spec.principal_documents)
+    return scope == "complete" or any(k in held for k, s in amendment.items.items() if s.status != "stub")
 
 
 def nth_amendment(amendments: list[T], n: int) -> T | None:

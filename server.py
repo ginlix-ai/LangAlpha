@@ -43,6 +43,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    args.workers = max(1, args.workers)
 
     # Configure SSE event logger independently
     # This allows viewing ONLY SSE events by setting SSE_EVENT_LOG_LEVEL=info
@@ -74,6 +75,13 @@ if __name__ == "__main__":
     # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
     # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
     os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+    # edgartools rate-limits SEC requests per process at 9/s, under SEC's 10/s
+    # per client, so N workers share that budget rather than multiply it. Its
+    # rate is a whole number per second, so past 9 workers the floor of 1/s
+    # each adds up to more than SEC allows.
+    os.environ.setdefault("EDGAR_RATE_LIMIT_PER_SEC", str(max(1, 9 // args.workers)))
+    if args.workers > 9 and os.environ["EDGAR_RATE_LIMIT_PER_SEC"] == "1":
+        logger.warning(f"{args.workers} workers at 1 SEC request/s each exceed SEC's 10/s per client")
 
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")

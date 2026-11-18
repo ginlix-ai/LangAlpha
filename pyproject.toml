@@ -110,6 +110,7 @@ dependencies = [
     "PyJWT[crypto]>=2.13",
     "langalpha-market-protocol",
     "langalpha-chartkit",
+    "langalpha-edgar-engine",
     "certifi>=2026.1.4",
     "requests>=2.32.5",
     "croniter>=2.0.0",
@@ -142,6 +143,7 @@ dependencies = [
 [tool.uv.sources]
 langalpha-market-protocol = { path = "libs/market-protocol", editable = true }
 langalpha-chartkit = { path = "libs/chartkit", editable = true }
+langalpha-edgar-engine = { path = "libs/edgar-engine", editable = true }
 
 [project.optional-dependencies]
 dev = [

@@ -8,6 +8,7 @@ import edgar_engine.amendments as amendments_mod
 import edgar_engine.api as api_mod
 import edgar_engine.filings as filings_mod
 import edgar_engine.sections.extract as extract_mod
+import edgar_engine.submission as submission_mod
 from edgar_engine import get_sections
 from edgar_engine.amendments import (amendment_scope, cover_period, merge, nth_amendment, original_filed_on,
                                      resolve_amends)
@@ -115,7 +116,7 @@ ROWS = [
 @pytest.fixture
 def filer(monkeypatch):
     """list_filings over ROWS, honoring amendments and filed_on_or_before, with no network."""
-    def fake(company, form, *, amendments=False, filed_on_or_before=None):
+    def fake(company, form, *, amendments=False, filed_on_or_before=None, full_history=True, fiscal_labels=None):
         return refs_from_rows(ROWS, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(filings_mod, "list_filings", fake)
@@ -492,7 +493,7 @@ def test_amendment_the_list_cannot_place_is_placed_by_its_cover(engine, monkeypa
         head="For the fiscal year ended December 31, 2023\n")))
     rows = [*ROWS, row(orphan, "10-K/A", "2024-05-01", "2024-05-01")]
 
-    def fake(company, form, *, amendments=False, filed_on_or_before=None):
+    def fake(company, form, *, amendments=False, filed_on_or_before=None, full_history=True, fiscal_labels=None):
         return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(api_mod, "list_filings", fake)
@@ -509,7 +510,7 @@ def test_amendment_whose_cover_names_another_year_is_not_merged_into_this_one(en
         head="For the fiscal year ended December 31, 2024\n")))
     rows = [*ROWS, row(stray, "10-K/A", "2025-06-02", "2023-12-31")]
 
-    def fake(company, form, *, amendments=False, filed_on_or_before=None):
+    def fake(company, form, *, amendments=False, filed_on_or_before=None, full_history=True, fiscal_labels=None):
         return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(api_mod, "list_filings", fake)
@@ -523,12 +524,42 @@ def test_amendment_the_list_links_to_another_year_is_placed_by_its_cover(engine,
         head="For the fiscal year ended December 31, 2023\n")))
     rows = [*ROWS, row(mistyped, "10-K/A", "2025-03-01", "2024-12-31")]
 
-    def fake(company, form, *, amendments=False, filed_on_or_before=None):
+    def fake(company, form, *, amendments=False, filed_on_or_before=None, full_history=True, fiscal_labels=None):
         return refs_from_rows(rows, CIK, ("10-K", "10-K405"), amendments=amendments,
                               filed_on_or_before=filed_on_or_before, fiscal_year_end="1231")
     monkeypatch.setattr(api_mod, "list_filings", fake)
     assert get_sections(CIK, "10-K", fiscal_year=2023, view="as_amended")["9A"].source == mistyped
     assert mistyped not in get_sections(CIK, "10-K", fiscal_year=2024, view="as_amended").amendments
+
+def test_an_amendment_that_cannot_be_read_is_set_aside_when_asked_and_the_rest_still_read(engine, monkeypatch):
+    read_one = extract_mod.extract_sections
+
+    def extract(submission, *, form, filing_date, accession):
+        if accession == "0001234567-24-000020":
+            raise ValueError("truncated")
+        return read_one(submission, form=form, filing_date=filing_date, accession=accession)
+
+    monkeypatch.setattr(extract_mod, "extract_sections", extract)
+    monkeypatch.setattr(submission_mod, "_drop_cached", lambda filing: None)
+    refs = filings_mod.list_filings(CIK, "10-K", amendments=True)
+    original = next(r for r in refs if r.accession == "0001234567-24-000010")
+    unreadable = []
+
+    found = amendments_mod.amended_sections(original, refs, unreadable=unreadable)
+
+    assert [a.accession for a in found] == ["0001234567-25-000030"]
+    assert [r.accession for r in unreadable] == ["0001234567-24-000020"]
+    with pytest.raises(ValueError):
+        amendments_mod.amended_sections(original, refs)
+
+
+def test_an_amendment_restates_the_statements_when_it_prints_their_item_or_refiles_the_report():
+    part_iii = filing("a", "10-K/A", "2024-04-29", {"10": "Item 10. Directors\nThe board.",
+                                                     "11": "Item 11. Executive Compensation\nPay."})
+    restated = filing("b", "10-K/A", "2024-04-29", {"8": "Item 8. Financial Statements\nRestated balance sheet."})
+    assert not amendments_mod.restates_statements(part_iii) and amendments_mod.restates_statements(restated)
+    assert amendments_mod.restates_statements(replace(part_iii, scope="complete"))
+
 
 # Live: an original with a Part III amendment and a second, narrower one, pinned by accession.
 

@@ -1,4 +1,6 @@
+from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -184,35 +186,46 @@ def test_period_rule_leap_day_year_end():
 def test_companyfacts_labels_are_read_only_because_callers_share_them(monkeypatch):
     from edgar.entity import entity_facts
 
-    from edgar_engine.filings import _companyfacts_labels, companyfacts_labels
+    from edgar_engine.filings import companyfacts_labels
     fact = {"accn": "0001234567-24-000011", "form": "10-K", "fy": 2023, "fp": "FY"}
     monkeypatch.setattr(entity_facts, "download_company_facts_from_sec",
                         lambda cik: {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [fact]}}}}})
-    _companyfacts_labels.cache_clear()
     labels = companyfacts_labels(CIK)
     assert labels == {("0001234567-24-000011", "10-K"): (2023, "FY")}
     with pytest.raises(TypeError):
         labels[("0001234567-24-000011", "10-K")] = (2024, "FY")
-    _companyfacts_labels.cache_clear()
 
 
-def test_companyfacts_labels_do_not_keep_a_company_that_has_none_yet(monkeypatch):
+def test_companyfacts_labels_are_read_again_on_every_call(monkeypatch):
     from edgar.entity import entity_facts
     from edgar.exceptions import CompanyFactsNotFoundError
 
-    from edgar_engine.filings import _companyfacts_labels, companyfacts_labels
+    from edgar_engine.filings import companyfacts_labels
     calls = []
 
     def download(cik):
         calls.append(cik)
         if len(calls) == 1:
             raise CompanyFactsNotFoundError(cik)
-        return {"facts": {"dei": {"X": {"units": {"USD": [{"accn": "A-1", "form": "10-K", "fy": 2024, "fp": "FY"}]}}}}}
+        return {"facts": {"dei": {"X": {"units": {"USD": [{"accn": "A-1", "form": "10-K", "fy": len(calls), "fp": "FY"}]}}}}}
     monkeypatch.setattr(entity_facts, "download_company_facts_from_sec", download)
-    _companyfacts_labels.cache_clear()
     assert companyfacts_labels(CIK) == {}
-    assert companyfacts_labels(CIK) == {("A-1", "10-K"): (2024, "FY")}
-    _companyfacts_labels.cache_clear()
+    assert companyfacts_labels(CIK) == {("A-1", "10-K"): (2, "FY")}
+    assert companyfacts_labels(CIK) == {("A-1", "10-K"): (3, "FY")}
+
+
+def test_list_filings_takes_labels_a_caller_already_read(monkeypatch):
+    from edgar_engine import filings as filings_mod
+
+    monkeypatch.setattr(filings_mod, "companyfacts_labels", lambda cik: pytest.fail("labels read again"))
+    rows = [{"accession_number": "0001234567-25-000040", "form": "10-K", "filing_date": "2025-02-01",
+             "reportDate": "2024-12-31", "acceptanceDateTime": "2025-02-01T06:00:00"}]
+    company = SimpleNamespace(cik=CIK, fiscal_year_end="1231",
+                              get_filings=lambda **kw: SimpleNamespace(data=SimpleNamespace(num_rows=1, to_pylist=lambda: rows)))
+    monkeypatch.setattr(filings_mod, "_company", lambda c: c)
+    labels = {("0001234567-25-000040", "10-K"): (2025, "FY")}
+    (ref,) = filings_mod.list_filings(company, "10-K", fiscal_labels=labels)
+    assert (ref.fiscal_year, ref.fiscal_source) == (2025, "xbrl")
 
 
 def test_get_filing_builds_edgartools_filing():
@@ -258,3 +271,49 @@ def test_a_same_day_amendment_links_to_the_original_received_before_it():
                           row("0001234567-12-000003", "10-K", "2012-03-01", "2011-12-31")],
                          CIK, ["10-K"], amendments=True, fiscal_year_end="1231")
     assert next(r for r in got if r.form == "10-K/A").amends == "0001234567-12-000001"
+
+
+def test_select_filing_reads_the_whole_history_only_when_the_filing_can_be_older(monkeypatch):
+    from edgar_engine import filings as filings_mod
+
+    recent = [r for r in refs() if r.filing_date >= "2024-01-01"]
+    reads = []
+
+    def listing(company, form, *, full_history=True, **kw):
+        reads.append(full_history)
+        return recent if not full_history else refs()
+
+    monkeypatch.setattr(filings_mod, "_company", lambda c: c)
+    monkeypatch.setattr(filings_mod, "list_filings", listing)
+
+    def select(**period):
+        reads.clear()
+        return select_filing(CIK, "10-K", fiscal_labels=LABELS, **period), list(reads)
+
+    assert select() == (recent[0], [False])
+    assert select(fiscal_year=2030) == (None, [False])
+    ref, read = select(fiscal_year=2022)
+    assert ref.accession == "0001234567-23-000012" and read == [False, True]
+
+    recent[-1] = replace(recent[-1], fiscal_year=2019, fiscal_source="period_rule")
+    assert select(fiscal_year=2019)[1] == [False, True]
+    assert select(fiscal_year=2025) == (None, [False])
+
+
+def test_a_submission_that_does_not_parse_is_dropped_from_the_cache_and_read_once_more(monkeypatch):
+    from edgar_engine import submission
+    from edgar_engine.submission import TruncatedSubmission, parse_submission
+
+    dropped, reads = [], iter(["cut", "whole", "cut", "cut"])
+    monkeypatch.setattr(submission, "_drop_cached", lambda filing: dropped.append(filing.accession_no))
+    filing = SimpleNamespace(accession_no="A-1", full_text_submission=lambda: next(reads))
+
+    def parse(raw):
+        if raw == "cut":
+            raise ValueError("truncated")
+        return raw
+
+    assert parse_submission(filing, parse) == "whole"
+    with pytest.raises(TruncatedSubmission) as e:
+        parse_submission(filing, parse)
+    assert dropped == ["A-1", "A-1"] and e.value.accession == "A-1"
