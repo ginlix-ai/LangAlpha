@@ -77,6 +77,8 @@ _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 STDERR_KEPT = 50
 EXIT_STDERR_WAIT_S = 5
 STDERR_LOG_CHARS = 2000
+#: How long a failed write waits for the CLI's exit to be reaped.
+EXIT_REAP_WAIT_S = 2
 _log = logging.getLogger(__name__)
 
 #: The sha256 of ``SubprocessCLITransport.connect``'s source that
@@ -287,9 +289,22 @@ class ScopedEnvTransport(SubprocessCLITransport):
         try:
             await super().write(data)
         except CLIConnectionError:
-            if self._process is None or self._process.returncode is None:
+            code = await self._exit_code()
+            if code is None:
                 raise
-            raise await self._exited(self._process.returncode) from None
+            raise await self._exited(code) from None
+
+    async def _exit_code(self) -> int | None:
+        """The CLI's exit code once a write to it has failed, None while it
+        runs. An exiting CLI's closed stdin can be seen before its exit is
+        reaped, so the exit is waited for briefly rather than read at once."""
+        process = self._process
+        if process is None:
+            return None
+        if process.returncode is None:
+            with anyio.move_on_after(EXIT_REAP_WAIT_S), contextlib.suppress(Exception):
+                await process.wait()
+        return process.returncode
 
     async def _exited(self, code: int | None) -> ProcessError:
         return await exit_error(code, self._stderr, self._stderr_task.wait() if self._stderr_task is not None else None)
