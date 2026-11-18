@@ -453,3 +453,32 @@ def test_a_response_with_no_response_metadata_still_bills():
     (record,) = tracker.get_per_call_records()
     assert record["model_name"] == "vendor-model"
     assert record["usage"]["input_tokens"] == 10
+
+
+@pytest.mark.asyncio
+async def test_an_async_stream_calls_the_tracker_on_the_loop():
+    """Through the default executor, every streamed token cost a thread round
+    trip, and a Stop could read the tracker before a call's record landed."""
+    import threading
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
+
+    calls = []
+
+    class Tracker(PerCallTokenTracker):
+        def on_llm_new_token(self, *args, **kwargs):
+            calls.append(("token", threading.get_ident()))
+
+        def on_llm_end(self, *args, **kwargs):
+            calls.append(("end", threading.get_ident()))
+            return super().on_llm_end(*args, **kwargs)
+
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="one two three four five")]))
+    async for _ in model.astream("hi", config={"callbacks": [Tracker()]}):
+        pass
+
+    assert [event for event, _ in calls].count("token") > 1
+    assert calls[-1][0] == "end"
+    assert {thread for _, thread in calls} == {threading.get_ident()}

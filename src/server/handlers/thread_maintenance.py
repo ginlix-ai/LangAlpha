@@ -500,18 +500,13 @@ async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
     hold them. The row is the thread's, under the caller, with ``verb`` on
     its token usage to tell it from a turn's, and is written once the
     operation has ended, so its status is the operation's. Yields the
-    tracker, whose records the caller may read as the calls end.
-
-    The tracker runs inline: a call's end is reported in a callback shielded
-    from cancellation, which on an executor thread could still be running
-    when a Stop or a timeout reads the tracker."""
+    tracker, whose records the caller may read as the calls end."""
     from langchain_core.callbacks import BaseCallbackManager
     from langchain_core.runnables.config import var_child_runnable_config
 
     from src.utils.tracking import TokenTrackingManager
 
     tracker = TokenTrackingManager.initialize_tracking(thread_id=agent.thread_id)
-    tracker.run_inline = True
     ambient = var_child_runnable_config.get() or {}
     callbacks = ambient.get("callbacks")
     if isinstance(callbacks, BaseCallbackManager):
