@@ -168,7 +168,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langalpha-market-protocol", directory = "../market-protocol" },
+    { name = "langalpha-market-protocol", editable = "../market-protocol" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.2.2" },
     { name = "playwright", marker = "extra == 'snapshot'", specifier = ">=1.49" },
@@ -182,7 +182,7 @@ dev = [{ name = "pytest", specifier = ">=8.0.0" }]
 [[package]]
 name = "langalpha-market-protocol"
 version = "0.1.0"
-source = { directory = "../market-protocol" }
+source = { editable = "../market-protocol" }
 dependencies = [
     { name = "exchange-calendars" },
     { name = "pandas" },

@@ -216,6 +216,7 @@ source = { editable = "." }
 dependencies = [
     { name = "edgartools" },
     { name = "lxml" },
+    { name = "pandas" },
 ]
 
 [package.dev-dependencies]
@@ -227,6 +228,7 @@ dev = [
 requires-dist = [
     { name = "edgartools", specifier = ">=5.62.1,<7" },
     { name = "lxml", specifier = ">=5.3" },
+    { name = "pandas", specifier = ">=2.2" },
 ]
 
 [package.metadata.requires-dev]
