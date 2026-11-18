@@ -3053,6 +3053,58 @@ async def test_the_file_backup_switch_answers_with_the_machine(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("quality", ["retina", None], ids=["chosen", "follows-size"])
+async def test_the_live_view_quality_is_kept_on_the_computer_and_reaches_its_machine(
+    client, sample_computer_dict, quality
+):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="daytona")
+    after = {**before, "config": {"browser_quality": quality} if quality else {}}
+    write = AsyncMock(return_value=True)
+    apply_now = AsyncMock()
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(side_effect=[before, after])),
+        patch("src.server.app.computers.set_computer_settings", write),
+        patch("src.server.services.browser_quality.apply_now", apply_now),
+        patch(
+            "src.server.app.computers.count_live_workspaces_by_computer",
+            AsyncMock(return_value={COMPUTER_ID: 1}),
+        ),
+    ):
+        resp = await client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json={"quality": quality}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["config"] == after["config"]
+    # None removes the key, which is what following the computer's size is.
+    write.assert_awaited_once_with(
+        COMPUTER_ID, "test-user-123", {"browser_quality": quality, "browser_quality_rev": ANY}
+    )
+    apply_now.assert_awaited_once_with(after)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "body", "status"),
+    [("ssh", {"quality": "sharp"}, 409), ("daytona", {"quality": "8k"}, 422)],
+    ids=["no-browser", "unknown"],
+)
+async def test_the_live_view_quality_is_refused_where_it_means_nothing(
+    client, sample_computer_dict, kind, body, status
+):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind)
+    write = AsyncMock(return_value=True)
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
+        patch("src.server.app.computers.set_computer_settings", write),
+    ):
+        resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json=body)
+
+    assert resp.status_code == status
+    write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_file_backup_stays_on_for_a_primary_machine_of_the_users_own(
     client, sample_computer_dict
 ):
