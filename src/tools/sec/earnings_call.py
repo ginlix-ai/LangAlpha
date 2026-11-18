@@ -1,8 +1,10 @@
 """
 Async earnings call transcript integration for SEC filings.
 
-Provides async functionality to fetch earnings call transcripts that match
-SEC filing periods using FMP's transcript dates API.
+Matches the transcript of the earnings call that reports a filing's period, using
+FMP's transcript dates. Call dates change as calls are scheduled and held, so they
+are read on every call; a published transcript does not change once out, so it is
+kept in Redis for every worker, and one not published yet is never kept.
 """
 
 from datetime import date
@@ -10,7 +12,9 @@ from typing import List, NamedTuple, Optional
 
 from src.data_client.fmp import FMPClient
 from src.data_client.fmp.fmp_client import CallDate
+from src.utils.cache.redis_cache import PERSIST, get_cache_client
 
+from .metering import fmp_event_hooks, note_cache
 from .types import FilingType
 
 # Per form: the most days a call may follow the period end, and the fiscal
@@ -26,45 +30,6 @@ class EarningsCall(NamedTuple):
     fiscal_year: int
     quarter: int
     call_date: date
-
-
-def format_earnings_call_section(call: Optional[EarningsCall], period_end: str) -> str:
-    """
-    Format the matched call's transcript as a markdown section, or the notice
-    that no call matched the filing's period or that its transcript is not
-    published.
-
-    Args:
-        call: The matched earnings call, or None
-        period_end: The filing's period of report, "YYYY-MM-DD"
-
-    Returns:
-        Formatted markdown section
-    """
-    if call and call.transcript:
-        return f"""
-
----
-
-## Earnings Call Transcript
-
-**Matched Call:** Q{call.quarter} FY{call.fiscal_year}, held {call.call_date}, the call reporting the period ending {period_end}
-**Alignment:** SEC filing and earnings call cover the same fiscal period
-
-{call.transcript}
-"""
-    if call is None:
-        notice = f"no earnings call transcript could be matched to the period ending {period_end}."
-    else:
-        notice = f"the earnings call held {call.call_date} for the period ending {period_end} has no published transcript yet."
-    return f"""
-
----
-
-## Earnings Call Transcript
-
-**Not included:** {notice}
-"""
 
 
 def _select_call(
@@ -90,31 +55,39 @@ def _select_call(
     return min(reporting, key=lambda c: (c.date, c.fiscal_year, c.quarter), default=None)
 
 
+async def _transcript(client: FMPClient, symbol: str, call: CallDate) -> str:
+    # The call date is in the key because FMP can move a fiscal label to another call.
+    key = f"sec:fmp:transcript:{symbol.upper()}:{call.fiscal_year}:{call.quarter}:{call.date.isoformat()}"
+    cache = get_cache_client()
+    cached = await cache.get(key)
+    note_cache("fmp_transcript", "miss" if cached is None else "hit")
+    if cached is not None:
+        return cached
+    data = await client.get_earnings_call_transcript(symbol, call.fiscal_year, call.quarter)
+    content = (data[0].get("content") if data else None) or ""
+    if not content.strip() or content.strip().startswith("No data available"):
+        content = ""
+    if content:
+        await cache.set(key, content, ttl=PERSIST)
+    return content
+
+
 async def fetch_matching_earnings_call(
     symbol: str,
     filing_type: FilingType,
     period_end: str,
 ) -> Optional[EarningsCall]:
     """
-    Async fetch the transcript of the earnings call for the SEC filing's period.
+    The earnings call for the SEC filing's period.
 
     FMP errors propagate. None means FMP lists no call for the period (see
     _select_call); an empty transcript means FMP has not published one for
     the selected call.
-
-    Args:
-        symbol: Stock ticker symbol
-        filing_type: FilingType.FORM_10K or FilingType.FORM_10Q
-        period_end: The filing's period of report, "YYYY-MM-DD"
     """
     period = date.fromisoformat(period_end)
-    async with FMPClient() as client:
+    async with FMPClient(event_hooks=fmp_event_hooks()) as client:
         call = _select_call(await client.get_earnings_call_dates(symbol), filing_type, period)
         if call is None:
             return None
-        transcript_data = await client.get_earnings_call_transcript(symbol, call.fiscal_year, call.quarter)
-
-    content = (transcript_data[0].get("content") if transcript_data else None) or ""
-    if not content.strip() or content.strip().startswith("No data available"):
-        content = ""
+        content = await _transcript(client, symbol, call)
     return EarningsCall(content, call.fiscal_year, call.quarter, call.date)

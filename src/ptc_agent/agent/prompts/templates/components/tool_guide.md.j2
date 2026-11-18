@@ -38,7 +38,7 @@ Call these directly for quick data retrieval. No complex post-processing — jus
 | get_market_overview | Single-day market snapshot: index closes + US sector performance; date arg for historical days (region="us"/"cn"/"hk"/"jp"/"uk"/"eu"/"global") |
 | get_options_chain | Options contracts for one underlying, with snapshot pricing |
 | screen_stocks | Filter stocks by market cap, price, sector, and similar criteria |
-| get_sec_filing | SEC filings (10-K, 10-Q, 8-K), earnings calls, financials |
+| get_sec_filing | SEC filings (10-K, 10-Q, 20-F, 40-F, 8-K), earnings calls, financials |
 {% if market_watch_enabled %}
 | watch_market | Start/stop a live price watch for intraday-sensitive tasks (`action="watch"`/`"unwatch"`; prices then arrive automatically as `<market-watch>` feed updates — not a callable tool) |
 {% endif %}

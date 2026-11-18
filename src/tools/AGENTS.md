@@ -103,8 +103,8 @@ Returns:
     File paths only, not contents; newest first.        # Glob: tells you a Read is coming
 
 Returns:
-    A long markdown report with the filing's official   # get_sec_filing: the cost signal
-    source URLs. Expect it to consume real context.     # is the reason to prefer a cheaper tool
+    ... The items' text is not in the result: it is     # get_sec_filing: what is not in it,
+    written to files in your workspace.                 # so the model knows a Read is coming
 ```
 
 **MCP tools: the full machine shape.** Agent-written Python indexes `resp["data"]`
