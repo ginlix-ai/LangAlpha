@@ -48,4 +48,4 @@ cache-keys = [
 ]
 
 [tool.uv.sources]
-langalpha-market-protocol = { path = "../market-protocol" }
+langalpha-market-protocol = { path = "../market-protocol", editable = true }
