@@ -1,0 +1,4 @@
+#!/bin/sh
+# agent-browser on a computer, first on every command's PATH. The browser runtime
+# shipped beside the `la` CLI decides what runs (``browser_runtime/wrapper.py``).
+exec python3 -I "$(dirname "$0")/../../browser_runtime" agent-browser "$@"

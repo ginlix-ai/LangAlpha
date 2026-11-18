@@ -442,9 +442,7 @@ async def _compute_sandbox_manifest(
     src_dir = (repo_root / "src").resolve()
     internal_files = {
         str(rel): _sha256_file(local)
-        for local, rel in _internal_package_files(
-            src_dir, livefs=sandbox.mounts_livefs
-        )
+        for local, rel in _internal_package_files(src_dir, type(sandbox.provider))
     }
     if internal_files:
         # The vault helper ships in the same upload but is generated rather
