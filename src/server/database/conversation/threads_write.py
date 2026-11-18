@@ -15,6 +15,7 @@ from src.server.contracts.status import (
 from src.server.database import pool
 from src.server.database.conversation import _sql, errors
 from src.server.database.share_codes import mint_share_code
+from src.server.database.sql_fences import advisory_key
 from src.server.utils.pg_sanitize import normalize_uuid
 from src.server.utils.thread_stamp import stamped_title
 
@@ -42,47 +43,32 @@ async def forget_workspace_exists(workspace_id: str) -> None:
     await get_cache_client().delete(ws_exists_key(workspace_id))
 
 
-async def calculate_next_thread_index(workspace_id: str, conn=None) -> int:
+def next_thread_index_sql(workspace_id_sql: str) -> str:
+    """The workspace's next thread_index: one past its highest, so a deleted
+    thread's number is never handed out again while a later one exists. Read
+    it only under ``lock_thread_index``."""
+    return (
+        "(SELECT COALESCE(MAX(thread_index), -1) + 1 FROM conversation_threads"
+        f" WHERE workspace_id = {workspace_id_sql})"
+    )
+
+
+async def lock_thread_index(cur, workspace_id: str) -> None:
+    """Hold the workspace's thread numbering until the transaction ends.
+
+    thread_index is unique per workspace and read as ``MAX + 1``
+    (``next_thread_index_sql``), so threads started at once read the same
+    number unless each reads it under this lock, in a statement after the
+    lock is taken: a statement's snapshot is taken when it starts, so one that
+    waited for the lock inside it would still miss the thread the holder
+    inserted.
     """
-    Calculate the next thread_index for a workspace (0-based).
-
-    Uses MAX(thread_index) + 1 instead of COUNT(*) to correctly handle
-    gaps from deleted threads and avoid unique constraint violations.
-
-    Args:
-        workspace_id: Workspace ID
-        conn: Optional database connection to reuse
-    """
-    try:
-        if conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT COALESCE(MAX(thread_index), -1) + 1 as next_index
-                    FROM conversation_threads
-                    WHERE workspace_id = %s
-                """,
-                    (workspace_id,),
-                )
-                result = await cur.fetchone()
-                return result["next_index"]
-        else:
-            async with pool.get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(
-                        """
-                        SELECT COALESCE(MAX(thread_index), -1) + 1 as next_index
-                        FROM conversation_threads
-                        WHERE workspace_id = %s
-                    """,
-                        (workspace_id,),
-                    )
-                    result = await cur.fetchone()
-                    return result["next_index"]
-
-    except Exception as e:
-        logger.error(f"Error calculating thread index: {e}")
-        return 0
+    # Keyed on the id as Postgres compares it, so two spellings of one
+    # workspace share the lock.
+    key = normalize_uuid(workspace_id) or str(workspace_id)
+    await cur.execute(
+        "SELECT pg_advisory_xact_lock(%s)", (advisory_key("THREAD_INDEX", key),)
+    )
 
 
 async def create_thread(
@@ -90,7 +76,6 @@ async def create_thread(
     workspace_id: str,
     current_status: str,
     msg_type: str = "ptc",
-    thread_index: Optional[int] = None,
     title: Optional[str] = None,
     external_id: Optional[str] = None,
     platform: Optional[str] = None,
@@ -101,7 +86,8 @@ async def create_thread(
     conn=None,
 ) -> Dict[str, Any]:
     """
-    Create a thread entry (thread_index auto-calculated if not provided).
+    Create a thread entry, numbered next in its workspace
+    (``lock_thread_index``).
 
     `msg_type` names the agent the thread runs on: 'ptc', the full agent, for
     every new thread.
@@ -138,31 +124,39 @@ async def create_thread(
         "title",
         "subagents_allowed",
     ]
-    base_params = [conversation_thread_id, workspace_id, current_status, msg_type]
-    # thread_index is appended per-attempt (may be recalculated on retry)
-
-    extra_params: List[Any] = []
+    params: List[Any] = [
+        conversation_thread_id,
+        workspace_id,
+        current_status,
+        msg_type,
+        workspace_id,
+        title,
+        subagents_allowed,
+        workspace_id,
+    ]
+    # Columns whose value is an expression, with the params it binds above.
+    expressions = {
+        "thread_index": next_thread_index_sql("%s"),
+        "subagents_allowed": _sql.stored_subagents_allowed("%s", "%s"),
+    }
     if platform:
         columns.append("platform")
-        extra_params.append(platform)
+        params.append(platform)
     if external_id:
         columns.append("external_id")
-        extra_params.append(external_id)
+        params.append(external_id)
     if metadata:
         columns.append("metadata")
-        extra_params.append(Json(metadata))
+        params.append(Json(metadata))
     if reasoning_effort is not None:
         columns.append("reasoning_effort")
-        extra_params.append(reasoning_effort)
+        params.append(reasoning_effort)
     if fast_mode is not None:
         columns.append("fast_mode")
-        extra_params.append(fast_mode)
+        params.append(fast_mode)
 
     col_str = ", ".join(columns)
-    placeholders = ", ".join(
-        _sql.stored_subagents_allowed("%s", "%s") if c == "subagents_allowed" else "%s"
-        for c in columns
-    )
+    placeholders = ", ".join(expressions.get(c, "%s") for c in columns)
     returning_str = f"{col_str}, created_at, updated_at"
 
     sql = f"""
@@ -171,63 +165,30 @@ async def create_thread(
         RETURNING {returning_str}
     """
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        # Calculate thread_index if not provided, or recalculate on retry
-        if thread_index is None or attempt > 0:
-            thread_index = await calculate_next_thread_index(workspace_id, conn=conn)
-
-        params = tuple(
-            base_params
-            + [thread_index, title, subagents_allowed, workspace_id]
-            + extra_params
-        )
-
-        try:
-            if conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(sql, params)
-                    result = await cur.fetchone()
-                    logger.info(
-                        f"[conversation_db] create_thread thread_id={conversation_thread_id} thread_index={thread_index} workspace_id={workspace_id}"
-                    )
-                    return dict(result)
-            else:
-                async with pool.get_db_connection() as conn_new:
-                    async with conn_new.cursor(row_factory=dict_row) as cur:
-                        await cur.execute(sql, params)
-                        result = await cur.fetchone()
-                        return dict(result)
-
-        except psycopg.errors.UniqueViolation as e:
-            # A collision on the external-id dedup index can't be fixed by
-            # retrying — (platform, external_id) is fixed for this insert, so a
-            # concurrent create won the race. Surface a typed conflict (routes map
-            # it to a 409 / an in-stream ``external_id_conflict`` SSE error) that
-            # channel clients recover from by regenerating under a fresh external
-            # key. Only the per-workspace thread_index constraint is the retryable
-            # race handled below (recalc thread_index + reinsert).
-            if (
-                errors._unique_violation_constraint(e) == errors._EXTERNAL_ID_INDEX
-                and platform
-                and external_id
-            ):
-                raise errors.ExternalIdConflictError(
-                    platform=platform, external_id=external_id
-                )
-            if attempt == max_retries - 1:
-                logger.error(
-                    f"thread_index conflict after {max_retries} attempts for workspace {workspace_id}"
-                )
+    async with pool.get_db_connection(conn) as owned, owned.transaction():
+        async with owned.cursor(row_factory=dict_row) as cur:
+            await lock_thread_index(cur, workspace_id)
+            try:
+                await cur.execute(sql, params)
+            except psycopg.errors.UniqueViolation as e:
+                # The (platform, external_id) dedup index: a concurrent create
+                # won the race, and no retry can change that. A typed conflict
+                # (a 409, or an in-stream ``external_id_conflict``) lets the
+                # channel client regenerate under a fresh external key.
+                if (
+                    errors._unique_violation_constraint(e) == errors._EXTERNAL_ID_INDEX
+                    and platform
+                    and external_id
+                ):
+                    raise errors.ExternalIdConflictError(
+                        platform=platform, external_id=external_id
+                    ) from e
                 raise
-            logger.warning(
-                f"thread_index conflict (attempt {attempt + 1}/{max_retries}), retrying for workspace {workspace_id}"
-            )
-            continue
-
-        except Exception as e:
-            logger.error(f"Error creating thread: {e}")
-            raise
+            result = await cur.fetchone()
+    logger.info(
+        f"[conversation_db] create_thread thread_id={conversation_thread_id} thread_index={result['thread_index']} workspace_id={workspace_id}"
+    )
+    return dict(result)
 
 
 async def update_thread_external_id(
@@ -486,7 +447,6 @@ async def ensure_thread_exists(
                 conversation_thread_id=conversation_thread_id,
                 workspace_id=workspace_id,
                 current_status=initial_status,
-                thread_index=None,  # Will be calculated inside create_thread using same conn
                 title=title,
                 external_id=external_id,
                 platform=platform,

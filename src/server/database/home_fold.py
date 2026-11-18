@@ -22,6 +22,10 @@ from itertools import count
 
 from psycopg.rows import dict_row
 
+from src.server.database.conversation.threads_write import (
+    lock_thread_index,
+    next_thread_index_sql,
+)
 from src.server.database.pool import get_db_connection
 from src.server.database.runs.lifecycle import workspace_has_live_runs
 from src.server.database.user_lock import lock_user_writes
@@ -43,13 +47,10 @@ MOVES: dict[str, str] = {
     # thread_index is unique per workspace, so a row's threads append after
     # Home's in the order they were started. updated_at stays, so the thread
     # list keeps its order.
-    "conversation_threads": """
-        WITH base AS (
-            SELECT COALESCE(MAX(thread_index), -1) + 1 AS next_index
-            FROM conversation_threads WHERE workspace_id = %(home)s
-        ), moved AS (
+    "conversation_threads": f"""
+        WITH moved AS (
             SELECT conversation_thread_id,
-                   (SELECT next_index FROM base)
+                   {next_thread_index_sql("%(home)s")}
                      + ROW_NUMBER() OVER (ORDER BY created_at, thread_index) - 1
                      AS thread_index
             FROM conversation_threads WHERE workspace_id = %(former)s
@@ -142,6 +143,9 @@ async def fold_former_homes(user_id: str, home_id: str, conn=None) -> list[str]:
         moved = dict.fromkeys(MOVES, 0)
         async with owned.transaction(), owned.cursor(row_factory=dict_row) as cur:
             await lock_user_writes(cur, user_id)
+            # Home's numbering, before any row lock: a thread started in Home
+            # meanwhile would read the same next index as the threads moved in.
+            await lock_thread_index(cur, home_id)
             # Locked before the busy check, so the check sees a turn admitted
             # meanwhile: admission holds the row FOR SHARE until its run is
             # recorded.

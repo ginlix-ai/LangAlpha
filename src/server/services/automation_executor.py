@@ -484,7 +484,6 @@ class AutomationExecutor:
                 conversation_thread_id=thread_id,
                 workspace_id=workspace_id,
                 current_status="completed",
-                thread_index=None,
                 title=f"{name} — {run_date}"[:255],
                 metadata={
                     "origin": {

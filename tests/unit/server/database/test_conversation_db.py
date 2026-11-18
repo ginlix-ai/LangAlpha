@@ -6,6 +6,7 @@ thread sharing, and pagination logic.
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -102,27 +103,12 @@ def _response_row(response_id=None, thread_id="t-1", turn_index=0, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_calculate_next_thread_index(mock_db_connection, mock_cursor):
-    """calculate_next_thread_index returns MAX(thread_index) + 1."""
-    from src.server.database.conversation import calculate_next_thread_index
-
-    mock_cursor.fetchone.return_value = {"next_index": 3}
-
-    idx = await calculate_next_thread_index("ws-1")
-
-    assert idx == 3
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "COALESCE(MAX(thread_index), -1)" in sql
-
-
-@pytest.mark.asyncio
 async def test_create_thread(mock_db_connection, mock_cursor):
     """create_thread inserts a row and returns the new thread dict."""
     from src.server.database.conversation import create_thread
 
     row = _thread_row(thread_id="t-1", workspace_id="ws-1")
-    # First call: calculate_next_thread_index fetchone; second: create_thread fetchone
-    mock_cursor.fetchone.side_effect = [{"next_index": 0}, row]
+    mock_cursor.fetchone.side_effect = [row]
 
     result = await create_thread(
         conversation_thread_id="t-1",
@@ -175,7 +161,7 @@ async def test_create_thread_binds_the_switch_with_its_workspace(
     PostgreSQL in tests/integration/test_thread_subagents_default_db.py)."""
     from src.server.database.conversation import create_thread
 
-    mock_cursor.fetchone.side_effect = [{"next_index": 0}, _thread_row()]
+    mock_cursor.fetchone.side_effect = [_thread_row()]
 
     await create_thread(
         conversation_thread_id="t-1",
@@ -204,7 +190,7 @@ async def test_create_thread_stamps_the_full_agent_unless_told_otherwise(
     """No caller names the producer any more; the insert still writes 'ptc'."""
     from src.server.database.conversation import create_thread
 
-    mock_cursor.fetchone.side_effect = [{"next_index": 0}, _thread_row()]
+    mock_cursor.fetchone.side_effect = [_thread_row()]
 
     await create_thread(
         conversation_thread_id="t-1",
@@ -228,7 +214,6 @@ async def test_a_thread_a_turn_creates_is_the_full_agents(
     mock_cursor.fetchone.side_effect = [
         {"workspace_id": "ws-1"},
         None,
-        {"next_index": 0},
         _thread_row(),
     ]
     cache = SimpleNamespace(enabled=False, client=None)
@@ -246,38 +231,38 @@ async def test_a_thread_a_turn_creates_is_the_full_agents(
 
 
 @pytest.mark.asyncio
-async def test_create_thread_index_retry_keeps_the_switch_aligned(
-    mock_db_connection, mock_cursor
+async def test_create_thread_reads_its_index_under_the_workspace_lock_in_one_transaction(
+    mock_db_connection, mock_connection, mock_cursor
 ):
-    """The retry rebuilds the bound values with a new thread_index; the switch
-    keeps its column on every attempt."""
+    """The workspace's numbering is locked, then read by the insert, a
+    statement of its own, in one transaction, so threads started at once each
+    read the number the last one left (proven against PostgreSQL in
+    tests/integration/test_thread_index_race_db.py)."""
     from src.server.database.conversation import create_thread
+    from src.server.database.sql_fences import advisory_key
 
-    mock_cursor.execute.side_effect = [
-        None,
-        _make_unique_violation("unique_thread_index_per_workspace"),
-        None,
-        None,
-    ]
-    mock_cursor.fetchone.side_effect = [
-        {"next_index": 0},
-        {"next_index": 1},
-        _thread_row(),
-    ]
+    in_transaction = False
+    seen_in_transaction = []
 
-    await create_thread(
-        conversation_thread_id="t-1",
-        workspace_id="ws-1",
-        current_status="in_progress",
-        platform="web",
-        subagents_allowed=False,
-    )
+    @asynccontextmanager
+    async def _transaction():
+        nonlocal in_transaction
+        in_transaction = True
+        yield
+        in_transaction = False
 
-    first = _insert_values(*mock_cursor.execute.call_args_list[1].args)
-    second = _insert_values(*mock_cursor.execute.call_args_list[3].args)
-    assert first["subagents_allowed"] == second["subagents_allowed"] == (False, "ws-1")
-    assert (first["thread_index"], second["thread_index"]) == (0, 1)
-    assert first["platform"] == second["platform"] == "web"
+    mock_connection.transaction = _transaction
+    mock_cursor.execute.side_effect = lambda *a: seen_in_transaction.append(in_transaction)
+    mock_cursor.fetchone.side_effect = [_thread_row()]
+
+    await create_thread(conversation_thread_id="t-1", workspace_id="ws-1", current_status="in_progress")
+
+    # On an autocommit connection the lock would end with its own statement.
+    assert seen_in_transaction == [True, True]
+    lock, insert = mock_cursor.execute.call_args_list
+    assert lock.args == ("SELECT pg_advisory_xact_lock(%s)", (advisory_key("THREAD_INDEX", "ws-1"),))
+    assert "MAX(thread_index)" in insert.args[0]
+    assert _insert_values(*insert.args)["thread_index"] == "ws-1"
 
 
 @pytest.mark.asyncio
@@ -589,15 +574,9 @@ async def test_create_thread_external_race_raises_conflict(
         create_thread,
     )
 
-    # execute: [calc-index, INSERT raises the external-index UV]. No re-lookup —
-    # the conflict is raised straight away.
-    mock_cursor.execute.side_effect = [
-        None,
-        _make_unique_violation(_EXTERNAL_INDEX),
-    ]
-    mock_cursor.fetchone.side_effect = [
-        {"next_index": 0},
-    ]
+    # execute: [lock, INSERT raises the external-index UV]. No re-lookup: the
+    # conflict is raised straight away.
+    mock_cursor.execute.side_effect = [None, _make_unique_violation(_EXTERNAL_INDEX)]
 
     with pytest.raises(ExternalIdConflictError) as exc_info:
         await create_thread(
@@ -613,35 +592,16 @@ async def test_create_thread_external_race_raises_conflict(
 
 
 @pytest.mark.asyncio
-async def test_create_thread_thread_index_conflict_still_retries(
-    mock_db_connection, mock_cursor
-):
-    """A thread_index unique violation keeps the existing recalc-and-retry path
-    (unchanged by the external-id branch)."""
+async def test_create_thread_raises_any_other_unique_violation(mock_db_connection, mock_cursor):
+    """Under the lock the index cannot collide, so a violation left is a real
+    conflict (the thread id taken), raised rather than retried."""
     from src.server.database.conversation import create_thread
 
-    row = _thread_row(thread_id="t-1", workspace_id="ws-1")
+    mock_cursor.execute.side_effect = [None, _make_unique_violation("conversation_threads_pkey")]
 
-    # attempt 0: calc, INSERT raises thread_index UV. attempt 1: recalc, INSERT ok.
-    mock_cursor.execute.side_effect = [
-        None,
-        _make_unique_violation("unique_thread_index_per_workspace"),
-        None,
-        None,
-    ]
-    mock_cursor.fetchone.side_effect = [
-        {"next_index": 0},
-        {"next_index": 1},
-        row,
-    ]
-
-    result = await create_thread(
-        conversation_thread_id="t-1",
-        workspace_id="ws-1",
-        current_status="in_progress",
-    )
-
-    assert result["conversation_thread_id"] == "t-1"
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        await create_thread(conversation_thread_id="t-1", workspace_id="ws-1", current_status="in_progress")
+    assert mock_cursor.execute.call_count == 2
 
 
 # ===========================================================================
