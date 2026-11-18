@@ -196,6 +196,11 @@ class ComputerReach(Protocol):
         """The computer ``computer`` names, awake and ready for a call, or
         None when it is the turn's own. Raises ``ComputerUnreachable``."""
 
+    async def target(self, computer: str | None) -> ComputerTarget:
+        """The computer ``computer`` names, the turn's own included, which
+        None names too. The turn's own reads paths as its tools do, from
+        Home's folder. Raises ``ComputerUnreachable``."""
+
     async def in_use(self, target: ComputerTarget) -> None:
         """Count a call still running on ``target`` as use of it: the idle
         sweep counts turns on a computer's own workspaces, not this one."""
@@ -299,7 +304,7 @@ def _with_computer(tool: BaseTool, tools: ComputerTools, reach: ComputerReach) -
         stamp_tool_provider(target.sandbox.config.sandbox.provider)
         stamp_tool_channel(target.sandbox.channel)
         with project_bound(target.project):
-            return await _while_in_use(reach, target, _run(there, kwargs, config))
+            return await while_in_use(reach, (target,), _run(there, kwargs, config))
 
     return StructuredTool(
         name=tool.name,
@@ -367,17 +372,20 @@ async def _unsearched(reach: ComputerReach) -> str | None:
     )
 
 
-async def _while_in_use(reach: ComputerReach, target: ComputerTarget, work: Awaitable[T]) -> T:
-    """``work``, with ``target`` counted as in use until it ends, so the idle
-    sweep does not stop the computer under a call still running there."""
+async def while_in_use(
+    reach: ComputerReach, targets: Sequence[ComputerTarget], work: Awaitable[T]
+) -> T:
+    """``work``, with each of ``targets`` counted as in use until it ends, so
+    the idle sweep does not stop a computer under a call still running there."""
 
     async def beat() -> None:
         while True:
             await asyncio.sleep(_IN_USE_EVERY_S)
-            try:
-                await reach.in_use(target)
-            except Exception as e:  # noqa: BLE001 - the call goes on
-                logger.debug("could not count the computer as in use", error=str(e))
+            for target in targets:
+                try:
+                    await reach.in_use(target)
+                except Exception as e:  # noqa: BLE001 - the call goes on
+                    logger.debug("could not count the computer as in use", error=str(e))
 
     beating = asyncio.create_task(beat())
     try:

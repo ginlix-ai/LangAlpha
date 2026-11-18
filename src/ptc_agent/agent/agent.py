@@ -141,6 +141,7 @@ from ptc_agent.agent.tools import (
     TodoWrite,
 )
 from ptc_agent.agent.tools.context_file_policy import agent_md_for
+from ptc_agent.agent.tools.copy_file import create_copy_file_tool
 from ptc_agent.agent.tools.computer_reach import (
     REACHABLE_TOOLS,
     ComputerReach,
@@ -849,6 +850,7 @@ class PTCAgent:
                 computer_tools.wrap(tool) if tool.name in REACHABLE_TOOLS else tool
                 for tool in tools
             ]
+            tools.append(create_copy_file_tool(reach))
 
         if role == "chief_of_staff":
             from src.tools.secretary.approvals import StandingApprovalMiddleware

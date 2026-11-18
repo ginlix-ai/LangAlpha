@@ -246,6 +246,43 @@ async def test_a_failed_wake_becomes_the_agents_sentence():
     assert "asleep or offline" in str(e.value)
 
 
+async def _target(manager, wanted, own_session, **kw):
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for p in _patched(manager, **kw):
+            stack.enter_context(p)
+        return await TurnComputers(USER, HOME_ID, own_session).target(wanted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wanted", [None, "", "Cloud computer"])
+async def test_a_copy_reads_the_turns_own_computer_from_homes_folder(wanted):
+    """CopyFile's side on the turn's own computer reads paths as Read and
+    Write there do, from Home's folder, not from the machine's root."""
+    own = SimpleNamespace(sandbox=SimpleNamespace(layout=SimpleNamespace(root="/home/workspace")))
+    home = ProjectContext(workspace_id="home-ws", dir_name="Home")
+    manager = _manager()
+    with project_bound(home):
+        target = await _target(manager, wanted, own)
+    assert target.computer_id == HOME_ID
+    assert target.name == "Cloud computer"
+    assert target.session is own
+    assert target.project is home
+    assert target.root == "/home/workspace"
+    manager.reach_computer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_copy_reaches_another_computer_as_its_tools_do():
+    session = SimpleNamespace(sandbox=None)
+    manager = _manager(session)
+    target = await _target(manager, "Studio Mac", OWN)
+    assert target.computer_id == MAC_ID
+    assert target.session is session
+    assert target.root == "/Users/studio/langalpha"
+
+
 def test_a_user_with_one_computer_gets_no_reach():
     assert turn_computers(USER, HOME_ID, OWN, ROWS[:1]) is None
 
