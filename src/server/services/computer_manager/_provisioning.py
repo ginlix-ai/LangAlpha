@@ -52,6 +52,7 @@ from src.server.services.persistence.file import (
     RestoreIdentityLost,
 )
 from src.server.services.persistence.sync_result import BackupIncomplete
+from src.server.services import browser_quality
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.workspace_layout import (
@@ -325,9 +326,22 @@ class ProvisioningMixin:
             raise
         if token is not None:
             await token
+        await self._keep_browser_quality(binding, sandbox)
         total = (time.time() - _sync_t0) * 1000
         logger.info(f"[SYNC_DETAIL] workspace_id={workspace_id} total={total:.0f}ms")
         return assets
+
+    @staticmethod
+    async def _keep_browser_quality(binding: ComputerBinding, sandbox: Any) -> None:
+        """Hand the machine its owner's live view quality once its runtime has
+        synced, since the runtime is what takes it. Only the first acquire on a
+        sandbox writes, or one whose row says it changed."""
+        await browser_quality.keep(
+            sandbox,
+            kind=binding.kind,
+            quality=binding.browser_quality,
+            revision=binding.browser_quality_rev,
+        )
 
     async def refresh_project_assets(self, workspace_id: str, sandbox: Any) -> Any:
         """Force one project's assets back in sync on a machine already running.

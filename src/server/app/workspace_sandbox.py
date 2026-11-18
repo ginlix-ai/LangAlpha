@@ -38,9 +38,10 @@ from src.server.database.workspace_folders import is_top_level, workspace_folder
 from src.server.services.workspace_files import (
     held_workspace_row,
     layout_for,
+    preview_viewer,
     reached_workspace_on_computer,
+    sandbox_if_running,
 )
-from src.server.database.shared_workspaces import is_holder
 from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
 from src.server.utils.error_sanitization import sandbox_failure_http
 from src.server.services.computer_usage.causes import computer_cause
@@ -66,6 +67,7 @@ from src.server.services.preview_links import (
     delete_preview_owner,
     get_preview_owner,
     preview_launch_lease,
+    proxy_failure,
     resolve_preview,
     set_preview_owner,
 )
@@ -153,12 +155,6 @@ _PACKAGE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+([<>=!~]+.*)?$")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _viewer(workspace: dict[str, Any], user_id: str) -> str | None:
-    """The member a shared workspace's preview is minted for; None for the
-    owner's own workspace, whose previews are as before."""
-    return user_id if is_holder(workspace.get("user_id")) else None
 
 
 async def _get_sandbox(workspace_id: str, user_id: str, cause: StartCause) -> Any:
@@ -649,7 +645,7 @@ async def owner_preview(
                 sandbox, workspace_id, port,
                 command=command, force=force, expires_in=expires_in,
                 folder=_preview_layout(workspace),
-                viewer_id=_viewer(workspace, user_id),
+                viewer_id=preview_viewer(workspace, user_id),
             )
             return OwnerPreview(url, command_key(command))
     except HTTPException:
@@ -661,21 +657,8 @@ async def owner_preview(
         ) from None
     except PreviewPortInUse as e:
         raise _port_in_use(e) from None
-    except PreviewProxyNotConfigured:
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "Previews on this computer need the preview proxy, which this "
-                "deployment has not configured."
-            ),
-        ) from None
-    except PreviewProxyUnavailable:
-        logger.warning(
-            "Preview proxy unavailable for workspace %s port %d", workspace_id, port
-        )
-        raise HTTPException(
-            status_code=503, detail="Previews are unavailable. Try again shortly."
-        ) from None
+    except (PreviewProxyNotConfigured, PreviewProxyUnavailable) as e:
+        raise proxy_failure(e, workspace_id, port) from None
     except Exception:
         logger.exception(
             "Failed to get preview URL for workspace %s port %d", workspace_id, port
@@ -756,12 +739,7 @@ async def check_preview_health(
     workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
     stopped = HTTPException(status_code=503, detail="Computer is stopped")
     manager = WorkspaceManager.get_instance()
-    try:
-        session = await manager.get_session_if_running(workspace_id, user_id=x_user_id)
-    except Exception as e:
-        logger.warning(f"Preview health could not reach workspace {workspace_id}: {e}")
-        raise sandbox_failure_http(e) from None
-    sandbox = getattr(session, "sandbox", None)
+    sandbox = await sandbox_if_running(workspace_id, x_user_id)
     if sandbox is None or sandbox.runtime is None:
         raise stopped
 
@@ -784,7 +762,7 @@ async def check_preview_health(
     # Invalidate cached signed URL when server is down so next resolve gets a fresh one
     if not reachable:
         await delete_cached_signed_url(
-            sandbox.sandbox_id, body.port, _viewer(workspace, x_user_id)
+            sandbox.sandbox_id, body.port, preview_viewer(workspace, x_user_id)
         )
 
     # On the runtime itself: the sandbox's own call path reconnects, which

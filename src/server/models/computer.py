@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ptc_agent.core.sandbox.browser_runtime.protocol import StreamQualityName
 from ptc_agent.core.sandbox.providers.ssh_errors import MACHINE_ID_PATTERN
 
 from src.server.services.persistence.sync_result import UnsavedReason
@@ -716,6 +717,17 @@ class ComputerFilesBackupRequest(BaseModel):
         description=(
             "Whether routine backups of its workspaces' files run; off keeps "
             "the last backup as it is"
+        )
+    )
+
+
+class ComputerBrowserQualityRequest(BaseModel):
+    """Request model for how sharply a computer's live browser view is drawn."""
+
+    quality: Optional[StreamQualityName] = Field(
+        description=(
+            "The live view's quality; null follows the computer's size. It "
+            "applies the next time the browser opens"
         )
     )
 

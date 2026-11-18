@@ -43,6 +43,7 @@ from src.server.database.computer import (
     removal_held,
     rename_computer as db_rename_computer,
     set_computer_files_backup,
+    set_computer_settings,
     update_computer_status,
 )
 from src.server.database.computer_names import ComputerNameTaken, name_taken
@@ -66,6 +67,7 @@ from src.server.models.computer import (
     CLAIMABLE_FOR_START,
     ComputerActionResponse,
     ComputerAlwaysOnRequest,
+    ComputerBrowserQualityRequest,
     ComputerCreate,
     ComputerFilesBackupRequest,
     ComputerListResponse,
@@ -1250,6 +1252,39 @@ async def set_computer_files_backup_route(
         logger.info(
             f"Set computer {computer_id} file backup to {request.enabled} "
             f"for user {x_user_id}"
+        )
+        return await _counted_response(updated)
+
+
+@router.post("/{computer_id}/browser-quality", response_model=ComputerResponse)
+async def set_computer_browser_quality(
+    computer_id: str,
+    request: ComputerBrowserQualityRequest,
+    x_user_id: CurrentUserId,
+):
+    """Choose how sharply the computer's live browser view is drawn, or with
+    null go back to the one its size gets.
+
+    A browser keeps the quality it started with, since changing it restarts the
+    browser and loses its pages, so the choice reaches the next one it opens.
+    """
+    from src.server.services import browser_quality
+
+    async with _computer_action_errors("set the live view quality for", computer_id):
+        computer = await _owned_computer(computer_id, x_user_id)
+        if not provider_class(computer["kind"]).browser_use:
+            raise HTTPException(status_code=409, detail="This computer has no browser.")
+        if not await set_computer_settings(
+            computer_id, x_user_id, browser_quality.saved(request.quality)
+        ):
+            raise HTTPException(status_code=404, detail="Computer not found")
+        updated = await get_computer(computer_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Computer not found")
+        await browser_quality.apply_now(updated)
+        logger.info(
+            f"Set computer {computer_id} live view quality to "
+            f"{request.quality or 'its size'} for user {x_user_id}"
         )
         return await _counted_response(updated)
 

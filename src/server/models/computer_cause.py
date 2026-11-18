@@ -34,6 +34,7 @@ StartCause = Literal[
     "files",
     "upload",
     "preview",
+    "browser_view",
     "packages",
     "refresh",
     "restore",

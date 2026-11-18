@@ -16,6 +16,7 @@ from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 from ptc_agent.core.sandbox.unreachable import unanswered_code
 from src.observability import safe_record, workspace_fs_bytes
 from src.server.database.home_workspace import is_unbound
+from src.server.database.shared_workspaces import is_holder
 from src.server.database.workspace import computer_backs_up_files
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.database.workspace_file import workspace_has_backup
@@ -72,6 +73,12 @@ async def reached_workspace_on_computer(
     return workspace, access
 
 
+def preview_viewer(workspace: dict[str, Any], user_id: str) -> str | None:
+    """The member a shared workspace's preview is minted for; None for the
+    owner's own workspace, whose previews are as before."""
+    return user_id if is_holder(workspace.get("user_id")) else None
+
+
 def not_running_for_upload(workspace: dict[str, Any]) -> HTTPException:
     """The refusal of an upload into a workspace that is not running, on either path."""
     return HTTPException(
@@ -116,6 +123,19 @@ async def acquire_sandbox(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return sandbox, workspace
+
+
+async def sandbox_if_running(workspace_id: str, user_id: str) -> Any | None:
+    """The workspace's sandbox while its computer is running, else None, for a
+    read that must never start it. The caller has checked ownership."""
+    try:
+        session = await WorkspaceManager.get_instance().get_session_if_running(
+            workspace_id, user_id=user_id
+        )
+    except Exception as e:
+        logger.warning(f"Workspace {workspace_id} could not be reached: {e}")
+        raise sandbox_failure_http(e) from None
+    return getattr(session, "sandbox", None)
 
 
 @asynccontextmanager
