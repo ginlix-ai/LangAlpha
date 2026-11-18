@@ -557,7 +557,8 @@ def _place_file_racing(tmp_path, race: str, *, overwrite: bool = False) -> tuple
     staging.mkdir()
     (staging / "0").write_text("data")
     source = cf._Source("/src/data.txt", folder=False, size=4, mode="644")
-    script = race + cf._join_script(str(staging), 1, 4, cf._place(str(landing), source, overwrite=overwrite))
+    arrival = cf._streamed(cf._Payload(source.path, 4), 1, folder=False)
+    script = race + cf._placing_script(str(staging), str(landing), source, arrival, overwrite=overwrite)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert not staging.exists()
     return done.returncode, landing
@@ -655,7 +656,8 @@ async def test_a_folder_taking_the_name_while_a_folder_lands_is_left_as_it_is(tm
     source = cf._Source("/src/kit", folder=True, size=size)
     # Another copy makes the folder just before this one moves in.
     race = f'mv(){{ [ "$2" = {landing} ] && mkdir -p "$2"; command mv "$@"; }}; '
-    script = race + cf._join_script(str(staging), 1, size, cf._place(str(landing), source, overwrite=False, entries=2))
+    arrival = cf._streamed(cf._Payload(source.path, size, entries=2), 1, folder=True)
+    script = race + cf._placing_script(str(staging), str(landing), source, arrival, overwrite=False)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == cf._TAKEN
     assert landing.is_dir() and not list(landing.iterdir())
@@ -779,10 +781,9 @@ def _join_crafted(tmp_path, entries, *, merge=False, counted=None):
     if counted is None:
         counted = len(entries)
     source = cf._Source("/src/kit", folder=True, size=size)
-    place = cf._place(str(landing), source, overwrite=merge, entries=counted)
-    done = subprocess.run(
-        ["bash", "-c", cf._join_script(str(staging), 1, size, place)], capture_output=True, text=True
-    )
+    arrival = cf._streamed(cf._Payload(source.path, size, entries=counted), 1, folder=True)
+    script = cf._placing_script(str(staging), str(landing), source, arrival, overwrite=merge)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert not staging.exists()
     return done.returncode, landing
 
@@ -857,7 +858,8 @@ def test_every_mode_stat_prints_is_taken(tmp_path, mode):
     staging.mkdir()
     (staging / "0").write_text("data")
     source = cf._Source("/src/data.txt", folder=False, size=4, mode=mode)
-    script = cf._join_script(str(staging), 1, 4, cf._place(str(landing), source, overwrite=False))
+    arrival = cf._streamed(cf._Payload(source.path, 4), 1, folder=False)
+    script = cf._placing_script(str(staging), str(landing), source, arrival, overwrite=False)
     assert subprocess.run(["bash", "-c", script]).returncode == 0
     assert (landing.stat().st_mode & 0o7777) == int(mode, 8)
     landing.chmod(0o644)

@@ -3,10 +3,14 @@ user's computers to another.
 
 Each machine tool runs on one computer, so without this a file crossed
 machines only through the model: Read on one, Write on the other, text only
-and every byte paid twice in tokens. Here the server carries the bytes, a
-part at a time, so neither the model nor a worker ever holds the whole file.
-A folder travels as a tar archive packed on the source and unpacked beside
-the destination, moved into place only once it is whole.
+and every byte paid twice in tokens. Where both computers reach object
+storage, the bytes go through it (``ComputerReach.ship``): the source uploads
+only what the store lacks, so a file a backup stored already costs no
+upload, and the destination fetches the rest itself. Otherwise the server
+carries them, a part at a time, so neither the model nor a worker ever holds
+the whole file, and a folder travels as a tar archive packed on the source.
+Either way the copy lands beside the destination and moves into place only
+once it is whole.
 
 Every check runs on where a path really is on the machine, its links
 followed, and what a folder leaves out is matched as the same folder on
@@ -19,7 +23,7 @@ import posixpath
 import re
 import secrets
 import shlex
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +37,9 @@ from ptc_agent.agent.tools.computer_reach import (
     ComputerReach,
     ComputerTarget,
     ComputerUnreachable,
+    Shipment,
+    Shipped,
+    ShipmentTooLarge,
     file_refusal,
     while_in_use,
 )
@@ -52,10 +59,18 @@ logger = structlog.get_logger(__name__)
 
 _MB = 1024 * 1024
 
-#: The most one call carries, a folder counted as its packed size: past it
-#: the call runs for many minutes and lands a second copy of a large tree on
-#: a disk the user may not watch.
+#: The most one call carries through the server, a folder counted as its
+#: packed size: past it the call runs for many minutes, every byte crossing
+#: the server twice, and lands a second copy of a large tree on a disk the
+#: user may not watch.
 COPY_MAX_BYTES = 1024 * _MB
+
+#: The most one call carries through object storage, every file counted
+#: whole. The bytes never cross the server, so what bounds it is the time a
+#: call waits and the destination's disk.
+COPY_MAX_BYTES_VIA_STORE = 10 * 1024 * _MB
+
+Ship = Callable[[ComputerTarget, Shipment, ComputerTarget], Awaitable[Shipped | None]]
 
 #: What the server holds of a file at once. Each part lands as its own file on
 #: the destination, joined there once all have arrived.
@@ -160,9 +175,9 @@ class CopyFileInput(BaseModel):
     )
 
 
-DESCRIPTION = f"""Copy a file or a folder from one of the user's computers to another, or within one. Use it to move data between machines rather than reading a file out and writing it back, which works for text only.
+DESCRIPTION = """Copy a file or a folder from one of the user's computers to another, or within one. Use it to move data between machines rather than reading a file out and writing it back, which works for text only.
 
-Up to {COPY_MAX_BYTES // _MB} MB per call, a folder counted as its packed size. A folder's `.agents` memory, threads and tool files are left out: memory, memos, the profile, automations and workflows are the same on every computer and need no copy.
+A folder's `.agents` memory, threads and tool files are left out: memory, memos, the profile, automations and workflows are the same on every computer and need no copy.
 
 To move rather than copy, delete the source with Bash once the copy is done."""
 
@@ -204,17 +219,19 @@ def _size(n: int) -> str:
         return f"{n} bytes"
     if n < _MB:
         return f"{n / 1024:.1f} KB"
-    return f"{n / _MB:.1f} MB"
+    if n < 1024 * _MB:
+        return f"{n / _MB:.1f} MB"
+    return f"{n / (1024 * _MB):.1f} GB"
 
 
 def _detail(result: dict[str, Any]) -> str:
     return (result.get("stderr") or result.get("stdout") or "no answer").strip()[:300]
 
 
-def _over_cap(spelled: str, measured: str) -> str:
+def _over_cap(spelled: str, measured: str, cap: int = COPY_MAX_BYTES) -> str:
     return (
-        f"{spelled} {measured}, and CopyFile carries up to {COPY_MAX_BYTES // _MB} MB. "
-        "Copy it in pieces, or compress it with Bash first."
+        f"{spelled} {measured}, and CopyFile carries up to {_size(cap)} between these "
+        "computers. Copy it in pieces, or compress it with Bash first."
     )
 
 
@@ -442,11 +459,75 @@ async def _payload(target: ComputerTarget, source: _Source, spelled: str) -> Asy
         await _shielded_rm(target, archive)
 
 
-def _place(landing: str, source: _Source, *, overwrite: bool, entries: int = 0) -> str:
-    """The script that puts the joined ``whole`` at ``landing``. A folder is
-    unpacked whole first, so a failed unpack leaves nothing there, with its
-    modes as packed. A merge extracts over the folder there; GNU tar and a
-    Mac's both replace a link in its way rather than write through it."""
+@dataclass(frozen=True)
+class _Arrival:
+    """A copy in its staging folder, by either route, as the placing script
+    takes it up."""
+
+    size: int
+    files: int
+    #: Everything a folder holds, folders and links among them: as many must
+    #: come out of it on the destination's disk.
+    entries: int
+    #: Run first, in the staging folder: leaves a file as ``whole`` and a
+    #: folder as ``unpacked/<its name>``, or fails.
+    assemble: str
+    #: Prints a folder as a tar archive, its entries under ``./<its name>``,
+    #: for a merge to extract over the folder there.
+    archive: str
+
+
+def _streamed(payload: _Payload, parts: int, *, folder: bool) -> _Arrival:
+    """Parts the server carried, joined into ``whole``. Each part goes as
+    soon as it is joined, so the disk holds little more than the copy at
+    once. A folder's archive is unpacked from it, and a merge extracts
+    straight from it, so a sparse file stays sparse, which packing it again
+    would undo."""
+    assemble = (
+        ": > whole || fail 1; "
+        f'for p in {" ".join(str(i) for i in range(parts))}; do '
+        'cat "$p" >> whole && rm -f "$p" || fail 1; done; '
+        f'[ "$(wc -c < whole | tr -d " ")" = {payload.size} ] || fail {_SHORT}; '
+    )
+    if folder:
+        assemble += f"mkdir unpacked && tar -xpf whole -C unpacked --no-same-owner || fail {_UNPACK}; "
+    return _Arrival(
+        payload.size, payload.files, payload.entries, assemble=assemble, archive="cat whole"
+    )
+
+
+def _stored(shipped: Shipped, source: _Source) -> _Arrival:
+    """What object storage landed, already unpacked, each file's digest
+    checked as it landed. A merge packs the folder again."""
+    return _Arrival(
+        shipped.size,
+        shipped.files,
+        shipped.entries,
+        assemble="",
+        archive=f"(cd unpacked && COPYFILE_DISABLE=1 tar -cf - {shlex.quote('./' + source.name)})",
+    )
+
+
+def _placing_script(
+    staging: str, landing: str, source: _Source, arrival: _Arrival, *, overwrite: bool
+) -> str:
+    """Assemble ``arrival`` in ``staging`` and put it at ``landing``, then
+    remove ``staging``, which decides nothing: a folder unpacked read-only is
+    made writable first."""
+    return (
+        f"set -o pipefail; umask 077; d={shlex.quote(staging)}; "
+        'tidy(){ cd /; chmod -R u+rwX "$d"; rm -rf "$d"; } 2>/dev/null; '
+        'fail(){ tidy; exit "$1"; }; cd "$d" || exit 1; '
+        f"{arrival.assemble}{_place(landing, source, arrival, overwrite=overwrite)}; tidy; exit 0"
+    )
+
+
+def _place(landing: str, source: _Source, arrival: _Arrival, *, overwrite: bool) -> str:
+    """The script that puts the copy at ``landing``: a file from ``whole``,
+    a folder from ``unpacked/<its name>``, which a failed unpack leaves
+    nothing of. A merge extracts the arrival's archive over the folder there;
+    GNU tar and a Mac's both replace a link in its way rather than write
+    through it."""
     at = shlex.quote(landing)
     # Moved in under a name of its own, so a folder that took the landing's
     # name meanwhile, which ln and mv put the copy inside, is told apart and
@@ -473,42 +554,25 @@ def _place(landing: str, source: _Source, *, overwrite: bool, entries: int = 0) 
     unpacked = shlex.quote(f"unpacked/{source.name}")
     claim = f"unpacked/{mark}"
     merge = (
-        # Straight from the archive, its own folder's entry left off, so the
-        # folder merged into keeps its mode and a sparse file stays sparse,
-        # which packing it again would undo.
-        f"tar -xpf whole -C {at} --strip-components=2 --no-same-owner || fail {_PARTLY}"
+        # Its own folder's entry left off, so the folder merged into keeps
+        # its mode.
+        f"{arrival.archive} | tar -xpf - -C {at} --strip-components=2 --no-same-owner "
+        f"|| fail {_PARTLY}"
         if overwrite
         else f"fail {_TAKEN}"
     )
     return (
-        # Unpacked whole beside the landing first, on the same disk, so a
-        # failed unpack leaves nothing there, and so that disk itself says
-        # whether two of its names are one to it (A and a, or two spellings
-        # of é), which shows as fewer entries than were packed.
-        f"mkdir unpacked && tar -xpf whole -C unpacked --no-same-owner && [ -d {unpacked} ] "
-        f"|| fail {_UNPACK}; "
+        # Unpacked whole beside the landing first, on the same disk, so that
+        # disk itself says whether two of its names are one to it (A and a,
+        # or two spellings of é), which shows as fewer entries than were
+        # sent.
+        f"[ -d {unpacked} ] || fail {_UNPACK}; "
         f'[ "$(find unpacked -mindepth 1 -print0 | tr -dc "\\\\0" | wc -c | tr -d " ")" '
-        f"= {entries} ] || fail {_CLASH}; "
+        f"= {arrival.entries} ] || fail {_CLASH}; "
         f"if [ -d {at} ]; then {merge}; "
         f"elif [ -e {at} ] || [ -L {at} ]; then fail {_CHANGED}; "
         f"else rm -f whole; mv {unpacked} {claim} || fail 1; mv {claim} {at} || fail 1; "
         f"if [ -e {at}/{mark} ]; then mv {at}/{mark} unpacked/; fail {_TAKEN}; fi; fi"
-    )
-
-
-def _join_script(staging: str, parts: int, size: int, place: str) -> str:
-    """Join the parts in ``staging`` into ``whole``, check its size and run
-    ``place``, then remove ``staging``, which decides nothing: a folder
-    unpacked read-only is made writable first. Each part goes as soon as it
-    is joined, so the disk holds little more than the copy at once."""
-    names = " ".join(str(i) for i in range(parts))
-    return (
-        f"set -o pipefail; umask 077; d={shlex.quote(staging)}; "
-        'tidy(){ cd /; chmod -R u+rwX "$d"; rm -rf "$d"; } 2>/dev/null; '
-        'fail(){ tidy; exit "$1"; }; cd "$d" || exit 1; '
-        f': > whole || fail 1; for p in {names}; do cat "$p" >> whole && rm -f "$p" || fail 1; done; '
-        f'[ "$(wc -c < whole | tr -d " ")" = {size} ] || fail {_SHORT}; '
-        f"{place}; tidy; exit 0"
     )
 
 
@@ -540,58 +604,113 @@ async def _shielded_rm(target: ComputerTarget, path: str) -> None:
             logger.warning("Could not remove a copy's leftovers", path=logged_path(path), error=str(e))
 
 
-async def _carry(
-    source: ComputerTarget,
-    payload: _Payload,
-    destination: ComputerTarget,
-    landing: str,
-    place: str,
-) -> dict[str, Any]:
-    """Stream ``payload`` into parts beside ``landing``, in a folder only its
-    owner reads, then join them and run ``place`` there; the script's
-    result. Leaves no part behind."""
+async def _staging(destination: ComputerTarget, landing: str) -> str:
+    """A new folder beside ``landing`` that only its owner reads, for a copy
+    to land in before it moves into place."""
     # Spelled as the upload resolves it: on Home's computer a hidden name
     # beside a workspace folder resolves into Home's folder.
     staging = _whole(
         destination,
         f"{posixpath.dirname(landing)}/{_transient('.' + posixpath.basename(landing))}",
     )
+    made = await _sh(destination, f"mkdir -p -m 700 {shlex.quote(staging)}")
+    if not made.get("success"):
+        await _shielded_rm(destination, staging)
+        raise ComputerUnreachable(
+            f'{landing} could not be written on computer "{destination.name}": {_detail(made)}'
+        )
+    return staging
+
+
+async def _land(
+    destination: ComputerTarget,
+    landing: str,
+    what: _Source,
+    arrive: Callable[[str], Awaitable[_Arrival | None]],
+    *,
+    overwrite: bool,
+) -> _Arrival | None:
+    """Bring ``what`` into a new staging folder beside ``landing`` with
+    ``arrive`` and put it in place; what arrived. None, with nothing left
+    behind, when ``arrive`` finds its route does not serve these computers.
+    Raises ``ComputerUnreachable`` when the copy was not placed."""
+    staging = await _staging(destination, landing)
     try:
-        made = await _sh(destination, f"mkdir -p -m 700 {shlex.quote(staging)}")
-        if not made.get("success"):
-            raise ComputerUnreachable(
-                f'{landing} could not be written on computer "{destination.name}": {_detail(made)}'
-            )
-        with project_bound(source.project):
-            stream = await source.sandbox.astream_file_bytes(payload.path)
-        if stream is None:
-            raise ComputerUnreachable(f'{payload.path} is gone from computer "{source.name}".')
-        parts = 0
-        try:
-            async for part in _parts(stream, COPY_MAX_BYTES):
-                with project_bound(destination.project):
-                    written = await destination.sandbox.aupload_file_bytes(f"{staging}/{parts}", part)
-                if not written:
-                    raise ComputerUnreachable(
-                        f'{landing} could not be written on computer "{destination.name}".'
-                    )
-                parts += 1
-        finally:
-            await stream.aclose()
-        joined = await _sh(
+        arrival = await arrive(staging)
+        if arrival is None:
+            await _shielded_rm(destination, staging)
+            return None
+        placed = await _sh(
             destination,
-            _join_script(staging, parts, payload.size, place),
-            # Joining reads and writes the copy once more on its disk, and an
-            # unpack once again.
-            timeout=_STEP_TIMEOUT_S + payload.size // (10 * _MB),
+            _placing_script(staging, landing, what, arrival, overwrite=overwrite),
+            # Joining, unpacking or merging reads and writes the copy once
+            # more on its disk.
+            timeout=_STEP_TIMEOUT_S + arrival.size // (10 * _MB),
         )
     except BaseException:
         await _shielded_rm(destination, staging)
         raise
-    if not joined.get("success"):
+    if not placed.get("success"):
         # A script that ran out of time cleared nothing.
         await _shielded_rm(destination, staging)
-    return joined
+    if failed := _unplaced(placed, what, landing, f'computer "{destination.name}"'):
+        raise ComputerUnreachable(failed)
+    return arrival
+
+
+async def _by_store(
+    ship: Ship, source: ComputerTarget, what: _Source, destination: ComputerTarget, staging: str
+) -> _Arrival | None:
+    """``what`` landed in ``staging`` through object storage, or None when
+    that route does not serve these computers."""
+    try:
+        shipped = await ship(
+            source,
+            Shipment(
+                path=what.path,
+                folder=what.folder,
+                size=0 if what.folder else what.size,
+                staging=staging,
+                max_bytes=COPY_MAX_BYTES_VIA_STORE,
+                tails=_LEFT_OUT_ANYWHERE,
+                names=(_STAGING_NAME,),
+                same_as=tuple(_held(source)),
+            ),
+            destination,
+        )
+    except ShipmentTooLarge as e:
+        raise ComputerUnreachable(
+            _over_cap(what.path, f"holds {_size(e.size)}", COPY_MAX_BYTES_VIA_STORE)
+        ) from None
+    return None if shipped is None else _stored(shipped, what)
+
+
+async def _by_server(
+    source: ComputerTarget,
+    payload: _Payload,
+    what: _Source,
+    destination: ComputerTarget,
+    landing: str,
+    staging: str,
+) -> _Arrival:
+    """``payload`` streamed through the server into parts in ``staging``."""
+    with project_bound(source.project):
+        stream = await source.sandbox.astream_file_bytes(payload.path)
+    if stream is None:
+        raise ComputerUnreachable(f'{payload.path} is gone from computer "{source.name}".')
+    parts = 0
+    try:
+        async for part in _parts(stream, COPY_MAX_BYTES):
+            with project_bound(destination.project):
+                written = await destination.sandbox.aupload_file_bytes(f"{staging}/{parts}", part)
+            if not written:
+                raise ComputerUnreachable(
+                    f'{landing} could not be written on computer "{destination.name}".'
+                )
+            parts += 1
+    finally:
+        await stream.aclose()
+    return _streamed(payload, parts, folder=what.folder)
 
 
 def _unplaced(
@@ -635,10 +754,12 @@ async def copy_file(
     destination_path: str,
     *,
     overwrite: bool = False,
+    ship: Ship | None = None,
 ) -> str:
-    """Copy one file or folder between two computers. Returns the agent's
-    result line; raises ComputerUnreachable with the agent's sentence for a
-    refusal."""
+    """Copy one file or folder between two computers, through object
+    storage when ``ship`` serves them, else through the server. Returns the
+    agent's result line; raises ComputerUnreachable with the agent's sentence
+    for a refusal."""
     if "\n" in source_path or "\n" in destination_path:
         raise ComputerUnreachable("CopyFile does not take a path with a line break in it.")
     _check(source, "Read", source_path)
@@ -657,31 +778,39 @@ async def copy_file(
     if refused := _landing_refusal(destination, what, landing, there, overwrite=overwrite):
         raise ComputerUnreachable(refused)
 
-    async with _payload(source, what, source_path) as payload:
-        if payload.size > COPY_MAX_BYTES:
-            # A pack stops one byte past the cap.
-            measured = (
-                f"packs to more than {_size(COPY_MAX_BYTES)}"
-                if what.folder
-                else f"is {_size(payload.size)}"
-            )
-            raise ComputerUnreachable(_over_cap(source_path, measured))
-        result = await _carry(
-            source,
-            payload,
+    landed = None
+    if ship is not None:
+        landed = await _land(
             destination,
             landing,
-            _place(landing, what, overwrite=overwrite, entries=payload.entries),
+            what,
+            lambda staging: _by_store(ship, source, what, destination, staging),
+            overwrite=overwrite,
         )
-    if failed := _unplaced(result, what, landing, where):
-        raise ComputerUnreachable(failed)
+    if landed is None:
+        async with _payload(source, what, source_path) as payload:
+            if payload.size > COPY_MAX_BYTES:
+                # A pack stops one byte past the cap.
+                measured = (
+                    f"packs to more than {_size(COPY_MAX_BYTES)}"
+                    if what.folder
+                    else f"is {_size(payload.size)}"
+                )
+                raise ComputerUnreachable(_over_cap(source_path, measured))
+            landed = await _land(
+                destination,
+                landing,
+                what,
+                lambda staging: _by_server(source, payload, what, destination, landing, staging),
+                overwrite=overwrite,
+            )
 
     origin = f'{what.path} on computer "{source.name}"'
     if not what.folder:
-        return f"Copied {_size(payload.size)} from {origin} to {landing} on {where}."
-    files = f"{payload.files} file{'' if payload.files == 1 else 's'}"
+        return f"Copied {_size(landed.size)} from {origin} to {landing} on {where}."
+    files = f"{landed.files} file{'' if landed.files == 1 else 's'}"
     verb, onto = ("Merged", "into") if there == "dir" else ("Copied", "to")
-    return f"{verb} the folder {origin} ({files}, {_size(payload.size)}) {onto} {landing} on {where}."
+    return f"{verb} the folder {origin} ({files}, {_size(landed.size)}) {onto} {landing} on {where}."
 
 
 def create_copy_file_tool(reach: ComputerReach) -> BaseTool:
@@ -703,7 +832,7 @@ def create_copy_file_tool(reach: ComputerReach) -> BaseTool:
             return await while_in_use(
                 reach,
                 (src, dst),
-                copy_file(src, source, dst, destination, overwrite=overwrite),
+                copy_file(src, source, dst, destination, overwrite=overwrite, ship=reach.ship),
             )
         except ComputerUnreachable as e:
             return f"ERROR: {e}"

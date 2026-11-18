@@ -15,6 +15,7 @@ import base64
 import codecs
 import contextlib
 import errno
+import fnmatch
 import functools
 import hashlib
 import http.client
@@ -266,6 +267,18 @@ def _is_connection_error(exc: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _identities(paths: Any) -> frozenset[tuple[int, int]]:
+    """The (device, inode) of each of ``paths`` there, links followed."""
+    found = set()
+    for path in paths:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        found.add((st.st_dev, st.st_ino))
+    return frozenset(found)
+
+
 class _Exclusions:
     """What a backup leaves out, shared by ``scan`` and ``sweep``.
 
@@ -285,6 +298,26 @@ class _Exclusions:
         self.root_basenames = set(spec.get("exclude_root_basenames") or ())
         self.root_prefixes = tuple(spec.get("exclude_root_basename_prefixes") or ())
         self.suffixes = tuple(spec.get("exclude_suffixes") or ())
+        # A copy's own rules, which no backup sets, each matching any kind of
+        # entry: paths by how they end, read from the walked folder's own
+        # name so a folder copied on its own matches too; names by pattern;
+        # and folders as the same one on disk, however the walk spells them.
+        base = (spec.get("tail_base") or "").strip("/")
+        self.tail_base = f"{base}/" if base else ""
+        self.tails = tuple(t.strip("/") for t in (spec.get("exclude_tails") or ()))
+        self.name_patterns = tuple(spec.get("exclude_name_patterns") or ())
+        self.same_as = _identities(spec.get("exclude_same_as") or ())
+
+    def _left_out_by_copy(self, child: Any, rel: str) -> bool:
+        full = self.tail_base + rel
+        if any(full == t or full.endswith("/" + t) for t in self.tails):
+            return True
+        if any(fnmatch.fnmatchcase(child.name, p) for p in self.name_patterns):
+            return True
+        if self.same_as:
+            st = child.stat(follow_symlinks=False)
+            return (st.st_dev, st.st_ino) in self.same_as
+        return False
 
     def kind(self, child: Any, rel: str, at_root: bool) -> str | None:
         """``child``'s kind as a backup carries it, or None when it is left out.
@@ -298,6 +331,8 @@ class _Exclusions:
         # directories included, so a row for one would only promise what the
         # next restore deletes.
         if at_root and (name in self.root_basenames or name.startswith(self.root_prefixes)):
+            return None
+        if self._left_out_by_copy(child, rel):
             return None
         if child.is_symlink():
             # A symlink standing where an excluded directory would be is that
@@ -465,9 +500,22 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
             except OSError as exc:
                 errors.append({"path": rel, "error": str(exc), "errno": exc.errno})
 
-    walk(root, "")
+    try:
+        st = os.stat(root)
+        root_mode, root_mtime_ns = stat.S_IMODE(st.st_mode), st.st_mtime_ns
+        # A copy names the folders it leaves out; the walked folder being
+        # one of them leaves out everything.
+        left_out = (st.st_dev, st.st_ino) in excluded.same_as
+    except OSError:
+        # The walk reports a root it cannot open.
+        root_mode, root_mtime_ns, left_out = None, None, False
+    if not left_out:
+        walk(root, "")
     entries.sort(key=lambda e: e["path"])
     return {
+        "root_mode": root_mode,
+        "root_mtime_ns": root_mtime_ns,
+        "root_left_out": left_out,
         "entries": entries,
         "oversized": oversized,
         "errors": errors,
@@ -1661,10 +1709,6 @@ def pack(spec: dict[str, Any]) -> dict[str, Any]:
     changed: list[str] = []
     current: dict[str, Any] | None = None
 
-    def _chunk_path(walk_root: str, final: str) -> str:
-        prefix = walk_root.rstrip(os.sep) + os.sep
-        return os.path.relpath(final, walk_root) if final.startswith(prefix) else final
-
     def open_chunk() -> dict[str, Any]:
         tmp = tempfile.NamedTemporaryFile(dir=out_dir, prefix="chunk-tmp-", delete=False)
         return {"file": tmp, "hash": hashlib.sha256(), "size": 0, "members": []}
@@ -1681,10 +1725,11 @@ def pack(spec: dict[str, Any]) -> dict[str, Any]:
         os.replace(current["file"].name, final)
         chunks.append(
             {
-                # A chunk staged outside the walk root has no relative name
-                # there, so it travels absolute; the push and unlink ops
-                # accept an absolute path only under the pack directory.
-                "path": _chunk_path(root, final),
+                # Staged under a pack root, a chunk travels absolute: the
+                # push and unlink ops take it under that root's pack
+                # directory, whether or not the walk root holds it, as a
+                # copy of a folder above the computer root does.
+                "path": final if spec.get("pack_root") else os.path.relpath(final, root),
                 "sha256": digest,
                 "size": current["size"],
                 "members": current["members"],

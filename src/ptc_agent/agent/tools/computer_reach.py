@@ -153,6 +153,15 @@ class ComputerUnreachable(Exception):
     """The named computer cannot take the call; the message is for the agent."""
 
 
+class ShipmentTooLarge(Exception):
+    """A shipment holds more than its ``max_bytes``. Not for the agent as it
+    is: the caller words it, naming the limit."""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(f"{size} bytes")
+        self.size = size
+
+
 @dataclass(frozen=True)
 class ComputerTarget:
     """Another of the user's computers, as one call reaches it."""
@@ -188,6 +197,41 @@ class Attached:
     copied: int = 0
 
 
+@dataclass(frozen=True)
+class Shipment:
+    """One file or folder for the host to carry between two computers by way
+    of object storage, landing in a staging folder on the destination."""
+
+    #: Where the file or folder really is on the source, links followed.
+    path: str
+    folder: bool
+    #: A file's size as the source read it, held to ``max_bytes`` before it
+    #: is read whole; a folder's is found by walking it.
+    size: int
+    #: The folder on the destination the copy lands in: a file as
+    #: ``whole``, a folder as ``unpacked/<its name>``.
+    staging: str
+    #: The most it may hold, every file counted whole.
+    max_bytes: int
+    #: Left out of a folder: paths by how they end, read from the folder's
+    #: own name; names by pattern; and folders matched as the same one on
+    #: disk however they are spelled.
+    tails: tuple[str, ...] = ()
+    names: tuple[str, ...] = ()
+    same_as: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Shipped:
+    """What a shipment landed on the destination."""
+
+    #: Its files' bytes, every file counted whole.
+    size: int
+    files: int
+    #: Everything landed, folders and links among them, the folder included.
+    entries: int
+
+
 class ComputerReach(Protocol):
     """Resolves the ``computer`` a call names. The host implements it,
     since the user's computers and their sessions are its own."""
@@ -214,6 +258,16 @@ class ComputerReach(Protocol):
         as the messaging service fetches them, in order. All are found before
         any is copied, so a file that cannot go leaves no copy of the others.
         Raises ``ComputerUnreachable``."""
+
+    async def ship(
+        self, source: ComputerTarget, shipment: Shipment, destination: ComputerTarget
+    ) -> Shipped | None:
+        """Land ``shipment`` from ``source`` in its staging folder on
+        ``destination`` through object storage, uploading only what the store
+        does not hold yet. None when that route does not serve these two
+        computers, or failed to reach the store, which leaves the staging
+        folder for the caller to clear and carry the bytes itself. Raises
+        ``ComputerUnreachable`` with the agent's sentence."""
 
 
 ToolsOn = Callable[[ComputerTarget], Mapping[str, BaseTool]]
