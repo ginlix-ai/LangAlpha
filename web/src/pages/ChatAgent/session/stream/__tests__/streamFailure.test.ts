@@ -15,34 +15,34 @@ const refusal = (fields: Record<string, unknown>) => ({ event: 'error', error: S
 
 describe('readStreamFailure: a Claude Code refusal', () => {
   it.each(['needs_bigger_computer'])('words %s in the app', (reason) => {
-    expect(readStreamFailure(refusal({ reason }), SERVER, 'ws-1', t)).toEqual({ message: `chat.claudeCode.off.${reason}` });
+    expect(readStreamFailure(refusal({ reason }), SERVER, null, 'ws-1', t)).toEqual({ message: `chat.claudeCode.off.${reason}` });
   });
 
   it('names the cap on turns', () => {
-    expect(readStreamFailure(refusal({ reason: 'too_many_turns', limit: 2 }), SERVER, 'ws-1', t))
+    expect(readStreamFailure(refusal({ reason: 'too_many_turns', limit: 2 }), SERVER, null, 'ws-1', t))
       .toEqual({ message: 'chat.claudeCode.off.too_many_turns:{"n":2}' });
   });
 
   it('words a refused setup token in the app, with the link to a new one', () => {
-    const failure = readStreamFailure(refusal({ reason: 'token_refused' }), SERVER, 'ws-1', t);
+    const failure = readStreamFailure(refusal({ reason: 'token_refused' }), SERVER, null, 'ws-1', t);
     expect(failure?.message).toBe('chat.claudeCode.off.token_refused');
     expect(failure?.links).toHaveLength(1);
   });
 
   it("keeps the server's words for a reason the app does not word", () => {
-    expect(readStreamFailure(refusal({ reason: 'server' }), SERVER, 'ws-1', t)).toBeUndefined();
+    expect(readStreamFailure(refusal({ reason: 'server' }), SERVER, null, 'ws-1', t)).toBeUndefined();
   });
 
   it("carries a plan limit's window and reset for the card to word, with nothing to fix", () => {
     const until = '2026-11-06T20:40:00Z';
-    expect(readStreamFailure(refusal({ reason: 'plan_stopped', window: 'five_hour', until, credits_billed: true }), SERVER, 'ws-1', t))
+    expect(readStreamFailure(refusal({ reason: 'plan_stopped', window: 'five_hour', until, credits_billed: true }), SERVER, null, 'ws-1', t))
       .toEqual({ message: SERVER, planRefusal: { reason: 'plan_stopped', window: 'five_hour', until, creditsBilled: true } });
-    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'seven_day', until }), SERVER, 'ws-1', t))
+    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'seven_day', until }), SERVER, null, 'ws-1', t))
       .toEqual({ message: SERVER, planRefusal: { reason: 'plan_limited', window: 'seven_day', until, creditsBilled: false } });
   });
 
   it("keeps the server's words for a plan limit without a time to word", () => {
-    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'five_hour' }), SERVER, 'ws-1', t)).toBeUndefined();
+    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'five_hour' }), SERVER, null, 'ws-1', t)).toBeUndefined();
   });
 });
 
@@ -50,19 +50,19 @@ describe('readStreamFailure: who pays for an upstream failure', () => {
   const upstream = (fields: Record<string, unknown>) => ({ event: 'error', error: SERVER, error_kind: 'upstream', ...fields });
 
   it('reads the payer and the account the server named', () => {
-    const failure = readStreamFailure(upstream({ payer: 'own_key', account: 'DeepSeek' }), SERVER, 'ws-1', t);
+    const failure = readStreamFailure(upstream({ payer: 'own_key', account: 'DeepSeek' }), SERVER, null, 'ws-1', t);
     expect(failure?.payer).toBe('own_key');
     expect(failure?.account).toBe('DeepSeek');
   });
 
   it('drops a payer it does not know, so the card reads as it always did', () => {
-    expect(readStreamFailure(upstream({ payer: 'someone' }), SERVER, 'ws-1', t)?.payer).toBeUndefined();
+    expect(readStreamFailure(upstream({ payer: 'someone' }), SERVER, null, 'ws-1', t)?.payer).toBeUndefined();
   });
 });
 
 describe("readStreamFailure: what the provider said and a subscription's limit", () => {
   const upstream = (fields: Record<string, unknown>) => ({ event: 'error', error: SERVER, error_kind: 'upstream', ...fields });
-  const read = (fields: Record<string, unknown>) => readStreamFailure(upstream(fields), SERVER, 'ws-1', t);
+  const read = (fields: Record<string, unknown>) => readStreamFailure(upstream(fields), SERVER, null, 'ws-1', t);
   const until = '2026-11-06T20:40:00Z';
 
   it('passes the reason as sent, a new one included, for the report to name', () => {
@@ -94,7 +94,7 @@ describe("readStreamFailure: what the provider said and a subscription's limit",
   it('reads neither on a failure of our own', () => {
     const failure = readStreamFailure(
       { event: 'error', error: SERVER, error_kind: 'internal', reason: 'overloaded', plan_limit: { plan: 'Claude', window: null, until: null } },
-      SERVER, 'ws-1', t,
+      SERVER, null, 'ws-1', t,
     );
     expect(failure?.reason).toBeUndefined();
     expect(failure?.planLimit).toBeUndefined();
@@ -104,7 +104,7 @@ describe("readStreamFailure: what the provider said and a subscription's limit",
 describe('readStreamFailure: a machine that did not answer', () => {
   it('carries the connect code for the card to word, live or replayed', () => {
     const frame = { event: 'error', error: 'mini is not connected.', error_kind: 'computer_unreachable', error_code: 'not_connected', response_id: 'run-1' };
-    expect(readStreamFailure(frame, 'mini is not connected.', 'ws-1', t)).toEqual({
+    expect(readStreamFailure(frame, 'mini is not connected.', null, 'ws-1', t)).toEqual({
       message: 'mini is not connected.', kind: 'computer_unreachable', unreachable: { code: 'not_connected' }, runId: 'run-1',
     });
   });
@@ -114,7 +114,7 @@ describe('readStreamFailure: a machine that did not answer', () => {
       event: 'error', error_kind: 'computer_unreachable', error_code: 'timeout',
       computer_id: 'comp-mac', computer_name: 'mini', run_id: 'run-2',
     };
-    expect(readStreamFailure(frame, '', 'ws-1', t)).toMatchObject({
+    expect(readStreamFailure(frame, '', null, 'ws-1', t)).toMatchObject({
       kind: 'computer_unreachable', unreachable: { code: 'timeout', computerId: 'comp-mac', computerName: 'mini' }, runId: 'run-2',
     });
   });

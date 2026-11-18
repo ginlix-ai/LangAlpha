@@ -11,6 +11,7 @@ import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage'
 import type { OpenFileHandler } from '../utils/fileLocation';
 import { errorLinkKey, type StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
+import { RuleStopRow } from '@/components/organization/RuleStopRow';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { useWorkspaceId } from '../contexts/WorkspaceContext';
 import { useComputer } from '../hooks/useComputers';
@@ -93,6 +94,7 @@ function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   const stop = planStopOf(err);
   if (stop) return <PlanStopCard stop={stop} />;
   if (err.kind === 'notice') return <NoticeLine message={err.message} className="py-1.5" />;
+  if (err.ruleStop) return <RuleStopRow stop={err.ruleStop} message={err.message} />;
   if (err.kind === 'upstream') return <StructuredErrorDisplay err={err} />;
   if (err.kind === 'computer_unreachable') return <ComputerUnreachableCard err={err} />;
   if (err.kind === 'internal') {

@@ -7,10 +7,15 @@
 import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
+import { useSharedWorkspaces } from '@/hooks/useSharedWorkspaces';
 import { deleteThreadRow } from './deleteThreadRow';
 import { archiveThreadRow, pinThreadRow, renameThreadRow } from './threadRowMutations';
-import { useNavigationData } from './useNavigationData';
+import { applyStableOrderBy, useNavigationData } from './useNavigationData';
+import { getFrozenSharedOrder, setFrozenSharedOrder } from './navOrderFreeze';
 import type { NavWorkspace } from './useNavigationData';
+import { useNavPrefs } from '../utils/navPrefs';
+import { useLocale } from '@/hooks/useLocale';
+import type { SharedWorkspaceEntry } from '@/types/sharedWorkspaces';
 import { useRemoveThread } from './useRemoveThread';
 import type { SidebarAgentRow } from '../session/subagents/subagentStatus';
 
@@ -38,6 +43,28 @@ export interface UseNavTreePropsOptions {
   fallbackWorkspaceName?: string;
 }
 
+const sharedId = (e: SharedWorkspaceEntry) => e.workspace.workspace_id;
+
+/**
+ * The shared group in the order the person's own follows: by name, by
+ * activity as the list comes, or under the custom order held where this
+ * session first saw it (`navOrderFreeze`, shared by every host), so a
+ * colleague's turn does not move a row under the reader. A workspace that
+ * arrives later joins at the top.
+ */
+function useSharedOrder(entries: SharedWorkspaceEntry[] | undefined): SharedWorkspaceEntry[] | undefined {
+  const { orderBy } = useNavPrefs();
+  const locale = useLocale();
+  return useMemo(() => {
+    if (!entries) return undefined;
+    if (orderBy === 'name') return [...entries].sort((a, b) => a.workspace.name.localeCompare(b.workspace.name, locale));
+    if (orderBy === 'activity') return entries;
+    const { order, items } = applyStableOrderBy(getFrozenSharedOrder(), entries, sharedId);
+    setFrozenSharedOrder(order);
+    return items;
+  }, [entries, orderBy, locale]);
+}
+
 // Stable fallback while no ChatView is publishing (agents undefined → no tree).
 const noopSelectAgent = () => {};
 
@@ -63,10 +90,14 @@ export function useNavTreeProps({
     renameWorkspace,
   } = useNavigationData(currentWorkspaceId || '');
   const { openThread: onNavigateThread, removeThread } = useRemoveThread(currentThreadId, fallbackWorkspaceName);
+  // Off (the query never runs) or empty, the tree draws no shared group.
+  const { data: sharedList, enabled: sharedOn } = useSharedWorkspaces();
+  const sharedWorkspaces = useSharedOrder(sharedOn && sharedList?.workspaces.length ? sharedList.workspaces : undefined);
 
   const findWorkspace = useCallback(
-    (wsId: string): NavWorkspace | undefined => workspaces.find((ws) => ws.workspace_id === wsId),
-    [workspaces],
+    (wsId: string): NavWorkspace | undefined => workspaces.find((ws) => ws.workspace_id === wsId)
+      ?? (sharedWorkspaces?.find((e) => e.workspace.workspace_id === wsId)?.workspace as NavWorkspace | undefined),
+    [workspaces, sharedWorkspaces],
   );
 
   const onNewThread = useCallback(
@@ -125,8 +156,9 @@ export function useNavTreeProps({
     onArchiveThread,
     onRenameThread,
     onDeleteThread,
+    sharedWorkspaces,
   }), [
-    workspaces, workspaceThreads, currentWorkspaceId, currentThreadId, agents,
+    workspaces, workspaceThreads, currentWorkspaceId, currentThreadId, agents, sharedWorkspaces,
     expandWorkspace, onNavigateThread, hasMore, loadAll, loadMoreThreads,
     canReorderWorkspaces, reorderWorkspace, pinWorkspace, renameWorkspace,
     onNewThread, onPinThread, onArchiveThread, onRenameThread, onDeleteThread,

@@ -31,7 +31,11 @@ import {
   DetailPage,
   DetailSection,
 } from './DetailPage';
-import { SurfaceGrid } from './surface/Surface';
+import { SurfaceCell, SurfaceGrid } from './surface/Surface';
+import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
+import { useRule } from '@/hooks/useAccount';
+import { RULE } from '@/lib/accountRules';
+import { connectorHeldBack } from './connectors/heldBack';
 import { BuiltinConnectorCell, ConnectorCell } from './connectors/ConnectorCells';
 import { PluginBareCell, SkillCell, SubagentCell } from './pluginsPage/componentCells';
 import { MetaLine, OnOffControl, PageButton } from './pluginsPage/parts';
@@ -78,6 +82,7 @@ export function PluginDetail({
   const { data: skillList } = useSkills({ includeDisabled: true, allScopes: true });
   const { data: subagentList } = useSubagents();
   const vendorOf = useVendorOf();
+  const ownConnectors = useRule(RULE.userConnectors);
   const { openDetail } = useSectionNav();
   const { data: vault } = useUserVaultSecrets();
   const { workspaces, loading: workspacesLoading } = useWorkspaceOptions();
@@ -257,6 +262,7 @@ export function PluginDetail({
             connecting={signIn.oauth.connectingName === name}
             onConnect={() => connect(row)}
             onOpen={() => openComponent('mcp', name)}
+            heldBack={connectorHeldBack(ownConnectors.allowed, vendorOf(row.url))}
           />
         );
       })
@@ -274,6 +280,21 @@ export function PluginDetail({
           <PluginBareCell key={name} name={name} onOpen={() => openComponent('mcp', name)} />
         );
       });
+  // Connectors a rule kept from landing have no row to open: they say so,
+  // and land on the plugin's next update once the rule allows them.
+  const heldBackCells = installed
+    ? (plugin.withheld ?? []).map((key) => (
+        <SurfaceCell
+          key={`withheld:${key}`}
+          mark={<BrandMark name={key} kind="server" size="md" />}
+          name={key}
+          line={t('organization.connectors.heldBackReason', { who: ownConnectors.who.start })}
+          off
+          trailing={<span className="surface-state-off">{t('organization.connectors.heldBack')}</span>}
+        />
+      ))
+    : [];
+  const allConnectorCells = [...connectorCells, ...heldBackCells];
   const skillCells = [...skillNames]
     .sort((a, b) => a.localeCompare(b))
     .map((name) => {
@@ -493,9 +514,9 @@ export function PluginDetail({
       >
         {!plugin.enabled && <p className="pp-empty-line">{t('plugins.pluginsPage.offNote')}</p>}
         {callout}
-        {connectorCells.length > 0 && (
-          <DetailSection title={t('plugins.pluginsPage.connectors')} count={connectorCells.length}>
-            <SurfaceGrid className="is-wide">{connectorCells}</SurfaceGrid>
+        {allConnectorCells.length > 0 && (
+          <DetailSection title={t('plugins.pluginsPage.connectors')} count={allConnectorCells.length}>
+            <SurfaceGrid className="is-wide">{allConnectorCells}</SurfaceGrid>
           </DetailSection>
         )}
         {skillCells.length > 0 && (
@@ -508,7 +529,7 @@ export function PluginDetail({
             <SurfaceGrid className="is-wide">{subagentCells}</SurfaceGrid>
           </DetailSection>
         )}
-        {connectorCells.length === 0 && skillCells.length === 0 && subagentCells.length === 0 && (
+        {allConnectorCells.length === 0 && skillCells.length === 0 && subagentCells.length === 0 && (
           <p className="pp-empty-line">{t('plugins.pluginsPage.nothingInside')}</p>
         )}
       </DetailPage>

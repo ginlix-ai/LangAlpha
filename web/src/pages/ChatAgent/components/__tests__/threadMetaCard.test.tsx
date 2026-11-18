@@ -13,6 +13,7 @@ import { ThreadTreeRow } from '../NavigationRows';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+vi.mock('@/hooks/useUser', () => ({ useUser: () => ({ user: null }) }));
 
 const OPEN_DELAY = 500;
 

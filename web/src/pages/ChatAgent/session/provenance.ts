@@ -121,7 +121,7 @@ export function withLiveReportRow(
 
 /** What each place a report is drawn sets on its row beside the caption. */
 type ReportRowFields = Pick<UserMessage, 'id' | 'timestamp'>
-  & Partial<Pick<UserMessage, 'turnIndex' | 'runId' | 'isHistory' | 'steeringDelivered'>>;
+  & Partial<Pick<UserMessage, 'turnIndex' | 'runId' | 'isHistory' | 'steeringDelivered' | 'sender'>>;
 
 /**
  * A report's row: the caption alone, whether the report opened its own turn

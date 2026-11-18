@@ -81,6 +81,9 @@ export function deliveredEntryRow(
     steeringDelivered: true,
     turnIndex,
     ...(provenance ? { provenance } : {}),
+    // Named, so another member's view captions it as theirs rather than as
+    // the viewer's own, which an unnamed live row reads as.
+    ...(entry.user_id && !provenance ? { sender: { userId: entry.user_id, name: null } } : {}),
     ...(entry.request_key ? { requestKey: entry.request_key } : {}),
     ...(entry.artifact_comments ? { artifactComments: entry.artifact_comments } : {}),
   };

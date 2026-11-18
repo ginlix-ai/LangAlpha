@@ -35,6 +35,12 @@ export interface SharedThreadMetadata {
    *  the move spells its paths under. */
   previous_root_dirs?: string[] | null;
   permissions: Record<string, unknown>;
+  /** `organization` for a link that opens to members only. */
+  audience?: 'organization';
+  /** A member's grant, which stands in for the token on the replay and file
+   *  routes; renewed through this read before `expires_in` runs out. */
+  grant?: string;
+  expires_in?: number;
 }
 
 interface SharedFileFields {

@@ -11,6 +11,12 @@ import { useSharedLinks, useShareLinkMutations } from '@/hooks/useShareLink';
 import { useQueryClient } from '@tanstack/react-query';
 import { saveThreadSharing, useThreadShareStatus } from '../hooks/useThreadShareStatus';
 import type { ShareLink, ThreadShareStatus, ThreadSharePermissions } from '../../../types/api';
+import { useAccount } from '@/hooks/useAccount';
+import { useLinkStanding } from '@/hooks/useLinkStanding';
+import { LinkRuleNote } from '@/components/organization/LinkRuleNote';
+import { AudiencePicker } from '@/components/organization/AudiencePicker';
+import { LibraryPublishRow } from '@/components/organization/LibraryPublishRow';
+import type { ShareAudience } from '@/types/api';
 
 function sharedLinkName(link: ShareLink): string {
   return link.title || link.path?.split('/').pop() || link.code;
@@ -108,9 +114,24 @@ export function ThreadSharePanel({
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const { orgT } = useAccount();
 
   const queryClient = useQueryClient();
   const { data: shareState, isPending, isError, refetch } = useThreadShareStatus(threadId, { refetchOnMount: 'always' });
+
+  const isShared = shareState?.is_shared === true;
+  const permissions = shareState?.permissions || {};
+  // A rule against public links refuses turning one on, never turning one
+  // off: a link shared before it stays, paused, and opens again unchanged
+  // once the rule lifts.
+  const standing = useLinkStanding(workspaceId, {
+    surface: 'thread',
+    linkOn: isShared,
+    audience: permissions.audience,
+    audiences: shareState?.audiences,
+  });
+  const { membersOnly, lockedOut, keptIn, state } = standing;
+  const paused = state === 'paused';
 
   const save = useCallback(async (body: Pick<ThreadShareStatus, 'is_shared' | 'permissions'>) => {
     setUpdating(true);
@@ -122,9 +143,15 @@ export function ThreadSharePanel({
     setUpdating(false);
   }, [queryClient, threadId]);
 
-  const handleToggleShare = (enabled: boolean) => save({
-    is_shared: enabled,
-    permissions: shareState?.permissions || { allow_files: false, allow_download: false },
+  const handleToggleShare = (enabled: boolean) => {
+    const perms = shareState?.permissions || { allow_files: false, allow_download: false };
+    const toMembers = enabled && standing.turnsOnToMembers;
+    return save({ is_shared: enabled, permissions: toMembers ? { ...perms, audience: 'organization' } : perms });
+  };
+
+  const handleAudience = (audience: ShareAudience) => save({
+    is_shared: shareState?.is_shared === true,
+    permissions: { ...shareState?.permissions, audience },
   });
 
   const handlePermissionChange = (key: keyof ThreadSharePermissions, value: boolean) => {
@@ -148,8 +175,6 @@ export function ThreadSharePanel({
     });
   }, [shareState, t]);
 
-  const isShared = shareState?.is_shared === true;
-  const permissions = shareState?.permissions || {};
 
   if (isPending) {
     return (
@@ -179,32 +204,43 @@ export function ThreadSharePanel({
     );
   }
 
+  const audiencePicker = standing.picker && (
+    <AudiencePicker
+      {...standing.picker}
+      disabled={updating || lockedOut}
+      onChange={(audience) => void handleAudience(audience)}
+    />
+  );
+
   return (
     <div className="p-4 space-y-3">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {isShared ? (
-            <Link2 className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
+            <Link2 className="h-4 w-4" style={{ color: paused ? 'var(--color-text-tertiary)' : 'var(--color-accent-primary)' }} />
           ) : (
             <Lock className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />
           )}
           <Heading className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {isShared ? t('share.publicLinkEnabled') : t('share.shareConversation')}
+            {paused ? t('organization.share.paused')
+              : isShared && membersOnly ? t('organization.share.membersLinkEnabled')
+                : isShared ? t('share.publicLinkEnabled') : t('share.shareConversation')}
           </Heading>
         </div>
-        {/* Toggle */}
+        {/* Toggle: under the rule only a shared link's, which turns it off. */}
+        {(isShared || state !== 'blocked') && (
         <button
           type="button"
           role="switch"
           aria-checked={isShared}
           aria-label={t('share.shareConversation')}
           onClick={() => handleToggleShare(!isShared)}
-          disabled={updating}
-          className="tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors"
+          disabled={updating || lockedOut}
+          className="tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed"
           style={{
             backgroundColor: isShared ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
-            opacity: updating ? 0.6 : 1,
+            opacity: updating || lockedOut ? 0.5 : 1,
           }}
         >
           <span
@@ -212,7 +248,15 @@ export function ThreadSharePanel({
             style={{ transform: isShared ? 'translateX(16px)' : 'translateX(0)' }}
           />
         </button>
+        )}
       </div>
+
+      {!isShared && (
+        <>
+          <LinkRuleNote note={standing.note} />
+          {audiencePicker}
+        </>
+      )}
 
       {isShared && shareState && (
         <>
@@ -241,6 +285,10 @@ export function ThreadSharePanel({
             </button>
           </div>
 
+          {paused && <LinkRuleNote note={standing.note} />}
+          {audiencePicker}
+          {!paused && (
+          <>
           {/* Permissions */}
           <div className="space-y-2 pt-1">
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -251,7 +299,7 @@ export function ThreadSharePanel({
                 type="checkbox"
                 checked={permissions.allow_files || false}
                 onChange={(e) => handlePermissionChange('allow_files', e.target.checked)}
-                disabled={updating}
+                disabled={updating || lockedOut}
                 className="rounded border-gray-300"
               />
               <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -264,7 +312,7 @@ export function ThreadSharePanel({
                   type="checkbox"
                   checked={permissions.allow_download || false}
                   onChange={(e) => handlePermissionChange('allow_download', e.target.checked)}
-                  disabled={updating}
+                  disabled={updating || lockedOut}
                   className="rounded border-gray-300"
                 />
                 <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -274,10 +322,20 @@ export function ThreadSharePanel({
             )}
           </div>
 
-          {/* Info */}
+          {/* Info: under "no one" the workspace's line says who opens it. */}
+          {!keptIn && (
           <p className="text-xs pt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('share.anyoneWithLink')}
+            {membersOnly ? orgT('organization.share.membersCanView') : t('share.anyoneWithLink')}
           </p>
+          )}
+          <LinkRuleNote note={standing.note} />
+          <LibraryPublishRow
+            target={{ kind: 'thread', threadId }}
+            linkOn={isShared}
+            hint={t('organization.library.publishThreadHint')}
+          />
+          </>
+          )}
         </>
       )}
       {workspaceId && <SharedInWorkspace workspaceId={workspaceId} />}

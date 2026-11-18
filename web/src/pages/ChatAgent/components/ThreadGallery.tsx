@@ -1,9 +1,16 @@
+import { useSharedEntry, useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
+import { useThreadPrivacy } from './chatView/useThreadPrivacy';
+import { useUser } from '@/hooks/useUser';
+import { threadStanding } from '@/lib/sharedThreads';
+import { SharedPeopleButton, SharedWorkspaceKind } from '@/components/sharedWorkspaces/SharedWorkspaceHeader';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ArrowLeft, Folder, FileText, Archive } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import { SwapCell } from '@/components/ui/crossfade';
 import { SkeletonBar } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { SharedGoneNotice } from '@/components/sharedWorkspaces/SharedGoneNotice';
+import { leaveGoneWorkspace } from '@/lib/sharedGone';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
@@ -67,7 +74,6 @@ function ThreadCardSkeleton({ index }: { index: number }) {
 interface ThreadRecord {
   thread_id: string;
   title?: string;
-  thread_index?: number;
   current_status?: string;
   updated_at?: string;
   is_shared?: boolean;
@@ -108,6 +114,19 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // Home runs the full agent with a folder of its own, so its files show. It
   // still has no machine controls of its own.
   const isHome = isHomeWorkspace(wsData);
+  // Shared with others in the organization: said under its name, with its
+  // people, and its machine's settings (the owner's) are not offered.
+  const sharedEntry = useSharedEntry(workspaceId);
+  const { machineSettings } = useWorkspaceCapabilities(workspaceId);
+  // Latched: losing the workspace drops it from the list too, and leaving
+  // still has to say why.
+  const [wasShared, setWasShared] = useState(false);
+  if (sharedEntry && !wasShared) setWasShared(true);
+  const { user } = useUser();
+  const me = sharedEntry ? user?.user_id : undefined;
+  const canManage = !!sharedEntry?.shared.can_manage;
+  // A thread started here is private unless its starter switches it.
+  const { sendOptions: privacySendOptions, chip: privacyChip } = useThreadPrivacy(null, workspaceId);
 
   // Archived view toggle. Both views live under the byWorkspace prefix
   // (queryKeys.threads.gallery), so prefix invalidations refresh both — and
@@ -267,14 +286,27 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   }, [workspaceId, setPanelOverride]);
 
   const navigate = useNavigate();
-  const { threadId: currentThreadId } = useParams();
+  const { threadId: currentThreadId, workspaceId: routeWorkspaceId } = useParams();
 
   // Redirect to workspace gallery when workspace is not found or access is denied
+  const showsThisWorkspace = routeWorkspaceId === workspaceId;
   useEffect(() => {
-    if (wsNotFound || accessDenied) {
+    // A gallery still drawn only while its exit plays is no longer the page:
+    // whatever replaced it says why, and a second redirect would say it wrong.
+    if (!((wsNotFound || accessDenied) && showsThisWorkspace)) return;
+    if (!wasShared) {
       navigate('/chat', { replace: true });
+      return;
     }
-  }, [wsNotFound, accessDenied, navigate]);
+    // A shared workspace the reader was in and no longer is: the gallery
+    // says so rather than leaving them wondering where it went, and whether
+    // it was deleted, which a reconnect learns only by asking.
+    let current = true;
+    void leaveGoneWorkspace(navigate, workspaceId, () => current);
+    return () => {
+      current = false;
+    };
+  }, [wsNotFound, accessDenied, navigate, wasShared, showsThisWorkspace, workspaceId]);
 
   // Sort helper for file list display
   const sortFiles = useCallback((fileList: string[]) => {
@@ -371,16 +403,16 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
    */
   const { requestDelete, dialog: deleteConfirmDialog } = useThreadDeleteConfirm();
   const handleDeleteClick = useCallback((thread: Record<string, unknown>) => {
-    const { thread_id: threadId, title, thread_index: index } = thread as ThreadRecord;
+    const { thread_id: threadId, title } = thread as ThreadRecord;
     if (!threadId) return;
-    requestDelete(title || `Thread ${index !== undefined ? index + 1 : ''}`, async () => {
+    requestDelete(title || t('nav.untitledThread'), async () => {
       await deleteThreadRow(queryClient, workspaceId, threadId);
       // If the deleted thread is currently active, navigate back to thread gallery
       if (currentThreadId === threadId) {
         navigate(isValidUuid(workspaceId) ? `/chat/${workspaceId}` : '/chat');
       }
     });
-  }, [requestDelete, queryClient, workspaceId, currentThreadId, navigate]);
+  }, [requestDelete, queryClient, workspaceId, currentThreadId, navigate, t]);
 
   /**
    * Handles rename icon click - opens rename modal
@@ -522,6 +554,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
           ...(typeof fastMode === 'boolean' ? { fastMode } : {}),
           ...(reasoningEffortOverride !== undefined ? { reasoningEffortOverride } : {}),
           ...(fastModeOverride !== undefined ? { fastModeOverride } : {}),
+          ...privacySendOptions,
         },
       });
     } catch (error) {
@@ -642,6 +675,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
         {/* Main Content - Centered with max width */}
         <div ref={scrollContainerRef} className="flex-1 flex flex-col min-h-0 w-full px-4 overflow-auto">
           <div className="w-full max-w-[768px] mx-auto flex flex-col gap-8">
+            <SharedGoneNotice className="mt-2" />
 
             {/* Workspace Header */}
             <div className="w-full flex flex-col items-center mt-2 md:mt-[8vh]">
@@ -651,8 +685,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                   (a 403 or 404 redirects instead) draws the plain icon, inert,
                   rather than loading for good. */}
               <div
-                className={cn('flex items-center justify-center transition-colors', wsData && !isHome && 'cursor-pointer')}
-                onClick={wsData && !isHome ? () => setShowSandboxPanel(true) : undefined}
+                className={cn('flex items-center justify-center transition-colors', wsData && !isHome && machineSettings && 'cursor-pointer')}
+                onClick={wsData && !isHome && machineSettings ? () => setShowSandboxPanel(true) : undefined}
               >
                 {!wsData && !wsError ? (
                   <SkeletonBar className="w-10 h-10 rounded-lg" />
@@ -669,7 +703,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 {workspaceName || (wsError ? '\u00a0' : <SkeletonBar className="w-40" />)}
               </h1>
               <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                <span>{t('thread.workspace')}</span>
+                {sharedEntry ? <SharedWorkspaceKind entry={sharedEntry} /> : <span>{t('thread.workspace')}</span>}
                 <div className="size-[3px] rounded-full bg-current opacity-50"></div>
                 {isLoading ? (
                   <SkeletonBar className="w-14" />
@@ -677,6 +711,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                   <span>{totalThreads ?? threads.length} {(totalThreads ?? threads.length) === 1 ? t('thread.thread') : t('thread.threads')}</span>
                 )}
               </div>
+              {sharedEntry && <SharedPeopleButton entry={sharedEntry} className="mt-3" />}
             </div>
 
             {/* Chat Input */}
@@ -694,6 +729,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 selectedWorkspaceId={workspaceId}
                 inHome={isHome}
                 minRows={2}
+                toolbarStatus={privacyChip}
               />
             </div>
 
@@ -829,8 +865,9 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                             <ThreadCard
                               thread={thread}
                               onClick={handleThreadClick}
-                              onDelete={handleDeleteClick}
+                              onDelete={threadStanding(thread.shared, me, canManage).canDelete ? handleDeleteClick : undefined}
                               onRename={handleRenameClick}
+                              sharedMe={me}
                               onArchive={!thread.archived_at ? handleArchive : undefined}
                               onUnarchive={thread.archived_at ? handleUnarchive : undefined}
                             />

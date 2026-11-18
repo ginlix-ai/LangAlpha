@@ -524,6 +524,12 @@ export type MessageProvenance =
       chartLayers?: PublishedLayer[];
     };
 
+/** The member who sent a turn in a shared workspace. */
+export interface MessageSender {
+  userId: string;
+  name: string | null;
+}
+
 export type UserMessage = {
   id: string;
   role: 'user';
@@ -559,6 +565,9 @@ export type UserMessage = {
   /** Who sent it, when not the user in this view. A report-back's row has
    *  empty content and is drawn as this label alone. */
   provenance?: MessageProvenance;
+  /** In a shared workspace, the member who sent it (replay and the live
+   *  start frame both name them); absent everywhere else. */
+  sender?: MessageSender;
   /** On a report-back's row only: the run it opened. History and a live
    *  attach can both draw that row, and know it by this. */
   runId?: string;
@@ -642,9 +651,11 @@ export type AssistantMessage = {
    *  the end, so it offers a Regenerate: the server refuses a Retry for a
    *  run that did not fail. */
   unloaded?: boolean;
-  // Set when the user hard-stopped this turn (live finalize or history replay
-  // of a stopped turn). Drives the per-message "⏹ Stopped" chip.
-  stopped?: boolean;
+  /** Set when the turn was stopped (live finalize or history replay of a
+   *  stopped turn): `true` when its user stopped it, which the "⏹ Stopped"
+   *  chip says, or `suspension` when the account's suspension ended it,
+   *  which its own chip says. */
+  stopped?: TurnStop;
   /** The reply to a send the server refused before admitting it (see
    *  UserMessage.unadmitted). */
   unadmitted?: boolean;
@@ -660,6 +671,8 @@ export type AssistantMessage = {
    * loss or a paused turn; replay's completedAt takes precedence. */
   completionObservedAt?: number;
 };
+
+export type TurnStop = true | 'suspension';
 
 export type NotificationVariant = 'info' | 'success' | 'warning';
 

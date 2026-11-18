@@ -35,6 +35,8 @@ let shipped: Brokerage[] | undefined;
 let servers: CatalogServer[] | undefined;
 /** How many ledger rows the one-row probe finds; `undefined` is still in flight. */
 let ledgerRows: number | undefined;
+/** The flags as `/users/me/features` lists them; `undefined` is still in flight. */
+let features: { key: string; enabled: boolean }[] | undefined;
 
 /** What the shared cache holds for each query the gate asks. */
 function cached(queryKey: readonly unknown[]) {
@@ -46,6 +48,7 @@ function cached(queryKey: readonly unknown[]) {
   if (key === JSON.stringify(queryKeys.orders.any())) {
     return ledgerRows === undefined ? undefined : { items: Array(ledgerRows).fill({}), next_cursor: null };
   }
+  if (key === JSON.stringify(queryKeys.features.list())) return features;
   throw new Error(`the nav gate asked an unexpected query: ${key}`);
 }
 
@@ -62,6 +65,7 @@ beforeEach(() => {
   shipped = [MOOMOO];
   servers = [];
   ledgerRows = 0;
+  features = [];
 });
 
 describe('the primary nav', () => {
@@ -74,10 +78,21 @@ describe('the primary nav', () => {
 
   it('shows Orders once a shipped brokerage is connected', () => {
     servers = [httpCatalogServer({ name: 'moomoo', url: MOOMOO.url, oauth_status: 'connected' })];
+    features = [{ key: 'org_library', enabled: true }];
     expect(keys()).toContain('/orders');
     // In its declared place, not appended: the gate filters the list, it does
     // not rebuild it.
     expect(keys()).toEqual(NAV_ITEMS.map((item) => item.key));
+  });
+
+  it('shows the Library only where the organization library is on for the account', () => {
+    expect(keys()).not.toContain('/library');
+    features = undefined;
+    expect(keys()).not.toContain('/library');
+    features = [{ key: 'org_library', enabled: false }];
+    expect(keys()).not.toContain('/library');
+    features = [{ key: 'org_library', enabled: true }];
+    expect(keys()).toContain('/library');
   });
 
   it('hides Orders while the answer is still in flight', () => {

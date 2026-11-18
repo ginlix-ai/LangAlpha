@@ -4,6 +4,7 @@
  */
 import { queryOptions } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { isLastingRefusal } from '@/api/errors';
 import type { ThreadsResponse } from '@/types/api';
 import { getRecentThreads, getThread, getThreadShareStatus, getWorkspaceThreads } from './api';
 
@@ -47,5 +48,7 @@ export function threadShareQuery(threadId: string) {
     queryKey: queryKeys.threads.share(threadId),
     queryFn: () => getThreadShareStatus(threadId),
     staleTime: 30_000,
+    // A refusal stands: asking again only doubles the request.
+    retry: (count, error) => count < 1 && !isLastingRefusal(error),
   });
 }

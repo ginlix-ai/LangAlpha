@@ -7,6 +7,7 @@ import { api } from '@/api/client';
 import { getAuthHeaders } from '@/lib/authToken';
 import { holdReload } from '@/lib/reloadHolds';
 import { RUN_STREAM_BEAT_MS, watchStreamSilence, type StreamSilenceWatch } from '@/lib/streamSilence';
+import { noteIfSuspended } from '@/lib/accountSuspension';
 
 export const baseURL = api.defaults.baseURL;
 
@@ -146,6 +147,7 @@ export async function streamFetch(
         detail = typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail || body);
       }
     } catch { /* ignore parse errors */ }
+    if (res.status === 403) noteIfSuspended(errorInfo);
     console.error(`[api] ${opts.method || 'GET'} ${url} failed:`, res.status, detail);
     const err: Error & { status?: number; errorInfo?: Record<string, unknown> } =
       new Error(detail || `HTTP error! status: ${res.status}`);

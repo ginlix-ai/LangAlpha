@@ -18,6 +18,7 @@ import { Loader } from '@/components/ui/loader';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
+import { useUser } from '@/hooks/useUser';
 import { relativeTime } from '@/lib/format';
 import { AnimatePresence } from '@/lib/framer';
 import { DURATION } from '@/lib/motion';
@@ -35,6 +36,7 @@ import { spotPhrase } from '../../../artifactComments/anchorKinds';
 import { PinBadge } from '../../../artifactComments/PinBadge';
 import { SendingGlyph } from './SendingGlyph';
 import { useKeptWhileFading } from './useKeptWhileFading';
+import { writerName } from './commentWriter';
 import './CommentCard.css';
 
 /** How much of the newest unread reply a shut card shows; the line truncates it to its width. */
@@ -137,6 +139,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
   const [failed, setFailed] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
+  const { user } = useUser();
+  const me = user?.user_id ?? null;
   const { actions, besideThreadId, destinations } = useCommentLayer();
   const { state, working, reached, canReply, pending, refusal } = useCommentLook(comment);
   // The ⋯ menu, Send now and the reply box go where this comment's words go:
@@ -207,8 +211,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
       <PinBadge number={comment.number} state={state} working={working} unread={unread} />
       <span className="sr-only">{t('pageViewer.comments.pinLabel', { number: comment.number })}</span>
       {unread && <span className="sr-only">{t('pageViewer.comments.unreadLabel')}</span>}
-      <span className="shrink-0 text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
-        {t('pageViewer.comments.you')}
+      <span className="min-w-0 truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
+        {writerName(t, comment.messages[0], me)}
       </span>
       <time className="shrink-0 text-xs whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }} dateTime={comment.created_at}>
         {relativeTime(comment.created_at, locale, now)}
@@ -340,7 +344,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
               <AnimatePresence initial={false}>
                 {later.map((m) => (
                   <PresenceFold key={m.message_id} appear className="pt-2.5">
-                    <Reply message={m} locale={locale} now={now} />
+                    <Reply message={m} me={me} locale={locale} now={now} />
                   </PresenceFold>
                 ))}
               </AnimatePresence>
@@ -479,7 +483,7 @@ function QueuedRow({ comment, besideThreadId, pending, onSend }: {
 }
 
 /** One answer under the comment: the agent's with its avatar, in markdown, or the owner's next words as typed. */
-function Reply({ message, locale, now }: { message: ArtifactCommentMessage; locale: string; now: number }): React.ReactElement {
+function Reply({ message, me, locale, now }: { message: ArtifactCommentMessage; me: string | null; locale: string; now: number }): React.ReactElement {
   const { t } = useTranslation();
   const agent = message.author === 'agent';
   return (
@@ -495,7 +499,7 @@ function Reply({ message, locale, now }: { message: ArtifactCommentMessage; loca
           </span>
         )}
         <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
-          {agent ? t('pageViewer.comments.agent') : t('pageViewer.comments.you')}
+          {agent ? t('pageViewer.comments.agent') : writerName(t, message, me)}
         </span>
         <time className="whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }} dateTime={message.created_at}>
           {relativeTime(message.created_at, locale, now)}

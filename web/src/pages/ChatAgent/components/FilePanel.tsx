@@ -50,6 +50,7 @@ import { useTreeInteraction, useTreeOpen } from './filePanel/useTreeInteraction'
 import { useFileRefOpen } from './filePanel/useFileRefOpen';
 import { PanelNotices } from './filePanel/PanelNotices';
 import { RestoreOffer } from './RestoreOffer';
+import { useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import { FileContextMenu, type FileMenuAction } from './filePanel/FileContextMenu';
 import { useFileDownloads } from './filePanel/useFileDownloads';
 import { useFileBodyCache, useFileBody } from './filePanel/useFileBody';
@@ -239,7 +240,9 @@ function FilePanel({
   // The reader's memory and memo stores open here as tabs. A share reads
   // through an adapter with no workspace id: it browses someone else's files
   // and has no stores to show.
+  const capabilities = useWorkspaceCapabilities(workspaceId);
   const stores = !!workspaceId;
+  const memos = stores && capabilities.memos;
   // A file the tree never got is not a file that is gone, so this flag also
   // decides what a missed reference is told.
   const filesRestoreIncomplete = wsData?.files_restore_incomplete === true;
@@ -492,7 +495,7 @@ function FilePanel({
   const openSettings = useCallback(() => { cancelPending(); tabs.openSettings(); }, [tabs, cancelPending]);
   const openMemory = useCallback(() => { cancelPending(); tabs.openMemory(); }, [tabs, cancelPending]);
   const openMemo = useCallback(() => { cancelPending(); tabs.openMemo(); }, [tabs, cancelPending]);
-  const viewInMemo = stores ? openMemo : null;
+  const viewInMemo = memos ? openMemo : null;
 
   const handleAddToMemo = useAddToMemo({ workspaceId, downloadFileAsArrayBufferFn, readFileFullFn, onSwitchToMemoTab: viewInMemo });
   const memoedMap = useWorkspaceMemoIndex(workspaceId);
@@ -871,13 +874,13 @@ function FilePanel({
         backupResult={backup.backupOff ? null : backup.backupResult}
         // Said where the files are listed, and only to the folder's owner,
         // who is the one able to answer it.
-        restoreOffer={restoreOffered && listingTab && !readOnly && workspaceId
+        restoreOffer={restoreOffered && listingTab && !readOnly && capabilities.restoreOffer && workspaceId
           ? <RestoreOffer workspaceId={workspaceId} variant="notice" />
           : null}
         onDismissBackupResult={() => setBackupResult(null)}
         editing={edit.isEditing}
       />
-      {memoEntry && selectedFile && (
+      {memos && memoEntry && selectedFile && (
         <MemoStaleBanner
           status={memoStaleStatus}
           syncing={memoSyncing}
@@ -1020,7 +1023,7 @@ function FilePanel({
               onOpenMemory={stores ? openMemory : null}
               onOpenMemo={viewInMemo}
               onOpenChart={openChart}
-              onOpenSettings={!readOnly && !isHome ? openSettings : null}
+              onOpenSettings={!readOnly && !isHome && capabilities.machineSettings ? openSettings : null}
               workspaceName={wsData?.name}
               filesRestoreIncomplete={filesRestoreIncomplete}
               overlay={narrow}
@@ -1040,7 +1043,7 @@ function FilePanel({
           onAction={handleContextMenuAction}
           onClose={() => setContextMenu(null)}
           canAddContext={!!onAddContext}
-          memoState={memoMimeForName(contextMenu.filePath)
+          memoState={memos && memoMimeForName(contextMenu.filePath)
             ? (memoedMap.has(contextMenu.filePath) ? 'present' : 'absent')
             : null}
           canDownload={canDownload}

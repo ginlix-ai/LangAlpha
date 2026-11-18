@@ -154,6 +154,16 @@ describe('ChatAgent API utilities', () => {
       expect(body).toEqual({ first_query: '', title: 'Getting started', workspace_id: 'ws-1' });
     });
 
+    it('asks for a thread shared with its workspace only when the switch says so', async () => {
+      mockPost.mockResolvedValue({ data: { thread_id: 't-1' } });
+
+      await createThreadWithTitle({ workspaceId: 'ws-1', firstQuery: 'hi', sharedWithWorkspace: true });
+      await createThreadWithTitle({ workspaceId: 'ws-1', firstQuery: 'hi', sharedWithWorkspace: false });
+      expect(mockPost.mock.calls[0][1]).toEqual({ first_query: 'hi', workspace_id: 'ws-1', shared_with_workspace: true });
+      // Private is the server's default, so a private or personal thread's request is unchanged.
+      expect(mockPost.mock.calls[1][1]).toEqual({ first_query: 'hi', workspace_id: 'ws-1' });
+    });
+
     it("stores the thread's own effort and fast mode only when picked", async () => {
       mockPost.mockResolvedValue({ data: { thread_id: 't-1' } });
 

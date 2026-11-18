@@ -36,6 +36,7 @@ import {
   setArtifactFileLeftOut,
   setArtifactKeepUpdated,
   unbindArtifact,
+  setArtifactAudience,
   unshareArtifact,
 } from '@/pages/ChatAgent/utils/api/artifacts';
 import type {
@@ -47,6 +48,7 @@ import type {
   ArtifactVersion,
   PublishArtifactRequest,
   QueuedArtifactComment,
+  ShareAudience,
 } from '@/types/api';
 
 /** A grant lasts 12h; keep the entry that long so a re-opened version does not mint again. */
@@ -386,7 +388,12 @@ export function useArtifactPublishing() {
     mutationFn: ({ artifactId, on }: { artifactId: string; on: boolean }) => setArtifactKeepUpdated(artifactId, on),
     onSuccess: settle,
   });
-  return { publish, unshare, keepUpdated };
+  const audience = useMutation({
+    mutationFn: ({ artifactId, audience: to }: { artifactId: string; audience: ShareAudience }) =>
+      setArtifactAudience(artifactId, to),
+    onSuccess: settle,
+  });
+  return { publish, unshare, keepUpdated, audience };
 }
 
 // --- Comments ---

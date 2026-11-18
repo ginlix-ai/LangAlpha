@@ -13,6 +13,7 @@ import { createEmitter } from '@/lib/emitter';
 
 const frozenThreadOrders: Record<string, string[]> = {};
 let frozenWorkspaceOrder: string[] | null = null;
+let frozenSharedOrder: string[] | null = null;
 
 /**
  * Last-seen manual arrangement (sort_order + pin state) per workspace. The
@@ -30,10 +31,16 @@ export const getFrozenWorkspaceOrder = (): string[] | null => frozenWorkspaceOrd
 export function setFrozenWorkspaceOrder(order: string[] | null): void {
   frozenWorkspaceOrder = order;
 }
+/** The shared group's custom order, frozen the same way. */
+export const getFrozenSharedOrder = (): string[] | null => frozenSharedOrder;
+export function setFrozenSharedOrder(order: string[]): void {
+  frozenSharedOrder = order;
+}
 
 export function resetStableNavOrder() {
   for (const key of Object.keys(frozenThreadOrders)) delete frozenThreadOrders[key];
   frozenWorkspaceOrder = null;
+  frozenSharedOrder = null;
   lastWorkspaceArrangement.clear();
 }
 

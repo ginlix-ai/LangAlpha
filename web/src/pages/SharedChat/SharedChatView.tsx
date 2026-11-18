@@ -68,12 +68,21 @@ const CHART_MAX_RATIO = 0.92;
  */
 interface SharedChatViewProps {
   shareToken: string;
+  /** What the replay and file routes are asked with: a member's grant, which
+   *  the page renews, or the link's own token. */
+  access?: string;
   /** Resolved by `SharePage`; the replay starts from it. */
   metadata: SharedThreadMetadata;
 }
 
-export default function SharedChatView({ shareToken, metadata }: SharedChatViewProps) {
+export default function SharedChatView({ shareToken, access = shareToken, metadata }: SharedChatViewProps) {
   const { t } = useTranslation();
+  // The latest credential, read by the loads keyed on the share itself, so a
+  // renewed grant serves the next request without replaying the thread.
+  const accessRef = useRef(access);
+  useEffect(() => {
+    accessRef.current = access;
+  }, [access]);
 
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,7 +163,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
 
     (async () => {
       try {
-        await replaySharedThread(shareToken, (event: SSEEvent) => {
+        await replaySharedThread(accessRef.current, (event: SSEEvent) => {
           if (cancelled) return;
           const eventType = event.event as string | undefined;
           const contentType = event.content_type as string | undefined;
@@ -378,7 +387,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
     setFilesLoading(true);
     (async () => {
       try {
-        const result = await getSharedFiles(shareToken);
+        const result = await getSharedFiles(accessRef.current);
         if (cancelled) return;
         const listed = result.files || [];
         setFiles(listed);
@@ -405,21 +414,21 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
 
   // The panel's adapter over the public endpoints. The serve prefix stands in
   // for the workspace, which a share never names.
-  const servePrefix = sharedServePrefix(shareToken);
+  const servePrefix = sharedServePrefix(access);
   const fileApiAdapter = useMemo(() => ({
-    readFile: (path: string) => readSharedFile(shareToken, path),
+    readFile: (path: string) => readSharedFile(access, path),
     // HTML files read their full source here; the public read endpoint caps at
     // its own line limit, and the preview renders via the served URL regardless.
-    readFileFull: (path: string) => readSharedFile(shareToken, path),
+    readFileFull: (path: string) => readSharedFile(access, path),
     // Previews read under the serve prefix (allow_files), matching the rendered
     // report; only the explicit save uses the download endpoint (allow_download).
     downloadFile: (path: string) => servedObjectUrl(servePrefix, path),
     downloadFileAsArrayBuffer: (path: string) => servedBytes(servePrefix, path),
-    triggerDownload: (path: string) => downloadSharedFile(shareToken, path),
+    triggerDownload: (path: string) => downloadSharedFile(access, path),
     servePrefix,
     resolveFile: (candidates: string[], recentWrites: string[]) =>
-      resolveSharedFile(shareToken, candidates, recentWrites),
-  }), [shareToken, servePrefix]);
+      resolveSharedFile(access, candidates, recentWrites),
+  }), [access, servePrefix]);
 
   const imageDownloader = useCallback((path: string) => servedObjectUrl(servePrefix, path), [servePrefix]);
 
@@ -496,14 +505,14 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
             // a report and then fail to save it.
             const target = await downloadTarget(
               path,
-              (candidates, recentWrites) => resolveSharedFile(shareToken, candidates, recentWrites),
+              (candidates, recentWrites) => resolveSharedFile(access, candidates, recentWrites),
               getRecentWritePaths(),
             );
             // Namesakes the lookup could not pick between leave nothing to
             // save, so the click lands on the panel that asks, exactly as Open
             // does with the same answer.
             if (!target.placed) return void handleOpenFile(path, fileWorkspaceId);
-            await downloadSharedFile(shareToken, target.path);
+            await downloadSharedFile(access, target.path);
           } catch (err: unknown) {
             console.error('[SharedChatView] Download failed:', err);
             // A reader on a shared link has no other way to learn the save did
@@ -512,7 +521,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
           }
         }
       : undefined,
-  }), [handleOpenFile, handleOpenChart, canDownload, shareToken, getRecentWritePaths, t]);
+  }), [handleOpenFile, handleOpenChart, canDownload, access, getRecentWritePaths, t]);
 
   // Deep link: `?file=<path>` opens that report directly once metadata + file
   // permission are known. One-shot — the share-link target from §1.3b.

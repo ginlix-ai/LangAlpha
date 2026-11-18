@@ -6,6 +6,9 @@ import { useTradingPermissionChoice } from '@/hooks/useTradingPermissionChoice';
 import { TRADING_LEVELS, TRADING_LEVEL_INFO, TRADING_PERMISSION_ANCHOR } from '@/lib/tradingPermission';
 import { cn } from '@/lib/utils';
 import type { TradingLevel } from '@/types/api';
+import { useRule } from '@/hooks/useAccount';
+import { RULE } from '@/lib/accountRules';
+import { RuleNote } from '@/components/organization/RuleRow';
 
 /**
  * The user's trading permission: how far the agent may go with orders at their
@@ -19,6 +22,9 @@ export function TradingPermissionSection() {
   const groupName = useId();
   const { permission, shown, pendingLevel, agreedDate, select, dialog } = useTradingPermissionChoice();
   const loaded = permission.data !== undefined;
+  // Under a rule against trading no level places an order, so none is offered.
+  const trading = useRule(RULE.trading);
+  const tradingOff = !trading.allowed;
 
   return (
     <section aria-labelledby={headingId} className="space-y-2">
@@ -58,7 +64,11 @@ export function TradingPermissionSection() {
         <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('common.loading')}</p>
       )}
 
-      {loaded && (
+      {tradingOff && (
+        <RuleNote>{t('organization.trading.off', { who: trading.who.start })}</RuleNote>
+      )}
+
+      {loaded && !tradingOff && (
         // The anchor is on the levels, which draw once the permission has
         // loaded: a link or a search lands on them, not on an empty section.
         <div

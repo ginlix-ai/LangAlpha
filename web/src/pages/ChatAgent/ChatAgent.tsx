@@ -2,20 +2,19 @@ import React, { Suspense, useCallback, useState, useEffect, useRef } from 'react
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { SwapCell } from '@/components/ui/crossfade';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { queryKeys } from '../../lib/queryKeys';
-import { threadDetailQuery } from './utils/threadQueries';
 import { threadGalleryQuery } from './utils/threadGalleryQuery';
 import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
+import { useThreadRoute } from './hooks/useThreadRoute';
 import { useDeletedThreads } from '@/lib/deletedThreads';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
 import { useComputerStatusFanout } from './hooks/useComputers';
 import { warmWorkspace } from './utils/warmWorkspace';
 import { isValidUuid } from './utils/uuid';
-import { shouldLeaveThreadRoute } from './utils/threadRouteGuard';
 import ChatView from './components/ChatView';
 import ComputersDialogHost from './components/ComputersDialogHost';
 import { closeComputerSpec, closeComputersPanel } from './hooks/computerPanelStore';
@@ -37,10 +36,6 @@ interface LocationState {
   fromThreadId?: string;
   fromWorkspaceId?: string;
   [key: string]: unknown;
-}
-
-interface ThreadErrorResponse {
-  response?: { status?: number };
 }
 
 /**
@@ -106,20 +101,15 @@ function ChatAgent(): React.ReactElement | null {
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState<string | null>(
     urlWorkspaceId || stateWorkspaceId || null
   );
-  const needsThreadLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !stateWorkspaceId;
-
-  const { data: resolvedThread, error: threadError } = useQuery({
-    ...threadDetailQuery(threadId!),
-    enabled: needsThreadLookup,
+  // LRU cache for ChatView instances — keeps up to 5 alive simultaneously
+  const cache = useChatViewCache();
+  const { workspaceId, shownWorkspaceId, accessDenied, sharedAccessEnded } = useThreadRoute({
+    threadId,
+    urlWorkspaceId,
+    namedWorkspaceId: urlWorkspaceId || stateWorkspaceId || null,
+    lastWorkspaceId: resolvedWorkspaceId,
+    cache,
   });
-
-  const accessDenied = (threadError as ThreadErrorResponse | null)?.response?.status === 403;
-
-  useEffect(() => {
-    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied, !!resolvedThread)) {
-      navigate('/chat', { replace: true });
-    }
-  }, [needsThreadLookup, threadError, accessDenied, resolvedThread, navigate]);
 
   // __default__ with lost state — redirect. The query goes along: a brokerage
   // connect started on this page comes back to it by a full load, which loses
@@ -129,9 +119,6 @@ function ChatAgent(): React.ReactElement | null {
       navigate({ pathname: '/chat', search: location.search }, { replace: true });
     }
   }, [threadId, resolvedWorkspaceId, navigate, location.search]);
-
-  // LRU cache for ChatView instances — keeps up to 5 alive simultaneously
-  const cache = useChatViewCache();
 
   // A thread deleted in this tab: its cached view goes once it is off screen,
   // and arriving at its route (Back to an entry that still names it) leaves
@@ -143,26 +130,10 @@ function ChatAgent(): React.ReactElement | null {
     cache.evict(deletedThreads, threadId);
   }, [deletedThreads, threadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A thread belongs to one workspace, so the workspace in view before it is
-  // no stand-in when the navigation names none (back/forward to an entry
-  // without state, a link from outside the chat): a view made under it was a
-  // second view of the thread, which loaded it again and stayed cached. Its
-  // own comes from the navigation, a cached view of it, or the lookup, and
-  // until one of them has it no view is made.
-  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
-  const lookedUpWsId = (resolvedThread as Record<string, unknown> | undefined)?.workspace_id as string | undefined;
-  const workspaceId = threadId && threadId !== '__default__'
-    ? incomingWsId || cache.entries.find(e => e.threadId === threadId)?.workspaceId || lookedUpWsId || null
-    : incomingWsId || resolvedWorkspaceId;
-
   // Use synchronous update to avoid stale workspace on first render after navigation
   if (workspaceId && workspaceId !== resolvedWorkspaceId) {
     setResolvedWorkspaceId(workspaceId);
   }
-  // The workspace on screen: a thread's, or the one whose threads are listed.
-  // The gallery of every workspace shows none, whatever was resolved last.
-  const shownWorkspaceId = (threadId || urlWorkspaceId) ? workspaceId : null;
-
   const queryClient = useQueryClient();
 
   // Proactively warm the sandbox the moment a user enters a workspace.
@@ -324,7 +295,7 @@ function ChatAgent(): React.ReactElement | null {
   }
 
   // Access denied overlay (shown on top of everything)
-  const accessDeniedContent = threadId && accessDenied ? (
+  const accessDeniedContent = threadId && accessDenied && !sharedAccessEnded ? (
     <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--color-text-secondary)', padding: 24, backgroundColor: 'var(--color-bg-page)' }}>
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />

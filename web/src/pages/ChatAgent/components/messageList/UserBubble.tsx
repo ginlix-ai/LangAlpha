@@ -5,14 +5,20 @@
  * draw it, so a caption sits the same distance above its bubble in each.
  */
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Disclosure } from '@/components/ui/Disclosure';
+import { PersonAvatar } from '@/components/organization/PersonAvatar';
 import { cn } from '@/lib/utils';
+import { personLabel } from '@/lib/sharedThreads';
 import type { MessageProvenance } from '@/types/chat';
+import type { BubbleSender } from '../../session/sharedThread';
 import { CAPTION, MessageProvenanceLabel, SteeredMark } from './MessageProvenance';
 import './UserBubble.css';
 
 interface UserBubbleProps {
   provenance?: MessageProvenance;
+  /** Who sent it, in a shared workspace's thread; never beside `provenance`. */
+  sender?: BubbleSender;
   /** A turn already running took it in. */
   steered?: boolean;
   readOnly?: boolean;
@@ -24,8 +30,9 @@ interface UserBubbleProps {
 
 const CAPTION_BOX: React.CSSProperties = { minWidth: 0, maxWidth: '100%' };
 
-export function UserBubble({ provenance, steered, readOnly, isMobile, className, children }: UserBubbleProps): React.ReactElement {
-  const captioned = !!provenance || !!steered;
+export function UserBubble({ provenance, sender, steered, readOnly, isMobile, className, children }: UserBubbleProps): React.ReactElement {
+  const { t } = useTranslation();
+  const captioned = !!provenance || !!steered || !!sender;
   // Only a caption arriving after the bubble (a running turn taking the
   // message in) unfolds; one there from the start is drawn open.
   const [captionedFirst] = useState(captioned);
@@ -47,6 +54,12 @@ export function UserBubble({ provenance, steered, readOnly, isMobile, className,
           <div className="flex min-w-0 max-w-full items-center gap-3">
             {steered && <SteeredMark className={CAPTION} />}
             {provenance && <MessageProvenanceLabel provenance={provenance} readOnly={readOnly} />}
+            {sender && (
+              <span className={CAPTION} data-testid="message-sender">
+                <PersonAvatar name={sender.name} avatarUrl={sender.avatarUrl} size={16} />
+                <span className="min-w-0 truncate">{personLabel(t, sender)}</span>
+              </span>
+            )}
           </div>
         </Disclosure>
       )}

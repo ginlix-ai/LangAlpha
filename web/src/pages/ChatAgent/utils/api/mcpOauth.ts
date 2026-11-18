@@ -251,6 +251,26 @@ export async function startMcpOauth(
   }, arming);
 }
 
+/** The member's own sign-in to an organization connector; the caller
+ *  navigates to `authorize_url`. */
+export async function startOrgConnectorSignIn(
+  connectorId: string,
+  returnTo = '/plugins',
+): Promise<McpOauthStart | null> {
+  return armedStart(async (redirectUri) => {
+    const { data } = await api.post<McpOauthStart>(
+      `/api/v1/mcp/org-connectors/${encodeURIComponent(connectorId)}/oauth/start`,
+      startFields(returnTo, redirectUri, undefined),
+    );
+    return data;
+  }, {});
+}
+
+/** Signs the member out of an organization connector. */
+export async function signOutOrgConnector(connectorId: string): Promise<void> {
+  await api.delete(`/api/v1/mcp/org-connectors/${encodeURIComponent(connectorId)}/oauth`);
+}
+
 /**
  * A save that waits for its sign-in: the same body the ordinary route would
  * have taken, which the callback saves once the user has signed in and the

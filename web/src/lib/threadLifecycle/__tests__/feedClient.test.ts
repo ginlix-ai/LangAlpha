@@ -847,6 +847,59 @@ describe('threadLifecycleFeed — snapshot invalidation', () => {
   });
 });
 
+describe('threadLifecycleFeed — shared workspaces', () => {
+  const sharedList = (...ids: string[]) => ({
+    can_create: false,
+    workspaces: ids.map((id) => ({
+      workspace: { workspace_id: id },
+      shared: { role: 'member', can_manage: false, everyone: false, created_by: null },
+    })),
+  });
+
+  it('a members change reads the people again and touches no thread', async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    queryClient.setQueryData(queryKeys.sharedWorkspaces.members('w1'), []);
+    queryClient.setQueryData(queryKeys.threads.byWorkspace('w1'), { threads: [] });
+
+    conns[0].emit({ event: 'thread_lifecycle', type: 'shared_members', workspace_id: 'w1' });
+    await flush(400);
+
+    expect(queryClient.getQueryState(queryKeys.sharedWorkspaces.members('w1'))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(queryKeys.threads.byWorkspace('w1'))?.isInvalidated).toBe(false);
+  });
+
+  it("another member's turn ending reads the shared workspace's files again", async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    queryClient.setQueryData(queryKeys.sharedWorkspaces.list(), sharedList('w1'));
+    queryClient.setQueryData(queryKeys.workspaceFiles.workspace('w1'), []);
+    queryClient.setQueryData(queryKeys.workspaceFiles.workspace('mine'), []);
+
+    for (const [ws, t] of [['w1', 't1'], ['mine', 't2']]) {
+      conns[0].emit({
+        event: 'thread_lifecycle', type: 'run_settled', thread_id: t, workspace_id: ws,
+        run_id: `r-${t}`, run_seq: 3, status: 'completed',
+      });
+    }
+    await flush(400);
+
+    expect(queryClient.getQueryState(queryKeys.workspaceFiles.workspace('w1'))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(queryKeys.workspaceFiles.workspace('mine'))?.isInvalidated).toBe(false);
+  });
+
+  it("a connection's first snapshot reads the shared list again, its events having no replay", async () => {
+    queryClient.setQueryData(queryKeys.sharedWorkspaces.list(), sharedList('w1'));
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+
+    conns[0].emit({ event: 'snapshot', as_of_seq: 1, oldest_included_unseen_seq: 0, live: [], unseen: [] });
+    await flush(400);
+
+    expect(queryClient.getQueryState(queryKeys.sharedWorkspaces.list())?.isInvalidated).toBe(true);
+  });
+});
+
 describe('threadLifecycleFeed: agent requests waiting on the user', () => {
   const pendingKey = queryKeys.cliApprovals.pending();
   const cached = (ids: string[]) => ids.map((approval_id) => ({ approval_id }));

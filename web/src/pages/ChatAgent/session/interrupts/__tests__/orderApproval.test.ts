@@ -160,8 +160,8 @@ describe('the live projection of an order interrupt', () => {
       setMessages: ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
         current = updater(current);
       }) as StreamRuntime['setMessages'],
-      setPendingInterrupt: vi.fn(),
-      pendingInterruptIdsRef: { current: new Set<string>() },
+      pause: { current: () => null, arm: vi.fn(), clear: vi.fn() },
+      currentRunIdRef: { current: 'run-1' },
       renderedInterruptIdsRef: { current: new Set<string>() },
     } as unknown as StreamRuntime;
     const refs = { contentOrderCounterRef: { current: 0 } } as unknown as StreamProcessorRefs;

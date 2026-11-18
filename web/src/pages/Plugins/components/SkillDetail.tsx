@@ -1,3 +1,5 @@
+import { LibraryPublishRow } from '@/components/organization/LibraryPublishRow';
+import { useLibraryEnabled } from '@/hooks/useOrgLibrary';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Check, Pencil, Trash2, X } from 'lucide-react';
@@ -63,6 +65,7 @@ export function SkillDetail({
 }) {
   const { t } = useTranslation();
   const locale = useLocale();
+  const libraryOn = useLibraryEnabled();
   const catalogPlugins = useCatalogPlugins();
   const home = useHomeOption();
   const labelId = useId();
@@ -256,6 +259,16 @@ export function SkillDetail({
             )}
           </DetailAsideBlock>
           <DetailAsideBlock title={t('plugins.skillsPage.workspacesTitle')}>{scope}</DetailAsideBlock>
+          {skill.origin === 'user' && !pluginOwned && libraryOn && (
+            <DetailAsideBlock title={t('organization.library.sectionLabel')}>
+              <LibraryPublishRow
+                target={{ kind: 'skill', skillName: skill.name }}
+                linkOn
+                framed={false}
+                hint={t('organization.library.publishSkillHint')}
+              />
+            </DetailAsideBlock>
+          )}
           <DetailAsideBlock title={t('plugins.detail.info')}>
             <DetailFacts
               items={[

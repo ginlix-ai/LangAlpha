@@ -31,6 +31,7 @@ import { VendorTermsHost } from './components/VendorTerms/VendorTermsHost';
 import { WarmHome } from './components/WarmHome';
 import { ThisMacFirstRunGate } from './pages/ThisMac/ThisMacFirstRunGate';
 import { HostedSignInGate } from './components/HostedSignInGate';
+import { SuspendedGate } from './components/organization/SuspendedAccount';
 import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/hostedSignIn';
 import { markBooted, reloadIfStale, watchStaleBuild } from './lib/staleBuild';
 import { appSectionOf } from './lib/appRoutes';
@@ -511,9 +512,11 @@ function App() {
       } />
       <Route path="/setup/*" element={
         isLoggedIn ? (
-          <Suspense fallback={<PageLoading />}>
-            <SetupWizard />
-          </Suspense>
+          <SuspendedGate>
+            <Suspense fallback={<PageLoading />}>
+              <SetupWizard />
+            </Suspense>
+          </SuspendedGate>
         ) : (
           <Navigate to={APP_ENTRY_PATH} replace />
         )
@@ -527,7 +530,7 @@ function App() {
         </Suspense>
       } />
       <Route path="/*" element={
-        isLoggedIn ? <AuthenticatedShell /> : <Navigate to={APP_ENTRY_PATH} replace />
+        isLoggedIn ? <SuspendedGate><AuthenticatedShell /></SuspendedGate> : <Navigate to={APP_ENTRY_PATH} replace />
       } />
     </Routes>
     </AriaLocale>

@@ -5,7 +5,7 @@
  */
 import { useId, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Cloud, House, Laptop } from 'lucide-react';
+import { AlertCircle, Cloud, House, Laptop, Lock } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -19,7 +19,9 @@ import { ComputerStatusIndicator } from './computerStatusUi';
 import { tierLabel } from './tierUi';
 import { activeSpecChange, effectiveTier, specChangeLabel, SpecChangeProgress } from './specChangeUi';
 import { Pill } from './pill';
-import { providerLabel, providerManagesSpec } from './providerUi';
+import { providerIsOwnMachine, providerLabel, providerManagesSpec } from './providerUi';
+import { useRule } from '@/hooks/useAccount';
+import { RULE } from '@/lib/accountRules';
 import { ArtFrame } from './machineArt/ArtFrame';
 import { MachineArt } from './machineArt/MachineArt';
 import { machineArtOf, machineModelOf, machineStateOf } from './machineArt/machine';
@@ -147,12 +149,29 @@ export function StartFailureNote({ failure, className }: { failure: ComputerStar
   );
 }
 
+/** Whether a rule keeps this machine, one the user brought, from being
+ *  used: it stays theirs to stop, rename and remove, and no Start is offered. */
+function useOwnMachineHeld(computer: Pick<Computer, 'kind'>): { held: boolean; who: string } {
+  const ownMachines = useRule(RULE.ownMachines);
+  return { held: providerIsOwnMachine(computer.kind) && !ownMachines.allowed, who: ownMachines.who.start };
+}
+
 /** The lines under a machine's name that say why it is not doing more. */
 export function ComputerNotes({ computer, thisMac, prepareHintId, primaryNote = false }: ComputerNotesProps) {
   const { t } = useTranslation();
   const failure = shownStartFailure(computer);
+  const own = useOwnMachineHeld(computer);
   return (
     <>
+      {own.held && (
+        <p className="computer-card-failure computer-card-note" data-testid="computer-rule-held">
+          <Lock aria-hidden="true" className="computer-card-failure-glyph" style={{ color: 'var(--color-text-tertiary)' }} />
+          <span className="computer-card-failure-text">
+            <span className="computer-card-failure-lead">{t('organization.machines.cantBeUsed')}</span>{' '}
+            {t('organization.machines.heldBody', { who: own.who })}
+          </span>
+        </p>
+      )}
       {failure && <StartFailureNote failure={failure} className="computer-card-note" />}
       {thisMac?.paused && (
         <p className="computer-card-note">
@@ -271,7 +290,10 @@ export function StartFailureAction({ computer, actions }: { computer: Computer; 
 export function PowerButton({ computer, actions }: { computer: Computer; actions: MachineActions }) {
   const { t } = useTranslation();
   const specChange = activeSpecChange(computer);
+  const own = useOwnMachineHeld(computer);
   if (computer.status === 'stopped' && pairedElsewhere(computer)) return null;
+  // Stopping a machine a rule holds stays open; starting one does not.
+  if (own.held && computer.status !== 'running') return null;
   // Second to the fix a failed start offers, so one button leads.
   const quiet = startFailureRemedy(computer) !== null;
   if (computer.status === 'running') {

@@ -160,6 +160,43 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
     expect(result.current.messageError).toBeNull();
   });
 
+  it('while the computer starts, cancels first and drops the reader once the server has it', async () => {
+    // A send that drops during setup ends as a dropped send, not a stop, so
+    // the turn would never read as stopped for anyone else watching it.
+    const { result } = await mountSettled();
+    const hang = deferred<{ disconnected: boolean; aborted: boolean }>();
+    let signal: AbortSignal | undefined;
+    mockSendStream.mockImplementation(async (...args: unknown[]) => {
+      const { onEvent, signal: s } = args[3] as { onEvent: OnEvent; signal: AbortSignal };
+      signal = s;
+      onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
+      onEvent({ event: 'workspace_status', status: 'starting' });
+      return hang.promise;
+    });
+    const cancel = deferred<{ cancelled: boolean }>();
+    mockCancel.mockReturnValue(cancel.promise);
+
+    let send: Promise<unknown> = Promise.resolve();
+    act(() => { send = result.current.handleSendMessage('analyze AAPL'); });
+    await waitFor(() => expect(result.current.turnStatus.workspaceStarting).toBe('starting'));
+
+    let stopped: Promise<unknown> = Promise.resolve();
+    act(() => { stopped = result.current.stopWorkflow(); });
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(mockCancel).toHaveBeenCalledWith('th-stop', 'run-1');
+    expect(signal?.aborted).toBe(false);
+    expect(result.current.isLoading).toBe(false);
+
+    await act(async () => {
+      cancel.resolve({ cancelled: true });
+      await stopped;
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    hang.resolve({ disconnected: false, aborted: true });
+    await act(async () => { await send.catch(() => undefined); });
+  });
+
   it('clears the in-flight tool-call "generating" row on stop (no lingering shimmer)', async () => {
     const { result } = await mountSettled();
 

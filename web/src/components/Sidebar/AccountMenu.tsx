@@ -1,9 +1,10 @@
-import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning, BookOpen, CircleHelp, Sparkles, History, LifeBuoy } from 'lucide-react';
+import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning, BookOpen, CircleHelp, Sparkles, History, LifeBuoy, Building2 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '@/hooks/useUser';
+import { useAccount } from '@/hooks/useAccount';
 import { isPlatformMode } from '@/config/hostMode';
 import {
   DropdownMenu,
@@ -47,6 +48,9 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
   const location = useLocation();
   const { logout } = useAuth();
   const { user } = useUser();
+  // A work account is told apart from a personal one by its organization,
+  // named under the person's own name.
+  const { organizationName } = useAccount();
   const { t } = useTranslation();
   const locale = useLocale();
   const [open, setOpen] = useState(false);
@@ -69,7 +73,8 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
   const rawPlanDisplayName = isPlatformMode
     ? ((user?.plan_display_name as string | null | undefined) || null)
     : null;
-  const planDisplayName = rawPlanDisplayName && rawPlanDisplayName !== 'Free' ? rawPlanDisplayName : null;
+  // A work account's seat is the organization's, so it carries no plan pill.
+  const planDisplayName = rawPlanDisplayName && rawPlanDisplayName !== 'Free' && !organizationName ? rawPlanDisplayName : null;
   const initials = useMemo(() => {
     const source = displayName || email;
     if (!source) return '';
@@ -130,9 +135,18 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
                   <User className="sidebar-account-icon" />
                 )}
               </span>
-              <span className="sidebar-account-row-name">
-                {displayName || email || t('account.menuLabel', 'Account menu')}
-              </span>
+              {organizationName ? (
+                <span className="sidebar-account-row-text">
+                  <span className="sidebar-account-row-name">
+                    {displayName || email || t('account.menuLabel', 'Account menu')}
+                  </span>
+                  <span className="sidebar-account-row-org">{organizationName}</span>
+                </span>
+              ) : (
+                <span className="sidebar-account-row-name">
+                  {displayName || email || t('account.menuLabel', 'Account menu')}
+                </span>
+              )}
               {planDisplayName && (
                 <span className="sidebar-account-row-plan">
                   {planDisplayName}
@@ -242,6 +256,21 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
             >
               {email}
             </div>
+          )}
+
+          {/* Information, not an action: which organization this account
+              belongs to, for someone who also holds a personal one. */}
+          {organizationName && (
+            <>
+              <div className="flex items-start gap-2 px-2.5 py-1.5">
+                <Building2 aria-hidden="true" className="h-4 w-4 mt-0.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                <div className="min-w-0 flex flex-col">
+                  <span className="text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>{organizationName}</span>
+                  <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('organization.yourOrganization')}</span>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+            </>
           )}
 
           {CONSOLE_ITEMS.map(({ href, icon: Icon, labelKey }) => href && (

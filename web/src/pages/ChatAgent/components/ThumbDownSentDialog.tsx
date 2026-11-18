@@ -26,6 +26,8 @@ type FollowUp = (action: ThumbDownFollowUp) => Promise<ThumbDownFollowUpOutcome>
 
 interface ThumbDownSentDialogProps {
   feedback: FeedbackResult;
+  /** Whether asking for a human review is offered (``ThumbDownDialog``). */
+  humanReview?: boolean;
   onClose: () => void;
   onFollowUp: FollowUp;
   onWithdrawn: () => void;
@@ -41,7 +43,7 @@ type Phase = 'view' | 'sending' | 'confirmWithdraw' | 'withdrawing';
  * withdraw it. Nothing sent is replaced, so what the user sees is what the
  * team has. Mounted only while open, so nothing here outlives a close.
  */
-function ThumbDownSentDialog({ feedback, onClose, onFollowUp, onWithdrawn }: ThumbDownSentDialogProps): React.ReactElement {
+function ThumbDownSentDialog({ feedback, humanReview = true, onClose, onFollowUp, onWithdrawn }: ThumbDownSentDialogProps): React.ReactElement {
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
@@ -174,7 +176,7 @@ function ThumbDownSentDialog({ feedback, onClose, onFollowUp, onWithdrawn }: Thu
                 <Info className="h-3.5 w-3.5 shrink-0 mt-px" aria-hidden="true" />
                 {t('report.followUp.reviewRequested')}
               </p>
-            ) : (
+            ) : humanReview && (
               <label
                 className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer flex flex-col gap-1.5"
                 style={{
@@ -246,6 +248,9 @@ function ThumbDownSentDialog({ feedback, onClose, onFollowUp, onWithdrawn }: Thu
 export default ThumbDownSentDialog;
 
 interface ThumbDownDialogProps {
+  /** False on a shared thread's turn another member sent: a human review
+   *  is the turn's sender's to ask for, so neither form offers it. */
+  humanReview?: boolean;
   /** The thread's ratings are still loading, so ``sent`` is not yet known. */
   loading?: boolean;
   /** The rating when this turn already has a thumbs-down, else null. */
@@ -263,7 +268,7 @@ interface ThumbDownDialogProps {
  * before; sending it again gives that rating its report. Mounted only while open, so
  * the bubbles of a long thread don't each read the reports flag.
  */
-export function ThumbDownDialog({ loading, sent, onSubmit, onCancel, onFollowUp, onWithdrawn }: ThumbDownDialogProps): React.ReactElement | null {
+export function ThumbDownDialog({ humanReview = true, loading, sent, onSubmit, onCancel, onFollowUp, onWithdrawn }: ThumbDownDialogProps): React.ReactElement | null {
   const reports = useReportsState();
   // Opens once the turn's rating is known: a rated turn reads as unrated until
   // then, and the form would take edits a sent report never gets.
@@ -275,8 +280,8 @@ export function ThumbDownDialog({ loading, sent, onSubmit, onCancel, onFollowUp,
   // reports are off.
   if (sent?.report_id && onFollowUp && (reports !== false || sent.reported_at)) {
     return (
-      <ThumbDownSentDialog feedback={sent} onClose={onCancel} onFollowUp={onFollowUp} onWithdrawn={onWithdrawn} />
+      <ThumbDownSentDialog feedback={sent} humanReview={humanReview} onClose={onCancel} onFollowUp={onFollowUp} onWithdrawn={onWithdrawn} />
     );
   }
-  return <ThumbDownModal isOpen onSubmit={onSubmit} onCancel={onCancel} />;
+  return <ThumbDownModal isOpen humanReview={humanReview} onSubmit={onSubmit} onCancel={onCancel} />;
 }

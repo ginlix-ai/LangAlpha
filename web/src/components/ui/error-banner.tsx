@@ -14,6 +14,7 @@ import {
 import { ReportDialog } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 import { MediumActionLink } from '@/pages/ChatAgent/components/MediumActionLink';
+import { RuleStopRow } from '@/components/organization/RuleStopRow';
 import { ComputerRefusal } from '@/pages/ChatAgent/components/ComputerRefusal';
 
 interface ErrorBannerProps {
@@ -146,6 +147,11 @@ export function ErrorBanner({ error, className, style, reportThreadId }: ErrorBa
   const { t } = useTranslation();
   const name = useModelName();
   if (!error) return null;
+
+  // A rule's refusal: nothing failed either, so a neutral row with its fix.
+  if (typeof error === 'object' && error.ruleStop) {
+    return <RuleStopRow stop={error.ruleStop} message={error.message} className={className} />;
+  }
 
   // Nothing failed: the same quiet row as the thread's other notices.
   if (typeof error === 'object' && error.kind === 'notice') {

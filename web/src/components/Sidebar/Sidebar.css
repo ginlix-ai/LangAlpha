@@ -290,10 +290,13 @@ html.desktop-mac .sidebar-history {
   flex-shrink: 0;
 }
 
+/* As tall as the Workspaces header with its 24px action buttons, so a group
+   with no actions (shared workspaces) starts as far under its title. */
 .sidebar-section-header {
   display: flex;
   align-items: center;
   gap: 2px;
+  min-height: 36px;
   padding: 10px 12px 2px 19px;
   flex-shrink: 0;
 }
@@ -418,6 +421,29 @@ html.desktop-mac .sidebar-history {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* A work account's row: the name, and under it the organization it belongs to. */
+.sidebar-account-row-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  text-align: left;
+  line-height: 1.25;
+}
+
+.sidebar-account-row-text .sidebar-account-row-name {
+  max-width: 100%;
+}
+
+.sidebar-account-row-org {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .sidebar-account-row-plan {

@@ -40,6 +40,16 @@ const toNew = commentDestinations(t, {
 }, null).targetFor;
 
 describe('queuedBatches', () => {
+  it("leaves out a comment waiting for a colleague's private thread, where the default would take it", () => {
+    const batches = queuedBatches([
+      comment('mine'),
+      comment('theirs', { thread_id: null, thread_title: null, thread_hidden: true }),
+    ], toNew);
+    expect(batches.map((b) => b.comments.map((c) => c.comment_id))).toEqual([['mine']]);
+    expect(toNew(comment('x', { thread_id: null, thread_hidden: true }), 'send')).toBeNull();
+    expect(toNew(comment('x', { thread_id: null, thread_hidden: true }), 'queue')).toBeNull();
+  });
+
   it('starts another send each time one is as full as the server takes', () => {
     const many = Array.from({ length: 101 }, (_, i) => comment(String(i)));
 

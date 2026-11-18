@@ -9,6 +9,8 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
 
 import { projectLiveInterrupt } from '../fromLiveEvent';
+import { createAnswerBoard } from '../answerBoard';
+import { createPauseSlot } from '../pauseSlot';
 import { projectHistoryInterrupt, type HistoryInterruptContext } from '../fromHistoryEvent';
 import { createApprovalEvidence } from '../claims';
 import type { StreamRuntime, HistoryRuntime } from '../../runtime';
@@ -73,20 +75,23 @@ const bubble = (id: string): ChatMessage =>
 describe('live projection', () => {
   function build(messages: ChatMessage[]) {
     let current = messages;
+    const setMessages = ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+      current = updater(current);
+    }) as StreamRuntime['setMessages'];
+    const ids = ref(new Set<string>());
+    const show = vi.fn();
     const rt = {
-      setMessages: ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
-        current = updater(current);
-      }) as StreamRuntime['setMessages'],
-      setPendingInterrupt: vi.fn(),
-      pendingInterruptIdsRef: ref(new Set<string>()),
+      setMessages,
+      pause: createPauseSlot(show, createAnswerBoard({ pendingIds: ids, sessionEpoch: ref(0), setMessages })),
+      currentRunIdRef: ref<string | null>('run-1'),
       renderedInterruptIdsRef: ref(new Set<string>()),
     } as unknown as StreamRuntime;
     const refs = { contentOrderCounterRef: ref(0) } as unknown as StreamProcessorRefs;
-    return { rt, refs, read: () => current };
+    return { rt, refs, ids, show, read: () => current };
   }
 
   it('renders a tool approval card with the exact arguments', () => {
-    const { rt, refs, read } = build([bubble('a-1')]);
+    const { rt, refs, ids, show, read } = build([bubble('a-1')]);
     projectLiveInterrupt(rt, toolEvent(), 'a-1', refs);
 
     const msg = read()[0] as AssistantMessage;
@@ -103,13 +108,16 @@ describe('live projection', () => {
     expect(card?.args).toEqual(ARGS);
     expect(msg.isStreaming).toBe(false);
 
-    expect(rt.pendingInterruptIdsRef.current.has(INTERRUPT_ID)).toBe(true);
-    expect(rt.setPendingInterrupt).toHaveBeenCalledWith({
+    expect(ids.current.has(INTERRUPT_ID)).toBe(true);
+    // The run that raised it, which a later reattach is compared against.
+    expect(show).toHaveBeenCalledWith({
       type: 'tool_approval',
       interruptId: INTERRUPT_ID,
       assistantMessageId: 'a-1',
       proposalId: INTERRUPT_ID,
+      runId: 'run-1',
     });
+    expect(rt.pause.current()?.runId).toBe('run-1');
   });
 
   it('renders one card per stopped call when an interrupt batches them', () => {
@@ -128,24 +136,24 @@ describe('live projection', () => {
   });
 
   it('draws no card and arms nothing for an interrupt no branch matches', () => {
-    const { rt, refs, read } = build([bubble('a-1')]);
+    const { rt, refs, ids, show, read } = build([bubble('a-1')]);
     projectLiveInterrupt(rt, unmatchedEvent(), 'a-1', refs);
     const msg = read()[0] as AssistantMessage;
     expect(msg.contentSegments).toEqual([]);
     expect(msg.toolApprovals).toBeUndefined();
-    expect(rt.setPendingInterrupt).not.toHaveBeenCalled();
-    expect(rt.pendingInterruptIdsRef.current.size).toBe(0);
+    expect(show).not.toHaveBeenCalled();
+    expect(ids.current.size).toBe(0);
   });
 
   it('suppresses the duplicate card on a re-raise but keeps it answerable', () => {
-    const { rt, refs, read } = build([bubble('a-1'), bubble('a-2')]);
+    const { rt, refs, ids, read } = build([bubble('a-1'), bubble('a-2')]);
     projectLiveInterrupt(rt, toolEvent(), 'a-1', refs);
-    rt.pendingInterruptIdsRef.current.clear();
+    ids.current.clear();
     projectLiveInterrupt(rt, toolEvent(), 'a-2', refs);
     const [first, second] = read() as AssistantMessage[];
     expect(first.contentSegments).toHaveLength(1);
     expect(second.contentSegments).toHaveLength(0);
-    expect(rt.pendingInterruptIdsRef.current.has(INTERRUPT_ID)).toBe(true);
+    expect(ids.current.has(INTERRUPT_ID)).toBe(true);
   });
 
   it('puts a settled card back to pending when the same interrupt is re-raised', () => {
@@ -180,7 +188,7 @@ describe('live projection', () => {
     expect(fresh.contentSegments || []).toHaveLength(0);
     expect(fresh.toolApprovals).toBeUndefined();
     // Tracked again, so the retried decision is not dropped.
-    expect(second.rt.pendingInterruptIdsRef.current.has(INTERRUPT_ID)).toBe(true);
+    expect(second.ids.current.has(INTERRUPT_ID)).toBe(true);
   });
 });
 

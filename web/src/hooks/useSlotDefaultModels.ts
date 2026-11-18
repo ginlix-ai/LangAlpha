@@ -2,6 +2,8 @@ import { useAllModels } from './useAllModels';
 import { usePreferences } from './usePreferences';
 import { slotDefaultModel, modelPrefs, type ModelSlot } from '@/lib/modelPreferences';
 import { isPlatformMode } from '@/config/hostMode';
+import { useAccount } from './useAccount';
+import { allowedDefault } from '@/lib/accountRules';
 
 /**
  * The account's default model for each slot, as the composer, the
@@ -36,7 +38,11 @@ export function useSlotDefaultModels(): Record<ModelSlot, string | null> {
  */
 export function useDefaultModel(): string | null {
   const saved = useSlotDefaultModels().default;
-  const { offPlanModels, systemDefaults, platform, rawApiResponse, isLoading } = useAllModels();
+  const { offPlanModels, systemDefaults, platform, rawApiResponse, isLoading, validModelNames, metadata } = useAllModels();
+  const { policy } = useAccount();
   if (saved === null || isLoading || (isPlatformMode && !(platform && rawApiResponse))) return null;
-  return offPlanModels.has(saved) ? systemDefaults?.default_model ?? null : saved;
+  const onPlan = offPlanModels.has(saved) ? systemDefaults?.default_model ?? null : saved;
+  // One a rule refuses is not what a turn runs: the server takes the first
+  // model the allow-list names that the user can reach.
+  return allowedDefault(policy, onPlan, (m) => validModelNames.has(m), metadata, systemDefaults?.default_model ?? null);
 }

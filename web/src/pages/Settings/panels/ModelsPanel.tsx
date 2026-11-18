@@ -9,7 +9,7 @@ import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import { ModelSelector } from '@/components/model/ModelSelector';
 import { FallbackModelsPicker } from '@/components/model/FallbackModelsPicker';
 import { PayerOrder } from '@/components/model/PayerOrder';
-import { PayerBadge } from '@/components/model/PayerBadge';
+import { NameTag, PayerBadge } from '@/components/model/PayerBadge';
 import { isPlatformMode } from '@/config/hostMode';
 import { PerModelMatrix } from '@/components/model/PerModelMatrix';
 import { AccountTuningDefaults } from '@/components/model/AccountTuningDefaults';
@@ -17,6 +17,8 @@ import { DefaultModelScopeChoice } from '@/components/model/DefaultModelScopeCho
 import { useDefaultModelChange } from '@/hooks/useDefaultModelChange';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useFavoriteModels } from '@/hooks/useFavoriteModels';
+import { useAccount } from '@/hooks/useAccount';
+import { modelRefusedBy } from '@/lib/accountRules';
 import { modelLabel, modelMatches } from '@/lib/modelLabel';
 import { Trans, useTranslation } from 'react-i18next';
 import { ModelAccessSection } from './ModelAccessSection';
@@ -102,6 +104,9 @@ export function ModelsPanel() {
   // Model routing and tuning live in model_preference.
   const mPref = modelPrefs(prefsData);
   const favorites = useFavoriteModels();
+  // A favorite a rule refuses stays saved and says so.
+  const { policy } = useAccount();
+  const refusedModel = (m: string) => modelRefusedBy(policy, modelMetadata, m) !== null;
   // Every name the catalog still carries, access aside. A fallback the user
   // temporarily cannot reach is still configured; one the manifest dropped is
   // not, and _resolve_fallback_clients skips it without saying so, leaving the
@@ -245,7 +250,9 @@ export function ModelsPanel() {
                   }}
                 >
                   {modelLabel(key, modelMetadata)}
-                  <PayerBadge payer={payers[key]} />
+                  {refusedModel(key)
+                    ? <NameTag>{t('modelAccess.status.notAllowed')}</NameTag>
+                    : <PayerBadge payer={payers[key]} />}
                   <button
                     type="button"
                     onClick={() => favorites.remove(key)}

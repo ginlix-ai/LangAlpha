@@ -147,7 +147,8 @@
     "resize": "Resize sidebar",
     "plugins": "Plugins",
     "orders": "Orders",
-    "menu": "Menu"
+    "menu": "Menu",
+    "library": "Library"
   },
   "account": {
     "menuLabel": "Account menu"
@@ -179,6 +180,7 @@
     "threadTurns": "Turns",
     "threadNeedsInput": "Waiting for your input",
     "threadUnseen": "Finished, not yet viewed",
+    "workspaceUnread": "Has threads you haven't viewed",
     "untitledThread": "Untitled",
     "onComputer": "On {{name}} · {{kind}}",
     "noConversations": "No conversations yet",
@@ -2059,7 +2061,9 @@
     "loadFailedBody": "Something went wrong on the way. Try again in a moment.",
     "retry": "Retry",
     "signIn": "Sign in",
-    "goToLangAlpha": "Go to LangAlpha"
+    "goToLangAlpha": "Go to LangAlpha",
+    "membersOnlyTitle": "This link is for members of an organization",
+    "membersOnlyBody": "Sign in with your organization account to open it."
   },
   "publish": {
     "title": "Publish {{file}}",
@@ -3324,7 +3328,6 @@
       "tagResolved": "Resolved",
       "tagQueued": "Queued",
       "tagNote": "Note, not sent",
-      "you": "You",
       "agent": "Agent",
       "sentToAgent": "Sent to the agent",
       "working": "Agent is working on it",
@@ -6035,7 +6038,8 @@
       "keyFormatLengthAtLeast_other": "This is {{count}} characters long; the plugin expects at least {{min}}.",
       "keyFormatCharacters": "This has characters the plugin's format does not allow.",
       "hideKey": "Hide key",
-      "sourceHintNoCatalog": "A plugin repo, or any folder of SKILL.md skills or an agents/ folder of subagents."
+      "sourceHintNoCatalog": "A plugin repo, or any folder of SKILL.md skills or an agents/ folder of subagents.",
+      "statusHeldBack": "Held back"
     },
     "bulk": {
       "select": "Select",
@@ -7056,7 +7060,8 @@
       "notConnected": "Not connected",
       "offline": "Offline",
       "off": "Off",
-      "needsComputer": "No computer"
+      "needsComputer": "No computer",
+      "notAllowed": "Not allowed"
     },
     "before": {
       "need": "What you need",
@@ -7732,6 +7737,7 @@
     "thumbs": {
       "title": "Report an issue",
       "description": "This goes to our team with the conversation's ID. Your messages are only shared if you ask for a human review.",
+      "descriptionNoReview": "This goes to our team with the conversation's ID. The messages in it are not shared.",
       "descriptionLocal": "Help us improve the quality of responses",
       "whatWentWrong": "What went wrong?",
       "commentLabel": "Additional comments (optional)",
@@ -7996,6 +8002,365 @@
   },
   "desktopApp": {
     "untitledThread": "Untitled thread"
+  },
+  "organization": {
+    "who": {
+      "deploymentStart": "This deployment",
+      "deploymentMid": "this deployment",
+      "yourOrganizationStart": "Your organization",
+      "yourOrganizationMid": "your organization"
+    },
+    "yourOrganization": "Your organization",
+    "refusal": {
+      "modelNotAllowed": "{{who}} doesn't allow {{model}}",
+      "modelsLimited": "{{who}} limits which models can be used",
+      "pickAllowed": {
+        "organization": "Pick one of the models your organization allows.",
+        "deployment": "Pick one of the models this deployment allows."
+      },
+      "ownModels": "{{who}} doesn't allow your own models",
+      "ownModelBody": {
+        "organization": "{{model}} runs on your own key or endpoint. Pick a model your organization provides.",
+        "deployment": "{{model}} runs on your own key or endpoint. Pick a model this deployment provides."
+      },
+      "ownApiKeys": "{{who}} doesn't allow your own API keys",
+      "ownSubscriptions": "{{who}} doesn't allow your own subscriptions",
+      "ownSubscriptionBody": {
+        "organization": "{{model}} runs on your own subscription. Pick a model your organization provides.",
+        "deployment": "{{model}} runs on your own subscription. Pick a model this deployment provides."
+      },
+      "ownMachines": "{{who}} doesn't allow work on your own machines",
+      "ownMachinesBody": "Nothing ran there. Use a workspace on a cloud computer.",
+      "publicLinks": "{{who}} doesn't allow public links",
+      "publicLinksBody": "Links that open without signing in can't be turned on.",
+      "trading": "{{who}} doesn't allow trading",
+      "tradingBody": "The agent can't place or change live orders for this account.",
+      "userConnectors": "{{who}} doesn't allow your own connectors",
+      "userConnectorsBody": "Connectors you added are kept, and work again if that changes.",
+      "generic": "{{who}} doesn't allow this",
+      "chooseModel": "Choose a model",
+      "sharedWorkspaces": "{{who}} doesn't allow members to create shared workspaces",
+      "sharedWorkspacesBody": "Ask an admin to create one, or to add you to one."
+    },
+    "suspended": {
+      "title": "Your access to {{organization}} has ended",
+      "titleUnnamed": "Your access through your organization has ended",
+      "body": "An admin of {{organization}} suspended or removed this account, so its workspaces, chats and settings can't be opened. Nothing it holds is deleted.",
+      "bodyUnnamed": "An admin of your organization suspended or removed this account, so its workspaces, chats and settings can't be opened. Nothing it holds is deleted.",
+      "canStill": "What you can still do",
+      "askAdmin": "Ask an admin of {{organization}} if this is unexpected.",
+      "askAdminUnnamed": "Ask an admin of your organization if this is unexpected.",
+      "signOther": "Sign out, and sign in with another account.",
+      "checkAgain": "Check again",
+      "checking": "Checking…",
+      "stillEnded": "Access hasn't come back yet.",
+      "signOut": "Sign out",
+      "turnStopped": "Stopped: this account's access through {{organization}} ended",
+      "turnStoppedUnnamed": "Stopped: this account's access through its organization ended"
+    },
+    "modelAccess": {
+      "bothOff": "{{who}} doesn't allow your own API keys or subscriptions.",
+      "keysOff": "{{who}} doesn't allow your own API keys.",
+      "subscriptionsOff": "{{who}} doesn't allow your own subscriptions.",
+      "provided": "Turns run on the models {{who}} provides.",
+      "savedStays": "What you saved stays here, unused, in case that changes."
+    },
+    "picker": {
+      "foot": {
+        "allowList": "{{who}} picks which models you can use.",
+        "ownApiKeys": "{{who}} doesn't allow models on your own API keys.",
+        "ownSubscriptions": "{{who}} doesn't allow models on your own subscriptions."
+      },
+      "row": {
+        "allowList": "Not allowed by {{whoMid}}",
+        "custom": "Your own models can't run under {{whoMid}}'s model list",
+        "ownApiKeys": "{{who}} doesn't allow your own API keys",
+        "ownSubscriptions": "{{who}} doesn't allow your own subscriptions"
+      }
+    },
+    "setup": {
+      "nothingToConnect": "{{who}} provides this account's models, so there's nothing to connect here."
+    },
+    "connectors": {
+      "title": "Organization",
+      "setUpBy": "Set up by {{organization}}",
+      "setUpByUnnamed": "Set up by your organization",
+      "offIn_one": "Off in {{count}} workspace",
+      "offIn_other": "Off in {{count}} workspaces",
+      "shared": "Shared access",
+      "yourSignIn": "Your sign-in",
+      "signInLine": "Sign in with your own {{name}} account",
+      "signInStopped": "Sign-in stopped working",
+      "notAnswering": "Didn't answer, so its tools aren't listed yet",
+      "signIn": "Sign in",
+      "signInAgain": "Sign in again",
+      "signOut": "Sign out",
+      "signInFailed": "Couldn't start the sign-in",
+      "signOutFailed": "Couldn't sign out",
+      "unreadable": "Your organization's connectors can't be read right now.",
+      "heldBack": "Held back",
+      "ownOff": "{{who}} doesn't allow your own connectors. They're kept, and work again if it does.",
+      "heldBackReason": "{{who}} doesn't allow your own connectors. It installs on the plugin's next update once that changes."
+    },
+    "share": {
+      "paused": "Public link paused",
+      "cantShare": "{{who}} doesn't allow links that open without signing in, so this conversation can't be shared.",
+      "pausedBody": "Visitors can't open this link while {{whoMid}} doesn't allow public links. Turn it off to stop sharing for good.",
+      "pausedShort": "Visitors can't open this link while {{whoMid}} doesn't allow public links.",
+      "publishOff": "Publishing isn't available: {{whoMid}} doesn't allow links that open without signing in.",
+      "audienceLabel": "Who can open it",
+      "audienceAnyone": "Anyone with the link",
+      "audienceMembers": "Members of {{organization}}",
+      "audienceMembersUnnamed": "Members of your organization",
+      "membersLinkEnabled": "Members link enabled",
+      "membersInstead": "{{who}} doesn't allow links that open without signing in. You can still share this conversation with members of your organization.",
+      "membersCanView": "Members of {{organization}} who sign in can view the conversation with this link.",
+      "membersCanViewUnnamed": "Members of your organization who sign in can view the conversation with this link.",
+      "fileMembersHint": "Members of {{organization}} who sign in can open this file.",
+      "fileMembersHintUnnamed": "Members of your organization who sign in can open this file.",
+      "publishMembersInstead": "Publishing to anyone isn't available: {{whoMid}} doesn't allow links that open without signing in. Choose members of your organization to publish this file."
+    },
+    "machines": {
+      "notAllowed": "Not allowed",
+      "cardBody": "{{who}} doesn't allow work on machines you bring.",
+      "cantBeUsed": "Can't be used.",
+      "heldBody": "{{who}} doesn't allow work on a machine you bring. Its workspaces and their files stay."
+    },
+    "trading": {
+      "off": "{{who}} doesn't allow trading. The agent can't place or change live orders for this account."
+    },
+    "features": {
+      "on": "On",
+      "off": "Off",
+      "keptOn": "{{who}} keeps this on.",
+      "turnedOff": "{{who}} turned this off."
+    },
+    "unknown": {
+      "banner": "Your organization's settings can't be read right now. Chats and features are paused until they can.",
+      "notSent": "This message wasn't sent",
+      "notSentBody": "Your organization's settings can't be read right now. It's on our side; try again in a few minutes."
+    },
+    "twoSentences": "{{first}} {{next}}",
+    "library": {
+      "title": "Library",
+      "description": "Conversations, files and skills members of {{organization}} have published for each other.",
+      "descriptionUnnamed": "Conversations, files and skills members of your organization have published for each other.",
+      "filterLabel": "Show",
+      "filterAll": "All",
+      "filterThreads": "Conversations",
+      "filterFiles": "Files",
+      "kindThread": "Conversation",
+      "kindFile": "File",
+      "empty": "Nothing has been published yet. Publish a conversation or a file from its Share dialog, or a skill from its page.",
+      "emptyFiltered": "Nothing of this kind has been published yet.",
+      "loadFailed": "Couldn't load the library.",
+      "loadMore": "Load more",
+      "loading": "Loading…",
+      "byYou": "Published by you · {{date}}",
+      "byName": "Published by {{name}} · {{date}}",
+      "byUnnamed": "Published {{date}}",
+      "membersOnly": "Members only",
+      "open": "Open",
+      "actions": "Actions for {{title}}",
+      "remove": "Remove from library",
+      "removeShort": "Remove",
+      "removeConfirm": "Remove “{{title}}” from the library? Its link stays as it is.",
+      "removed": "Removed from the library",
+      "removeFailed": "Couldn't remove it. Try again.",
+      "sectionLabel": "Library",
+      "publish": "Publish to library",
+      "publishing": "Publishing…",
+      "publishFailed": "Couldn't publish it. Try again.",
+      "inLibrary": "In the {{organization}} library",
+      "inLibraryUnnamed": "In your organization's library",
+      "publishThreadHint": "Members find it in the Library and open it with this link.",
+      "publishFileHint": "Members find it in the Library and open it with this link.",
+      "publishNotAllowed": "{{who}} doesn't allow you to publish to the library.",
+      "view": "View library",
+      "filterSkills": "Skills",
+      "kindSkill": "Skill",
+      "install": "Install",
+      "installing": "Installing…",
+      "update": "Update",
+      "installed": "Installed",
+      "installedToast": "Installed {{name}}. Your agent has it in every workspace.",
+      "updatedToast": "Updated {{name}}",
+      "installFailed": "Couldn't install it. Try again.",
+      "nameTaken": "You already have a skill named {{name}}. Rename or remove yours to install this one.",
+      "publishSkillHint": "Members find it in the Library and install their own copy. Publish again after you change it."
+    }
+  },
+  "sharedWorkspace": {
+    "placeholder": "Type / for commands, @ for files",
+    "reviewOthersTurn": "Only the member who sent this turn can ask for a human review. Send your report without it.",
+    "kicker": "Shared · {{organization}}",
+    "sectionLabel": "Shared workspaces in {{organization}}",
+    "new": "New shared workspace",
+    "empty": "Work in one workspace with others in {{organization}}: each person runs their own turns, and everyone sees the files and the threads people share.",
+    "everyone": "Everyone in {{organization}}",
+    "peopleCount_one": "{{count}} person",
+    "peopleCount_other": "{{count}} people",
+    "you": "(you)",
+    "youShort": "You",
+    "someone": "Someone",
+    "badge": "Shared",
+    "role": {
+      "manager": "Manager",
+      "member": "Member"
+    },
+    "create": {
+      "title": "New shared workspace",
+      "description": "A workspace on its own cloud computer for people in {{organization}}. Each person's turns use their own seat and rules.",
+      "name": "Name",
+      "namePlaceholder": "Q4 earnings review",
+      "purpose": "What it's for",
+      "everyoneBody": "Anyone in the organization can open it and work in it.",
+      "people": "People",
+      "alsoManagers": "People to list by name",
+      "peoplePlaceholder": "ana@company.com, ben@company.com",
+      "peopleHint": "Email addresses of people in {{organization}}. You can add more later.",
+      "submit": "Create",
+      "creating": "Creating…",
+      "teamHint": "Everyone in the team can open it, beside the people you list."
+    },
+    "members": {
+      "open": "People",
+      "openLabel": "People in this workspace",
+      "title": "People",
+      "description": "Everyone in {{workspace}} sees its files and the threads people share with it. Each person's turns run under their own account.",
+      "everyoneBody": "Anyone in the organization can open it, beside the people listed.",
+      "everyoneOn": "Anyone in the organization can open it.",
+      "everyoneOff": "Only the people listed can open it.",
+      "addLabel": "Add someone by email",
+      "addPlaceholder": "Email address",
+      "add": "Add",
+      "optionsFor": "Options for {{name}}",
+      "makeManager": "Make manager",
+      "makeMember": "Make member",
+      "remove": "Remove",
+      "leave": "Leave",
+      "leaveWorkspace": "Leave workspace",
+      "deleteWorkspace": "Delete workspace",
+      "confirmLabel": "Confirm",
+      "leaveConfirm": "Leave {{workspace}}? You will no longer see its threads or files.",
+      "removeConfirm": "Remove {{name}}? A turn of theirs running here stops.",
+      "deleteConfirm": "Delete {{workspace}} for everyone? Its threads, files and computer go with it.",
+      "noLongerActive": "No longer in the organization",
+      "everyoneOffTeam": "Only {{team}} and the people added here can open it."
+    },
+    "refusal": {
+      "notInOrganization": "{{email}} isn't in your organization. Check the address.",
+      "alreadyMember": "That person is already in this workspace.",
+      "lastManager": "Make someone else a manager first. A shared workspace needs one.",
+      "managersOnly": "Only a manager can do that.",
+      "limit": "Your organization has as many shared workspaces as it can have ({{limit}}). Delete one to make another.",
+      "noCloudComputer": "Shared workspaces need a cloud computer, and none is available here.",
+      "tooMany": "Add at most 50 people at once.",
+      "unavailable": "Your organization's settings can't be read right now. Try again in a moment.",
+      "noAccess": "You're no longer in this workspace.",
+      "badName": "That name can't be used. Try another.",
+      "generic": "That didn't work. Try again.",
+      "teamNotYours": "You can only choose a team you're in.",
+      "teamNotFound": "That team no longer exists. Choose another."
+    },
+    "threads": {
+      "startedBy": "Started by {{name}}",
+      "startedByMe": "Started by you",
+      "lastBy": "Last message from {{name}}",
+      "lastByMe": "Last message from you",
+      "mine": "Mine",
+      "everyones": "Everyone's",
+      "filterLabel": "Whose threads"
+    },
+    "otherWorkspace": "This conversation belongs to another workspace. Open it from that workspace to send.",
+    "rewrite": {
+      "edit": "Another member sent a message after this one, so it can't be edited. Your text is in the message box to send as a new message.",
+      "redo": "Another member sent a message after this reply, so it can't be redone. Send a new message instead.",
+      "answer": "Only the person whose turn this is can answer it."
+    },
+    "othersTurn": {
+      "running": "{{name}}'s turn is running here. You can send when it finishes.",
+      "waiting": "Waiting for {{name}} to answer. You can send when their turn finishes.",
+      "check": "Check again"
+    },
+    "gone": {
+      "title": "You're no longer in this workspace",
+      "body": "A manager removed you, you're no longer in its team, or your access through the organization ended.",
+      "back": "Back to workspaces"
+    },
+    "deleted": {
+      "title": "This shared workspace was deleted",
+      "body": "Its threads and files went with it."
+    },
+    "unavailable": "Not available in a shared workspace",
+    "share": {
+      "membersOnly": "Links from a shared workspace open only to members of your organization."
+    },
+    "threadDeleted": {
+      "title": "This thread was deleted",
+      "body": "It was deleted while you had it open."
+    },
+    "threadPrivate": {
+      "title": "This conversation is now private",
+      "body": "The person who started it made it private while you had it open."
+    },
+    "anotherMembersTask": "This task is part of another member's turn. Only they can instruct it.",
+    "shareOut": {
+      "label": "Sharing outside this workspace",
+      "help": "Who can share a thread or file with the rest of {{organization}}, or publish it to the library.",
+      "groupLabel": "Who can share outside this workspace",
+      "managers": "Managers only",
+      "managersBody": "Only managers turn on links and publish to the library.",
+      "members": "Any member",
+      "membersBody": "Anyone in this workspace can turn on links and publish to the library.",
+      "none": "No one",
+      "noneBody": "Links open only for people in this workspace.",
+      "managersLink": "Only a manager of this workspace can share it with {{organization}}.",
+      "noneLink_one": "Only the {{count}} person in this workspace can open the link.",
+      "noneLink_other": "Only the {{count}} people in this workspace can open the link.",
+      "noneLinkUncounted": "Only the people in this workspace can open the link.",
+      "libraryManagers": "Only a manager of this workspace can publish it to the library.",
+      "libraryNone": "Nothing in this workspace can be published to the library. A manager can change that under People."
+    },
+    "privacy": {
+      "onlyYou": "Only you",
+      "sharedWith": "Shared with {{workspace}}",
+      "share": "Share with the workspace",
+      "makePrivate": "Make private",
+      "note": "The conversation is yours alone. Files it saves are in {{workspace}}, where everyone in the workspace can open them.",
+      "linkTurnedOff": "Its link was turned off.",
+      "confirmTitle": "Share this conversation with {{workspace}}?",
+      "confirmBody": "Everyone in the workspace will see it from the first message, and can send their own turns in it. You can make it private again until someone else writes in it.",
+      "confirmShare": "Share",
+      "chipPrivate": "Private",
+      "chipPrivateTitle": "Only you see this conversation",
+      "chipSharedTitle": "Everyone in {{workspace}} sees this conversation",
+      "sharedMark": "Shared with the workspace",
+      "shareFailed": "Couldn't share this conversation. Try again.",
+      "privateFailed": "Couldn't make this conversation private. Try again.",
+      "othersSent": "Someone else has written in this conversation, so it can't be made private."
+    },
+    "teamAndPeople_one": "{{team}} and {{count}} person",
+    "teamAndPeople_other": "{{team}} and {{count}} people",
+    "team": {
+      "label": "Team",
+      "individually": "People added individually",
+      "none": "No team",
+      "noneBody": "Choose one of your teams and everyone in it can open this workspace.",
+      "unnamed": "A team",
+      "unnamedLower": "its team",
+      "people_one": "{{count}} person · its admins manage this workspace",
+      "people_other": "{{count}} people · its admins manage this workspace",
+      "loadFailed": "Its people can't be loaded right now.",
+      "change": "Change",
+      "choose": "Choose",
+      "optionsLabel": "Team options",
+      "current": "Current team",
+      "remove": "Remove team",
+      "alsoIn": "Also in {{team}}",
+      "removeConfirmInTeam": "Remove {{name}} from the people added here? They are also in {{team}}, so they keep this workspace through the team.",
+      "everyoneClears": "Anyone in the organization can open it. Turning this on removes the team."
+    }
   },
   "cliApproval": {
     "title": {

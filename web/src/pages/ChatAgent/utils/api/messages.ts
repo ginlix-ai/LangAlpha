@@ -10,6 +10,7 @@ import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { PING_STREAM_BEAT_MS, RUN_STREAM_BEAT_MS, watchStreamSilence } from '@/lib/streamSilence';
 import type { PageBudget } from '../../session/history/pageBudget';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
+import { noteThreadRefused, noteThreadResponseRefused } from '@/lib/threadRefusals';
 import { BACKUP_OK, readFromBody, type ReadFrom } from './readFrom';
 
 /**
@@ -561,7 +562,10 @@ export function watchThread(
             if (await refreshAccessToken(bearerTokenOf(authHeaders.Authorization))) continue;
           }
 
-          if (!res.ok || !res.body) return;
+          if (!res.ok || !res.body) {
+            await noteThreadResponseRefused(threadId, res);
+            return;
+          }
 
           // A retry attempt (not the initial subscribe) just re-established the
           // stream: surface it so the caller can reconcile the gap. Fired AFTER
@@ -677,13 +681,19 @@ export async function reconnectToWorkflowStream(
   const query = params.toString();
   const queryParam = query ? `?${query}` : '';
   const authHeaders = await getAuthHeaders();
-  return await streamFetch(
-    `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
-    { method: 'GET', headers: { ...authHeaders }, ...(signal ? { signal } : {}) },
-    onEvent,
-    undefined,
-    { beatMs: RUN_STREAM_BEAT_MS },
-  );
+  try {
+    return await streamFetch(
+      `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
+      { method: 'GET', headers: { ...authHeaders }, ...(signal ? { signal } : {}) },
+      onEvent,
+      undefined,
+      { beatMs: RUN_STREAM_BEAT_MS },
+    );
+  } catch (err) {
+    const { status, errorInfo } = err as { status?: number; errorInfo?: unknown };
+    noteThreadRefused(threadId, status, errorInfo);
+    throw err;
+  }
 }
 
 /**
@@ -731,6 +741,7 @@ export async function openThreadMuxStream(
     },
   );
   if (!res.ok) {
+    await noteThreadResponseRefused(threadId, res);
     const err: Error & { status?: number } = new Error(
       `mux stream HTTP ${res.status}`,
     );

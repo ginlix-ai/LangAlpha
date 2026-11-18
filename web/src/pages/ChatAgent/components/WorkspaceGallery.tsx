@@ -41,6 +41,8 @@ import { ChiefOfStaffCard } from './workspaceGallery/ChiefOfStaffCard';
 import { CardGrid } from './workspaceGallery/CardGrid';
 import { GALLERY_COLUMN, GALLERY_FRAME, GALLERY_GRID, GALLERY_PAGE } from './workspaceGallery/layout';
 import { useGalleryReorder } from './workspaceGallery/useGalleryReorder';
+import { SharedSection } from './workspaceGallery/SharedSection';
+import { SharedGoneNotice } from '@/components/sharedWorkspaces/SharedGoneNotice';
 import { WorkspaceCard, WorkspaceCardSkeleton } from './workspaceGallery/WorkspaceCard';
 import type { WorkspaceRecord } from './workspaceGallery/types';
 import './workspaceGallery/WorkspaceCard.css';
@@ -384,6 +386,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
               <GalleryActions stacked onNewWorkspace={() => setIsModalOpen(true)} />
             </div>
 
+            <SharedGoneNotice className="mb-4" />
             {alertComputer && (
               <div className="pb-4 enter-fade-up">
                 <DiskWarning computer={alertComputer} />
@@ -456,6 +459,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
                 )}
               </SwapCell>
             </div>
+            <SharedSection now={now} query={searchQuery} onWorkspaceSelect={onWorkspaceSelect} />
           </div>
         </div>
       </div>

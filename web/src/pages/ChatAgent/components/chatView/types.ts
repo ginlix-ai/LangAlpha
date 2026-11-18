@@ -27,6 +27,9 @@ export interface LocationState {
    * the thread that send starts. Absent leaves it to the user's default.
    */
   subagentsAllowed?: boolean;
+  /** In a shared workspace, the composer that sent `initialMessage` started
+   *  its thread shared with everyone there; absent, it is private. */
+  sharedWithWorkspace?: boolean;
   /**
    * Text to leave in the composer, unsent, for the user to finish: "Set up a
    * subagent that ". Ignored alongside `initialMessage`, which is sent.

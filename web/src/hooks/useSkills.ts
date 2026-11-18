@@ -47,12 +47,14 @@ export function useSkills(
     includeDisabled?: boolean;
     workspaceId?: string | null;
     allScopes?: boolean;
+    enabled?: boolean;
   } = {},
 ) {
-  const { includeDisabled = false, workspaceId = null, allScopes = false } = opts;
+  const { includeDisabled = false, workspaceId = null, allScopes = false, enabled = true } = opts;
   return useQuery({
     queryKey: queryKeys.skills.list(includeDisabled, workspaceId, allScopes),
     queryFn: () => getSkills({ includeDisabled, workspaceId, allScopes }),
+    enabled,
     staleTime: 60_000,
   });
 }

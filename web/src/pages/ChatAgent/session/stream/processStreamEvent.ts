@@ -4,7 +4,10 @@
  * StreamRuntime lane port plus cross-lane orchestration callbacks.
  */
 
-import { settleFailedBubble, settleStoppedBubble } from './stopBubble';
+import { readSender, withTurnSender } from '../turnSender';
+import { othersTurnWords, readTurnRefusal } from '@/lib/turnRefusal';
+import { rereadRules } from '@/lib/ruleRefusal';
+import { readStop, settleFailedBubble, settleStoppedBubble } from './stopBubble';
 import { readStreamFailure } from './streamFailure';
 import { readHomeFallback, stampHomeFallback } from './turnPlacement';
 import { continuationChain } from './continuedBubbles';
@@ -58,6 +61,7 @@ import { preapprovedReportBack } from '../../utils/preapprovedCards';
 import { dispatchResultFields } from '../../utils/dispatchResult';
 import { applySideChannelArtifact } from './sideChannelArtifact';
 import { pinCapturedImages } from './capturedImages';
+import { noteAccountSuspended } from '@/lib/accountSuspension';
 
 type RefreshOnResult = 'refreshMarketWatch' | 'refreshWakeups' | 'refreshCommands';
 
@@ -272,6 +276,10 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         const runId = typeof event.run_id === 'string' ? event.run_id : undefined;
         deps.onAdmittedTurn?.(runBubbleId, turn);
         rt.setMessages((prev) => stampRunTurn(prev, runBubbleId, turn, runId));
+        // A shared workspace's run names who sent it, so a view attached to
+        // another member's turn draws it as theirs, as a reload would.
+        const sender = readSender(event.sender);
+        if (sender) rt.setMessages((prev) => withTurnSender(prev, turn, sender));
       }
       // The server writes this only after the run has its sandbox, so any
       // folder move that acquisition made is already on the row.
@@ -323,7 +331,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         queueMessagesForHandlers((prev) => pinCapturedImages(prev, assistantMessageId, images));
       }
       if (event.outcome === 'cancelled') {
-        settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers });
+        // Stopped by the account's suspension rather than by its user: the
+        // bubble says so instead of "Stopped".
+        settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers }, readStop(event));
       } else if (event.outcome === 'error' && !refs.retryNotice && !turnShowsFailure()) {
         // A run can fail where no `error` frame can be written for it: the
         // stream's own quota is spent, or its owner died and recovery closed
@@ -876,6 +886,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           assistantMessageId,
           content: event.content as string,
           finishReason: event.finish_reason,
+          stop: readStop(event),
           refs,
           setMessages: queueMessagesForHandlers,
           eventId,
@@ -892,6 +903,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // switch suggestion (the fallback model didn't save the turn either).
       deps.clearModelStatus();
       rt.setFallbackSuggestion(null);
+      const refusal = readTurnRefusal(event);
+      // The account's access ended mid-turn: the whole app says so, once.
+      if (refusal?.kind === 'suspended') noteAccountSuspended(refusal.organization);
       // A failure that names its recovery ended before the run reached the
       // agent: there is nothing to reconnect to, and the reply's Retry sends
       // what the recovery says.
@@ -908,8 +922,12 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // A Claude Code refusal the server's next read of the tokens or of the
       // Claude plan says: Settings, the picker and the composer take that now.
       if (event.type === 'claude_code_off' && claudeCodeRefusal(event, rt.workspaceId).reread) deps.refreshClaudeCode();
+      if (refusal?.kind === 'rule') rereadRules(rt.queryClient);
+      const othersTurn = refusal?.kind === 'others_turn';
       // Only the frame that ends the server's own retries carries `max_retries`.
-      const errorMessage = busyCode !== null
+      const errorMessage = othersTurn
+        ? othersTurnWords(rt.t, refusal.member)
+        : busyCode !== null
         ? rt.t(BUSY_REPLY_KEYS[busyCode])
         : typeof event.max_retries === 'number'
           ? rt.t('chat.autoRetryExhausted')
@@ -926,9 +944,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // Either way what the turn streamed stays its reply: the failure rides
       // apart from the content, so the reply never renders as the error.
       const kind = event.error_kind;
-      const structured: StructuredError | undefined = busyCode !== null
+      const structured: StructuredError | undefined = busyCode !== null || othersTurn
         ? { message: errorMessage as string, kind: 'notice' }
-        : readStreamFailure(event, errorMessage as string, rt.workspaceId, rt.t);
+        : readStreamFailure(event, errorMessage as string, refusal, rt.workspaceId, rt.t);
       // A live failure's frame does not name its run; the stream's metadata did.
       const latchedRunId = rt.currentRunIdRef?.current;
       if (structured && !structured.runId && latchedRunId) structured.runId = latchedRunId;

@@ -13,6 +13,7 @@ import type { Computer } from '@/types/api';
 
 import { WorkspaceMenuItems } from '../workspaceActions';
 import type { CardDrag } from './CardGrid';
+import { CARD_BODY, CARD_FILL, CARD_SURFACE } from './cardSurface';
 import { MachineSummary } from './MachineSummary';
 import type { WorkspaceRecord } from './types';
 import './WorkspaceCard.css';
@@ -81,16 +82,6 @@ interface WorkspaceCardProps {
 
 const RESTING: CardDrag = { state: 'resting', dragging: false, held: false };
 
-// The card's box, shared with its skeleton so a placeholder is the card's size.
-// The open card styles draw it unfilled inside their edge, with its title cut
-// into the top edge (WorkspaceCard.css). The edge firms under the pointer
-// (`.hover-lift`).
-const CARD_BODY = 'pf-card relative flex h-full w-full flex-col gap-1.5 overflow-hidden rounded-[var(--cs-radius-card,0.75rem)] py-3.5 pl-[18px] pr-4 md:px-5 md:py-4';
-const CARD_FILL = 'var(--color-bg-card-gradient, linear-gradient(to bottom, var(--color-border-muted), var(--color-border-muted)))';
-const CARD_SURFACE = {
-  background: `var(--color-shell-fill, ${CARD_FILL})`,
-  border: '1px solid var(--lift-edge, var(--color-shell-edge, var(--color-bg-card-border, var(--color-border-muted))))',
-} as const;
 // The lifted copy passes over other cards, so it is never see-through: the
 // open styles, whose card is unfilled, lift it on the page's ground, and the
 // card's own translucent fill blurs what is behind it. Only the lifted copy

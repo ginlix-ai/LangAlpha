@@ -16,6 +16,8 @@ import { detailHref } from '../utils/detailParam';
 import { secretEditHref } from '../utils/secretParam';
 import { capitalizeFirst } from '../utils/sentence';
 import { DiagnosticLine } from './RefusalView';
+import { useRule } from '@/hooks/useAccount';
+import { RULE } from '@/lib/accountRules';
 
 /**
  * What an install or update did, in the order a user asks it: did it work
@@ -85,12 +87,18 @@ function ComponentRow({
   onLeave: () => void;
 }) {
   const { t } = useTranslation();
+  const ownConnectors = useRule(RULE.userConnectors);
   const label = result.name || result.key;
   const failed = result.status === 'invalid' || result.status === 'error';
-  const status = result.status === 'upgradable' ? null : STATUS_WORD[result.status];
+  // One a rule held back is not skipped for good: it lands on the plugin's
+  // next update once the rule allows it.
+  const status = result.withheld ? 'statusHeldBack'
+    : result.status === 'upgradable' ? null : STATUS_WORD[result.status];
   // "Already had one" is the whole story; the server's sentence for it only
   // says the same thing longer.
-  const reason = result.status === 'exists' ? '' : capitalizeFirst(result.reason);
+  const reason = result.withheld
+    ? t('organization.connectors.heldBackReason', { who: ownConnectors.who.start })
+    : result.status === 'exists' ? '' : capitalizeFirst(result.reason);
   return (
     <li className="flex flex-col gap-0.5 py-1.5">
       <div className="flex items-baseline gap-3 min-w-0">

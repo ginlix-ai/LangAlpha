@@ -46,6 +46,9 @@ export interface PluginComponentResult {
   status: PluginComponentStatus;
   reason: string;
   warnings: string[];
+  /** Skipped only because a rule keeps the user's own connectors off; it
+   *  installs on the plugin's next update once the rule allows it. */
+  withheld?: boolean;
 }
 
 /**
@@ -105,6 +108,9 @@ export interface PluginInfo {
   installed_at: string | null;
   updated_at: string | null;
   components: PluginComponentRef[];
+  /** The mcp.json keys of the connectors a rule on the user's own
+   *  connectors keeps from landing right now. */
+  withheld?: string[];
 }
 
 export interface PluginListResponse {

@@ -1,5 +1,5 @@
 import { useState, useCallback, useId, useMemo } from 'react';
-import { useNavigate, useLocation } from 'react-router';
+import { Navigate, useNavigate, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import { WizardStepHeader } from '@/components/ui/wizard';
@@ -17,6 +17,8 @@ import { NO_FILTER, startingOption, type KeyFilter, type ProviderGroup } from '@
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { claudeCodeChoice } from '@/lib/claudeCode';
 import { useProviderConnected, type LocationState, type ProviderList } from './connectStep/shared';
+import { useAccount } from '@/hooks/useAccount';
+import { methodAllowed } from '@/lib/accountRules';
 
 // ---------------------------------------------------------------------------
 // ProviderStep — Step 2: the provider, as Settings lists them
@@ -30,6 +32,7 @@ export default function ProviderStep() {
   const headingId = useId();
 
   const list: ProviderList = (location.state as LocationState | null)?.list ?? 'api_key';
+  const { policy } = useAccount();
 
   const { keyGroups, planGroups, localEntries, isLoading } = useProviderCatalog();
   const { preferences } = usePreferences();
@@ -81,6 +84,10 @@ export default function ProviderStep() {
   const addCustom = useCallback(() => {
     navigate('/setup/connect', { state: { method: list, list, isCustom: true } });
   }, [navigate, list]);
+
+  // A way a rule keeps off is not offered on the step before; a page reached
+  // some other way goes back to it.
+  if (!methodAllowed(policy, list)) return <Navigate to="/setup/method" replace />;
 
   if (isLoading) {
     return (

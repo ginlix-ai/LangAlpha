@@ -29,6 +29,9 @@ interface PendingInterrupt {
   questionId?: string;
   proposalId?: string;
   toolCallId?: string;
+  /** The run that raised it: a reattach to another run of the thread is how
+   *  the view learns it was answered elsewhere. Null when not known. */
+  runId?: string | null;
 }
 
 /** Loosely-typed SSE event — all event shapes merged. */
@@ -176,6 +179,9 @@ interface ModelOptions {
    */
   reasoningEffortOverride?: string;
   fastModeOverride?: boolean;
+  /** In a shared workspace, the thread this send creates is shared with
+   *  everyone there from its first message; absent, its starter's alone. */
+  sharedWithWorkspace?: boolean;
   /**
    * The file comments this send carries, as its bubble shows them. Their ids
    * go out as `artifact_comment_ids` with its `reading`, and the message is

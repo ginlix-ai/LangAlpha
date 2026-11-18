@@ -10,12 +10,14 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { forgetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
 import { queryKeys } from '@/lib/queryKeys';
+import { isCachedSharedWorkspace } from '@/lib/sharedWorkspaceFeed';
 import { scrollMemory } from '@/lib/scrollMemory';
 import { clearAllMarketThreadsForWorkspace } from '../../MarketView/utils/threadPersistence';
 import { forgetNavPanelExpansion } from '../components/navExpansionStore';
 import { updateWorkspace } from '../utils/api';
 import { forgetStableNavOrder, resetWorkspaceOrderFreeze } from './navOrderFreeze';
 import { removeStoredThreadId } from './utils/threadStorage';
+import type { SharedWorkspaceList } from '@/types/sharedWorkspaces';
 
 // Shape of a cached workspace-list query entry (queryKeys.workspaces.lists()).
 interface CachedWorkspaceList {
@@ -49,8 +51,9 @@ export function invalidateNewWorkspace(queryClient: QueryClient): void {
 }
 
 /**
- * Optimistically patch one workspace across every cached list. Returns the
- * snapshot so the caller can roll back on error.
+ * Optimistically patch one workspace across every cached list, the member's
+ * shared list included, since a shared workspace's rows read that one.
+ * Returns the snapshot so the caller can roll back on error.
  */
 export function patchCachedWorkspace(
   queryClient: QueryClient,
@@ -66,6 +69,17 @@ export function patchCachedWorkspace(
       workspaces: d.workspaces.map((ws) => (ws.workspace_id === wsId ? { ...ws, ...patch } : ws)),
     });
   });
+  const sharedKey = queryKeys.sharedWorkspaces.list();
+  const shared = queryClient.getQueryData<SharedWorkspaceList>(sharedKey);
+  if (shared && isCachedSharedWorkspace(queryClient, wsId)) {
+    previous.push([sharedKey, shared]);
+    queryClient.setQueryData<SharedWorkspaceList>(sharedKey, {
+      ...shared,
+      workspaces: shared.workspaces.map((e) => (
+        e.workspace.workspace_id === wsId ? { ...e, workspace: { ...e.workspace, ...patch } } : e
+      )),
+    });
+  }
   return previous;
 }
 
@@ -206,6 +220,13 @@ export async function patchWorkspaceRow(
     console.warn('[workspaceRowActions] Failed to update workspace:', e);
     onError?.(e);
     return false;
+  } finally {
+    // A shared workspace's row reads the member's shared list. After a
+    // refusal too: a member who lost the manager role meanwhile stops being
+    // offered the change once the list says so.
+    if (isCachedSharedWorkspace(queryClient, wsId)) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sharedWorkspaces.list() });
+    }
   }
 }
 

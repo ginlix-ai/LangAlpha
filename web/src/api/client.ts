@@ -13,6 +13,7 @@
  */
 import { authGeneration, bearerTokenOf, getAccessToken, refreshAccessToken } from '../lib/authToken';
 import { trackRequest } from '../lib/reloadHolds';
+import { noteIfSuspended } from '../lib/accountSuspension';
 
 const baseURL: string = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -258,6 +259,9 @@ async function send(
   const response: ApiResponse = { ...rest, headers: Object.fromEntries(rawHeaders) };
   const { status } = response;
   if (status >= 200 && status < 300) return response;
+  // Every route refuses a suspended account the same way: the shell turns
+  // the whole app into that one state rather than each caller failing alone.
+  if (status === 403) noteIfSuspended((response.data as { detail?: unknown } | null)?.detail);
   throw new ApiError(
     `Request failed with status code ${status}`,
     status >= 400 && status < 500 ? 'ERR_BAD_REQUEST' : 'ERR_BAD_RESPONSE',

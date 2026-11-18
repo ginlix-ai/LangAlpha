@@ -1,4 +1,5 @@
-import { useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react';
+import { onModelPickerRequest } from '@/lib/modelPickerRequest';
 import { Check, ChevronDown, Gauge, Info, Rocket } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -191,6 +192,10 @@ export function ChatInputModelMenu({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const toSettings = () => navigate('/settings?tab=model');
+  // A refusal's "Choose a model" opens the picker of the composer on screen.
+  useEffect(() => onModelPickerRequest(() => {
+    if (!disabled && triggerRef.current?.offsetParent) setOpen(true);
+  }), [disabled]);
 
   if (groups.length === 0 && !selectedModel) {
     if (disabled) return null;

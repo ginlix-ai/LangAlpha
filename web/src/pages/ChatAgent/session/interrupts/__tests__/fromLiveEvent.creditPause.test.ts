@@ -14,6 +14,8 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
 
 import { projectLiveInterrupt } from '../fromLiveEvent';
+import { createAnswerBoard } from '../answerBoard';
+import { createPauseSlot } from '../pauseSlot';
 import type { StreamRuntime } from '../../runtime';
 import type { SSEEvent, StreamProcessorRefs } from '../../types';
 
@@ -32,18 +34,20 @@ function pauseEvent(): SSEEvent {
 
 function build(messages: ChatMessage[]) {
   let current = messages;
+  const setMessages = ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+    current = updater(current);
+  }) as StreamRuntime['setMessages'];
+  const ids = ref(new Set<string>());
   const rt = {
-    setMessages: ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
-      current = updater(current);
-    }) as StreamRuntime['setMessages'],
-    setPendingInterrupt: vi.fn(),
-    pendingInterruptIdsRef: ref(new Set<string>()),
+    setMessages,
+    pause: createPauseSlot(vi.fn(), createAnswerBoard({ pendingIds: ids, sessionEpoch: ref(0), setMessages })),
+    currentRunIdRef: ref<string | null>('run-1'),
     renderedInterruptIdsRef: ref(new Set<string>()),
   } as unknown as StreamRuntime;
   const refs = {
     contentOrderCounterRef: ref(0),
   } as unknown as StreamProcessorRefs;
-  return { rt, refs, read: () => current };
+  return { rt, refs, ids, read: () => current };
 }
 
 const bubble = (id: string): ChatMessage =>
@@ -79,6 +83,6 @@ describe('a credit pause that is raised twice', () => {
     // ...and nothing unrenderable left behind on the fresh bubble.
     expect(cardOn(fresh)).toBeUndefined();
     // The pause is tracked again, so a later click is not dropped.
-    expect(second.rt.pendingInterruptIdsRef.current.has(PAUSE_ID)).toBe(true);
+    expect(second.ids.current.has(PAUSE_ID)).toBe(true);
   });
 });

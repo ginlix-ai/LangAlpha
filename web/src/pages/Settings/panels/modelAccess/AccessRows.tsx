@@ -102,12 +102,18 @@ export function AccessRow({
 }
 
 /** A key row's status: Connected, unless its own model list says the key was refused. */
-export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: KeyPlace; onManage: () => void }) {
+export function KeyRow({ p, place, onManage, notAllowed = false }: {
+  p: ConfiguredProvider;
+  place?: KeyPlace;
+  onManage: () => void;
+  /** A rule keeps the user's own keys off: saved, unused, and removable. */
+  notAllowed?: boolean;
+}) {
   const { t } = useTranslation();
   const listable = !p.is_custom && p.access_type !== 'local';
-  const list = useAvailableModels(listable ? p.provider : null);
+  const list = useAvailableModels(listable && !notAllowed ? p.provider : null);
   const knownHosts = useKnownHosts();
-  const status: RowStatus = list.isLoading
+  const status: RowStatus = notAllowed ? 'not_allowed' : list.isLoading
     ? 'working'
     : list.data?.status === 'fallback' && list.data.reason === 'unauthorized'
       ? 'refused'
