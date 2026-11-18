@@ -5,7 +5,7 @@ takes back what it wrote if a step after its row landed fails.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -91,7 +91,8 @@ async def test_a_pending_install_that_fails_after_its_row_landed_is_taken_back()
 
     error, uninstall, drop, invalidate = await _commit(AsyncMock(side_effect=install))
     assert isinstance(error, RuntimeError)
-    uninstall.assert_awaited_once_with(USER, plugin)
+    # Taken back, so the log never hears of it: neither installed nor removed.
+    uninstall.assert_awaited_once_with(USER, plugin, record=False)
     introduced = ["UNCLAIMED_KEY", "VENDOR_AUTHORIZATION", "VENDOR_KEY"]
     assert drop.await_args.args == (USER, introduced)
     # Running sandboxes were handed them at install, so they are told too.
@@ -129,4 +130,50 @@ async def test_a_pending_install_missing_any_component_is_taken_back():
     error, uninstall, _drop, _invalidate = await _commit(AsyncMock(side_effect=install))
     assert isinstance(error, ValueError)
     assert str(error).startswith("other could not be added (Maximum of 100")
-    uninstall.assert_awaited_once_with(USER, plugin)
+    uninstall.assert_awaited_once_with(USER, plugin, record=False)
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["stands", "taken-back"])
+@pytest.mark.asyncio
+async def test_a_pending_install_is_recorded_only_once_it_stands(stored, monkeypatch):
+    """The commit installs without recording; the callback records the
+    install once the connection is stored, and nothing for one it takes back."""
+    from src.server.services import mcp_saves
+    from src.server.services.mcp_oauth.finish import CallbackFailed
+    from src.server.services.plugins import lifecycle
+    from src.server.services.plugins.lifecycle import InstallProgress
+    from src.server.services.plugins.pending import CommittedPluginInstall
+
+    package = type("P", (), {"name": "demo", "version": "1.0"})()
+    progress = InstallProgress(
+        plugin={"user_plugin_id": PLUGIN_ID, "name": "demo"},
+        report=InstallReport(),
+    )
+    record = MagicMock()
+    monkeypatch.setattr(lifecycle.activity, "record", record)
+    monkeypatch.setattr(
+        mcp_saves, "commit_pending_plugin_install",
+        AsyncMock(return_value=CommittedPluginInstall(progress, package, "zip")),
+    )
+    undo = AsyncMock()
+    monkeypatch.setattr(mcp_saves, "undo_pending_plugin_install", undo)
+    store = AsyncMock(side_effect=None if stored else RuntimeError("db down"))
+
+    finish = mcp_saves._PluginFinish(USER, _pending())
+    if stored:
+        await finish.write(store)
+        (call,) = record.call_args_list
+        assert call.args[1] == "plugin.installed"
+        undo.assert_not_awaited()
+    else:
+        with pytest.raises(CallbackFailed):
+            await finish.write(store)
+        record.assert_not_called()
+        undo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_commit_installs_without_recording():
+    install = AsyncMock(return_value=({"name": "demo"}, InstallReport()))
+    await _commit(install)
+    assert install.await_args.kwargs["record"] is False

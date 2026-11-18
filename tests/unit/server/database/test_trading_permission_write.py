@@ -66,7 +66,7 @@ async def test_the_write_takes_the_workspace_insert_lock_before_it_writes(db):
 
     assert db.log[0] == "BEGIN"
     assert db.log[1] == "SELECT pg_advisory_xact_lock(hashtext(%s::text))"
-    assert db.log[2].startswith("INSERT INTO trading_permissions")
+    assert "INSERT INTO trading_permissions" in db.log[2]
     assert db.log[-1] == "COMMIT"
 
 

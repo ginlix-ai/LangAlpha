@@ -47,7 +47,9 @@ def lands(monkeypatch):
     found = {}
     for kind in ("publish", "keep", "turn", "legacy"):
         found[kind] = AsyncMock(
-            return_value=SimpleNamespace(artifact="landed", changed=False)
+            return_value=SimpleNamespace(
+                artifact="landed", changed=False, seq=1, shared_now=True
+            )
         )
         monkeypatch.setattr(snapshot.artifacts_db, f"{kind}_version", found[kind])
     return SimpleNamespace(**found)
@@ -1219,6 +1221,27 @@ async def test_a_kept_page_off_the_list_is_let_go_after_the_grace_not_cut(pass_o
     assert kwargs["grace"] == snapshot.KEPT_RELEASE_GRACE
     assert _cut_ids(pass_over) == [_LISTED]
     pass_over.announced.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_members_turn_refreshes_the_shared_workspaces_records_as_its_holder(
+    pass_over, monkeypatch
+):
+    """A member's turn or file change starts the pass, but the records, their
+    blobs and versions are the holder's: cut as the member, the row lock finds
+    no record of theirs and the page goes stale."""
+    monkeypatch.setattr(
+        snapshot,
+        "db_get_workspace",
+        AsyncMock(return_value={"user_id": "holder", "status": "running"}),
+    )
+    pass_over.kept.return_value = [_kept(artifact_id=_OFF, kept_at=_LONG_AGO)]
+    pass_over.listed.return_value = None
+
+    await snapshot.keep_updated_after_turn(workspace_id="w", user_id="member")
+
+    pass_over.listed.assert_awaited_once_with("holder")
+    assert [c.args[1] for c in pass_over.cut.await_args_list] == ["holder"]
 
 
 @pytest.mark.asyncio
