@@ -353,6 +353,20 @@ class ScanEntry:
     symlink_target: str | None
     is_binary: bool | None
 
+    @classmethod
+    def from_wire(cls, e: dict[str, Any]) -> ScanEntry:
+        """An entry as the runtime reports it."""
+        return cls(
+            path=e["path"],
+            kind=e["kind"],
+            size=int(e.get("size") or 0),
+            mtime_ns=int(e.get("mtime_ns") or 0),
+            mode=int(e.get("mode") or 0),
+            sha256=e.get("sha256"),
+            symlink_target=e.get("symlink_target"),
+            is_binary=e.get("is_binary"),
+        )
+
 
 @dataclass(slots=True)
 class ScanResult:
@@ -381,7 +395,21 @@ class SweepResult:
     walk_ms: int
 
 
-def _transfer_roots(layout: WorkspaceLayout) -> dict[str, str]:
+@dataclass(frozen=True, slots=True)
+class TransferRoots:
+    """A folder a transfer works in that is no workspace's own, such as a
+    copy's source or its staging, and the computer root its pack chunks
+    stage under; read as a layout's ``workspace`` and ``root``."""
+
+    workspace: str
+    root: str
+
+
+#: Where a transfer op works: a workspace's folder, or any other.
+Layout = WorkspaceLayout | TransferRoots
+
+
+def _transfer_roots(layout: Layout) -> dict[str, str]:
     """The walk root and the machine scratch root every transfer op needs.
 
     Packs are the machine's scratch and live under the computer's ``_internal``,
@@ -496,13 +524,21 @@ def _slowest(out: dict[str, Any]) -> str:
 
 
 async def run_transfer_op(
-    sandbox: Any, op: str, spec: dict[str, Any], *, timeout_s: int
+    sandbox: Any,
+    op: str,
+    spec: dict[str, Any],
+    *,
+    timeout_s: int,
+    reports: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Run one runtime subcommand and return its output document.
 
     One exec when the spec fits an argument, two when it has to be uploaded.
     A sandbox without the runtime, or with one that predates this exchange,
     exits 2 without a result line; the runtime is uploaded and the op rerun.
+    ``reports`` names keys only a runtime that honours the whole spec
+    returns: one that predates them ignores the keys it does not know and
+    answers anyway, so a result without them is treated the same way.
     """
     script = _script_path(sandbox)
     runtime = sandbox.runtime
@@ -532,9 +568,14 @@ async def run_transfer_op(
             runtime.exec, cmd, timeout_s, retry_policy=RetryPolicy.SAFE
         )
 
+    def stale(out: Any) -> bool:
+        if out is None:
+            return res.exit_code == 2
+        return isinstance(out, dict) and not out.get("error") and any(k not in out for k in reports)
+
     res = await _run()
     out = _parse_result(res.stdout)
-    if out is None and res.exit_code == 2:
+    if stale(out):
         await _upload_runtime(sandbox)
         res = await _run()
         out = _parse_result(res.stdout)
@@ -549,6 +590,8 @@ async def run_transfer_op(
         # The runtime caught its own crash and reported it instead of
         # a result set; nothing below is trustworthy.
         raise TransferRuntimeError(f"wsfiles_transfer {op} failed: {out['error']}")
+    if missing := [k for k in reports if k not in out]:
+        raise TransferRuntimeError(f"wsfiles_transfer {op} reported no {missing[0]}")
     hs = out.get("handshakes") or {}
     hs_note = (
         f", tls full={hs.get('full', 0)} resumed={hs.get('resumed', 0)}"
@@ -590,16 +633,7 @@ async def scan_workspace(
     # file; a manifest row for it would restore a "populated" claim into a
     # sandbox before its files arrive, so the server drops it as well.
     entries = [
-        ScanEntry(
-            path=e["path"],
-            kind=e["kind"],
-            size=int(e.get("size") or 0),
-            mtime_ns=int(e.get("mtime_ns") or 0),
-            mode=int(e.get("mode") or 0),
-            sha256=e.get("sha256"),
-            symlink_target=e.get("symlink_target"),
-            is_binary=e.get("is_binary"),
-        )
+        ScanEntry.from_wire(e)
         for e in out.get("entries", [])
         if e["path"] not in (SYNC_MARKER_NAME, DEFERRED_MARKER)
     ]
@@ -746,7 +780,7 @@ async def hash_one_file(
     path: str,
     *,
     prior: tuple[int, int, str] | None,
-    layout: WorkspaceLayout,
+    layout: Layout,
 ) -> ScanEntry | None:
     """Stat and hash one file under the project folder; None when it is not a file.
 
@@ -759,20 +793,11 @@ async def hash_one_file(
     out = await run_transfer_op(sandbox, "hash", spec, timeout_s=SCAN_TIMEOUT_S)
     if out.get("status") != "ok" or not out.get("sha256"):
         return None
-    return ScanEntry(
-        path=path,
-        kind="file",
-        size=int(out.get("size") or 0),
-        mtime_ns=int(out.get("mtime_ns") or 0),
-        mode=int(out.get("mode") or 0),
-        sha256=out["sha256"],
-        symlink_target=None,
-        is_binary=out.get("is_binary"),
-    )
+    return ScanEntry.from_wire({**out, "path": path, "kind": "file"})
 
 
 async def push_direct(
-    sandbox: Any, items: list[dict[str, Any]], *, layout: WorkspaceLayout
+    sandbox: Any, items: list[dict[str, Any]], *, layout: Layout
 ) -> dict[str, dict[str, Any]]:
     """Upload ``items`` (path, sha256, size, url, headers) from the sandbox.
 
@@ -797,7 +822,7 @@ async def pull_direct(
     sandbox: Any,
     items: list[dict[str, Any]],
     *,
-    layout: WorkspaceLayout,
+    layout: Layout,
     defer_dir_modes: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Materialize ``items`` in the sandbox. Returns per-path results.
@@ -828,7 +853,7 @@ async def pack_direct(
     sandbox: Any,
     members: list[dict[str, Any]],
     *,
-    layout: WorkspaceLayout,
+    layout: Layout,
     release: list[str] | None = None,
 ) -> dict[str, Any]:
     """Concatenate ``members`` (path, sha256, size) into chunk files in the sandbox.
@@ -857,7 +882,7 @@ async def pack_direct(
 
 
 async def unlink_direct(
-    sandbox: Any, paths: list[str], *, layout: WorkspaceLayout
+    sandbox: Any, paths: list[str], *, layout: Layout
 ) -> int:
     """Remove files under the project folder; returns how many were removed."""
     if not paths:

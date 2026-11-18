@@ -1651,6 +1651,20 @@ def test_pack_writes_chunks_at_the_computer_root_when_pack_root_is_given(tmp_pat
     assert open(chunk["path"], "rb").read() == b"aaa"
 
 
+def test_pack_names_a_chunk_absolute_when_the_walk_root_holds_the_computer(tmp_path):
+    """A copy walks any folder, one above the computer root among them; the
+    chunk is still named where the push resolves it, under the pack root."""
+    computer = tmp_path / "langalpha"
+    computer.mkdir()
+    members = _members(tmp_path, {"a.txt": b"aaa"})
+    out = rt.pack(
+        {"root": str(tmp_path), "pack_root": str(computer), "max_bytes": 1024, "members": members}
+    )
+    chunk = out["chunks"][0]
+    assert chunk["path"].startswith(str(computer / "_internal" / "packs") + os.sep)
+    assert open(chunk["path"], "rb").read() == b"aaa"
+
+
 def test_pack_without_pack_root_still_names_chunks_relative_to_the_walk_root(tmp_path):
     """A spec written before the split reads exactly as it did."""
     members = _members(tmp_path, {"a.txt": b"aaa"})

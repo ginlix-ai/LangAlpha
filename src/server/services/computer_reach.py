@@ -25,9 +25,12 @@ from ptc_agent.agent.tools.computer_reach import (
     Attached,
     ComputerTarget,
     ComputerUnreachable,
+    Shipment,
+    Shipped,
+    ShipmentTooLarge,
     file_refusal,
 )
-from ptc_agent.core.paths import langalpha_config_dir, lexical_path
+from ptc_agent.core.paths import langalpha_config_dir, lexical_path, logged_path
 from ptc_agent.core.project_context import (
     MachinePaths,
     ProjectContext,
@@ -51,6 +54,8 @@ from src.server.database.workspace_binding import (
 )
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_usage.causes import computer_cause
+from src.server.services.persistence.ship import StoreUnreachable, ship_via_store
+from src.server.services.persistence.transfer import TransferRuntimeError, transfer_mode
 from src.tools.messaging.tools import ATTACH_MAX_BYTES, SEND_MAX_BYTES
 from src.tools.secretary.utils import spoken_computer_name
 
@@ -461,6 +466,43 @@ class TurnComputers:
 
     async def in_use(self, target: ComputerTarget) -> None:
         await self._keep_alive(target.computer_id, target.session)
+
+    async def ship(
+        self, source: ComputerTarget, shipment: Shipment, destination: ComputerTarget
+    ) -> Shipped | None:
+        """Through object storage when both computers move bytes to and from
+        it themselves, and the source's owner lets its files be stored: one
+        whose backup is off keeps its files out of the store, a copy's too.
+        Only a refusal meant for the agent crosses; any other failure is this
+        route's, and the server carries the copy instead."""
+        if transfer_mode(source.sandbox) != "direct" or transfer_mode(destination.sandbox) != "direct":
+            return None
+        row = await get_computer(source.computer_id)
+        if row is None or row.get("files_backup") is False:
+            return None
+        try:
+            return await ship_via_store(
+                self._user_id,
+                source.sandbox,
+                source.sandbox.working_dir,
+                destination.sandbox,
+                destination.sandbox.working_dir,
+                shipment,
+                source_name=source.name,
+                destination_name=destination.name,
+            )
+        except (ComputerUnreachable, ShipmentTooLarge):
+            raise
+        except Exception as e:  # noqa: BLE001 - the server route is the fallback for any of them
+            logger.warning(
+                "Copy of %s goes through the server: %s",
+                logged_path(shipment.path),
+                e,
+                # A store out of reach or a runtime that cannot run there is
+                # expected; anything else is worth its trace.
+                exc_info=not isinstance(e, (StoreUnreachable, TransferRuntimeError)),
+            )
+            return None
 
     async def _keep_alive(self, computer_id: str, session: Session) -> None:
         """Count the call as use of the computer, at most once a minute:
