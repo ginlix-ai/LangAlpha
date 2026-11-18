@@ -25,8 +25,8 @@ uv run python scripts/utils/render_prompt.py --role chief_of_staff
 
 The service is model-agnostic — the same prompt has to serve frontier models
 and small self-hosted ones. Frontier models regress when given procedural
-scaffolding they already fold in; a 20b model falls apart without it. So every
-template renders at one of two levels, resolved per request (see
+scaffolding they already fold in; a 20b model falls apart without it. So the
+system prompts render at one of two levels, resolved per request (see
 `../guidance.py`):
 
 ```
@@ -35,6 +35,17 @@ user model_preference.prompt_guidance → config.yaml prompt.guidance → models
 
 `detailed` is the fail-safe default: an unannotated or unknown model gets more
 scaffolding, never less.
+
+### Which text has levels
+
+Only text inside a guidance fence differs by level: the PTC and subagent system
+prompts (`system.md.j2`, `subagent_base.md.j2` and the files they include) and
+the market-watch block's `envelope/updates.md.j2`. Everything else has one
+version for every model: the other `envelope/` fragments (see below), tool
+names, docstrings and argument descriptions on both surfaces, tool results and
+errors, skills, AGENTS.md files, and the `prompt` the agent writes in a `Task`
+call. Review that text for sentences its readers do not need; it has no
+lean copy to diff.
 
 ### You never write the lean version
 
@@ -136,6 +147,9 @@ uv run python scripts/utils/render_prompt.py --model claude-opus-5-5
 `test_lean_subset_invariant.py` enforces the subset property across PTC and all
 five subagents. If it fails, lean is rendering text detailed never
 sees — move it outside the fence, or register it as an either/or.
+`--diff` renders only the system prompts; `test_runtime_context_templates.py`
+holds each `envelope/` fragment to the same subset rule and pins the ones that
+must render the same at both levels.
 
 ## Other conventions
 
@@ -204,10 +218,13 @@ Fragments of the runtime context, rendered by `middleware/runtime_context/`
 rather than included from a system template. Three lifetimes share the
 directory:
 
-- **Tail fragments** (`header`, `updates`) re-render per model call, after the
-  last breakpoint, so their cost is a few hundred tokens rather than the whole
-  history. They emit bare markdown lines: the envelope supplies the
-  `<system-reminder>` wrapper, so a fragment that adds one nests it.
+- **The market-watch block** (`header`, `updates`) is rendered once, at the
+  turn's guidance level, when `middleware/market_watch.py` writes it into
+  history as a `market_watch` row, and the model reads a stamp only until the
+  next user message or tool result (`runtime_context/carrier.py`). Both
+  fragments emit bare markdown lines, because the carrier picks the wrapper
+  per call (a `<system-reminder>` block or an operator-role message), and a
+  fragment that adds one nests it.
 - **Baseline fragments** (`baseline_files`, `baseline_agentmd`,
   `baseline_memory`, `baseline_identity`, and the harness blocks
   `baseline_model`, `baseline_mcp_servers`, `baseline_skills` and the Chief

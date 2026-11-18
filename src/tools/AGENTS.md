@@ -21,6 +21,11 @@ call this tool rather than another one, what to pass, or what to do with the res
 A sentence that changes none of the three is prompt cost with no return, paid on
 every turn of every conversation.
 
+Tool text has one version for every model. The guidance level
+(`src/ptc_agent/agent/prompts/templates/AGENTS.md`) reaches only the prompt
+templates, never a docstring, an argument description, a result or an error, so
+review tool text for sentences no bound model needs, not for a missing lean copy.
+
 ## Three sections, three jobs
 
 ```
