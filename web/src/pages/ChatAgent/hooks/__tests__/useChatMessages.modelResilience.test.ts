@@ -178,7 +178,7 @@ describe('useChatMessages — model retry/fallback resilience', () => {
       | import('@/types/chat').NotificationSegment
       | undefined;
     expect(notif).toBeDefined();
-    expect(notif!.fallback).toEqual({ from: 'model-alpha', to: 'model-beta' });
+    expect(notif!.notice).toEqual({ kind: 'fallback', from: 'model-alpha', to: 'model-beta' });
     expect(notif!.detail).toContain('placeholder upstream error');
     expect(notif!.detail).toContain('HTTP 503');
     expect(notif!.detailKind).toBe('error');
@@ -447,7 +447,7 @@ describe('useChatMessages — model retry/fallback resilience', () => {
         | import('@/types/chat').NotificationSegment
         | undefined;
       expect(notif).toBeDefined();
-      expect(notif!.fallback).toEqual({ from: 'model-alpha', to: 'model-beta' });
+      expect(notif!.notice).toEqual({ kind: 'fallback', from: 'model-alpha', to: 'model-beta' });
       // The persisted event replays with the same expandable detail.
       expect(notif!.detail).toContain('placeholder persisted error');
       expect(notif!.detail).toContain('HTTP 429');

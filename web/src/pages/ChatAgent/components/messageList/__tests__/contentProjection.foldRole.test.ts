@@ -50,32 +50,20 @@ describe('what survives a collapsed turn', () => {
     expect(roleOf(type)).toBe('retain');
   });
 
-  it('keeps the notice that a reply was billed to usage credits, which is what it cost', () => {
+  // Each notice's part is said where it is drawn (`NOTICES`); this pins the split.
+  it.each([
+    ['a reply billed to usage credits, which is what it cost', 'retain', { kind: 'planBilled', window: 'five_hour', until: '2026-11-06T20:40:00Z' }],
+    ['a turn that opened on another model\'s brief, which says what it was written from', 'retain', { kind: 'handoff', from: 'deepseek-flash', to: 'claude-sonnet-5-5-code' }],
+    ['a turn that waited for a Claude Code CLI, which is part of how long it took', 'retain', { kind: 'cliWait', waitId: 'w1', computerId: 'c1', name: 'Mac', cap: 2, settable: true, max: 8, waitedS: 42 }],
+    ['a model switch, which folds with the working', 'process', { kind: 'fallback', from: 'model-alpha', to: 'model-beta' }],
+  ])('the notice of %s: %s', (_why, role, notice) => {
     const message = {
       id: 'a0',
       role: 'assistant',
       content: 'Done.',
       contentType: 'text',
       contentSegments: [
-        { type: 'text', content: 'Done.', order: 1 },
-        { type: 'notification', order: 2, planBilled: { window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
-      ],
-      reasoningProcesses: {},
-      toolCallProcesses: {},
-    } as unknown as MessageRecord;
-    const projection = projectMessageContent(message);
-    const block = projection.blocks.find((b) => b.type === 'notification');
-    expect(projection.roles.get(block!.key)).toBe('retain');
-  });
-
-  it('keeps the mark of a turn that opened on another model\'s brief, which says what it was written from', () => {
-    const message = {
-      id: 'a0',
-      role: 'assistant',
-      content: 'Done.',
-      contentType: 'text',
-      contentSegments: [
-        { type: 'notification', order: 1, handoff: { from: 'deepseek-flash', to: 'claude-sonnet-5-5-code' }, detail: 'The brief.', detailKind: 'brief' },
+        { type: 'notification', order: 1, notice },
         { type: 'text', content: 'Done.', order: 2 },
       ],
       reasoningProcesses: {},
@@ -83,7 +71,7 @@ describe('what survives a collapsed turn', () => {
     } as unknown as MessageRecord;
     const projection = projectMessageContent(message);
     const block = projection.blocks.find((b) => b.type === 'notification');
-    expect(projection.roles.get(block!.key)).toBe('retain');
+    expect(projection.roles.get(block!.key)).toBe(role);
   });
 
   it.each(Object.keys(INLINE_ARTIFACT_MAP).filter((t) => !RETAINED.includes(t)))(

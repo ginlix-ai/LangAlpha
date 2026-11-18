@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
-from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, agents
+from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount, agents, default_clis
 from src.config.settings import get_claude_code_config
 from src.llms.claude_code import backend_available, rows_available
 from src.server.database.claude_code_hosted import (
@@ -229,19 +229,34 @@ def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
 
 def own_clis(computer: Mapping[str, Any]) -> int:
     """How many Claude Code CLIs the user's own ``computer`` runs at once:
-    the number they set for it (``CLIS_KEY``), else ``CLIS_DEFAULT``."""
+    the number they set for it (``CLIS_KEY``), else what its memory allows."""
+    chosen = chosen_clis(computer)
+    return automatic_clis(computer) if chosen is None else chosen
+
+
+def chosen_clis(computer: Mapping[str, Any]) -> int | None:
+    """The number of CLIs the owner set for ``computer``, None while it runs
+    what its memory allows."""
     clis = (computer.get("config") or {}).get(CLIS_KEY)
-    return clis if type(clis) is int and 1 <= clis <= CLIS_MAX else CLIS_DEFAULT
+    return clis if type(clis) is int and 1 <= clis <= CLIS_MAX else None
 
 
-async def computer_clis(computer_id: str) -> int:
+def automatic_clis(computer: Mapping[str, Any]) -> int:
+    """The CLIs ``computer`` runs while its owner sets none, by its memory."""
+    return default_clis(((computer.get("config") or {}).get("machine") or {}).get("memory_bytes"))
+
+
+async def computer_clis(computer_id: str) -> CliCount:
     """``cli_cap`` of the computer ``computer_id`` as it stands now, for a
     CLI starting there; one gone, or of a size not known, runs ``CLIS_DEFAULT``."""
     from src.server.database.computer import get_computer
+    from src.server.services.ssh_computers import is_own_computer
 
     computer = await get_computer(computer_id)
-    cap = cli_cap(computer) if computer is not None else None
-    return CLIS_DEFAULT if cap is None else cap
+    if computer is None:
+        return CliCount(CLIS_DEFAULT, False, None)
+    cap = cli_cap(computer)
+    return CliCount(CLIS_DEFAULT if cap is None else cap, is_own_computer(computer), computer.get("name") or None)
 
 
 def cli_cap_refusal(cap: int, *, alone: bool) -> str:

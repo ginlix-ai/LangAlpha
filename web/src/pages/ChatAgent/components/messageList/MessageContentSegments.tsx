@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, memo } from 'react';
-import { useTranslation } from 'react-i18next';
 import ActivityBlock from '../ActivityBlock';
 import type { ActivityItem } from './activityTypes';
 import { INLINE_ARTIFACT_MAP, openCardTarget } from '../charts/InlineArtifactCards';
@@ -25,11 +24,7 @@ import TextMessageContent from '../TextMessageContent';
 import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import InlineWidget from '../viewers/InlineWidget';
-import { NotificationDivider } from './NotificationDivider';
-import { NoticeLine } from '@/components/ui/error-banner';
-import { usePlanClock } from '@/hooks/useClaudeCodePlan';
-import type { PlanBilled } from '@/api/model';
-import { planBilledText } from '@/lib/claudeCodePlan';
+import { renderNotification } from './notices';
 import { normalizeSubagentText } from './normalizeSubagentText';
 import StructuredResultBlock from './StructuredResultBlock';
 import { parseStructuredResult } from '../../utils/structuredResult';
@@ -115,13 +110,6 @@ const HOLDS_FOR_PROSE = new Set<RenderBlock['type']>([
 ]);
 
 type RunKind = 'pill' | 'line' | 'subagent' | 'analyst';
-
-/** Under a reply whose last request was billed to usage credits, worded in
- *  the reader's zone. */
-function PlanBilledNotice({ billed }: { billed: PlanBilled }): React.ReactElement {
-  const { t } = useTranslation();
-  return <NoticeLine message={planBilledText(t, billed, usePlanClock())} className="py-1.5" />;
-}
 
 /** Whitespace between two blocks, such as the "\n\n" a model writes between
  *  two tool calls. It draws nothing, so it is treated as nothing: it neither
@@ -415,11 +403,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
         }
 
         if (block.type === 'notification') {
-          const notifSeg = (block as NotificationRenderBlock).segment;
-          if (notifSeg.planBilled) return <PlanBilledNotice key={block.key} billed={notifSeg.planBilled} />;
-          return (
-            <NotificationDivider key={block.key} content={notifSeg.content} fallback={notifSeg.fallback} handoff={notifSeg.handoff} detail={notifSeg.detail} detailKind={notifSeg.detailKind} />
-          );
+          return <React.Fragment key={block.key}>{renderNotification((block as NotificationRenderBlock).segment)}</React.Fragment>;
         }
 
         if (block.type === 'text') {

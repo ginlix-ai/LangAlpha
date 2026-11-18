@@ -106,6 +106,11 @@ class ClaudeCodeComputer(BaseModel):
     #: How many Claude Code CLIs it runs at once, turns' and subagents'
     #: together (``hosted.own_clis``).
     clis: int
+    #: What it runs while its owner sets no number: one per 2 GiB of its
+    #: memory (``hosted.automatic_clis``).
+    clis_automatic: int
+    #: Whether its owner set the number (``hosted.chosen_clis``).
+    clis_chosen: bool
 
 
 #: Why a cloud computer refuses a turn whatever its credential
@@ -240,8 +245,9 @@ class TokenBody(BaseModel):
 
 
 class ClisBody(BaseModel):
-    #: How many Claude Code CLIs the computer runs at once, 1 to ``clis_max``.
-    clis: StrictInt = Field(ge=1, le=CLIS_MAX)
+    #: How many Claude Code CLIs the computer runs at once, 1 to
+    #: ``clis_max``, or None for what its memory allows.
+    clis: StrictInt | None = Field(ge=1, le=CLIS_MAX)
 
 
 class CodeBody(BaseModel):

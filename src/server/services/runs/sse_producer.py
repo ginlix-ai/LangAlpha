@@ -31,6 +31,7 @@ from src.server.utils.content_normalizer import (
     is_thinking_status_signal,
 )
 from src.server.utils.pg_sanitize import finite_json_dumps
+from src.llms.claude_code import QUEUE_FIELDS, QUEUE_EVENT_TYPE, queue_record
 from src.server.contracts.status import classify_interrupts
 from src.server.database.provenance import MAIN_PROVENANCE_LANE
 from src.server.database.runs.lifecycle import ProducerRecord
@@ -63,6 +64,12 @@ from src.server.utils.error_sanitization import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Claude Code's own custom events, by the fields each passes on.
+_CLAUDE_CODE_EVENTS: dict[str, tuple[str, ...]] = {
+    "claude_code_plan": ("reason", "window", "until"),
+    QUEUE_EVENT_TYPE: QUEUE_FIELDS,
+}
 
 # Dedicated logger for SSE events (can be configured independently)
 sse_logger = logging.getLogger("sse_events")
@@ -157,6 +164,23 @@ def _fallback_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "props": props,
         "metadata": {"after_message_id": after} if after else {},
     }
+
+
+def kept_notice(event_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The ui record a notice frame names, as the producer keeps it for a
+    step that may never commit its own: a main-lane model fallback, or a
+    main-lane CLI wait long enough to note. Recovery reads a dead run's
+    notices back through it, in the order they streamed."""
+    if event_type == "model_fallback":
+        return fallback_from_frame(data)
+    if (
+        event_type == QUEUE_EVENT_TYPE
+        and data.get("agent") == "main"
+        and data.get("signal") == "admitted"
+        and data.get("wait_id")
+    ):
+        return queue_record(data)
+    return None
 
 
 def fallback_from_frame(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -258,9 +282,10 @@ class RunSSEProducer:
         # The main agent's provenance records as emitted, for the finalize to
         # write.
         self.provenance_events: List[Dict[str, Any]] = []
-        # The main agent's model_fallback ui records as emitted: a step that
-        # fails or is stopped after one never commits it.
-        self._model_fallbacks: List[Dict[str, Any]] = []
+        # The main lane's notice ui records as streamed (model fallbacks,
+        # Claude Code CLI waits), which a stopped or failed run's row keeps
+        # for those its last step never committed.
+        self._notices: List[Dict[str, Any]] = []
         # The last error frame the main agent's stream sent, for the finalize
         # of a failed run to keep.
         self._error_frame: Optional[Dict[str, Any]] = None
@@ -622,15 +647,24 @@ class RunSSEProducer:
                             yield self._build_sse_event("provenance", prov_data)
                             continue
 
-                        # A reply the Claude plan ran out during, billed to
-                        # usage credits: its notice, which replay shows from
-                        # the reply's stamp (``PLAN_NOTICE_KEY``).
-                        if event_type == "claude_code_plan":
-                            yield self._build_sse_event("claude_code_plan", {
+                        # Claude Code's own notices, passed on with the fields
+                        # each carries: a reply the Claude plan ran out during,
+                        # billed to usage credits (replay shows it from the
+                        # reply's stamp, ``PLAN_NOTICE_KEY``), and a turn's wait
+                        # for one of its computer's CLIs (replay shows it from
+                        # the turn's ``ui`` record, ``QUEUE_EVENT_TYPE``).
+                        if (passed := _CLAUDE_CODE_EVENTS.get(event_type)) is not None:
+                            if (
+                                event_type == QUEUE_EVENT_TYPE
+                                and event_data.get("signal") == "admitted"
+                                and not agent_from_stream
+                            ):
+                                self._notices.append(queue_record(event_data))
+                            yield self._build_sse_event(event_type, {
                                 "thread_id": self.thread_id,
                                 "agent": self._extract_agent_name(agent_from_stream, event_data)
                                 if agent_from_stream else "main",
-                                **{k: event_data[k] for k in ("reason", "window", "until") if k in event_data},
+                                **{k: event_data[k] for k in passed if k in event_data},
                             })
                             continue
 
@@ -655,7 +689,7 @@ class RunSSEProducer:
                         ):
                             if not agent_from_stream:
                                 kept = _fallback_record(event_data)
-                                self._model_fallbacks.append(kept)
+                                self._notices.append(kept)
                                 # Names the record, so recovery can keep a
                                 # notice whose step died with the worker.
                                 fallback_ref = {
@@ -1736,7 +1770,7 @@ class RunSSEProducer:
                 if isinstance(e, dict) and e.get("event") == "provenance"
             ],
             reasoning_ms=self._reasoning.as_facts(),
-            model_fallbacks=list(self._model_fallbacks),
+            model_fallbacks=list(self._notices),
             error_frame=self._error_frame,
         )
 

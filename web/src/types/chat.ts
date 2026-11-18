@@ -11,6 +11,7 @@ import type {
 } from './sse';
 import type { PageLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import type { PlanBilled } from '@/api/model';
+import type { CliWait } from '@/lib/claudeCodeQueue';
 import type { DispatchingAgent, ReportOutcome } from './api';
 import type { CommandFailureReason, CommandTool } from './commands';
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
@@ -120,22 +121,35 @@ export interface HandOffNotice {
 /** Which expander toggle label a notification's detail takes. */
 export type NotificationDetailKind = 'summary' | 'brief' | 'error';
 
+/**
+ * What a notification draws beyond a plain labelled divider, one kind each.
+ * `NOTICES` (`components/messageList/notices.tsx`) says how each kind is
+ * drawn and whether a folded turn keeps it.
+ */
+export type SegmentNotice =
+  /** A model switch, labelled when shown. */
+  | ({ kind: 'fallback' } & ModelFallbackNotice)
+  /** A hand-off to a model that keeps a session of its own, labelled when shown. */
+  | ({ kind: 'handoff' } & HandOffNotice)
+  /** A reply whose last request was billed to usage credits at a Claude
+   *  plan's limit: a quiet notice line under it, not a divider. */
+  | ({ kind: 'planBilled' } & PlanBilled)
+  /** A Claude Code turn that waited for one of its computer's CLIs: a notice
+   *  line where in the reply the wait happened. */
+  | ({ kind: 'cliWait' } & CliWait);
+
 export interface NotificationSegment {
   type: 'notification';
-  /** The label. A model switch has none: its label is written from
-   *  `fallback`, and a hand-off's from `handoff`. */
+  /** The label of a plain divider. A notice has none: its own is written
+   *  from it when shown. */
   content?: string;
-  fallback?: ModelFallbackNotice;
-  handoff?: HandOffNotice;
+  notice?: SegmentNotice;
   order: number;
   /** Optional longer text (e.g. the compaction summary) shown in an
    *  expandable panel beneath the notification label. */
   detail?: string;
   /** Picks the expander toggle label, 'summary' by default. */
   detailKind?: NotificationDetailKind;
-  /** A reply whose last request was billed to usage credits at a Claude
-   *  plan's limit: drawn as the quiet notice line under it, not a divider. */
-  planBilled?: PlanBilled;
 }
 
 export interface UserQuestionSegment {

@@ -20,6 +20,7 @@ import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/com
 import { usePublishFile } from '../../ChatAgent/components/chatView/usePublishFile';
 import { useComposerGiveBack } from '../../ChatAgent/components/chatView/useComposerGiveBack';
 import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
+import { CliQueueLine } from '../../ChatAgent/components/CliQueueNotice';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
 import { computerFolders } from '../../ChatAgent/utils/agentPaths';
@@ -417,7 +418,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     // interrupted / compaction status banners.
     pendingInterrupt,
     hasActiveSubagents,
-    workspaceStarting,
+    turnStatus: { workspaceStarting, cliQueue },
     isCompacting,
     setIsCompacting,
     compactionTokens,
@@ -854,6 +855,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           compaction. Mirrors the indicators ChatView shows above its input. */}
       {((hasActiveSubagents && !isLoading)
         || workspaceStarting
+        || cliQueue
         || isCompacting
         || threadModel.retired
         || threadModel.lapsed
@@ -878,6 +880,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
               <span>{t(workspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
             </div>
           )}
+          {cliQueue && <CliQueueLine wait={cliQueue} />}
           {isCompacting && (
             <div style={bannerStyle('transparent')}>
               <span aria-hidden="true" style={{ flexShrink: 0 }}>

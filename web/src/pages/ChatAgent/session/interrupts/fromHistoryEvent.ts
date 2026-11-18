@@ -24,6 +24,7 @@ import {
 } from './toolApprovalCard';
 import type { SSEEvent, PairState, HistoryInterruptInfo } from '../types';
 import type { HistoryRuntime } from '../runtime';
+import { eventOrder } from '../eventOrder';
 
 export interface HistoryInterruptContext {
   currentActivePairIndex: number | null;
@@ -131,7 +132,7 @@ export function projectHistoryInterrupt(
       // --- User question interrupt (history) ---
       const questionId = event.interrupt_id || `question-history-${Date.now()}`;
       const questionData = actionRequests[0];
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -166,7 +167,7 @@ export function projectHistoryInterrupt(
       // --- Create workspace interrupt (history) ---
       const proposalId = event.interrupt_id || `workspace-history-${Date.now()}`;
       const proposalData = actionRequests[0];
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -198,7 +199,7 @@ export function projectHistoryInterrupt(
       // --- Start question interrupt (history) ---
       const proposalId = event.interrupt_id || `question-start-history-${Date.now()}`;
       const proposalData = actionRequests[0];
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -230,7 +231,7 @@ export function projectHistoryInterrupt(
       // --- PTC agent interrupt (history) ---
       const proposalId = event.interrupt_id || `ptc-agent-history-${Date.now()}`;
       const proposalData = actionRequests[0];
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -267,7 +268,7 @@ export function projectHistoryInterrupt(
       // --- Secretary action interrupt (history) ---
       const proposalId = event.interrupt_id || `secretary-${actionType}-history-${Date.now()}`;
       const proposalData = actionRequests[0];
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -301,7 +302,7 @@ export function projectHistoryInterrupt(
       // --- Credit pause interrupt (history) ---
       const proposalId = event.interrupt_id!;
       const pauseState = buildCreditPauseState(actionRequests[0], event.interrupt_id!);
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {
@@ -328,7 +329,7 @@ export function projectHistoryInterrupt(
         event.interrupt_id,
         `tool-approval-history-${Date.now()}`,
       );
-      const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
+      const order = eventOrder(event, () => ++pairState.contentOrderCounter);
 
       rt.setMessages((prev) =>
         updateMessage(prev,interruptAssistantId, (m) => {

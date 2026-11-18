@@ -151,7 +151,7 @@ describe('ClaudeCodeSheet', () => {
     const select = within(row).getByLabelText('Claude Code agents at once') as HTMLSelectElement;
     expect(select.value).toBe('4');
     expect(Array.from(select.options, (o) => o.value)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
-    expect(select).toHaveAccessibleDescription(/Above 4, LangAlpha opens a second connection/);
+    expect(select).toHaveAccessibleDescription(/Each takes about 150 to 300 MB of its memory/);
     expect(screen.getByText('MacBook Pro', { selector: 'span' }).parentElement).not.toContainElement(select);
     fireEvent.change(select, { target: { value: '6' } });
     expect(h.setClis).toHaveBeenCalledWith('mac', 6);

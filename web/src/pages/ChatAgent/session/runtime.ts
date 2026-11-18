@@ -32,7 +32,7 @@ import type React from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import type {
   SetMessages, TokenUsage, PendingInterrupt, OffloadBatch, SSEEvent,
-  TaskRefs, HistoryInterruptInfo, FallbackSuggestion,
+  TaskRefs, HistoryInterruptInfo, FallbackSuggestion, TurnStatus,
 } from './types';
 import type { CardUpdater } from './streamRefs';
 import type { SubagentHistoryStore } from './subagents/historyStore';
@@ -156,8 +156,10 @@ export interface StreamRuntime {
   setCompactionTokens: (tokens: number | null) => void;
   setFallbackSuggestion: React.Dispatch<React.SetStateAction<FallbackSuggestion | null>>;
   setThreadId: React.Dispatch<React.SetStateAction<string>>;
-  setWorkspaceStarting: React.Dispatch<React.SetStateAction<false | 'starting' | 'archived'>>;
-  setTurnHeld: React.Dispatch<React.SetStateAction<string | null>>;
+  /** Sets the fields of the turn's status it names and keeps the rest. */
+  setTurnStatus: (patch: Partial<TurnStatus>) => void;
+  /** Clears the turn's status, every field at once. */
+  clearTurnStatus: () => void;
   // stable containers, ref-current reads — owned by this lane (per-turn cursors)
   contentOrderCounterRef: Ref<number>;
   currentReasoningIdRef: Ref<string | null>;
@@ -201,8 +203,10 @@ export interface RecoveryRuntime {
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setIsReconnecting: React.Dispatch<React.SetStateAction<boolean>>;
   setMessageError: React.Dispatch<React.SetStateAction<string | StructuredError | null>>;
-  setWorkspaceStarting: React.Dispatch<React.SetStateAction<false | 'starting' | 'archived'>>;
-  setTurnHeld: React.Dispatch<React.SetStateAction<string | null>>;
+  /** Sets the fields of the turn's status it names and keeps the rest. */
+  setTurnStatus: (patch: Partial<TurnStatus>) => void;
+  /** Clears the turn's status, every field at once. */
+  clearTurnStatus: () => void;
   setIsCompacting: (value: string | false) => void;
   setHasActiveSubagents: React.Dispatch<React.SetStateAction<boolean>>;
   setReloadTrigger: React.Dispatch<React.SetStateAction<number>>;

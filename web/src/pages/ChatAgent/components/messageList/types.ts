@@ -1,5 +1,4 @@
-import type { HandOffNotice, ModelFallbackNotice, NotificationDetailKind, TextChunkMark } from '@/types/chat';
-import type { PlanBilled } from '@/api/model';
+import type { NotificationSegment, TextChunkMark } from '@/types/chat';
 import type { ThreadFeedback } from '../../utils/api/feedback';
 
 // Stable empty object to avoid defeating React.memo with fresh `|| {}` fallbacks
@@ -16,8 +15,9 @@ export type FoldState = 'unfolded' | 'live' | 'collapsed' | 'process' | 'expande
 
 export type { ToolCallProcessRecord } from '../ToolCallDetailView';
 
-/** Content segment from message data */
-export interface ContentSegmentRecord {
+/** Content segment from message data. A notification's own fields
+ *  (`notice`, `detail`, …) are `NotificationSegment`'s. */
+export interface ContentSegmentRecord extends Partial<Omit<NotificationSegment, 'type' | 'order'>> {
   type: string;
   content?: string;
   order: number;
@@ -30,16 +30,6 @@ export interface ContentSegmentRecord {
   questionId?: string;
   proposalId?: string;
   widgetId?: string;
-  /** Notification-only: a model switch, labeled when shown. */
-  fallback?: ModelFallbackNotice;
-  /** Notification-only: a hand-off to Claude Code, labeled when shown. */
-  handoff?: HandOffNotice;
-  /** Notification-only: longer text (compaction summary, hand-off brief, fallback error) shown under toggle. */
-  detail?: string;
-  /** Notification-only: expander toggle label flavor. */
-  detailKind?: NotificationDetailKind;
-  /** Notification-only: a reply billed to usage credits, drawn as a notice line. */
-  planBilled?: PlanBilled;
 }
 
 /** Subagent info for opening subagent task tabs */

@@ -49,7 +49,6 @@ from claude_agent_sdk import (
     SystemMessage,
 )
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.config import get_stream_writer
 from langgraph.constants import TAG_NOSTREAM
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, compacts_at, is_haiku, launch, pointed, received, turn_failure
@@ -64,6 +63,7 @@ from ptc_agent.agent.claude_code.session import (
     SessionWrite,
     compacted,
 )
+from ptc_agent.agent.claude_code.signals import emit
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.compaction import brief
 from ptc_agent.agent.middleware.compaction.brief import HandOffBrief
@@ -622,10 +622,7 @@ def context_signal(action: str, signal: str, **fields: Any) -> None:
     API thread's. An ``error`` is the CLI's own text, which can quote a request."""
     if "error" in fields:
         fields["error"] = sanitize_error_text(str(fields["error"]))
-    try:
-        get_stream_writer()({"type": "context_window", "action": action, "signal": signal, **fields})
-    except Exception:  # noqa: BLE001 - a signal is never worth failing a step for
-        logger.debug("[ClaudeCode] %s %s signal not emitted", action, signal, exc_info=True)
+    emit({"type": "context_window", "action": action, "signal": signal, **fields})
 
 
 def report_usage(ai: AIMessage, threshold: int) -> None:

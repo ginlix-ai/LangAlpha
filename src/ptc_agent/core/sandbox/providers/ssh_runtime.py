@@ -701,7 +701,7 @@ class SSHRuntime(ExecSessionRuntime):
                     link, script, computer_dir=d, timeout=timeout, root=root
                 )
             except ScriptLost as e:
-                pool().evict(link)
+                pool().evict(e.link)
                 raise SandboxTransientError(
                     f"Lost the connection to {self._target.host} while a command "
                     "ran; it may still be running there."

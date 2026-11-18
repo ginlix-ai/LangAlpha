@@ -129,7 +129,7 @@ def _run_items(thread_id: str, run: SpanDelta, agent: str) -> list[dict[str, Any
     # earlier responses, where it fired.
     out = projector.context_signal_items(thread_id, run, agent=agent)
     out.extend(
-        projector.with_model_fallbacks(
+        projector.with_notices(
             thread_id,
             run,
             lambda messages: _namespace_items(

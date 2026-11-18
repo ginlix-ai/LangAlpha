@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
+from src.llms.claude_code import CliWait
 from src.server.services.runs.recovery import RecoveryScanner
 from src.server.services.runs.sse_producer import RunSSEProducer
 
@@ -346,7 +347,8 @@ class _Graph:
 
 
 async def _streamed_fallback():
-    """A producer that streamed one main-lane notice, and the stream it left."""
+    """A producer that streamed two main-lane notices, a model fallback and a
+    CLI wait long enough to note, and the stream it left."""
     handler = RunSSEProducer(thread_id=THREAD, run_id=RUN)
     notice = {
         "type": "ui",
@@ -362,10 +364,17 @@ async def _streamed_fallback():
         },
         "metadata": {"merge": False, "tags": ["t"], "after_message_id": "ai-2"},
     }
+    wait = CliWait(computer_id="c1", name="Mac", running=4, cap=4, settable=True, max=16, wait_id="w1")
     frames = [
         frame
         async for frame in handler.stream_workflow(
-            _Graph(((), "custom", notice)), input_state={}, config={}
+            _Graph(
+                ((), "custom", notice),
+                ((), "custom", wait.event("waiting")),
+                ((), "custom", wait.event("admitted", 12)),
+            ),
+            input_state={},
+            config={},
         )
     ]
     entries = [
@@ -395,6 +404,13 @@ async def test_a_stopped_or_failed_runs_notices_are_kept_as_its_finalize_keeps_t
             ),
         ),
         (b"201-0", _wire("model_fallback", {"agent": "main", "to_model": "b"})),
+        (
+            b"202-0",
+            _wire(
+                "claude_code_queue",
+                {"agent": "task:k7", "signal": "admitted", "wait_id": "w2", "waited_s": 9},
+            ),
+        ),
     ]
 
     record, _ = await _salvage(
@@ -402,7 +418,7 @@ async def test_a_stopped_or_failed_runs_notices_are_kept_as_its_finalize_keeps_t
     )
 
     finalized = handler.record().model_fallbacks
-    assert [r["id"] for r in finalized] == ["fb-main"]
+    assert [r["id"] for r in finalized] == ["fb-main", "cli-queue-w1"]
     assert "sekret" not in json.dumps(finalized)
     assert record.model_fallbacks == (finalized if kept else [])
 

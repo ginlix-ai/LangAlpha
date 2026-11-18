@@ -2723,6 +2723,15 @@
       "briefNoModel": "正在把上下文交接给新模型...",
       "other": "正在等待此对话上的当前操作完成..."
     },
+    "cliQueue": {
+      "waiting_other": "正在等待 {{name}} 上的 Claude Code：那里已有 {{count}} 个 Agent 在运行。",
+      "waitingHere_other": "正在等待你电脑上的 Claude Code：那里已有 {{count}} 个 Agent 在运行。",
+      "waitingAtMost_other": "正在等待 {{name}} 上的 Claude Code：那里已有 {{count}} 个 Agent 在运行，已达同时运行的上限。",
+      "waitingHereAtMost_other": "正在等待你电脑上的 Claude Code：那里已有 {{count}} 个 Agent 在运行，已达同时运行的上限。",
+      "runMore": "调高同时运行数",
+      "waited": "等待了 {{duration}} 才在 {{name}} 上启动 Claude Code。",
+      "waitedHere": "等待了 {{duration}} 才在你的电脑上启动 Claude Code。"
+    },
     "compactionStopped": "压缩已停止",
     "queuedSend": "消息已排队 — 压缩完成后将自动发送",
     "automationWaiting": "“{{name}}”已到运行时间，将在本轮结束后运行。",
@@ -7093,7 +7102,8 @@
         "addOwn": "为它添加 token",
         "checking": "正在向 Claude 确认它的 token 是否有效",
         "clis": "同时运行的 Claude Code Agent 数",
-        "clisHelp": "这台电脑同时运行的 Claude Code Agent 数量，包括子 Agent。超过 4 个时，LangAlpha 会为它再建立一条连接。"
+        "clisAutomatic": "自动（{{count}}）",
+        "clisHelp": "这台电脑同时运行的 Claude Code Agent 数量，包括子 Agent。每个约占用 150 到 300 MB 内存。选“自动”时，每 2 GB 内存运行一个。"
       },
       "optOut": {
         "saved": "Claude Code 已关闭，但你的 setup token 仍处于保存状态。",

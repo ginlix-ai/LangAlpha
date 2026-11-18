@@ -29,9 +29,10 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from functools import partial
 from itertools import pairwise
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -55,6 +56,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
+from ptc_agent.agent.claude_code.cli_waits import CliWaits
 from ptc_agent.agent.claude_code.compaction import (
     NO_RULES,
     CompactionRules,
@@ -68,7 +70,7 @@ from ptc_agent.agent.claude_code.compaction import (
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
 from ptc_agent.agent.claude_code.plan import PlanWatch
-from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
+from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, DeltaJoin, anthropic_content
 from ptc_agent.agent.claude_code.session import (
     ENDED,
     RULES_KEY,
@@ -199,7 +201,12 @@ class ClaudeCodeState(StandingApprovalState, MainAgentState):
     _claude_code_rules: NotRequired[dict[str, Any]]
 
 
-_END = object()
+class _End(Enum):
+    END = auto()
+
+
+#: The run's end, after its last event.
+_END = _End.END
 
 
 @dataclass(frozen=True)
@@ -209,6 +216,11 @@ class _Compacting:
 
     boundary: str | None = None
     error: str | None = None
+
+
+#: What the run's queue carries: the CLI's raw stream events, a compaction
+#: it makes, and the run's end.
+_Event = dict[str, Any] | _Compacting | Literal[_End.END]
 
 
 class _Message:
@@ -222,10 +234,12 @@ class _Message:
         self.restarted = False
         self._first = first
         self._run = run
+        self._join = DeltaJoin(run)
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         item = self._first
         while True:
+            item = await self._join.grow(item)
             yield item
             if item.get("type") == "message_stop":
                 self.stopped = True
@@ -278,8 +292,8 @@ class _Run:
         #: seconds to a minute of prompt processing that a stamp taken at the
         #: response's start would err by.
         self.last_request_at: float | None = None
-        self._events: asyncio.Queue[Any] = asyncio.Queue()
-        self._held: dict[str, Any] | None = None
+        self._events: asyncio.Queue[_Event] = asyncio.Queue()
+        self._held: _Event | None = None
         self._streamed: set[str] = set()
         self._assistant: dict[str, list[str]] = {}
         self._closing: asyncio.Future[None] | None = None
@@ -433,14 +447,27 @@ class _Run:
         finally:
             task.cancel()
 
-    async def next_event(self) -> Any:
+    async def next_event(self, *, within: float | None = None) -> _Event | None:
+        """The next event, waiting for it at most ``within`` seconds where
+        given, None where none came by then."""
         if self._held is not None:
             item, self._held = self._held, None
             return item
-        return await self._events.get()
+        if within is None:
+            return await self._events.get()
+        try:
+            return self._events.get_nowait()
+        except asyncio.QueueEmpty:
+            if within <= 0:
+                return None
+        try:
+            async with asyncio.timeout(within):
+                return await self._events.get()
+        except TimeoutError:
+            return None
 
-    def hold(self, item: dict[str, Any]) -> None:
-        """Keep an event read past the end of one message for the next."""
+    def hold(self, item: _Event) -> None:
+        """Keep an event read past the end of what it was read for, for the next read."""
         self._held = item
 
     async def next_message(self, compacting: Callable[[_Compacting], Awaitable[None]]) -> _Message | _Compacting | None:
@@ -599,13 +626,16 @@ class ClaudeTurn:
     when the session compacts and moves to this build's prompt and tools.
     ``steering`` takes in what is sent into the thread while the turn runs
     (``TurnSteering``), or into the task for a subagent's run (``TaskSteering``).
+    ``waits`` keeps the marks of its waits for one of its computer's CLIs,
+    which each step commits.
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
                  checkpoint_ns: str = "", baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
                  steering: SteeringMiddleware | TaskSteering | None = None,
-                 alert_senders: frozenset[str] = frozenset()) -> None:
+                 alert_senders: frozenset[str] = frozenset(), waits: CliWaits | None = None) -> None:
         self.spec = spec
+        self.waits = waits if waits is not None else CliWaits()
         self.launcher = launcher
         self.identity = identity
         self.thread_key = thread_key
@@ -974,7 +1004,8 @@ class ClaudeTurn:
 
     def commit(self, session: list[SessionWrite]) -> dict[str, Any]:
         """A step's session records, the first of its own carrying what the
-        session holds from then on that it did not before."""
+        session holds from then on that it did not before, and the marks of
+        the waits for a CLI ahead of it."""
         for write in session:
             if write["session_id"] != self._session:
                 self._session, self._owed = write["session_id"], self._fresh
@@ -982,7 +1013,9 @@ class ClaudeTurn:
                 write.update(self._owed)
                 self._owed = {}
         pin = self._fresh.get("pinned")
-        return {"claude_session": _pinned_after(session, pin, due=bool(pin) and not same_pin(pin, self.current_pin()))}
+        waited = self.waits.drain()
+        return {"claude_session": _pinned_after(session, pin, due=bool(pin) and not same_pin(pin, self.current_pin())),
+                **({"ui": waited} if waited else {})}
 
     def _baseline_due(self, state: ClaudeCodeState) -> tuple[str, str | None]:
         """The thread's baseline, unless Claude's session already holds its epoch."""
@@ -1149,13 +1182,16 @@ def build_claude_code_graph(
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
+        turn.waits.after = state["messages"][-1].id if state["messages"] else None
         opening = not turn.started
         if opening and (handed := await turn.hand_off(state, config)):
             return Command(update=handed, goto="model")
         if opening and (compacted := await turn._repin(state)):
             asked = state["messages"][-1].model_copy()
             turn.stamp(asked)
-            return Command(update={"claude_session": compacted, "messages": [asked]}, goto="model")
+            waited = turn.waits.drain()
+            return Command(update={"claude_session": compacted, "messages": [asked], **({"ui": waited} if waited else {})},
+                           goto="model")
         run = await turn.run(state)
         if opening:
             turn.steering.opened(state, config)

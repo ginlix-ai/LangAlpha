@@ -34,7 +34,7 @@ from ptc_agent.agent.middleware.compaction.usage_event import token_usage_fields
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.tools.computer_reach import ran_elsewhere
 from ptc_agent.agent.transcript.classify import STEERING_MARKERS, human_kind
-from src.llms.claude_code import PLAN_NOTICE_KEY
+from src.llms.claude_code import PLAN_NOTICE_KEY, QUEUE_EVENT_TYPE
 from src.llms.content_utils import extract_content_with_type
 from src.server.utils.content_normalizer import normalize_text_content
 from src.server.utils.error_sanitization import (
@@ -898,26 +898,27 @@ def model_fallback_items(
     thread_id: str, turn: SpanDelta, *, agent: str = MAIN_AGENT
 ) -> list[dict[str, Any]]:
     """Project a turn's model_fallback notices from its new ``ui`` records.
-
-    The whitelist is every prop ``_emit_fallback`` pushes — narrower than the
-    live handler's list, which also serves transient ``model_retry`` fields
-    that never reach the checkpointed ``ui`` channel. ``agent`` identifies the
-    namespace being projected (main or ``task:{id}``).
+    ``agent`` identifies the namespace being projected (main or ``task:{id}``).
     """
-    return [item for _, item in _model_fallbacks(thread_id, turn, agent)]
+    return [
+        item
+        for _, item in _placed_notices(thread_id, turn, agent)
+        if item["event"] == "model_fallback"
+    ]
 
 
-def with_model_fallbacks(
+def with_notices(
     thread_id: str,
     turn: SpanDelta,
     project: Callable[[list[AnyMessage]], list[dict[str, Any]]],
     *,
     agent: str = MAIN_AGENT,
 ) -> list[dict[str, Any]]:
-    """``project(turn.messages)`` with the turn's model_fallback notices where
-    they fired live: after the items of the message the falling-back call
-    followed, which is as many items as projecting the messages up to it
-    gives. A record that names no message of the span opens the turn."""
+    """``project(turn.messages)`` with the notices the turn's ``ui`` records
+    keep (``_NOTICES``) where they fired live: after the items of the
+    message they followed, which is as many items as projecting the
+    messages up to it gives. A record that names no message of the span
+    opens the turn."""
     ids = [message.id for message in turn.messages]
 
     def position(after: str | None) -> int:
@@ -928,7 +929,7 @@ def with_model_fallbacks(
     placed = sorted(
         (
             (position(after), item)
-            for after, item in _model_fallbacks(thread_id, turn, agent)
+            for after, item in _placed_notices(thread_id, turn, agent)
         ),
         key=lambda p: p[0],
     )
@@ -943,22 +944,41 @@ def with_model_fallbacks(
     return out
 
 
-def _model_fallbacks(
+def _placed_notices(
     thread_id: str, turn: SpanDelta, agent: str
 ) -> list[tuple[str | None, dict[str, Any]]]:
-    """Each fallback notice, with the id of the message its call followed."""
+    """Each notice the turn's ``ui`` records keep, in their order, with the id
+    of the message it followed."""
     out: list[tuple[str | None, dict[str, Any]]] = []
     for record in turn.new_ui_records:
-        if record.get("name") != MODEL_FALLBACK_UI_NAME:
+        notice = _NOTICES.get(record.get("name"))
+        if notice is None:
             continue
-        props = record.get("props") or {}
-        data: dict[str, Any] = {"thread_id": thread_id, "agent": agent}
-        for key in MODEL_FALLBACK_FIELDS:
-            if key in props:
-                data[key] = props[key]
-        error_text = props.get("error")
-        if isinstance(error_text, str):
-            data["error"] = _sanitize_error_text(error_text)
+        props = record.get("props")
+        event, data = notice(props if isinstance(props, dict) else {})
         after = (record.get("metadata") or {}).get("after_message_id")
-        out.append((after, {"event": "model_fallback", "data": data}))
+        out.append((after, {"event": event, "data": {"thread_id": thread_id, "agent": agent, **data}}))
     return out
+
+
+def _model_fallback(props: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The whitelist is every prop ``_emit_fallback`` pushes, narrower than the
+    live handler's list, which also serves transient ``model_retry`` fields
+    that never reach the checkpointed ``ui`` channel."""
+    data = {key: props[key] for key in MODEL_FALLBACK_FIELDS if key in props}
+    if isinstance(error_text := props.get("error"), str):
+        data["error"] = _sanitize_error_text(error_text)
+    return "model_fallback", data
+
+
+def _cli_wait(props: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """A Claude Code turn's wait for a CLI, as the ``admitted`` event that
+    ended it live, which its record keeps whole (``CliWait.mark``)."""
+    return QUEUE_EVENT_TYPE, props
+
+
+#: The ``ui`` records replay shows as notices where they fired.
+_NOTICES: dict[str, Callable[[dict[str, Any]], tuple[str, dict[str, Any]]]] = {
+    MODEL_FALLBACK_UI_NAME: _model_fallback,
+    QUEUE_EVENT_TYPE: _cli_wait,
+}

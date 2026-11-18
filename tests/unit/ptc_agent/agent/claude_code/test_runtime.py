@@ -22,6 +22,7 @@ from ptc_agent.agent.claude_code.cli import (
     turn_failure,
 )
 from ptc_agent.agent.claude_code import compaction as compaction_module
+from ptc_agent.agent.claude_code import signals
 from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.transcript import pointer
 from ptc_agent.agent.transcript.pointer import transcript_note
@@ -511,10 +512,17 @@ async def test_a_cli_that_exits_before_its_init_never_started_and_after_it_fails
 
 
 class _Events:
-    def __init__(self, items):
-        self.items, self.held = list(items), None
+    """A run whose CLI sent ``items`` already, where ``sent`` says so, else sends each as it is read."""
 
-    async def next_event(self):
+    def __init__(self, items, *, sent=False):
+        self.items, self.held, self.sent = list(items), None, sent
+
+    async def next_event(self, *, within=None):
+        if self.held is not None:
+            item, self.held = self.held, None
+            return item
+        if within is not None and not self.sent:
+            return None
         return self.items.pop(0)
 
     def hold(self, item):
@@ -532,6 +540,73 @@ async def test_a_message_is_whole_only_when_its_stream_reaches_message_stop(tail
     assert [e["type"] async for e in message.events()][0] == "message_start"
     assert (message.stopped, message.restarted) == (stopped, restarted)
     assert (run.held is not None) is restarted
+
+
+def _delta(index, kind, piece):
+    field = {"text_delta": "text", "thinking_delta": "thinking", "input_json_delta": "partial_json"}[kind]
+    return {"type": "content_block_delta", "index": index, "delta": {"type": kind, field: piece}}
+
+
+_REPLY = [
+    {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+    *[_delta(0, "text_delta", w) for w in ("The ", "margin ", "held ", "up.")],
+    {"type": "content_block_stop", "index": 0},
+    {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}},
+    *[_delta(1, "input_json_delta", p) for p in ('{"comm', 'and": "l', 's"}')],
+    {"type": "content_block_stop", "index": 1},
+    {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 9}},
+    {"type": "message_stop"},
+]
+_START = {"type": "message_start", "message": {"id": "m1", "type": "message", "role": "assistant", "model": "m", "content": [],
+                                              "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 3, "output_tokens": 0}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sent", [False, True])
+async def test_deltas_the_cli_already_sent_reach_the_turn_joined_into_the_same_message(sent):
+    """A block's first delta goes on alone, and those the CLI sends within the
+    window after it join; deltas the window passes on go on alone. The
+    message is the same either way."""
+    from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay
+
+    message = _Message(_START, _Events(_REPLY, sent=sent))
+    events = [e async for e in message.events()]
+    deltas = [e["delta"] for e in events if e["type"] == "content_block_delta"]
+    assert deltas == (
+        [{"type": "text_delta", "text": "The "}, {"type": "text_delta", "text": "margin held up."},
+         {"type": "input_json_delta", "partial_json": '{"comm'}, {"type": "input_json_delta", "partial_json": 'and": "ls"}'}]
+        if sent else [e["delta"] for e in _REPLY if e["type"] == "content_block_delta"]
+    )
+    assert message.stopped
+
+    async def replay():
+        for e in events:
+            yield e
+
+    reply = await ClaudeStreamRelay(model_name="m").feed(replay()).ainvoke([])
+    assert reply.content[0]["text"] == "The margin held up."
+    assert reply.tool_calls == [{"name": "Bash", "args": {"command": "ls"}, "id": "t1", "type": "tool_call"}]
+
+
+@pytest.mark.asyncio
+async def test_joined_deltas_stay_under_the_size_the_client_types_out():
+    from src.utils.stream_coalescing import COALESCE_MAX_CHARS
+
+    piece = "x" * 100
+    message = _Message(_START, _Events([_delta(0, "text_delta", piece)] * 12 + [{"type": "message_stop"}], sent=True))
+    texts = [e["delta"]["text"] async for e in message.events() if e["type"] == "content_block_delta"]
+    assert "".join(texts) == piece * 12
+    assert max(map(len, texts)) <= COALESCE_MAX_CHARS
+    assert list(map(len, texts)) == [100, 500, 500, 100]
+
+
+@pytest.mark.asyncio
+async def test_only_deltas_of_one_block_and_kind_join():
+    tail = [_delta(0, "thinking_delta", "a"), _delta(0, "text_delta", "b"), _delta(1, "text_delta", "c"),
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "s"}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "t"}}, _END]
+    message = _Message(_START, _Events(tail, sent=True))
+    assert [e for e in [e async for e in message.events()] if e["type"] != "message_start"] == tail[:-1]
 
 
 @pytest.mark.asyncio
@@ -1089,7 +1164,7 @@ async def test_a_compaction_failure_is_signalled_without_the_credentials_its_tex
     from ptc_agent.agent.claude_code.runtime import _Compacting
 
     emitted = []
-    monkeypatch.setattr(compaction_module, "get_stream_writer", lambda: emitted.append)
+    monkeypatch.setattr(signals, "get_stream_writer", lambda: emitted.append)
 
     async def compact(records):
         raise ClaudeTurnFailed("api_error", "Authorization: Bearer abcdefgh12345")
@@ -1215,6 +1290,38 @@ async def test_a_batch_past_the_credit_boundary_stops_the_cli_in_a_subagents_run
     finally:
         current_credit_gate.reset(token)
     assert out["continue"] is False
+
+
+def test_a_turns_wait_for_a_cli_streams_as_it_starts_and_ends_and_the_next_step_keeps_it(monkeypatch):
+    """A wait long enough to note is kept for replay, placed after the message
+    its CLI went on from; a short one, or one that got no slot, only clears
+    the line."""
+    from ptc_agent.agent.claude_code.cli_waits import CliWaits
+    from src.llms.claude_code import NOTED_WAIT_S, QUEUE_EVENT_TYPE, CliWait
+
+    events = []
+    monkeypatch.setattr(signals, "get_stream_writer", lambda: events.append)
+    waits = CliWaits()
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="opus-code", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t", waits=waits)
+    fields = {"computer_id": "c", "name": "Mac", "running": 4, "cap": 4, "settable": True, "max": 8}
+    waits.after = "m-1"
+    waits.waiting(long := CliWait(**fields))
+    waits.admitted(329.4)
+    waits.waiting(short := CliWait(**fields))
+    waits.admitted(NOTED_WAIT_S - 0.4)
+    waits.waiting(lost := CliWait(**fields))
+    waits.gave_up(600)
+    assert [(e["signal"], e["wait_id"], e.get("waited_s")) for e in events] == [
+        ("waiting", long.wait_id, None), ("admitted", long.wait_id, 329),
+        ("waiting", short.wait_id, None), ("cleared", short.wait_id, NOTED_WAIT_S),
+        ("waiting", lost.wait_id, None), ("cleared", lost.wait_id, 600),
+    ]
+    assert all(e["type"] == QUEUE_EVENT_TYPE and e["name"] == "Mac" for e in events)
+    [mark] = turn.commit([])["ui"]
+    assert mark["props"] == {**{k: v for k, v in events[1].items() if k != "type"}}
+    assert mark["metadata"] == {"after_message_id": "m-1"}
+    assert "ui" not in turn.commit([])
 
 
 @pytest.mark.asyncio

@@ -342,14 +342,15 @@ async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signall
     second = local_link(HOME=str(tmp_path))
     dials = []
 
-    async def spill():
-        dials.append(1)
+    async def spill(want):
+        dials.append(want)
         return second
 
     link.spill = spill
+    link.peers = lambda: [second] if dials else []
     running = [await _started(launcher(slot_wait_s=5)) for _ in range(2 * CLI_SLOTS)]
     assert (link.cli_slots._value, second.cli_slots._value) == (0, 0)
-    assert len(dials) == CLI_SLOTS and link.slots._value == 2
+    assert dials == ["cli"] and link.slots._value == 2
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(2 * CLI_SLOTS))}$"):
         await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)
@@ -377,9 +378,11 @@ async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signall
 
 
 @pytest.mark.asyncio
-async def test_a_cli_holds_one_of_the_computers_clis_from_start_to_close_within_its_one_wait(tmp_path, monkeypatch):
-    """Taken before the link's slot, and given the whole wait, the link the
-    rest; one none frees in time refuses the CLI naming the computer's count."""
+async def test_a_run_holds_one_of_the_computers_clis_from_its_layout_to_its_release(tmp_path, monkeypatch):
+    """Taken before anything runs on the machine, with the whole wait, so a
+    turn on a full computer waits where its queue is told, not behind the
+    running turns' commands; one none frees in time refuses the run naming
+    the computer's count, and a layout that fails gives it back."""
     cli = tmp_path / "claude"
     cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
     cli.chmod(0o755)
@@ -396,12 +399,31 @@ async def test_a_cli_holds_one_of_the_computers_clis_from_start_to_close_within_
         finally:
             held.clear()
 
-    transport = await _started(launcher(cli_slot=slot, slot_wait_s=7))
-    assert held == [7] and link.cli_slots._value == CLI_SLOTS - 1
+    async def written(self, link, prepared, files):
+        pass
+
+    # The stand-in connection has no SFTP; the layout's files are not what this is about.
+    monkeypatch.setattr(SSHLauncher, "_write", written)
+    one = launcher(cli_slot=slot, slot_wait_s=7)
+    prepared = await one.scratch()
+    assert held == [7] and link.cli_slots._value == CLI_SLOTS
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    await transport.connect()
+    assert link.cli_slots._value == CLI_SLOTS - 1
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(3))}$"):
-        await _started(launcher(cli_slot=slot))
+        await launcher(cli_slot=slot).scratch()
     await transport.close()
-    assert held == [] and link.cli_slots._value == CLI_SLOTS
+    assert held == [7] and link.cli_slots._value == CLI_SLOTS
+    await one.release(prepared)
+    assert held == []
+
+    async def unreachable(conn, at, *, install):
+        raise RuntimeError("no CLI")
+
+    monkeypatch.setattr(ssh_launcher.cli_install, "ensure_cli", unreachable)
+    with pytest.raises(RuntimeError, match="no CLI"):
+        await launcher(cli_slot=slot).scratch()
+    assert held == []
 
 
 @pytest.mark.parametrize(("n", "said"), [(1, "1 agent on this computer. Try again when it finishes."),

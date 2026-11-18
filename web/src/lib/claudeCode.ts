@@ -7,7 +7,7 @@ import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { RESIZE_PARAM } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import type { ResourceTier } from '@/types/api';
-import type { PageLinkSpec } from '@/utils/rateLimitError';
+import type { ErrorLinkSpec, PageLinkSpec } from '@/utils/rateLimitError';
 
 /** The provider and sdk of the models a turn runs on Claude Code. */
 export const CLAUDE_CODE = 'claude-code';
@@ -178,6 +178,18 @@ export const CLAUDE_CODE_MODE_LABELS: Readonly<Record<ClaudeCodeCustodyMode, str
  *  chooses how it runs on cloud computers, by the same query. */
 export const CLAUDE_CODE_CHOICE = 'claude-code-cloud';
 export const CLAUDE_CODE_CHOICE_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE_CHOICE}`;
+
+/** With this too, Claude Code's sheet opens at that computer's row and
+ *  puts the reader on how many agents it runs at once. */
+export const CLAUDE_CODE_COMPUTER_PARAM = 'computer';
+
+/** To Claude Code's sheet at the computer a turn waited for a CLI on, where
+ *  the user sets how many agents it runs at once. */
+export const claudeCodeClisLink = (computerId: string): ErrorLinkSpec => ({
+  url: `${CLAUDE_CODE_CHOICE_URL}&${CLAUDE_CODE_COMPUTER_PARAM}=${encodeURIComponent(computerId)}`,
+  label: 'Run more at once',
+  labelKey: 'chat.cliQueue.runMore',
+});
 
 /** With this too, Settings opens the sheet for the token that workspace's
  *  turns run on, which it resolves when it opens: a link made before the

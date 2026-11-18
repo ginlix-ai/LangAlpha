@@ -177,7 +177,8 @@ class ProducerRecord:
     saved. ``reasoning_ms`` is None when nothing could time the main agent's
     thinking (a recovered run whose stream or checkpoint could not be read),
     so the row's facts stay unset. ``model_fallbacks`` are the main lane's
-    fallback ui records as streamed, kept only for a stopped or failed run,
+    notice ui records as streamed (model fallbacks, and Claude Code CLI
+    waits), kept only for a stopped or failed run,
     whose last step may never have committed its own. ``error_frame`` is the
     main lane's last error frame as streamed, kept only for a failed run.
     """

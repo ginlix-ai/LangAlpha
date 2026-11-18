@@ -16,14 +16,14 @@ describe('buildModelFallbackSegment', () => {
     );
     expect(segment).toEqual({
       type: 'notification',
-      fallback: { from: 'alpha-oauth', to: 'beta', paidBy: 'platform' },
+      notice: { kind: 'fallback', from: 'alpha-oauth', to: 'beta', paidBy: 'platform' },
       order: 3,
     });
   });
 
   it('leaves the payer out when the server did not say', () => {
     const segment = buildModelFallbackSegment({ from_model: 'alpha', to_model: 'beta' }, t, 3);
-    expect(segment.fallback).toEqual({ from: 'alpha', to: 'beta' });
+    expect(segment.notice).toEqual({ kind: 'fallback', from: 'alpha', to: 'beta' });
   });
 
   it('carries the failure as the error detail', () => {

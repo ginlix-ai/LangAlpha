@@ -294,7 +294,7 @@ async def test_the_billed_notice_goes_out_once_the_reports_before_it_are_kept(mo
     watch = PlanWatch(_source(log), HAIKU, stop_at_limit=True)
     for raw in (BILLED, REJECTED):
         watch.seen(_event(**raw))
-    monkeypatch.setattr("ptc_agent.agent.claude_code.plan.get_stream_writer", lambda: lambda event: log.order.append(event["type"]))
+    monkeypatch.setattr("ptc_agent.agent.claude_code.signals.get_stream_writer", lambda: lambda event: log.order.append(event["type"]))
     assert await watch.stamp(AIMessage("x")) is not None
     assert log.order == ["written", "claude_code_plan"], "a client reading the plan on the notice reads the limit"
 

@@ -2691,6 +2691,19 @@
       "briefNoModel": "Handing off context to the new model...",
       "other": "Waiting for the current operation on this conversation to finish..."
     },
+    "cliQueue": {
+      "waiting_one": "Waiting for Claude Code on {{name}}: {{count}} agent already running there.",
+      "waiting_other": "Waiting for Claude Code on {{name}}: {{count}} agents already running there.",
+      "waitingHere_one": "Waiting for Claude Code on your computer: {{count}} agent already running there.",
+      "waitingHere_other": "Waiting for Claude Code on your computer: {{count}} agents already running there.",
+      "waitingAtMost_one": "Waiting for Claude Code on {{name}}: {{count}} agent already running there. That's the most it runs at once.",
+      "waitingAtMost_other": "Waiting for Claude Code on {{name}}: {{count}} agents already running there. That's the most it runs at once.",
+      "waitingHereAtMost_one": "Waiting for Claude Code on your computer: {{count}} agent already running there. That's the most it runs at once.",
+      "waitingHereAtMost_other": "Waiting for Claude Code on your computer: {{count}} agents already running there. That's the most it runs at once.",
+      "runMore": "Run more at once",
+      "waited": "Waited {{duration}} for Claude Code on {{name}}.",
+      "waitedHere": "Waited {{duration}} for Claude Code on your computer."
+    },
     "compactionStopped": "Compaction stopped",
     "queuedSend": "Message queued — sends when compaction finishes",
     "automationWaiting": "{{name}} is due. It runs when this turn ends.",
@@ -7177,7 +7190,8 @@
         "addOwn": "Add its own token",
         "checking": "Asking Claude whether its token works",
         "clis": "Claude Code agents at once",
-        "clisHelp": "How many Claude Code agents this computer runs at the same time, subagents included. Above 4, LangAlpha opens a second connection to it."
+        "clisAutomatic": "Automatic ({{count}})",
+        "clisHelp": "How many Claude Code agents this computer runs at the same time, subagents included. Each takes about 150 to 300 MB of its memory. Automatic runs one for every 2 GB of its memory."
       },
       "optOut": {
         "saved": "Claude Code is off, but your setup token is still saved.",

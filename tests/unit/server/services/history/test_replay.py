@@ -1689,6 +1689,32 @@ async def test_a_turn_that_opened_on_a_brief_replays_its_mark_ahead_of_the_reply
     assert data["summary_text"] == "BRIEF BODY" and data["turn_index"] == 0
 
 
+async def test_a_turn_that_waited_for_a_claude_code_cli_replays_each_wait_where_it_happened(monkeypatch):
+    """One at the turn's start follows its hand-off, which came first; one a
+    CLI started mid-turn sits after the message that CLI went on from, as
+    each showed live."""
+    from ptc_agent.agent.middleware.compaction.brief import handoff_mark
+    from src.llms.claude_code import CliWait
+
+    fields = {"computer_id": "c", "name": "Mac", "running": 4, "cap": 4, "settable": True, "max": 8}
+    opening, later = CliWait(**fields, wait_id="w1"), CliWait(**fields, wait_id="w2")
+    brief = {"text": "B", "through": "other-1", "source": "model", "from_model": "deepseek-flash"}
+    turn = _turn(
+        0,
+        [AIMessage(content="first", id="ai-1"), AIMessage(content="done", id="ai-2")],
+        new_ui_records=[handoff_mark(brief, to="claude-opus-5-5-code"), opening.mark(329, "human-0"),
+                        later.mark(12, "ai-1")],
+    )
+    _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=[turn]))
+    items = await build_checkpoint_replay_items(thread_rows([_query(0)], {0: _response(0)}))
+    assert [(i["event"], i["data"].get("wait_id")) for i in items] == [
+        ("user_message", None), ("context_window", None), ("claude_code_queue", "w1"),
+        ("message_chunk", None), ("claude_code_queue", "w2"), ("message_chunk", None),
+    ]
+    assert items[2]["data"] == {"thread_id": THREAD, "agent": "main", "signal": "admitted", **fields, "wait_id": "w1",
+                                "waited_s": 329, "turn_index": 0, "response_id": "resp-0"}
+
+
 def _fallback_record(record_id, after=None):
     return {
         "type": "ui",
@@ -1727,6 +1753,21 @@ async def test_model_fallback_a_failed_step_never_saved_replays_from_its_row(
         "error",
     ]
     assert items[2]["data"]["to_model"] == "f"
+
+
+async def test_a_cli_wait_a_failed_step_never_saved_replays_from_its_row_and_a_saved_one_once(monkeypatch):
+    from src.llms.claude_code import CliWait, queue_record
+
+    fields = {"computer_id": "c", "name": "Mac", "running": 4, "cap": 4, "settable": True, "max": 8}
+    unsaved, saved = CliWait(**fields, wait_id="w1"), CliWait(**fields, wait_id="w2")
+    turn = _turn(0, [AIMessage(content="ok", id="ai-1")], new_ui_records=[saved.mark(30, None)])
+    _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=[turn]))
+    rows = [queue_record(w.event("admitted", 30)) for w in (unsaved, saved)]
+    items = await build_checkpoint_replay_items(thread_rows([_query(0)], {0: _failed_response(*rows)}))
+    assert [(i["event"], i["data"].get("wait_id")) for i in items] == [
+        ("user_message", None), ("claude_code_queue", "w2"), ("message_chunk", None),
+        ("claude_code_queue", "w1"), ("error", None),
+    ]
 
 
 async def test_model_fallback_saved_and_on_the_row_replays_once(monkeypatch):

@@ -87,7 +87,7 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     handleResumeCreditPause: h.handleResumeCreditPause,
     pendingInterrupt: h.pendingInterrupt,
     hasActiveSubagents: false,
-    workspaceStarting: false,
+    turnStatus: { workspaceStarting: false, turnHeld: null, cliQueue: null },
     isCompacting: false,
     setIsCompacting: h.setIsCompacting,
     tokenUsage: null,

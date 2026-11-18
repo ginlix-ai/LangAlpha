@@ -12,6 +12,7 @@ import { buildCreditPauseState } from './creditPauseCard';
 import { isToolApprovalInterrupt, toolApprovalCards } from './toolApprovalCard';
 import type { SSEEvent, StreamProcessorRefs } from '../types';
 import type { StreamRuntime } from '../runtime';
+import { eventOrder } from '../eventOrder';
 
 export function projectLiveInterrupt(
   rt: StreamRuntime,
@@ -43,7 +44,7 @@ export function projectLiveInterrupt(
     // --- User question interrupt ---
     const questionId = event.interrupt_id || `question-${Date.now()}`;
     const questionData = actionRequests[0];
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     rt.setMessages((prev) =>
       updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
@@ -75,7 +76,7 @@ export function projectLiveInterrupt(
     // --- Create workspace interrupt ---
     const proposalId = event.interrupt_id || `workspace-${Date.now()}`;
     const proposalData = actionRequests[0];
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     rt.setMessages((prev) =>
       updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
@@ -105,7 +106,7 @@ export function projectLiveInterrupt(
     // --- Start question interrupt ---
     const proposalId = event.interrupt_id || `question-start-${Date.now()}`;
     const proposalData = actionRequests[0];
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     rt.setMessages((prev) =>
       updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
@@ -135,7 +136,7 @@ export function projectLiveInterrupt(
     // --- PTC agent interrupt ---
     const proposalId = event.interrupt_id || `ptc-agent-${Date.now()}`;
     const proposalData = actionRequests[0];
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     rt.setMessages((prev) =>
       updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
@@ -173,7 +174,7 @@ export function projectLiveInterrupt(
     // --- Secretary action interrupt ---
     const proposalId = event.interrupt_id || `secretary-${actionType}-${Date.now()}`;
     const proposalData = actionRequests[0];
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     rt.setMessages((prev) =>
       updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
@@ -205,7 +206,7 @@ export function projectLiveInterrupt(
     // --- Credit pause interrupt ---
     const proposalId = event.interrupt_id!;
     const pauseState = buildCreditPauseState(actionRequests[0], event.interrupt_id!);
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     // A re-raise is the pause saying it was never consumed, whatever the resume
     // looked like from the client: admission opens a run either way, so the card
@@ -238,7 +239,7 @@ export function projectLiveInterrupt(
       event.interrupt_id,
       `tool-approval-${Date.now()}`,
     );
-    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+    const order = eventOrder(event, () => ++refs.contentOrderCounterRef.current);
 
     // A re-raise is the backend saying the calls are still stopped, whatever
     // the resume looked like from the client, and the click already settled

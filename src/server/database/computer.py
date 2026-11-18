@@ -528,19 +528,21 @@ async def clear_computer_retirement_pending(
 async def set_computer_setting(
     computer_id: str, user_id: str, key: str, value: Any, *, conn=None
 ) -> bool:
-    """Set one of the user's computer's settings in its ``config``. False
-    where the computer is gone or not theirs."""
+    """Set one of the user's computer's settings in its ``config``, or with
+    ``value`` None remove it. False where the computer is gone or not theirs."""
+    change = ("COALESCE(config, '{}'::jsonb) - %s::text", [key]) if value is None else (
+        "jsonb_set(COALESCE(config, '{}'::jsonb), %s, %s::jsonb)", [[key], Json(value)])
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
             UPDATE computers
-            SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), %s, %s::jsonb),
+            SET config = {change[0]},
                 updated_at = NOW()
             WHERE computer_id = %s
               AND user_id = %s
               AND {FENCE_NOT_DELETED}
             """,
-            ([key], Json(value), computer_id, user_id),
+            (*change[1], computer_id, user_id),
         )
         return cur.rowcount > 0
 

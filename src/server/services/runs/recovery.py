@@ -604,8 +604,8 @@ class RecoveryScanner:
         from src.server.services.history.reader import CheckpointHistoryReader
         from src.server.services.runs.reasoning_facts import saved_durations
         from src.server.services.runs.sse_producer import (
-            fallback_from_frame,
             kept_error_frame,
+            kept_notice,
         )
 
         frames, quality = await self._read_stream(thread_id, run_id)
@@ -625,8 +625,7 @@ class RecoveryScanner:
             [
                 record
                 for event_type, data in frames
-                if event_type == "model_fallback"
-                and (record := fallback_from_frame(data)) is not None
+                if (record := kept_notice(event_type, data)) is not None
             ]
             if status in UNSAVED_RESULT_ENDINGS
             else []

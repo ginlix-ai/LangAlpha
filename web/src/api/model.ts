@@ -152,6 +152,11 @@ export interface ClaudeCodeComputer {
   /** How many Claude Code agents it runs at once, subagents included.
    *  Absent from a server that predates the setting. */
   clis?: number;
+  /** What it runs while no number is set: one per 2 GiB of its memory.
+   *  Absent from a server that predates it. */
+  clis_automatic?: number;
+  /** Whether a number was set; `clis` is `clis_automatic` while not. */
+  clis_chosen?: boolean;
 }
 
 /** The user's own computers, and each cloud computer of theirs that refuses
@@ -245,8 +250,9 @@ export async function submitClaudeCodeComputerSignInCode(computerId: string, cod
 }
 
 /** `PUT .../computers/{id}/clis`: how many Claude Code agents the computer
- *  runs at once, from its next one on. Answers the computer's entry. */
-export async function setClaudeCodeComputerClis(computerId: string, clis: number): Promise<ClaudeCodeComputer> {
+ *  runs at once, from its next one on, null for what its memory allows.
+ *  Answers the computer's entry. */
+export async function setClaudeCodeComputerClis(computerId: string, clis: number | null): Promise<ClaudeCodeComputer> {
   const { data } = await api.put(`${computerPath(computerId)}/clis`, { clis });
   return data as ClaudeCodeComputer;
 }

@@ -8,11 +8,11 @@ import { compactNumber } from '@/lib/format';
 import { DURATION, EASE_COLLAPSE, TWEEN } from '@/lib/motion';
 import { useLocale } from '@/hooks/useLocale';
 import { useModelName } from '@/hooks/useModelName';
-import type { ModelStatus } from '../../session/types';
+import type { ModelStatus, TurnStatus } from '../../session/types';
 import type { RetiredModel } from '../../hooks/useThreadModel';
-import type { WarmingDisplay } from '../../utils/warmWorkspace';
 import { useWaitingAutomations } from '../../../Automations/hooks/useWaitingAutomations';
 import { QueuedAutomationNotice } from '../QueuedAutomationNotice';
+import { CliQueueLine } from '../CliQueueNotice';
 import { ModelStatusPill } from './ModelStatusPill';
 import { RetiredModelNotice } from './ThreadModelBanner';
 import { StatusLine } from './StatusLine';
@@ -24,9 +24,9 @@ interface TranscriptStatusProps {
   modelStatus: ModelStatus | null;
   isLoading: boolean;
   retired: RetiredModel | null;
-  workspaceStarting: WarmingDisplay;
-  /** Why this send waits on a thread mutation, null when it is not held. */
-  turnHeld: string | null;
+  /** What the turn waits on, its workspace's start merged with the warm
+   *  the page itself watches. */
+  turnStatus: TurnStatus;
   /** The model the thread runs, which a hand-off's wait names. */
   model: string | null;
   isCompacting: string | false;
@@ -55,8 +55,7 @@ export function TranscriptStatus({
   modelStatus,
   isLoading,
   retired,
-  workspaceStarting,
-  turnHeld,
+  turnStatus: { workspaceStarting, turnHeld, cliQueue },
   model,
   isCompacting,
   compactionTokens,
@@ -76,6 +75,7 @@ export function TranscriptStatus({
     lines.push({ key: 'workspace', node: <WorkspaceStartingLine archived={workspaceStarting === 'archived'} /> });
   }
   if (turnHeld !== null) lines.push({ key: 'turnHeld', node: <TurnHeldLine reason={turnHeld} model={model} /> });
+  if (cliQueue) lines.push({ key: 'cliQueue', node: <CliQueueLine wait={cliQueue} /> });
   if (isCompacting) {
     lines.push({
       key: 'compacting',

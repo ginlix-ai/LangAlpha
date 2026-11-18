@@ -48,7 +48,7 @@ from src.utils.cache.redis_cache import get_cache_client
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, check_would_bill, in_background, run_check, ttl
 from .check_now import CHECK_UNAVAILABLE, PLAN_WRITTEN_S, computer_unreached, held_check, limit_held, not_checkable, unreached, unsaved
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, require, rows_on
-from .hosted import CLIS_KEY, own_clis, saved_token_runs
+from .hosted import CLIS_KEY, automatic_clis, chosen_clis, own_clis, saved_token_runs
 from .plan import CheckReports, CredentialPlan, UserPlan, plan_views
 from .saved import refusal_stamp, refuse, stored_row, token_hash, token_state, usable
 
@@ -497,7 +497,8 @@ def _entry(
     """The computer's entry, saying, where its token is the one shown, what a sign-in told of it (``meta``)."""
     return ClaudeCodeComputer(
         computer_id=str(computer["computer_id"]), name=computer.get("name") or "", kind=_kind(computer),
-        state=state, source=source, own_file=own_file or source == "machine", clis=own_clis(computer), **meta,
+        state=state, source=source, own_file=own_file or source == "machine", clis=own_clis(computer),
+        clis_automatic=automatic_clis(computer), clis_chosen=chosen_clis(computer) is not None, **meta,
     )
 
 
@@ -592,9 +593,10 @@ def _with_plan(entry: ClaudeCodeComputer, plans: Mapping[str, CredentialPlan]) -
     return entry.model_copy(update=found._asdict()) if found else entry
 
 
-async def set_clis(user_id: str, computer_id: str, clis: int) -> ClaudeCodeComputer:
+async def set_clis(user_id: str, computer_id: str, clis: int | None) -> ClaudeCodeComputer:
     """Set how many Claude Code CLIs the user's own computer runs at once,
-    from its next CLI on, and return its entry as it then stands."""
+    from its next CLI on, or with None go back to what its memory allows,
+    and return its entry as it then stands."""
     await MachineHome.of(user_id, computer_id)
     if await set_computer_setting(computer_id, user_id, CLIS_KEY, clis):
         for entry in (await list_computers(user_id)).computers:

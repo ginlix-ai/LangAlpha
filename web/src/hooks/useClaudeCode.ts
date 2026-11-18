@@ -89,7 +89,7 @@ export function updateComputers(
 export function useSetComputerClis(computerId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (clis: number) => setClaudeCodeComputerClis(computerId, clis),
+    mutationFn: (clis: number | null) => setClaudeCodeComputerClis(computerId, clis),
     onMutate: () => queryClient.cancelQueries({ queryKey: queryKeys.features.claudeCodeComputers() }),
     onSuccess: (entry) => {
       updateComputers(queryClient, (c) => c.computer_id === entry.computer_id, () => entry);

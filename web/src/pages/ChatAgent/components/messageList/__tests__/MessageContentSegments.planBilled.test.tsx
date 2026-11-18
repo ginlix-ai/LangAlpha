@@ -23,7 +23,7 @@ describe('MessageContentSegments: a reply billed to usage credits', () => {
         <MessageContentSegments
           segments={[
             { type: 'text', order: 1, content: 'Here is the summary.' },
-            { type: 'notification', order: 2, planBilled: { window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
+            { type: 'notification', order: 2, notice: { kind: 'planBilled', window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
           ] as SegmentsProps['segments']}
           reasoningProcesses={{}}
           toolCallProcesses={{}}

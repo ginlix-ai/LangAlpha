@@ -181,3 +181,9 @@ async def test_an_own_computer_admits_as_many_clis_as_its_owner_set_and_only_its
     with pytest.raises(subagent_runs.ClaudeCodeCapError) as refused:
         await _task(thread, "k6", (studio_id, cli_cap(row)))
     assert refused.value.cap == 6
+
+    # Cleared, it runs what its memory allows again, and only its owner clears it.
+    assert not await set_computer_setting(studio_id, "someone-else", CLIS_KEY, None)
+    assert await set_computer_setting(studio_id, user, CLIS_KEY, None)
+    cleared = await get_computer(studio_id)
+    assert CLIS_KEY not in cleared["config"] and cli_cap(cleared) == 4
