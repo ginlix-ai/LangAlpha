@@ -15,7 +15,8 @@ from src.tools.market_data import company, earnings
 from src.tools.market_data.company import CompanyInputs, _company_text, _extended_session, _quote_lines
 from src.tools.market_data.display import _symbol_currency, resolve_listing
 from src.tools.market_data.earnings import join_earnings
-from src.tools.market_data.fiscal_periods import fiscal_period_lookup, report_period_ends
+from src.data_client.report_periods import report_period_ends
+from src.tools.market_data.fiscal_periods import fiscal_period_lookup
 from src.tools.market_data.sec_filings import _rows
 from src.tools.market_data.segments import SegmentBreakdown
 
