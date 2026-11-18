@@ -18,6 +18,7 @@ from src.llms.preferences import MOVED_MODEL_KEYS, TuningError
 from src.server.database.oauth_tokens import CLAUDE_CODE_PROVIDER
 from src.server.database.pool import get_db_connection
 from src.server.database.user_lock import lock_user_profile
+from src.server.models.onboarding import ACCOUNT_SETUP_KEY
 from src.server.models.profile_vocabulary import structured_preferences
 from src.server.utils.db import UpdateQueryBuilder
 
@@ -702,7 +703,9 @@ async def lock_user_preferences(user_id: str, *, conn) -> Optional[Dict[str, Any
 async def delete_user_preferences(user_id: str, *, keep_overrides: Collection[str] = ()) -> bool:
     """
     Delete all preferences for a user, except the ``feature_overrides`` named
-    in ``keep_overrides``, which only the server writes.
+    in ``keep_overrides`` and the account setup stamp (``ACCOUNT_SETUP_KEY``),
+    which only the server writes: a reset clears what the user chose, not a
+    record of what their account has done.
 
     Returns:
         True if a row was deleted, False if no preferences existed
@@ -715,13 +718,18 @@ async def delete_user_preferences(user_id: str, *, keep_overrides: Collection[st
                 (user_id,),
             )
             deleted = cur.rowcount > 0
-            row = await cur.fetchone() if deleted and keep_overrides else None
-            overrides = ((row or {}).get("other_preference") or {}).get("feature_overrides")
+            row = await cur.fetchone() if deleted else None
+            other = (row or {}).get("other_preference")
+            other = other if isinstance(other, dict) else {}
+            overrides = other.get("feature_overrides")
             kept = {k: v for k, v in overrides.items() if k in keep_overrides} if isinstance(overrides, dict) else {}
-            if kept:
+            saved: dict[str, Any] = {"feature_overrides": kept} if kept else {}
+            if other.get(ACCOUNT_SETUP_KEY) is not None:
+                saved[ACCOUNT_SETUP_KEY] = other[ACCOUNT_SETUP_KEY]
+            if saved:
                 await cur.execute(
                     "INSERT INTO user_preferences (user_id, other_preference) VALUES (%s, %s)",
-                    (user_id, Json({"feature_overrides": kept})),
+                    (user_id, Json(saved)),
                 )
             logger.info(f"[user_db] delete_user_preferences user_id={user_id} deleted={deleted}")
             return deleted

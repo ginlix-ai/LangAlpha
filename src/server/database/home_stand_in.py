@@ -1,7 +1,9 @@
 """Home's stand-in: where a Home turn runs while the machine Home lives on can't be reached.
 
 A hidden workspace row at a fixed id (``home_workspace.get_home_stand_in_id``)
-on a cloud computer the user already has; nothing is ever built for it. Where
+on a cloud computer the user already has: a turn builds nothing for it, and
+the one cloud computer made for it ahead, where the plan grants one, carries
+``STAND_IN_HOST`` in its config (``ComputerManager.ensure_stand_in_host``). Where
 it may stand is one SQL rule here, read alike by a turn's placement and by the
 sweeps that release Home's parked work, so work is released only onto the
 computer a Home turn would run on. Two workers placing it at once converge on
@@ -26,7 +28,11 @@ from src.server.database.home_workspace import (
     stand_in_id_sql,
 )
 from src.server.database.pool import get_db_connection
-from src.server.database.sql_fences import computer_cols, takes_a_workspace_sql
+from src.server.database.sql_fences import (
+    FENCE_TAKES_WORKSPACES,
+    computer_cols,
+    takes_a_workspace_sql,
+)
 from src.server.database.user_lock import lock_user_writes
 from src.server.database.workspace_folders import (
     folder_allocation,
@@ -44,6 +50,11 @@ _KINDS = ", ".join(f"'{kind}'" for kind in RECREATABLE_KINDS)
 # A read of what the user keeps on a computer leaves the stand-in out by its
 # mark: it is placed again on the next need, so it alone keeps nothing.
 EXCLUDE_STAND_IN = f"NOT COALESCE(config, '{{}}'::jsonb) ? '{HOME_STAND_IN_KEY}'"
+
+# Marks the cloud computer kept for the stand-in, made for it or adopted, which
+# takes the plan's size at its first build if that comes after the mark, and
+# is not made again once its owner removes it.
+STAND_IN_HOST = "stand_in_host"
 
 # The stand-in's computer columns, beside its own of the same names.
 _HOST = "host__"
@@ -95,6 +106,14 @@ def _turn_host_sql(host: str) -> str:
     )
 
 
+def _status_order(host: str) -> str:
+    """Rank computer row ``host`` by how soon a turn could run on it."""
+    return (
+        f"CASE {host}.status WHEN 'running' THEN 0 WHEN 'starting' THEN 1"
+        " WHEN 'creating' THEN 1 WHEN 'stopping' THEN 3 ELSE 2 END"
+    )
+
+
 def home_stand_in_could_run_sql(ws: str) -> str:
     """Whether workspace row ``ws`` is its user's Home and a Home turn could
     run in the stand-in now (``stand_in_computer``), so Home's work need not
@@ -109,16 +128,19 @@ def home_stand_in_could_run_sql(ws: str) -> str:
 async def stand_in_computer(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
     """The computer a Home turn in the stand-in runs on now
     (``_turn_host_sql``): the one it stands on, else the one it would be
-    placed on, a running one first, as the turn need not wait for a start,
-    then the most recently used, then the oldest. None when there is none. A
-    read: nothing is placed, built or started."""
+    placed on: by status first, running, then starting, then stopped, then
+    stopping, since a turn waits out whatever start or stop is ahead of it;
+    within one status, the one marked for it (``STAND_IN_HOST``), then the
+    most recently used, then the oldest. None when there is none. A read:
+    nothing is placed, built or started."""
     async with get_db_connection(conn) as c, c.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"""
             SELECT {computer_cols("host")}
             FROM computers host
             WHERE host.user_id = %(user)s AND {_turn_host_sql("host")}
-            ORDER BY (host.status = 'running') DESC,
+            ORDER BY {_status_order("host")},
+                     COALESCE((host.config->>'{STAND_IN_HOST}')::boolean, false) DESC,
                      host.last_activity_at DESC NULLS LAST,
                      host.created_at, host.computer_id
             LIMIT 1
@@ -143,6 +165,86 @@ async def stand_in_needed(user_id: str, *, conn=None) -> bool:
             (user_id,),
         )
         return await cur.fetchone() is not None
+
+
+async def stand_in_host_marked(user_id: str, *, conn=None) -> bool:
+    """Whether a computer of the user's carries ``STAND_IN_HOST``, live or one
+    its owner has removed, which is not replaced."""
+    async with get_db_connection(conn) as c, c.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT 1 FROM computers
+            WHERE user_id = %s AND COALESCE(config, '{{}}'::jsonb) ? '{STAND_IN_HOST}'
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        return await cur.fetchone() is not None
+
+
+async def adopt_stand_in_host(user_id: str, *, conn=None) -> bool:
+    """Mark the cloud computer the stand-in stands on as its host, else the
+    one a Home turn would place it on now (``stand_in_computer``'s rule),
+    so the computer kept for the stand-in is the one Home's turns run on;
+    one not built yet takes the plan's size at its first build. True when
+    they have a live cloud computer at all (building or failed included),
+    so none is to be made beside it. A computer being stopped or retired is passed over, on
+    the row the write lands on too, so a retirement that begins between the
+    pick and the write keeps the mark off its tombstone.
+    """
+    async with get_db_connection(conn) as c, c.cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = COALESCE(config, '{{}}'::jsonb) || '{{"{STAND_IN_HOST}": true}}'::jsonb
+            WHERE computer_id = (
+                SELECT c.computer_id FROM computers c
+                LEFT JOIN workspaces s
+                  ON s.workspace_id = {stand_in_id_sql("%(user)s")}
+                 AND s.computer_id = c.computer_id
+                 AND s.status <> 'deleted'
+                WHERE c.user_id = %(user)s AND c.kind IN ({_KINDS})
+                  AND c.status NOT IN ('deleted', 'stopping')
+                ORDER BY s.workspace_id IS NULL,
+                         {_turn_host_sql("c")} DESC,
+                         {_status_order("c")},
+                         c.last_activity_at DESC NULLS LAST,
+                         c.created_at, c.computer_id
+                LIMIT 1
+            )
+              AND status NOT IN ('deleted', 'stopping')
+              AND {FENCE_TAKES_WORKSPACES}
+            """,
+            {"user": user_id},
+        )
+        await cur.execute(
+            f"""
+            SELECT 1 FROM computers
+            WHERE user_id = %s AND kind IN ({_KINDS}) AND status <> 'deleted'
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        return await cur.fetchone() is not None
+
+
+async def marked_stand_in_host(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
+    """The live cloud computer made for the stand-in, in any state; None
+    when there is none."""
+    async with get_db_connection(conn) as c, c.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"""
+            SELECT {computer_cols("host")}
+            FROM computers host
+            WHERE host.user_id = %s AND host.status <> 'deleted'
+              AND COALESCE(host.config, '{{}}'::jsonb) ? '{STAND_IN_HOST}'
+            ORDER BY host.created_at, host.computer_id
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 @dataclass(frozen=True, slots=True)

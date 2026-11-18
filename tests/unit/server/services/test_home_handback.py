@@ -658,7 +658,7 @@ def retiring():
     on it as each read of it (``stand_in_on``) finds it in turn."""
     from src.server.services.computer_manager._retirement import RetirementMixin
 
-    state = {"reads": [], "held": True, "holding": [], "torn_down": [], "needed": False}
+    state = {"reads": [], "held": True, "holding": [], "torn_down": [], "needed": False, "writes": []}
 
     class Manager(RetirementMixin):
         @asynccontextmanager
@@ -679,7 +679,8 @@ def retiring():
         finally:
             state["holding"].remove(user_id)
 
-    async def update_status(computer_id, status, **_):
+    async def update_status(computer_id, status, **kwargs):
+        state["writes"].append((status, kwargs))
         return {**_RETIRING, "status": status}
 
     with (
@@ -781,6 +782,111 @@ async def test_the_stand_ins_computer_stays_for_a_primary_that_can_be_away(
     retiring["needed"] = needed
 
     assert await _decide(retiring, **ask) == outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ask", "outcome"),
+    [({"sweep": True}, "stand_in"), ({"owner_request": True}, "retired")],
+    ids=["sweep", "owner"],
+)
+async def test_the_computer_kept_for_the_stand_in_stays_before_it_stood_there(retiring, ask, outcome):
+    """Made or marked for Home's stand-in (``stand_in_host``), it is kept while
+    the primary can be away even before the stand-in was first placed on it,
+    so emptying it never reads as its owner removing it."""
+    retiring["reads"] = [None]
+    retiring["needed"] = True
+    marked = {**_RETIRING, "config": {"retire_when_empty": True, "stand_in_host": True}}
+    with patch(f"{_R}.get_computer", AsyncMock(return_value=marked)):
+        assert await _decide(retiring, **ask) == outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ask", "unmarked"),
+    [({"sweep": True}, True), ({"owner_request": True}, False)],
+    ids=["sweep", "owner"],
+)
+async def test_retiring_the_stand_ins_computer_as_empty_takes_its_mark_off(retiring, ask, unmarked):
+    """Retired while Home lived on the cloud, the computer made for the
+    stand-in loses its mark, so a later Home on the user's own machine gets
+    another; only its owner's remove leaves the mark that refuses one. The
+    tombstone write takes it off, so it goes whatever the row read said: a
+    mark adopted after that read goes with it."""
+    retiring["reads"] = [None]
+    unmarked_when_read = {**_RETIRING, "config": {"retire_when_empty": True}}
+    with patch(f"{_R}.get_computer", AsyncMock(return_value=unmarked_when_read)):
+        assert await _decide(retiring, **ask) == "retired"
+
+    tombstone = [kwargs for status, kwargs in retiring["writes"] if status == "deleted"]
+    assert [kwargs["drop_config_key"] for kwargs in tombstone] == [
+        "stand_in_host" if unmarked else None
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_finishing_an_owners_remove_keeps_the_mark(retiring):
+    """The owner's remove lost the key to the sweep, which finishes it: the
+    tombstone keeps the mark while the row's marker says whose remove it is,
+    read where the write lands, so the mark refuses Home's stand-in another
+    computer as the owner's own retirement would."""
+    retiring["reads"] = [None]
+    by_owner = {**_RETIRING, "config": {"retire_when_empty": True, "retire_by_owner": True}}
+    with patch(f"{_R}.get_computer", AsyncMock(return_value=by_owner)):
+        assert await _decide(retiring, sweep=True) == "retired"
+
+    tombstone = [kwargs for status, kwargs in retiring["writes"] if status == "deleted"]
+    assert [(kw["drop_config_key"], kw["unless_config_key"]) for kw in tombstone] == [
+        ("stand_in_host", "retire_by_owner")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("torn_down", [True, False], ids=["torn-down", "not-yet"])
+async def test_a_sweep_finishes_an_owners_remove_that_already_tore_it_down(retiring, torn_down):
+    """Its worker went between the teardown and the tombstone: the sweep only
+    writes the tombstone, rather than keep a computer with no sandbox left for
+    a stand-in Home still needs. Before the teardown it is still its owner's
+    remove, left to the sweep once its stop settles rather than kept as
+    Home's stand-in with the marker taken off."""
+    retiring["reads"] = [None]
+    retiring["needed"] = True
+    marks = {"retire_when_empty": True, "retire_by_owner": True, "stand_in_host": True}
+    if torn_down:
+        marks["retire_torn_down"] = True
+    row = {**_RETIRING, "status": "stopping", "config": marks}
+    with patch(f"{_R}.get_computer", AsyncMock(return_value=row)):
+        assert await _decide(retiring, sweep=True) == ("retired" if torn_down else "busy")
+    retiring["cleared"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("by_owner", "kind", "outcome"),
+    [(True, None, "retired"), (False, None, "stand_in"), (True, "ssh", "owners_machine")],
+    ids=["owners-remove", "delete", "owners-machine"],
+)
+async def test_a_delete_finishing_an_owners_remove_takes_the_stand_ins_computer(
+    retiring, by_owner, kind, outcome
+):
+    """The last workspace of the computer its owner is removing goes first,
+    and that delete retires it as the remove would, so a worker gone before
+    the remove itself cannot leave the computer kept for Home's stand-in with
+    the owner's marker taken off. One of the user's own keeps its machine for
+    the remove that follows."""
+    retiring["reads"] = [None]
+    retiring["needed"] = True
+    marks = {"retire_when_empty": True, "stand_in_host": True}
+    if by_owner:
+        marks["retire_by_owner"] = True
+    row = {**_RETIRING, "config": marks, **({"kind": kind} if kind else {})}
+    with patch(f"{_R}.get_computer", AsyncMock(return_value=row)):
+        assert await _decide(retiring, workspace_id="ws-a") == outcome
+    assert len(retiring["torn_down"]) == (1 if outcome == "retired" else 0)
+    if outcome == "retired":
+        retiring["cleared"].assert_not_awaited()
+    else:
+        retiring["cleared"].assert_awaited_once_with("cloud-1")
 
 
 def test_what_a_hand_back_left_is_read_off_its_notice():

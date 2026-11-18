@@ -668,6 +668,41 @@ class ComputerSpecRequest(BaseModel):
     )
 
 
+class HomePlanSizeResponse(BaseModel):
+    """Home's computer beside the size the user's plan gives it now."""
+
+    computer_id: Optional[str] = Field(
+        None, description="Home's computer; null before the user has one"
+    )
+    resource_tier: Optional[ResourceTierId] = Field(
+        None, description="Its size now; null before the user has one"
+    )
+    plan_tier: ResourceTierId = Field(
+        description=(
+            "The largest size the plan gives it on its provider, or its own when "
+            "the plan cannot be read"
+        )
+    )
+    largest_tier: Optional[ResourceTierId] = Field(
+        None, description="The largest size its cloud provider builds"
+    )
+    follows_plan: bool = Field(
+        description=(
+            "True while it is still to take plan_tier at its first build: a cloud "
+            "computer not built yet whose owner did not choose its size"
+        )
+    )
+    can_resize: bool = Field(
+        description=(
+            "True when Home's computer is the user's primary, a cloud computer "
+            "already built whose owner did not choose its size, and plan_tier is "
+            "bigger than its size: the computer the app's resize opens. False "
+            "while Home is on a machine of the user's own, a cloud stand-in "
+            "included"
+        )
+    )
+
+
 class ComputerAlwaysOnRequest(BaseModel):
     """Request model for toggling a computer's always-on flag."""
 

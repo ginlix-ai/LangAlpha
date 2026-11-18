@@ -33,11 +33,12 @@ vi.mock('../../utils/api', () => ({
   getSshKey: vi.fn(() => new Promise(() => {})),
 }));
 
-import { getComputerProviders, getWorkspaceQuota } from '../../utils/api';
+import { getComputerProviders, getComputers, getWorkspaceQuota } from '../../utils/api';
 import CreateComputerDialog from '../CreateComputerDialog';
 
 const mockProviders = getComputerProviders as Mock;
 const mockQuota = getWorkspaceQuota as Mock;
+const mockComputers = getComputers as Mock;
 
 // As `GET /computers/providers` lists them: Daytona runs three sizes, E2B four.
 const BASE_SPECS: ComputerTierSpec[] = [
@@ -80,6 +81,83 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockProviders.mockResolvedValue({ providers: [DAYTONA, E2B] });
   mockQuota.mockResolvedValue(OPEN_QUOTA);
+  mockComputers.mockReset();
+});
+
+describe('CreateComputerDialog, a first computer', () => {
+  // It becomes the user's Home, which the server sizes by the plan.
+  beforeEach(() => {
+    mockComputers.mockResolvedValue({ computers: [] });
+  });
+
+  it('leaves the size to the plan until a size is picked', async () => {
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await waitFor(() => expect(radio('Automatic \\(follows your plan\\)')).toBeChecked());
+    expect(tierValues()).toEqual(['automatic', 'standard', 'performance', 'max']);
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('resource_tier');
+  });
+
+  it('sends Small as the owner\'s pick', async () => {
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await waitFor(() => expect(radio('Automatic')).toBeChecked());
+    await user.click(radio('Small'));
+    expect(radio('Small')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ resource_tier: 'standard' });
+  });
+
+  it('keeps a picked size picked when it falls away', async () => {
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await waitFor(() => expect(radio('Automatic')).toBeChecked());
+    await user.click(radio('E2B'));
+    await user.click(radio('Extra Large'));
+    await user.click(radio('Daytona'));
+    expect(radio('Automatic')).not.toBeChecked();
+    expect(radio('Small')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit).toHaveBeenCalledWith({ resource_tier: 'standard', kind: 'daytona' });
+  });
+
+  it('keeps Small when it was clicked before the list answered', async () => {
+    let answer: (list: { computers: never[] }) => void = () => {};
+    mockComputers.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await screen.findByRole('radiogroup', { name: 'Provider' });
+    expect(radio('Small')).toBeChecked();
+    await user.click(radio('Small'));
+    await act(async () => answer({ computers: [] }));
+    await waitFor(() => expect(tierValues()).toEqual(['automatic', 'standard', 'performance', 'max']));
+    expect(radio('Small')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ resource_tier: 'standard' });
+  });
+
+  it('offers no automatic size once the user has a primary, and sends the size shown', async () => {
+    mockComputers.mockResolvedValue({ computers: [{ computer_id: 'c-1', name: 'Home', is_primary: true }] });
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await screen.findByRole('radiogroup', { name: 'Provider' });
+    await waitFor(() => expect(mockComputers).toHaveBeenCalled());
+    expect(tierValues()).toEqual(['standard', 'performance', 'max']);
+    expect(radio('Small')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ resource_tier: 'standard' });
+  });
+
+  it('sends the size shown while the computer list is still loading', async () => {
+    mockComputers.mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    const onSubmit = open();
+    await screen.findByRole('radiogroup', { name: 'Provider' });
+    expect(tierValues()).toEqual(['standard', 'performance', 'max']);
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ resource_tier: 'standard' });
+  });
 });
 
 describe('CreateComputerDialog, sizes', () => {
@@ -272,6 +350,20 @@ describe('CreateComputerDialog, a size on another provider', () => {
     expect(radio('E2B')).toBeChecked();
     expect(radio('Extra Large')).toBeChecked();
     expect(screen.queryByTestId('create-computer-tier-elsewhere')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create computer' }));
+    expect(onSubmit).toHaveBeenCalledWith({ resource_tier: 'xlarge', kind: 'e2b' });
+  });
+
+  it('takes the size the hint switches to as a pick on a first computer', async () => {
+    mockQuota.mockResolvedValue(MAX_PLAN);
+    mockComputers.mockResolvedValue({ computers: [] });
+    const user = userEvent.setup();
+    const onSubmit = open();
+
+    await waitFor(() => expect(radio('Automatic')).toBeChecked());
+    await user.click(await screen.findByRole('button', { name: 'Switch to E2B' }));
+    expect(radio('Automatic')).not.toBeChecked();
+    expect(radio('Extra Large')).toBeChecked();
     await user.click(screen.getByRole('button', { name: 'Create computer' }));
     expect(onSubmit).toHaveBeenCalledWith({ resource_tier: 'xlarge', kind: 'e2b' });
   });

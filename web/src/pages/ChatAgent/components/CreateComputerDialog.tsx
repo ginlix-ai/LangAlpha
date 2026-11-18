@@ -128,6 +128,7 @@ function CreateComputerDialog({
   const nameRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<string | null>(initialPick);
   const [pickedTier, setPickedTier] = useState<ResourceTier>('standard');
+  const [sizeLeftToPlan, setSizeLeftToPlan] = useState(true);
   const errorRef = useRef<HTMLDivElement>(null);
 
   // The SSH summary makes the form taller than the dialog, so a refusal would
@@ -186,6 +187,17 @@ function CreateComputerDialog({
   const base = own ? own.defaultName : providers.find((p) => p.kind === (hosted ?? providers[0]?.kind))?.default_name;
   const suggested = base && computerList ? nextComputerName(base, computerList.computers.map((c) => c.name)) : null;
   const name = typed ?? suggested ?? '';
+  // A cloud computer made while the user has no primary becomes their Home,
+  // which the server sizes by the plan unless a size is sent, so leaving the
+  // size to the plan is offered there, and is the selection until a size is
+  // picked. A size picked stays picked, whatever it falls back to.
+  const followsPlan =
+    isPlatformMode && typeof source === 'object' && !!computerList && !computerList.computers.some((c) => c.is_primary);
+  const automaticSelected = followsPlan && sizeLeftToPlan;
+  const pickSize = (size: ResourceTier) => {
+    setPickedTier(size);
+    setSizeLeftToPlan(false);
+  };
 
   // A size the plan allows that this provider does not run but another open
   // one does (Extra Large, on E2B alone) is named with the way there, in
@@ -209,7 +221,8 @@ function CreateComputerDialog({
   // its kind, since the server takes a target only with it. Only a name the
   // user typed is sent: the one the field suggests the server gives anyway,
   // numbering past a computer that took it meanwhile, where a name sent is
-  // refused when one of them has it.
+  // refused when one of them has it. The size is sent unless the user left it
+  // to the plan: a size sent is the owner's and stays put.
   const trimmedName = (typed ?? '').trim();
   const fields: ComputerCreate | null = source === 'thisMac'
     ? addThisMac.body({ name: trimmedName })
@@ -217,7 +230,7 @@ function CreateComputerDialog({
       ? ssh.create && ownMachineCreate(ssh.create, { name: trimmedName })
       : {
         ...(trimmedName ? { name: trimmedName } : {}),
-        resource_tier: tier,
+        ...(automaticSelected ? {} : { resource_tier: tier }),
         ...(choosesProvider && hosted ? { kind: hosted } : {}),
       };
   // Every provider on offer locked leaves nothing to create on. The cap locks
@@ -373,13 +386,21 @@ function CreateComputerDialog({
         ) : source === 'ssh' ? (
           <SshSetup state={ssh} busy={busy} />
         ) : (
-          <TierRadioGroup
-            offer={offer}
-            value={tier}
-            onChange={setPickedTier}
-            label={t('computer.tierLabel', 'Computer spec')}
-            quota={quota}
-          />
+          // Before the list answers whether the size may be left to the plan,
+          // a click on the size shown is a pick too, though the radio already
+          // checked changes nothing: the answer must not take it back.
+          <div className="contents" onClickCapture={computerList ? undefined : () => setSizeLeftToPlan(false)}>
+            <TierRadioGroup
+              offer={offer}
+              value={tier}
+              onChange={pickSize}
+              label={t('computer.tierLabel', 'Computer spec')}
+              quota={quota}
+              automatic={
+                followsPlan ? { checked: automaticSelected, onSelect: () => setSizeLeftToPlan(true) } : undefined
+              }
+            />
+          </div>
         )}
 
         {elsewhere && (
@@ -395,7 +416,7 @@ function CreateComputerDialog({
               disabled={busy}
               onClick={() => {
                 setPicked(elsewhere.kind);
-                setPickedTier(elsewhere.tier);
+                pickSize(elsewhere.tier);
               }}
             >
               {t('computer.switchProvider', 'Switch to {{provider}}', { provider: providerLabel(elsewhere.kind, t) })}

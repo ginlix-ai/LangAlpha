@@ -63,6 +63,51 @@ async def test_get_home_workspace(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["creating", "stopped", None], ids=["built-now", "stopped", "none-made"])
+async def test_loading_home_makes_its_stand_in_a_computer_in_the_background(client, status):
+    made = None if status is None else {"computer_id": COMPUTER_ID, "status": status}
+    manager = AsyncMock()
+    manager.ensure_stand_in_host = AsyncMock(return_value=made)
+    scheduled = []
+    with (
+        patch(f"{HOME}.get_or_create_home_workspace", new_callable=AsyncMock, return_value=_home_row()),
+        patch(f"{HOME}.schedule_start", side_effect=lambda key, start: scheduled.append((key, start))),
+        patch("src.server.services.computer_manager.ComputerManager.get_instance", return_value=manager),
+        patch("src.server.app.computers.schedule_computer_start", AsyncMock()) as start,
+    ):
+        resp = await client.post("/api/v1/workspaces/home")
+        assert resp.status_code == 200
+        manager.ensure_stand_in_host.assert_not_awaited()
+        [(key, run)] = scheduled
+        await run()
+
+    assert key == f"stand-in-host:{USER}"
+    manager.ensure_stand_in_host.assert_awaited_once_with(USER)
+    if status == "creating":
+        start.assert_awaited_once_with(COMPUTER_ID)
+    else:
+        start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_cannot_add_computers_makes_no_stand_in_computer():
+    from src.server.app.home import router
+    from src.server.dependencies.principal import Principal, get_principal
+
+    app = create_test_app(router)
+    app.dependency_overrides[get_principal] = lambda: Principal(user_id=USER, auth="token", scopes=("agent:read",))
+    with (
+        patch(f"{HOME}.get_or_create_home_workspace", new_callable=AsyncMock, return_value=_home_row()),
+        patch(f"{HOME}.schedule_start") as scheduled,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/api/v1/workspaces/home")
+
+    assert resp.status_code == 200
+    scheduled.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_home_workspace_error(client):
     with patch(
         f"{HOME}.get_or_create_home_workspace",

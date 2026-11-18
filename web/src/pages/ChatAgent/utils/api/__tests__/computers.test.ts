@@ -136,16 +136,22 @@ describe('createComputer', () => {
     expect(computer.resource_tier).toBe('performance');
   });
 
-  it('defaults to standard and omits an absent name so the server names it', async () => {
+  it('omits an absent tier and name so the server picks both', async () => {
     mockPost.mockResolvedValueOnce({ data: {} });
     await createComputer();
+    expect(mockPost.mock.calls[0][1]).toEqual({});
+  });
+
+  it('sends standard when the caller picked it', async () => {
+    mockPost.mockResolvedValueOnce({ data: {} });
+    await createComputer({ resource_tier: 'standard' });
     expect(mockPost.mock.calls[0][1]).toEqual({ resource_tier: 'standard' });
   });
 
   it('asks the server to make the new computer primary once it starts', async () => {
     mockPost.mockResolvedValueOnce({ data: {} });
     await createComputer({ kind: 'ssh', make_primary: true });
-    expect(mockPost.mock.calls[0][1]).toEqual({ resource_tier: 'standard', kind: 'ssh', make_primary: true });
+    expect(mockPost.mock.calls[0][1]).toEqual({ kind: 'ssh', make_primary: true });
   });
 
   it('carries the backup choice for a machine the user brings, off included', async () => {
@@ -156,7 +162,7 @@ describe('createComputer', () => {
     };
     await createComputer({ name: 'devbox', kind: 'ssh', ssh, files_backup: false });
     expect(mockPost.mock.calls[0][1]).toEqual({
-      name: 'devbox', resource_tier: 'standard', kind: 'ssh', ssh, files_backup: false,
+      name: 'devbox', kind: 'ssh', ssh, files_backup: false,
     });
   });
 

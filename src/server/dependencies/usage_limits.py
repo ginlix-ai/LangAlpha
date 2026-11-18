@@ -18,13 +18,14 @@ import logging
 import math
 import os
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Optional
+from typing import Annotated, Optional, get_args
 
 from fastapi import Depends, HTTPException
 
 from src.config.settings import HOST_MODE, AUTH_SERVICE_URL
+from src.server.models.computer import ResourceTierId
 from src.server.utils.api import get_current_user_id
 from src.server.utils.http_client import get_http_client
 
@@ -779,18 +780,25 @@ def _extract_capacity(quota: dict) -> tuple[int | None, int | None]:
     return used, limit
 
 
-def _allowed_returning_a_slot(quota: dict) -> bool:
+def _returned_slot_verdict(quota: dict) -> bool | None:
     """Whether the quota allows one more once a slot the caller holds is given back.
 
     The platform's ``allowed`` counts that slot as taken, so the counts decide
     here instead: one fewer used, a limit of 0 still the plan leaving it out,
-    and -1 unlimited. Without both counts the platform's own answer stands.
+    and -1 unlimited. None without both counts.
     """
     used, limit = _extract_capacity(quota)
     if used is None or limit is None:
-        return quota.get("allowed") is not False
+        return None
     limit = int(limit)
     return limit == -1 or (limit > 0 and int(used) - 1 < limit)
+
+
+def _allowed_returning_a_slot(quota: dict) -> bool:
+    """The gate's reading of :func:`_returned_slot_verdict`: without both
+    counts the platform's own answer stands, fail-open."""
+    verdict = _returned_slot_verdict(quota)
+    return quota.get("allowed") is not False if verdict is None else verdict
 
 
 async def enforce_capacity(
@@ -910,6 +918,95 @@ _SPEC_ENTITLEMENTS: dict[str, tuple[str, str]] = {
     "max": ("workspace:spec:max", "spec_max"),
     "xlarge": ("workspace:spec:xlarge", "spec_xlarge"),
 }
+
+#: Every size a computer may have, smallest first.
+SPEC_TIERS_BY_SIZE: tuple[str, ...] = get_args(ResourceTierId)
+
+
+def tier_rank(tier: Optional[str]) -> Optional[int]:
+    """A spec tier's place by size; None for a tier that has none."""
+    return SPEC_TIERS_BY_SIZE.index(tier) if tier in SPEC_TIERS_BY_SIZE else None
+
+
+async def computer_slot_granted(user_id: str, *, running: bool = False) -> bool:
+    """Whether the plan definitively lets the user hold one more computer the
+    deployment builds, or with ``running`` run one more, for one made for
+    them rather than by them (Home's stand-in's). Reads the other way from the
+    gate: unreachable, ambiguous or OSS is no, so a blip never builds or
+    starts a machine nobody asked for.
+    """
+    if not platform_gating_active():
+        return False
+    try:
+        result = await _call_validate_for_user(
+            user_id, check_quota="workspace" if running else COMPUTER_COUNT_QUOTA
+        )
+    except Exception:
+        logger.warning("Could not read the computer quota for user %s", user_id, exc_info=True)
+        return False
+    quota = (result or {}).get("quota")
+    return bool(quota) and quota.get("allowed") is True
+
+
+async def plan_spec_tier(
+    user_id: str, offered: Collection[str], *, current_tier: Optional[str] = None
+) -> Optional[str]:
+    """The largest size of ``offered`` the user's plan gives a computer now.
+
+    For a computer sized for the user rather than by them (their Home), so it
+    reads the other way from the gate: only a definitive platform answer opens
+    a size. None when the plan could not be read (unreachable platform, an
+    ambiguous answer, a missing quota, any error), which a caller must not take
+    for standard: that would shrink a machine on a blip. Scopes are read past
+    the cache, since the plan may have just changed, and never written to it:
+    two reads can overlap a plan change, and the earlier one landing last
+    would hand the gate a grant the plan has withdrawn. A quota with neither
+    a boolean ``allowed`` nor both counts for a returned slot is ambiguous.
+    ``current_tier`` is the size the computer holds now, whose slot it gives
+    back for a bigger one (as ``assert_spec_allowed``). Standard in OSS mode.
+    """
+    if not platform_gating_active():
+        return "standard"
+    try:
+        result = await _call_validate_for_user(user_id)
+        scopes = (result or {}).get("scopes")
+        if not isinstance(scopes, list):
+            return None
+        for tier in reversed(SPEC_TIERS_BY_SIZE):
+            entitlement = _SPEC_ENTITLEMENTS.get(tier)
+            if entitlement is None or tier not in offered or entitlement[0] not in scopes:
+                continue
+            if tier == current_tier:
+                return tier
+            counted = await _call_validate_for_user(user_id, check_quota=entitlement[1])
+            later = (counted or {}).get("scopes")
+            if isinstance(later, list):
+                # The newer list decides the smaller sizes tried after this.
+                scopes = later
+            quota = (counted or {}).get("quota")
+            if not quota:
+                return None
+            allowed = (
+                _returned_slot_verdict(quota) if current_tier in _SPEC_ENTITLEMENTS else None
+            )
+            if allowed is None:
+                allowed = quota.get("allowed")
+            if allowed is True:
+                # The count says nothing of the scope, which may have gone
+                # since the read above: the answer approving it must carry
+                # it, and one whose newer list leaves it out tries smaller.
+                if not isinstance(later, list):
+                    return None
+                if entitlement[0] in later:
+                    return tier
+                continue
+            if allowed is not False:
+                return None
+    except Exception:
+        logger.warning("Could not read the plan's computer size for user %s", user_id, exc_info=True)
+        return None
+    return "standard"
+
 
 # key -> (scope, count-quota name) for every entitlement the quota route shows.
 DISPLAYED_ENTITLEMENTS: dict[str, tuple[str, str]] = {

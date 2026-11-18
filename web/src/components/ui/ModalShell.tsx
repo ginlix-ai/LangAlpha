@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { animate, motion, useMotionValue, useReducedMotion } from '@/lib/framer';
 import { X } from 'lucide-react';
@@ -149,6 +149,10 @@ export function ModalShell({
   const isMobile = useIsMobile();
   const space = DENSITY[density];
   const layer = zIndex ?? (stacked ? 1020 : 1010);
+  // The subtitle says what the dialog is for, a warning at times, so it is
+  // read as the dialog's description when it opens.
+  const subtitleId = useId();
+  const describedBy = !header && subtitle ? subtitleId : undefined;
   useScrollLock();
 
   // The panel follows the measured height of its content.
@@ -218,6 +222,7 @@ export function ModalShell({
         data-slot="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
+        aria-describedby={describedBy}
         tabIndex={-1}
         inert={covered}
         // Clipped, not hidden: an overflow-hidden box can still be scrolled
@@ -284,7 +289,7 @@ export function ModalShell({
                 {title}
               </h3>
               {subtitle && (
-                <p data-slot="dialog-desc" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                <p id={subtitleId} data-slot="dialog-desc" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
                   {subtitle}
                 </p>
               )}

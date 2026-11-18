@@ -266,6 +266,7 @@ async def test_the_first_computer_is_primary_and_the_second_is_not(
         is_primary=False,
         prepare=False,
         files_backup=True,
+        config=None,
     ):
         # Mirrors the insert's `%s AND NOT EXISTS (... is_primary ...)`, which
         # test_computer_db locks as SQL.
@@ -298,6 +299,34 @@ async def test_create_computer_defaults_to_the_standard_tier(
     kwargs = manager.create_computer_for_user.call_args.kwargs
     assert kwargs["resource_tier"] == "standard"
     assert kwargs["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_computer_keeps_the_size_its_owner_picked_here(
+    client, computer, entitled, prepares
+):
+    """The first one made here becomes Home, which otherwise follows the plan."""
+    manager = MagicMock()
+    manager.create_computer_for_user = AsyncMock(return_value=computer)
+    with patch("src.server.app.computers._computer_manager", return_value=manager):
+        resp = await client.post("/api/v1/computers", json={"resource_tier": "standard"})
+
+    assert resp.status_code == 201
+    assert manager.create_computer_for_user.call_args.kwargs["config"] == {"sized_by_owner": True}
+
+
+@pytest.mark.asyncio
+async def test_a_computer_left_at_the_default_size_follows_the_plan(
+    client, computer, entitled, prepares
+):
+    """A CLI add with no tier picked nothing, so no size is marked as chosen."""
+    manager = MagicMock()
+    manager.create_computer_for_user = AsyncMock(return_value=computer)
+    with patch("src.server.app.computers._computer_manager", return_value=manager):
+        resp = await client.post("/api/v1/computers", json={})
+
+    assert resp.status_code == 201
+    assert "config" not in manager.create_computer_for_user.call_args.kwargs
 
 
 OTHER_COMPUTER_ID = "33333333-3333-4333-8333-333333333333"

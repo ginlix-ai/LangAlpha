@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 from ptc_agent.core.sandbox.providers import provider_class
 
 from src.server.database.computer import (
+    RETIRE_BY_OWNER,
+    RETIRE_TORN_DOWN,
     clear_computer_retirement_pending,
     defer_computer_retirement,
     get_computer,
@@ -17,7 +19,12 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.home_away import stand_in_held
-from src.server.database.home_stand_in import StandIn, stand_in_needed, stand_in_on
+from src.server.database.home_stand_in import (
+    STAND_IN_HOST,
+    StandIn,
+    stand_in_needed,
+    stand_in_on,
+)
 from src.server.database.workspace import get_live_workspace_ids_for_computer
 from src.server.database.workspace_move import primary_candidate
 from src.server.models.computer import ComputerStatus
@@ -66,6 +73,7 @@ class RetirementMixin:
         workspace: Dict[str, Any],
         *,
         keep_folder: bool = False,
+        owner_removing: bool = False,
     ) -> bool:
         """Check emptiness under the machine advisory key after project tombstoning.
 
@@ -77,7 +85,7 @@ class RetirementMixin:
         # this into an indefinitely billed empty machine. Explicitly created bare
         # computers carry no marker and are not swept.
         try:
-            await mark_computer_retirement_pending(computer_id)
+            await mark_computer_retirement_pending(computer_id, by_owner=owner_removing)
             async with self._retirement_decision(
                 computer_id, workspace_id=workspace_id
             ) as (outcome, computer):
@@ -185,8 +193,13 @@ class RetirementMixin:
         ``owner_request`` marks it here instead and takes back what it marked
         on any refusal, so a refused remove leaves the computer as it was, and
         it refuses a machine mid transition rather than claim it from its
-        owner. Yields the outcome and the row it was read from, with the key
-        still held.
+        owner. The marker says when a retirement is its owner's remove
+        (``RETIRE_BY_OWNER``), so whoever finishes it keeps the stand-in mark
+        as the owner's own remove does, and when that remove has already torn
+        a cloud computer's sandbox down (``RETIRE_TORN_DOWN``), so a sweep
+        finishing it tombstones it rather than keep a computer with no
+        sandbox left. Yields
+        the outcome and the row it was read from, with the key still held.
         """
         async with self._machine_decision_lock(computer_id) as locked, AsyncExitStack() as held:
             if not locked:
@@ -222,7 +235,20 @@ class RetirementMixin:
                     yield Retirement.BUSY, computer
                     return
                 stand_in = await stand_in_on(computer)
-            if owner_request:
+            config = computer.get("config") or {}
+            # A delete or sweep finishing what its owner asked for decides as
+            # that remove would, rather than keep the computer and take the
+            # marker off. One of the user's own still keeps its machine here,
+            # its folders going as each delete asked; its owner's remove
+            # follows.
+            owners_remove = owner_request or (
+                bool(config.get(RETIRE_BY_OWNER)) and not _owners_machine(computer)
+            )
+            if sweep and config.get(RETIRE_TORN_DOWN):
+                # Its owner's remove tore its sandbox down; only the
+                # tombstone is left to write.
+                kept = None
+            elif owners_remove:
                 kept = await self._removal_refusal(computer_id, computer, stand_in)
             elif _owners_machine(computer):
                 kept = Retirement.OWNERS_MACHINE
@@ -238,11 +264,12 @@ class RetirementMixin:
                     kept = Retirement.HANDBACK_LEFT
                 elif (
                     kept is None
-                    and stand_in is not None
+                    and (stand_in is not None or config.get(STAND_IN_HOST))
                     and await stand_in_needed(str(computer["user_id"]))
                 ):
                     # Where Home's turns run while the user's own machine is
-                    # away; its owner's remove still takes it.
+                    # away, or the computer kept for them to run on before
+                    # any has; its owner's remove still takes it.
                     logger.info(
                         f"Computer {computer_id} holds Home's stand-in for a "
                         "primary of the user's own; leaving it in place"
@@ -253,23 +280,48 @@ class RetirementMixin:
                     await clear_computer_retirement_pending(computer_id)
                 yield kept, computer
                 return
+            # In the claim itself: a remove whose tombstone write never lands,
+            # its worker gone at any point after the claim or the write
+            # missed, is the sweep's to finish as the owner's, and a claim
+            # that misses marks nothing.
+            owners = (
+                {"merge_config": {"retire_when_empty": True, RETIRE_BY_OWNER: True}}
+                if owner_request
+                else {}
+            )
             claimed = await update_computer_status(
                 computer_id,
                 ComputerStatus.STOPPING,
                 expected=computer["status"],
+                **owners,
             )
             if claimed is None:
                 if marked_here:
                     await clear_computer_retirement_pending(computer_id)
                 yield Retirement.BUSY, computer
                 return
-            await self._teardown_machine(
-                self._binding_from_computer(workspace_id, claimed)
-            )
+            binding = self._binding_from_computer(workspace_id, claimed)
+            await self._teardown_machine(binding)
+            if owners_remove and provider_class(claimed["kind"]).recreatable:
+                # Only once its sandbox is gone, which is all a cloud computer
+                # owes: what one of the user's own owes its machine comes after
+                # the tombstone, so that one is left for its owner to remove
+                # again.
+                await mark_computer_retirement_pending(
+                    computer_id, by_owner=True, torn_down=True
+                )
             deleted = await update_computer_status(
                 computer_id,
                 ComputerStatus.DELETED,
                 expected=ComputerStatus.STOPPING,
+                # Retired for being empty: a mark left on the tombstone would
+                # read as its owner's remove, which refuses Home's stand-in
+                # another. Taken off in the tombstone write itself, unless the
+                # row says by then that this is its owner's remove, so a mark
+                # adopted or a remove begun since this decision read the row
+                # is read where it lands.
+                drop_config_key=None if owner_request else STAND_IN_HOST,
+                unless_config_key=RETIRE_BY_OWNER,
             )
             # Torn down already, so the marker stays for the sweep to finish.
             outcome = Retirement.BUSY if deleted is None else Retirement.RETIRED

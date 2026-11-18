@@ -7,6 +7,7 @@ import { ModalShell } from '@/components/ui/ModalShell';
 import { useLocale } from '@/hooks/useLocale';
 import type { Computer, ComputerProviderOption, ResourceTier, WorkspaceQuota } from '@/types/api';
 import {
+  TIER_ORDER,
   TierRadioGroup,
   isTierBlocked,
   needsBiggerPlan,
@@ -158,7 +159,8 @@ function ChangeSpecPanel({
           {t(
             'computer.spec.notKept',
             "Installed packages, caches and running apps aren't kept. The Agent reinstalls what it needs.",
-          )}
+          )}{' '}
+          {t('computer.spec.gitNotKept', 'Unpushed git commits, branches and stashes on this computer are not kept.')}
         </>
       }
       onClose={onClose}
@@ -238,7 +240,16 @@ function seedTier(
   quota: WorkspaceQuota | null | undefined,
   wanted: ResourceTier | null,
 ): ResourceTier {
-  if (wanted && offer.tiers.includes(wanted) && !isTierBlocked(tierCapacity(quota, wanted))) return wanted;
+  // Only above the size it is now: the row the request was read off can be
+  // replaced by one already at or past it, which no request takes down.
+  if (
+    wanted &&
+    TIER_ORDER.indexOf(wanted) > TIER_ORDER.indexOf(current) &&
+    offer.tiers.includes(wanted) &&
+    !isTierBlocked(tierCapacity(quota, wanted))
+  ) {
+    return wanted;
+  }
   return (isDiskAlertLevel(target.disk?.level) && diskUpgradeTier(current, offer, quota)) || current;
 }
 

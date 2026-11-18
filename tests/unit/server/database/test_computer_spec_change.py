@@ -162,6 +162,19 @@ class TestSettle:
         assert params["claim_id"] == "c-1"
         assert params["outcome"].obj == {"state": "succeeded", "error": None}
 
+    async def test_success_marks_the_size_as_the_owners(self, cursor, db):
+        await S.settle_computer_spec_change(COMPUTER_ID, claim_id="c-1")
+        update = _sql(cursor).split("RETURNING")[0]
+        assert (
+            "config = COALESCE(c.config, '{}'::jsonb)"
+            " || jsonb_build_object('sized_by_owner', true)"
+        ) in update
+
+    async def test_failure_leaves_the_owners_mark_alone(self, cursor, db):
+        error = {"code": "unknown", "message": "m", "files": []}
+        await S.settle_computer_spec_change(COMPUTER_ID, claim_id="c-1", error=error)
+        assert "sized_by_owner" not in _sql(cursor)
+
     async def test_failure_writes_outcome_and_revert_in_one_statement(
         self, cursor, db
     ):

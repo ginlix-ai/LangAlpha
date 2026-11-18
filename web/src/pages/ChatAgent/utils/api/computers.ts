@@ -55,7 +55,9 @@ export async function getComputerProviders(): Promise<ComputerProvidersResponse>
 
 /**
  * Create a computer. The tier is picked here because it is the machine's
- * property, not a workspace's. In platform mode this is the metered route: a
+ * property, not a workspace's, and is sent only when given: a tier sent marks
+ * the size as the owner's choice, which then stops following the plan, so a
+ * caller whose user picked none leaves it to the server. In platform mode this is the metered route: a
  * refusal arrives as a 429 whose `detail.message` is the platform's own
  * wording, which the shared API client puts on `err.rateLimitInfo`, or as a
  * 403 when the plan lacks the tier or the provider. With no name the server
@@ -66,7 +68,7 @@ export async function createComputer(body: ComputerCreate = {}): Promise<Compute
     '/api/v1/computers',
     {
       ...(body.name ? { name: body.name } : {}),
-      resource_tier: body.resource_tier ?? 'standard',
+      ...(body.resource_tier ? { resource_tier: body.resource_tier } : {}),
       ...(body.kind ? { kind: body.kind } : {}),
       ...(body.ssh ? { ssh: body.ssh } : {}),
       ...(body.files_backup !== undefined ? { files_backup: body.files_backup } : {}),
