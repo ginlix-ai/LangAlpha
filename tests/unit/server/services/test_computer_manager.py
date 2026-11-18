@@ -146,15 +146,16 @@ def _make_binding(workspace_id="ws-a", computer_id="comp-1", **overrides):
     return ComputerBinding(workspace_id=workspace_id, computer_id=computer_id, **fields)
 
 
-def _resolving(folder=None):
+def _resolving(folder=None, owner=None):
     """Resolve every project onto one machine, without a row read.
 
     The folder rides on the binding the edge resolve returns, which is where
-    every step below it now reads the project's folder from.
+    every step below it now reads the project's folder from, and so does the
+    machine's owner, which the attach gives the folder what it has.
     """
     return AsyncMock(
         side_effect=lambda workspace_id, **_kw: _make_binding(
-            workspace_id, dir_name=folder
+            workspace_id, dir_name=folder, user_id=owner
         )
     )
 
@@ -180,7 +181,7 @@ def _attaching(manager, session, *, folder="joiner-6c06", resolve_lands=True):
     reached = SimpleNamespace(resolve=AsyncMock(side_effect=_apply), sync=AsyncMock(side_effect=_synced))
     patches = (
         ("_acquire_session", AsyncMock(return_value=session)),
-        ("resolve_binding", _resolving(folder)),
+        ("resolve_binding", _resolving(folder, owner="user-1")),
         ("_ensure_workspace_dirs", AsyncMock()),
         ("_maybe_restore_files", AsyncMock(return_value=True)),
         ("_reconcile_skills", AsyncMock(return_value=True)),
@@ -760,7 +761,7 @@ class TestEnsureStandInHost(_Base):
             return_value=_make_computer("stand-in-host", is_primary=False)
         )
         with (
-            patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=gating),
+            patch("src.server.services.platform_client.platform_gating_active", return_value=gating),
             patch(
                 "src.server.dependencies.usage_limits.computer_slot_granted",
                 AsyncMock(side_effect=lambda _u, running=False: running_slot if running else granted),
@@ -5095,7 +5096,7 @@ def _no_computer_to_promote():
 @pytest.fixture(autouse=True)
 def _local_lifecycle_capacity(monkeypatch):
     # Lifecycle fakes have no platform or database; admission is tested separately.
-    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+    monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: False)
 
 
 @pytest.mark.asyncio
@@ -5127,7 +5128,7 @@ async def test_capacity_admission_holds_user_lock_through_committed_claim(denied
         return {"status": "starting"}
 
     with (
-        patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=True),
+        patch("src.server.services.platform_client.platform_gating_active", return_value=True),
         patch("src.server.dependencies.usage_limits.enforce_computer_limit", side_effect=admit),
         patch(f"{_MACHINES}.computer_capacity_lock", capacity_lock),
         patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=_make_computer(status="stopped"))),
@@ -5150,7 +5151,7 @@ async def test_an_owners_machine_claims_its_start_outside_the_plan_cap():
     capacity = MagicMock(side_effect=AssertionError("capacity lock taken"))
     limit = AsyncMock(side_effect=AssertionError("limit read"))
     with (
-        patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=True),
+        patch("src.server.services.platform_client.platform_gating_active", return_value=True),
         patch("src.server.dependencies.usage_limits.enforce_computer_limit", limit),
         patch(f"{_MACHINES}.computer_capacity_lock", capacity),
         patch(

@@ -467,7 +467,7 @@ def _cfg(name: str = "acme", **kw) -> MCPServerConfig:
 class TestStaleServerNames:
     def _catalog(self, monkeypatch, rows):
         monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_enabled_user_servers",
+            "src.server.database.mcp_servers.list_enabled_user_servers",
             AsyncMock(return_value=rows),
         )
         monkeypatch.setattr(
@@ -498,7 +498,7 @@ class TestStaleServerNames:
         row with the same name must not make a non-user server look current."""
         self._catalog(monkeypatch, [])
         monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_workspace_servers",
+            "src.server.database.mcp_servers.list_workspace_servers",
             AsyncMock(return_value=[{
                 "name": "acme", "source": "workspace", "enabled": True,
                 "config": {"transport": "stdio", "command": "npx"},

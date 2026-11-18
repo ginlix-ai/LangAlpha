@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.server.services.policy import ALLOW_ALL
+
 PAYERS = "src.server.services.llm.payers"
 LIMITS = "src.server.dependencies.usage_limits"
 
@@ -80,7 +82,8 @@ async def _keys(user_id, slugs):
 
 
 async def _payers(
-    pref=None, *, byok=True, gated=True, connection=None, server_key=None, claude_code=(False, None)
+    pref=None, *, byok=True, gated=True, connection=None, server_key=None, claude_code=(False, None),
+    policy=ALLOW_ALL,
 ):
     """``connection`` is the stored Claude sign-in; ``gated`` a hosted
     deployment on a plan reaching tier 1; ``claude_code`` whether the user's
@@ -94,15 +97,18 @@ async def _payers(
     with (
         patch("src.llms.llm.LLM.get_model_config", return_value=_Manifest()),
         patch(f"{PAYERS}.user_models.get_model_preference", AsyncMock(return_value=pref or {})),
-        patch(f"{PAYERS}.is_byok_active", AsyncMock(return_value=byok)),
+        patch("src.server.database.api_keys.is_byok_active", AsyncMock(return_value=byok)),
         patch(f"{PAYERS}.get_byok_configs_for_providers", _keys),
         patch(f"{PAYERS}.get_oauth_connection", sign_in),
         patch(f"{LIMITS}.HOST_MODE", "platform" if gated else "oss"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform" if gated else "oss"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "https://auth.example"),
-        patch(f"{LIMITS}._fetch_platform_tier", AsyncMock(return_value=1)),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "https://auth.example"),
+        patch("src.server.services.membership.access_tier", AsyncMock(return_value=1)),
         patch(f"{PAYERS}.deployment_llm", return_value=SimpleNamespace(name="house", background=None)),
         patch(f"{PAYERS}.deployment_key", side_effect=lambda p: server_key if p == "openai" else None),
         patch(f"{PAYERS}._claude_code", AsyncMock(return_value=claude_code)),
+        patch("src.server.services.account.require_policy", AsyncMock(return_value=policy)),
     ):
         return {row.name: row.model_dump(exclude_unset=True) for row in await model_payers("u1")}
 
@@ -122,6 +128,25 @@ async def test_each_model_names_who_pays():
     assert rows["max-only"]["payer"] == "subscription"
     assert {"payer": "subscription", "plan": "GLM Coding Plan"}.items() <= rows["coded"].items()
     assert rows["nearby"]["payer"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_the_list_marks_what_the_policy_refuses_and_drops_denied_own_access():
+    from src.config.models import PolicyLayer
+    from src.server.services.policy import merge
+
+    policy = merge(None, PolicyLayer.model_validate({
+        "models": {"allowed": ["house", "tiered", "keyed", "signed"]},
+        "own_model_access": {"api_keys": False, "subscriptions": False},
+    }))
+    rows = await _payers(connection={"needs_reauth_at": None, "plan_type": "max"}, policy=policy)
+    assert (rows["premium"]["needs"], rows["premium"]["rule"]) == ("policy", "models.allowed")
+    assert (rows["signed"]["needs"], rows["signed"]["rule"]) == (
+        "policy", "own_model_access.subscriptions",
+    )
+    # The user's key for it is not used: it runs as it would for anyone.
+    assert rows["keyed"]["payer"] == "credits"
+    assert rows["house"]["payer"] == "credits"
 
 
 @pytest.mark.asyncio
@@ -182,6 +207,25 @@ async def test_a_model_the_user_added_takes_the_built_ins_place_and_needs_their_
         connection={"needs_reauth_at": None, "plan_type": "pro"},
     )
     assert {"custom": True, "payer": "subscription", "plan": "Claude"}.items() <= signed["untuned"].items()
+
+
+@pytest.mark.asyncio
+async def test_under_an_allow_list_the_built_in_is_listed_in_place_of_its_custom_shadow():
+    """As a turn reads it: the custom entry is not considered, so the name is
+    the built-in's row, and a custom-only model is listed as the list refuses it."""
+    from src.config.models import PolicyLayer
+    from src.server.services.policy import merge
+
+    policy = merge(None, PolicyLayer.model_validate({"models": {"allowed": ["tiered"]}}))
+    rows = await _payers(
+        {"custom_models": [
+            {"name": "tiered", "provider": "anthropic"},
+            {"name": "mine", "provider": "anthropic"},
+        ]},
+        policy=policy,
+    )
+    assert rows["tiered"]["custom"] is False and rows["tiered"]["payer"] == "credits"
+    assert {"custom": True, "needs": "policy", "rule": "models.allowed"}.items() <= rows["mine"].items()
 
 
 @pytest.mark.asyncio
@@ -266,5 +310,5 @@ async def test_a_turn_on_the_deployment_records_its_local_server(monkeypatch, so
     monkeypatch.setattr("src.llms.llm.LLM.get_model_config", lambda: _Manifest())
     config = SimpleNamespace(credential_source=CredentialSource(source), credential_payer=None)
 
-    await clients._stamp_credential_payer(config, "u", "m", is_byok=False, model_pref={}, byok_cache={})
+    await clients._stamp_credential_payer(config, "u", "m", is_byok=False, model_pref={}, byok_cache={}, policy=ALLOW_ALL)
     assert config.credential_payer == payer

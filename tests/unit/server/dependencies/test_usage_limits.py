@@ -139,6 +139,7 @@ class TestReleaseBurstSlot:
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
         ):
             from src.server.dependencies.usage_limits import release_burst_slot
 
@@ -156,6 +157,7 @@ class TestReleaseBurstSlot:
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
         ):
             from src.server.dependencies.usage_limits import release_burst_slot
 
@@ -173,6 +175,7 @@ class TestReleaseBurstSlot:
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
         ):
             from src.server.dependencies.usage_limits import release_burst_slot
 
@@ -189,6 +192,7 @@ class TestReleaseBurstSlot:
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
         ):
             from src.server.dependencies.usage_limits import release_burst_slot
 
@@ -205,6 +209,7 @@ class TestReleaseBurstSlot:
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
         ):
             from src.server.dependencies.usage_limits import release_burst_slot
 
@@ -234,7 +239,7 @@ class TestBurstReapHorizon:
 
 @pytest.mark.asyncio
 async def test_call_validate_for_user_uses_x_service_token_header():
-    """_call_validate_for_user sends X-Service-Token, not Authorization: Bearer."""
+    """call_validate sends X-Service-Token, not Authorization: Bearer."""
     mock_response = httpx.Response(
         200,
         json={"valid": True, "quota": {"allowed": True}},
@@ -244,13 +249,15 @@ async def test_call_validate_for_user_uses_x_service_token_header():
 
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{MODULE}.get_http_client", return_value=mock_client),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="my-secret-token"),
     ):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        result = await _call_validate_for_user("user-123", check_quota="chat")
+        result = await call_validate("user-123", check_quota="chat")
 
     assert result is not None
     assert result["valid"] is True
@@ -274,13 +281,15 @@ async def test_call_validate_for_user_no_token_omits_service_header():
 
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{MODULE}.get_http_client", return_value=mock_client),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value=""),
     ):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        await _call_validate_for_user("user-456")
+        await call_validate("user-456")
 
     call_kwargs = mock_client.post.call_args
     headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
@@ -292,11 +301,11 @@ async def test_call_validate_for_user_no_token_omits_service_header():
 
 @pytest.mark.asyncio
 async def test_call_validate_for_user_returns_none_when_no_auth_url():
-    """When AUTH_SERVICE_URL is unset, _call_validate_for_user returns None immediately."""
-    with patch(f"{MODULE}.AUTH_SERVICE_URL", ""):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+    """When AUTH_SERVICE_URL is unset, call_validate returns None immediately."""
+    with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
+        from src.server.services.platform_client import call_validate
 
-        result = await _call_validate_for_user("user-789")
+        result = await call_validate("user-789")
 
     assert result is None
 
@@ -310,13 +319,15 @@ async def test_call_validate_for_user_sends_check_quota_in_body():
 
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{MODULE}.get_http_client", return_value=mock_client),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="token"),
     ):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        await _call_validate_for_user("user-123", check_quota="workspace", byok=True)
+        await call_validate("user-123", check_quota="workspace", byok=True)
 
     call_kwargs = mock_client.post.call_args
     body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -332,9 +343,9 @@ async def test_call_validate_for_user_fails_open_on_exception():
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        result = await _call_validate_for_user("user-123")
+        result = await call_validate("user-123")
 
     assert result is None
 
@@ -350,15 +361,17 @@ def _unreachable_service(mock_client):
 
     stack = ExitStack()
     stack.enter_context(patch(f"{MODULE}.HOST_MODE", "platform"))
+    stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
     stack.enter_context(patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch(f"{MODULE}.get_http_client", return_value=mock_client))
-    stack.enter_context(patch(f"{MODULE}._VALIDATE_RETRY_DELAYS", (0,) * _retries()))
+    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
+    stack.enter_context(patch("src.server.services.platform_client._VALIDATE_RETRY_DELAYS", (0,) * _retries()))
     stack.enter_context(patch("os.getenv", return_value="token"))
     return stack
 
 
 def _retries():
-    from src.server.dependencies.usage_limits import _VALIDATE_RETRY_DELAYS
+    from src.server.services.platform_client import _VALIDATE_RETRY_DELAYS
 
     return len(_VALIDATE_RETRY_DELAYS)
 
@@ -370,13 +383,13 @@ async def test_transport_failure_is_retried_for_strict_callers():
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import (
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
     assert mock_client.post.await_count == 1 + _retries()
 
@@ -393,9 +406,9 @@ async def test_fail_open_callers_do_not_retry():
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        assert await _call_validate_for_user("user-1") is None
+        assert await call_validate("user-1") is None
 
     assert mock_client.post.await_count == 1
 
@@ -409,9 +422,9 @@ async def test_retry_recovers_a_restarting_service():
     )
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        assert await _call_validate_for_user("user-1", strict=True) == {"valid": True}
+        assert await call_validate("user-1", strict=True) == {"valid": True}
 
 
 @pytest.mark.asyncio
@@ -421,13 +434,13 @@ async def test_a_rejected_service_token_is_not_retried():
     mock_client.post = AsyncMock(return_value=httpx.Response(403, text="Invalid service token"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import (
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
     assert mock_client.post.await_count == 1
 
@@ -439,13 +452,13 @@ async def test_strict_callers_are_told_there_was_no_verdict():
     mock_client.post = AsyncMock(return_value=httpx.Response(500, text="boom"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import (
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
 
 @pytest.mark.asyncio
@@ -462,13 +475,13 @@ async def test_an_unreadable_200_is_no_verdict_and_still_retried():
     )
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import (
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
     assert mock_client.post.await_count == 1 + _retries()
 
@@ -481,9 +494,9 @@ async def test_an_unreadable_200_still_fails_open_for_everyone_else():
     mock_client.post = AsyncMock(return_value=httpx.Response(200, text="not json"))
 
     with _unreachable_service(mock_client):
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        assert await _call_validate_for_user("user-1") is None
+        assert await call_validate("user-1") is None
 
 
 def _restarting_service(refused_for: float, *, attempt_takes: float = 0.0):
@@ -507,8 +520,10 @@ def _restarting_service(refused_for: float, *, attempt_takes: float = 0.0):
     mock_client.post = AsyncMock(side_effect=post)
     stack = ExitStack()
     stack.enter_context(patch(f"{MODULE}.HOST_MODE", "platform"))
+    stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
     stack.enter_context(patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch(f"{MODULE}.get_http_client", return_value=mock_client))
+    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
     stack.enter_context(patch("os.getenv", return_value="token"))
     stack.enter_context(patch("asyncio.sleep", new=AsyncMock(side_effect=sleep)))
     stack.enter_context(patch(f"{MODULE}.time.monotonic", side_effect=lambda: clock[0]))
@@ -521,9 +536,9 @@ async def test_strict_callers_wait_out_an_in_place_restart():
     in that gap gets its verdict once the service is back, not a 503."""
     stack, mock_client, clock = _restarting_service(refused_for=5.0)
     with stack:
-        from src.server.dependencies.usage_limits import _call_validate_for_user
+        from src.server.services.platform_client import call_validate
 
-        assert await _call_validate_for_user("user-1", strict=True) == {
+        assert await call_validate("user-1", strict=True) == {
             "valid": True, "allowed": True,
         }
 
@@ -537,14 +552,14 @@ async def test_strict_callers_give_up_within_the_window():
     hears there was no verdict, rather than holding the turn indefinitely."""
     stack, _mock_client, clock = _restarting_service(refused_for=float("inf"))
     with stack:
-        from src.server.dependencies.usage_limits import (
-            _VALIDATE_RETRY_WINDOW,
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
+            _VALIDATE_RETRY_WINDOW,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
     assert clock[0] <= _VALIDATE_RETRY_WINDOW
 
@@ -558,14 +573,14 @@ async def test_slow_attempts_do_not_stretch_the_window():
         refused_for=float("inf"), attempt_takes=3.0
     )
     with stack:
-        from src.server.dependencies.usage_limits import (
-            _VALIDATE_RETRY_WINDOW,
+        from src.server.services.platform_client import (
+            call_validate,
             QuotaServiceUnavailable,
-            _call_validate_for_user,
+            _VALIDATE_RETRY_WINDOW,
         )
 
         with pytest.raises(QuotaServiceUnavailable):
-            await _call_validate_for_user("user-1", strict=True)
+            await call_validate("user-1", strict=True)
 
     assert clock[0] <= _VALIDATE_RETRY_WINDOW + 3.0
     assert mock_client.post.await_count < 1 + _retries()
@@ -651,7 +666,7 @@ class TestCreditGateFailsClosed:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-        with patch(f"{MODULE}.HOST_MODE", "oss"), patch(f"{MODULE}.get_http_client", return_value=mock_client):
+        with patch(f"{MODULE}.HOST_MODE", "oss"), patch("src.server.services.platform_client.HOST_MODE", "oss"), patch("src.server.services.platform_client.get_http_client", return_value=mock_client):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
             await enforce_credit_limit("user-1", byok=False)
@@ -715,8 +730,10 @@ class TestEnforceCreditLimitByok:
 
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
@@ -741,8 +758,10 @@ class TestEnforceCreditLimitByok:
 
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
@@ -755,8 +774,10 @@ class TestEnforceCreditLimitByok:
 
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", mock_validate),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", mock_validate),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
@@ -782,8 +803,10 @@ class TestEnforceCreditLimitByok:
 
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
@@ -806,8 +829,10 @@ class TestEnforceCreditLimitByok:
         }
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
             with pytest.raises(HTTPException) as exc_info:
@@ -818,7 +843,7 @@ class TestEnforceCreditLimitByok:
     @pytest.mark.asyncio
     async def test_no_auth_service_url_returns_immediately(self):
         """When AUTH_SERVICE_URL is unset, enforce_credit_limit is a no-op."""
-        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""):
+        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
             await enforce_credit_limit("user-1", byok=True)
@@ -895,7 +920,7 @@ class TestGetCapacityStatus:
     @pytest.mark.asyncio
     async def test_oss_mode_returns_none(self):
         """OSS mode has no quotas — returns None without calling the platform."""
-        with patch(f"{MODULE}.HOST_MODE", "oss"):
+        with patch(f"{MODULE}.HOST_MODE", "oss"), patch("src.server.services.platform_client.HOST_MODE", "oss"):
             from src.server.dependencies.usage_limits import get_capacity_status
 
             assert await get_capacity_status("user-1", "spec_performance") is None
@@ -903,7 +928,7 @@ class TestGetCapacityStatus:
     @pytest.mark.asyncio
     async def test_no_auth_service_url_returns_none(self):
         """No AUTH_SERVICE_URL configured — returns None immediately."""
-        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""):
+        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
             from src.server.dependencies.usage_limits import get_capacity_status
 
             assert await get_capacity_status("user-1", "spec_max") is None
@@ -914,8 +939,10 @@ class TestGetCapacityStatus:
         quota_response = {"quota": {"capacity_used": 1, "capacity_limit": 3}}
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -927,8 +954,10 @@ class TestGetCapacityStatus:
         quota_response = {"quota": {"capacity_used": 5, "capacity_limit": -1}}
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -945,8 +974,10 @@ class TestGetCapacityStatus:
         quota_response = {"quota": {"allowed": True, "capacity_limit": -1}}
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -958,8 +989,10 @@ class TestGetCapacityStatus:
         quota_response = {"quota": {"active": 2, "limit": 4}}
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -970,8 +1003,10 @@ class TestGetCapacityStatus:
         """No quota object in the response — degrade to None, no display."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value={"access_tier": 1}),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value={"access_tier": 1}),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -983,8 +1018,10 @@ class TestGetCapacityStatus:
         quota_response = {"quota": {"capacity_used": 1}}  # no limit
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -995,8 +1032,10 @@ class TestGetCapacityStatus:
         """Validate returns None (platform down) — fail soft to None."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=None),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
 
@@ -1084,7 +1123,8 @@ class TestAlwaysOnEntitlementLost:
         """OSS mode never reconciles — returns False without calling validate."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import always_on_entitlement_lost
 
@@ -1096,9 +1136,11 @@ class TestAlwaysOnEntitlementLost:
         """200 with the scope present → still entitled → False."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": ["workspace:always_on", "workspace:spec:max"]},
             ),
@@ -1112,9 +1154,11 @@ class TestAlwaysOnEntitlementLost:
         """200 with a real scope list lacking always-on → entitlement lost → True."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": ["workspace:spec:performance"]},
             ),
@@ -1129,9 +1173,11 @@ class TestAlwaysOnEntitlementLost:
         list is present, so this is a definitive answer, not an outage."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": []},
             ),
@@ -1146,8 +1192,10 @@ class TestAlwaysOnEntitlementLost:
         An outage must never mass-disable always-on."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=None),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import always_on_entitlement_lost
 
@@ -1158,9 +1206,11 @@ class TestAlwaysOnEntitlementLost:
         """200 but scopes missing/None (not a list) → ambiguous → fail-safe keep."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"valid": True},
             ),
@@ -1182,7 +1232,8 @@ class TestEnforceCapacity:
         """OSS mode never counts — returns without calling the platform."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
 
@@ -1194,8 +1245,10 @@ class TestEnforceCapacity:
         """No AUTH_SERVICE_URL (partial deploy) — fail-open, no platform call."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", ""),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
 
@@ -1216,8 +1269,10 @@ class TestEnforceCapacity:
         }
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
 
@@ -1236,9 +1291,11 @@ class TestEnforceCapacity:
         """allowed:True → no raise."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"quota": {"allowed": True}},
             ),
@@ -1252,8 +1309,10 @@ class TestEnforceCapacity:
         """validate None (platform down) → fail-open, never block the user."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=None),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
 
@@ -1264,9 +1323,11 @@ class TestEnforceCapacity:
         """200 without a quota object → fail-open (no count to enforce)."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"access_tier": 1},
             ),
@@ -1303,8 +1364,10 @@ class TestEnforceComputerCount:
         validate = AsyncMock(return_value=quota_response)
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", validate),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", validate),
         ):
             from src.server.dependencies.usage_limits import enforce_computer_count
 
@@ -1322,9 +1385,11 @@ class TestEnforceComputerCount:
         falls back on the running-computer limit it also asks."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1338,8 +1403,10 @@ class TestEnforceComputerCount:
         validate = AsyncMock(return_value={"quota": {"allowed": True}})
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", validate),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", validate),
         ):
             from src.server.dependencies.usage_limits import enforce_computer_limit
 
@@ -1367,7 +1434,9 @@ class TestAssertSpecAllowed:
         """Non-empty scope list lacking the performance scope → 403, no count check."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1388,7 +1457,9 @@ class TestAssertSpecAllowed:
         """Scope held + tier change → count quota enforced for spec_performance."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1408,7 +1479,9 @@ class TestAssertSpecAllowed:
         """current_tier == tier → scope checked but no new slot counted."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1427,7 +1500,9 @@ class TestAssertSpecAllowed:
         back: the platform counts it among the computers the quota covers."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1447,7 +1522,9 @@ class TestAssertSpecAllowed:
         """max tier gates on the spec:max scope + spec_max count."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1466,7 +1543,9 @@ class TestAssertSpecAllowed:
         entry would leave the tier ungated."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1487,14 +1566,16 @@ class TestAssertSpecAllowed:
         """Small to Extra Large takes a new slot, so the platform's count decides."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
                 return_value=["workspace:spec:xlarge"],
             ),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={
                     "quota": {
@@ -1521,7 +1602,9 @@ class TestAssertSpecAllowed:
     async def test_a_step_down_from_xlarge_counts_the_target_tier(self):
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1541,12 +1624,14 @@ class TestAssertSpecAllowed:
         Yields the scope and validate mocks."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[scope]
             ) as scopes,
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value=None if quota is None else {"quota": quota},
             ) as validate,
@@ -1652,7 +1737,8 @@ class TestAssertSpecAllowed:
         """OSS mode: scope + count gates both fail open, so any tier is allowed."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
         ):
             from src.server.dependencies.usage_limits import assert_spec_allowed
@@ -1673,7 +1759,9 @@ class TestAssertAlwaysOnAllowed:
         """Non-empty scope list lacking always-on → 403, count not reached."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1694,7 +1782,9 @@ class TestAssertAlwaysOnAllowed:
         """always-on scope held → count quota enforced for always_on."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1712,8 +1802,9 @@ class TestAssertAlwaysOnAllowed:
         """OSS mode: both gates fail open — always-on never blocked."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import assert_always_on_allowed
 
@@ -1737,6 +1828,7 @@ class TestRequireWorkspaceScope:
         """OSS mode: gate inactive → returns without fetching scopes."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
         ):
             from src.server.dependencies.usage_limits import require_workspace_scope
@@ -1749,7 +1841,9 @@ class TestRequireWorkspaceScope:
         """Unreachable platform (None) → fail-open, no 403."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=None
             ),
@@ -1763,7 +1857,9 @@ class TestRequireWorkspaceScope:
         """A platform-confirmed empty list lacks every scope → 403."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[]),
         ):
             from src.server.dependencies.usage_limits import require_workspace_scope
@@ -1777,7 +1873,9 @@ class TestRequireWorkspaceScope:
         """Definitive list containing the scope → no raise."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1805,8 +1903,10 @@ class TestRequireWorkspaceScope:
             _scope_cache["user-up"] = ([], time.time() + 300 - 20)
             with (
                 patch(f"{MODULE}.HOST_MODE", "platform"),
+                patch("src.server.services.platform_client.HOST_MODE", "platform"),
                 patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-                patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=answer) as validate,
+                patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=answer) as validate,
             ):
                 if refused:
                     with pytest.raises(HTTPException):
@@ -1827,8 +1927,10 @@ class TestRequireWorkspaceScope:
         _scope_cache["user-new"] = ([], time.time() + 300 - 5)
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as validate,
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as validate,
         ):
             with pytest.raises(HTTPException):
                 await require_workspace_scope("user-new", "workspace:spec:performance")
@@ -1850,8 +1952,10 @@ class TestRequireWorkspaceScope:
             _scope_cache["user-back"] = ([], time.time() + 300 - age)
             with (
                 patch(f"{MODULE}.HOST_MODE", "platform"),
+                patch("src.server.services.platform_client.HOST_MODE", "platform"),
                 patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-                patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=answer) as validate,
+                patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=answer) as validate,
             ):
                 if refused:
                     with pytest.raises(HTTPException):
@@ -1871,8 +1975,10 @@ class TestRequireWorkspaceScope:
         _scope_cache["user-ok"] = (["workspace:spec:performance"], time.time() + 300)
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as validate,
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as validate,
         ):
             await require_workspace_scope("user-ok", "workspace:spec:performance")
         validate.assert_not_awaited()
@@ -1888,8 +1994,8 @@ class TestRequireWorkspaceScope:
 def _platform_scopes(scopes):
     """Patches for platform mode with the given cached scope answer."""
     return (
-        patch(f"{MODULE}.HOST_MODE", "platform"),
-        patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=scopes),
     )
 
@@ -1908,6 +2014,7 @@ class TestAssertProviderAllowed:
     async def test_oss_mode_is_noop(self):
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
         ):
             from src.server.dependencies.usage_limits import assert_provider_allowed
@@ -1948,6 +2055,7 @@ class TestGetProviderAllowances:
     async def test_oss_mode_reads_the_default_as_allowed_and_others_as_ungated(self):
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
         ):
             from src.server.dependencies.usage_limits import get_provider_allowances
@@ -2004,7 +2112,7 @@ class TestGetUserScopes:
     async def test_unreachable_returns_none(self):
         """validate None → None (the fail-open signal), not []."""
         with patch(
-            f"{MODULE}._call_validate_for_user",
+            "src.server.services.platform_client.call_validate",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -2020,7 +2128,7 @@ class TestGetUserScopes:
     async def test_omitted_scopes_key_returns_none(self):
         """A 200 without a scopes key → None (can't confirm), not []."""
         with patch(
-            f"{MODULE}._call_validate_for_user",
+            "src.server.services.platform_client.call_validate",
             new_callable=AsyncMock,
             return_value={"valid": True},
         ):
@@ -2036,7 +2144,7 @@ class TestGetUserScopes:
     async def test_definitive_empty_list_preserved(self):
         """A 200 with scopes: [] → [] (definitive), distinct from None."""
         with patch(
-            f"{MODULE}._call_validate_for_user",
+            "src.server.services.platform_client.call_validate",
             new_callable=AsyncMock,
             return_value={"scopes": []},
         ):
@@ -2060,7 +2168,7 @@ class TestGetUserScopes:
         )
 
         with patch(
-            f"{MODULE}._call_validate_for_user",
+            "src.server.services.platform_client.call_validate",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -2069,7 +2177,7 @@ class TestGetUserScopes:
         assert _scope_cache["user-4"][1] - time.time() <= 15.5
 
         with patch(
-            f"{MODULE}._call_validate_for_user",
+            "src.server.services.platform_client.call_validate",
             new_callable=AsyncMock,
             return_value={"scopes": ["workspace.spec.performance"]},
         ):
@@ -2102,6 +2210,7 @@ class TestSpecGrantable:
         """OSS mode: gate inactive → grantable, no scope fetch."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock) as mock_scopes,
         ):
             from src.server.dependencies.usage_limits import spec_grantable
@@ -2167,7 +2276,9 @@ class TestSpecGrantable:
         """Unreachable scopes (None) + count no-op → fail-open True (never block)."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=None
             ),
@@ -2185,7 +2296,9 @@ class TestSpecGrantable:
         fail-open: the scope gate rejects, so spec_grantable is False."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[]),
             patch(f"{MODULE}.enforce_capacity", new_callable=AsyncMock) as mock_cap,
         ):
@@ -2211,7 +2324,8 @@ class TestSpecEntitlementLost:
         """OSS mode never reconciles — returns False without calling validate."""
         with (
             patch(f"{MODULE}.HOST_MODE", "oss"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.HOST_MODE", "oss"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import spec_entitlement_lost
 
@@ -2224,8 +2338,10 @@ class TestSpecEntitlementLost:
         An outage must never mass-reclaim elevated tiers."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=None),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import spec_entitlement_lost
 
@@ -2236,9 +2352,11 @@ class TestSpecEntitlementLost:
         """200 but scopes missing/None (not a list) → ambiguous → fail-safe keep."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"valid": True},
             ),
@@ -2252,9 +2370,11 @@ class TestSpecEntitlementLost:
         """200 with a real scope list lacking the max scope → tier lost → True."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": ["workspace:spec:performance"]},
             ),
@@ -2268,9 +2388,11 @@ class TestSpecEntitlementLost:
         """200 with the performance scope present → still entitled → False."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": ["workspace:spec:performance", "workspace:always_on"]},
             ),
@@ -2283,9 +2405,11 @@ class TestSpecEntitlementLost:
     async def test_xlarge_is_reclaimed_when_its_scope_is_gone(self):
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(
-                f"{MODULE}._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
                 return_value={"scopes": ["workspace:spec:max"]},
             ),
@@ -2299,8 +2423,10 @@ class TestSpecEntitlementLost:
         """Ungated tiers short-circuit to False before any platform call."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch("src.server.services.platform_client.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as mock_v,
+            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import spec_entitlement_lost
 

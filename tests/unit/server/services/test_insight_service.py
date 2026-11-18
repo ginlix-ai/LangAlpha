@@ -520,6 +520,70 @@ class TestResearch:
         assert fetch.fetch_llm_client_override.get() is None
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "policy,falls_back",
+        [
+            ("allow_all", True),
+            ("restricted", False),
+            (None, False),  # the account is unknown
+        ],
+    )
+    async def test_the_deployments_models_stand_in_only_for_an_unrestricted_user(
+        self, policy, falls_back
+    ):
+        """They were never held to the user's policy, so a failure resolving
+        the user's own must not run them over a restricted user's data."""
+        from langchain_core.messages import AIMessage
+
+        from src.config.models import PolicyLayer
+        from src.server.services.policy import ALLOW_ALL, merge
+
+        policies = {
+            "allow_all": ALLOW_ALL,
+            "restricted": merge(None, PolicyLayer.model_validate({"models": {"allowed": ["m"]}})),
+            None: None,
+        }
+
+        class Graph:
+            async def ainvoke(self, state, config):
+                return {"messages": [AIMessage(content="brief")]}
+
+        with patch("src.server.app.setup.agent_config", MagicMock()), \
+             patch(
+                 "src.server.services.llm.config.resolve_llm_config",
+                 AsyncMock(side_effect=RuntimeError("no client")),
+             ), \
+             patch(
+                 "src.server.services.account.policy_for",
+                 AsyncMock(return_value=policies[policy]),
+             ), \
+             patch("ptc_agent.agent.insight_graph.build_insight_graph", return_value=Graph()):
+            if falls_back:
+                assert await _research("p", user_id="u", insight_type="personalized") == "brief"
+            else:
+                with pytest.raises(RuntimeError, match="no client"):
+                    await _research("p", user_id="u", insight_type="personalized")
+
+    @pytest.mark.asyncio
+    async def test_a_suspended_account_gets_no_run_on_the_deployments_models(self):
+        from src.server.services.account_contract import Account, Org
+        from src.server.services.account import AccountSuspended, Standing
+
+        suspended = Account(org=Org("o", "Acme", suspended=True))
+        refusal = Standing(suspended, suspended).refusal()
+        fallback = AsyncMock()
+        with patch("src.server.app.setup.agent_config", MagicMock()), \
+             patch(
+                 "src.server.services.llm.config.resolve_llm_config",
+                 AsyncMock(side_effect=refusal),
+             ), \
+             patch("src.server.services.account.policy_for", fallback), \
+             pytest.raises(AccountSuspended):
+            await _research("p", user_id="u", insight_type="personalized")
+        fallback.assert_not_awaited()
+
+
 class TestBuildUserContext:
     """Test InsightService._build_user_context."""
 

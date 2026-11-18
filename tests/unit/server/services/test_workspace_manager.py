@@ -5748,7 +5748,7 @@ class TestFirstBuildTier:
 
         with (
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=True,
             ) as self.gating,
             patch(f"{_ENTITLEMENTS}.computer_capacity_lock", lock),
@@ -6060,7 +6060,7 @@ class TestSetComputerAlwaysOn:
             patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
             patch(f"{_ENTITLEMENTS}.computer_capacity_lock", capacity),
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=True,
             ),
             patch(
@@ -6103,7 +6103,7 @@ class TestSetComputerAlwaysOn:
             patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
             patch(f"{_ENTITLEMENTS}.computer_capacity_lock", capacity),
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=True,
             ),
             patch("src.server.dependencies.usage_limits.assert_always_on_allowed", gate),
@@ -6768,7 +6768,7 @@ class TestSetWorkspaceSpec:
             patch(f"{_SPEC}.get_computer", AsyncMock(return_value=computer)),
             patch(f"{_SPEC}.computer_capacity_lock", capacity),
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=True,
             ),
             patch(
@@ -8745,6 +8745,23 @@ class TestGeneratedContentGoesToTheHeldFolder:
         assert (("ws-1", "sandbox-abc") in manager._projects_attached) is not link_failed
 
     @pytest.mark.asyncio
+    async def test_a_refresh_syncs_as_the_computers_owner(self):
+        """Whoever asks for a refresh, the machine is given its owner's vault
+        and skills. On a shared computer the one asking is another member,
+        whose own secrets must never land where every member's code runs."""
+        manager, sandbox = self._asset_sync([])
+        binding = _binding("ws-1", dir_name="Research")
+        manager.resolve_binding = AsyncMock(return_value=binding)
+        manager._sync_project_assets = AsyncMock(return_value="synced")
+
+        assert await manager.refresh_project_assets("ws-1", sandbox) == "synced"
+
+        assert manager._sync_project_assets.await_args.args[:3] == (
+            binding, binding.user_id, sandbox,
+        )
+        assert binding.user_id
+
+    @pytest.mark.asyncio
     async def test_unheld_helpers_still_take_their_own_hold(self):
         """The refresh route, provisioning's restore and the discovery task's
         sync run under no caller's hold, so each holds the folder it writes into
@@ -8762,7 +8779,7 @@ class TestGeneratedContentGoesToTheHeldFolder:
             stack.enter_context(
                 patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", restore)
             )
-            assert await manager.refresh_project_assets("ws-1", "user-1", sandbox)
+            assert await manager.refresh_project_assets("ws-1", sandbox)
             assert await manager._maybe_restore_files(
                 _binding("ws-1", dir_name="Research"), sandbox
             )
@@ -8834,7 +8851,7 @@ class TestSupersededResolve:
 @pytest.fixture(autouse=True)
 def _local_lifecycle_capacity(monkeypatch):
     # Lifecycle fakes have no platform or database; admission is tested separately.
-    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+    monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: False)
 
 
 @pytest.mark.parametrize(

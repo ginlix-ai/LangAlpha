@@ -442,6 +442,24 @@ async def test_an_admission_refusal_names_a_run_only_when_one_started(coordinato
     ]
 
 
+@pytest.mark.asyncio
+async def test_another_members_refusal_names_the_member_on_the_frame(coordinator):
+    # The composer says whose turn holds the send, from the frame alone.
+    from fastapi import HTTPException
+
+    member = {"user_id": "u-maya", "name": "Maya Okafor"}
+    detail = {"code": "another_member", "message": "Maya Okafor's turn is running", "member": member}
+    frames = await _fail(
+        HTTPException(status_code=409, detail=detail),
+        scope=_scope(None),
+        request=_make_request(**_SEND),
+    )
+
+    assert [(name, data["code"], data.get("member")) for name, data in frames] == [
+        ("error", "another_member", member)
+    ]
+
+
 _FIND_KEY = "src.server.database.runs.lifecycle.find_run_by_request_key"
 _FIRST_COPY = {
     "conversation_response_id": "r-first",
@@ -621,6 +639,118 @@ async def test_http_body_still_aborts_on_a_failure_with_no_frame():
 
     with pytest.raises(ConnectionError):
         await _consume(error_handling.end_after_failure_frame(stream))
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_ends_the_turn_with_no_recovery(coordinator):
+    """A retry or resend meets the same refusal while the policy stands, so
+    the frame names no ``recovery`` and the client offers neither."""
+    import json
+
+    from src.server.services.policy import OWN_MACHINES, policy_denied
+
+    err = policy_denied(OWN_MACHINES, "Your own machines cannot be used.", "organization", status_code=403)
+    with patch(RELEASE, new=AsyncMock()):
+        events = await _consume(error_handling.handle_workflow_error(
+            e=err,
+            thread_id="t-policy",
+            user_id="u-1",
+            workspace_id="ws-1",
+            handler=None,
+            token_callback=None,
+            scope=_scope(_run_handle()),
+            start_time=0.0,
+            request=_make_request(),
+            is_byok=False,
+        ))
+    assert len(events) == 1 and events[0].startswith("event: error\n")
+    payload = json.loads(events[0].split("data: ", 1)[1])
+    assert "recovery" not in payload
+    assert payload["error_type"] == "policy_denied"
+    assert payload["rule"] == OWN_MACHINES
+    assert payload["error"] == "Your own machines cannot be used."
+    coordinator.finalize_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_suspended_account_ends_the_turn_with_its_own_frame(coordinator):
+    """Refused at acquire for a computer started before the suspension: as
+    lasting as a policy refusal, so no ``recovery`` either, and its own type."""
+    import json
+
+    from src.server.services.account_contract import Account, Org
+    from src.server.services.account import Standing
+
+    suspended = Account(org=Org("o-1", "Acme", suspended=True))
+    err = Standing(suspended, suspended).refusal()
+    with patch(RELEASE, new=AsyncMock()):
+        events = await _consume(error_handling.handle_workflow_error(
+            e=err,
+            thread_id="t-suspended",
+            user_id="u-1",
+            workspace_id="ws-1",
+            handler=None,
+            token_callback=None,
+            scope=_scope(_run_handle()),
+            start_time=0.0,
+            request=_make_request(),
+            is_byok=False,
+        ))
+    assert len(events) == 1 and events[0].startswith("event: error\n")
+    payload = json.loads(events[0].split("data: ", 1)[1])
+    assert "recovery" not in payload
+    assert payload["error_type"] == "account_suspended"
+    assert payload["organization"] == "Acme"
+    assert payload["error"] == str(err)
+    assert "rule" not in payload and "set_by" not in payload
+    coordinator.finalize_run.assert_awaited_once()
+
+
+def _unavailable(cause: Exception, *, starting: bool):
+    from src.server.services.computer_errors import ComputerUnavailableError
+
+    try:
+        raise ComputerUnavailableError(starting=starting) from cause
+    except ComputerUnavailableError as e:
+        return e
+
+
+async def _finalized_text(coordinator, err, attempt_no=1):
+    with patch(RELEASE, new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        frames = _frames(await _consume(error_handling.handle_workflow_error(
+            e=err, thread_id="t-1", user_id="u-1", workspace_id="ws-1",
+            handler=None, token_callback=None,
+            scope=_scope(_run_handle(attempt_no)), start_time=0.0,
+            request=_make_request(**_SEND), is_byok=False,
+        )))
+    _, outcome = coordinator.finalize_run.await_args.args
+    return frames, outcome.errors[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt_no", [1, 99])
+async def test_a_computer_still_starting_is_kept_in_plain_words(coordinator, attempt_no):
+    # A shared workspace's second turn waiting on the first one's start:
+    # retried as the lock timeout always was, kept as the person reads it.
+    from src.server.services.computer_errors import MachineLockTimeout
+
+    err = _unavailable(MachineLockTimeout("Timeout acquiring lock for computer c-1 after 60.0s"), starting=True)
+    frames, text = await _finalized_text(coordinator, err, attempt_no)
+
+    assert text == "This workspace's computer is still starting. Try again in a moment."
+    assert frames[0][0] == ("retry" if attempt_no == 1 else "error")
+
+
+@pytest.mark.asyncio
+async def test_a_computer_that_could_not_start_is_kept_in_plain_words(coordinator):
+    err = _unavailable(RuntimeError("Failed to create sandbox: Cannot connect to host 127.0.0.1:9"), starting=False)
+    frames, text = await _finalized_text(coordinator, err)
+
+    assert text == "This workspace's computer couldn't be started. Try again in a moment."
+    assert [(name, data["error"], data["error_type"]) for name, data in frames] == [
+        ("error", text, "workflow_error")
+    ]
 
 
 def _machine_asleep(wrap):

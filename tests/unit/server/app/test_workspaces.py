@@ -33,7 +33,7 @@ COMPUTER_ID = "11111111-1111-4111-8111-111111111111"
 @pytest.fixture(autouse=True)
 def workspace_quota_gate_off():
     with patch(
-        "src.server.dependencies.usage_limits.platform_gating_active",
+        "src.server.services.platform_client.platform_gating_active",
         return_value=False,
     ):
         yield
@@ -84,17 +84,17 @@ async def client():
 def test_home_is_told_by_is_home_and_reads_its_real_status():
     """Bound to a computer, Home's row carries the computer's status like any
     workspace on it, so clients tell Home by ``is_home``, never by status."""
-    from src.server.app.workspaces import _workspace_to_response
+    from src.server.app.workspaces import workspace_response
     from src.server.database.home_workspace import get_home_workspace_id
 
     home_id = get_home_workspace_id("test-user-123")
-    bound = _workspace_to_response(_ws(workspace_id=home_id, name="Home"))
+    bound = workspace_response(_ws(workspace_id=home_id, name="Home"))
     assert (bound.status, bound.is_home) == ("running", True)
-    unbound = _workspace_to_response(
+    unbound = workspace_response(
         _ws(workspace_id=home_id, name="Home", status="unbound", computer_id=None)
     )
     assert (unbound.status, unbound.is_home) == ("unbound", True)
-    assert _workspace_to_response(_ws()).is_home is False
+    assert workspace_response(_ws()).is_home is False
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +471,7 @@ def _quota_platform(scopes, capacity):
     counts = AsyncMock(side_effect=lambda _uid, quota: capacity[quota])
     return (
         patch(
-            "src.server.dependencies.usage_limits.platform_gating_active",
+            "src.server.services.platform_client.platform_gating_active",
             return_value=True,
         ),
         patch(
@@ -550,9 +550,9 @@ async def test_get_workspace_quota_back_from_the_plan_page_reads_the_plan_again(
     for query, limit in (("", 0), ("?plan_changed=true", 3)):
         _scope_cache["test-user-123"] = ([], time.time() + 300 - 5)
         with (
-            patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=True),
+            patch("src.server.services.platform_client.platform_gating_active", return_value=True),
             patch(
-                "src.server.dependencies.usage_limits._call_validate_for_user",
+                "src.server.services.platform_client.call_validate",
                 new=AsyncMock(return_value={"scopes": ["workspace:spec:performance"]}),
             ),
             patch("src.server.dependencies.usage_limits.get_capacity_status", new=counts),
@@ -567,7 +567,7 @@ async def test_get_workspace_quota_back_from_the_plan_page_reads_the_plan_again(
 async def test_get_workspace_quota_oss_all_null(client):
     """OSS mode: every capability is None, so the response fields are null."""
     with patch(
-        "src.server.dependencies.usage_limits.platform_gating_active",
+        "src.server.services.platform_client.platform_gating_active",
         return_value=False,
     ):
         resp = await client.get("/api/v1/workspaces/quota")

@@ -824,7 +824,7 @@ class TestStopMirrorsEveryProjectOnTheMachine(_Base):
 @pytest.fixture(autouse=True)
 def _local_lifecycle_capacity(monkeypatch):
     # Lifecycle fakes have no platform or database; admission is tested separately.
-    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+    monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: False)
 
 
 class TestArchiveClaim(_Base):

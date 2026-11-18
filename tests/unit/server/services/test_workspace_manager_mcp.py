@@ -340,6 +340,8 @@ class TestWarmSessionOnAMachineThatIsAway:
             kind="ssh",
             root_dir="/Users/me/langalpha",
             provider_config={"host": "mac-mini.local", "user": "me", "tunnel": "tun-1"},
+            # A machine the user brought is asked about under its owner's policy.
+            user_id="user-1",
             **kw,
         )
 
@@ -1749,7 +1751,7 @@ class TestSetComputerSpecDiskGuard:
                 new=AsyncMock(return_value={"status": "starting"}),
             ) as claim,
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=False,
             ),
             patch(
@@ -2111,8 +2113,8 @@ class TestVaultPushPublishesTheOwnersVault:
             )
             manager = McpSecretsMixin()
             manager._live_session_computer = lambda wid: "comp-1"
-            manager.get_session_if_ready = lambda wid, expected_sandbox_id, target: (
-                SimpleNamespace(sandbox=sandbox)
+            manager.get_session_if_ready_for_work = AsyncMock(
+                return_value=SimpleNamespace(sandbox=sandbox)
             )
             return manager, sandbox
 

@@ -335,7 +335,8 @@ async def test_list_surfaces_applied_config_version(client):
     )
 
 
-def test_live_sandbox_declines_a_superseded_handle():
+@pytest.mark.asyncio
+async def test_live_sandbox_declines_a_superseded_handle():
     """Discovery probes a sandbox and persists the schemas under the workspace,
     so a handle for a replaced sandbox would attribute a dead sandbox's toolset
     to the live one. Declining leaves the rows ``pending``, which is recoverable.
@@ -344,15 +345,17 @@ def test_live_sandbox_declines_a_superseded_handle():
 
     ws = _ws(sandbox_id="sb-replaced")
     wm = MagicMock()
-    wm.get_session_if_ready.return_value = None  # bound elsewhere ⇒ declined
+    # bound elsewhere ⇒ declined
+    wm.get_session_if_ready_for_work = AsyncMock(return_value=None)
     with patch(
         "src.server.app.mcp_servers.WorkspaceManager.get_instance", return_value=wm
     ):
-        assert _get_live_sandbox(ws["workspace_id"], ws) is None
-    wm.get_session_if_ready.assert_called_once_with(
+        assert await _get_live_sandbox(ws["workspace_id"], ws) is None
+    wm.get_session_if_ready_for_work.assert_awaited_once_with(
         ws["workspace_id"],
         expected_sandbox_id="sb-replaced",
         target=MachineTarget.of_workspace(ws),
+        owner_id=ws["user_id"],
     )
 
 
@@ -1729,6 +1732,54 @@ async def test_patch_disable_never_asks_for_a_sign_in(client, checks):
         )
     assert resp.status_code == 200
     checks.sign_in.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("enabled", "status"), [(False, 200), (True, 503)])
+@pytest.mark.asyncio
+async def test_a_saved_switch_off_answers_success_while_the_account_is_unknown(
+    client, enabled, status
+):
+    """The grant sync after a switch-off cannot resolve the account during an
+    outage; the switch is already saved, so it answers 200 and is recorded.
+    A switch-on keeps the 503."""
+    from src.server.services.platform_client import quota_service_unavailable
+
+    ws = _ws()
+    record = MagicMock()
+    with (
+        patch("src.server.app.mcp_servers.db_get_workspace", new=AsyncMock(return_value=ws)),
+        patch("src.server.app.setup.agent_config", _agent_config([])),
+        patch(
+            "src.server.database.mcp_servers.list_workspace_servers",
+            new=AsyncMock(return_value=[_TOMBSTONE] if enabled else []),
+        ),
+        patch(
+            "src.server.database.mcp_servers.get_catalog_server",
+            new=AsyncMock(return_value=None if enabled else _catalog_row(user_mcp_server_id="s-1")),
+        ),
+        patch("src.server.app.mcp_servers.get_catalog_server", new=AsyncMock(return_value=None)),
+        patch("src.server.app.mcp_servers.tombstone_user_server", new=AsyncMock(return_value=True)),
+        patch(
+            "src.server.app.mcp_servers.untombstone_user_server",
+            new=AsyncMock(return_value="enabled"),
+        ),
+        patch(
+            "src.server.app.mcp_servers._sync_sandbox_grants_now",
+            new=AsyncMock(side_effect=quota_service_unavailable()),
+        ),
+        patch("src.server.app.mcp_servers.schedule_proactive_apply"),
+        patch("src.server.app.mcp_servers.activity.record", record),
+    ):
+        resp = await client.patch(
+            f"/api/v1/workspaces/{ws['workspace_id']}/mcp/servers/remote_server/enabled",
+            json={"enabled": enabled},
+        )
+    assert resp.status_code == status, resp.text
+    if not enabled:
+        assert resp.json() == {"name": "remote_server", "enabled": False}
+        assert record.call_args.args[1] == "connector.turned_off"
+    else:
+        record.assert_not_called()
 
 
 @pytest.mark.parametrize(("tombstoned", "status"), [(True, 200), (False, 404)])

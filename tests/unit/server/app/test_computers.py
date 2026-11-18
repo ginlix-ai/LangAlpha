@@ -29,7 +29,7 @@ OTHER_COMPUTER_ID = "66666666-6666-4666-8666-666666666666"
 def workspace_alias_quota_gate_off():
     with (
         patch(
-            "src.server.dependencies.usage_limits.platform_gating_active",
+            "src.server.services.platform_client.platform_gating_active",
             return_value=False,
         ),
         patch(

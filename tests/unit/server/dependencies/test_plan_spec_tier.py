@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-MODULE = "src.server.dependencies.usage_limits"
+PLATFORM = "src.server.services.platform_client"
 OFFERED = ("standard", "performance", "max")
 ALL_SCOPES = ["workspace:spec:performance", "workspace:spec:max", "workspace:spec:xlarge"]
 
@@ -32,8 +32,8 @@ async def _tier(validate, *, gating=True, offered=OFFERED, current_tier=None):
     from src.server.dependencies.usage_limits import plan_spec_tier
 
     with (
-        patch(f"{MODULE}.platform_gating_active", return_value=gating),
-        patch(f"{MODULE}._call_validate_for_user", validate),
+        patch(f"{PLATFORM}.platform_gating_active", return_value=gating),
+        patch(f"{PLATFORM}.call_validate", validate),
     ):
         return await plan_spec_tier("user-1", offered, current_tier=current_tier)
 
@@ -101,13 +101,13 @@ async def test_a_late_read_from_before_a_downgrade_leaves_the_gates_denial():
     stale = _platform(ALL_SCOPES, {"spec_max": {"allowed": True}})
     with (
         patch.dict(usage_limits._scope_cache, clear=True),
-        patch(f"{MODULE}.platform_gating_active", return_value=True),
+        patch(f"{PLATFORM}.platform_gating_active", return_value=True),
     ):
-        with patch(f"{MODULE}._call_validate_for_user", downgraded):
+        with patch(f"{PLATFORM}.call_validate", downgraded):
             assert not await usage_limits.spec_grantable("user-1", "max", current_tier="standard")
-        with patch(f"{MODULE}._call_validate_for_user", stale):
+        with patch(f"{PLATFORM}.call_validate", stale):
             assert await usage_limits.plan_spec_tier("user-1", OFFERED) == "max"
-        with patch(f"{MODULE}._call_validate_for_user", downgraded):
+        with patch(f"{PLATFORM}.call_validate", downgraded):
             assert not await usage_limits.spec_grantable("user-1", "max", current_tier="standard")
         assert usage_limits._scope_cache["user-1"][0] == []
 
@@ -180,8 +180,8 @@ async def _slot(validate, *, gating=True, running=False):
     from src.server.dependencies.usage_limits import computer_slot_granted
 
     with (
-        patch(f"{MODULE}.platform_gating_active", return_value=gating),
-        patch(f"{MODULE}._call_validate_for_user", validate),
+        patch(f"{PLATFORM}.platform_gating_active", return_value=gating),
+        patch(f"{PLATFORM}.call_validate", validate),
     ):
         return await computer_slot_granted("user-1", running=running)
 

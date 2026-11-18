@@ -679,10 +679,10 @@ class TestMintPatience:
 
         with (
             patch(
-                "src.server.dependencies.usage_limits.get_http_client",
+                "src.server.services.platform_client.get_http_client",
                 AsyncMock(return_value=client),
             ),
-            patch("src.server.dependencies.usage_limits.service_headers", return_value={}),
+            patch("src.server.services.platform_client.service_headers", return_value={}),
         ):
             minted, _, again = await data_tokens._mint_once(USER_ID, COMPUTER_ID, 5.0)
 
@@ -695,10 +695,10 @@ class TestMintPatience:
 
         with (
             patch(
-                "src.server.dependencies.usage_limits.get_http_client",
+                "src.server.services.platform_client.get_http_client",
                 AsyncMock(return_value=client),
             ),
-            patch("src.server.dependencies.usage_limits.service_headers", return_value={}),
+            patch("src.server.services.platform_client.service_headers", return_value={}),
         ):
             minted, _, again = await data_tokens._mint_once(USER_ID, COMPUTER_ID, 5.0)
 
@@ -728,10 +728,10 @@ class TestRevokeUpstream:
 
         with (
             patch(
-                "src.server.dependencies.usage_limits.get_http_client",
+                "src.server.services.platform_client.get_http_client",
                 AsyncMock(return_value=client),
             ),
-            patch("src.server.dependencies.usage_limits.service_headers", return_value={}),
+            patch("src.server.services.platform_client.service_headers", return_value={}),
             patch.object(data_tokens.asyncio, "sleep", AsyncMock()),
         ):
             assert await data_tokens._revoke_upstream(USER_ID, COMPUTER_ID) == answer
@@ -855,7 +855,9 @@ class TestTheAcquireKeepsTheToken:
             yield
 
         session = SimpleNamespace(sandbox=SimpleNamespace(runtime=object()))
-        binding = SimpleNamespace(computer_id=COMPUTER_ID, root_dir="/home/workspace", dir_name=None)
+        binding = SimpleNamespace(
+            computer_id=COMPUTER_ID, root_dir="/home/workspace", dir_name=None, user_id=USER_ID
+        )
         manager = SimpleNamespace(
             _acquire_session=AsyncMock(return_value=session),
             resolve_binding=AsyncMock(return_value=binding),

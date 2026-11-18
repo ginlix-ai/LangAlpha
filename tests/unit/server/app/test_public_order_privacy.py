@@ -160,6 +160,7 @@ async def _replay(
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": "ws-1",
         "share_permissions": {},
+        "owner_id": "owner-1",
     }
     queries = [{"turn_index": 0, "content": "buy one share", "metadata": {}}]
     turns = [events if events is not None else _TURN_EVENTS]

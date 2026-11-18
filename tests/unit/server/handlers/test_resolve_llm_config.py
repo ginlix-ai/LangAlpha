@@ -1893,7 +1893,7 @@ class TestSearchProviderPreference:
     """The ``search_provider`` model preference selects the web-search engine.
 
     OSS mode honours any valid engine; platform mode gates it behind
-    ``_fetch_platform_tier(user_id) >= SEARCH_PROVIDER_MIN_TIER``. An unknown
+    ``access_tier(user_id) >= SEARCH_PROVIDER_MIN_TIER``. An unknown
     engine string is ignored (validity check runs before the tier gate, so the
     membership fetch is skipped). When honoured, the returned config is a
     copy-on-write copy with ``search_api`` set; when ignored, ``search_api``
@@ -1908,7 +1908,7 @@ class TestSearchProviderPreference:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         tier_mock = AsyncMock(return_value=0)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -1933,11 +1933,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -1959,15 +1959,15 @@ class TestSearchProviderPreference:
     async def test_platform_mode_tier_below_min_ignores_provider(self, base_config, monkeypatch):
         """Platform mode: tier 0 (< min) → provider ignored, search_api stays default.
 
-        Asserts the gate consulted membership (``_fetch_platform_tier`` called)."""
+        Asserts the gate consulted membership (``membership.access_tier`` called)."""
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=0)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -1993,11 +1993,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2022,11 +2022,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2048,16 +2048,16 @@ class TestSearchProviderPreference:
     @pytest.mark.asyncio
     async def test_platform_byok_user_honors_provider_via_tier(self, base_config, monkeypatch):
         """Platform mode + is_byok=True: the tier still comes from
-        ``_fetch_platform_tier`` (not ChatAuthResult, which is -1 for BYOK
+        ``membership.access_tier`` (not ChatAuthResult, which is -1 for BYOK
         users), so a paid BYOK user (tier 1) still gets their provider."""
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2088,11 +2088,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=-1)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2117,11 +2117,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2143,11 +2143,11 @@ class TestSearchProviderPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         mock_mc = _mock_model_config()
@@ -2194,7 +2194,7 @@ class TestSearchDepthPreference:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         tier_mock = AsyncMock(return_value=0)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_depth": "deep"})
@@ -2209,11 +2209,11 @@ class TestSearchDepthPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_depth": "deep"})
@@ -2230,11 +2230,11 @@ class TestSearchDepthPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=0)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_depth": "deep"})
@@ -2254,11 +2254,11 @@ class TestSearchDepthPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_depth": "warp9"})
@@ -2278,7 +2278,7 @@ class TestSearchDepthPreference:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         tier_mock = AsyncMock(return_value=5)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_provider": "serper", "search_depth": "deep"})
@@ -2314,11 +2314,11 @@ class TestSearchDepthPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_provider": "tavily", "search_depth": "deep"})
@@ -2339,7 +2339,7 @@ class TestSearchDepthPreference:
         from src.tools.web.manifest import LevelSpec
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         # Raise the bar for depth levels only; provider/crawl capabilities stay open.
         monkeypatch.setattr(
@@ -2348,7 +2348,7 @@ class TestSearchDepthPreference:
         )
         tier_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_provider": "tavily", "search_depth": "deep"})
@@ -2364,11 +2364,11 @@ class TestSearchDepthPreference:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
         tier_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
 
         p1, p2, p3 = self._patches({"search_depth": {"level": "deep"}})
@@ -2407,10 +2407,10 @@ class TestCrawlFeatureGate:
         from src.server.services.llm.config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
-        monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: host_mode == "platform")
+        monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: host_mode == "platform")
         tier_mock = AsyncMock(return_value=tier)
         monkeypatch.setattr(
-            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+            "src.server.services.membership.access_tier", tier_mock
         )
         prefs = {"feature_overrides": {"site_crawl": True}} if opted_in else {}
         p1, p2, p3 = self._patches(prefs)

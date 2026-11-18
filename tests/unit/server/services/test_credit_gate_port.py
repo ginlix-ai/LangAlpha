@@ -53,9 +53,9 @@ def client(monkeypatch):
     async def _get_client():
         return fake
 
-    monkeypatch.setattr(port_module.usage_limits, "get_http_client", _get_client)
-    monkeypatch.setattr(port_module.usage_limits, "service_headers", lambda *a: {})
-    monkeypatch.setattr(port_module.usage_limits, "service_token_missing", lambda: False)
+    monkeypatch.setattr(port_module.platform_client, "get_http_client", _get_client)
+    monkeypatch.setattr(port_module.platform_client, "service_headers", lambda *a: {})
+    monkeypatch.setattr(port_module.platform_client, "service_token_missing", lambda: False)
     return fake
 
 
@@ -221,7 +221,7 @@ async def test_the_wiring_check_is_silent_without_platform_gating(
 ):
     """OSS builds have no service to ask, and a boot-time GET at a URL that
     means nothing to them is noise, not a check."""
-    monkeypatch.setattr(port_module.usage_limits, "platform_gating_active", lambda: False)
+    monkeypatch.setattr(port_module.platform_client, "platform_gating_active", lambda: False)
     await port_module.verify_credit_gate_wiring()
     assert client.gets == []
 
@@ -233,7 +233,7 @@ async def test_the_wiring_check_is_silent_without_platform_gating(
 async def test_the_wiring_check_never_raises_on_any_ttl(client, monkeypatch, ttl):
     """It runs inside the lifespan. Whatever it finds, the server still boots —
     the gate is an extra guard, not an availability dependency."""
-    monkeypatch.setattr(port_module.usage_limits, "platform_gating_active", lambda: True)
+    monkeypatch.setattr(port_module.platform_client, "platform_gating_active", lambda: True)
     client.responses = [FakeResponse(200, {"enabled": True, "lease_ttl_seconds": ttl})]
     await port_module.verify_credit_gate_wiring()
     assert len(client.gets) == 1
@@ -293,9 +293,9 @@ async def test_a_rate_we_cannot_use_is_clamped_not_refused(client, sent, expecte
 async def test_an_unpriced_model_reserves_at_the_baseline(monkeypatch):
     """A model the manifest cannot price leaves the reservation where it was,
     which is the same thing every OSS build gets."""
-    monkeypatch.setattr(port_module.usage_limits, "platform_gating_active", lambda: True)
+    monkeypatch.setattr(port_module.platform_client, "platform_gating_active", lambda: True)
     gate = port_module.build_run_credit_gate(
-        "u", "run-1", None, None, "not-a-real-model-anywhere"
+        "u", "run-1", None, None, "not-a-real-model-anywhere", sender="u"
     )
     assert gate.rate_multiplier == 1.0
 
@@ -324,7 +324,7 @@ async def test_the_wiring_check_reports_a_bounds_disagreement(
     verdict and leaves the turn ungated. Boot is the only place that can see
     that coming."""
     monkeypatch.setattr(
-        port_module.usage_limits, "platform_gating_active", lambda: True
+        port_module.platform_client, "platform_gating_active", lambda: True
     )
     client.responses = [
         FakeResponse(
@@ -347,7 +347,7 @@ async def test_the_wiring_check_is_quiet_when_the_bounds_agree(
     client, monkeypatch, caplog
 ):
     monkeypatch.setattr(
-        port_module.usage_limits, "platform_gating_active", lambda: True
+        port_module.platform_client, "platform_gating_active", lambda: True
     )
     client.responses = [
         FakeResponse(

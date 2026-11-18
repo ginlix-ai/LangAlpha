@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.server.services.policy import ALLOW_ALL
+
 from ptc_agent.agent.subagents.definition import SubagentDefinition
 from ptc_agent.agent.subagents.merge import ResolvedSubagents
 from ptc_agent.config.agent import CredentialSource
@@ -99,7 +101,7 @@ def ladder(monkeypatch):
 
     async def _resolve(user_id, model_name, *, is_byok, cache_key=None, reasoning_effort=None,
                        service_tier=None, allow_platform_fallback=False, _pref_cache=None,
-                       _byok_cache=None):
+                       _byok_cache=None, policy=None):
         state.calls.append((model_name, reasoning_effort, allow_platform_fallback))
         credential = state.own.get(model_name)
         if credential is None and allow_platform_fallback and model_name not in state.no_platform:
@@ -126,7 +128,7 @@ def _turn(credential: CredentialSource) -> SimpleNamespace:
 
 async def _resolve_roles(config, *roles: LLMRole) -> None:
     await clients._resolve_role_clients(
-        config, "user-1", list(roles), {}, {}, is_byok=True, cache_key="t-1", main_model=MAIN,
+        config, "user-1", list(roles), {}, {}, is_byok=True, cache_key="t-1", policy=ALLOW_ALL, main_model=MAIN,
     )
 
 
