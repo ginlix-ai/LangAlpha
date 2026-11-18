@@ -21,7 +21,7 @@ from src.server.services.mcp_probe import (
     _describe,
     _scrub_sent_values,
     _scrub_url,
-    _sent_secrets,
+    sent_secrets,
 )
 
 # A catalog row's address in the two shapes vendors ship: the key in the path
@@ -123,7 +123,7 @@ async def test_a_key_straddling_the_cap_is_scrubbed_before_the_cut(
 
 def _scrub(error: str, headers: dict[str, str]) -> str:
     url = "https://mcp.example.com/mcp"
-    return _scrub_sent_values(error, url, _sent_secrets(url, headers))
+    return _scrub_sent_values(error, url, sent_secrets(url, headers))
 
 
 def test_scrub_redacts_a_raw_sent_value() -> None:
