@@ -129,6 +129,17 @@ def _gone_if_removed(sandbox_id: str) -> Iterator[None]:
         raise
 
 
+def _published_ports(info: dict[str, Any], proxy_ports: list[int]) -> dict[int, int]:
+    """The host ports Docker picked for *proxy_ports*, from an inspect; none while stopped."""
+    bindings = info.get("NetworkSettings", {}).get("Ports") or {}
+    published: dict[int, int] = {}
+    for port in proxy_ports:
+        bound = bindings.get(f"{port}/tcp") or []
+        if bound and bound[0].get("HostPort"):
+            published[port] = int(bound[0]["HostPort"])
+    return published
+
+
 class DockerRuntime(ExecSessionRuntime):
     """Runtime that wraps a single Docker container."""
 
@@ -180,6 +191,12 @@ class DockerRuntime(ExecSessionRuntime):
 
     async def start(self, timeout: int = 120) -> None:
         await self._container.start()
+        # A start picks new dynamic host ports, and a runtime made while the
+        # container was stopped read none. Its forwarders died with the stop too.
+        info = await self._container.show()
+        self._host_port_map = _published_ports(info, self._proxy_ports)
+        self._port_map.clear()
+        self._forwarder_pids.clear()
 
     async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
         with _gone_if_removed(self._id):
@@ -810,13 +827,7 @@ class DockerProvider(SandboxProvider):
                 await self._verify_tier_applied(container_obj, info, sizing)
 
             # Read actual host port mappings (dynamic ports picked by Docker)
-            host_port_map: dict[int, int] = {}
-            if proxy_ports:
-                port_bindings = info.get("NetworkSettings", {}).get("Ports", {})
-                for cp in proxy_ports:
-                    bindings = port_bindings.get(f"{cp}/tcp", [])
-                    if bindings and bindings[0].get("HostPort"):
-                        host_port_map[cp] = int(bindings[0]["HostPort"])
+            host_port_map = _published_ports(info, proxy_ports)
         except BaseException:
             # No runtime/provider reference exists yet, so this method is the
             # only owner capable of removing a container that started but could
@@ -887,12 +898,7 @@ class DockerProvider(SandboxProvider):
 
         # Read actual host port mappings from running container
         proxy_ports = _parse_proxy_port_range(self._config.preview_proxy_ports)
-        host_port_map: dict[int, int] = {}
-        port_bindings = info.get("NetworkSettings", {}).get("Ports", {})
-        for cp in proxy_ports:
-            bindings = port_bindings.get(f"{cp}/tcp", [])
-            if bindings and bindings[0].get("HostPort"):
-                host_port_map[cp] = int(bindings[0]["HostPort"])
+        host_port_map = _published_ports(info, proxy_ports)
 
         return DockerRuntime(
             container_obj,
