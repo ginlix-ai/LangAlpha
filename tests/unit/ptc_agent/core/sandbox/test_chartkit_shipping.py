@@ -10,7 +10,7 @@ def _shipped(tmp_path) -> set[str]:
     src = tmp_path / "src"
     src.mkdir()
     (src / "__init__.py").write_text("")
-    return {str(rel) for _, rel in _shared._internal_package_files(src, livefs=False)}
+    return {str(rel) for _, rel in _shared._internal_package_files(src)}
 
 
 def test_chartkit_ships_as_an_internal_package(tmp_path):
@@ -63,7 +63,7 @@ def test_a_mounted_chartkit_without_a_render_page_ships_the_images(tmp_path, mon
     src = tmp_path / "src"
     src.mkdir()
     (src / "__init__.py").write_text("")
-    shipped = dict((str(rel), local) for local, rel in _shared._internal_package_files(src, livefs=False))
+    shipped = dict((str(rel), local) for local, rel in _shared._internal_package_files(src))
     assert shipped["chartkit/render/chart-render.html"].read_text() == "image"
     assert "chartkit/render/assets/chart-render-img.js" in shipped
 
@@ -74,6 +74,6 @@ def test_a_host_built_render_page_wins_over_the_images(tmp_path, monkeypatch):
     src = tmp_path / "src"
     src.mkdir()
     (src / "__init__.py").write_text("")
-    shipped = dict((str(rel), local) for local, rel in _shared._internal_package_files(src, livefs=False))
+    shipped = dict((str(rel), local) for local, rel in _shared._internal_package_files(src))
     assert shipped["chartkit/render/chart-render.html"].read_text() == "host"
     assert "chartkit/render/assets/chart-render-img.js" not in shipped
