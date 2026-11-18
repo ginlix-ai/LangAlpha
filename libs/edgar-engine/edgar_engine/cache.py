@@ -7,13 +7,22 @@ import os
 import tempfile
 import zlib
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
 from edgar_engine.sections.model import FilingSections
 from edgar_engine.sections.version import SECTIONS_VERSION
 
-__all__ = ["LocalDirStore", "SectionsCache", "Store", "SubmissionCache"]
+__all__ = ["DocumentsCache", "LocalDirStore", "S3Store", "SectionsCache", "Store", "SubmissionCache"]
+
+_MISSING_CODES = {"NoSuchKey", "404", "NotFound"}
+
+
+def _checked(key: str) -> str:
+    if key.startswith("/") or "\\" in key or any(part in ("", ".", "..") for part in key.split("/")):
+        raise ValueError(f"invalid cache key: {key!r}")
+    return key
 
 
 class Store(Protocol):
@@ -31,9 +40,7 @@ class LocalDirStore:
         self.root = Path(root or os.environ.get("EDGAR_ENGINE_CACHE") or Path.home() / ".cache" / "edgar-engine")
 
     def _path(self, key: str) -> Path:
-        if key.startswith("/") or "\\" in key or any(part in ("", ".", "..") for part in key.split("/")):
-            raise ValueError(f"invalid cache key: {key!r}")
-        return self.root / key
+        return self.root / _checked(key)
 
     def get(self, key: str) -> bytes | None:
         try:
@@ -55,6 +62,35 @@ class LocalDirStore:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+
+
+class S3Store:
+    """A Store over an S3-compatible client with boto3's call shape (get_object, put_object, delete_object),
+    injected so the library takes no dependency on boto3. Keys live under prefix, which is joined as given, so end
+    a folder prefix with '/'."""
+
+    def __init__(self, client, bucket: str, prefix: str = ""):
+        self.client, self.bucket, self.prefix = client, bucket, prefix
+
+    def _key(self, key: str) -> str:
+        return self.prefix + _checked(key)
+
+    def get(self, key: str) -> bytes | None:
+        name = self._key(key)
+        try:
+            return self.client.get_object(Bucket=self.bucket, Key=name)["Body"].read()
+        except Exception as e:
+            no_such_key = getattr(getattr(self.client, "exceptions", None), "NoSuchKey", None)
+            code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code")
+            if (no_such_key and isinstance(e, no_such_key)) or code in _MISSING_CODES:
+                return None
+            raise
+
+    def put(self, key: str, data: bytes) -> None:
+        self.client.put_object(Bucket=self.bucket, Key=self._key(key), Body=data)
+
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
 
 
 class SectionsCache:
@@ -89,6 +125,32 @@ class SectionsCache:
         sections = compute()
         self.put(sections)
         return sections
+
+
+class DocumentsCache:
+    """A filing's attached documents (edgar_engine.documents.attached_documents), rendered."""
+
+    def __init__(self, store: Store | None = None):
+        self.store = store if store is not None else LocalDirStore()
+
+    @staticmethod
+    def _key(accession: str) -> str:
+        return f"documents/v{SECTIONS_VERSION}/{accession}.json.gz"
+
+    def get(self, accession: str) -> list | None:
+        from edgar_engine.documents import SubmissionDocument
+
+        data = self.store.get(self._key(accession))
+        if data is None:
+            return None
+        try:
+            return [SubmissionDocument(**d) for d in json.loads(gzip.decompress(data))]
+        except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError):
+            return None
+
+    def put(self, accession: str, documents: list) -> None:
+        payload = json.dumps([asdict(d) for d in documents], separators=(",", ":")).encode()
+        self.store.put(self._key(accession), gzip.compress(payload, mtime=0))
 
 
 class SubmissionCache:

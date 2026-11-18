@@ -1,9 +1,10 @@
 import gzip
+import io
 import json
 
 import pytest
 
-from edgar_engine.cache import LocalDirStore, SectionsCache, SubmissionCache
+from edgar_engine.cache import LocalDirStore, S3Store, SectionsCache, SubmissionCache
 from edgar_engine.sections import sections_for_filing
 from edgar_engine.sections.model import FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
@@ -46,6 +47,83 @@ def test_store_rejects_unsafe_keys(tmp_path, key):
     for call in (lambda: store.get(key), lambda: store.put(key, b""), lambda: store.delete(key)):
         with pytest.raises(ValueError):
             call()
+
+
+class FakeS3:
+    """boto3's call shape over a dict; a missing key raises the error the test hands in."""
+
+    def __init__(self, missing=None):
+        self.objects, self.calls = {}, []
+
+        class NoSuchKey(Exception):
+            pass
+
+        self.exceptions = type("Exceptions", (), {"NoSuchKey": NoSuchKey})
+        self.missing = missing or NoSuchKey()
+
+    def get_object(self, Bucket, Key):
+        self.calls.append(("get", Bucket, Key))
+        if (Bucket, Key) not in self.objects:
+            raise self.missing
+        return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+
+    def put_object(self, Bucket, Key, Body):
+        self.calls.append(("put", Bucket, Key))
+        self.objects[(Bucket, Key)] = Body
+
+    def delete_object(self, Bucket, Key):
+        self.calls.append(("delete", Bucket, Key))
+        self.objects.pop((Bucket, Key), None)
+
+
+class ClientError(Exception):
+    def __init__(self, code):
+        self.response = {"Error": {"Code": code}}
+
+
+def test_s3_store_round_trip_under_its_prefix_and_delete():
+    client = FakeS3()
+    store = S3Store(client, "bucket", prefix="edgar/")
+    assert store.get("a/b.bin") is None
+    store.put("a/b.bin", b"one")
+    store.put("a/b.bin", b"two")
+    assert store.get("a/b.bin") == b"two"
+    assert list(client.objects) == [("bucket", "edgar/a/b.bin")]
+    store.delete("a/b.bin")
+    store.delete("a/b.bin")
+    assert store.get("a/b.bin") is None
+    S3Store(client, "bucket").put("k", b"v")
+    assert ("bucket", "k") in client.objects
+
+
+@pytest.mark.parametrize("code", ["NoSuchKey", "404", "NotFound"])
+def test_s3_store_reads_a_missing_object_from_the_error_code_when_the_client_has_no_exception_class(code):
+    client = FakeS3(missing=ClientError(code))
+    del client.exceptions
+    assert S3Store(client, "bucket").get("k") is None
+
+
+def test_s3_store_propagates_other_errors():
+    for error in (ClientError("AccessDenied"), ClientError("500"), RuntimeError("boom")):
+        with pytest.raises(type(error)):
+            S3Store(FakeS3(missing=error), "bucket").get("k")
+
+
+@pytest.mark.parametrize("key", ["../x", "a/../x", "/abs", "a\\b", "", "a//b", "./a"])
+def test_s3_store_rejects_unsafe_keys_without_calling_the_client(key):
+    client = FakeS3()
+    store = S3Store(client, "bucket", prefix="edgar/")
+    for call in (lambda: store.get(key), lambda: store.put(key, b""), lambda: store.delete(key)):
+        with pytest.raises(ValueError):
+            call()
+    assert client.calls == []
+
+
+def test_a_sections_cache_runs_over_an_s3_store():
+    cache = SectionsCache(S3Store(FakeS3(), "bucket", prefix="edgar/"))
+    sections = make_sections()
+    cache.put(sections)
+    assert cache.get(sections.accession) == sections
 
 
 def test_store_root_from_env(tmp_path, monkeypatch):

@@ -25,7 +25,10 @@ mdna.target       # for a stub: where its content is (kind, description, and the
 ```
 
 `extract_sections(submission)` does the same for a full-text submission you already hold (the accession's
-`.txt` file), and `sections_for_filing(filing)` for an edgartools `Filing`.
+`.txt` file), and `sections_for_filing(filing)` for an edgartools `Filing`. `submission_documents(submission, keep=None)` returns
+every non-binary document of a submission (type, filename, description, rendered text) in sequence order, for the
+exhibits the items do not cover; `keep(type, filename)` skips a document before it is rendered, and a truncated
+submission raises `ValueError`.
 
 **How items are found.** The engine renders the main document (and, for annual reports, every Exhibit 13) into
 lines, one per paragraph, heading or table row, without deleting anything: page numbers, running headers and
@@ -88,6 +91,9 @@ year end, moved to the filer's XBRL convention (a January year end is the prior 
 the same one for others). `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
 `~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
+`S3Store` does so over any S3-compatible client with boto3's call shape, which you pass in, so the library
+depends on no S3 package: `SectionsCache(S3Store(boto3.client("s3", endpoint_url=...), "bucket", prefix="edgar/"))`.
+A missing object reads as absent; any other client error propagates.
 Cached sections are keyed by `SECTIONS_VERSION`, so an engine change never serves stale results. Pass
 `submissions=SubmissionCache()` to `get_sections` or `sections_for_filing` to keep raw submissions too, so a
 re-parse reads exactly what EDGAR served; a submission that does not parse (a truncated download) is not kept.

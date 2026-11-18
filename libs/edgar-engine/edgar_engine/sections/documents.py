@@ -11,6 +11,10 @@ _TEXT = re.compile(r"<TEXT>(.*)</TEXT>", re.S | re.I)
 _TAGS = {k: re.compile(rf"^\s*<{k}>([^\n<]*)", re.M | re.I) for k in ("TYPE", "SEQUENCE", "FILENAME", "DESCRIPTION")}
 _PDF = re.compile(r"<PDF>.*?</PDF>", re.S | re.I)
 _UUENCODED = re.compile(r"\s*begin \d{3} ")
+_OPEN = re.compile(r"<DOCUMENT>", re.I)
+_CLOSE = re.compile(r"</DOCUMENT>", re.I)
+_SUBMISSION_OPEN = re.compile(r"<SEC-DOCUMENT>", re.I)
+_SUBMISSION_CLOSE = re.compile(r"</SEC-DOCUMENT>", re.I)
 _HEADER_FIELD = {
     "form": re.compile(r"^\s*CONFORMED SUBMISSION TYPE:\s*(\S+)", re.M),
     "filing_date": re.compile(r"^\s*FILED AS OF DATE:\s*(\d{8})", re.M),
@@ -40,6 +44,16 @@ def decode(raw: bytes | str) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("cp1252", errors="replace")
+
+
+def require_complete(submission: str) -> None:
+    """Refuse a submission with no document, a <DOCUMENT> left open, or an <SEC-DOCUMENT> never closed: a partial
+    download, or an HTTP cache that kept one, would otherwise parse into documents cut short or missing with no
+    sign of it."""
+    opened = len(_OPEN.findall(submission))
+    if not opened or opened != len(_CLOSE.findall(submission)) or (
+            _SUBMISSION_OPEN.search(submission[:1000]) and not _SUBMISSION_CLOSE.search(submission[-1000:])):
+        raise ValueError("the submission is truncated or holds no document")
 
 
 def header(submission: str) -> dict:

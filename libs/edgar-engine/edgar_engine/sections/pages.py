@@ -19,7 +19,8 @@ class Pagination:
 
     def footers(self, d: int) -> dict[str, int]:
         """Printed page number -> its footer line in document d. A footer is a short line that is a page number
-        alone or a number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37"). A page
+        alone or a number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37", or on
+        left-hand pages "38 2025 FORM 10-K", the number before a running text that opens with a year). A page
         number printed twice on a page (a header and a footer) ends the page at the later one."""
         if d in self._footers:
             return self._footers[d]
@@ -31,7 +32,7 @@ class Pagination:
             if len(s) > 80:
                 continue
             m = re.fullmatch(r"(?P<pre>.*?)[\s|]*(?:page\s+)?-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?", s, re.I) or \
-                re.fullmatch(r"-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?[\s|]+(?P<pre>\D.*)", s, re.I)
+                re.fullmatch(r"-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?[\s|]+(?P<pre>(?=\D|\d{4}\D*[a-z]).*)", s, re.I)
             if m:
                 cands.append((m.group("pre").strip(" |-").lower(), m.group("p").replace(" ", "").upper(), ln))
         stems: dict[str, set] = {}
