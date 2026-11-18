@@ -495,3 +495,340 @@ class TestGetTechnicalIndicator:
 
         assert result["timeframe"] == timeframe
         assert client.get_technical_indicator.await_args.kwargs["timeframe"] == timeframe
+
+
+# ---------------------------------------------------------------------------
+# analyst tools
+# ---------------------------------------------------------------------------
+
+def _analyst_client() -> AsyncMock:
+    client = _make_fmp_client()
+    client.get_price_target_consensus = AsyncMock(return_value=[
+        {"symbol": "AAPL", "targetHigh": 300, "targetLow": 200, "targetConsensus": 250.5, "targetMedian": 255},
+    ])
+    client.get_grades_historical = AsyncMock(return_value=[
+        {"symbol": "AAPL", "date": "2026-02-01", "analystRatingsStrongBuy": 2, "analystRatingsBuy": 10,
+         "analystRatingsHold": 5, "analystRatingsSell": 1, "analystRatingsStrongSell": 0},
+    ])
+    client.get_stock_grades = AsyncMock(return_value=[
+        {"symbol": "AAPL", "date": "2026-01-20", "gradingCompany": "Firm A", "previousGrade": "Hold",
+         "newGrade": "Buy", "action": "upgrade"},
+    ])
+    client.get_price_target_news = AsyncMock(return_value=[
+        {"symbol": "AAPL", "publishedDate": "2026-01-15T10:30:00.000Z", "newsURL": "https://example.com/a",
+         "newsTitle": "Firm B raises target", "analystName": "", "priceTarget": 260, "adjPriceTarget": 260,
+         "priceWhenPosted": 240.5, "newsPublisher": "Example", "newsBaseURL": "example.com",
+         "analystCompany": "Firm B"},
+    ])
+    client.get_analyst_estimates = AsyncMock(return_value=[
+        {"symbol": "AAPL", "date": "2028-12-31", "revenueLow": 0, "revenueHigh": 0, "revenueAvg": 0,
+         "ebitdaLow": 5, "ebitdaHigh": 7, "ebitdaAvg": 6, "ebitLow": 0, "ebitHigh": 0, "ebitAvg": 0,
+         "netIncomeLow": 3, "netIncomeHigh": 4, "netIncomeAvg": 3.5, "sgaExpenseLow": 1, "sgaExpenseHigh": 1,
+         "sgaExpenseAvg": 1, "epsAvg": 1.2, "epsHigh": 1.4, "epsLow": 1.0, "numAnalystsRevenue": 0,
+         "numAnalystsEps": 0},
+    ])
+    client.get_earnings_report = AsyncMock(return_value=[
+        {"symbol": "AAPL", "date": "2099-01-28", "epsActual": None, "epsEstimated": 1.5,
+         "revenueActual": None, "revenueEstimated": 100, "lastUpdated": "2026-11-01"},
+        {"symbol": "AAPL", "date": "2026-10-29", "epsActual": 1.4, "epsEstimated": 1.3,
+         "revenueActual": 95, "revenueEstimated": 90, "lastUpdated": "2026-11-01"},
+        {"symbol": "AAPL", "date": "2026-07-30", "epsActual": 1.2, "epsEstimated": 1.25,
+         "revenueActual": 88, "revenueEstimated": 89, "lastUpdated": "2026-11-01"},
+    ])
+    client.get_income_statement = AsyncMock(return_value=[
+        {"date": "2026-09-27", "period": "Q4", "reportedCurrency": "USD"},
+        {"date": "2026-06-28", "period": "Q3", "reportedCurrency": "USD"},
+    ])
+    return client
+
+
+class TestGetAnalystRatings:
+    @pytest.mark.asyncio
+    async def test_each_list_keeps_its_documented_fields(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL", limit=5)
+
+        assert_ok_envelope(result, symbol="AAPL", source="fmp", currency="USD", count=4)
+        data = result["data"]
+        assert data["target_consensus"] == [{"high": 300, "low": 200, "median": 255, "mean": 250.5}]
+        assert data["rating_counts"] == [
+            {"date": "2026-02-01", "strongBuy": 2, "buy": 10, "hold": 5, "sell": 1, "strongSell": 0},
+        ]
+        assert data["rating_actions"] == [{
+            "date": "2026-01-20", "gradingCompany": "Firm A", "previousGrade": "Hold",
+            "newGrade": "Buy", "action": "upgrade",
+        }]
+        assert data["price_targets"] == [{
+            "date": "2026-01-15", "analystCompany": "Firm B", "priceTarget": 260, "priceWhenPosted": 240.5,
+            "newsTitle": "Firm B raises target", "newsURL": "https://example.com/a",
+        }]
+        for read in (client.get_grades_historical, client.get_stock_grades, client.get_price_target_news):
+            assert read.await_args.kwargs["limit"] == 5
+
+    @pytest.mark.asyncio
+    async def test_every_list_is_cut_to_limit(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        days = range(20, 0, -1)
+        # FMP answers every grade whatever limit asks for.
+        client.get_stock_grades = AsyncMock(return_value=[{"date": f"2026-01-{d:02d}"} for d in days])
+        client.get_grades_historical = AsyncMock(return_value=[{"date": f"2026-01-{d:02d}"} for d in days])
+        client.get_price_target_news = AsyncMock(return_value=[
+            {"publishedDate": f"2026-01-{d:02d}T15:00:00.000Z"} for d in days
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL", limit=5)
+
+        expected = ["2026-01-20", "2026-01-19", "2026-01-18", "2026-01-17", "2026-01-16"]
+        for name in ("rating_counts", "rating_actions", "price_targets"):
+            assert [row["date"] for row in result["data"][name]] == expected, name
+
+    @pytest.mark.asyncio
+    async def test_a_target_takes_the_day_it_was_published_where_the_listing_trades(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        client.get_price_target_news = AsyncMock(return_value=[
+            {"publishedDate": "2026-01-15T00:30:00.000Z", "adjPriceTarget": 260, "analystCompany": "Firm B"},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL")
+
+        assert result["data"]["price_targets"][0]["date"] == "2026-01-14"
+
+    @pytest.mark.asyncio
+    async def test_a_target_set_before_a_split_keeps_fmps_adjusted_prices(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        # FMP adjusts the price when posted itself; only the target has a raw twin.
+        client.get_price_target_news = AsyncMock(return_value=[
+            {"publishedDate": "2024-06-04T00:00:00.000Z", "priceTarget": 1400, "adjPriceTarget": 140,
+             "priceWhenPosted": 115, "analystCompany": "Firm C"},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL")
+
+        target = result["data"]["price_targets"][0]
+        assert (target["priceTarget"], target["priceWhenPosted"]) == (140, 115)
+
+    @pytest.mark.asyncio
+    async def test_pence_listing_prices_in_pounds(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("VOD.L")
+
+        assert result["currency"] == "GBP"
+        assert result["data"]["target_consensus"][0]["high"] == 3
+        assert result["data"]["price_targets"][0]["priceWhenPosted"] == 2.405
+
+    @pytest.mark.asyncio
+    async def test_no_consensus_is_an_empty_list(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        client.get_price_target_consensus = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL")
+
+        assert result["data"]["target_consensus"] == []
+        assert result["count"] == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, 101])
+    async def test_limit_out_of_range_is_refused_before_fmp(self, limit):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL", limit=limit)
+
+        assert result == {
+            "error": "invalid_argument",
+            "detail": f"limit must be between 1 and 100, not {limit}",
+            "symbol": "AAPL",
+        }
+        client.get_stock_grades.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upstream_failure_is_an_error(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_ratings
+
+        client = _analyst_client()
+        client.get_stock_grades = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_ratings("AAPL")
+
+        assert_error(result, "upstream_error", symbol="AAPL", detail_excludes=("boom",))
+
+
+class TestGetAnalystEstimates:
+    @pytest.mark.asyncio
+    async def test_missing_metrics_are_null_and_currency_is_the_filings(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_estimates
+
+        client = _analyst_client()
+        client.get_income_statement = AsyncMock(return_value=[{"date": "2025-12-31", "reportedCurrency": "TWD"}])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_estimates("TSM", period="quarter", limit=4)
+
+        assert_ok_envelope(result, symbol="TSM", currency="TWD", count=1)
+        assert result["period"] == "quarter"
+        row = result["data"][0]
+        assert "symbol" not in row
+        # No analysts: no consensus. All three zero where FMP counts nobody: none either.
+        assert (row["revenueAvg"], row["revenueLow"], row["revenueHigh"]) == (None, None, None)
+        assert (row["ebitAvg"], row["epsAvg"], row["epsLow"], row["epsHigh"]) == (None, None, None, None)
+        assert (row["ebitdaAvg"], row["netIncomeAvg"], row["sgaExpenseAvg"]) == (6, 3.5, 1)
+        client.get_analyst_estimates.assert_awaited_once_with("TSM", period="quarter", limit=4)
+
+    @pytest.mark.asyncio
+    async def test_a_zero_consensus_analysts_agree_on_stays(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_estimates
+
+        client = _analyst_client()
+        client.get_analyst_estimates = AsyncMock(return_value=[
+            {"date": "2028-12-31", "epsAvg": 0, "epsLow": 0, "epsHigh": 0, "numAnalystsEps": 3},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_estimates("AAPL")
+
+        row = result["data"][0]
+        assert (row["epsAvg"], row["epsLow"], row["epsHigh"]) == (0, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_statement_failure_only_drops_the_currency(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_analyst_estimates
+
+        client = _analyst_client()
+        client.get_income_statement = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_analyst_estimates("AAPL")
+
+        assert_ok_envelope(result, count=1)
+        assert "currency" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["get_analyst_estimates", "get_earnings_surprises"])
+    async def test_a_limit_below_one_is_refused_before_fmp(self, tool):
+        from plugins.langalpha_market_data import fundamentals_mcp_server
+
+        client = _analyst_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await getattr(fundamentals_mcp_server, tool)("AAPL", limit=0)
+
+        assert result == {"error": "invalid_argument", "detail": "limit must be at least 1, not 0", "symbol": "AAPL"}
+        client.get_income_statement.assert_not_awaited()
+
+
+class TestGetEarningsSurprises:
+    @pytest.mark.asyncio
+    async def test_reports_take_their_filed_quarter(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("AAPL", limit=3)
+
+        assert_ok_envelope(result, symbol="AAPL", currency="USD", count=3)
+        assert [(r["date"], r["fiscalDateEnding"]) for r in result["data"]] == [
+            ("2099-01-28", None),
+            ("2026-10-29", "2026-09-27"),
+            ("2026-07-30", "2026-06-28"),
+        ]
+        assert set(result["data"][1]) == {
+            "date", "fiscalDateEnding", "epsActual", "epsEstimated", "revenueActual", "revenueEstimated",
+        }
+        client.get_income_statement.assert_awaited_once_with("AAPL", period="quarter", limit=5)
+
+    @pytest.mark.asyncio
+    async def test_a_report_on_a_quarter_not_filed_yet_is_unmatched(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_income_statement = AsyncMock(return_value=[{"date": "2026-06-28", "reportedCurrency": "USD"}])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("AAPL")
+
+        assert [r["fiscalDateEnding"] for r in result["data"]] == [None, None, "2026-06-28"]
+
+    @pytest.mark.asyncio
+    async def test_an_annual_report_after_the_next_quarter_ends_keeps_its_own_quarter(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_earnings_report = AsyncMock(return_value=[
+            {"date": "2026-04-24", "epsActual": 2.0, "epsEstimated": 2.1},
+            {"date": "2026-04-17", "epsActual": 1.4, "epsEstimated": 1.8},
+            {"date": "2025-10-29", "epsActual": 1.5, "epsEstimated": 1.6},
+        ])
+        client.get_income_statement = AsyncMock(return_value=[
+            {"date": "2026-03-31", "period": "Q1", "reportedCurrency": "CNY"},
+            {"date": "2025-12-31", "period": "Q4", "reportedCurrency": "CNY"},
+            {"date": "2025-09-30", "period": "Q3", "reportedCurrency": "CNY"},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("600519.SH")
+
+        assert [r["fiscalDateEnding"] for r in result["data"]] == ["2026-03-31", "2025-12-31", "2025-09-30"]
+        assert "currency" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_past_report_never_filled_in_is_dropped(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_earnings_report = AsyncMock(return_value=[
+            {"date": "2026-10-29", "epsActual": 1.4, "epsEstimated": 1.3},
+            {"date": "2026-08-01", "epsActual": None, "epsEstimated": 1.2, "revenueActual": None},
+            {"date": "2026-07-30", "epsActual": 1.2, "epsEstimated": 1.25},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("AAPL")
+
+        assert [r["date"] for r in result["data"]] == ["2026-10-29", "2026-07-30"]
+
+    @pytest.mark.asyncio
+    async def test_a_report_with_revenue_but_no_eps_takes_its_quarter(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_earnings_report = AsyncMock(return_value=[
+            {"date": "2026-10-29", "epsActual": None, "epsEstimated": 1.3, "revenueActual": 95},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("AAPL")
+
+        assert result["data"][0]["fiscalDateEnding"] == "2026-09-27"
+
+    @pytest.mark.asyncio
+    async def test_two_reports_on_one_day_are_both_unmatched(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_earnings_report = AsyncMock(return_value=[
+            {"date": "2026-10-29", "epsActual": 1.4, "epsEstimated": 1.3},
+            {"date": "2026-10-29", "epsActual": 1.1, "epsEstimated": 1.0},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("AAPL")
+
+        assert [r["fiscalDateEnding"] for r in result["data"]] == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_a_us_listing_filing_in_another_currency_names_none(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_earnings_surprises
+
+        client = _analyst_client()
+        client.get_income_statement = AsyncMock(return_value=[{"date": "2026-07-31", "reportedCurrency": "CAD"}])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_surprises("RY")
+
+        assert_ok_envelope(result, count=3)
+        assert "currency" not in result
