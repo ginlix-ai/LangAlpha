@@ -234,7 +234,7 @@ async def test_thread_create_tells_the_gate_the_surface_too(threads_client, plat
         ),
         patch(
             f"{CREATE_MOD}.turn_route",
-            return_value=TurnRoute("ws-1", "analyst"),
+            return_value=TurnRoute("ws-1", "analyst", "usr-placeholder-001"),
         ),
         patch(f"{CREATE_MOD}.create_thread", new=AsyncMock(return_value=_row())),
         patch(f"{CREATE_MOD}.schedule_title_generation", return_value=None),

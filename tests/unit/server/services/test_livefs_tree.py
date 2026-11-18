@@ -214,24 +214,24 @@ def history(monkeypatch):
     the database is faked, so the service's own read path serves the files."""
     content = {path: text.encode() for path, text in TRANSCRIPT.items()}
 
-    def workspace_transcripts(workspace_id):
+    def workspace_transcripts(workspace_id, *, scope):
         return [THREADS[workspace_id]] if workspace_id in THREADS else []
 
     def found(workspace_id, short_id):
         thread_id = THREADS.get(workspace_id)
         return bool(thread_id) and thread_id[:8] == short_id
 
-    def list_transcript(workspace_id, short_id):
+    def list_transcript(workspace_id, short_id, *, scope=None):
         if not found(workspace_id, short_id):
             return None
         return {path: (_sha(data), len(data)) for path, data in content.items()}
 
-    def load_transcript_file(workspace_id, short_id, path):
+    def load_transcript_file(workspace_id, short_id, path, *, scope):
         if not found(workspace_id, short_id) or path not in content:
             return None
         return StoredFile(USER, _sha(content[path]), content[path])
 
-    def list_transcript_tree(workspace_id, short_id, limit):
+    def list_transcript_tree(workspace_id, short_id, limit, *, scope):
         thread_id = THREADS.get(workspace_id)
         if thread_id is None or short_id not in (None, thread_id[:8]):
             return []

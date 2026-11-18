@@ -88,7 +88,7 @@ class TestCollectorFiltersBySpawnedRunId:
             run_id=run_id_current,
             status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
-            metadata={"workspace_id": "ws-1", "user_id": "u-1"},
+            metadata={"workspace_id": "ws-1", "user_id": "u-1", "recorded_as": "u-1"},
         )
 
         # Registry holds one prior-turn subagent and one current-turn subagent.
@@ -146,7 +146,7 @@ class TestCollectorFiltersBySpawnedRunId:
             run_id=run_id_current,
             status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
-            metadata={"workspace_id": "ws-1", "user_id": "u-1"},
+            metadata={"workspace_id": "ws-1", "user_id": "u-1", "recorded_as": "u-1"},
         )
 
         registry = BackgroundTaskRegistry(thread_id=thread_id)
@@ -195,7 +195,7 @@ class TestClaimLoopHoldsRegistryLock:
         btm.executions[(thread_id, run_id)] = LocalRunExecution(
             thread_id=thread_id, run_id=run_id,
             status=LocalRunStatus.RUNNING, created_at=datetime.now(),
-            metadata={"workspace_id": "ws-1", "user_id": "u-1"},
+            metadata={"workspace_id": "ws-1", "user_id": "u-1", "recorded_as": "u-1"},
         )
 
         registry = BackgroundTaskRegistry(thread_id=thread_id)

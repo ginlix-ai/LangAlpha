@@ -215,3 +215,37 @@ class TestInterruptReasonVocabulary:
         source = Path(credit_ledger.__file__).read_text()
         assert "interrupt_reason = 'credit_pause'" not in source
         assert "INTERRUPT_REASON_CREDIT_PAUSE" in source
+
+
+class TestStopper:
+    """Who stopped a run is read back off the keys its cancel stamp and
+    finalize write, which rows already stored carry and replay reads."""
+
+    @staticmethod
+    def _stopped(**metadata):
+        return {"status": "cancelled", "metadata": metadata}
+
+    def test_each_stamp_reads_back_as_its_stopper(self):
+        from src.server.contracts.status import stopper_of, stops_mark
+
+        for stopper in ("user", "agent", "suspension", "member"):
+            meta = {"cancelled_by_user": stopper != "suspension"}
+            if (mark := stops_mark(stopper)) is not None:
+                meta[mark] = True
+            assert stopper_of(self._stopped(**meta)) == stopper
+
+    def test_a_cancel_no_one_asked_for_has_no_stopper(self):
+        from src.server.contracts.status import asked_for, stopper_of
+
+        assert stopper_of(self._stopped()) is None
+        assert stopper_of(self._stopped(cancelled_by_user=False)) is None
+        assert stopper_of({"status": "completed", "metadata": {"cancelled_by_user": True}}) is None
+        assert not asked_for({"status": "cancelled", "metadata": None})
+
+    def test_a_suspension_is_asked_for_but_no_users_stop(self):
+        from src.server.contracts.status import asked_for, is_suspension_stop, is_user_stop
+
+        row = self._stopped(stopped_by_suspension=True, cancelled_by_user=False)
+        assert (asked_for(row), is_user_stop(row), is_suspension_stop(row)) == (True, False, True)
+        member = self._stopped(stopped_by_member=True, cancelled_by_user=True)
+        assert (is_user_stop(member), is_suspension_stop(member)) == (True, False)

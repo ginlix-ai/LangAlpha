@@ -82,7 +82,7 @@ async def test_the_owner_sees_the_dashboards_version_and_the_one_visitors_see():
 
     counts = AsyncMock(return_value=SimpleNamespace(open=0, unread=0))
     with patch.object(records.artifacts_db, "comment_counts", counts):
-        answer = await records._response(_record(), "owner")
+        answer = await records._response(_record(), "owner", "owner")
     assert (answer.latest_seq, answer.shared_seq) == (5, 3)
 
 

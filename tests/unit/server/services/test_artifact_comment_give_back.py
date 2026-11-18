@@ -50,6 +50,31 @@ def test_a_plain_steer_reads_as_it_was_sent():
     assert entry == {"content": "hello", "request_key": "k", "timestamp": None}
 
 
+class _Conn:
+    """A connection whose one read is the thread's workspace owner."""
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def cursor(self, **_):
+        conn = self
+
+        class _Cur:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def execute(self, sql, params):
+                pass
+
+            async def fetchone(self):
+                return {"user_id": conn.owner} if conn.owner else None
+
+        return _Cur()
+
+
 @pytest.mark.asyncio
 async def test_a_stop_gives_back_the_comments_of_the_steers_it_returns(monkeypatch):
     from src.server.database.artifacts import delivery
@@ -57,10 +82,26 @@ async def test_a_stop_gives_back_the_comments_of_the_steers_it_returns(monkeypat
     release = AsyncMock(return_value=[])
     monkeypatch.setattr(delivery, "release_unread", release)
     plain = {"payload": {"content": "hello", "request_key": "plain"}}
+    conn = _Conn("u")
 
-    await outbox._give_back_comments("conn", [_steer(), plain])
+    await outbox._give_back_comments(conn, [_steer(), plain], "t1")
 
-    release.assert_awaited_once_with("conn", user_id="u", request_keys=["k"])
+    release.assert_awaited_once_with(conn, user_id="u", request_keys=["k"])
+
+
+@pytest.mark.asyncio
+async def test_a_shared_threads_steer_gives_back_the_holders_comments(monkeypatch):
+    """A shared workspace's comments are its holder's rows, though the steer
+    names the member who sent it."""
+    from src.server.database.artifacts import delivery
+
+    release = AsyncMock(return_value=[])
+    monkeypatch.setattr(delivery, "release_unread", release)
+    conn = _Conn("shared-1234")
+
+    await outbox._give_back_comments(conn, [_steer(user_id="member-b")], "t1")
+
+    release.assert_awaited_once_with(conn, user_id="shared-1234", request_keys=["k"])
 
 
 @pytest.mark.asyncio
@@ -70,7 +111,7 @@ async def test_steers_carrying_no_comments_touch_no_comment(monkeypatch):
     release = AsyncMock()
     monkeypatch.setattr(delivery, "release_unread", release)
 
-    await outbox._give_back_comments("conn", [{"payload": {"content": "hello"}}])
+    await outbox._give_back_comments(_Conn("u"), [{"payload": {"content": "hello"}}], "t1")
 
     release.assert_not_awaited()
 
@@ -90,7 +131,7 @@ def db(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_run_that_never_began_gives_back_what_its_send_claimed(db):
     scope = comments.CommentSendScope(
-        thread_id="t", user_id="u", chief_of_staff=False, timezone=None
+        thread_id="t", user_id="u", owner_id="u", chief_of_staff=False, timezone=None
     )
     scope._claimed = [SimpleNamespace()]
     scope._request_key = "k"
@@ -104,7 +145,7 @@ async def test_a_run_that_never_began_gives_back_what_its_send_claimed(db):
 @pytest.mark.asyncio
 async def test_a_send_that_claimed_nothing_has_nothing_to_give_back(db):
     scope = comments.CommentSendScope(
-        thread_id="t", user_id="u", chief_of_staff=False, timezone=None
+        thread_id="t", user_id="u", owner_id="u", chief_of_staff=False, timezone=None
     )
 
     await scope.run_never_began()

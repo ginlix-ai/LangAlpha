@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.server.app.artifacts import records
+from src.server.services.shared_workspaces.access import Access
 from src.server.app.artifacts.models import KeptRequest, LeftOutRequest
 from src.server.database.artifacts import records as records_db
 from src.server.database.artifacts.records import Artifact
@@ -49,7 +50,7 @@ def statement(monkeypatch):
 async def test_one_file_changes_in_one_statement_and_the_answer_is_the_record(
     monkeypatch, statement, left_out
 ):
-    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records, "reached", AsyncMock(return_value=(_artifact(), Access("u"))))
     statement.return_value = _artifact(
         left_out_files=("reports/other.html",) if left_out else ()
     )
@@ -73,7 +74,7 @@ async def test_a_path_the_full_list_did_not_take_is_refused(monkeypatch, stateme
     """The statement holds the cap, so two at once cannot both pass it; the
     answer says whether this one got in."""
     full = tuple(f"p{i}.html" for i in range(records._MAX_LEFT_OUT))
-    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records, "reached", AsyncMock(return_value=(_artifact(), Access("u"))))
     statement.return_value = _artifact(left_out_files=full)
 
     with pytest.raises(HTTPException) as refused:
@@ -106,7 +107,7 @@ async def test_a_refused_keep_leaves_the_record_as_it_was(
     """Keeping cuts its first version in the write that keeps the record, so a
     read that fails writes nothing: no record kept with no version, nor one
     that starts following turns for a page on no dashboard."""
-    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records, "reached", AsyncMock(return_value=(_artifact(), Access("u"))))
     monkeypatch.setattr(records.snapshot, "keep", AsyncMock(side_effect=refusal))
 
     with pytest.raises(HTTPException) as refused:

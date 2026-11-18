@@ -342,7 +342,7 @@ async def test_dropping_the_stored_token_forgets_its_check_and_stops_each_turn_a
         stopped = await drop_stored("user-1", block_reason="terms")
     leave.assert_awaited_once_with("user-1", "local", block_reason="terms")
     cache.delete.assert_awaited_once_with(token_check_key(TOKEN))
-    assert cancel.await_args_list == [call("t-1", "r-1", by_user=False), call("t-2", "r-2", by_user=False)]
+    assert cancel.await_args_list == [call("t-1", "r-1", by="agent"), call("t-2", "r-2", by="agent")]
     # By its run: a stop reaching the task after that run ended stops nothing.
     cancel_task.assert_awaited_once_with("t-3", "k1", task_run_id="tr-3")
     no_stored_task_runs.assert_awaited_once_with("user-1")
@@ -360,7 +360,7 @@ async def test_a_turn_that_fails_to_stop_leaves_none_of_the_others_on_the_stored
     ):
         await hosted_module.stop_stored_turns("user-1")
     assert raised.value.count == 1 and raised.value.__cause__ is failed
-    assert cancel.await_args_list == [call("t-1", "r-1", by_user=False), call("t-2", "r-2", by_user=False)]
+    assert cancel.await_args_list == [call("t-1", "r-1", by="agent"), call("t-2", "r-2", by="agent")]
 
 
 @pytest.mark.asyncio
@@ -468,7 +468,7 @@ async def test_turning_claude_code_off_whose_drop_left_a_turn_running_saves_no_o
     assert again.status_code == 200
     leave.assert_awaited_once()
     upsert.assert_awaited_once()
-    assert cancel.await_args_list == [call("t-1", "r-1", by_user=False)] * 2
+    assert cancel.await_args_list == [call("t-1", "r-1", by="agent")] * 2
 
 
 @pytest.mark.asyncio
@@ -510,7 +510,7 @@ async def test_removing_the_token_stops_the_turns_on_it():
         patch("src.server.services.cancel_dispatch.cancel_workflow", AsyncMock()) as cancel,
     ):
         await SavedHome("user-1").remove(held=AsyncMock(return_value=True))
-    assert cancel.await_args_list == [call("t-1", "r-1", by_user=False)]
+    assert cancel.await_args_list == [call("t-1", "r-1", by="agent")]
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ from src.server.contracts.status import (
     classify_interrupts,
 )
 from src.server.database.runs.lifecycle import ProducerRecord
-from src.server.services.automation_settlement import run_failure_message
+from src.server.services.automation_outcomes import run_failure_message
 from src.server.services.runs.finalization import (
     assemble_finalize_artifacts,
     classify_outcome,
@@ -103,7 +103,7 @@ async def _outcome(handler, kind="stream_end", *, graph=None, stop_events=None):
         handler=handler,
         cancelled_by_user=False,
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
         stop_events=stop_events,
     )
 

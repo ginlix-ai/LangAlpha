@@ -190,7 +190,7 @@ async def test_durable_cancel_intent_adopts_cancelled_outcome():
         _FakeCache({}),
         FinalizeResult(applied=True, run={"status": "cancelled"}),
     )
-    assert closes == [(("ptc-1", "run-1", "cancelled"), {"error_frame": None})]
+    assert closes == [(("ptc-1", "run-1", "cancelled"), {"error_frame": None, "stopped_by": None})]
 
 
 @pytest.mark.asyncio
@@ -205,7 +205,7 @@ async def test_lost_finalize_cas_still_closes_with_survivor_status():
         _FakeCache({}),
         FinalizeResult(applied=False, run={"status": "completed"}),
     )
-    assert closes == [(("ptc-1", "run-1", "completed"), {"error_frame": None})]
+    assert closes == [(("ptc-1", "run-1", "completed"), {"error_frame": None, "stopped_by": None})]
 
 
 @pytest.mark.asyncio

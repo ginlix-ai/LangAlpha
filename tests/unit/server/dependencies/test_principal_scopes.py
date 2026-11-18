@@ -554,7 +554,7 @@ async def test_a_computer_token_still_adds_no_computer_and_deletes_nothing_ungat
 
 
 @pytest.mark.asyncio
-async def test_a_gated_delete_reaches_the_route_for_a_computer_token(client, computer_token):
+async def test_a_gated_delete_reaches_the_route_for_a_computer_token(client, world, computer_token):
     """The route then asks the user itself (``cli_approval``); the dependency
     only stops an ungated delete from running unasked."""
     own_computer_thread = await client.delete(f"/t/{THREAD}", headers=_computer())
@@ -564,7 +564,7 @@ async def test_a_gated_delete_reaches_the_route_for_a_computer_token(client, com
 
 
 @pytest.mark.asyncio
-async def test_a_computer_may_not_remove_itself_even_on_a_gated_route(client, computer_token):
+async def test_a_computer_may_not_remove_itself_even_on_a_gated_route(client, world, computer_token):
     own = await client.delete(f"/c/{COMPUTER}", headers=_computer())
     other = await client.delete(f"/c/{OTHER_COMPUTER}", headers=_computer())
 

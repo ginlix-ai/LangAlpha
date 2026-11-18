@@ -340,8 +340,8 @@ def _sandbox_pull(
     return (
         patch.object(
             upload_pull,
-            "owned_workspace_on_computer",
-            AsyncMock(return_value={"workspace_id": "ws-1", "status": "running"}),
+            "reached_workspace_on_computer",
+            AsyncMock(return_value=({"workspace_id": "ws-1", "status": "running"}, None)),
         ),
         patch.object(upload_pull, "acquire_sandbox_to_change", acquire),
         patch.object(upload_pull, "owner_layout", MagicMock(return_value=layout)),
@@ -427,6 +427,48 @@ async def test_a_placement_a_retry_can_rescue_keeps_the_fetched_copy_for_it():
         with pytest.raises(RuntimeError):
             await _pull_once(_row(state="pulling", attempts=1), {})
     assert not [e for e in events if e[0] == "remove"]
+
+
+def _gate(*answers: set):
+    """A thread folder gate answering ``answers`` in turn, and what built it."""
+    gate = MagicMock()
+    gate.hidden = AsyncMock(side_effect=list(answers))
+    of = MagicMock(return_value=gate)
+    return gate, patch.object(upload_pull.ThreadFolderGate, "of", of), of
+
+
+@pytest.mark.asyncio
+async def test_a_folder_made_private_during_the_fetch_takes_no_file():
+    """A member's upload into a shared thread's folder, whose starter made it
+    private while the bytes were on their way: nothing is placed there."""
+    from contextlib import ExitStack
+
+    events: list = []
+    gate, gate_patch, of = _gate(set(), {"data/big.bin"})
+    with ExitStack() as stack:
+        for p in (*_sandbox_pull({"status": "ok"}, events=events), gate_patch):
+            stack.enter_context(p)
+        with pytest.raises(_Refused):
+            await _pull_once(_row(state="pulling", attempts=1), {})
+    assert of.call_args.args[1] == "user-1"
+    assert not [e for e in events if e[0] in ("placing", "place")]
+    assert events[-1] == ("remove", f"rm -f -- /home/u/Research/{STAGED}")
+    for call in gate.hidden.await_args_list:
+        assert tuple(call.args[0]) == ("data/big.bin", "data/big.bin")
+
+
+@pytest.mark.asyncio
+async def test_a_folder_private_before_the_pull_fetches_nothing():
+    from contextlib import ExitStack
+
+    events: list = []
+    _, gate_patch, _ = _gate({"data/big.bin"})
+    with ExitStack() as stack:
+        for p in (*_sandbox_pull({"status": "ok"}, events=events), gate_patch):
+            stack.enter_context(p)
+        with pytest.raises(_Refused):
+            await _pull_once(_row(state="pulling", attempts=1), {})
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -547,7 +589,7 @@ async def test_a_workspace_stopped_since_the_upload_began_is_not_started_again()
         for p in _sandbox_pull({"status": "ok"}):
             stack.enter_context(p)
         stack.enter_context(
-            patch.object(upload_pull, "owned_workspace_on_computer", AsyncMock(return_value=stopped))
+            patch.object(upload_pull, "reached_workspace_on_computer", AsyncMock(return_value=(stopped, None)))
         )
         stack.enter_context(patch.object(upload_pull, "acquire_sandbox_to_change", acquired))
         with pytest.raises(_Refused) as refused:

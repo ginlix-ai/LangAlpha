@@ -19,6 +19,8 @@ from src.server.services.report_back.handoff.keys import (
 from src.server.services.report_back.handoff import wake
 from src.server.services.report_back.handoff.wake_listener import ThreadWakeListener
 
+from tests.unit.server.access_stub import as_owner  # noqa: E402
+
 THREADS_MOD = "src.server.app.threads.messaging"
 AUTH_MOD = "src.server.utils.api"
 
@@ -98,7 +100,7 @@ async def test_watch_forwards_every_wake_on_one_subscription(
     # End the stream server-side on its own max-duration close, rather than
     # by cancelling the client: the ASGI transport runs the generator inline,
     # so a client-side break would leave it producing keepalives for 30 min.
-    with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), patch(
+    with as_owner(THREADS_MOD), patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ), patch(
         "src.server.services.workspace_status_pubsub.get_shared_pubsub_client",
@@ -135,7 +137,7 @@ async def test_watch_emits_error_when_cache_unavailable(threads_client):
     cache.enabled = False
     cache.client = None
 
-    with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), patch(
+    with as_owner(THREADS_MOD), patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
         async with threads_client.stream(
@@ -146,3 +148,55 @@ async def test_watch_emits_error_when_cache_unavailable(threads_client):
             # ends on its own — read it fully (no infinite keepalive loop here).
             body = "".join([line async for line in resp.aiter_lines()])
     assert "watch unavailable" in body
+
+
+@pytest.mark.asyncio
+async def test_a_shared_threads_watch_ends_once_its_viewer_loses_access(threads_client):
+    """A member removed while watching gets the watch's own end, not the
+    next wake."""
+    from src.server.services.shared_workspaces import access as access_mod
+    from src.server.services.shared_workspaces.access import Access
+
+    async def wakes(*_a, **_k):
+        yield 'event: workflow_started\ndata: {"run_id": "rb-other"}\n\n'
+
+    shared = Access("shared-1", shared={"workspace_id": "ws-1"})
+    with patch(f"{THREADS_MOD}.thread_access", AsyncMock(return_value=shared)), patch(
+        "src.server.services.report_back.handoff.core.watch_wakes",
+        lambda *_a: wakes(),
+    ), patch.object(
+        access_mod, "thread_access", AsyncMock(side_effect=access_mod.NoAccess(status_code=403))
+    ):
+        async with threads_client.stream("GET", "/api/v1/threads/th-s/watch") as resp:
+            body = "".join([line + "\n" async for line in resp.aiter_lines()])
+
+    assert "rb-other" not in body
+    assert "event: timeout" in body
+
+
+@pytest.mark.asyncio
+async def test_a_shared_threads_run_stream_ends_once_its_viewer_loses_access(threads_client):
+    """A member removed while following a turn stops getting its frames: the
+    run stream ends as a dropped one does, and the reconnect meets the
+    route's refusal."""
+    from src.server.services.shared_workspaces import access as access_mod
+    from src.server.services.shared_workspaces.access import Access
+
+    async def frames(*_a, **_k):
+        yield ":keepalive\n\n"
+        yield 'id: 1\nevent: message_chunk\ndata: {"content": "after removal"}\n\n'
+
+    shared = Access("shared-1", shared={"workspace_id": "ws-1"})
+    with patch(f"{THREADS_MOD}.thread_access", AsyncMock(return_value=shared)), patch(
+        "src.server.handlers.chat.reconnect_to_workflow_stream", frames
+    ), patch(
+        "src.server.handlers.chat.reconnect_admission.classify_reconnect",
+        AsyncMock(return_value="r-1"),
+    ), patch.object(access_mod, "STREAM_RECHECK_S", 0.0), patch.object(
+        access_mod, "thread_access", AsyncMock(side_effect=access_mod.NoAccess(status_code=403))
+    ):
+        async with threads_client.stream("GET", "/api/v1/threads/th-s/messages/stream?run_id=r-1") as resp:
+            body = "".join([line + "\n" async for line in resp.aiter_lines()])
+
+    assert resp.status_code == 200
+    assert "after removal" not in body

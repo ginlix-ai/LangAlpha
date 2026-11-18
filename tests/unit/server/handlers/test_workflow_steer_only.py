@@ -22,6 +22,8 @@ import pytest
 
 from src.server.services.turn_runtime import TurnRoute
 
+from src.server.services.shared_workspaces.turn import TurnIdentity
+
 PTC = "src.server.handlers.chat.ptc_run"
 # RunScope routes burst releases through the definition site.
 RELEASE = "src.server.dependencies.usage_limits.release_burst_slot"
@@ -105,7 +107,8 @@ async def test_ptc_foreground_forwards_steer_only_and_can_steer():
                 run_id="r-1",
                 user_input="hi",
                 user_id="u-1",
-                route=TurnRoute("ws-1", "analyst"),
+                route=TurnRoute("ws-1", "analyst", "u-1"),
+                identity=TurnIdentity("u-1", "u-1", "u-1"),
             )
         )
 
@@ -149,7 +152,8 @@ async def test_ptc_dispatched_forwards_can_steer_false():
                 run_id="r-1",
                 user_input="hi",
                 user_id="u-1",
-                route=TurnRoute("ws-1", "analyst"),
+                route=TurnRoute("ws-1", "analyst", "u-1"),
+                identity=TurnIdentity("u-1", "u-1", "u-1"),
                 dispatched=True,
             )
         )
@@ -249,7 +253,8 @@ async def _run_to_admission(
             run_id="r-1",
             user_input="hi",
             user_id="u-1",
-            route=TurnRoute("ws-1", "analyst"),
+            route=TurnRoute("ws-1", "analyst", "u-1"),
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             dispatched=dispatched,
         )
         try:

@@ -217,6 +217,7 @@ def _run(
         metadata={
             "workspace_id": "ws-1",
             "user_id": "user-1",
+            "recorded_as": "user-1",
             "is_byok": False,
             "run_handle": MagicMock(guard=None),
             "handler": RunSSEProducer(thread_id=THREAD, run_id=RUN),

@@ -488,6 +488,7 @@ class _HeldRuns:
         """Settle the firing as completed, leaving its finish as a settle
         does; whether the job was left."""
         from src.server.database.automation_executions import settle_execution
+        from src.server.services import automation_outcomes
         from src.server.services import automation_settlement as settlement
         from src.server.services.automation_delivery import Delivery, Target
 
@@ -498,7 +499,7 @@ class _HeldRuns:
 
         async def leave(conn, settled):
             left.append(await settlement._leave_finish(
-                conn, settlement._POLICIES[settlement.Outcome.COMPLETED],
+                conn, automation_outcomes.POLICIES[automation_outcomes.Outcome.COMPLETED],
                 {"automation_id": aid, "user_id": user_id}, eid,
                 thread_id, run_id, held, settled, "The brief.",
             ))

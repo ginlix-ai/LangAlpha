@@ -32,6 +32,7 @@ def test_no_user_id_closes_every_user_scoped_surface(workflows):
     workflows(True)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=object(),
         user_id=None,
         workspace_id="ws-1",
@@ -52,6 +53,7 @@ def test_no_store_closes_the_store_routes_but_not_the_user_data_backend(workflow
     workflows(True)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=None,
         user_id="user-1",
         workspace_id="ws-1",
@@ -68,6 +70,7 @@ def test_workspace_memory_needs_a_workspace_as_well_as_a_user(workflows):
     workflows(False)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=object(),
         user_id="user-1",
         workspace_id=None,
@@ -86,6 +89,7 @@ def test_the_recursion_gate_drops_the_tool_but_not_the_workflow_filesystem(workf
     workflows(True)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=object(),
         user_id="user-1",
         workspace_id="ws-1",
@@ -101,6 +105,7 @@ def test_the_workflow_flag_closes_both_the_tool_and_the_filesystem(workflows):
     workflows(False)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=object(),
         user_id="user-1",
         workspace_id="ws-1",
@@ -127,6 +132,7 @@ def test_channels_need_the_ask_and_a_user(workflows, asked, user_id, expected):
     workflows(False)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=None,
         user_id=user_id,
         workspace_id=None,
@@ -143,6 +149,7 @@ def test_channels_are_off_unless_asked_for(workflows):
     workflows(False)
 
     gates = resolve_identity_gates(
+        own_data=True,
         store=object(), user_id="user-1", workspace_id="ws-1", disable_subagents=False
     )
 

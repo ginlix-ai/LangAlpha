@@ -70,7 +70,7 @@ def _computer(*, direct=True, scan_cap=None, free=None, store_id=STORE_ID):
     """A running workspace whose sandbox the begin route acquires and inspects."""
     sandbox = SimpleNamespace(sandbox_id="sb-1")
     m = SimpleNamespace(
-        owned=AsyncMock(return_value={"workspace_id": WS, "user_id": USER, "status": "running"}),
+        owned=AsyncMock(return_value=({"workspace_id": WS, "user_id": USER, "status": "running"}, None)),
         acquired=MagicMock(),
         open=MagicMock(return_value=store_id),
         abort=MagicMock(return_value=True),
@@ -84,16 +84,19 @@ def _computer(*, direct=True, scan_cap=None, free=None, store_id=STORE_ID):
 
     with ExitStack() as stack:
         for name, value in {
-            "owned_workspace_on_computer": m.owned,
+            "reached_workspace_on_computer": m.owned,
             "acquire_sandbox_to_change": acquire,
             "direct_available": lambda _sandbox: direct,
             "scan_cap_bytes": lambda _sandbox, *, blobs_on: scan_cap,
-            "owner_work_dir": lambda _workspace: WORK_DIR,
-            "previous_dir_names_of": lambda _workspace: (),
             "contained_target": AsyncMock(side_effect=lambda _sb, path, wd, _prev: f"{wd}/{path}"),
             "free_disk_bytes": AsyncMock(return_value=free),
         }.items():
             stack.enter_context(patch(f"{_UPLOADS}.{name}", value))
+        for name, value in {
+            "owner_work_dir": lambda _workspace: WORK_DIR,
+            "previous_dir_names_of": lambda _workspace: (),
+        }.items():
+            stack.enter_context(patch(f"src.server.app.workspace_files._shared.{name}", value))
         stack.enter_context(patch.object(store_multipart, "open_multipart_upload", m.open))
         stack.enter_context(patch.object(store_multipart, "abort_multipart_upload", m.abort))
         stack.enter_context(patch.object(uploads.db, "create_upload", m.create))

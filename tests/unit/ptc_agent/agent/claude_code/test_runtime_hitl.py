@@ -172,7 +172,7 @@ async def test_a_call_past_the_credit_boundary_runs_and_the_turn_stops_at_the_ga
     tools = [counted]
     graph = new_graph(tools, pause=[("credit", credit)])
     gated = dataclasses.replace(SPEC, tools=tools)
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     async with FakeMessagesAPI() as api:
@@ -193,7 +193,7 @@ async def test_a_quiet_end_the_tool_refuses_past_the_credit_boundary_stops_at_th
     tools = [refused]
     graph = new_graph(tools, pause=[("credit", credit)])
     gated = dataclasses.replace(SPEC, tools=tools)
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     async with FakeMessagesAPI() as api:
@@ -213,7 +213,7 @@ async def test_a_refused_quiet_end_the_gate_then_lets_on_carries_on_in_a_new_cli
     tools = [refused]
     graph = new_graph(tools, pause=[("credit", lets_on)])
     gated = dataclasses.replace(SPEC, tools=tools)
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     async with FakeMessagesAPI() as api:
@@ -284,7 +284,7 @@ async def test_a_result_that_comes_back_after_the_credit_gate_stopped_stops_at_t
     tools = [denied_meanwhile]
     graph = new_graph(tools, pause=[("credit", credit)])
     gated = dataclasses.replace(SPEC, tools=tools)
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     async with FakeMessagesAPI() as api:
         try:
@@ -340,7 +340,7 @@ async def test_a_quiet_end_past_the_credit_boundary_still_runs_the_wakeup_calls_
 
     tools = [wakeups]
     graph = new_graph(tools, pause=[("credit", credit)])
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     async with FakeMessagesAPI() as api:
@@ -361,7 +361,7 @@ async def test_a_steer_waiting_as_a_query_ends_past_the_credit_boundary_stops_at
     from .test_runtime_cli import _Inbox
 
     inbox = _Inbox()
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
 
     @tool("Bash")
     def steered(command: str) -> str:

@@ -122,7 +122,7 @@ def test_archived_list_rows_carry_what_the_projection_needs():
     paged = src.split("async def get_workspace_threads")[1].split("async def ")[0]
     assert "last_seen_run_seq" in paged
     for col in ("latest_run_seq", "latest_run_status"):
-        assert col in threads_read._LATEST_ATTEMPT_LATERAL_COLS
+        assert col in threads_read.LATEST_ATTEMPT_LATERAL_COLS
 
 
 def test_stamped_archived_row_projects_as_seen():

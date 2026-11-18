@@ -118,7 +118,7 @@ async def _persist_metadata(*, status, cancelled_by_user, restart):
         handler=None,
         cancelled_by_user=cancelled_by_user,
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
         restart=restart,
     )
     return outcome.metadata

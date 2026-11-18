@@ -541,6 +541,7 @@ class TestWorkspaceScopedPreviewCommands:
             port=8080,
             workspace_id="ws-test-001",
             expires_in=3600,
+            viewer_id=None,
         )
         assert cache_url.await_args.args[2] == capability
 
@@ -687,6 +688,7 @@ class TestWorkspaceScopedPreviewCommands:
             expires_in=60,
             owner_workspace_id="ws-test-001",
             url_expires_at=ANY,
+            viewer_id=None,
         )
 
     @pytest.mark.asyncio

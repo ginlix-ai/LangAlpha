@@ -14,7 +14,7 @@ from src.server.app.workspace_files import router as files_router
 from src.server.app.workspace_sandbox import router as sandbox_router
 from src.server.services.workspace_files import (
     HOME_NOT_ON_COMPUTER,
-    owned_workspace_on_computer,
+    reached_workspace_on_computer,
 )
 from tests.conftest import create_test_app
 
@@ -42,14 +42,15 @@ def _row(**overrides) -> dict:
 async def test_the_guard_refuses_as_the_routes_always_have(row, status, detail):
     with patch(_READ, AsyncMock(return_value=row)):
         with pytest.raises(HTTPException) as exc:
-            await owned_workspace_on_computer(WS, USER)
+            await reached_workspace_on_computer(WS, USER)
     assert (exc.value.status_code, exc.value.detail) == (status, detail)
 
 
 async def test_the_guard_returns_the_row_it_read():
     row = _row()
     with patch(_READ, AsyncMock(return_value=row)):
-        assert await owned_workspace_on_computer(WS, USER) is row
+        workspace, access = await reached_workspace_on_computer(WS, USER)
+    assert workspace is row and access.owner_id == USER
 
 
 ROUTES = [

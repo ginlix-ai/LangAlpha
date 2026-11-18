@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.server.database.wakeups.cancel import CancelOutcome
 from tests.conftest import create_test_app
+from tests.unit.server.access_stub import owned_thread
 
 MOD = "src.server.app.threads.wakeups"
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
@@ -39,10 +40,7 @@ async def test_a_committed_cancel_answers_its_outcomes_when_the_listing_fails(
 ):
     cancelled = CancelOutcome(WAKEUP_ID, "w_ab12", "cancelled", {"kind": "at"})
     with (
-        patch(
-            "src.server.database.conversation.get_thread_owner_id",
-            new=AsyncMock(return_value=OWNER_ID),
-        ),
+        owned_thread(OWNER_ID),
         patch(f"{MOD}.wakeups_cancel.user_cancel", new=AsyncMock(return_value=[cancelled])),
         patch(
             f"{MOD}.thread_wakeups",

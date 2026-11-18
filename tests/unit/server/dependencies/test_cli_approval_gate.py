@@ -23,7 +23,12 @@ from fastapi import HTTPException
 from src.server.database.turn_targets import Place
 from src.server.database.workspace_names import WorkspaceNameTaken
 from src.server.dependencies import cli_approval
-from src.server.dependencies.principal import _CLI_CALL, CliCall, Principal
+from src.server.dependencies.principal import (
+    _CLI_CALL,
+    SHARED_WORKSPACE_REFUSAL,
+    CliCall,
+    Principal,
+)
 from src.server.models.automation import AutomationCreate, AutomationUpdate
 from src.server.models.chat import ChatRequest
 from src.server.models.computer import ComputerRemoveRequest
@@ -32,6 +37,17 @@ from src.server.models.workspace import WorkspaceCreate
 from src.server.services.automations.lifecycle import AutomationRefusal
 from src.server.services import cli_approvals as store
 from src.server.services.cli_tokens import SCOPES
+from tests.unit.server.dependencies.test_principal_shared_reach import (
+    FOREIGN_THREAD,
+    FOREIGN_WORKSPACE,
+    MY_PRIVATE_THREAD,
+    PRIVATE_THREAD,
+    SHARED_THREAD,
+    SHARED_WORKSPACE,
+    UNREACHED_THREAD,
+    UNREACHED_WORKSPACE,
+    SharedWorld,
+)
 
 USER = "user-gate-1"
 COMPUTER = "c0ffee00-0000-4000-8000-000000000001"
@@ -40,6 +56,7 @@ WORKSPACE = "a1100000-0000-4000-8000-000000000001"
 OTHER_WORKSPACE = "a1100000-0000-4000-8000-000000000002"
 THREAD = "b2200000-0000-4000-8000-000000000001"
 OTHER_THREAD = "b2200000-0000-4000-8000-000000000002"
+UNKNOWN = "e5500000-0000-4000-8000-000000000009"
 AUTOMATION = "d4400000-0000-4000-8000-000000000001"
 APPROVAL = "f6600000-0000-4000-8000-000000000001"
 OTHER_APPROVAL = "f6600000-0000-4000-8000-000000000002"
@@ -480,6 +497,8 @@ def rows(monkeypatch) -> SimpleNamespace:
         # Home's stand-in would run on then.
         home_away=False,
         stand_in=None,
+        # The workspaces that are shared ones, on their holders' computers.
+        shared=set(),
     )
 
     async def auth_meta(thread_id):
@@ -518,8 +537,13 @@ def rows(monkeypatch) -> SimpleNamespace:
     async def sender(user_id, thread_id):
         return world.senders.get(thread_id)
 
+    async def in_shared(*, workspace_id=None, thread_id=None):
+        thread = world.threads.get(thread_id) or {}
+        return bool({workspace_id, thread.get("workspace_id")} & world.shared)
+
     monkeypatch.setattr(cli_approval, "get_thread_auth_meta", auth_meta)
     monkeypatch.setattr(cli_approval, "get_thread_by_id", thread_by_id)
+    monkeypatch.setattr(cli_approval, "in_shared_workspace", in_shared)
     monkeypatch.setattr(cli_approval, "turn_place", place)
     monkeypatch.setattr(cli_approval, "get_automation", automation)
     monkeypatch.setattr(cli_approval.runs_db, "get_latest_attempt", latest)
@@ -786,6 +810,98 @@ async def test_a_turn_returns_the_computer_it_was_checked_on_whether_it_asked_or
     )
 
     assert (here, there) == (COMPUTER, OTHER_COMPUTER)
+
+
+@pytest.fixture
+def shared(monkeypatch, rows) -> SharedWorld:
+    """Two organizations' shared workspaces, the user a member of the first
+    (``test_principal_shared_reach``), with the person-level checks run for
+    real and ``in_shared_workspace``'s read counted in ``lookups``."""
+    world = SharedWorld(USER)
+    world.install(monkeypatch)
+    world.lookups = []
+
+    async def in_shared(*, workspace_id=None, thread_id=None):
+        world.lookups.append((workspace_id, thread_id))
+        return world.is_shared(workspace_id=workspace_id, thread_id=thread_id)
+
+    monkeypatch.setattr(cli_approval, "in_shared_workspace", in_shared)
+    return world
+
+
+def _shared_sends(target: str) -> list:
+    """Each way a body names ``target``: a new thread in a workspace, a
+    thread an external id resolved to (which no path named), and a retry
+    run in a workspace."""
+    return [
+        lambda: cli_approval.admit_turn(_request(), TOKEN, _say("Hi", workspace_id=target), None),
+        lambda: cli_approval.admit_turn(
+            _request(call_thread=OTHER_THREAD), TOKEN, _say("Hi"), target
+        ),
+        lambda: cli_approval.admit_retry(
+            _request(), TOKEN, OTHER_THREAD, RetryRequest(workspace_id=target)
+        ),
+    ]
+
+
+async def _outcome(send, built) -> tuple:
+    before = len(built)
+    try:
+        checked = await send()
+    except HTTPException as e:
+        return ("refused", e.status_code, e.detail)
+    return ("admitted", checked, built[before:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reached", "sends"),
+    [(SHARED_WORKSPACE, (0, 2)), (SHARED_THREAD, (1,)), (MY_PRIVATE_THREAD, (1,))],
+)
+async def test_a_token_starts_no_turn_in_a_shared_workspace_the_user_reaches(
+    built, shared, reached, sends
+):
+    # It runs on the workspace's own computer, so no OK of the user's covers it.
+    # A path's thread is ``require_scopes``'s (test_principal_shared_reach).
+    for index in sends:
+        assert await _forbidden(_shared_sends(reached)[index]()) == SHARED_WORKSPACE_REFUSAL
+    assert built == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unreached",
+    [UNREACHED_WORKSPACE, FOREIGN_WORKSPACE, UNREACHED_THREAD, FOREIGN_THREAD, PRIVATE_THREAD],
+)
+async def test_what_the_user_does_not_reach_is_left_to_the_route_as_a_made_up_id(
+    built, shared, unreached
+):
+    # A refusal here would tell the token the id exists and is shared.
+    for index, send in enumerate(_shared_sends(unreached)):
+        made_up = await _outcome(_shared_sends(UNKNOWN)[index], built)
+        assert made_up[0] == "admitted"
+        assert await _outcome(send, built) == made_up
+
+
+@pytest.mark.asyncio
+async def test_someone_in_no_organization_is_left_to_the_route_too(built, shared):
+    shared.seat = None
+    for target in (SHARED_WORKSPACE, SHARED_THREAD):
+        for index, send in enumerate(_shared_sends(target)):
+            made_up = await _outcome(_shared_sends(UNKNOWN)[index], built)
+            assert await _outcome(send, built) == made_up
+
+
+@pytest.mark.asyncio
+async def test_with_the_teams_door_shut_a_body_costs_no_lookup(built, shared):
+    # No one reaches a shared workspace then; its route answers 404 alone.
+    shared.door = False
+    for target in (SHARED_WORKSPACE, SHARED_THREAD, FOREIGN_WORKSPACE):
+        for index, send in enumerate(_shared_sends(target)):
+            made_up = await _outcome(_shared_sends(UNKNOWN)[index], built)
+            assert await _outcome(send, built) == made_up
+    assert shared.lookups == []
+    assert shared.access_reads == []
 
 
 @pytest.mark.asyncio

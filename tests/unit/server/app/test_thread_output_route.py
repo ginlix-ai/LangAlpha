@@ -25,7 +25,7 @@ async def test_output_reads_the_latest_turns_in_the_users_zone():
         return_value=ThreadOutput(workspace_id="ws-1", status="completed", text="Margins rose.")
     )
     with (
-        patch("src.server.utils.api.require_thread_owner", new=AsyncMock()) as owner,
+        patch("src.server.app.threads.crud.thread_access", new=AsyncMock()) as owner,
         patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch(
             "src.server.services.wakeups.message.user_timezone",
@@ -52,7 +52,7 @@ async def test_output_reads_the_latest_turns_in_the_users_zone():
 async def test_output_defaults_to_the_latest_turn_and_takes_zero_for_history():
     extract = AsyncMock(return_value=ThreadOutput(workspace_id="ws-1", status="running", text=""))
     with (
-        patch("src.server.utils.api.require_thread_owner", new=AsyncMock()),
+        patch("src.server.app.threads.crud.thread_access", new=AsyncMock()),
         patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):
@@ -72,7 +72,7 @@ async def test_output_of_a_thread_the_caller_does_not_own_is_refused():
     extract = AsyncMock()
     with (
         patch(
-            "src.server.utils.api.require_thread_owner",
+            "src.server.app.threads.crud.thread_access",
             new=AsyncMock(side_effect=HTTPException(status_code=404, detail="Thread not found")),
         ),
         patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
@@ -87,7 +87,7 @@ async def test_output_of_a_thread_the_caller_does_not_own_is_refused():
 @pytest.mark.asyncio
 async def test_output_of_a_thread_deleted_after_the_owner_check_is_not_found():
     with (
-        patch("src.server.utils.api.require_thread_owner", new=AsyncMock()),
+        patch("src.server.app.threads.crud.thread_access", new=AsyncMock()),
         patch("src.server.services.thread_output.extract_text_from_thread", new=AsyncMock(return_value=None)),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):
@@ -104,7 +104,7 @@ async def test_output_of_a_thread_taken_by_another_account_mid_read_is_refused()
     owner = AsyncMock(side_effect=[None, HTTPException(status_code=404, detail="Thread not found")])
     extract = AsyncMock(return_value=ThreadOutput(workspace_id="w", status="completed", text="x"))
     with (
-        patch("src.server.utils.api.require_thread_owner", new=owner),
+        patch("src.server.app.threads.crud.thread_access", new=owner),
         patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):

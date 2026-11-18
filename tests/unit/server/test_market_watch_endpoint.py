@@ -15,12 +15,18 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
+from tests.unit.server.access_stub import owned_thread
 
 THREADS_MOD = "src.server.app.threads.crud"
 TARGET_ID = "22222222-2222-2222-2222-222222222222"
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 OWNER_ID = "test-user-123"  # matches create_test_app's auth override
+
+
+def _owned_by(owner):
+    """A thread's owner as the access check reads it, or None for no thread."""
+    return {"user_id": owner, "workspace_id": "ws-fake-0001"} if owner else None
 
 
 @pytest.fixture(autouse=True)
@@ -50,10 +56,7 @@ class TestGetMarketWatch:
     @pytest.mark.asyncio
     async def test_returns_watchlist(self, threads_client):
         with (
-            patch(
-                "src.server.database.conversation.get_thread_owner_id",
-                new=AsyncMock(return_value=OWNER_ID),
-            ),
+            owned_thread(OWNER_ID),
             patch(
                 f"{THREADS_MOD}.user_feature_enabled",
                 new=AsyncMock(return_value=True),
@@ -75,10 +78,7 @@ class TestGetMarketWatch:
     @pytest.mark.asyncio
     async def test_empty_watchlist(self, threads_client):
         with (
-            patch(
-                "src.server.database.conversation.get_thread_owner_id",
-                new=AsyncMock(return_value=OWNER_ID),
-            ),
+            owned_thread(OWNER_ID),
             patch(
                 f"{THREADS_MOD}.user_feature_enabled",
                 new=AsyncMock(return_value=True),
@@ -103,10 +103,7 @@ class TestGetMarketWatchDisabled:
         feature_gate = AsyncMock(return_value=False)
         watchlist = AsyncMock(return_value=["NVDA"])
         with (
-            patch(
-                "src.server.database.conversation.get_thread_owner_id",
-                new=AsyncMock(return_value=OWNER_ID),
-            ),
+            owned_thread(OWNER_ID),
             patch(f"{THREADS_MOD}.user_feature_enabled", new=feature_gate),
             patch(f"{THREADS_MOD}.get_watchlist", new=watchlist),
         ):
@@ -125,8 +122,8 @@ class TestGetMarketWatchAuth:
     @pytest.mark.asyncio
     async def test_unknown_thread_returns_404(self, threads_client):
         with patch(
-            "src.server.database.conversation.get_thread_owner_id",
-            new=AsyncMock(return_value=None),
+            "src.server.database.conversation.get_thread_auth_meta",
+            new=AsyncMock(return_value=_owned_by(None)),
         ):
             resp = await threads_client.get(
                 f"/api/v1/threads/{THREAD_ID}/market-watch"
@@ -136,8 +133,8 @@ class TestGetMarketWatchAuth:
     @pytest.mark.asyncio
     async def test_non_owner_returns_403(self, threads_client):
         with patch(
-            "src.server.database.conversation.get_thread_owner_id",
-            new=AsyncMock(return_value="someone-else"),
+            "src.server.database.conversation.get_thread_auth_meta",
+            new=AsyncMock(return_value=_owned_by("someone-else")),
         ):
             resp = await threads_client.get(
                 f"/api/v1/threads/{THREAD_ID}/market-watch"
@@ -147,10 +144,7 @@ class TestGetMarketWatchAuth:
 
 def _owner_and_feature(enabled: bool = True):
     return (
-        patch(
-            "src.server.database.conversation.get_thread_owner_id",
-            new=AsyncMock(return_value=OWNER_ID),
-        ),
+        owned_thread(OWNER_ID),
         patch(f"{THREADS_MOD}.user_feature_enabled", new=AsyncMock(return_value=enabled)),
     )
 
@@ -311,8 +305,8 @@ class TestMarketWatchTargets:
     @pytest.mark.asyncio
     async def test_cancel_by_a_non_owner_is_forbidden(self, threads_client, no_targets):
         with patch(
-            "src.server.database.conversation.get_thread_owner_id",
-            new=AsyncMock(return_value="someone-else"),
+            "src.server.database.conversation.get_thread_auth_meta",
+            new=AsyncMock(return_value=_owned_by("someone-else")),
         ):
             resp = await threads_client.delete(
                 f"/api/v1/threads/{THREAD_ID}/market-watch/targets/{TARGET_ID}"

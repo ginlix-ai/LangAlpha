@@ -748,7 +748,7 @@ async def test_the_call_a_resumed_cli_asks_for_again_runs_with_the_result_the_th
 async def test_past_the_credit_boundary_only_a_call_that_waits_for_the_user_is_deferred():
     """The gate stops the request after a batch, as a langalpha turn's does
     its next model call, not the batch's calls."""
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
     try:
@@ -1277,7 +1277,7 @@ async def test_a_batch_past_the_credit_boundary_stops_the_cli_in_a_subagents_run
     async def take():
         return None
 
-    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
     token = current_credit_gate.set(CreditGateState(run_ref="r", kind=kind, port=None, lease=lease))
     try:

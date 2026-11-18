@@ -137,7 +137,7 @@ async def test_destinations_read_the_owners_preference_alone(_db, mock_cursor):
     ]
 
     found = await artifacts.destinations(
-        user_id=_U, artifact_id=_A, beside_thread_id=_BESIDE
+        user_id=_U, artifact_id=_A, beside_thread_id=_BESIDE, caller=_U
     )
 
     sql, params = mock_cursor.execute.await_args_list[0].args

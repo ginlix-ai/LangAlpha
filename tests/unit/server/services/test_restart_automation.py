@@ -12,7 +12,7 @@ import pytest
 from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
 from src.server.database.runs.hook_jobs import build_finalize_jobs_from_run_row
 from src.server.services import automation_settlement
-from src.server.services.automation_settlement import Outcome, ledger_outcome
+from src.server.services.automation_outcomes import Outcome, ledger_outcome
 from src.server.services.report_back.handoff import carry
 
 _LATEST = "src.server.database.runs.lifecycle.get_latest_attempt"

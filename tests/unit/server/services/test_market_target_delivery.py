@@ -365,6 +365,21 @@ async def test_no_room_for_another_claude_code_turn_asks_again_by_the_clock_unsp
     env.mark.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_a_suspended_accounts_notice_asks_again_each_hour_still_owed():
+    from src.server.services.report_back.notify_turn import SUSPENDED_WAIT_S
+
+    env = Env(target=_target(), post_outcomes=[("suspended", None)])
+    room = AsyncMock(return_value=True)
+    with _env(env), patch("src.server.database.runs.outbox.wait_for_room", new=room):
+        await execute_market_target(_job(attempts=MAX_ATTEMPTS))
+
+    assert env.post.await_args.kwargs["suspension_waits"]
+    room.assert_awaited_once_with("job-1", attempts=MAX_ATTEMPTS, wait_s=SUSPENDED_WAIT_S)
+    env.exhaust.assert_not_awaited()
+    env.mark.assert_not_awaited()
+
+
 def _held_for_the_next_turn(env: Env, attempts: int) -> None:
     env.exhaust.assert_awaited_once_with("job-1", attempts=attempts)
     env.mark.assert_not_awaited()

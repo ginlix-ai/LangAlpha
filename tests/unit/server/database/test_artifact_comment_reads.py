@@ -107,7 +107,7 @@ async def test_an_owner_message_takes_its_seq_under_the_lock_and_moves_the_curso
     ]
 
     await artifacts.add_owner_message(
-        user_id=_U, artifact_id=_A, comment_id=_C, body="hi", delivery=None
+        user_id=_U, artifact_id=_A, comment_id=_C, body="hi", delivery=None, caller=_U
     )
 
     calls = _calls(mock_cursor)
@@ -130,7 +130,7 @@ async def test_a_new_comment_starts_the_cursor_at_its_first_message(mock_cursor)
     ]
 
     await artifacts.create_comment(
-        user_id=_U, artifact_id=_A, anchor={}, body="hi", delivery="note"
+        user_id=_U, artifact_id=_A, anchor={}, body="hi", delivery="note", caller=_U
     )
 
     calls = _calls(mock_cursor)

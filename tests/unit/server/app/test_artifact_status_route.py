@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.server.app.artifacts import records
+from src.server.services.shared_workspaces.access import Access
 from src.server.app.artifacts.models import PublishRequest, StatusRequest
 from src.server.database.artifacts.records import Artifact
 from src.server.services.artifacts import snapshot
@@ -41,7 +42,7 @@ def _artifact() -> Artifact:
 
 @pytest.fixture
 def status(monkeypatch):
-    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records, "reached", AsyncMock(return_value=(_artifact(), Access("u"))))
     entry = ManifestEntry("reports/q3.html", 3, "entry")
     found = snapshot.Status(
         snapshot.Snapshot(
@@ -96,7 +97,7 @@ async def test_what_the_page_loads_from_the_origin_root_comes_with_the_list(stat
 
 @pytest.mark.asyncio
 async def test_a_list_past_a_cap_is_answered_with_the_cap_and_no_code(monkeypatch):
-    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records, "reached", AsyncMock(return_value=(_artifact(), Access("u"))))
     rows = [
         ManifestEntry("reports/q3.html", 3, "entry"),
         ManifestEntry("reports/raw.zip", 500, "link", optional=True),

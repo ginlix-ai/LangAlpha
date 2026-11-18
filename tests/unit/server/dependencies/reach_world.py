@@ -24,9 +24,11 @@ UNKNOWN = "e5500000-0000-4000-8000-000000000009"
 
 
 class ReachWorld:
-    """Stands in for the ``turn_targets`` lookup the principal tests reach:
+    """Stands in for the ``turn_targets`` lookups the principal tests reach:
     ``turn_sender`` answers from ``senders``, ``None`` for an id it does not
-    list, as the database does for one the user lacks."""
+    list, as the database does for one the user lacks, and
+    ``in_shared_workspace`` from ``shared``, the workspace, thread and
+    computer ids a shared workspace holds (none unless a test adds them)."""
 
     def __init__(self, monkeypatch) -> None:
         # The thread that sent each thread its latest turn.
@@ -35,6 +37,13 @@ class ReachWorld:
             side_effect=lambda user_id, thread_id: self.senders.get(thread_id)
         )
         monkeypatch.setattr(turn_targets, "turn_sender", self.sender_of)
+        self.shared: set[str] = set()
+        self.in_shared = AsyncMock(
+            side_effect=lambda *, workspace_id=None, thread_id=None, computer_id=None: bool(
+                {workspace_id, thread_id, computer_id} & self.shared
+            )
+        )
+        monkeypatch.setattr(turn_targets, "in_shared_workspace", self.in_shared)
 
 
 def act_as_computer(app, *, call_thread: str | None = None, computer: str = COMPUTER):

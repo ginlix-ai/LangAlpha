@@ -50,7 +50,7 @@ def home():
 
 
 def test_a_workspace_turn_runs_its_analyst_there():
-    assert turn_route(USER, PROJECT) == TurnRoute("proj-ws", "analyst")
+    assert turn_route(USER, PROJECT) == TurnRoute("proj-ws", "analyst", USER)
 
 
 @pytest.mark.parametrize(
@@ -60,7 +60,7 @@ def test_a_workspace_turn_runs_its_analyst_there():
 )
 def test_every_other_turn_runs_the_chief_of_staff_in_home(workspace):
     """A former Home runs in the user's own Home, where its threads went."""
-    assert turn_route(USER, workspace) == TurnRoute(HOME, "chief_of_staff")
+    assert turn_route(USER, workspace) == TurnRoute(HOME, "chief_of_staff", USER)
 
 
 @pytest.mark.asyncio
@@ -151,6 +151,16 @@ async def test_a_new_thread_naming_no_workspace_is_refused():
     assert refused.value.detail.startswith(
         "workspace_id is required to start a thread"
     )
+
+
+def test_the_owner_is_the_workspace_rows_and_home_is_the_senders():
+    """The two accounts a turn has only part where a workspace is not the
+    sender's: the route names the row's owner, never the sender, for it."""
+    held = {**PROJECT, "user_id": "user-2"}
+    assert turn_route(USER, held).owner_id == "user-2"
+    assert turn_route(USER, PROJECT).owner_id == USER
+    assert turn_route(USER, None).owner_id == USER
+    assert turn_route(USER, BOUND_HOME).owner_id == USER
 
 
 @pytest.mark.asyncio

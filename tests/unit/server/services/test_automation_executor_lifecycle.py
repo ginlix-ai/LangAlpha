@@ -33,11 +33,8 @@ from src.server.services.automation_computer_wait import (
     ONE_SHOT_WAIT_CAP_SECONDS,
 )
 from src.server.services.automation_executor import AutomationExecutor
-from src.server.services.automation_settlement import (
-    INTERRUPTED_ERROR,
-    Outcome,
-    settle_abandoned,
-)
+from src.server.services.automation_outcomes import INTERRUPTED_ERROR, Outcome
+from src.server.services.automation_settlement import settle_abandoned
 from src.server.services.runs.admission import BUSY_STATES
 from src.server.services.turn_runtime import TurnRoute
 from src.server.services.writer_guard import WriterGuardUnavailable
@@ -143,8 +140,8 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,), away=())
         patch(f"{_WAIT}.exec_db", new=db),
         patch("src.server.services.automation_settlement.auto_db", new=db),
         patch("src.server.services.automation_settlement.exec_db", new=db),
-        patch(f"{_MOD}.is_byok_active", new=fx.byok),
-        patch(f"{_MOD}.has_any_oauth_token", new=AsyncMock(return_value=False)),
+        patch("src.server.database.api_keys.is_byok_active", new=fx.byok),
+        patch("src.server.database.oauth_tokens.has_any_oauth_token", new=AsyncMock(return_value=False)),
         patch(f"{_MOD}.enforce_credit_limit", new=fx.credit),
         patch(
             "src.server.database.workspace.get_workspace",
@@ -508,7 +505,7 @@ async def test_an_analysts_run_names_its_workspace_to_the_service():
         await AutomationExecutor().execute(automation, _EXEC)
 
     args = _turn_args(fx)
-    assert args["route"] == TurnRoute("ws-9", "analyst")
+    assert args["route"] == TurnRoute("ws-9", "analyst", _USER)
     dx.start.assert_awaited_once_with(automation, _EXEC, "ws-9", thread_id=args["thread_id"])
     assert args["extra_configurable"] == automation_delivery.turn_configurable(_HELD)
 
@@ -963,7 +960,7 @@ async def test_a_chief_of_staff_automation_runs_in_home():
 
     turn = fx.astream.call_args.kwargs
     assert turn["request"].workspace_id == _HOME
-    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff")
+    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff", _USER)
     manager.ensure_home_bound.assert_awaited_once_with(_USER)
 
 

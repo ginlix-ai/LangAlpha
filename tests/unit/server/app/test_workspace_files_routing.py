@@ -24,10 +24,18 @@ import pytest
 
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.app.workspace_files.crud import list_workspace_files
+from src.server.services.shared_workspaces.access import Access
 
 # Every listing also carries the user's data files, read from their rows.
 # These tests pin the routing; test_workspace_files_virtual.py pins those.
 _DATA_FILES = "src.server.app.workspace_files.crud._virtual_files_in_scope"
+# The routes build every path through ``RoutePaths``, which reads the folder here.
+_SHARED = "src.server.app.workspace_files._shared"
+
+
+def _reached(row: dict) -> AsyncMock:
+    """``reached_workspace_on_computer`` as its owner reaches ``row``."""
+    return AsyncMock(return_value=(row, Access(row["user_id"])))
 
 
 def _workspace(ws_id: str, user_id: str, status: str) -> dict:
@@ -42,7 +50,7 @@ def _workspace(ws_id: str, user_id: str, status: str) -> dict:
 
 @pytest.mark.asyncio
 @patch(_DATA_FILES, new=AsyncMock(return_value=[]))
-@patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files._shared.owner_work_dir", return_value="/home/workspace")
 @patch("src.server.app.workspace_files.backup_reads.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_starting_status_routes_to_db_fallback(
@@ -77,7 +85,7 @@ async def test_starting_status_routes_to_db_fallback(
 
 @pytest.mark.asyncio
 @patch(_DATA_FILES, new=AsyncMock(return_value=[]))
-@patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files._shared.owner_work_dir", return_value="/home/workspace")
 @patch("src.server.app.workspace_files.backup_reads.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_files_during_concurrent_failing_lazy_init(
@@ -430,7 +438,7 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
             AsyncMock(return_value=row),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owner_work_dir",
+            "src.server.app.workspace_files._shared.owner_work_dir",
             return_value="/Users/me/langalpha/ws",
         ),
         patch("src.server.services.workspace_files.WorkspaceManager", manager),
@@ -498,11 +506,11 @@ async def test_a_client_that_has_not_said_it_shows_a_backup_gets_the_away_machin
             AsyncMock(return_value=row),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
-            AsyncMock(return_value=row),
+            "src.server.app.workspace_files.crud.reached_workspace_on_computer",
+            _reached(row),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owner_work_dir",
+            "src.server.app.workspace_files._shared.owner_work_dir",
             return_value="/Users/me/langalpha/ws",
         ),
         patch(
@@ -548,11 +556,11 @@ async def test_bytes_from_the_backup_say_by_header_that_the_machine_is_away(away
     with (
         patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
         patch(
-            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
-            AsyncMock(return_value=row),
+            "src.server.app.workspace_files.crud.reached_workspace_on_computer",
+            _reached(row),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owner_work_dir",
+            "src.server.app.workspace_files._shared.owner_work_dir",
             return_value="/Users/me/langalpha/ws",
         ),
         patch(
@@ -592,12 +600,12 @@ async def test_a_download_link_from_the_backup_says_the_machine_is_away(link):
     with (
         patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
         patch(
-            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
-            AsyncMock(return_value=_mac_row("ws-away")),
+            "src.server.app.workspace_files.crud.reached_workspace_on_computer",
+            _reached(_mac_row("ws-away")),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owner_layout",
-            return_value=SimpleNamespace(workspace="/Users/me/langalpha/ws"),
+            "src.server.app.workspace_files._shared.owner_work_dir",
+            return_value="/Users/me/langalpha/ws",
         ),
         patch(
             "src.server.services.workspace_files.computer_backs_up_files",
@@ -635,7 +643,7 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
             AsyncMock(return_value=row),
         ),
         patch(
-            "src.server.app.workspace_files.crud.owner_work_dir",
+            "src.server.app.workspace_files._shared.owner_work_dir",
             return_value="/Users/me/langalpha/ws",
         ),
         patch(
@@ -752,8 +760,8 @@ async def test_a_save_names_the_version_it_edited_and_never_overwrites_a_newer_f
     crud = "src.server.app.workspace_files.crud"
     with ExitStack() as stack:
         for p in (
-            patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
-            patch(f"{crud}.owner_work_dir", return_value=root),
+            patch(f"{crud}.reached_workspace_on_computer", _reached(row)),
+            patch(f"{_SHARED}.owner_work_dir", return_value=root),
             patch(f"{crud}.acquire_sandbox_to_change", acquire),
             patch(f"{crud}.contained_target", AsyncMock(return_value=str(notes))),
             patch(f"{crud}.to_client_path", return_value="notes.md"),
@@ -822,8 +830,8 @@ def _save_patches(sandbox, row: dict, root: str, notes) -> list:
 
     crud = "src.server.app.workspace_files.crud"
     return [
-        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
-        patch(f"{crud}.owner_work_dir", return_value=root),
+        patch(f"{crud}.reached_workspace_on_computer", _reached(row)),
+        patch(f"{_SHARED}.owner_work_dir", return_value=root),
         patch(f"{crud}.acquire_sandbox_to_change", acquire),
         patch(f"{crud}.contained_target", AsyncMock(return_value=str(notes))),
         patch(f"{crud}.to_client_path", return_value="notes.md"),
@@ -930,8 +938,8 @@ async def test_a_base_version_no_read_gave_is_a_client_error_not_a_concurrent_ed
     acquire = MagicMock(side_effect=AssertionError("the machine is not reached"))
     crud = "src.server.app.workspace_files.crud"
     with (
-        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
-        patch(f"{crud}.owner_work_dir", return_value="/w"),
+        patch(f"{crud}.reached_workspace_on_computer", _reached(row)),
+        patch(f"{_SHARED}.owner_work_dir", return_value="/w"),
         patch(f"{crud}.acquire_sandbox_to_change", acquire),
         pytest.raises(HTTPException) as refused,
     ):

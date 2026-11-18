@@ -102,7 +102,7 @@ async def test_graph_redacts_the_owners_whole_vault_read_fresh():
         patch(_VAULT_READ, AsyncMock(return_value=vault)) as secrets,
     ):
         await build_ptc_graph_with_session(
-            session=session, config=MagicMock(), user_id='user-1',
+            session=session, config=MagicMock(), user_id='user-1', owner_id='user-1',
             project=ProjectContext('ws-a', 'a'),
         )
     secrets.assert_awaited_once_with('user-1')
@@ -125,7 +125,7 @@ async def test_graph_does_not_continue_with_wrong_secrets_when_vault_read_fails(
         pytest.raises(RuntimeError, match='vault unavailable'),
     ):
         await build_ptc_graph_with_session(
-            session=_make_session('summary'), config=MagicMock(), user_id='user-1',
+            session=_make_session('summary'), config=MagicMock(), user_id='user-1', owner_id='user-1',
             project=ProjectContext('ws-a', 'a'),
         )
     agent.create_agent.assert_not_called()

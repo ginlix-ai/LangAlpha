@@ -74,6 +74,7 @@ async def _resolve(
     disabled_bundles=None,
     bundle_owns=None,
     schemas=None,
+    user_id="user-1",
 ):
     """Run resolve_mcp_config with all six DB reads mocked.
 
@@ -125,7 +126,7 @@ async def _resolve(
             return_value=owners,
         ),
     ):
-        return await resolve_mcp_config(base, "user-1", "ws-1")
+        return await resolve_mcp_config(base, user_id, "ws-1")
 
 
 # ---------------------------------------------------------------------------
@@ -658,3 +659,55 @@ class TestHeaderRowDirectBinding:
         assert entry.binding_plan.direct == frozenset()
         assert entry.awaiting_probe is False
 
+
+
+@pytest.mark.asyncio
+class TestSharedWorkspaceWithholdsPerUserAccountBuiltins:
+    """A built-in reached on a vendor account the host keeps per user needs a
+    person behind the account; a shared workspace's holder is none, so its
+    computer goes without the server, its grant and its tools."""
+
+    @staticmethod
+    def _base():
+        return _base_config(
+            MCPServerConfig(name="market"),
+            MCPServerConfig(
+                name="crawler",
+                transport="http",
+                url="https://crawler.example.test/mcp",
+                auth="firecrawl_account",
+            ),
+            MCPServerConfig(
+                name="quotes",
+                transport="http",
+                url="https://quotes.example.test/mcp",
+                auth="data_token",
+            ),
+        )
+
+    async def test_a_shared_workspace_gets_no_such_server_or_grant(self):
+        from src.server.services.egress.grant_scope import grant_refs
+
+        with patch(
+            "src.server.database.shared_workspaces.shared_of_holder",
+            new=AsyncMock(return_value=None),
+        ):
+            resolved = await _resolve(self._base(), [], user_id="shared-0000")
+            refs = await grant_refs(resolved, user_id="shared-0000")
+
+        assert [s.name for s in resolved.servers] == ["market", "quotes"]
+        # Left out, not listed as off: no member could turn it back on.
+        assert all(e.name != "crawler" for e in resolved.entries)
+        assert refs == []
+
+    async def test_a_personal_workspace_keeps_it_and_its_grant(self):
+        from src.server.database.egress_grants import GRANT_KIND_PLATFORM_MCP
+        from src.server.services.egress.grant_scope import grant_refs
+
+        resolved = await _resolve(self._base(), [])
+        refs = await grant_refs(resolved, user_id="user-1")
+
+        assert [s.name for s in resolved.servers] == ["market", "crawler", "quotes"]
+        assert [(r.kind, r.server_name) for r in refs] == [
+            (GRANT_KIND_PLATFORM_MCP, "crawler")
+        ]

@@ -426,6 +426,7 @@ def tuple_rows(monkeypatch, test_db_pool):
 async def test_a_directory_two_threads_share_serves_neither(thread, tuple_rows):
     from src.server.database.conversation import create_thread
     from src.server.database.thread_transcripts import (
+        ON_COMPUTER,
         list_transcript,
         list_transcript_tree,
         load_transcript_file,
@@ -433,9 +434,9 @@ async def test_a_directory_two_threads_share_serves_neither(thread, tuple_rows):
 
     short_id, segment = thread.id[:8], "turn-0001.jsonl"
     await _save(thread, _copy(inline={segment: b"mine"}))
-    served = await load_transcript_file(thread.workspace_id, short_id, segment)
+    served = await load_transcript_file(thread.workspace_id, short_id, segment, scope=ON_COMPUTER)
     assert served is not None and served.content == b"mine"
-    assert [f.thread_id for f in await list_transcript_tree(thread.workspace_id, None, 10)] == [
+    assert [f.thread_id for f in await list_transcript_tree(thread.workspace_id, None, 10, scope=ON_COMPUTER)] == [
         thread.id
     ]
 
@@ -447,10 +448,10 @@ async def test_a_directory_two_threads_share_serves_neither(thread, tuple_rows):
     )
     await _save(twin, _copy(inline={segment: b"theirs"}))
 
-    assert await list_transcript(thread.workspace_id, short_id) is None
-    assert await load_transcript_file(thread.workspace_id, short_id, segment) is None
-    assert await list_transcript_tree(thread.workspace_id, None, 10) == []
-    assert await list_transcript_tree(thread.workspace_id, short_id, 10) == []
+    assert await list_transcript(thread.workspace_id, short_id, scope=ON_COMPUTER) is None
+    assert await load_transcript_file(thread.workspace_id, short_id, segment, scope=ON_COMPUTER) is None
+    assert await list_transcript_tree(thread.workspace_id, None, 10, scope=ON_COMPUTER) == []
+    assert await list_transcript_tree(thread.workspace_id, short_id, 10, scope=ON_COMPUTER) == []
 
 
 # -- a task's run moving under its render --------------------------------------

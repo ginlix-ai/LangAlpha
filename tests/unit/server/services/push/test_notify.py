@@ -633,3 +633,100 @@ def test_the_executors_are_registered():
     notices.register_outbox_executors()
     for hook_type, executor in _EXECUTORS.items():
         assert hook_outbox._EXECUTORS[hook_type] is executor
+
+
+# ---------------------------------------------------------------------------
+# A shared workspace's thread: the news is its sender's
+# ---------------------------------------------------------------------------
+
+HOLDER = "shared-00000000-0000-4000-8000-000000000001"
+SENDER, OTHER = "maya", "lee"
+
+_SHARED_KINDS = [
+    pytest.param({}, {}, "turn", id="turn-finished"),
+    pytest.param(
+        {"status": "interrupted", "interrupt_reason": "approval_required"}, {}, "needs_input", id="needs-approval"
+    ),
+    pytest.param(
+        {"status": "interrupted", "interrupt_reason": "user_question"}, {}, "needs_input", id="has-a-question"
+    ),
+    pytest.param({}, {"query_type": "system"}, "wakeup", id="report-back"),
+    pytest.param({}, {"query_type": "wakeup"}, "wakeup", id="wakeup-fired"),
+]
+
+
+@pytest.fixture
+def member(monkeypatch):
+    """The thread's access check and the member's own cursor, patched."""
+    from src.server.services import notices
+    from src.server.services.shared_workspaces import access
+
+    state = {"reaches": {SENDER, OTHER}, "seen": {SENDER: 0, OTHER: 0}}
+
+    async def _thread_access(thread_id, user_id):
+        if user_id not in state["reaches"]:
+            raise access.NoAccess(status_code=404)
+        return access.Access(HOLDER, shared=object())
+
+    async def _member_seen(thread_id, user_id):
+        return state["seen"][user_id]
+
+    monkeypatch.setattr(notices, "thread_access", _thread_access)
+    monkeypatch.setattr(notices, "member_seen", _member_seen)
+    return state
+
+
+def _shared_context(**kw):
+    return _context(owner_id=HOLDER, last_seen_run_seq=0, run_metadata={"user_id": SENDER}, **kw)
+
+
+@pytest.mark.parametrize(("payload", "context", "kind"), _SHARED_KINDS)
+@pytest.mark.asyncio
+async def test_a_shared_turns_news_goes_to_its_sender_alone(db, member, payload, context, kind):
+    db["get_push_context"].return_value = _shared_context(**context)
+
+    news = await notices.settle_news(_payload(user_id=SENDER, **payload))
+    assert news is not None and news.notice.kind == kind
+    assert await notices.settle_news(_payload(user_id=OTHER, **payload)) is None
+
+
+@pytest.mark.parametrize(("payload", "context", "kind"), _SHARED_KINDS)
+@pytest.mark.asyncio
+async def test_a_sender_who_lost_the_workspace_is_told_nothing(db, member, payload, context, kind):
+    db["get_push_context"].return_value = _shared_context(**context)
+    member["reaches"] = {OTHER}
+
+    assert await notices.settle_news(_payload(user_id=SENDER, **payload)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_finished_shared_turn_its_sender_watched_is_not_news(db, member):
+    db["get_push_context"].return_value = _shared_context()
+    member["seen"][OTHER] = 5  # another member's reading says nothing of the sender's
+    assert await notices.settle_news(_payload(user_id=SENDER)) is not None
+    member["seen"][SENDER] = 5
+    assert await notices.settle_news(_payload(user_id=SENDER)) is None
+
+
+@pytest.mark.asyncio
+async def test_the_sender_hears_it_on_their_own_feed(db, member):
+    db["get_push_context"].return_value = _shared_context()
+    await _job("user_notification", _payload(user_id=SENDER))
+    user_id, event = db["feed"].await_args.args
+    assert user_id == SENDER and event["type"] == "notification"
+    assert db["feed"].await_args.kwargs.get("shared_org") is None
+
+
+@pytest.mark.asyncio
+async def test_the_badge_counts_the_shared_threads_the_user_reaches(db, monkeypatch):
+    from src.server.services.shared_workspaces import feed
+
+    async def _reach(user_id):
+        return feed.Reach("org", frozenset({"ws-b", "ws-a"}))
+
+    shared_badge = AsyncMock(return_value=4)
+    monkeypatch.setattr(notify, "reach_of", _reach)
+    monkeypatch.setattr(notify, "count_shared_attention", shared_badge)
+    assert await notify._badge(SENDER) == 4
+    shared_badge.assert_awaited_once_with(SENDER, ["ws-a", "ws-b"])
+    db["badge"].assert_not_awaited()

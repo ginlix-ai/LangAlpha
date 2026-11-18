@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.server.services.commands.control import StopResult
 from tests.conftest import create_test_app
+from tests.unit.server.access_stub import owned_thread
 
 MOD = "src.server.app.threads.commands"
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
@@ -51,10 +52,7 @@ async def client():
 
 
 def _owner():
-    return patch(
-        "src.server.database.conversation.get_thread_owner_id",
-        new=AsyncMock(return_value=OWNER_ID),
-    )
+    return owned_thread(OWNER_ID)
 
 
 def _stop(result):
