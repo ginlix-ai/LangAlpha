@@ -36,7 +36,7 @@ from src.server.services.workspace_files import (
     acquire_sandbox_to_change,
     contained_target,
     not_running_for_upload,
-    owned_workspace_on_computer,
+    reached_workspace_on_computer,
     owner_layout,
     previous_dir_names_of,
     record_fs_bytes,
@@ -49,6 +49,7 @@ from src.server.services.store_multipart import (
     discard_upload,
 )
 from src.server.services.sweep_loop import JitteredSweeper
+from src.server.services.thread_folders import ThreadFolderGate
 from src.server.utils.error_sanitization import single_line
 from src.utils.concurrency import cancel_and_join
 from src.utils.storage import get_signed_url, is_storage_enabled
@@ -337,7 +338,7 @@ async def _pull_once(row: dict[str, Any], held: dict[str, Any]) -> None:
     workspace_id, user_id = row["workspace_id"], row["user_id"]
     size = int(row["size"])
     try:
-        current = await owned_workspace_on_computer(workspace_id, user_id)
+        current, _ = await reached_workspace_on_computer(workspace_id, user_id)
     except HTTPException as e:
         # Deleted, or no longer this user's: nothing will take the file.
         if e.status_code in (400, 403, 404):
@@ -361,6 +362,12 @@ async def _pull_once(row: dict[str, Any], held: dict[str, Any]) -> None:
             raise _Refused(UPLOAD_FAILED) from None
         rel = target[len(work_dir.rstrip("/")) + 1 :]
         staged = f"{_STAGING_PREFIX}{row['upload_id']}"
+        # The start judged the path for the sender, but a thread made private
+        # since takes its folder out of their reach, so it is judged again,
+        # as the start did, before the file is fetched and when it is placed.
+        gate = ThreadFolderGate.of(workspace, user_id)
+        if await gate.hidden((row["path"], rel)):
+            raise _Refused(UPLOAD_FAILED)
         item: dict[str, Any] = {"kind": "file", "size": size, "mode": 0o644}
         if row.get("sha256"):
             item["sha256"] = row["sha256"]
@@ -404,6 +411,9 @@ async def _pull_once(row: dict[str, Any], held: dict[str, Any]) -> None:
                     sandbox, [{**item, "path": staged, "url": url}], layout=layout
                 )
                 _raise_unless_ok(row, fetched.get(staged))
+            if await gate.hidden((row["path"], rel)):
+                await _remove(sandbox, f"{work_dir.rstrip('/')}/{staged}")
+                raise _Refused(UPLOAD_FAILED)
             inode = await _inode_of(sandbox, f"{work_dir.rstrip('/')}/{staged}")
             if not await db.mark_placing(row["upload_id"], int(row["attempts"]), inode):
                 raise _ClaimLost

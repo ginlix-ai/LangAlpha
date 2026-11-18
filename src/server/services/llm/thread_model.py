@@ -90,7 +90,8 @@ async def turn_model(
 
 #: Refusals of a model the catalog still lists but this user cannot run right
 #: now: an account to reconnect, a key to add, a plan that does not cover it,
-#: a base URL the server will not dial. ``model_removed`` is here too, in case
+#: a policy that does not allow it, a base URL the server will not dial.
+#: ``model_removed`` is here too, in case
 #: the availability check and the resolver ever disagree about a model
 #: ``turn_model`` kept.
 _UNSERVABLE_REFUSALS = frozenset({
@@ -103,6 +104,7 @@ _UNSERVABLE_REFUSALS = frozenset({
     "model_unavailable",
     "model_removed",
     "base_url_blocked",
+    "policy_denied",
 })
 
 

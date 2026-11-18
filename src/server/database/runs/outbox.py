@@ -24,6 +24,7 @@ from typing import (
 
 from psycopg.rows import dict_row
 
+from src.server.contracts.status import Stopper, gives_back
 from src.server.database import pool
 # Re-exported so the hook_jobs split stays invisible to every call site.
 from src.server.database.runs.hook_jobs import (  # noqa: F401
@@ -40,6 +41,7 @@ from src.server.database.runs.hook_jobs import (  # noqa: F401
 )
 from src.server.database.home_stand_in import home_stand_in_could_run_sql
 from src.server.database.market_targets import MARKET_TARGET_OWED_SQL
+from src.server.database.shared_workspaces import former_member_sql
 from src.server.database.runs.command_runs import COMMAND_OWED_SQL
 from src.server.database.runs.command_runs import HOOK_TYPE as COMMAND_REPORT_HOOK
 from src.server.database.runs.command_runs import NOTICE_HOOK_TYPE as COMMAND_NOTICE_HOOK
@@ -126,8 +128,10 @@ _STEER_DUE_SQL = """(
 # is over and left it to nobody: a lost finalize CAS, a worker lost mid-turn, or a run finalized
 # by a build from before steers lived here. A thread steer waits on its
 # thread: no live run, and the latest one completed or was cancelled by
-# something other than the user (a user stop returns the user's steers, an
-# error keeps them for the user's next move, an interrupt for the resume). A
+# something other than the user or a suspension (a user stop returns the
+# user's steers, an error or a suspension's stop keeps them for the user's
+# next move, an interrupt for the resume). In a shared workspace a thread
+# steer also waits until the latest run is its member's own. A
 # task steer waits on its task run while on the task's chain; once its run
 # ended and moved it to the thread's chain to resume the task, it waits on the
 # thread like a thread steer. Its head is then due like any other, so the
@@ -157,15 +161,22 @@ _STEER_SAFETY_NET_SQL = f"""(
         )
         AND EXISTS (
             SELECT 1 FROM (
-                SELECT lr.status, lr.metadata FROM conversation_responses lr
+                SELECT lr.status, lr.metadata, lr.user_id
+                FROM conversation_responses lr
                 WHERE lr.conversation_thread_id = o.conversation_thread_id
                 ORDER BY lr.run_seq DESC
                 LIMIT 1
             ) latest
-            WHERE latest.status = 'completed'
+            WHERE (latest.status = 'completed'
                OR (latest.status = 'cancelled'
                    AND COALESCE(latest.metadata->>'cancelled_by_user', '')
-                       <> 'true')
+                       <> 'true'
+                   AND COALESCE(latest.metadata->>'stopped_by_suspension', '')
+                       <> 'true'))
+              -- A shared thread steer waits for its member, as a personal
+              -- one does for its owner: never due on another member turn.
+              AND (NOT (o.payload ? 'member')
+                   OR latest.user_id = o.payload->>'member')
         )
     END
 )"""
@@ -730,8 +741,9 @@ async def wait_for_room(job_id: str, *, attempts: int, wait_s: int) -> bool:
     Code turns at once as they may (``too_many_turns``). Room opens as turns
     on other threads end, which release nothing on this one, so it asks again
     by the clock, and the claim does not count: it waits as long as those
-    turns run. A steer is due by its own clock (``due_at``). False when the
-    fence was lost."""
+    turns run. A steer is due by its own clock (``due_at``). A notice refused
+    for a suspended account waits the same way, for as long as the suspension
+    lasts. False when the fence was lost."""
     later = "NOW() + make_interval(secs => %(wait_s)s::int)"
     return await _park_uncounted(
         job_id,
@@ -1971,10 +1983,16 @@ _TAKEABLE_STEER_SQL = (
     " WHERE fr.conversation_response_id = %(run_id)s::uuid"
     " AND fr.metadata->>'origin_home_thread_id'"
     " <> {a}.payload->'origin'->>'origin_home_thread_id')"
-    " AND NOT (({a}.payload ? 'llm_model') AND EXISTS ("
+    # A shared workspace's steer names its member: only a turn of theirs
+    # takes it in. It stays queued under their name until one does.
+    " AND (NOT ({a}.payload ? 'member') OR EXISTS ("
     "SELECT 1 FROM conversation_responses mr"
     " WHERE mr.conversation_response_id = %(run_id)s::uuid"
-    " AND mr.metadata->>'llm_model' IS DISTINCT FROM {a}.payload->>'llm_model')))"
+    " AND mr.user_id = {a}.payload->>'member'))"
+    " AND NOT (({a}.payload ? 'llm_model') AND EXISTS ("
+    "SELECT 1 FROM conversation_responses lr"
+    " WHERE lr.conversation_response_id = %(run_id)s::uuid"
+    " AND lr.metadata->>'llm_model' IS DISTINCT FROM {a}.payload->>'llm_model')))"
 )
 
 
@@ -2763,6 +2781,17 @@ _KEPT_BY_STOP_SQL = (
     "COALESCE(o.payload->>'kept_by_stop' = %(run_id)s::text, false)"
 )
 
+# The steers a run's ending settles. In a shared workspace's thread, one a
+# member keeps for their next move is theirs to settle, not another member's
+# run's: only the run it was sent into or a run of that member's moves it, so
+# another member's turn ending never makes it due as a turn in their name.
+_SETTLED_BY_RUN_SQL = (
+    "(NOT (o.payload ? 'member')"
+    " OR o.run_id = %(run_id)s::uuid"
+    " OR o.payload->>'member' = (SELECT sr.user_id FROM conversation_responses sr"
+    " WHERE sr.conversation_response_id = %(run_id)s::uuid))"
+)
+
 
 async def _end_thread_steers(
     cur, params: Dict[str, Any], where: str, outcome: str
@@ -2823,8 +2852,7 @@ async def settle_run_steers(
     thread_id: str,
     run_id: str,
     final_status: str,
-    user_cancel: bool,
-    agent_stop: bool = False,
+    stopper: Optional[Stopper],
 ) -> None:
     """Settle the thread's live steers in the finalize transaction of its run.
 
@@ -2834,33 +2862,43 @@ async def settle_run_steers(
     the user does next, since a turn started for them would fail the same way
     and make the error's Retry stale, and drops the agents' (their senders
     hear of the error from its report-back). A stop by an agent settles as an
-    error does: no one is there to take the user's back, and a turn started
-    for them would resume the work the agent stopped. A user stop returns the
+    error does, and so does a suspension's or another member's: no one is
+    there to take the user's back, and a turn started for them would resume
+    the work the agent stopped. A user stop returns the
     user's and drops the rest, as the cancel stamp did. An interrupt keeps
     them for the resume, but a chat-app steer goes back to the gateway: only
     the run it was sent into takes it, and the resume is another run. Task
     steers are their task's to settle."""
     params = {"okey": steer_ordering_key(thread_id), "run_id": run_id}
+
+    def own(where: str) -> str:
+        return f"{_SETTLED_BY_RUN_SQL} AND ({where})"
+
     async with conn.cursor(row_factory=dict_row) as cur:
         if final_status == "interrupted":
-            await _end_thread_steers(cur, params, _IS_PLATFORM_SQL, "returned")
-            await _repark_thread_steers(cur, params, "true", due=False)
-        elif final_status == "error" or (final_status == "cancelled" and agent_stop):
-            await _end_thread_steers(cur, params, _IS_PLATFORM_SQL, "returned")
-            await _end_thread_steers(cur, params, f"NOT {_IS_USER_SQL}", "dropped")
+            await _end_thread_steers(cur, params, own(_IS_PLATFORM_SQL), "returned")
+            await _repark_thread_steers(cur, params, own("true"), due=False)
+        elif final_status == "error" or (stopper is not None and not gives_back(stopper)):
+            await _end_thread_steers(cur, params, own(_IS_PLATFORM_SQL), "returned")
+            await _end_thread_steers(cur, params, own(f"NOT {_IS_USER_SQL}"), "dropped")
             await _repark_thread_steers(
-                cur, params, _IS_USER_SQL, due=False, claimed_too=True
+                cur, params, own(_IS_USER_SQL), due=False, claimed_too=True
             )
-        elif final_status == "cancelled" and user_cancel:
+        elif stopper is not None:
             returned = await _end_thread_steers(
-                cur, params, f"{_IS_USER_SQL} AND NOT ({_KEPT_BY_STOP_SQL})", "returned"
+                cur,
+                params,
+                own(f"{_IS_USER_SQL} AND NOT ({_KEPT_BY_STOP_SQL})"),
+                "returned",
             )
-            await _give_back_comments(conn, returned)
-            await _end_thread_steers(cur, params, f"NOT ({_KEPT_BY_STOP_SQL})", "dropped")
-            await _repark_thread_steers(cur, params, _KEPT_BY_STOP_SQL, due=False)
+            await _give_back_comments(conn, returned, thread_id)
+            await _end_thread_steers(
+                cur, params, own(f"NOT ({_KEPT_BY_STOP_SQL})"), "dropped"
+            )
+            await _repark_thread_steers(cur, params, own(_KEPT_BY_STOP_SQL), due=False)
         else:
-            await _end_thread_steers(cur, params, _IS_PLATFORM_SQL, "returned")
-            await _repark_thread_steers(cur, params, "true", due=True)
+            await _end_thread_steers(cur, params, own(_IS_PLATFORM_SQL), "returned")
+            await _repark_thread_steers(cur, params, own("true"), due=True)
 
 
 async def _exhaust_steers(
@@ -2967,9 +3005,13 @@ def _returned_entry(row: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-async def _give_back_comments(conn, returned: List[Dict[str, Any]]) -> None:
+async def _give_back_comments(
+    conn, returned: List[Dict[str, Any]], thread_id: str
+) -> None:
     """The file comments of steers that end unread, with the steers' ending:
-    marked ``sent``, they would never go out again."""
+    marked ``sent``, they would never go out again. They are the rows of the
+    thread's workspace owner, who is the sender everywhere but in a shared
+    workspace, where they are its holder's."""
     from src.server.database.artifacts.delivery import release_unread
 
     carrying = [
@@ -2979,9 +3021,19 @@ async def _give_back_comments(conn, returned: List[Dict[str, Any]]) -> None:
         and r["payload"].get("request_key")
     ]
     if carrying:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT w.user_id FROM conversation_threads t
+                  JOIN workspaces w ON w.workspace_id = t.workspace_id
+                 WHERE t.conversation_thread_id = %s
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
         await release_unread(
             conn,
-            user_id=carrying[0].get("user_id"),
+            user_id=row["user_id"] if row else carrying[0].get("user_id"),
             request_keys=[p["request_key"] for p in carrying],
         )
 
@@ -3013,7 +3065,7 @@ async def cancel_run_steers(
         returned = await _end_thread_steers(
             cur, params, f"{free} AND {_IS_USER_SQL}", "returned"
         )
-        await _give_back_comments(conn, returned)
+        await _give_back_comments(conn, returned, thread_id)
         await _end_thread_steers(cur, params, free, "dropped")
     returned.sort(key=lambda r: r["created_at"])
     return [
@@ -3043,6 +3095,42 @@ async def keep_unanswered_steers(thread_id: str, run_id: str) -> None:
                 """,
                 {"okey": steer_ordering_key(thread_id), "run_id": run_id},
             )
+
+
+async def drop_former_member_steers(workspace_id: str, user_id: Optional[str]) -> int:
+    """Drop the messages still queued in a shared workspace's threads by
+    ``user_id``, or with None by anyone not listed on it now; how many.
+
+    Only a turn of its own member takes a shared steer in, and someone who
+    lost the workspace sends no more turns there, so theirs would sit in
+    every member's queued list for good. One a run of theirs still holds
+    goes too: that run is being stopped, and its ending would only park it
+    again. The file comments they carried go back to unsent."""
+    who = former_member_sql(
+        "o.payload->>'member'", "%(ws)s::uuid", "%(user)s" if user_id is not None else None
+    )
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                UPDATE hook_outbox o
+                SET {_closed_steer_set()}
+                FROM conversation_threads t
+                WHERE t.conversation_thread_id = o.conversation_thread_id
+                  AND t.workspace_id = %(ws)s::uuid
+                  AND {_steer_sql(_LIVE_STEER_SQL)}
+                  AND o.payload ? 'member' AND {who}
+                RETURNING o.payload, o.conversation_thread_id
+                """,
+                {"ws": workspace_id, "user": user_id, "outcome": "dropped"},
+            )
+            dropped = [dict(r) for r in await cur.fetchall()]
+        by_thread: Dict[str, List[Dict[str, Any]]] = {}
+        for row in dropped:
+            by_thread.setdefault(str(row["conversation_thread_id"]), []).append(row)
+        for thread_id, rows in by_thread.items():
+            await _give_back_comments(conn, rows, thread_id)
+    return len(dropped)
 
 
 async def count_held_user_steers(conn, *, ordering_key: str, owner_id: str) -> int:
@@ -3181,10 +3269,14 @@ async def list_delivered_steers(run_id: str) -> List[Dict[str, Any]]:
     return [_returned_entry(r) for r in rows]
 
 
-async def list_pending_steers(thread_id: str) -> List[Dict[str, Any]]:
+async def list_pending_steers(
+    thread_id: str, *, with_sender: bool = False
+) -> List[Dict[str, Any]]:
     """The user's own steers waiting on the thread for a turn to read them
     (after an error or an agent's stop, until the user's next move):
-    ``[{content, request_key, timestamp}]``, oldest first."""
+    ``[{content, request_key, timestamp}]``, oldest first. ``with_sender``
+    adds the ``user_id`` that sent each, which a shared workspace's thread,
+    where several people queue, names to its readers."""
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -3200,7 +3292,13 @@ async def list_pending_steers(thread_id: str) -> List[Dict[str, Any]]:
                 """,
                 {"okey": steer_ordering_key(thread_id)},
             )
-            return [_returned_entry(dict(r)) for r in await cur.fetchall()]
+            rows = [dict(r) for r in await cur.fetchall()]
+    if not with_sender:
+        return [_returned_entry(r) for r in rows]
+    return [
+        {**_returned_entry(r), "user_id": (r.get("payload") or {}).get("user_id")}
+        for r in rows
+    ]
 
 
 async def list_taken_hand_offs(thread_id: str, run_ids: List[str]) -> List[str]:

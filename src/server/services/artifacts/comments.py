@@ -374,10 +374,14 @@ class CommentSendScope:
         *,
         thread_id: str,
         user_id: str,
+        owner_id: str,
         chief_of_staff: bool,
         timezone: str | None,
     ) -> None:
         self._thread_id = thread_id
+        # The comments are the workspace's owner's rows (a shared workspace's
+        # holder's), while the sender is who the send's title is for.
+        self._owner_id = owner_id
         self._user_id = user_id
         self._chief_of_staff = chief_of_staff
         self._timezone = timezone
@@ -438,10 +442,11 @@ class CommentSendScope:
         self._made_thread = await make_thread()
         self._row_ensured = True
         self._claimed = await artifacts_db.claim_comments(
-            user_id=self._user_id,
+            user_id=self._owner_id,
             thread_id=self._thread_id,
             comment_ids=list(request.artifact_comment_ids),
             request_key=request.request_key,
+            caller=self._user_id,
         )
         if self._made_thread:
             self._title_query = note.strip() or "\n\n".join(
@@ -487,7 +492,7 @@ class CommentSendScope:
         if self._claimed:
             try:
                 await artifacts_db.confirm_claim(
-                    user_id=self._user_id,
+                    user_id=self._owner_id,
                     request_key=self._request_key,
                     thread_id=self._thread_id,
                     message_ids=[i for c in self._claimed for i in c.message_ids],
@@ -515,7 +520,7 @@ class CommentSendScope:
         on the thread with the note. Never raises."""
         if self._claimed:
             await give_back_unread(
-                user_id=self._user_id,
+                user_id=self._owner_id,
                 thread_id=self._thread_id,
                 request_key=self._request_key,
             )
@@ -546,7 +551,7 @@ class CommentSendScope:
             # The check for a copy that reached a run is the release's own,
             # under the comments' locks, so no copy confirms in between.
             released = await artifacts_db.release_claim(
-                user_id=self._user_id, request_key=self._request_key
+                user_id=self._owner_id, request_key=self._request_key
             )
         except Exception:
             logger.warning(
@@ -559,7 +564,7 @@ class CommentSendScope:
 
     async def _publish(self, changed: dict[str, list[str]]) -> None:
         await _publish_changes(
-            self._user_id,
+            self._owner_id,
             self._thread_id,
             changed,
             {c.artifact_id: (c.workspace_id, c.path) for c in self._claimed or ()},

@@ -186,14 +186,20 @@ class CreditLease(_GateLoop):
     ``port`` is duck-typed (the server injects it; its absence is the OSS
     shape and disables the gate entirely):
 
-    - ``await port.acquire(user_id, run_ref, spent_credits, rate_multiplier,
-      byok)`` → :class:`LeaseVerdict`, or None for "no verdict" (unreachable
-      / 5xx — fail open).
-    - ``await port.release(user_id, run_ref, generation)`` → best-effort
+    - ``await port.acquire(recorded_as, run_ref, spent_credits,
+      rate_multiplier, byok)`` → :class:`LeaseVerdict`, or None for "no
+      verdict" (unreachable / 5xx — fail open).
+    - ``await port.release(recorded_as, run_ref, generation)`` → best-effort
       lease retirement, fenced on the generation of the grant being retired.
+    - ``await port.account_refusal(sender)`` (optional) → the exception
+      that ends the turn when the sender's account may no longer work, else
+      None.
     """
 
-    user_id: str
+    #: The account the turn is recorded as, which the lease is held for.
+    recorded_as: str
+    #: The person whose turn it is, whose standing a boundary checks.
+    sender: str
     run_ref: str
     port: Any
 
@@ -249,7 +255,7 @@ class CreditLease(_GateLoop):
         # the lease expires on its own if the release is lost.
         with contextlib.suppress(BaseException):
             await asyncio.shield(
-                self.port.release(self.user_id, self.run_ref, generation)
+                self.port.release(self.recorded_as, self.run_ref, generation)
             )
 
     def spend(self) -> float:
@@ -277,6 +283,23 @@ class CreditLease(_GateLoop):
         is entitled to finish."""
         return self.denial is not None and spent >= self.ceiling_credits
 
+    async def account_refusal(self) -> Optional[BaseException]:
+        """Why the account may no longer work, asked of the port at each
+        boundary; None when it may, or when the port cannot say: as with
+        credits, inability to check never stops a turn."""
+        ask = getattr(self.port, "account_refusal", None)
+        if ask is None:
+            return None
+        try:
+            return await ask(self.sender)
+        except Exception:
+            logger.warning(
+                "[CreditGate] account check failed for %s; carrying on",
+                self.run_ref,
+                exc_info=True,
+            )
+            return None
+
     # -- verdict -----------------------------------------------------------
 
     def _record(self, verdict: Optional[LeaseVerdict]) -> None:
@@ -301,7 +324,7 @@ class CreditLease(_GateLoop):
     async def _acquire(self, spent: float) -> Optional[LeaseVerdict]:
         try:
             return await self.port.acquire(
-                self.user_id,
+                self.recorded_as,
                 self.run_ref,
                 spent,
                 self.rate_multiplier(),
@@ -623,6 +646,15 @@ def build_pause_payload(lease: CreditLease) -> dict:
     }
 
 
+async def refuse_ended_account() -> None:
+    """End the run here when its account may no longer work: the refusal is
+    raised, so the run settles as failed with it, a subagent's as any failed
+    subagent does. Nothing is asked without a gate."""
+    gate = current_credit_gate.get()
+    if gate is not None and (refusal := await gate.lease.account_refusal()):
+        raise refusal
+
+
 class CreditGateMiddleware(AgentMiddleware):
     """Model-boundary enforcement point. Stateless — shared across lanes."""
 
@@ -632,6 +664,7 @@ class CreditGateMiddleware(AgentMiddleware):
         gate = current_credit_gate.get()
         if gate is None:
             return None
+        await refuse_ended_account()
         lease = gate.lease
         # One family-spend read per boundary, reused by the stop decision,
         # the log line, and (via recheck) the next acquire.

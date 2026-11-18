@@ -1,14 +1,14 @@
-"""Data provenance: per-turn external-data access records and bodies."""
+"""Data provenance: per-turn external-data access records and bodies.
+
+Read by the thread's owner, or by any member of a shared workspace, who
+reads its turns anyway."""
 
 import hashlib
 
 
 from fastapi import HTTPException, Query
 
-# require_thread_owner is called through the module (auth_api.…) so a single
-# definition-site patch governs every route — a consumer-site patch that stops
-# intercepting after a move would silently bypass auth in tests.
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces import access as shared_access
 from src.server.utils.api import (
     CurrentUserId,
 )
@@ -37,7 +37,7 @@ async def get_provenance(thread_id: str, x_user_id: CurrentUserId):
     the structured input a post-hoc verification agent consumes.
     """
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        await shared_access.thread_access(thread_id, x_user_id)
         rows = await get_provenance_for_thread(thread_id)
 
         turns: dict[int, dict] = {}
@@ -115,7 +115,7 @@ async def get_provenance_bodies(
     one request from materializing tens of MB.
     """
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        await shared_access.thread_access(thread_id, x_user_id)
 
         from src.server.database.pool import get_db_connection
         from src.server.database.provenance_bodies import fetch_result_bodies
@@ -187,7 +187,7 @@ async def get_provenance_record_body(
     caller's thread.
     """
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        await shared_access.thread_access(thread_id, x_user_id)
         row = await get_provenance_record(thread_id, provenance_record_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Provenance record not found")

@@ -247,6 +247,10 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 parent_run_id=parent_run_id,
                 launch_tool_call_id=launch_tool_call_id,
                 **run_on.admission_kwargs(),
+                # The turn the run is spent for: the one resuming it, else the
+                # one that launched it, which a workflow's child (no parent)
+                # carries too.
+                spending_run_id=parent_run_id or task.spawned_run_id,
             )
         except TaskRunRejected as e:
             logger.warning(

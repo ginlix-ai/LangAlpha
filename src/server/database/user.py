@@ -11,12 +11,13 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 from psycopg.types.json import Json
 
 from src.llms.preferences import MOVED_MODEL_KEYS, TuningError
 from src.server.database.oauth_tokens import CLAUDE_CODE_PROVIDER
 from src.server.database.pool import get_db_connection
+from src.server.database.shared_workspaces import HOLDER_PREFIX
 from src.server.database.user_lock import lock_user_profile
 from src.server.models.onboarding import ACCOUNT_SETUP_KEY
 from src.server.models.profile_vocabulary import structured_preferences
@@ -888,3 +889,39 @@ async def invalidate_user_profile_cache(user_id: str) -> None:
             await cache.client.delete(_user_profile_cache_key(user_id))
     except Exception:
         pass
+
+
+async def names_of(user_ids: list[str]) -> dict[str, Optional[str]]:
+    """Display names by id, for people named as senders or starters."""
+    if not user_ids:
+        return {}
+    async with get_db_connection() as conn, conn.cursor(row_factory=tuple_row) as cur:
+        await cur.execute(
+            "SELECT user_id, name FROM users WHERE user_id = ANY(%s)", (list(user_ids),)
+        )
+        return {r[0]: r[1] for r in await cur.fetchall()}
+
+
+async def avatars_of(user_ids: list[str]) -> dict[str, Optional[str]]:
+    """Avatar URLs by id, for people another service names."""
+    if not user_ids:
+        return {}
+    async with get_db_connection() as conn, conn.cursor(row_factory=tuple_row) as cur:
+        await cur.execute(
+            "SELECT user_id, avatar_url FROM users WHERE user_id = ANY(%s)", (list(user_ids),)
+        )
+        return {r[0]: r[1] for r in await cur.fetchall()}
+
+
+async def user_by_email(email: str) -> Optional[dict[str, Any]]:
+    """The one person an address names; a shared workspace's holder is not
+    one."""
+    async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT user_id, name, email FROM users WHERE lower(email) = lower(%s) "
+            f"AND user_id NOT LIKE '{HOLDER_PREFIX}%%' ORDER BY created_at LIMIT 2",
+            (email.strip(),),
+        )
+        rows = await cur.fetchall()
+    # Two accounts under one address cannot be told apart by it.
+    return dict(rows[0]) if len(rows) == 1 else None

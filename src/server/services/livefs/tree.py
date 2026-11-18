@@ -44,6 +44,7 @@ from ptc_agent.core.sandbox.livefs_runtime.protocol import (
 from src.observability.private_errors import failure
 from src.server.database import workspace as workspace_db
 from src.server.database.home_workspace import acting_for
+from src.server.database.shared_workspaces import is_holder
 from src.server.database.workspace_folders import is_top_level
 from src.server.services import transcripts
 from src.server.services.livefs.history import IndexRoute, TranscriptRoute
@@ -274,6 +275,7 @@ class LivefsTree:
         gates = resolve_identity_gates(
             store=self._store,
             user_id=user_id,
+            own_data=not is_holder(user_id),
             workspace_id=scope.workspace_id,
             disable_subagents=True,
         )

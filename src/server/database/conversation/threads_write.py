@@ -1,7 +1,7 @@
 """Write paths for conversation_threads: creation, status/metadata updates, deletion."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 import psycopg
@@ -83,6 +83,8 @@ async def create_thread(
     subagents_allowed: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     fast_mode: Optional[bool] = None,
+    created_by: Optional[str] = None,
+    shared_with_workspace: bool = False,
     conn=None,
 ) -> Dict[str, Any]:
     """
@@ -154,6 +156,13 @@ async def create_thread(
     if fast_mode is not None:
         columns.append("fast_mode")
         params.append(fast_mode)
+    if created_by is not None:
+        # Only in a shared workspace: who started the thread.
+        columns.append("created_by")
+        params.append(created_by)
+        if shared_with_workspace:
+            columns.extend(("workspace_shared_at", "workspace_shared_by"))
+            params.extend((datetime.now(timezone.utc), created_by))
 
     col_str = ", ".join(columns)
     placeholders = ", ".join(expressions.get(c, "%s") for c in columns)

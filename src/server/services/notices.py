@@ -28,6 +28,9 @@ from src.server.services.thread_lifecycle_feed import (
     build_notification_event,
     publish_user_event_strict,
 )
+from src.server.database.shared_workspaces import is_holder
+from src.server.database.conversation.shared_thread_reads import member_seen
+from src.server.services.shared_workspaces.access import thread_access, verdict
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +147,8 @@ async def settle_news(payload: Mapping[str, Any]) -> Optional[SettleNews]:
     desktop notice and the push each ask on their own job, at their own time
     and through their own retries, so they share the rules, not one verdict:
     a thread seen between the two asks can stop one and not the other. None
-    for a thread gone, archived or not the owner's, a settle ``push_owed``
+    for a thread gone, archived or not the owner's (in a shared workspace,
+    not the run's sender's, by their own seen cursor), a settle ``push_owed``
     passes over, a run the thread has moved past, or one watched during the
     grace delay."""
     user_id, thread_id = payload.get("user_id"), payload.get("thread_id")
@@ -157,22 +161,23 @@ async def settle_news(payload: Mapping[str, Any]) -> Optional[SettleNews]:
     status = payload.get("status")
     if (
         not context.get("run_exists")
-        or context.get("owner_id") != user_id
         or context.get("workspace_status") == "deleted"
         or context.get("archived_at") is not None
         or not push_owed(status, thread_id, run_meta)
     ):
         return None
+    last_seen = context.get("last_seen_run_seq") or 0
+    if context.get("owner_id") != user_id:
+        last_seen = await _member_seen_if_sender(thread_id, user_id, context)
+        if last_seen is None:
+            return None
     run_seq = payload.get("run_seq")
     if run_seq is not None:
         latest = context.get("latest_run_seq")
         if latest is not None and latest > run_seq:
             # The thread moved on; its newest run tells its own news.
             return None
-        if (
-            status in ("completed", "error")
-            and (context.get("last_seen_run_seq") or 0) >= run_seq
-        ):
+        if status in ("completed", "error") and last_seen >= run_seq:
             # Watched on the web, the desktop or a phone during the grace delay.
             return None
     origin = run_origin(run_meta, context.get("query_type"))
@@ -186,6 +191,21 @@ async def settle_news(payload: Mapping[str, Any]) -> Optional[SettleNews]:
         run_meta.get("automation_name") or context.get("automation_name"),
     )
     return SettleNews(notice=notice, origin=origin)
+
+
+async def _member_seen_if_sender(
+    thread_id: str, user_id: str, context: Mapping[str, Any]
+) -> Optional[int]:
+    """For a shared workspace's thread: the member's own seen cursor when
+    they sent the run and can still reach the thread, else None. Its news is
+    theirs alone; the thread's other members are not told of it, and a member
+    who has since lost the workspace is told nothing."""
+    run_meta = context.get("run_metadata") or {}
+    if not is_holder(context.get("owner_id")) or run_meta.get("user_id") != user_id:
+        return None
+    if await verdict(thread_access(thread_id, user_id)) != "member":
+        return None
+    return await member_seen(thread_id, user_id)
 
 
 async def execute_user_notification(job: Dict[str, Any]) -> None:

@@ -320,7 +320,7 @@ async def post_report(report: PlatformReport) -> PlatformResult:
 
 async def _post(path: str, body: dict[str, Any], report_id: str) -> PlatformResult:
     """The one call to the platform, and what each of its answers means."""
-    from src.server.dependencies.usage_limits import service_headers
+    from src.server.services.platform_client import service_headers
     from src.server.utils.http_client import get_http_client
 
     try:

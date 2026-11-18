@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
@@ -56,9 +57,13 @@ from src.config.settings import (
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
 from src.observability.private_query import drop_span_query
 from src.server.services.runs.executor import LocalRunExecutor
+from src.server.services import activity
+from src.server.services.policy import PolicyDenied
 from src.server.services.cli_calls import CliCallRecorder
+from src.server.services.membership import MembershipReadScope
 from src.server.utils.request_client import RequestClientMiddleware
 from src.server.services.background_registry_store import BackgroundRegistryStore
+from src.server.utils.api import caller_of
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 from src.server.services.preview_base import (
     PreviewProxyConfigurationError,
@@ -1100,6 +1105,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error draining automation settlements: {e}")
 
+    # Then the activity log's pending writes, briefly, while the pools, Redis
+    # and the auth service's client they use are still open.
+    try:
+        await activity.drain(timeout=activity.SHUTDOWN_DRAIN_S)
+    except Exception as e:
+        logger.warning(f"Error draining activity writes: {e}")
+
     # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
     # finalizes run on pinned guard sessions checked out of this pool.
     try:
@@ -1263,6 +1275,7 @@ class RequestIDMiddleware:
 
         trace_id = str(uuid4())
         scope["state"] = {"trace_id": trace_id}
+        activity.bind_request(scope)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -1370,6 +1383,8 @@ app.add_middleware(MalformedIdDiagnosticMiddleware)
 # made it (src/server/services/cli_calls.py).
 app.add_middleware(CliCallRecorder)
 
+# One shared membership read per request (services/membership.py).
+app.add_middleware(MembershipReadScope)
 # Which of our apps sent each request, for computer start telemetry
 # (src/server/utils/request_client.py).
 app.add_middleware(RequestClientMiddleware)
@@ -1467,6 +1482,16 @@ async def _sandbox_failure_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
+async def _policy_denied_handler(request: Request, exc: PolicyDenied):
+    """Answer a refusal by policy exactly as any ``HTTPException`` is answered,
+    recording it first in the organization's activity log: every route's
+    refusal passes here, so no route records its own."""
+    caller = caller_of(request.scope)
+    activity.record_refusal(exc, caller.user_id if caller is not None else None)
+    return await http_exception_handler(request, exc)
+
+
+app.add_exception_handler(PolicyDenied, _policy_denied_handler)
 app.add_exception_handler(SandboxGoneError, _sandbox_failure_handler)
 app.add_exception_handler(SandboxTransientError, _sandbox_failure_handler)
 # A refusal a caller let through unwrapped, which would otherwise answer 500.
@@ -1524,6 +1549,9 @@ from src.server.app.automations import router as automations_router
 from src.server.app.insights import router as insights_router
 from src.server.app.oauth import OAuthRefusal, router as oauth_router
 from src.server.app.orders import router as orders_router
+from src.server.app.activity import router as activity_router
+from src.server.app.org_library import router as org_library_router
+from src.server.app.shared_workspaces import router as shared_workspaces_router
 from src.server.app.public import router as public_router
 from src.server.app.share_links import (
     owner_router as share_link_owner_router,
@@ -1540,6 +1568,7 @@ from src.server.app.livefs import router as livefs_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
 from src.server.app.mcp_brokerages import router as mcp_brokerages_router
 from src.server.app.mcp_builtin import router as mcp_builtin_router
+from src.server.app.mcp_org_connectors import router as mcp_org_connectors_router
 from src.server.app.mcp_icons import router as mcp_icons_router
 from src.server.app.mcp_oauth import router as mcp_oauth_router
 from src.server.app.plugins import router as plugins_router
@@ -1655,6 +1684,15 @@ app.include_router(
     orders_router
 )  # /api/v1/orders/* - Order attempt ledger (read-only, user-scoped)
 app.include_router(
+    activity_router
+)  # /api/v1/activity - An organization's activity log (service token, no user)
+app.include_router(
+    org_library_router
+)  # /api/v1/org-library - The organization library (flag org_library)
+app.include_router(
+    shared_workspaces_router
+)  # /api/v1/shared-workspaces, /api/v1/workspaces/{id}/members (flag shared_workspaces)
+app.include_router(
     public_router
 )  # /api/v1/public/* - Public shared thread access (no auth)
 app.include_router(
@@ -1681,6 +1719,9 @@ app.include_router(
 app.include_router(
     mcp_builtin_router
 )  # /api/v1/mcp/builtin-servers - This build's own MCP servers, per-user toggle
+app.include_router(
+    mcp_org_connectors_router
+)  # /api/v1/mcp/org-connectors - The organization's connectors, as a member sees them
 app.include_router(
     mcp_brokerages_router
 )  # /api/v1/mcp/brokerages - Shipped brokerage connectors

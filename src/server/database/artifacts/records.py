@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 
 from src.server.database.pool import get_db_connection
 from src.server.database.share_codes import mint_share_code
@@ -67,6 +67,9 @@ class Artifact:
     #: ``latest_seq``; 0 when not shared, or shared before versions and not
     #: yet snapshotted.
     shared_seq: int = 0
+    #: ``organization`` when the link opens only to members of its owner's
+    #: organization; None opens it to anyone.
+    audience: str | None = None
 
     @property
     def shared(self) -> bool:
@@ -100,7 +103,8 @@ ARTIFACT_COLUMNS = """
     l.artifact_id::text, l.code, l.workspace_id::text, l.path,
     l.created_thread_id::text, l.bound_thread_id::text, l.keep_updated,
     l.latest_seq, l.shared_at, l.files, l.revision, l.created_at,
-    l.legacy_refused, l.loaded_files, l.left_out_files, l.kept_at, l.shared_seq
+    l.legacy_refused, l.loaded_files, l.left_out_files, l.kept_at, l.shared_seq,
+    l.audience
 """
 
 #: ``Artifact.follows_turns`` over ``share_links l``; change the two together.
@@ -140,6 +144,7 @@ def artifact_from_row(row: dict[str, Any] | None) -> Artifact | None:
         left_out_files=tuple(row["left_out_files"]),
         kept_at=row.get("kept_at"),
         shared_seq=row.get("shared_seq", 0),
+        audience=row.get("audience"),
     )
 
 
@@ -200,6 +205,24 @@ async def get_artifact(artifact_id: str, *, user_id: str) -> Artifact | None:
                 {"artifact_id": artifact_id, "user_id": user_id},
             )
             return artifact_from_row(await cur.fetchone())
+
+
+async def artifact_workspace_id(artifact_id: str) -> str | None:
+    """The workspace of a live file record, whoever owns it; the caller
+    judges whether it may be reached."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=tuple_row) as cur:
+            await cur.execute(
+                """
+                SELECT l.workspace_id::text FROM share_links l
+                  JOIN workspaces w ON w.workspace_id = l.workspace_id
+                 WHERE l.artifact_id = %s AND l.kind = 'file'
+                   AND w.status <> 'deleted'
+                """,
+                (artifact_id,),
+            )
+            row = await cur.fetchone()
+    return row[0] if row else None
 
 
 async def record_creator(
@@ -376,6 +399,19 @@ async def unshare(*, user_id: str, artifact_id: str) -> Artifact:
             "revision = l.revision + 1"
         ),
         params={},
+    )
+
+
+async def set_audience(
+    *, user_id: str, artifact_id: str, audience: str | None
+) -> Artifact:
+    """Who the link opens to. Not a revision move: every visitor's request
+    reads the audience off the row, so the change holds on the next one."""
+    return await set_record(
+        user_id=user_id,
+        artifact_id=artifact_id,
+        assignments="audience = %(audience)s",
+        params={"audience": audience},
     )
 
 

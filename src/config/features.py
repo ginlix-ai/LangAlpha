@@ -14,7 +14,9 @@ Each feature carries two orthogonal controls:
     * ``grant``   — off unless granted to the user: an override the server
       or a migration writes, which the user can neither see nor set
 
-Three definition layers, resolved in order:
+Three definition layers, resolved in order (with an organization tier between
+the last two, when the auth service places the user in one; see
+``effective_flags``):
 
 1. **Catalog** (this module): every feature the codebase knows about, with its
    hard defaults and the frontend-facing label/description/tradeoffs, in
@@ -66,6 +68,9 @@ class FeatureSpec:
     #: Where the user turns it on, when that is somewhere other than
     #: Experiments: Claude Code's opt-in is made by connecting it under Model access.
     home: Literal["model_access"] | None = None
+    #: Features this one depends on: it resolves off wherever any of them
+    #: does, so a child can never outlive the switch that opens its parent.
+    requires: tuple[str, ...] = ()
 
 
 FEATURES: dict[str, FeatureSpec] = {
@@ -243,7 +248,78 @@ FEATURES: dict[str, FeatureSpec] = {
         enabled=True,
         gate=FeatureGate.OPT_IN,
     ),
+    # Off in every deployment until one turns it on. Even then it resolves on
+    # only for an account the auth service places in an organization that
+    # allows it (``src.server.services.account.account_for``).
+    "teams": FeatureSpec(
+        key="teams",
+        label="Organizations",
+        description=(
+            "Lets the organization your account belongs to decide which "
+            "features its members have."
+        ),
+        enabled=False,
+        gate=FeatureGate.GRANT,
+    ),
+    # Off in every deployment until one turns it on, and then on only for a
+    # member whose organization grants it through its ``features`` block.
+    "org_connectors": FeatureSpec(
+        key="org_connectors",
+        label="Organization connectors",
+        description=(
+            "Gives you the connectors your organization sets up, ready in "
+            "every workspace without connecting each one yourself."
+        ),
+        enabled=False,
+        gate=FeatureGate.GRANT,
+        requires=("teams",),
+    ),
+    # Off in every deployment until one turns it on, and then on only for a
+    # member whose organization grants it through its ``features`` block.
+    "org_library": FeatureSpec(
+        key="org_library",
+        label="Organization library",
+        description=(
+            "Lets members publish threads, files and skills to a library "
+            "every member of the organization can open."
+        ),
+        enabled=False,
+        gate=FeatureGate.GRANT,
+        requires=("teams",),
+    ),
+    # Off in every deployment until one turns it on, and then on only for a
+    # member whose organization grants it through its ``features`` block.
+    "shared_workspaces": FeatureSpec(
+        key="shared_workspaces",
+        label="Shared workspaces",
+        description=(
+            "Lets members of the organization work in one workspace together, "
+            "each running their own turns and seeing each other's threads and "
+            "files."
+        ),
+        enabled=False,
+        gate=FeatureGate.GRANT,
+        requires=("teams",),
+    ),
 }
+
+
+def _check_requires(catalog: Mapping[str, FeatureSpec]) -> None:
+    """Each parent must be declared earlier in the catalog, which rules out a
+    cycle and lets one pass in catalog order resolve every child after its
+    parents."""
+    seen: set[str] = set()
+    for key, spec in catalog.items():
+        for parent in spec.requires:
+            if parent not in seen:
+                raise AssertionError(
+                    f"feature {key!r} requires {parent!r}, which is not "
+                    "declared before it"
+                )
+        seen.add(key)
+
+
+_check_requires(FEATURES)
 
 
 class SystemFlag(NamedTuple):
@@ -258,7 +334,8 @@ def get_feature_specs() -> dict[str, FeatureSpec]:
 
 def system_flag(key: str) -> SystemFlag:
     """Deployment-level state of a feature: catalog defaults overlaid with the
-    config.yaml ``features:`` entry (unset fields inherit the catalog)."""
+    config.yaml ``features:`` entry (unset fields inherit the catalog). A
+    feature whose parent is switched off is switched off with it."""
     spec = FEATURES[key]
     override = get_infrastructure_config().features.get(key)
     enabled = spec.enabled
@@ -271,6 +348,7 @@ def system_flag(key: str) -> SystemFlag:
             gate = FeatureGate(override.gate)
         if override.min_tier is not None:
             min_tier = override.min_tier
+    enabled = enabled and all(system_flag(parent).enabled for parent in spec.requires)
     return SystemFlag(enabled=enabled, gate=gate, min_tier=min_tier)
 
 
@@ -290,11 +368,20 @@ def has_plan_gated_features() -> bool:
     return any(system_flag(key).gate is FeatureGate.PLAN for key in FEATURES)
 
 
+def org_value(org_features: Mapping[str, object] | None, key: str) -> bool | None:
+    """The organization's setting for ``key``, or None where it sets none."""
+    value = (org_features or {}).get(key)
+    return value if isinstance(value, bool) else None
+
+
 def effective_flags(
     user_overrides: Mapping[str, object] | None,
     *,
     access_tier: int | None = None,
     platform_mode: bool | None = None,
+    org_features: Mapping[str, object] | None = None,
+    account_unknown: bool = False,
+    forced: Mapping[str, bool] | None = None,
 ) -> dict[str, bool]:
     """Resolve every cataloged feature for one user.
 
@@ -303,6 +390,17 @@ def effective_flags(
     ignored rather than errored so a stale or hand-edited row can't break
     turns. Plan gates fail closed in platform mode when ``access_tier`` is
     unknown or below ``min_tier``; non-platform deployments bypass them.
+
+    ``org_features`` is the organization tier between the deployment and the
+    user: False turns a feature off whatever the user chose, True grants a
+    ``grant`` feature. ``account_unknown`` (the auth service could not say
+    which organization the user is in) resolves every feature off, as the
+    deployment's kill switch does one feature: any of them might be one the
+    organization turned off.
+
+    ``forced`` settles a feature whatever its gate (``teams``, which only the
+    account decides), before a feature that requires another is turned off
+    with it, so a forced parent still carries its children.
     """
     if platform_mode is None:
         platform_mode = settings.HOST_MODE == "platform"
@@ -310,15 +408,21 @@ def effective_flags(
     resolved: dict[str, bool] = {}
     for key in FEATURES:
         flag = system_flag(key)
-        if not flag.enabled:
+        if not flag.enabled or account_unknown:
+            resolved[key] = False
+            continue
+        org = org_value(org_features, key)
+        if org is False:
             resolved[key] = False
             continue
         override = (user_overrides or {}).get(key)
         override = override if isinstance(override, bool) else None
         if flag.gate is FeatureGate.NONE:
             resolved[key] = True
-        elif flag.gate in (FeatureGate.OPT_IN, FeatureGate.GRANT):
+        elif flag.gate is FeatureGate.OPT_IN:
             resolved[key] = override is True
+        elif flag.gate is FeatureGate.GRANT:
+            resolved[key] = org is True or override is True
         elif flag.gate is FeatureGate.OPT_OUT:
             resolved[key] = override is not False
         else:  # FeatureGate.PLAN
@@ -327,6 +431,11 @@ def effective_flags(
                 and flag.min_tier is not None
                 and access_tier >= flag.min_tier
             )
+    for key, value in (forced or {}).items():
+        if key in resolved:
+            resolved[key] = value
+    for key, spec in FEATURES.items():
+        resolved[key] = resolved[key] and all(resolved[p] for p in spec.requires)
     return resolved
 
 

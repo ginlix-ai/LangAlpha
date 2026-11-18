@@ -34,6 +34,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import HTTPException
 
 from src.server.contracts.run_times import epoch_ms
+from src.server.services.shared_workspaces.access import ThreadWatch
 from src.server.services.thread_control_stream import control_stream_key
 from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
 from src.utils.cache import stream_pool
@@ -64,6 +65,11 @@ _RESCAN_INTERVAL_S = 30.0
 _KEEPALIVE_S = 25.0
 _MAX_DURATION_S = 30 * 60
 _OUT_QUEUE_MAX = 256
+
+
+class _AccessEnded(Exception):
+    """The viewer may no longer read the thread: the socket ends as a timed
+    out one does, and the reconnect meets the route's refusal."""
 
 
 def _control(event: str, data: dict) -> str:
@@ -457,6 +463,7 @@ async def stream_thread_mux_v2(
     since_age_s: float = 0.0,
     *,
     open_turn: bool = False,
+    watch: Optional[ThreadWatch] = None,
 ) -> AsyncGenerator[str, None]:
     """Attach (seed + control snapshot), then one XREAD pump over control +
     every open run stream, plus the watch relay.
@@ -472,7 +479,13 @@ async def stream_thread_mux_v2(
     settled. Only a fresh page asks: a reconnecting socket already holds them,
     and since the client sends no cursor for a closed channel, re-draining on
     every reconnect would resend each of those streams whole. The trailing
-    ``attached`` frame tells the client its ask was served."""
+    ``attached`` frame tells the client its ask was served.
+
+    ``watch``, given for a thread several people may read, says whether the
+    viewer still may: asked in full on every rescan and before a new run's
+    channel opens, so someone who lost access sees no turn that starts after,
+    and before each frame goes out, so a colleague sees no more of a turn
+    once the thread is made private."""
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         yield _control("transport_error", {"retryable": True})
@@ -730,6 +743,8 @@ async def stream_thread_mux_v2(
             pending_admissions.pop(run_id, None)
             pending_cursors.pop(run_id, None)
             return True
+        if watch and not await watch.ok(force=True):
+            raise _AccessEnded
         if _open_count() >= _MAX_CHANNELS:
             pending_admissions[run_id] = lane
             stored = await _store_pending(cache, thread_id, run_id, lane)
@@ -942,6 +957,8 @@ async def stream_thread_mux_v2(
 
             if time.monotonic() - last_scan >= _RESCAN_INTERVAL_S:
                 last_scan = time.monotonic()
+                if watch and not await watch.ok(force=True):
+                    raise _AccessEnded
                 if not pending_synced:
                     inherited = await _load_pending(cache, thread_id)
                     if inherited is not None:
@@ -1034,8 +1051,14 @@ async def stream_thread_mux_v2(
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
+    async def _guarded_read_pump() -> None:
+        try:
+            await _read_pump()
+        except _AccessEnded:
+            await out_q.put(("timeout", None))
+
     pumps = [
-        asyncio.create_task(_read_pump()),
+        asyncio.create_task(_guarded_read_pump()),
         asyncio.create_task(_watch_pump()),
     ]
     try:
@@ -1051,6 +1074,9 @@ async def stream_thread_mux_v2(
                 yield ": ping\n\n"
                 continue
             if kind == "frame":
+                if watch and not await watch.ok():
+                    yield _control("timeout", {})
+                    return
                 yield payload
             elif kind == "timeout":
                 yield _control("timeout", {})

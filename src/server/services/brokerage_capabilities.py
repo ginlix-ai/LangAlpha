@@ -181,6 +181,12 @@ GROUPS: tuple[CapabilityGroup, ...] = (
 
 _BY_KEY: dict[str, CapabilityGroup] = {g.key: g for g in GROUPS}
 
+# What the ``trading`` policy rule withholds: the groups whose tools place,
+# change or cancel a live order with no further step from a person. The other
+# rungs stay: paper trading spends nothing, a preview persists nothing, and a
+# staged order is not live until the user confirms it in the broker's own app.
+LIVE_ORDER_GROUPS: frozenset[str] = frozenset({"trading"})
+
 # Tool names exactly as the vendor publishes them, which is what the relay
 # compares against. Counted against live discovery: moomoo 105, Robinhood 91,
 # IBKR 45, Webull 103, and ``UNCURATED`` names the ones deliberately left out.
@@ -936,6 +942,22 @@ def group_for_tool(brokerage: str | None, tool: str) -> CapabilityGroup | None:
     """
     key = group_of_tool(brokerage, tool)
     return _BY_KEY.get(key) if key is not None else None
+
+
+def trading_rule_withholds(brokerage: str | None, tool: str) -> bool:
+    """Whether the ``trading`` policy rule withholds this tool.
+
+    Every tool of a known brokerage (a server whose address
+    :func:`vendor_for_url` matches to a shipped one) except those classified
+    into a group that places no live order. Unlike :func:`denied_tools`, a
+    tool nobody classified is withheld here: one a vendor adds between
+    releases may well place orders, and a restriction is not lifted by our
+    not knowing.
+    """
+    if brokerage is None or brokerage_by_name(brokerage) is None:
+        return False
+    group = group_of_tool(brokerage, tool)
+    return group is None or group in LIVE_ORDER_GROUPS
 
 
 def order_tool(brokerage: str | None, tool: str) -> OrderTool | None:

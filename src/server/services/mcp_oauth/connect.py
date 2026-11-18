@@ -60,7 +60,9 @@ from src.server.database.mcp_servers import (
 from src.server.database.order_attempts import refuse_attempts_on_connection_change
 from src.server.database.pool import get_db_connection
 from src.server.database.workspace import get_running_workspace_ids_for_user
+from src.server.database.org_keys import org_connector_id
 from src.server.services.brokerage_capabilities import (
+    LIVE_ORDER_GROUPS,
     group_keys_for,
     required_groups,
     vendor_for_url,
@@ -125,6 +127,10 @@ class McpOAuthError(Exception):
 
 class McpServerNotFound(McpOAuthError):
     """No such server in this user's catalog — the router's 404."""
+
+
+class OrgAccountUnknown(McpOAuthError):
+    """The organization behind a connector could not be read."""
 
 
 class McpServerMoved(McpOAuthError):
@@ -951,7 +957,10 @@ async def start_connect(
         raise McpServerMoved(
             "This server's address changed since the page was loaded"
         )
-    return await _start(
+    from src.server.services.account import refuse_user_connector
+
+    await refuse_user_connector(user_id, "Connecting a connector", url=server_url)
+    return await start_sign_in(
         user_id,
         server_name,
         server_url,
@@ -976,7 +985,7 @@ async def start_pending_connect(
     There is no row to read: ``prepared`` names the server and its address,
     and carries what the callback writes once the user has signed in.
     """
-    return await _start(
+    return await start_sign_in(
         user_id,
         prepared.server,
         prepared.url,
@@ -993,7 +1002,7 @@ async def start_pending_connect(
 _PENDING_GRACE_SECONDS = 60
 
 
-async def _start(
+async def start_sign_in(
     user_id: str,
     server_name: str,
     server_url: str,
@@ -1012,6 +1021,11 @@ async def _start(
     # one more per retry. Nothing below depends on the answer, so there is no
     # reason for it to wait.
     consented = _consented_capabilities(server_url, granted_capabilities)
+    if consented and LIVE_ORDER_GROUPS.intersection(consented):
+        from src.server.services.policy import TRADING
+        from src.server.services.account import require_policy
+
+        (await require_policy(user_id)).require(TRADING, "Granting live orders")
 
     # One value, used for the authorize URL, the registration metadata and the
     # state record alike — an AS is entitled to compare all three, and the token
@@ -1205,7 +1219,7 @@ async def _claim_state(state: str) -> ConnectState | None:
         return None
 
 
-class _ReconnectFinish:
+class ReconnectFinish:
     """A connect for a row that already exists, which only the connection
     is written for. A reconnect that lands switches the row back on."""
 
@@ -1262,7 +1276,7 @@ def _short(detail: str) -> str:
     return text if len(text) <= _DETAIL_LIMIT else text[: _DETAIL_LIMIT - 1] + "…"
 
 
-async def _resync_live_sandboxes(user_id: str) -> None:
+async def resync_live_sandboxes(user_id: str) -> None:
     """Re-apply the config on the user's running workspaces after a connect.
 
     The version bump alone only makes sessions re-resolve; the generated MCP
@@ -1279,6 +1293,30 @@ async def _resync_live_sandboxes(user_id: str) -> None:
         logger.warning(
             "[mcp_oauth] post-connect sandbox resync failed for user=%s",
             user_id, exc_info=True,
+        )
+
+
+def _record_sign_in(record: ConnectState, server_name: str, *, org: bool) -> None:
+    """The organization's record of a sign-in that just landed, and of the
+    brokerage groups it consented to, never the token."""
+    from src.server.services import activity
+    from src.server.services.activity import Action
+
+    vendor = brokerage_for_url(record.server_url)
+    activity.record(
+        record.user_id, Action.CONNECTOR_SIGNED_IN,
+        resource=("org_connector" if org else "mcp_server", server_name),
+        detail={
+            "name": server_name,
+            "host": urlsplit(record.server_url).hostname,
+            "brokerage": vendor.name if vendor else None,
+        },
+    )
+    if vendor and record.granted_capabilities:
+        activity.record(
+            record.user_id, Action.BROKERAGE_CONSENT_GRANTED,
+            resource=("mcp_server", server_name),
+            detail={"brokerage": vendor.name, "groups": sorted(record.granted_capabilities)},
         )
 
 
@@ -1319,7 +1357,15 @@ async def complete_callback(
         return redirect_to(mcp_error=CallbackError.INVALID_STATE)
 
     server_name = record.server_name
-    finish: CallbackFinish = _ReconnectFinish(record)
+    # Built on this module, so imported where it is used.
+    from src.server.services.mcp_oauth import org_connect
+
+    connector_id = org_connector_id(server_name)
+    finish: CallbackFinish = (
+        org_connect.OrgConnectorFinish(record, connector_id)
+        if connector_id is not None
+        else ReconnectFinish(record)
+    )
 
     def _fail(reason: CallbackError, detail: str | None = None) -> str:
         logger.warning(
@@ -1531,6 +1577,7 @@ async def complete_callback(
             await finish.write(store)
         except CallbackFailed as e:
             return _fail(e.reason, e.detail)
+        _record_sign_in(record, server_name, org=connector_id is not None)
 
         # The connection is stored, and a save's row with it. Every step from
         # here only makes it show up sooner, so each is best effort and none
@@ -1579,11 +1626,14 @@ async def complete_callback(
         # Best-effort host-side discovery so tools show up immediately; failure
         # leaves a pending/error schema row, never a broken connection.
         try:
-            from src.server.services.mcp_oauth.discovery import (
-                refresh_user_tool_schemas,
-            )
+            if connector_id is not None:
+                await org_connect.discover_signed_in(record.user_id, connector_id)
+            else:
+                from src.server.services.mcp_oauth.discovery import (
+                    refresh_user_tool_schemas,
+                )
 
-            await refresh_user_tool_schemas(record.user_id, server_name)
+                await refresh_user_tool_schemas(record.user_id, server_name)
         except Exception:
             logger.warning(
                 "[mcp_oauth] post-connect discovery failed for %s",
@@ -1594,7 +1644,7 @@ async def complete_callback(
         # failure path is precisely the one that needs this — nothing was written to
         # the user tier, so the read falls back to the pre-connect snapshot and the
         # warm sandbox would otherwise never learn it is relay-bound.
-        await _resync_live_sandboxes(record.user_id)
+        await resync_live_sandboxes(record.user_id)
 
         done: dict[str, str] = {"mcp_connected": server_name}
         if finish.plugin:

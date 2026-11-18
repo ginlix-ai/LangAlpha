@@ -62,6 +62,11 @@ class RelayError(StrEnum):
     POLICY_MISSING = "policy_missing"
     EXECUTION_REQUIRED = "execution_required"
     REFRESH_IN_PROGRESS = "refresh_in_progress"
+    ORG_CONNECTOR_UNAVAILABLE = "org_connector_unavailable"
+    ORG_UNREACHABLE = "org_unreachable"
+    ORG_SIGN_IN_REQUIRED = "org_sign_in_required"
+    POLICY_WITHHELD = "policy_withheld"
+    ACCOUNT_SUSPENDED = "account_suspended"
     CREDENTIAL_UNAVAILABLE = "credential_unavailable"
     TERMS_REQUIRED = "terms_required"
     # metering.admit

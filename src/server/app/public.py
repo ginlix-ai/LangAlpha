@@ -41,6 +41,16 @@ from src.server.app.share_access import (
     get_shared_thread,
     resolve_link,
 )
+from src.server.database.conversation import get_thread_by_share_token
+from src.server.services import member_grants
+from src.server.services.account import serves_public_links
+from src.server.services.share_audience import (
+    ORGANIZATION,
+    PUBLIC,
+    admits_member,
+    members_only,
+    thread_audience,
+)
 from src.server.app.share_files import share_files_router
 from src.server.app.workspace_sandbox import owner_preview, with_preview_path
 from src.server.database import artifacts as artifacts_db
@@ -106,7 +116,7 @@ async def _latest_shared_version(artifact: Artifact | None) -> tuple[Artifact, V
     return artifact, shared
 
 
-async def _file_metadata(access: LinkAccess) -> dict[str, Any]:
+async def _file_metadata(access: LinkAccess, viewer_id: str | None) -> dict[str, Any]:
     """A file link: the live file to its owner, the shared version to anyone
     else.
 
@@ -134,14 +144,22 @@ async def _file_metadata(access: LinkAccess) -> dict[str, Any]:
 
     artifact, latest = await _latest_shared_version(link.artifact)
     seq = latest.seq
-    visitor = await artifact_grants.mint_artifact_share_grant(
-        link.code, artifact.artifact_id, revision=artifact.revision, seq=seq
-    )
+    if access.member:
+        # Bound to this member, and judged again on every frame request.
+        visitor = await member_grants.mint_file_grant(
+            link.code, artifact.artifact_id, revision=artifact.revision, seq=seq,
+            viewer_id=viewer_id or "",
+        )
+    else:
+        visitor = await artifact_grants.mint_artifact_share_grant(
+            link.code, artifact.artifact_id, revision=artifact.revision, seq=seq
+        )
     base = artifact_base()
     entry = latest.entry_path
     return {
         "kind": "file",
         "access": "public",
+        "audience": ORGANIZATION if access.member else PUBLIC,
         "artifact_id": artifact.artifact_id,
         "name": entry.rsplit("/", 1)[-1],
         "path": entry,
@@ -179,7 +197,7 @@ async def _link_metadata(
             "url": with_preview_path(preview.url, path or link.path),
             "expires_in": seconds_left(await signed_url_expires_at(preview.url)),
         }
-    return await _file_metadata(access)
+    return await _file_metadata(access, user_id)
 
 
 @router.get("/shared/{share_token}")
@@ -201,23 +219,40 @@ async def get_shared_thread_metadata(
     # cache between here and the browser may hand it to the next visitor.
     response.headers["Cache-Control"] = "no-store"
     viewer = Viewer(None) if view_as == "visitor" else page_viewer
+    member_grant = None
     try:
         access = await resolve_link(share_token, user_id=viewer.user_id)
-        thread = None if access is not None else await get_shared_thread(share_token)
+        if access is None:
+            thread, member_grant = await _shared_thread_for(share_token, viewer.user_id)
     except HTTPException as e:
         # Not found is said only to a viewer the keys could check. Any other
-        # may be the owner, and a private link and an unknown code must still
-        # answer alike, so both wait for the keys.
-        if e.status_code == 404 and viewer.unconfirmed is not None:
+        # may be the owner or a member, and a private link and an unknown
+        # code must still answer alike, so both wait for the keys.
+        if e.status_code in (401, 404) and viewer.unconfirmed is not None:
             raise viewer.unconfirmed from None
+        # A suspended account reads as signed out, yet signing in again
+        # would open nothing: not found, as for any other non-member.
+        if e.status_code == 401 and viewer.suspended:
+            raise HTTPException(status_code=404, detail=LINK_NOT_FOUND) from None
         raise
     if access is not None:
         return await _link_metadata(access, viewer.user_id, path)
 
     perms = get_permissions(thread)
     allow_files = perms.get("allow_files", False)
+    members = (
+        {
+            "audience": ORGANIZATION,
+            # Stands in for the token on the replay and file routes.
+            "grant": member_grant.token,
+            "expires_in": seconds_left(member_grant.expires_at),
+        }
+        if member_grant is not None
+        else {}
+    )
 
     return {
+        **members,
         "kind": "thread",
         "thread_id": str(thread["conversation_thread_id"]),
         "title": thread.get("title"),
@@ -242,6 +277,30 @@ async def get_shared_thread_metadata(
             "allow_download": perms.get("allow_download", False),
         },
     }
+
+
+async def _shared_thread_for(
+    share_token: str, viewer_id: str | None
+) -> tuple[dict[str, Any], member_grants.ThreadGrant | None]:
+    """The thread a token opens for this viewer, with the grant a member's
+    page carries to the replay and file routes. A link that opens to anyone
+    answers as ``get_shared_thread`` does; a members-only one asks a
+    signed-out visitor to sign in and is not found by a non-member."""
+    thread = await get_thread_by_share_token(share_token)
+    if not thread:
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    owner_id = thread.get("owner_id")
+    if thread_audience(get_permissions(thread)) != ORGANIZATION:
+        if not await serves_public_links(owner_id):
+            raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+        return thread, None
+    if viewer_id is None:
+        raise members_only()
+    if not member_grants.can_hold(viewer_id) or not await admits_member(
+        viewer_id, owner_id
+    ):
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    return thread, await member_grants.mint_thread_grant(share_token, viewer_id)
 
 
 # =============================================================================

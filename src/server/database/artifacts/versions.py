@@ -64,6 +64,9 @@ class StoredVersionFile:
     byte_len: int
     content_type: str
     content: bytes | None
+    #: The workspace's owner, read with a visitor's file only: their policy
+    #: decides whether it opens.
+    owner_id: str | None = None
 
 
 class SharingChanged(Exception):
@@ -517,6 +520,7 @@ def _stored_file(row: dict[str, Any] | None) -> StoredVersionFile | None:
         byte_len=row["byte_len"],
         content_type=row["content_type"],
         content=bytes(content) if content is not None else None,
+        owner_id=row.get("owner_id"),
     )
 
 
@@ -542,9 +546,12 @@ async def get_version_file(
 
 
 async def get_shared_version_file(
-    *, code: str, artifact_id: str, revision: int, seq: int, path: str
+    *, code: str, artifact_id: str, revision: int, seq: int, path: str,
+    members: bool = False,
 ) -> StoredVersionFile | None:
-    """A file of version ``seq``, if the link ``code`` still opens it to anyone.
+    """A file of version ``seq``, if the link ``code`` still opens it to anyone,
+    or with ``members``, to the members of its owner's organization (whether
+    the viewer is one is the caller's to judge).
 
     One statement, so the answer is one snapshot: the link is the artifact's,
     shared, at the revision the visitor's grant was minted at (an unshare
@@ -558,7 +565,8 @@ async def get_shared_version_file(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT f.user_id, f.sha256, f.byte_len, f.content_type, f.content
+                SELECT f.user_id, f.sha256, f.byte_len, f.content_type, f.content,
+                       w.user_id AS owner_id
                   FROM share_links l
                   JOIN workspaces w
                     ON w.workspace_id = l.workspace_id AND w.status <> 'deleted'
@@ -571,6 +579,7 @@ async def get_shared_version_file(
                    AND l.revision = %(revision)s
                    AND l.shared_seq = %(seq)s
                    AND f.path = %(path)s
+                   AND l.audience IS NOT DISTINCT FROM %(audience)s::text
                 """,
                 {
                     "code": code,
@@ -578,6 +587,7 @@ async def get_shared_version_file(
                     "revision": revision,
                     "seq": seq,
                     "path": path,
+                    "audience": "organization" if members else None,
                 },
             )
             return _stored_file(await cur.fetchone())

@@ -62,6 +62,33 @@ def build_storage_key(user_id: str, content_hash: str) -> str:
     return f"user-skills/{user_id}/{content_hash.removeprefix('sha256:')}.zip"
 
 
+def build_library_key(org_id: str, content_hash: str) -> str:
+    """The ``org-library/{org_id}/{hash}.zip`` key of a skill an organization's
+    library holds: its own copy, so a publisher deleting or replacing their
+    skill never takes the library's with it."""
+    if not _USER_ID_RE.match(org_id):
+        msg = f"Refusing to build storage key for unsafe org_id: {org_id!r}"
+        raise SkillArchiveStorageError(msg)
+    if not _CONTENT_HASH_RE.match(content_hash):
+        msg = f"Refusing to build storage key for unsafe content_hash: {content_hash!r}"
+        raise SkillArchiveStorageError(msg)
+    return f"org-library/{org_id}/{content_hash.removeprefix('sha256:')}.zip"
+
+
+async def store_library_archive(*, org_id: str, content: bytes, content_hash: str) -> str | None:
+    """:func:`store_archive` under the organization library's prefix."""
+    if not is_configured():
+        return None
+    storage_key = build_library_key(org_id, content_hash)
+    success = await asyncio.to_thread(
+        _storage_upload_bytes, storage_key, content, _ARCHIVE_CONTENT_TYPE
+    )
+    if not success:
+        logger.error("Failed to upload a library skill archive (key=%s)", storage_key)
+        raise SkillArchiveUploadError("Could not store the skill archive. Please retry.")
+    return storage_key
+
+
 async def store_archive(*, user_id: str, content: bytes, content_hash: str) -> str | None:
     """Upload canonical archive bytes; return the storage key.
 

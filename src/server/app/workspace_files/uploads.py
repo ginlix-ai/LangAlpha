@@ -25,14 +25,11 @@ from src.server.models.workspace import served_from_mirror
 from src.server.services.background_starts import schedule_start
 from src.server.services.computer_disk import CRITICAL_FREE_BYTES
 from src.server.services.persistence.transfer import sandbox_pulls_from_store, scan_cap_bytes
-from src.server.services.workspace_file_containment import normalize_requested_path
 from src.server.services.workspace_files import (
     acquire_sandbox_to_change,
     contained_target,
     not_running_for_upload,
-    owned_workspace_on_computer,
-    owner_work_dir,
-    previous_dir_names_of,
+    reached_workspace_on_computer,
 )
 from src.server.services.store_multipart import (
     DIRECT_UPLOAD_MIN_BYTES,
@@ -62,7 +59,7 @@ from src.server.utils.api import CurrentUserId
 from src.server.utils.uploads import _too_large
 from src.utils.storage import browser_uploads_enabled, is_storage_enabled
 
-from ._shared import MAX_UPLOAD_BYTES, _virtual_file
+from ._shared import MAX_UPLOAD_BYTES, RoutePaths, _virtual_file
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +135,7 @@ async def begin_workspace_upload(
         raise HTTPException(
             status_code=413, detail=_too_large(MAX_DIRECT_UPLOAD_BYTES, body.size)
         )
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
     if served_from_mirror(workspace.get("status")):
         raise not_running_for_upload(workspace)
     if body.size < DIRECT_UPLOAD_MIN_BYTES:
@@ -153,14 +150,15 @@ async def begin_workspace_upload(
                 raise HTTPException(status_code=413, detail=_too_large(relay_cap, body.size))
             return {"mode": "relay"}
 
-        work_dir = owner_work_dir(workspace)
-        previous_dirs = previous_dir_names_of(workspace)
+        paths = RoutePaths.of(workspace, x_user_id)
+        work_dir = paths.work_dir
         # The checks the relay route makes, made before the bytes are sent.
-        virtual = _virtual_file(normalize_requested_path(body.path, work_dir, previous_dirs))
+        virtual = _virtual_file(await paths.requested(body.path))
         if virtual:
             raise HTTPException(status_code=400, detail=virtual.read_only)
-        target = await contained_target(sandbox, body.path, work_dir, previous_dirs)
+        target = await contained_target(sandbox, body.path, work_dir, paths.previous_dirs)
         rel = target[len(work_dir.rstrip("/")) + 1 :]
+        await paths.refuse(rel)
         if not rel:
             raise HTTPException(status_code=400, detail="Destination path is required")
 

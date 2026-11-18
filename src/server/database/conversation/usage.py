@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from src.server.database import pool
+from src.server.database.shared_workspaces import refuse_holder
 from src.server.utils.pg_sanitize import normalize_uuid
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,15 @@ async def create_usage_record(
 
     Raises:
         psycopg.Error: On database errors
+        HolderNotAPerson: When ``user_id`` names a shared workspace's holder
+
+    ``user_id`` is the account the run is recorded as
+    (``TurnIdentity.recorded_as``). Who sent it is the ``user_id`` of the
+    ``conversation_responses`` row ``conversation_response_id`` names, for a
+    turn's row and a subagent's. A model call between turns (a compact, a
+    hand-off brief) is written under an id of its own that names no run row.
     """
+    refuse_holder(usage_data["user_id"], "usage record")
 
     async def _create(cur):
         await cur.execute(

@@ -8,12 +8,18 @@ runs here: the files are fetched a batch at a time and matched off the event
 loop, and a long line comes back as windows around its matches, as rg's does.
 Each search fetches the files anew, so it takes the newest conversations
 first and stops at a byte limit, saying so in its answer.
+
+A shared workspace's computer, mounted or not, serves only the threads shared
+with the workspace. A turn in a thread its sender keeps private there reads
+that thread's own transcript the same way (``ThreadHistory``), handed to that
+turn alone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -21,8 +27,15 @@ from ptc_agent.agent.backends import ReadOnlyStoreError
 from ptc_agent.agent.backends.langgraph_store import compile_grep, grep_texts
 from ptc_agent.agent.backends.results import GrepAnswer
 from ptc_agent.core.paths import THREAD_DIR_NAME, SandboxLayout, WorkspaceLayout
+from src.server.database.thread_transcripts import ON_COMPUTER, Scope, own_thread
 from src.server.services import transcripts
-from src.server.services.livefs.history import IndexRoute, TranscriptRoute, blob_bytes, read_file_with_digest
+from src.server.services.livefs.history import (
+    IndexRoute,
+    TranscriptRoute,
+    blob_bytes,
+    read_file_with_digest,
+    transcript_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +128,11 @@ class TranscriptFiles(_ReadOnlyFiles):
 
     takes_walk = True
 
-    def __init__(self, workspace_id: str, layout: WorkspaceLayout) -> None:
+    def __init__(
+        self, workspace_id: str, layout: WorkspaceLayout, *, scope: Scope = ON_COMPUTER
+    ) -> None:
         self._workspace_id = workspace_id
-        self._route = TranscriptRoute(workspace_id, layout)
+        self._route = TranscriptRoute(workspace_id, layout, scope=scope)
         self.root_prefix = self._route.root_prefix
 
     async def _listed(self, path: str, *, newest_first: bool = False) -> list[Any]:
@@ -130,7 +145,11 @@ class TranscriptFiles(_ReadOnlyFiles):
         if short_id and not THREAD_DIR_NAME.match(short_id):
             return []
         listed = await db.list_transcript_tree(
-            self._workspace_id, short_id or None, _MAX_FILES, newest_first=newest_first
+            self._workspace_id,
+            short_id or None,
+            _MAX_FILES,
+            newest_first=newest_first,
+            scope=self._route.scope,
         )
         return [
             f
@@ -141,7 +160,7 @@ class TranscriptFiles(_ReadOnlyFiles):
         ]
 
     def _absolute(self, listed: Any) -> str:
-        return f"{self.root_prefix}{listed.short_id}/{listed.path}"
+        return f"{self._route.root_prefix}{listed.short_id}/{listed.path}"
 
     def _searched(self, files: list[Any], searches: Callable[[str], bool]) -> list[Any]:
         return [f for f in files if searches(self._absolute(f))]
@@ -175,7 +194,9 @@ class TranscriptFiles(_ReadOnlyFiles):
                 except BlobFetchError:
                     # No blob holds the listed bytes when they were in a row
                     # a save has replaced since; the file is read as it is now.
-                    found = await read_file_with_digest(self._workspace_id, f.short_id, f.path)
+                    found = await read_file_with_digest(
+                        self._workspace_id, f.short_id, f.path, self._route.scope
+                    )
             return f, None if found is None else found[0]
 
         for f, data in await asyncio.gather(*(fetch(f) for f in files if f not in held)):
@@ -257,6 +278,68 @@ class TranscriptFiles(_ReadOnlyFiles):
             len(listed),
         )
         return GrepAnswer(found, [note])
+
+
+class ThreadFiles(TranscriptFiles):
+    """One thread's transcript, for a turn in that thread whose sender keeps
+    it private in a shared workspace: the computer's mount and its in-process
+    routes serve only threads shared with the workspace, so this is the one
+    path to it. Rooted at the thread's own directory, which the pointer a
+    summary ends with names, so it wins over both there; every read names
+    the thread and the sender, so it serves nothing the sender no longer
+    reaches."""
+
+    def __init__(
+        self, workspace_id: str, layout: WorkspaceLayout, thread_id: str, sender: str
+    ) -> None:
+        super().__init__(workspace_id, layout, scope=own_thread(thread_id, sender))
+        self.root_prefix = transcript_dir(layout, thread_id) + "/"
+        # Where the mount serves transcripts, a Grep of their folder reaches
+        # each thread's own through the folder's link; this one is reached
+        # there too, or that Grep would say a thread's own history has no match.
+        self.link_dir = posixpath.dirname(self.root_prefix.rstrip("/"))
+
+
+class ThreadHistory:
+    """``HistoryFiles`` for a turn in a thread its sender keeps private in a
+    shared workspace: that thread's transcript alone, on any of the
+    workspace's computers, mounted or not. Bash and code still do not see it,
+    so the turn's reach says so and its pointers name the file tools."""
+
+    def __init__(
+        self, workspace_id: str, dir_name: str | None, thread_id: str, sender: str
+    ) -> None:
+        self._workspace_id = workspace_id
+        self._dir_name = dir_name
+        self._thread_id = thread_id
+        self._sender = sender
+
+    def routes(self, sandbox: Any) -> list[Any]:
+        root = sandbox.computer_root.rstrip("/")
+        layout = SandboxLayout.for_root(root).for_workspace(self._dir_name)
+        return [ThreadFiles(self._workspace_id, layout, self._thread_id, self._sender)]
+
+    def serves(self, workspace_id: str | None) -> bool:
+        return workspace_id is not None and str(workspace_id) == self._workspace_id
+
+    async def save_transcript(self, target: Any, messages: Any, *, window: Any) -> bool:
+        return await transcripts.save_live(target, messages, window=window)
+
+
+async def private_thread_history(
+    workspace_id: str, dir_name: str | None, thread_id: str, sender: str | None
+) -> ThreadHistory | None:
+    """The history a turn in ``thread_id``, in the workspace folder
+    ``dir_name``, reads its own transcript through, when the thread is
+    ``sender``'s and not shared with its workspace; None otherwise. Read from
+    the thread row at each build, so sharing the thread hands it back to the
+    mount from the next turn on, and making it private again brings it back
+    here."""
+    from src.server.database.conversation.thread_reach import private_to
+
+    if sender is None or str(await private_to(thread_id)) != str(sender):
+        return None
+    return ThreadHistory(str(workspace_id), dir_name, str(thread_id), str(sender))
 
 
 class IndexFile(_ReadOnlyFiles):

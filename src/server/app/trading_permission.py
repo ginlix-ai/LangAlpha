@@ -16,6 +16,8 @@ from src.server.database.trading_permission import (
     get_trading_permission_row,
     set_trading_permission,
 )
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.services.trading_permission import (
     DEFAULT_TRADING_PERMISSION,
     TRADING_AGREEMENT_VERSION,
@@ -82,6 +84,38 @@ async def update_trading_permission(
                 f"current agreement (version {TRADING_AGREEMENT_VERSION}) accepted"
             ),
         )
-    return _response(
-        await set_trading_permission(user_id, body.level, body.agreement_version)
-    )
+    await _refuse_raise_under_policy(user_id, body.level)
+    row = await set_trading_permission(user_id, body.level, body.agreement_version)
+    # A user who never chose was at the default, so choosing it changes nothing.
+    previous = row.get("previous_level") or DEFAULT_TRADING_PERMISSION.value
+    if previous != body.level.value:
+        activity.record(
+            user_id, Action.TRADING_PERMISSION_CHANGED,
+            detail={"from": previous, "to": body.level.value},
+        )
+    return _response(row)
+
+
+# Least to most the agent may do with orders on its own.
+_RANK = {
+    TradingPermission.NO_TRADING: 0,
+    TradingPermission.APPROVE_EACH: 1,
+    TradingPermission.PLAN_FIRST: 2,
+    TradingPermission.AUTONOMOUS: 3,
+}
+
+
+async def _refuse_raise_under_policy(user_id: str, level: TradingPermission) -> None:
+    """Refuse raising the level while the policy withholds trading; keeping
+    or lowering it always works. The row is read only when the policy asks."""
+    from src.server.services.policy import TRADING
+    from src.server.services.account import require_policy
+
+    if level is TradingPermission.NO_TRADING:
+        return
+    policy = await require_policy(user_id)
+    if policy.allows(TRADING):
+        return
+    current = _response(await get_trading_permission_row(user_id)).level
+    if _RANK[level] > _RANK[current]:
+        policy.require(TRADING, "Raising the trading permission")

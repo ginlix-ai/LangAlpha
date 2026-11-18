@@ -22,17 +22,19 @@ from ptc_agent.config.agent import CredentialPayer, Payer
 from src.config import settings as app_settings
 from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import LLM as LLMFactory
-from src.server.database.api_keys import get_byok_configs_for_providers, is_byok_active
+from src.server.database.api_keys import get_byok_configs_for_providers
 from src.server.database.oauth_tokens import get_oauth_connection
-from src.server.dependencies.usage_limits import platform_gating_active
+from src.server.services.platform_client import platform_gating_active
 from src.server.services.claude_code.flow import rows_on
 from src.server.services.claude_code.hosted import saved_token_runs
 from src.server.services.claude_code.saved import usable_token
 from src.server.services.claude_oauth import CLAUDE_PROVIDER
 from src.server.services.oauth_providers import SUBSCRIPTIONS
+from src.server.services.policy import MODELS_ALLOWED
+from src.server.services.account import own_access
 
 from . import user_models
-from .availability import model_on_plan
+from .availability import builtins_only, model_on_plan, policy_refuses
 from .byok import byok_candidates
 from .capabilities import PlanTier
 from .clients import (
@@ -54,8 +56,9 @@ class ModelPayer(BaseModel):
     whether it can serve a turn now), ``own_key``, ``credits``,
     ``server_key``, ``local`` (a server on the user's machine, which nobody
     bills), or None when nothing serves it, ``needs`` then saying what would:
-    ``plan`` or ``key``. Fields a row has no answer for are left unset, and
-    the route leaves them out.
+    ``plan`` or ``key``, or ``policy`` for a model the user's policy does not
+    let a turn run, ``rule`` naming the rule. Fields a row has no answer for
+    are left unset, and the route leaves them out.
     """
 
     name: str
@@ -64,7 +67,8 @@ class ModelPayer(BaseModel):
     payer: Payer | None
     plan: str | None = None
     signed_in: bool | None = None
-    needs: Literal["plan", "key"] | None = None
+    needs: Literal["plan", "key", "policy"] | None = None
+    rule: str | None = None
 
 
 def _plan_name(provider: str, mc) -> str:
@@ -152,12 +156,14 @@ async def model_payers(user_id: str) -> list[ModelPayer]:
     """One row per model the user can pick: the manifest's visible models,
     then the ones they added, a custom model taking a built-in's place."""
     mc = LLMFactory.get_model_config()
-    model_pref, is_byok, sign_ins, (claude_code_on, claude_code_signed_in) = await asyncio.gather(
+    model_pref, own, sign_ins, (claude_code_on, claude_code_signed_in) = await asyncio.gather(
         user_models.get_model_preference(user_id),
-        is_byok_active(user_id),
+        # Own access the policy denies is not there, as a turn reads it.
+        own_access(user_id, sign_ins=False),
         _sign_ins(user_id),
         _claude_code(user_id),
     )
+    policy, is_byok = own.policy, own.api_keys
     gated = platform_gating_active()
     exempt = plan_exempt_models(deployment_llm(), "primary")
     permits = PlanTier(user_id)
@@ -166,6 +172,15 @@ async def model_payers(user_id: str) -> list[ModelPayer]:
         if isinstance(cm, dict) and isinstance(cm.get("name"), str)
     ]
     custom_names = {cm["name"] for cm in customs}
+    # Read as a turn reads them: under an allow-list a custom entry is not
+    # considered, so a built-in it is named like is the row, and the rest are
+    # listed as the list refuses them.
+    refused_customs: list[dict] = []
+    if policy.models_allowed is not None:
+        model_pref = builtins_only(policy, model_pref)
+        manifest = mc.get_model_metadata()
+        refused_customs = [cm for cm in customs if cm["name"] not in manifest]
+        customs, custom_names = [], set()
     builtins = {
         name: meta for name, meta in mc.get_model_metadata().items()
         if name not in custom_names
@@ -229,12 +244,24 @@ async def model_payers(user_id: str) -> list[ModelPayer]:
         return {"payer": None, "needs": "key"}
 
     async def row(name: str, provider: str, custom: bool) -> ModelPayer:
+        if rule := policy_refuses(policy, model_pref, name):
+            return ModelPayer(
+                name=name, provider=provider, custom=custom, payer=None, needs="policy", rule=rule,
+            )
         route = await credential_route(
-            user_id, name, is_byok=is_byok, _pref_cache=model_pref, _byok_cache=byok_cache,
+            user_id, name, is_byok=is_byok, policy=policy,
+            _pref_cache=model_pref, _byok_cache=byok_cache,
         )
         return ModelPayer(name=name, provider=provider, custom=custom, **await bills(name, route))
 
     return [
         *[await row(name, meta["provider"], False) for name, meta in builtins.items()],
         *[await row(cm["name"], cm.get("provider") or "", True) for cm in customs],
+        *[
+            ModelPayer(
+                name=cm["name"], provider=cm.get("provider") or "", custom=True,
+                payer=None, needs="policy", rule=MODELS_ALLOWED,
+            )
+            for cm in refused_customs
+        ],
     ]

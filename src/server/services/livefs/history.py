@@ -25,6 +25,7 @@ from typing import Any
 from ptc_agent.agent.transcript import transcript_subdir
 from ptc_agent.core.paths import THREAD_DIR_NAME, SandboxLayout, WorkspaceLayout
 from ptc_agent.core.sandbox.livefs_runtime.protocol import Refusal
+from src.server.database.thread_transcripts import ON_COMPUTER, Scope
 from src.server.services import transcripts
 from src.server.services.livefs.cache import client as _cache
 from src.server.services.livefs.cache import tag
@@ -176,7 +177,7 @@ async def blob_bytes(user_id: str, sha256: str) -> bytes:
 
 
 async def read_file_with_digest(
-    workspace_id: str, short_id: str, path: str
+    workspace_id: str, short_id: str, path: str, scope: Scope
 ) -> tuple[bytes, str] | None:
     """One file of a thread's stored transcript, by its directory name and
     the path inside it, with the sha256 its listing gave; None when there is
@@ -184,7 +185,7 @@ async def read_file_with_digest(
     hash of its own."""
     from src.server.database.thread_transcripts import load_transcript_file
 
-    row = await load_transcript_file(workspace_id, short_id, path)
+    row = await load_transcript_file(workspace_id, short_id, path, scope=scope)
     if row is None:
         return None
     if row.content is not None:
@@ -193,10 +194,14 @@ async def read_file_with_digest(
 
 
 class TranscriptRoute(_ReadOnly):
-    """One workspace's stored transcripts, a directory per thread."""
+    """One workspace's stored transcripts, a directory per thread: those its
+    computer serves to any agent there, or the ``scope`` given."""
 
-    def __init__(self, workspace_id: str, layout: WorkspaceLayout) -> None:
+    def __init__(
+        self, workspace_id: str, layout: WorkspaceLayout, *, scope: Scope = ON_COMPUTER
+    ) -> None:
         self._workspace_id = workspace_id
+        self.scope = scope
         self.root_prefix = layout.transcripts + "/"
 
     async def list(self, path: str) -> list[dict[str, Any]] | None:
@@ -206,12 +211,15 @@ class TranscriptRoute(_ReadOnly):
         if relative is None:
             return None
         if not relative:
-            ids = Counter(t[:8] for t in await db.workspace_transcripts(self._workspace_id))
+            ids = Counter(
+                t[:8]
+                for t in await db.workspace_transcripts(self._workspace_id, scope=self.scope)
+            )
             return [_dir(name) for name in sorted(ids) if ids[name] == 1]
         short_id, _, inner = relative.partition("/")
         if not THREAD_DIR_NAME.match(short_id):
             return None
-        files = await db.list_transcript(self._workspace_id, short_id)
+        files = await db.list_transcript(self._workspace_id, short_id, scope=self.scope)
         if files is None:
             return None
         entries = _directories(files, inner).get("")
@@ -232,7 +240,10 @@ class TranscriptRoute(_ReadOnly):
         if short_id and not THREAD_DIR_NAME.match(short_id):
             return None
         listed = await db.list_transcript_tree(
-            self._workspace_id, short_id or None, _TREE_MAX_FILES + 1
+            self._workspace_id,
+            short_id or None,
+            _TREE_MAX_FILES + 1,
+            scope=self.scope,
         )
         cut = len(listed) > _TREE_MAX_FILES
         if cut:
@@ -271,7 +282,7 @@ class TranscriptRoute(_ReadOnly):
         short_id, _, inner = relative.partition("/")
         if not inner or not THREAD_DIR_NAME.match(short_id):
             return None
-        return await read_file_with_digest(self._workspace_id, short_id, inner)
+        return await read_file_with_digest(self._workspace_id, short_id, inner, self.scope)
 
     async def read(self, path: str) -> tuple[str, str] | None:
         found = await self.read_bytes(path)

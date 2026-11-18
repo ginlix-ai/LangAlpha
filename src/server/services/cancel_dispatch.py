@@ -11,6 +11,8 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from src.server.contracts.status import Stopper, chases_hand_offs, gives_back
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +49,10 @@ def _cancel_outcome(
 
 
 async def cancel_workflow(
-    thread_id: str, run_id: Optional[str] = None, *, by_user: bool = True
+    thread_id: str,
+    run_id: Optional[str] = None,
+    *,
+    by: Stopper = "user",
 ) -> dict:
     """
     Explicitly cancel a workflow execution (user stop) — v4 honest cancel.
@@ -69,11 +74,13 @@ async def cancel_workflow(
     *newer* turn the user started after the stopped one finished. Omitted =
     the thread's active run.
 
-    ``by_user=False`` is an agent's stop (the Chief of Staff's): the user's
-    steers stay queued rather than coming back to a caller who never sent
-    them, and a hand-off steered into a run that has since ended is stopped
-    where it went.
+    ``by`` names who asked (``Stopper``). Only the user's own stop hands
+    the run's steers back to its caller; any other leaves them with the run
+    for its ending to keep for its sender. An agent's or a suspension's stop
+    also stops a hand-off steered into a run that has since ended, where it
+    went.
     """
+    returns = gives_back(by)
     try:
         from src.server.services.runs.executor import (
             LocalRunExecutor,
@@ -134,7 +141,7 @@ async def cancel_workflow(
         held = 0
         if target_run_id:
             intent = await tl_db.request_run_cancel(
-                target_run_id, thread_id=thread_id, by_user=by_user
+                target_run_id, thread_id=thread_id, by=by
             )
             intent_state = intent["state"]
             logger.info(
@@ -142,14 +149,14 @@ async def cancel_workflow(
                 f"thread={thread_id}: {intent_state}"
             )
             held = intent.get("held_steers") or 0
-            if by_user and intent_state == "requested":
+            if returns and intent_state == "requested":
                 returned = intent.get("returned_steers") or []
                 from src.server.services.artifacts.comments import (
                     publish_returned_comments,
                 )
 
                 await publish_returned_comments(thread_id, returned)
-            elif by_user and intent_state in ("already_requested", "already_terminal"):
+            elif returns and intent_state in ("already_requested", "already_terminal"):
                 # The stamp that returned them may be an earlier call's whose
                 # answer was lost.
                 from src.server.database.runs import outbox as outbox_db
@@ -199,7 +206,7 @@ async def cancel_workflow(
                     thread_id, target_run_id, force=True
                 )
 
-        if by_user and held and intent_state in ("requested", "already_requested"):
+        if returns and held and intent_state in ("requested", "already_requested"):
             # The stamp left the steers the run holds to its ending: the
             # model call reading them may be confirming them right now. The
             # ending gives back the ones its checkpoint never read.
@@ -218,14 +225,11 @@ async def cancel_workflow(
                 await outbox_db.keep_unanswered_steers(thread_id, target_run_id)
             returned = await outbox_db.list_returned_steers(target_run_id)
 
-        if intent_state == "already_terminal" and not by_user:
+        if intent_state == "already_terminal" and chases_hand_offs(by):
             from src.server.database.runs import outbox as outbox_db
 
             taken = await outbox_db.stop_hand_off_steers(thread_id, target_run_id)
-            stopped = [
-                await cancel_workflow(thread_id, later, by_user=False)
-                for later in taken
-            ]
+            stopped = [await cancel_workflow(thread_id, later, by=by) for later in taken]
             if any(o.get("cancelled") for o in stopped):
                 return _cancel_outcome(
                     cancelled=True,

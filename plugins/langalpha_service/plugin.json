@@ -16,5 +16,12 @@
     "scheduling",
     "memory",
     "platform"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "onboarding": { "needs_own_data": true }
+      }
+    }
+  }
 }

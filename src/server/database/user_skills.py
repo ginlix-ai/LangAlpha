@@ -572,9 +572,14 @@ async def upsert_user_skill(
     command: str | None = None,
     overwrite: bool = True,
     owned_by_plugin: str | None = None,
+    org_library_item_id: str | None = None,
     conn=None,
 ) -> tuple[dict[str, Any], str | None]:
     """Insert or replace a skill by scope and name.
+
+    ``org_library_item_id`` names the library item an install copies; any
+    other write leaves it None, so a re-upload of one's own over an
+    installed copy makes the skill one's own again.
 
     ``overwrite=False`` makes an existing row in the same scope a
     :class:`SkillNameTaken` refusal instead of a replacement — the plugin
@@ -705,9 +710,9 @@ async def upsert_user_skill(
                          license, frontmatter, allowed_tools, enabled,
                          confirmed, plugin_id, plugin_skill_dir, content_hash,
                          archive_key, archive_blob, archive_bytes, file_count,
-                         created_at, updated_at)
+                         org_library_item_id, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, NOW(), NOW())
+                            %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     ON CONFLICT {conflict_target} DO UPDATE SET
                         description = EXCLUDED.description,
                         license = EXCLUDED.license,
@@ -721,6 +726,7 @@ async def upsert_user_skill(
                         archive_blob = EXCLUDED.archive_blob,
                         archive_bytes = EXCLUDED.archive_bytes,
                         file_count = EXCLUDED.file_count,
+                        org_library_item_id = EXCLUDED.org_library_item_id,
                         updated_at = NOW()
                     RETURNING {_SKILL_COLUMNS}
                     """,
@@ -729,7 +735,7 @@ async def upsert_user_skill(
                         license, Json(frontmatter), Json(allowed_tools),
                         enabled, confirmed, plugin_id, plugin_skill_dir,
                         content_hash, archive_key, archive_blob, archive_bytes,
-                        file_count,
+                        file_count, org_library_item_id,
                     ),
                 )
                 row = _row_to_dict(await cur.fetchone())

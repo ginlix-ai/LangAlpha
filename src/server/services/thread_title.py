@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.server.database.conversation import update_thread_title_cas
 from src.server.utils.thread_stamp import message_to_title
 from src.utils.timezone_utils import zone_or_none
+from src.server.services.shared_workspaces.access import shared_org_of
 
 logger = logging.getLogger(__name__)
 
@@ -166,12 +167,19 @@ async def generate_thread_title(
     # (dispatched threads have no mounted view to learn the title otherwise).
     from src.server.services.thread_lifecycle_feed import publish_thread_title
 
+    workspace_id = str(updated["workspace_id"])
+    try:
+        # A shared thread's title is news to every member.
+        shared_org = await shared_org_of(workspace_id)
+    except Exception:
+        shared_org = None
     await publish_thread_title(
         user_id=user_id,
         thread_id=thread_id,
-        workspace_id=str(updated["workspace_id"]),
+        workspace_id=workspace_id,
         title=title,
         updated_at=updated.get("updated_at"),
+        shared_org=shared_org,
     )
 
     return title, True

@@ -14,7 +14,7 @@ from src.server.models.command import (
 )
 from src.server.services.commands import control
 from src.server.dependencies.principal import ReadUserId, RunUserId
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces.access import thread_access
 
 from ._deps import router
 
@@ -29,7 +29,7 @@ async def list_commands(
     """The thread's commands: every running one, then the ``limit`` newest
     started of those that ended; ``status`` (repeatable) keeps only those
     statuses."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     rows = await cr_db.list_for_thread(thread_id, statuses=status, limit=limit)
     return CommandsResponse(
         thread_id=thread_id, commands=[CommandOut.model_validate(r) for r in rows]
@@ -46,7 +46,7 @@ async def stop_thread_command(
 
     ``stopped`` is False for one that had already ended; the row in the
     answer says how. 404 when the command is not this thread's."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     result = await control.stop_thread_command(thread_id, command_id, by="user")
     if result.outcome == "not_found":
         raise HTTPException(status_code=404, detail="Command not found")

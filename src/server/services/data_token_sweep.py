@@ -318,7 +318,9 @@ class DataTokenSweeper:
             path = SandboxLayout(await runtime.fetch_working_dir()).mcp_tokens
             return await data_tokens.push(
                 computer_id,
-                str(row["user_id"]),
+                # None for a shared workspace's computer no member's turn
+                # has minted for yet.
+                str(row["user_id"]) if row["user_id"] else "",
                 sandbox_id,
                 token_writer(runtime, path),
                 generation=current.generation,

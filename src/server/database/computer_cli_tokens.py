@@ -60,6 +60,9 @@ async def save_token(
                 WITH serving AS (
                     SELECT computer_id, user_id FROM computers
                     WHERE computer_id = %(computer_id)s AND user_id = %(user_id)s
+                      -- A shared workspace's computer holds no CLI token: one
+                      -- naming its holder would let code act as nobody.
+                      AND user_id NOT LIKE 'shared-%%'
                       AND {FENCE_BINDABLE}
                     FOR SHARE
                 )

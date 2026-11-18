@@ -101,6 +101,7 @@ class SubagentRunCoordinator:
         stored_token: bool = False,
         claude_code_model: Optional[str] = None,
         cli_computer: Optional[str] = None,
+        spending_run_id: Optional[str] = None,
         model_override: Optional[str] = None,
     ) -> str:
         """Bear the run row (in_progress) and open its v2 stream; returns the
@@ -115,7 +116,9 @@ class SubagentRunCoordinator:
         ``cli_computer`` where one runs it for a workspace on another, which
         the row names, else the thread's; and while the Claude plan it would
         sign in on there is used up for ``claude_code_model``, the model its
-        CLI runs (``subagent_plan_refusal``).
+        CLI runs (``subagent_plan_refusal``). ``spending_run_id`` is the turn
+        that launched it, whose sender the row names
+        (``subagent_runs.start_task_run``).
 
         Called under the task's namespace guard, BEFORE the writer spawns.
         Any constraint conflict raises TaskRunRejected — the spawn/resume
@@ -171,6 +174,7 @@ class SubagentRunCoordinator:
                 stored_token=claude_code and stored_token and HOST_MODE == "platform",
                 cli_cap=self._cli_cap(computer),
                 cli_computer=cli_computer if claude_code else None,
+                spending_run_id=spending_run_id,
                 model_override=model_override,
             )
         except sr_db.ClaudeCodeCapError as e:

@@ -417,10 +417,8 @@ class ComputerSpecMixin:
         if not computer:
             raise ValueError(f"Computer {computer_id} not found")
         owner_id = str(computer["user_id"])
-        from src.server.dependencies.usage_limits import (
-            assert_spec_allowed,
-            platform_gating_active,
-        )
+        from src.server.services.platform_client import platform_gating_active
+        from src.server.dependencies.usage_limits import assert_spec_allowed
 
         if platform_gating_active():
             await stack.enter_async_context(computer_capacity_lock(owner_id))

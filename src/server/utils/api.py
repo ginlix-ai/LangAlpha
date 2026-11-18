@@ -65,7 +65,68 @@ def _service_token_user_id(request: Request) -> tuple[bool, Optional[str]]:
         return False, None
     if not service_token_matches(token, _SERVICE_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid service token")
-    return True, request.headers.get("X-User-Id")
+    user_id = request.headers.get("X-User-Id")
+    refuse_holder_credential(user_id)
+    return True, user_id
+
+
+def refuse_holder_credential(user_id: Optional[str]) -> None:
+    """Refuse (401) a credential that names a shared workspace's holder: an
+    account that is not a person, which nobody may act as."""
+    # Late: the database package's pool imports this module's package.
+    from src.server.database.shared_workspaces import is_holder
+
+    if is_holder(user_id):
+        raise HTTPException(status_code=401, detail="Invalid credential")
+
+
+_CALLER = "caller"
+
+
+@dataclass(frozen=True)
+class Caller:
+    """Who the request's credential named and how, kept on the request so a
+    record made deeper down, or by an exception handler, can say who acted
+    without each route passing it along."""
+
+    user_id: str
+    auth: str
+    client_id: Optional[str] = None
+
+
+def note_caller(
+    request: Request, user_id: str, auth: str, client_id: Optional[str] = None
+) -> None:
+    request.scope.setdefault("state", {})[_CALLER] = Caller(user_id, auth, client_id)
+
+
+def caller_of(scope) -> Optional[Caller]:
+    """The caller ``note_caller`` kept for this request, or None."""
+    caller = (scope.get("state") or {}).get(_CALLER)
+    return caller if isinstance(caller, Caller) else None
+
+
+_ADMITTED = "admitted_user"
+
+
+async def admit_caller(request: Request, user_id: str) -> None:
+    """Refuse a suspended account's request (403) once its user is known.
+
+    Every resolver of a user's credential calls this, so no route serving
+    what an account holds can be reached by a suspended one; the few a
+    client needs to learn that state resolve through ``*_any_state``
+    instead. Once a request, however many resolvers it runs.
+    """
+    from src.server.services.account import admit
+    from src.server.services.membership import teams_door_open
+
+    if not teams_door_open():
+        return
+    state = request.scope.setdefault("state", {})
+    if state.get(_ADMITTED) == user_id:
+        return
+    await admit(user_id)
+    state[_ADMITTED] = user_id
 
 
 async def get_current_user_id(
@@ -78,26 +139,83 @@ async def get_current_user_id(
     When Supabase auth is disabled (``SUPABASE_URL`` unset), returns the
     configured local user ID (``AUTH_USER_ID`` env var, default ``local-dev-user``).
 
-    When auth is enabled, requires a valid Bearer JWT (Supabase).
+    When auth is enabled, requires a valid Bearer JWT (Supabase). A
+    suspended account is refused (``admit_caller``).
     """
+    user_id = await get_user_id_any_state(request, credentials)
+    await admit_caller(request, user_id)
+    return user_id
+
+
+async def get_user_id_any_state(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> str:
+    """:func:`get_current_user_id` for a suspended account too: only for the
+    routes a client needs to learn the account's state."""
     # Service-to-service auth (only active if INTERNAL_SERVICE_TOKEN is set)
     matched, user_id = _service_token_user_id(request)
     if matched:
         if not user_id:
             raise HTTPException(status_code=401, detail="Missing X-User-Id")
+        note_caller(request, user_id, "service")
         return user_id
 
     if HOST_MODE == "oss":
+        note_caller(request, LOCAL_DEV_USER_ID, "session")
         return LOCAL_DEV_USER_ID
 
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing authentication")
 
-    return (await _decode_token(credentials.credentials)).user_id
+    user_id = (await _decode_token(credentials.credentials)).user_id
+    refuse_holder_credential(user_id)
+    note_caller(request, user_id, "session")
+    return user_id
 
 
 # Annotated type for cleaner endpoint signatures
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
+AnyStateUserId = Annotated[str, Depends(get_user_id_any_state)]
+
+
+async def get_service_user_id(request: Request) -> str:
+    """The ``X-User-Id`` of a service-to-service call, for routes no user's
+    own credential may reach (401 for any other caller)."""
+    user_id = await get_service_user_id_any_state(request)
+    await admit_caller(request, user_id)
+    return user_id
+
+
+async def get_service_user_id_any_state(request: Request) -> str:
+    """:func:`get_service_user_id` for a suspended account too: for the
+    notice that tells this server an account's state changed."""
+    matched, user_id = _service_token_user_id(request)
+    if not matched:
+        raise HTTPException(status_code=401, detail="Service authentication required")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id")
+    note_caller(request, user_id, "service")
+    return user_id
+
+
+ServiceUserId = Annotated[str, Depends(get_service_user_id)]
+AnyStateServiceUserId = Annotated[str, Depends(get_service_user_id_any_state)]
+
+
+async def require_service_caller(request: Request) -> None:
+    """For routes only another service calls on no user's behalf: a valid
+    service token with no ``X-User-Id``, refused (401) for any other caller,
+    a service acting for a user included, since such a route answers for
+    every user at once."""
+    matched, user_id = _service_token_user_id(request)
+    if not matched:
+        raise HTTPException(status_code=401, detail="Service authentication required")
+    if user_id:
+        raise HTTPException(status_code=401, detail="This route takes no X-User-Id")
+
+
+ServiceCaller = Depends(require_service_caller)
 
 
 async def get_optional_user_id(
@@ -112,13 +230,17 @@ async def get_optional_user_id(
     only genuine absence is anonymous.
     """
     matched, user_id = _service_token_user_id(request)
-    if matched:
-        return user_id
-    if HOST_MODE == "oss":
-        return LOCAL_DEV_USER_ID
-    if credentials is None:
-        return None
-    return (await _decode_token(credentials.credentials)).user_id
+    if not matched:
+        if HOST_MODE == "oss":
+            user_id = LOCAL_DEV_USER_ID
+        elif credentials is None:
+            return None
+        else:
+            user_id = (await _decode_token(credentials.credentials)).user_id
+            refuse_holder_credential(user_id)
+    if user_id:
+        await admit_caller(request, user_id)
+    return user_id
 
 
 # The resolved user id, or None for an anonymous caller.
@@ -136,6 +258,9 @@ class Viewer:
 
     user_id: Optional[str]
     unconfirmed: Optional[HTTPException] = None
+    #: The credential named a suspended account, read as anonymous: a page
+    #: that would ask an anonymous visitor to sign in tells it not found.
+    suspended: bool = False
 
 
 async def get_viewer(
@@ -148,8 +273,13 @@ async def get_viewer(
     expired, or who arrives while the signing keys cannot be fetched, must
     still get the public answer.
     """
+    from src.server.services.account import AccountSuspended
+
     try:
         return Viewer(await get_optional_user_id(request, credentials))
+    except AccountSuspended:
+        # The owner's view is out of reach; the public one is anyone's.
+        return Viewer(None, suspended=True)
     except HTTPException as e:
         if e.status_code == 401:
             return Viewer(None)
@@ -180,6 +310,8 @@ async def get_stamp_auth(
     if matched:
         # X-User-Id optional here (unlike get_current_user_id): a token-only
         # caller is a privileged service acting without a specific owner.
+        if user_id:
+            await admit_caller(request, user_id)
         return user_id
     return await get_current_user_id(request, credentials)
 
@@ -269,13 +401,24 @@ def handle_api_exceptions(
 
 
 async def require_thread_owner(thread_id: str, user_id: str, *, conn=None) -> None:
-    """Verify the user owns the thread (via workspace). Raises 404 or 403."""
+    """Verify the user owns the thread (via workspace). Raises 404 or 403.
+
+    A shared workspace's thread the caller does not reach answers 404, as no
+    thread would: a 403 there would tell them a private thread exists.
+    """
     from src.server.database.conversation import get_thread_owner_id
 
     owner_id = await get_thread_owner_id(thread_id, conn=conn)
     if owner_id is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if owner_id != user_id:
+        from src.server.database.shared_workspaces import is_holder
+
+        if is_holder(owner_id):
+            from src.server.services.shared_workspaces.access import thread_access
+
+            # Raises the 404 itself when the caller does not reach the thread.
+            await thread_access(thread_id, user_id)
         raise HTTPException(status_code=403, detail="Forbidden")
 
 

@@ -586,8 +586,8 @@ async def list_workspace_servers(workspace_id: str) -> list[dict[str, Any]]:
 
 
 async def list_scope_markers_for_user(user_id: str) -> list[dict[str, Any]]:
-    """Disable-marker rows (inherited tombstones + builtin markers) across ALL
-    of a user's workspaces.
+    """Disable-marker rows (inherited tombstones, builtin and organization
+    connector markers) across ALL of a user's workspaces.
 
     Feeds the all-scopes catalog view's per-name "active in" checklist; one
     query instead of one per workspace. Soft-deleted workspaces are excluded:
@@ -598,7 +598,7 @@ async def list_scope_markers_for_user(user_id: str) -> list[dict[str, Any]]:
             await cur.execute(
                 """
                 SELECT workspace_id, name, source FROM workspace_mcp_servers
-                WHERE source IN ('user', 'builtin') AND enabled = FALSE
+                WHERE source IN ('user', 'builtin', 'org') AND enabled = FALSE
                   AND workspace_id IN
                     (SELECT w.workspace_id FROM workspaces w
                       WHERE w.user_id = %s AND w.status <> 'deleted')
@@ -852,8 +852,9 @@ async def start_new_workspace_selection(
     added from inside a workspace has ``enabled_in_new_workspaces`` off, and
     its tombstone lands whether the row is live or inert, so the choice holds
     if it is switched live later. A duplicate (``like_workspace_id``) starts
-    with its source's selection instead: every user server and built-in
-    switched off there, whatever the new-workspace default says.
+    with its source's selection instead: every user server, built-in and
+    organization connector switched off there, whatever the new-workspace
+    default says. A new workspace starts with every organization connector on.
 
     Runs in the workspace's INSERT transaction, after ``lock_user_writes``.
     No version bump: nothing can have resolved an uncommitted workspace.
@@ -904,7 +905,7 @@ async def start_new_workspace_selection(
         SELECT %(workspace_id)s::uuid, l.name, l.source, FALSE, NULL, NOW(), NOW()
         FROM workspace_mcp_servers l
         WHERE l.workspace_id = %(like)s::uuid AND NOT l.enabled
-          AND (l.source = 'builtin' OR (l.source = 'user' AND EXISTS (
+          AND (l.source IN ('builtin', 'org') OR (l.source = 'user' AND EXISTS (
               SELECT 1 FROM user_mcp_servers s
               WHERE s.user_id = %(user_id)s AND s.name = l.name
           )))

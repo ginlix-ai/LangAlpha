@@ -1,16 +1,16 @@
 """Per-turn user feedback routes: submit, follow up, list and remove a rating.
 The rating and the report a thumbs-down sends live in
-``services.feedback``; these routes check ownership and say what happened in
-HTTP terms."""
+``services.feedback``; these routes check access and say what happened in
+HTTP terms. A rating is the caller's own, so in a shared workspace each member
+rates and reports a turn for themselves; a human review of a turn is asked for
+only by the member who sent it."""
 
 from typing import Any, Optional
 
 from fastapi import BackgroundTasks, HTTPException
 
-# require_thread_owner is called through the module (auth_api.…) so a single
-# definition-site patch governs every route — a consumer-site patch that stops
-# intercepting after a move would silently bypass auth in tests.
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces import access as shared_access
+from src.server.services.shared_workspaces.turns import refuse_others_review
 from src.server.utils.api import (
     CurrentUserId,
 )
@@ -60,7 +60,9 @@ async def submit_feedback(
     thumbs-down is also sent to the team as a report; a thumbs-up over one
     withdraws it."""
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        access = await shared_access.thread_access(thread_id, x_user_id)
+        if access.is_shared and request.consent_human_review:
+            await refuse_others_review(thread_id, request.turn_index, x_user_id)
         row, report_status = await ratings.submit(
             thread_id,
             request.turn_index,
@@ -101,7 +103,9 @@ async def follow_up_feedback(
     if note and not request.note_id:
         raise HTTPException(status_code=422, detail="A note needs its note_id")
 
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    access = await shared_access.thread_access(thread_id, x_user_id)
+    if access.is_shared and request.human_review:
+        await refuse_others_review(thread_id, request.turn_index, x_user_id)
     try:
         row = await ratings.follow_up(
             thread_id,
@@ -131,7 +135,7 @@ async def follow_up_feedback(
 async def get_feedback(thread_id: str, x_user_id: CurrentUserId):
     """Get all feedback for a thread by the current user."""
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        await shared_access.thread_access(thread_id, x_user_id)
         rows = await ratings.for_thread(thread_id, x_user_id)
         return [_response(row, row["turn_index"]) for row in rows]
     except HTTPException:
@@ -153,7 +157,7 @@ async def remove_feedback(
     A thumbs-down's report is withdrawn first; when the platform cannot do
     that now, the 429 or 503 leaves the rating in place."""
     try:
-        await auth_api.require_thread_owner(thread_id, x_user_id)
+        await shared_access.thread_access(thread_id, x_user_id)
         feedback_id = await ratings.remove(thread_id, turn_index, x_user_id)
     except ReportRefused as refused:
         return report_refusal(refused.result)

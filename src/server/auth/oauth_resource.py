@@ -27,7 +27,7 @@ from src.config.env import (
     OAUTH_RESOURCE_JWKS_URL,
 )
 from src.server.auth.jwt_bearer import _SigningKeys, auth_unavailable
-from src.server.dependencies.usage_limits import get_http_client, service_headers
+from src.server.services.platform_client import get_http_client, service_headers
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)

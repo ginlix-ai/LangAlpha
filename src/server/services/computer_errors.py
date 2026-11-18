@@ -95,6 +95,25 @@ class ComputerBusyError(RuntimeError):
     """Another operation holds the machine or moved it underneath this one; retry later."""
 
 
+class MachineLockTimeout(RuntimeError):
+    """Another operation held the machine past the wait, most often its start
+    under another turn: a second turn waits behind the first one's start."""
+
+
+class ComputerUnavailableError(RuntimeError):
+    """A turn's computer could not be had for it, worded for the person who
+    sent the turn (the cause, for the logs, is ``__cause__``): still starting
+    under another turn, or its start failed. Raised in a shared workspace,
+    where a second member sending while the computer starts is ordinary."""
+
+    STILL_STARTING = "This workspace's computer is still starting. Try again in a moment."
+    NOT_STARTED = "This workspace's computer couldn't be started. Try again in a moment."
+
+    def __init__(self, *, starting: bool):
+        self.starting = starting
+        super().__init__(self.STILL_STARTING if starting else self.NOT_STARTED)
+
+
 class DiskTooSmallError(RuntimeError):
     """The machine's backed-up files would not fit the smaller disk a downgrade asks for."""
 

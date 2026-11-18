@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 # The public vocabulary is a PARTITION, not a list: every status is live
 # (still owed to the user), terminal (settled), or one of the two singletons —
@@ -102,29 +102,97 @@ def is_live(raw: Any) -> bool:
     return value is not None and str(value) in _LIVE
 
 
-def is_user_stop(row: Optional[Mapping[str, Any]]) -> bool:
-    """True iff a run or response row ended because the user stopped it.
+# The cancel stamp of a stop the account's suspension asked for. It is the
+# account's ending, not the user's choice: a run carrying it is no user stop
+# (``is_user_stop``), and every reader that derives an outcome reads it as the
+# suspension.
+SUSPENSION_STOP_META = "stopped_by_suspension"
+#: The cancel stamp of a stop by a member of a shared workspace other than the
+#: turn's sender. Still a person's stop; only the sender's queued messages are
+#: settled as at an agent's stop, kept for the sender rather than handed to the
+#: member who stopped it.
+MEMBER_STOP_META = "stopped_by_member"
+#: ``run_end``'s ``stopped_by`` for such a run, and its replay's.
+SUSPENSION_STOPPER = "suspension"
 
-    A cancelled status alone is not a stop: shutdown and recovery cancel runs
-    too. The finalize records ``cancelled_by_user`` from the user's /cancel,
-    whichever worker took it, so readers check that flag and never
-    ``cancel_requested_at``, which a system cancel stamps as well.
-    """
+#: Who asked for a stop: the user (their own turn), an agent (the Chief of
+#: Staff, a hosted Claude Code session, a removal from a shared workspace,
+#: which no person asked for), the account's suspension, or another member of
+#: a shared workspace than the turn's sender.
+Stopper = Literal["user", "agent", "suspension", "member"]
+_STOP_MARKS: dict[str, Optional[str]] = {
+    "user": None,
+    "agent": "stopped_by_agent",
+    "suspension": SUSPENSION_STOP_META,
+    "member": MEMBER_STOP_META,
+}
+
+
+def stops_mark(stopper: Stopper) -> Optional[str]:
+    """The metadata key the cancel stamp sets on the run; none for the
+    user's own stop."""
+    return _STOP_MARKS[stopper]
+
+
+def gives_back(stopper: Stopper) -> bool:
+    """Whether the stop hands the user's queued steers back to its caller:
+    only the user's own does. Any other leaves them for the run's ending to
+    keep for its sender."""
+    return stopper == "user"
+
+
+def chases_hand_offs(stopper: Stopper) -> bool:
+    """Whether a stop that finds the run already ended also stops the turn a
+    hand-off steered into it went on to: an agent's or a suspension's, which
+    stop the work rather than one turn of it."""
+    return stopper in ("agent", "suspension")
+
+
+def stopper_of(row: Optional[Mapping[str, Any]]) -> Optional[Stopper]:
+    """Who asked for a cancelled run's stop, read off its cancel stamp. None
+    for any other ending, and for a cancel no one asked for: shutdown and
+    recovery cancel runs too. The finalize sets ``cancelled_by_user`` on
+    every stamped stop but a suspension's, whichever worker took it, so
+    readers check the stamp and never ``cancel_requested_at``, which a
+    system cancel sets as well."""
     if not row or row.get("status") != "cancelled":
-        return False
+        return None
     metadata = row.get("metadata")
-    return isinstance(metadata, dict) and bool(metadata.get("cancelled_by_user"))
+    if not isinstance(metadata, dict):
+        return None
+    for stopper in ("suspension", "member", "agent"):
+        if metadata.get(_STOP_MARKS[stopper]):
+            return stopper
+    return "user" if metadata.get("cancelled_by_user") else None
 
 
-# Endings whose subagents are collected and billed. A user stop bills them
-# too, killed; any other ending (an error, a timeout, a shutdown) is not the
-# user's doing, so its subagents are killed unbilled.
+def asked_for(row: Optional[Mapping[str, Any]]) -> bool:
+    """True iff someone asked for the run's stop."""
+    return stopper_of(row) is not None
+
+
+def is_user_stop(row: Optional[Mapping[str, Any]]) -> bool:
+    """True iff a person, or an agent for them, stopped the run: any stop
+    asked for but the account's suspension's, which is its ending rather
+    than anyone's choice."""
+    return stopper_of(row) not in (None, "suspension")
+
+
+def is_suspension_stop(row: Optional[Mapping[str, Any]]) -> bool:
+    """True iff a run row was cancelled by its account's suspension."""
+    return stopper_of(row) == "suspension"
+
+
+# Endings whose subagents are collected and billed. A stop someone asked for
+# (the user's, an agent's, a suspension's) bills them too, killed, for the
+# work they did before it; any other ending (an error, a timeout, a shutdown)
+# is not the account's doing, so its subagents are killed unbilled.
 COLLECTED_ENDINGS = frozenset({"completed", "interrupted"})
 
 
 def bills_subagents(row: Optional[dict[str, Any]]) -> bool:
     """True iff a settled run row's ending bills the subagents it spawned."""
-    return bool(row) and (row.get("status") in COLLECTED_ENDINGS or is_user_stop(row))
+    return bool(row) and (row.get("status") in COLLECTED_ENDINGS or asked_for(row))
 
 
 # The credit gate's two wire spellings, declared rather than derived. Both are
@@ -181,6 +249,9 @@ INTERRUPT_REASONS = (
     "user_question",
     "approval_required",
 )
+
+# The pauses that wait on the person who sent the turn answering something.
+INTERRUPT_REASONS_AWAITING_ANSWER = ("user_question", "approval_required")
 
 
 def _action_requests(interrupts: Any):

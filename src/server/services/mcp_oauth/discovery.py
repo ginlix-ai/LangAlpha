@@ -24,6 +24,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from src.server.database.mcp_config_version import bump_user_versions
 from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
@@ -56,7 +57,7 @@ logger = logging.getLogger(__name__)
 REMOTE_TRANSPORTS = ("http", "sse")
 
 
-def _schema_digest(tools: list[dict]) -> str:
+def schema_digest(tools: list[dict]) -> str:
     canonical = json.dumps(tools, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -93,7 +94,7 @@ def _claimed(server_name: str, write: SchemaWrite) -> TokenUnavailable:
     return TokenUnavailable(reason)
 
 
-def _crossed_servable(write: SchemaWrite, *, now_ok: bool) -> bool:
+def crossed_servable(write: SchemaWrite, *, now_ok: bool) -> bool:
     """Whether this write moved the row in or out of the set a grant is issued for.
 
     Worth a version bump on its own, because the digest cannot see it: the
@@ -189,39 +190,11 @@ class _SnapshotWriter:
                     raise _superseded(self.server_name)
                 if self._reprobed_since(current):
                     raise _reprobed(self.server_name)
-                write = await upsert_user_tool_schemas(
-                    self.user_id, self.server_name, self.fingerprint,
-                    connection_id=self.connection_id, conn=conn,
-                    last_probe=probe.model_dump(mode="json"),
-                    **upsert_kwargs,
+                write = await land_verdict(
+                    conn, user_id=self.user_id, server_name=self.server_name,
+                    fingerprint=self.fingerprint, connection_id=self.connection_id,
+                    probe=probe, now_ok=now_ok, describe=True, **upsert_kwargs,
                 )
-                # In the same transaction, so a tool list that lands is queued
-                # for a description or not landed at all. Before the bump, so
-                # the scope lock is taken before any ``workspaces`` row, in
-                # the order landing a description takes them.
-                if write.row is not None and now_ok and upsert_kwargs.get("tools") is not None:
-                    await enqueue_if_new(
-                        user_id=self.user_id,
-                        server_name=self.server_name,
-                        tools=upsert_kwargs["tools"],
-                        from_vendor=True,
-                        conn=conn,
-                    )
-                # A moved tool surface means sessions must regenerate wrappers.
-                # The digest arm compares against what this write actually
-                # replaced, not a snapshot read before it: two workers probing
-                # the same row both read the pre-write digest, and the one that
-                # lands second would see its own value there and decline the
-                # bump its row needs. The crossing arm also carries the
-                # vendor-side recovery, which comes back with the same tools and
-                # so the same digest.
-                digest = upsert_kwargs.get("schema_digest")
-                if write.row is not None and (
-                    _crossed_servable(write, now_ok=now_ok)
-                    or (now_ok and write.replaced_digest != digest)
-                ):
-                    async with conn.cursor() as cur:
-                        await bump_user_versions(cur, self.user_id)
         if write.row is None:
             # Refused under the write's own lock, whichever way the credential
             # moved: a disconnect already purged what we would be re-adding, or
@@ -234,11 +207,7 @@ class _SnapshotWriter:
         return write
 
     async def fail(self, probe: ProbeResult) -> dict:
-        write = await self.write(
-            probe=probe, now_ok=False, status="error", error=probe.error,
-            observed_meta={"probe": "host"},
-        )
-        return write.row
+        return (await self.write(**verdict_write(probe))).row
 
     async def settle(self, outcome: ProbeOutcome) -> dict:
         """Land a probe's verdict: an error row, or the tools plus a bump when
@@ -256,27 +225,89 @@ class _SnapshotWriter:
                 "[mcp_discovery] skipped tool %r on %s: %s",
                 name, self.server_name, reason,
             )
-        digest = _schema_digest(outcome.tools)
-        write = await self.write(
-            probe=probe,
-            now_ok=True,
-            tools=outcome.tools,
-            status="ok",
-            schema_digest=digest,
-            # What the CACHED tools came with, which is why the server's own
-            # mark is here as well as on the verdict: this copy survives a
-            # later probe that fails, so the row keeps its icon.
-            observed_meta={
-                "probe": "host",
-                "skipped": [list(s) for s in outcome.skipped],
-                "server_info": bounded_identity(outcome.identity),
-            },
-        )
+        landed = verdict_write(probe, outcome)
+        write = await self.write(**landed)
         logger.info(
             "[mcp_discovery] discovered %d tools on %s (digest %s)",
-            len(outcome.tools), self.server_name, digest[:12],
+            len(outcome.tools), self.server_name, landed["schema_digest"][:12],
         )
         return write.row
+
+
+def verdict_write(probe: ProbeResult, outcome: ProbeOutcome | None = None) -> dict[str, Any]:
+    """What :func:`land_verdict` writes for a probe: the tools of a
+    successful ``outcome``, else an error row."""
+    if outcome is None or not outcome.ok:
+        return {
+            "probe": probe, "now_ok": False, "status": "error", "error": probe.error,
+            "observed_meta": {"probe": "host"},
+        }
+    return {
+        "probe": probe,
+        "now_ok": True,
+        "tools": outcome.tools,
+        "status": "ok",
+        "schema_digest": schema_digest(outcome.tools),
+        # What the CACHED tools came with, which is why the server's own
+        # mark is here as well as on the verdict: this copy survives a
+        # later probe that fails, so the row keeps its icon.
+        "observed_meta": {
+            "probe": "host",
+            "skipped": [list(s) for s in outcome.skipped],
+            "server_info": bounded_identity(outcome.identity),
+        },
+    }
+
+
+async def land_verdict(
+    conn,
+    *,
+    user_id: str,
+    server_name: str,
+    fingerprint: str,
+    connection_id: str | None,
+    probe: ProbeResult,
+    now_ok: bool,
+    describe: bool,
+    **upsert_kwargs,
+) -> SchemaWrite:
+    """Write a probe's verdict in the caller's fenced transaction, queue a
+    description for a tool list that lands (``describe``), and bump the
+    user's versions when the row crossed in or out of the servable set or
+    its tools moved."""
+    write = await upsert_user_tool_schemas(
+        user_id, server_name, fingerprint,
+        connection_id=connection_id, conn=conn,
+        last_probe=probe.model_dump(mode="json"),
+        **upsert_kwargs,
+    )
+    # In the same transaction, so a tool list that lands is queued for a
+    # description or not landed at all. Before the bump, so the scope lock is
+    # taken before any ``workspaces`` row, in the order landing a description
+    # takes them.
+    if describe and write.row is not None and now_ok and upsert_kwargs.get("tools") is not None:
+        await enqueue_if_new(
+            user_id=user_id,
+            server_name=server_name,
+            tools=upsert_kwargs["tools"],
+            from_vendor=True,
+            conn=conn,
+        )
+    # A moved tool surface means sessions must regenerate wrappers. The digest
+    # arm compares against what this write actually replaced, not a snapshot
+    # read before it: two workers probing the same row both read the
+    # pre-write digest, and the one that lands second would see its own value
+    # there and decline the bump its row needs. The crossing arm also carries
+    # the vendor-side recovery, which comes back with the same tools and so
+    # the same digest.
+    digest = upsert_kwargs.get("schema_digest")
+    if write.row is not None and (
+        crossed_servable(write, now_ok=now_ok)
+        or (now_ok and write.replaced_digest != digest)
+    ):
+        async with conn.cursor() as cur:
+            await bump_user_versions(cur, user_id)
+    return write
 
 
 async def refresh_user_tool_schemas(
@@ -433,7 +464,7 @@ async def _discovery_pass(
     Never raises: this runs detached, so a vendor failure has to land as a row
     and a log line rather than as a task nobody awaits.
     """
-    from src.server.services.mcp_oauth.connect import _resync_live_sandboxes
+    from src.server.services.mcp_oauth.connect import resync_live_sandboxes
 
     try:
         row = await discover_catalog_server(user_id, name, claimed_at=claimed_at)
@@ -451,7 +482,7 @@ async def _discovery_pass(
         return
     if row is not None and row.get("status") == "ok":
         try:
-            await _resync_live_sandboxes(user_id)
+            await resync_live_sandboxes(user_id)
         except Exception:
             logger.warning(
                 "[mcp_discovery] resync after %s discovery of %s failed",

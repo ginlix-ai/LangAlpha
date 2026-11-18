@@ -41,7 +41,7 @@ from pydantic import (
 
 from ptc_agent.config.core import VaultBlueprint
 from ptc_agent.config.plugins import NAMESPACE, ServerMeta
-from src.server.models.mcp_server import DESCRIPTION_MAX, INSTRUCTION_MAX
+from src.server.models.mcp_names import DESCRIPTION_MAX, INSTRUCTION_MAX
 from src.server.models.plugin import Diagnostic
 from src.server.services.plugins.mcp import McpEntryPlan
 
@@ -126,9 +126,10 @@ class LangalphaExtension(BaseModel):
 
     secrets: list[PluginSecret] = Field(default_factory=list)
     servers: dict[str, ServerMeta] = Field(default_factory=dict)
-    #: Accepted and ignored, in the older list form or the dict form that
-    #: carried per-skill icons: a package's skills are the directories it
-    #: carries, never a claim its manifest makes.
+    #: Accepted and ignored on an upload, in the older list form or the dict
+    #: form that carried per-skill icons: a package's skills are the
+    #: directories it carries, never a claim its manifest makes. A bundle's
+    #: is read for ``needs_own_data`` (``skills_needing_own_data``).
     skills: list[str] | dict[str, Any] = Field(default_factory=dict)
     #: The plugin's mark when it wears someone else's brand: a site, or the
     #: https address of the image itself.

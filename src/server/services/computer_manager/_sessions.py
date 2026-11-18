@@ -27,6 +27,7 @@ from src.server.database.workspace import (
     get_workspace_identity as db_get_workspace_identity,
 )
 
+from src.server.services.computer_errors import MachineLockTimeout
 from src.server.services.computer_manager._providers import HostOutageClock
 from src.server.services.computer_manager._types import (
     ComputerBinding,
@@ -64,6 +65,7 @@ class SessionCacheMixin:
                 str(computer["files_epoch"]) if computer.get("files_epoch") else None
             ),
             files_backup=computer.get("files_backup", True) is not False,
+            user_id=str(computer["user_id"]) if computer.get("user_id") else None,
         )
 
     async def resolve_binding(
@@ -255,7 +257,7 @@ class SessionCacheMixin:
         try:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)
         except asyncio.TimeoutError:
-            raise RuntimeError(
+            raise MachineLockTimeout(
                 f"Timeout acquiring lock for computer {computer_id} after {timeout}s"
             )
         try:
@@ -578,5 +580,43 @@ class SessionCacheMixin:
         if self._session_sandbox_id(session) != expected_sandbox_id:
             return None
         if self._machine_target_is_stale(target, session) is not None:
+            return None
+        return session
+
+    async def get_session_if_ready_for_work(
+        self,
+        workspace_id: str,
+        *,
+        expected_sandbox_id: str | None,
+        target: MachineTarget,
+        owner_id: str | None,
+    ) -> "Session | None":
+        """:meth:`get_session_if_ready` for a caller that does work on the
+        machine (starts processes, writes files or secrets) rather than read it.
+
+        A ready handle skips the acquire, which is where the ``own_machines``
+        rule is otherwise asked, so it is asked here; a refusal, the policy
+        unknown included, reads as no session. Nothing is read for a kind the
+        deployment provides.
+        """
+        from fastapi import HTTPException
+
+        from src.server.services.account import refuse_machine_use
+
+        session = self.get_session_if_ready(
+            workspace_id, expected_sandbox_id=expected_sandbox_id, target=target
+        )
+        if session is None:
+            return None
+        built = getattr(getattr(session.sandbox, "config", None), "sandbox", None)
+        kind = target.kind or getattr(built, "provider", None)
+        try:
+            await refuse_machine_use(kind, owner_id)
+        except HTTPException as e:
+            logger.info(
+                "Not working on the ready session of workspace %s: %s",
+                workspace_id,
+                e.detail,
+            )
             return None
         return session

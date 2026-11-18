@@ -69,6 +69,7 @@ from ptc_agent.agent.claude_code.compaction import (
 )
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
+from ptc_agent.agent.middleware.credit_gate import refuse_ended_account
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, DeltaJoin, anthropic_content
 from ptc_agent.agent.claude_code.session import (
@@ -1181,6 +1182,8 @@ def build_claude_code_graph(
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
+        # Each of the CLI's model steps, as a langalpha turn's model call.
+        await refuse_ended_account()
         turn = _turn(config)
         turn.waits.after = state["messages"][-1].id if state["messages"] else None
         opening = not turn.started

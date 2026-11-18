@@ -60,7 +60,7 @@ from ptc_agent.core.sandbox.jobs import (
     Running,
     StoppedJob,
 )
-from ptc_agent.core.sandbox.livefs_mount import MountHandle, TranscriptReach
+from ptc_agent.core.sandbox.livefs_mount import HistoryFiles, MountHandle, TranscriptReach
 from ptc_agent.core.sandbox.runtime import PreviewInfo
 
 logger = structlog.get_logger(__name__)
@@ -84,6 +84,7 @@ class SandboxBackend(SandboxBackendProtocol):
         virtual_mode: bool = True,
         operation_callback: OperationCallback | None = None,
         preview_owner: str | None = None,
+        history: HistoryFiles | None = None,
     ) -> None:
         """Create a new SandboxBackend.
 
@@ -98,6 +99,10 @@ class SandboxBackend(SandboxBackendProtocol):
                                 Receives a dict with operation details for persistence/logging.
             preview_owner: Workspace allowed to reuse preview ports started by
                            this backend on a shared computer.
+            history: The thread's own transcript, which the host serves this
+                     agent in process where what serves the computer's past
+                     threads leaves it out; it is then where this agent's
+                     transcripts reach its tools.
         """
         self.sandbox = sandbox
         self._pinned_root = root_dir.rstrip("/") if root_dir else None
@@ -105,6 +110,7 @@ class SandboxBackend(SandboxBackendProtocol):
         self.virtual_mode = virtual_mode
         self.operation_callback = operation_callback
         self.preview_owner = preview_owner
+        self._history = history
         logger.debug("Initialized SandboxBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
 
     @property
@@ -121,6 +127,8 @@ class SandboxBackend(SandboxBackendProtocol):
     def transcripts(self) -> TranscriptReach | None:
         """Where this agent's transcripts reach its tools, or None while
         nothing serves them."""
+        if self._history is not None:
+            return TranscriptReach(self._history, shell=False)
         return self.sandbox.transcripts
 
     async def settled_livefs(

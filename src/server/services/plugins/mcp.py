@@ -24,6 +24,7 @@ from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 from src.server.models.mcp_server import coerce_mcp_name
 from src.server.models.plugin import Diagnostic
 from src.server.services.plugins.manifest import SPEC_URL, check_schema_version
+from src.server.services.policy import USER_CONNECTORS, Policy
 from src.server.services.plugins.schemas import (
     MCP_SCHEMA,
     SCHEMA_URL_RE,
@@ -105,6 +106,43 @@ def _skip(plan: McpEntryPlan, code: str, reason: str) -> McpEntryPlan:
     plan.skip_reason = reason
     plan.diagnostics.append(_entry_diag(plan.key, code, reason))
     return plan
+
+
+def withheld_reason(policy: Policy | None) -> str | None:
+    """Why a server of the user's own is left out of what is being installed
+    under ``policy``, or None when it is not. An unknown policy withholds."""
+    if policy is None:
+        return "this account's policy could not be read, so your own connectors are held back"
+    if policy.allows(USER_CONNECTORS):
+        return None
+    return policy.reason(USER_CONNECTORS)
+
+
+async def withhold_own_connectors(user_id: str, plans: list[McpEntryPlan]) -> None:
+    """Skip each server the user's policy withholds, with the reason.
+
+    Asked wherever a plugin's servers are planned or written, so a withheld
+    one is neither checked, signed in to, nor created, while the rest of the
+    plugin (its skills, its subagents) still lands. A brokerage is the
+    ``trading`` rule's; nothing is read when no plan is governed, or with no
+    policy configured and the ``teams`` flag off. An unknown policy withholds.
+    """
+    from src.server.services.policy import governed_by_user_connectors
+    from src.server.services.account import policy_for
+
+    governed = [
+        p for p in plans
+        if p.skip_code is None and governed_by_user_connectors(p.config.get("url"))
+    ]
+    if not governed:
+        return
+    reason = withheld_reason(await policy_for(user_id))
+    if reason is None:
+        return
+    from src.server.models.plugin import WITHHELD_BY_POLICY
+
+    for plan in governed:
+        _skip(plan, WITHHELD_BY_POLICY, reason)
 
 
 def _plan_entry(key: str, entry: dict[str, Any]) -> McpEntryPlan:

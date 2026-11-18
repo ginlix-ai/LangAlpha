@@ -31,6 +31,13 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 from src.server.database.mcp_oauth import ConnectionStatus
+from src.server.models.mcp_names import (
+    DESCRIPTION_MAX,
+    INSTRUCTION_MAX,
+    NAME_RE,
+    PY_KEYWORDS,
+    RUNTIME_MODULE,
+)
 from src.server.services.brokerages import Brokerage
 from src.server.services.mcp_config import Origin
 from src.server.services.tool_binding import inputs_from_row
@@ -44,51 +51,7 @@ from src.server.services.trading_permission import (
 # in the frontend Zod schema; keep the two in sync).
 # ---------------------------------------------------------------------------
 
-NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}\Z")
-
-# A server name is also the module its tool wrappers are generated into,
-# imported from the sandbox's tools package beside the runtime's own
-# ``mcp_client``. NAME_RE admits three kinds of name that cannot hold that
-# role: the runtime's module, a dunder (``__init__`` is the package itself),
-# and a hard keyword (``from tools.class import ...`` does not parse). Soft
-# keywords stay legal, since ``from tools.match import ...`` parses. The
-# keywords are Python 3.13's ``keyword.kwlist`` written out, so which names
-# are refused does not move with the interpreter. The web form keeps a copy
-# (``mcpSchemas.ts``).
-_RUNTIME_MODULE = "mcp_client"
-_PY_KEYWORDS = frozenset({
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-    "class", "continue", "def", "del", "elif", "else", "except", "finally",
-    "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
-})
-
-
-def sandbox_name_error(name: str) -> Optional[str]:
-    """The refusal for a name the sandbox reserves, else ``None``.
-
-    Checked where a name is introduced, not by ``McpServerInput``: a row saved
-    before its name was reserved has to stay editable, since the only other
-    way out is a delete that takes its OAuth connection, tool schemas,
-    per-workspace switches and plugin ownership with it.
-    """
-    if name == _RUNTIME_MODULE:
-        return (
-            f"name {name!r} is reserved: the sandbox's MCP runtime module "
-            "already has it"
-        )
-    if name.startswith("__"):
-        return (
-            "name must not start with '__': a server name becomes a Python "
-            "module in the sandbox, and those names are Python's own"
-        )
-    if name in _PY_KEYWORDS:
-        return (
-            f"name {name!r} is a Python keyword, and a server name becomes a "
-            "Python module in the sandbox"
-        )
-    return None
 
 
 def _unreserve(name: str) -> str:
@@ -103,7 +66,7 @@ def _unreserve(name: str) -> str:
             return "server"
         if name[0].isdigit():
             name = f"_{name}"
-    if name == _RUNTIME_MODULE or name in _PY_KEYWORDS:
+    if name == RUNTIME_MODULE or name in PY_KEYWORDS:
         name = f"{name}_server"
     return name
 
@@ -139,8 +102,6 @@ def isolation_warnings(server: "McpServerInput") -> list[str]:
         ]
     return []
 
-DESCRIPTION_MAX = 512
-INSTRUCTION_MAX = 1024
 
 # Reject keys the user must never set on an MCP server payload.
 _FORBIDDEN_KEYS = ("vault_blueprints", "source", "auth")
@@ -932,6 +893,36 @@ class BuiltinServerList(BaseModel):
     """GET /api/v1/mcp/builtin-servers payload."""
 
     servers: list[BuiltinServer]
+
+
+class OrgConnectorEntry(BaseModel):
+    """One connector the user's organization sets up, as the member sees it.
+
+    ``managed``: the organization defines it, so the member can switch it off
+    per workspace (``disabled_workspace_ids``) and sign in or out of it, but
+    neither edit nor delete it. ``connection_status`` is the member's own
+    sign-in for an ``auth='member'`` connector, None before they sign in and
+    always for a shared one.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    auth: Literal["shared", "member"]
+    connection_status: Optional[ConnectionStatus] = None
+    disabled_workspace_ids: list[str] = Field(default_factory=list)
+    managed: Literal[True] = True
+    #: What the member's last listing of its tools found: ``ok`` with
+    #: ``tool_count`` tools, ``error`` when it did not answer, ``pending``
+    #: before anything was listed for its current address.
+    discovery: Literal["ok", "error", "pending"] = "pending"
+    tool_count: int = 0
+
+
+class OrgConnectorList(BaseModel):
+    """GET /api/v1/mcp/org-connectors payload."""
+
+    connectors: list[OrgConnectorEntry]
 
 
 class CapabilityGroupOption(BaseModel):

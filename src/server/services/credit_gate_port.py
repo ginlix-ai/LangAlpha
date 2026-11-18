@@ -27,7 +27,8 @@ from src.config.env import USD_TO_CREDITS_RATE
 from src.config.settings import AUTH_SERVICE_URL
 from src.llms.pricing_utils import chunk_multiplier
 from src.server.database.runs import credit_ledger
-from src.server.dependencies import usage_limits
+from src.server.services.shared_workspaces.holder import refuse_holder
+from src.server.services import platform_client
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def _token_hint() -> str:
     """Names the one acquire failure that no amount of retrying resolves."""
     return (
         "; INTERNAL_SERVICE_TOKEN is not set"
-        if usage_limits.service_token_missing()
+        if platform_client.service_token_missing()
         else ""
     )
 
@@ -230,6 +231,17 @@ class PlatformCreditGatePort:
     def _url(self, path: str) -> str:
         return f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/billing/leases/{path}"
 
+    async def account_refusal(self, user_id: str) -> Optional[BaseException]:
+        """The refusal of a suspended account, read through the account's
+        cached read; nothing is read with the ``teams`` flag off, and an
+        unknown account carries on unless the suspension hint is set."""
+        from src.server.services.account import read_standing
+        from src.server.services.membership import teams_door_open
+
+        if not teams_door_open():
+            return None
+        return (await read_standing(user_id, unknown_on_cache_error=True)).refusal()
+
     async def acquire(
         self,
         user_id: str,
@@ -258,7 +270,8 @@ class PlatformCreditGatePort:
             # enforcing the ceiling it already holds, and nothing unusable
             # reaches the reservation.
             return None
-        client = await usage_limits.get_http_client()
+        refuse_holder(user_id, "credit gate acquire")
+        client = await platform_client.get_http_client()
         body: dict[str, Any] = {
             "user_id": user_id,
             "run_ref": run_ref,
@@ -271,7 +284,7 @@ class PlatformCreditGatePort:
             resp = await client.post(
                 self._url("acquire"),
                 json=body,
-                headers=usage_limits.service_headers(),
+                headers=platform_client.service_headers(),
             )
         except Exception as e:
             logger.warning("[CreditGate] lease service unreachable: %s", e)
@@ -304,7 +317,8 @@ class PlatformCreditGatePort:
         ``aclose``, so until it returns the turn's stream has stopped producing
         but has not ended.
         """
-        client = await usage_limits.get_http_client()
+        client = await platform_client.get_http_client()
+        refuse_holder(user_id, "credit gate release")
         payload: dict[str, Any] = {"user_id": user_id, "run_ref": run_ref}
         if generation is not None:
             payload["generation"] = generation
@@ -319,7 +333,7 @@ class PlatformCreditGatePort:
                 resp = await client.post(
                     self._url("release"),
                     json=payload,
-                    headers=usage_limits.service_headers(),
+                    headers=platform_client.service_headers(),
                     timeout=remaining,
                 )
                 if resp.status_code < 500:
@@ -345,11 +359,11 @@ class PlatformCreditGatePort:
         """What the lease service reports about itself, or None if it did not
         answer. Read-only on both sides, so every worker asking at boot costs
         nothing."""
-        client = await usage_limits.get_http_client()
+        client = await platform_client.get_http_client()
         try:
             resp = await client.get(
                 self._url("capability"),
-                headers=usage_limits.service_headers(),
+                headers=platform_client.service_headers(),
                 timeout=_CAPABILITY_TIMEOUT_SECONDS,
             )
         except Exception as e:
@@ -394,12 +408,14 @@ _port = PlatformCreditGatePort()
 
 
 def build_run_credit_gate(
-    user_id: str,
+    recorded_as: str,
     run_id: str,
     token_callback: Any,
     tool_tracker: Any,
     model_name: Optional[str] = None,
     is_byok: bool = False,
+    *,
+    sender: str,
 ) -> Optional[CreditGateState]:
     """The main lane's gate state, or None when platform gating is inactive.
 
@@ -409,17 +425,21 @@ def build_run_credit_gate(
     the first model boundary proceeds on it while the lease's first acquire
     is in flight.
 
-    No gate without a principal: a heartbeat onto a ``user_id IS NULL`` row
+    No gate without an account: a heartbeat onto a ``user_id IS NULL`` row
     would spend against an aggregate that can never see it.
     """
-    if not user_id or not usage_limits.platform_gating_active():
+    if not recorded_as or not platform_client.platform_gating_active():
         return None
     return CreditGateState(
         run_ref=run_id,
         kind="run",
         port=_port,
         lease=CreditLease(
-            user_id=user_id, run_ref=run_id, port=_port, is_byok=is_byok
+            recorded_as=recorded_as,
+            sender=sender,
+            run_ref=run_id,
+            port=_port,
+            is_byok=is_byok,
         ),
         tracker=token_callback,
         tool_tracker=tool_tracker,
@@ -466,7 +486,7 @@ async def verify_credit_gate_wiring() -> None:
 
     Silent when gating is inactive: OSS builds have no service to ask.
     """
-    if not usage_limits.platform_gating_active():
+    if not platform_client.platform_gating_active():
         return
     body = await _port.capability()
     if body is None:

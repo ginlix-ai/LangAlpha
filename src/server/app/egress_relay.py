@@ -35,6 +35,7 @@ from src.server.services.egress.relay import (
     WALL_CLOCK_S,
     authenticate_relay,
     log_order_frame,
+    log_org_frame,
     open_upstream,
     prepare_relay,
     sandbox_response_headers,
@@ -145,6 +146,7 @@ async def relay(grant_id: str, request: Request) -> Response:
                 # After the vendor answered, so the one line an order writes
                 # carries the status rather than only the intent.
                 log_order_frame(prepared, upstream.status_code)
+                log_org_frame(prepared, upstream.status_code)
         except TimeoutError:
             raise RelayRejection(
                 504, RelayError.WALL_CLOCK, "relay wall clock exceeded"

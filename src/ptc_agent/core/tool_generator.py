@@ -646,8 +646,8 @@ except ImportError:
         time). Untrusted servers embed their full env/header mappings, whose
         values are either non-secret literals or ``${vault:NAME}`` placeholders
         resolved in-sandbox against the vault file only. Relay-bound servers
-        (an OAuth connection, or a built-in whose key the host holds per user)
-        are only marked so: the runtime dials the egress relay and reads the
+        (an OAuth connection, an organization connector, or a built-in whose
+        key the host holds per user) are only marked so: the runtime dials the egress relay and reads the
         grant id from the sandbox's credential file, so the vendor URL, the
         grant and every token stay host-side.
 
@@ -857,8 +857,8 @@ _EMISSION_PROBE_TOOL_2 = MCPToolInfo(
 # Third probe axis: the config/epilogue emission. One server per config
 # branch: builtin uv-stdio (path rewrite + env_keys), builtin http on the
 # sandbox's data token (auth kept, headers dropped), untrusted user http
-# (headers + secret-mode hint), OAuth relay-bound. Hash-relevant only; never
-# uploaded.
+# (headers + secret-mode hint), OAuth and organization relay-bound.
+# Hash-relevant only; never uploaded.
 _EMISSION_PROBE_SERVERS = [
     MCPServerConfig(
         name="probe_builtin",
@@ -887,6 +887,14 @@ _EMISSION_PROBE_SERVERS = [
         url="https://probe.example/oauth",
         source="user",
         oauth_connection_id="probe-conn",
+    ),
+    MCPServerConfig(
+        name="probe_org",
+        transport="http",
+        url="https://probe.example/org",
+        source="org",
+        org_connector_id="probe-org",
+        org_revision="1",
     ),
 ]
 

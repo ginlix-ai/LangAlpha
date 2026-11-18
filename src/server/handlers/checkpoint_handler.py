@@ -188,6 +188,44 @@ async def resolve_fork_turn(
     raise HTTPException(status_code=409, detail=stale_fork_detail())
 
 
+async def first_turn_dropped(thread_id: str, checkpoint_id: str) -> int | None:
+    """The first turn a run from ``checkpoint_id`` leaves off the thread's
+    branch, or None when the run only adds to it (the branch's tip, or a
+    newer checkpoint built on it, as a failed run leaves).
+
+    On the branch, the turn whose span holds the checkpoint is replaced and
+    every later one with it. Off the branch, or with no branch read, the
+    turns it drops are not known, so every turn counts (0).
+    """
+    from src.server.utils.checkpoint_helpers import checkpoint_on_branch
+
+    tip = (await threads_read.get_thread_branch_read(thread_id)).checkpoint_id
+    if tip is None:
+        return 0
+    if checkpoint_id == tip or await checkpoint_on_branch(thread_id, tip, checkpoint_id):
+        return None
+    if not await checkpoint_on_branch(thread_id, checkpoint_id, tip):
+        return 0
+    dropped = 0
+    # Checkpoint ids are uuid6, ordered by time, the fork root first.
+    for turn in (await _branch_turns(thread_id, tip)).turns:
+        start = turn.edit_checkpoint_id
+        if start is not None and start <= checkpoint_id:
+            dropped = max(dropped, turn.turn_index)
+    return dropped
+
+
+async def first_turn_replaced(thread_id: str, request: ChatRequest) -> int | None:
+    """The first turn ``request`` leaves off the thread's branch, or None
+    when it only adds to it. An answer to a paused turn names the checkpoint
+    it resumes, which replaces nothing."""
+    if request.fork_from_turn is not None:
+        return int(request.fork_from_turn)
+    if request.checkpoint_id and not request.hitl_response:
+        return await first_turn_dropped(thread_id, str(request.checkpoint_id))
+    return None
+
+
 def _is_run(run: dict | None, run_id: str) -> bool:
     expected = normalize_uuid(run_id)
     return (

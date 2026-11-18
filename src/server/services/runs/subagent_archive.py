@@ -280,7 +280,7 @@ class ArchiveBuffer:
     response_id: str
     thread_id: str
     workspace_id: str
-    user_id: str
+    recorded_as: str
     sandbox: Any
     unwritten: list[dict] = field(default_factory=list)
     withheld: bool = False

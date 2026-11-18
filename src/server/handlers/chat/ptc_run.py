@@ -26,14 +26,17 @@ from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
 )
-from src.server.database.user import get_user_profile_for_prompt
+from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.commands.mirror import mirror_computer
 from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
 from src.server.services.computer_usage.causes import computer_cause, turn_cause
 from src.server.services.history.window import runs_held
 from src.server.services.llm.claude_code import run_stamp
-from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
+from src.server.services.runs.pending_input import (
+    needs_resend,
+    pending_input_stamp,
+)
 from src.server.services.runs.sse_producer import RunSSEProducer
 from src.server.services.turn_awake import held_awake
 from src.server.models.chat import (
@@ -129,6 +132,11 @@ from src.server.services.llm.config import apply_fetch_override, resolve_llm_con
 from src.server.services.llm.thread_model import NamedModel
 from .steering import open_with_steers_ahead
 from .run_stream_reader import stream_from_log
+from .computer_acquire import (
+    StoppedAwaitingComputer,
+    acquire_session,
+    close_stopped_while_acquiring,
+)
 from .detached import fire_and_forget as _fire_and_forget
 from src.server.handlers.handoff_brief import brief_for_turn, brief_kept_at_head, brief_owed_at
 
@@ -217,6 +225,7 @@ async def astream_ptc_workflow(
     user_input: str,
     user_id: str,
     route: TurnRoute,
+    identity: TurnIdentity,
     is_byok: bool = False,
     config=None,
     dispatched: bool = False,
@@ -248,7 +257,8 @@ async def astream_ptc_workflow(
     once the turn is admitted; automations never pass one. ``route`` comes
     from ``turn_route`` and has no default, so routing decides the workspace
     and the role in one place and no caller runs Home as an analyst by
-    leaving one out.
+    leaving one out. ``identity`` is the one the caller's own gates read,
+    built here when it passes none.
 
     ``setup_over`` is set once the run's stream is yielding, which keeps the
     connection alive from there (``SetupKeepaliveResponse``).
@@ -316,6 +326,7 @@ async def astream_ptc_workflow(
         async with CommentSendScope(
             thread_id=thread_id,
             user_id=user_id,
+            owner_id=route.owner_id,
             chief_of_staff=route.role == "chief_of_staff",
             timezone=request.timezone,
         ) as comments:
@@ -378,6 +389,7 @@ async def astream_ptc_workflow(
                     request, dispatched=dispatched, steerable=steerable
                 ),
                 artifact_comments=request.artifact_comments,
+                shared=identity.shared,
                 checked_computer_id=request.checked_computer_id,
                 on_model=(request.llm_model or None) if dispatched else None,
             )
@@ -419,15 +431,14 @@ async def astream_ptc_workflow(
                     initial_query=user_input,
                     row_ensured=comments.row_ensured,
                 )
+            await identity.begin(thread_id)
             # /retry builds its attempt with no surface: it runs where the
             # attempt it retries did, under the same rules.
             request, inherits_rules = await retried_on_its_surface(request)
             # The attempts this turn may continue, read once for all it carries.
             prior = await carry.prior_attempt(request, thread_id)
             disk_free_mb, disk_known = await read_disk_notice(runs_in)
-            user_profile = (
-                await get_user_profile_for_prompt(user_id) if user_id else None
-            )
+            user_profile = await identity.profile()
             home = await HomeTurnStart.read(
                 user_id, route, retry=bool(request.retry_of_run_id)
             )
@@ -466,6 +477,7 @@ async def astream_ptc_workflow(
                     thread_id=thread_id,
                     enabled_subagents=request.subagents_enabled,
                     workspace_id=workspace_id,
+                    identity=identity,
                     role=route.role,
                 )
 
@@ -572,7 +584,7 @@ async def astream_ptc_workflow(
                 thread_id=thread_id,
                 run_id=run_id,
                 workspace_id=workspace_id,
-                user_id=user_id,
+                identity=identity,
                 is_byok=is_byok,
                 query_content=query_content,
                 query_type=query_type,
@@ -599,7 +611,7 @@ async def astream_ptc_workflow(
                     **({"llm_model": effective_model} if effective_model else {}),
                     **firing,
                     **home.run_metadata(),
-                    **(run_metadata or {}),
+                    **identity.stamp(run_metadata),
                 },
                 in_start=home.in_start(
                     user_id,
@@ -649,12 +661,13 @@ async def astream_ptc_workflow(
         # run's spend meter, lease, and refresher. Admission above is its
         # seed verdict; the stream wrapper below owns its lifetime.
         credit_gate = build_run_credit_gate(
-            user_id,
+            identity.recorded_as,
             run_id,
             token_callback,
             tool_tracker,
             effective_model,
             is_byok=own_key,
+            sender=user_id,
         )
 
         _mark_phase("db_setup")
@@ -677,7 +690,7 @@ async def astream_ptc_workflow(
         from src.server.services.user_skills import skills_delivery_signature
 
         skills_signature = skills_delivery_signature(
-            config.user_skill_dir, config.disabled_skills
+            config.user_skill_dir, config.disabled_skills | config.withheld_skills
         )
 
         # ``workspace_manager`` and ``needs_startup`` were resolved above for
@@ -689,6 +702,9 @@ async def astream_ptc_workflow(
         # broader than the old `ws_status == "stopped"` check — it also fires
         # on server-restart cold starts (workspace running in Daytona but no
         # session in memory). The extra "starting/ready" SSE pair is harmless.
+        # A cancel during the wait ends it here, on whichever worker the
+        # cancel lands, rather than once the provider answers, and so does
+        # this process's drain, which leaves the turn to the next process.
         turn_cause_name, turn_client = turn_cause(
             run_handle.origin,
             platform=request.platform,
@@ -696,95 +712,33 @@ async def astream_ptc_workflow(
         )
         if (placement := home.frame()) is not None:
             yield placement
-        if not needs_startup:
-            with computer_cause(turn_cause_name, client=turn_client):
-                session = await workspace_manager.get_session_for_workspace(
-                    runs_in,
-                    user_id=user_id,
-                    skills_signature=skills_signature,
-                    run_id=run_id,
-                )
-        else:
-            yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id})}\n\n"
-
-            # Learn the pre-start sandbox state via a callback threaded
-            # through session init → PTCSandbox.reconnect. The callback
-            # fires once with the state string as soon as reconnect reads
-            # it (before runtime.start() is invoked). We coordinate via
-            # asyncio.Event and the acquisition race each other so a warm sibling
-            # does not wait for a reconnect callback it can never emit.
-            state_event = asyncio.Event()
-            state_box: dict[str, str | None] = {"value": None}
-
-            def _on_state(state: str) -> None:
-                state_box["value"] = state
-                state_event.set()
-
-            # The task copies the cause in; no yield may sit inside the block.
-            with computer_cause(turn_cause_name, client=turn_client):
-                session_task = asyncio.create_task(
-                    workspace_manager.get_session_for_workspace(
-                        runs_in,
-                        user_id=user_id,
-                        on_state_observed=_on_state,
-                        skills_signature=skills_signature,
-                        run_id=run_id,
-                    )
-                )
-
-            try:
-
-                async def _wait_for_session():
-                    return await asyncio.shield(session_task)
-
-                state_waiter = asyncio.create_task(state_event.wait())
-                session_waiter = asyncio.create_task(_wait_for_session())
-                try:
-                    done, pending = await asyncio.wait(
-                        {state_waiter, session_waiter},
-                        timeout=5.0,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                except BaseException:
-                    state_waiter.cancel()
-                    session_waiter.cancel()
-                    await asyncio.gather(
-                        state_waiter, session_waiter, return_exceptions=True
-                    )
-                    raise
-                for waiter in pending:
-                    waiter.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-
-                # In the message: the default log format drops extras.
-                logger.info(
-                    f"[WS_STATUS] state observation workspace={workspace_id} "
-                    f"sandbox_state={state_box['value']}",
-                    extra={
-                        "workspace_id": workspace_id,
-                        "sandbox_state": state_box["value"],
-                    },
-                )
-
-                if state_box["value"] == "archived":
-                    yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id, 'sandbox_state': 'archived'})}\n\n"
-
-                session = (
-                    await session_waiter
-                    if session_waiter in done
-                    else await session_task
-                )
-                yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'ready', 'workspace_id': workspace_id})}\n\n"
-            except BaseException:
-                # Client disconnect / GeneratorExit / any error during the
-                # yield or await chain above must not leak session_task.
-                # Cancel and drain to surface the outcome (or CancelledError).
-                if not session_task.done():
-                    session_task.cancel()
-                    with contextlib.suppress(BaseException):
-                        await session_task
-                raise
+        session = None
+        async with contextlib.aclosing(
+            acquire_session(
+                manager,
+                workspace_manager,
+                thread_id=thread_id,
+                run_id=run_id,
+                workspace_id=workspace_id,
+                runs_in=runs_in,
+                user_id=user_id,
+                needs_startup=needs_startup,
+                skills_signature=skills_signature,
+                shared=identity.shared,
+            )
+        ) as acquiring:
+            while True:
+                # Each step under the turn's cause, which the acquire's tasks
+                # copy in; no yield may sit inside the block.
+                with computer_cause(turn_cause_name, client=turn_client):
+                    try:
+                        frame = await anext(acquiring)
+                    except StopAsyncIteration:
+                        break
+                if isinstance(frame, str):
+                    yield frame
+                else:
+                    session = frame
 
         _mark_phase("session")
 
@@ -821,7 +775,7 @@ async def astream_ptc_workflow(
         # binds it for the path layer.
         inputs = await AgentInputs.read(
             session,
-            user_id=user_id,
+            identity=identity,
             workspace_id=runs_in,
             thread_id=thread_id,
             role=route.role,
@@ -1007,7 +961,9 @@ async def astream_ptc_workflow(
         # =====================================================================
         # Save user request to system thread directory (non-critical)
         # =====================================================================
-        if not request.hitl_response and session.sandbox and project:
+        # Not in a shared workspace, where the folder is everyone's disk and
+        # nothing reads the copy.
+        if not request.hitl_response and session.sandbox and project and not identity.shared:
             short_id = thread_id[:8]
             try:
                 # The project is passed explicitly: this runs on the request
@@ -1064,7 +1020,10 @@ async def astream_ptc_workflow(
             tool_tracker=tool_tracker,
             agent_config=config,
             turn_index=run_handle.turn_index,
-            announced=announced(query_metadata),
+            announced={
+                **announced(query_metadata),
+                **identity.announced(user_profile),
+            },
         )
 
         # =====================================================================
@@ -1099,7 +1058,7 @@ async def astream_ptc_workflow(
                 # The run is terminal, so a settle may move the folder now: the
                 # pass reads it under the folder hold, not from the turn start.
                 await ws_manager.reconcile_skills_if_running(
-                    runs_in, user_id, source="post_turn"
+                    runs_in, route.owner_id, source="post_turn"
                 )
             try:
                 # Any project on the machine may have changed, not only this
@@ -1156,6 +1115,7 @@ async def astream_ptc_workflow(
                 "workspace_id": workspace_id,
                 "runs_in": runs_in,
                 "user_id": user_id,
+                "recorded_as": identity.recorded_as,
                 "sandbox_id": sandbox_id,
                 "sandbox": session.sandbox if session else None,
                 "started_at": datetime.now().isoformat(),
@@ -1214,6 +1174,16 @@ async def astream_ptc_workflow(
             if setup_over is not None:
                 setup_over.set()
             yield event
+
+    except StoppedAwaitingComputer:
+        status = await close_stopped_while_acquiring(
+            scope, comments, manager, thread_id, run_id
+        )
+        if status:
+            async for event in stream_from_log(thread_id, run_id, last_event_id=None):
+                if setup_over is not None:
+                    setup_over.set()
+                yield event
 
     except (asyncio.CancelledError, GeneratorExit):
         if scope.slot_owned:

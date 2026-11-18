@@ -18,10 +18,10 @@ admission policy lives in our layer.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Optional, Callable, Coroutine
+from typing import Dict, Any, Iterator, Literal, Optional, Callable, Coroutine
 from enum import Enum
 from dataclasses import dataclass, field
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 
 from src.config.settings import (
     get_checkpoint_flush_timeout,
@@ -37,7 +37,12 @@ from src.config.settings import (
     get_shutdown_timeout,
     get_wait_for_persistence_timeout,
 )
-from src.server.contracts.status import COLLECTED_ENDINGS, is_user_stop
+from src.server.contracts.status import (
+    COLLECTED_ENDINGS,
+    SUSPENSION_STOPPER,
+    bills_subagents,
+    is_suspension_stop,
+)
 from src.server.services.runs import (
     admission,
     finalization,
@@ -144,6 +149,9 @@ class LocalRunExecutor:
         # (wait_or_steer / one foreground turn at a time) is a thread-level
         # invariant, independent of the per-turn key.
         self._admission_locks: Dict[str, asyncio.Lock] = {}
+        # Runs past START whose stream is still acquiring their computer,
+        # before ``start_run`` registers them: the event ends that wait.
+        self._awaiting_computer: Dict[TaskKey, asyncio.Event] = {}
 
         # Configuration
         self.max_concurrent = get_max_concurrent_workflows()
@@ -203,12 +211,40 @@ class LocalRunExecutor:
         return best
 
     async def uncancelled_runs(self) -> list[TaskKey]:
-        """The runs this worker is running that no cancel has reached yet."""
+        """The runs this worker is running, or acquiring a computer for, that
+        no cancel has reached yet."""
         async with self.task_lock:
             return [
                 key for key, info in self.executions.items()
                 if info.status is LocalRunStatus.RUNNING and not info.explicit_cancel
+            ] + [
+                key for key, stopped in self._awaiting_computer.items()
+                if not stopped.is_set()
             ]
+
+    @contextmanager
+    def awaiting_computer(self, thread_id: str, run_id: str) -> Iterator[asyncio.Event]:
+        """While a run's stream acquires its computer, the event a stop of
+        that run sets (:meth:`signal_cancel`), so the wait ends at once rather
+        than when the provider answers. The nudge and the reconcile that
+        signal registered runs reach it the same way, on whichever worker
+        holds the wait.
+
+        A restart's drain sets it too, and on a draining process it is set
+        from the start: the provider may not answer before the process exits,
+        so the wait ends then and its settle marks the turn for resume. Every
+        other stop is recorded on the run's row first, and the finalize reads
+        who asked from there."""
+        key = (thread_id, run_id)
+        stopped = asyncio.Event()
+        if restart_drain.draining():
+            stopped.set()
+        self._awaiting_computer[key] = stopped
+        try:
+            yield stopped
+        finally:
+            if self._awaiting_computer.get(key) is stopped:
+                del self._awaiting_computer[key]
 
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
         """Check if any active tasks exist for a workspace.
@@ -989,6 +1025,7 @@ class LocalRunExecutor:
         outcome: Optional[str],
         *,
         error_frame: Optional[Dict[str, Any]] = None,
+        stopped_by: Optional[str] = None,
     ) -> None:
         """Write the closing frames to the per-run Stream (I6), exactly once.
 
@@ -1029,6 +1066,7 @@ class LocalRunExecutor:
             next_summary=next_summary,
             images=images,
             closing_frames=closing_frames,
+            stopped_by=stopped_by,
             redis_event_ttl=self.redis_event_ttl,
             max_stored_messages=self.max_stored_messages,
         )
@@ -1041,14 +1079,14 @@ class LocalRunExecutor:
         response_id: str,
         tasks: list,
         workspace_id: str,
-        user_id: str,
+        recorded_as: str,
         timeout: float | None = None,
         is_byok: bool = False,
         sandbox=None,
     ) -> None:
         await subagent_collection.collect_subagent_results_for_turn(
             thread_id, response_id, tasks,
-            workspace_id, user_id, timeout=timeout, is_byok=is_byok,
+            workspace_id, recorded_as, timeout=timeout, is_byok=is_byok,
             sandbox=sandbox,
             track_orphan_collector=self._track_orphan_collector,
         )
@@ -1170,6 +1208,7 @@ class LocalRunExecutor:
         handler = metadata.get("handler")
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
+        recorded_as = metadata.get("recorded_as")
 
         (
             status,
@@ -1197,7 +1236,7 @@ class LocalRunExecutor:
             cancelled_by_user=cancelled_by_user,
             restart=restart,
             workspace_id=workspace_id,
-            user_id=user_id,
+            recorded_as=recorded_as,
             stop_events=carried_events,
             exc=exc,
         )
@@ -1232,7 +1271,7 @@ class LocalRunExecutor:
             verdict = FinalizeVerdict(
                 applied=True,
                 status=status,
-                stopped_by_user=status == "cancelled" and cancelled_by_user,
+                bills_subagents=status == "cancelled" and cancelled_by_user,
             )
 
         # ---- local terminal mark (after the CAS: a losing finalize adopts
@@ -1264,7 +1303,8 @@ class LocalRunExecutor:
                     FinalizeVerdict(
                         applied=True,
                         status=row["status"],
-                        stopped_by_user=is_user_stop(row),
+                        bills_subagents=bills_subagents(row),
+                        stopped_by_suspension=is_suspension_stop(row),
                     ),
                     kind=kind,
                     stop=stop,
@@ -1276,7 +1316,7 @@ class LocalRunExecutor:
                     error=error,
                     metadata=metadata,
                     workspace_id=workspace_id,
-                    user_id=user_id,
+                    recorded_as=recorded_as,
                 )
                 task_info.persistence_complete.set()
                 # Recovery settled the row this run's own finalize could not:
@@ -1302,7 +1342,7 @@ class LocalRunExecutor:
                 error=error,
                 metadata=metadata,
                 workspace_id=workspace_id,
-                user_id=user_id,
+                recorded_as=recorded_as,
             )
 
         await self._note_credential_refusal(handler, user_id, exc)
@@ -1385,7 +1425,7 @@ class LocalRunExecutor:
         error: Optional[str],
         metadata: dict,
         workspace_id: Optional[str],
-        user_id: Optional[str],
+        recorded_as: Optional[str],
     ) -> None:
         """Local effects after a WON finalize CAS (never touch run status
         again). Isolated: a side-effect failure must not propagate back into
@@ -1399,7 +1439,7 @@ class LocalRunExecutor:
             # carries count them. Never raises.
             turn_subagents = (
                 await subagent_collection.claim_turn_subagents(
-                    thread_id, run_id, metadata, workspace_id, user_id
+                    thread_id, run_id, metadata, workspace_id, recorded_as
                 )
                 if collected
                 else []
@@ -1409,7 +1449,10 @@ class LocalRunExecutor:
             # status (I6). Attached consumers yield it and close. Losers
             # of a finalize race skip it — their consumers close via the
             # terminal handshake once the local mark lands.
-            await self.append_run_end_event(thread_id, run_id, status)
+            await self.append_run_end_event(
+                thread_id, run_id, status,
+                stopped_by=SUSPENSION_STOPPER if verdict.stopped_by_suspension else None,
+            )
 
             if status == "completed" and completion_callback:
                 try:
@@ -1434,7 +1477,7 @@ class LocalRunExecutor:
             if collected:
                 self._spawn_subagent_collector(
                     thread_id, run_id, turn_subagents, metadata,
-                    workspace_id, user_id,
+                    workspace_id, recorded_as,
                 )
             elif status in ("error", "cancelled"):
                 try:
@@ -1442,10 +1485,10 @@ class LocalRunExecutor:
                         thread_id,
                         run_id,
                         workspace_id,
-                        user_id,
+                        recorded_as,
                         claimed_at_stop=stop.claimed if stop else [],
                         carried_events=carried_events,
-                        bill=verdict.stopped_by_user,
+                        bill=verdict.bills_subagents,
                         is_byok=metadata.get("is_byok", False),
                         sandbox=metadata.get("sandbox"),
                     )
@@ -1469,11 +1512,11 @@ class LocalRunExecutor:
         tasks: list,
         metadata: dict,
         workspace_id: Optional[str],
-        user_id: Optional[str],
+        recorded_as: Optional[str],
     ) -> None:
         """Collect the run's claimed subagents' events post-terminal."""
         subagent_collection.spawn_subagent_collector(
-            thread_id, run_id, tasks, metadata, workspace_id, user_id,
+            thread_id, run_id, tasks, metadata, workspace_id, recorded_as,
             collect_for_turn=self._collect_subagent_results_for_turn,
         )
 
@@ -1587,6 +1630,22 @@ class LocalRunExecutor:
                 task_info = self._find_active_for_thread(thread_id)
 
             if not task_info:
+                stopped = next(
+                    (
+                        event
+                        for (thread, run), event in self._awaiting_computer.items()
+                        if thread == thread_id and run_id in (None, run)
+                    ),
+                    None,
+                )
+                if stopped is not None:
+                    stopped.set()
+                    logger.info(
+                        f"[LocalRunExecutor] Cancellation signaled while "
+                        f"acquiring the computer: thread_id={thread_id} "
+                        f"run_id={run_id}"
+                    )
+                    return True
                 logger.warning(
                     f"[LocalRunExecutor] Cannot cancel "
                     f"thread_id={thread_id} run_id={run_id}: workflow not found"

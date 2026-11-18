@@ -65,6 +65,7 @@ from src.server.services.computer_errors import (
     Retirement,
 )
 from src.server.services.computer_manager import ComputerManager
+from src.server.services.account import refuse_machine_use
 from src.server.services.computer_manager._types import (
     MachineTarget,
     WorkspaceNotFound,
@@ -238,7 +239,9 @@ class WorkspaceManager(ComputerManager):
 
         Args:
             workspace_id: Workspace UUID
-            user_id: Optional user ID for syncing user data to sandbox
+            user_id: The caller, for whom the computer's tokens are kept
+                (``_keep_computer_tokens``). Everything else the computer is
+                given is read for its owner (``ComputerBinding.user_id``).
             on_state_observed: Optional sync callback invoked with the
                 initial sandbox state ("archived", "running", ...) as
                 soon as the reconnect path observes it. Used by the chat
@@ -299,8 +302,10 @@ class WorkspaceManager(ComputerManager):
                     raise WorkspaceMovingError(workspace_id)
                 # Per project, not per machine: the acquire above may have handed
                 # back the session a sibling started, which prepared only that
-                # sibling's folder and only that sibling's tool overlay.
-                await self._ensure_project_attached(binding, session, user_id=user_id)
+                # sibling's folder and only that sibling's tool overlay. What
+                # the folder is given (connectors, skills, the file mount) is
+                # the computer's owner's, never the caller's.
+                await self._ensure_project_attached(binding, session, user_id=binding.user_id)
         except WorkspaceFolderMoving as e:
             raise SandboxTransientError(
                 "This workspace's folder is being moved. Try again in a moment."
@@ -370,6 +375,8 @@ class WorkspaceManager(ComputerManager):
             or not computer.get("provider_ref")
         ):
             return None
+        # As an acquire asks, since a ready handle is handed back without one.
+        await refuse_machine_use(computer["kind"], computer.get("user_id"))
         provider_ref = str(computer["provider_ref"])
         session = self.get_session_if_ready(
             workspace_id,
@@ -419,7 +426,7 @@ class WorkspaceManager(ComputerManager):
                 return False
             # Read again, for the arrival the settle recorded.
             binding = await self.resolve_binding(workspace_id)
-            await self._ensure_project_attached(binding, session, user_id=user_id)
+            await self._ensure_project_attached(binding, session, user_id=binding.user_id)
             return True
 
     async def archive_workspace(self, workspace_id: str) -> Dict[str, Any]:

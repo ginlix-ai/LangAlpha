@@ -205,6 +205,50 @@ async def _components_by_plugin(
     return out
 
 
+def _unlanded_connectors(
+    row: dict[str, Any], components: list[PluginComponentRef]
+) -> list[str]:
+    """The ``mcp.json`` keys of the connectors the plugin declares that the
+    ``user_connectors`` rule governs and that have no row of the plugin's."""
+    from src.server.services.policy import governed_by_user_connectors
+
+    doc = row.get("mcp_document") or {}
+    entries = doc.get("mcpServers") if isinstance(doc, dict) else None
+    if not isinstance(entries, dict):
+        return []
+    landed = {c.key for c in components if c.kind == "mcp"}
+    return sorted(
+        key for key, entry in entries.items()
+        if key not in landed
+        and isinstance(entry, dict)
+        and governed_by_user_connectors(entry.get("url"))
+    )
+
+
+async def _withheld_by_plugin(
+    user_id: str,
+    rows: list[dict[str, Any]],
+    components: dict[str, list[PluginComponentRef]],
+) -> dict[str, list[str]]:
+    """plugin_id → the connectors a rule keeps from landing, as the install
+    report said at the time, so the plugin's page can say it after. Asks for
+    the policy only when some plugin has a governed connector missing."""
+    missing = {
+        r["user_plugin_id"]: keys
+        for r in rows
+        if (keys := _unlanded_connectors(r, components.get(r["user_plugin_id"], [])))
+    }
+    if not missing:
+        return {}
+    from src.server.services.policy import USER_CONNECTORS
+    from src.server.services.account import policy_for
+
+    policy = await policy_for(user_id)
+    if policy is not None and policy.allows(USER_CONNECTORS):
+        return {}
+    return missing
+
+
 def _header_safe(value: Any) -> str:
     """A manifest string reduced to what a Content-Disposition filename can
     carry. Empty when nothing survives, which the caller reads as absent."""
@@ -218,6 +262,7 @@ def _header_safe(value: Any) -> str:
 async def list_plugins_endpoint(user_id: CurrentUserId) -> PluginListResponse:
     rows = await list_plugins(user_id)
     components = await _components_by_plugin(user_id)
+    withheld = await _withheld_by_plugin(user_id, rows, components)
     # Bundles ship with the app rather than being installed, so they lead the
     # list and are not counted against the user's slots.
     return PluginListResponse(
@@ -228,6 +273,7 @@ async def list_plugins_endpoint(user_id: CurrentUserId) -> PluginListResponse:
                     r,
                     components=components.get(r["user_plugin_id"], []),
                     icon_url=await plugin_mark(r),
+                    withheld=withheld.get(r["user_plugin_id"]),
                 )
                 for r in rows
             ],
@@ -247,11 +293,13 @@ async def _plugin_response(
     did; a caller renders all three through one code path.
     """
     components = await _components_by_plugin(user_id)
+    withheld = await _withheld_by_plugin(user_id, [row], components)
     return InstallResponse(
         plugin=plugin_row_to_info(
             row,
             components=components.get(row["user_plugin_id"], []),
             icon_url=await plugin_mark(row),
+            withheld=withheld.get(row["user_plugin_id"]),
         ),
         report=report,
     )
@@ -308,10 +356,12 @@ async def get_plugin_endpoint(
     plugin: CurrentPlugin, user_id: CurrentUserId
 ) -> PluginInfo:
     components = await _components_by_plugin(user_id)
+    withheld = await _withheld_by_plugin(user_id, [plugin], components)
     return plugin_row_to_info(
         plugin,
         components=components.get(plugin["user_plugin_id"], []),
         icon_url=await plugin_mark(plugin),
+        withheld=withheld.get(plugin["user_plugin_id"]),
     )
 
 

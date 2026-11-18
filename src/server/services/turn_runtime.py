@@ -20,6 +20,7 @@ from src.server.database.home_workspace import (
     is_home_row,
     is_home_stand_in_row,
 )
+from src.server.services.shared_workspaces.access import workspace_access
 
 if TYPE_CHECKING:
     from ptc_agent.agent.agent import AgentRole
@@ -28,7 +29,18 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TurnRoute:
-    """The workspace a turn runs in and the role the agent plays there.
+    """The workspace a turn runs in, the role the agent plays there, and
+    whose machine and workspace it is.
+
+    A turn has two accounts. The sender, which every entry carries as its
+    ``user_id``, is the person: models, rules, profile and every row that
+    records who acted. Its admission and usage name the account
+    ``TurnIdentity.recorded_as`` chooses. ``owner_id`` is the account that owns
+    the workspace row, and so the computer it is on: what the computer is
+    given (vault, connectors, skills, tokens, the file mount) and the
+    workspace's memory are read for it. Resolved here, from the row the turn
+    names, and never from the sender, so a read of the machine cannot fall
+    back on whoever happened to send the turn.
 
     ``workspace_id`` is the thread's: its turns, memory and records. Once
     bound, ``away`` is set for a Home turn in Home's stand-in while the
@@ -38,6 +50,7 @@ class TurnRoute:
 
     workspace_id: str
     role: AgentRole
+    owner_id: str
     away: Optional[HomeAway] = None
 
     @property
@@ -87,8 +100,11 @@ def turn_route(user_id: str, workspace: Optional[Dict[str, Any]]) -> TurnRoute:
     leaves the user's computer as it was.
     """
     if workspace is not None and not is_home_row(workspace):
-        return TurnRoute(str(workspace["workspace_id"]), "analyst")
-    return TurnRoute(get_home_workspace_id(user_id), "chief_of_staff")
+        return TurnRoute(
+            str(workspace["workspace_id"]), "analyst", str(workspace["user_id"])
+        )
+    # Home is the sender's own by derivation, whichever Home row was named.
+    return TurnRoute(get_home_workspace_id(user_id), "chief_of_staff", user_id)
 
 
 def named_workspace_id(
@@ -112,10 +128,9 @@ async def requested_workspace(
     turn that is refused never binds Home. A new thread has nowhere to run
     until it names a place, so naming none is refused rather than guessed.
     Home's id is the caller's by derivation, so it routes to Home before its
-    row exists.
+    row exists. A workspace on a machine the policy keeps work off is refused.
     """
     from src.server.database.workspace import get_workspace
-    from src.server.utils.api import require_workspace_owner
 
     if not workspace_id:
         # Clients match the opening clause, so it stays as is.
@@ -135,9 +150,16 @@ async def requested_workspace(
     # would never be owed to Home. Its files stay readable by workspace routes.
     if is_home_stand_in_row(workspace):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    # A fresh thread id must not run inside another user's workspace. The
-    # report-back dispatch sets X-User-Id to the owner, so it passes.
-    require_workspace_owner(workspace, user_id=user_id)
+    # A fresh thread id must not run inside another user's workspace, unless
+    # it is a shared workspace the sender is a member of. The report-back
+    # dispatch sets X-User-Id to the sender it posts for, so it passes.
+    await workspace_access(workspace, user_id)
+    # Refused here, before a send's stream opens or either door writes a
+    # thread row, as a 4xx a client shows rather than a stream error it would
+    # offer to retry. The acquire still asks, for every other path.
+    from src.server.services.account import refuse_machine_use
+
+    await refuse_machine_use(workspace.get("computer_kind"), user_id)
     return workspace
 
 

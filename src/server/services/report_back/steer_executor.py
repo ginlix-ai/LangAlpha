@@ -13,6 +13,8 @@ import asyncio
 import logging
 import uuid
 
+from src.server.services.report_back._owner import turn_owner
+
 logger = logging.getLogger(__name__)
 
 _LOG = "[STEER]"
@@ -123,7 +125,7 @@ async def execute_steer(job: dict) -> None:
             await repark()
             return
 
-    user_id, workspace_id = await _owner(payload, thread_id)
+    user_id, workspace_id = await turn_owner(payload, thread_id)
     if not user_id:
         await finish("dropped")
         return
@@ -191,10 +193,14 @@ async def execute_steer(job: dict) -> None:
     if outcome in ("deleted", "drop"):
         await finish("dropped")
         if payload.get("artifact_comments") and payload.get("request_key"):
+            from src.server.database.conversation import get_thread_owner_id
             from src.server.services.artifacts.comments import give_back_unread
 
+            # The comments are the thread's workspace owner's rows: the
+            # sender's, or a shared workspace's holder's.
+            owner = await get_thread_owner_id(thread_id) if thread_id else None
             await give_back_unread(
-                user_id=user_id,
+                user_id=owner or user_id,
                 thread_id=thread_id,
                 request_key=payload["request_key"],
             )
@@ -237,27 +243,6 @@ async def _settle_dispatched(job: dict, attempts: int, run_id, fence, finish) ->
                 f"never started; nacking to re-post under the same request key"
             )
         await asyncio.sleep(_START_POLL)
-
-
-async def _owner(payload: dict, thread_id: str) -> tuple[str | None, str | None]:
-    """The user and workspace the turn runs for: the payload's, else the
-    thread's."""
-    user_id = payload.get("user_id")
-    workspace_id = payload.get("workspace_id")
-    if user_id and workspace_id:
-        return str(user_id), str(workspace_id)
-    from src.server.database import conversation as conv_db
-
-    if not user_id:
-        meta = await conv_db.get_thread_auth_meta(thread_id)
-        user_id = meta.get("user_id") if meta else None
-    if not workspace_id:
-        row = await conv_db.get_thread_by_id(thread_id)
-        workspace_id = row.get("workspace_id") if row else None
-    return (
-        str(user_id) if user_id else None,
-        str(workspace_id) if workspace_id else None,
-    )
 
 
 async def _execute_task_steer(job: dict) -> None:

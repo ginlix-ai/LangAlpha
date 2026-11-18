@@ -20,6 +20,21 @@ from src.server.database.conversation import get_thread_by_share_token
 from src.server.database.share_codes import is_share_code
 from src.server.database.share_links import ShareLink, get_link
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services.member_grants import (
+    MemberGrantError,
+    can_hold,
+    is_thread_grant,
+    verify_thread_grant,
+)
+from src.server.services.account import serves_public_links
+from src.server.services.share_audience import (
+    LINK_NOT_FOUND,
+    ORGANIZATION,
+    admits_member,
+    link_audience,
+    members_only,
+    thread_audience,
+)
 from src.server.services.served_paths import ShareScope, shared_path_visible
 from src.server.services.workspace_file_containment import contained_relative_path
 from src.server.services.workspace_files import previous_dir_names_of
@@ -35,10 +50,35 @@ SHARE_ROOT_PATH_KEY = "root_path"
 
 
 async def get_shared_thread(share_token: str) -> dict[str, Any]:
-    """Fetch shared thread or raise 404."""
+    """Fetch shared thread or raise 404.
+
+    Every route a thread token opens starts here, and none of them knows its
+    viewer, so a thread whose owner may not keep public links answers as an
+    unshared one, to the owner too, who reads it in the app.
+
+    A members-only thread opens only under a member grant standing in the
+    token's place (``member_grants``), which the metadata route hands a
+    member; the link's own token opens nothing then, and a grant opens
+    nothing once the link opens to anyone, so either change ends the other's
+    access on its next request.
+    """
+    grant = None
+    if is_thread_grant(share_token):
+        try:
+            grant = await verify_thread_grant(share_token)
+        except MemberGrantError as e:
+            logger.info("Refusing shared thread request: %s", e)
+            raise HTTPException(status_code=404, detail=LINK_NOT_FOUND) from None
+        share_token = grant.share_token
     thread = await get_thread_by_share_token(share_token)
     if not thread:
-        raise HTTPException(status_code=404, detail="Shared thread not found")
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    owner_id = thread.get("owner_id")
+    if thread_audience(get_permissions(thread)) == ORGANIZATION:
+        if grant is None or not await admits_member(grant.viewer_id, owner_id):
+            raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    elif grant is not None or not await serves_public_links(owner_id):
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
     return thread
 
 
@@ -147,11 +187,6 @@ async def resolve_shared_files(
     return SharedFileTarget(workspace, ShareScope(workspace_id, root_path), work_dir)
 
 
-# One answer for everything a caller may not learn about a link: an unknown
-# code, a private link seen by anyone but its owner, an app seen by anyone else.
-LINK_NOT_FOUND = "Shared thread not found"
-
-
 @dataclass(frozen=True)
 class LinkAccess:
     """A link this viewer may open, with the workspace it opens."""
@@ -159,6 +194,9 @@ class LinkAccess:
     link: ShareLink
     workspace: dict[str, Any]
     owner: bool
+    #: Not the owner: a member of the owner's organization, on a link that
+    #: opens to members only.
+    member: bool = False
 
 
 async def _link_workspace(workspace_id: str) -> dict[str, Any]:
@@ -186,8 +224,11 @@ async def resolve_link(token: str, *, user_id: str | None = None) -> LinkAccess 
 
     None when the token is not a link at all, so the caller falls through to
     the thread rules. A private link, which an app link always is, opens for
-    the workspace's owner alone; everyone else gets ``LINK_NOT_FOUND``.
-    Ownership is judged on the workspace row, never on the link.
+    the workspace's owner alone; everyone else gets ``LINK_NOT_FOUND``, as
+    they do for a shared one while its owner may not keep public links. A
+    members-only link opens for a member of the owner's organization, asks a
+    signed-out visitor to sign in (401 ``members_only``) and is not found by
+    anyone else. Ownership is judged on the workspace row, never on the link.
     """
     if not is_share_code(token):
         return None
@@ -198,7 +239,18 @@ async def resolve_link(token: str, *, user_id: str | None = None) -> LinkAccess 
         # No viewer whose ownership could open it, so no workspace read.
         raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
     workspace = await _link_workspace(link.workspace_id)
-    owner = user_id is not None and workspace.get("user_id") == user_id
-    if not owner and not link.shared:
+    owner_id = workspace.get("user_id")
+    owner = user_id is not None and owner_id == user_id
+    if owner:
+        return LinkAccess(link, workspace, owner)
+    if not link.shared:
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    if link_audience(link.artifact.audience if link.artifact else None) == ORGANIZATION:
+        if user_id is None:
+            raise members_only()
+        if not can_hold(user_id) or not await admits_member(user_id, owner_id):
+            raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+        return LinkAccess(link, workspace, owner, member=True)
+    if not await serves_public_links(owner_id):
         raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
     return LinkAccess(link, workspace, owner)

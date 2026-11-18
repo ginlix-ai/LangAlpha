@@ -16,6 +16,7 @@ from src.server.database.artifacts.records import (
     lock_owned,
     set_record,
 )
+from src.server.database.conversation.thread_reach import visible_sql
 from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.pool import get_db_connection
 
@@ -35,12 +36,38 @@ class DestinationUnavailable(LookupError):
     """The thread is not one this artifact's comments may go to."""
 
 
-async def require_destination(
-    cur, *, user_id: str, workspace_id: str, thread_id: str
-) -> None:
-    """Raise unless comments on a file in ``workspace_id`` may go to the thread."""
+def _held(user_id: str, caller: str) -> str:
+    """For a member writing in a shared workspace (``user_id`` its holder),
+    the thread row held shared to the end of the transaction, as a turn's
+    START holds it: making the thread private then either sees the words
+    this queues or is seen by this read. No rule hides a thread from its
+    workspace's owner, so their write takes no lock."""
+    return " FOR SHARE OF t" if caller != user_id else ""
+
+
+async def require_reached(cur, *, user_id: str, thread_id: str, caller: str) -> None:
+    """Raise unless ``caller`` may see a thread a comment of ``user_id``'s
+    already waits for. A thread gone since lets it wait as before."""
+    if caller == user_id:
+        return
     await cur.execute(
-        """
+        f"SELECT {visible_sql('t', '%(user_id)s', '%(caller)s')} AS reached"
+        f" FROM conversation_threads t WHERE t.conversation_thread_id = %(thread_id)s"
+        f"{_held(user_id, caller)}",
+        {"thread_id": thread_id, "user_id": user_id, "caller": caller},
+    )
+    row = await cur.fetchone()
+    if row is not None and not row["reached"]:
+        raise DestinationUnavailable(thread_id)
+
+
+async def require_destination(
+    cur, *, user_id: str, workspace_id: str, thread_id: str, caller: str
+) -> None:
+    """Raise unless comments on a file in ``workspace_id`` may go to the
+    thread, one ``caller`` may see."""
+    await cur.execute(
+        f"""
         SELECT 1
           FROM conversation_threads t
           JOIN workspaces tw ON tw.workspace_id = t.workspace_id
@@ -48,22 +75,26 @@ async def require_destination(
            AND t.archived_at IS NULL
            AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
            AND t.workspace_id IN (%(workspace_id)s, %(home_id)s)
+           AND {visible_sql('t', 'tw.user_id', '%(caller)s')}
+        {_held(user_id, caller)}
         """,
         {
             "thread_id": thread_id,
             "user_id": user_id,
             "workspace_id": workspace_id,
             "home_id": get_home_workspace_id(user_id),
+            "caller": caller,
         },
     )
     if await cur.fetchone() is None:
         raise DestinationUnavailable(thread_id)
 
 
-async def bind(*, user_id: str, artifact_id: str, thread_id: str) -> Artifact:
+async def bind(*, user_id: str, artifact_id: str, thread_id: str, caller: str) -> Artifact:
     """Send the file's comments to ``thread_id`` until unbound.
 
-    ``DestinationUnavailable`` when the thread is not one they may go to.
+    ``DestinationUnavailable`` when the thread is not one they may go to, or
+    one ``caller`` may not see.
     """
     async with get_db_connection() as conn:
         async with conn.transaction():
@@ -76,6 +107,7 @@ async def bind(*, user_id: str, artifact_id: str, thread_id: str) -> Artifact:
                     user_id=user_id,
                     workspace_id=artifact.workspace_id,
                     thread_id=thread_id,
+                    caller=caller,
                 )
                 await cur.execute(
                     f"""
@@ -139,12 +171,17 @@ def _comment_destination(value: object) -> CommentDestination:
 
 
 async def destinations(
-    *, user_id: str, artifact_id: str, beside_thread_id: str | None = None
+    *,
+    user_id: str,
+    artifact_id: str,
+    beside_thread_id: str | None,
+    caller: str,
 ) -> Destinations:
     """The threads a comment on the artifact could go to by default.
 
-    A thread that is not the owner's, or is gone, comes back as None, so a
-    ``beside_thread_id`` from the client names nothing it may not see.
+    A thread that is not the owner's, or is gone, or one ``caller`` may not
+    see, comes back as None, so a ``beside_thread_id`` from the client names
+    nothing it may not see.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -176,7 +213,7 @@ async def destinations(
             threads: dict[str, DestinationThread] = {}
             if ids:
                 await cur.execute(
-                    """
+                    f"""
                     SELECT t.conversation_thread_id::text AS thread_id, t.title,
                            t.workspace_id::text,
                            (t.archived_at IS NULL
@@ -188,8 +225,10 @@ async def destinations(
                         ON tw.workspace_id = t.workspace_id
                        AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
                      WHERE t.conversation_thread_id = ANY(%(ids)s::uuid[])
+                       AND {visible_sql('t', 'tw.user_id', '%(caller)s')}
                     """,
                     {
+                        "caller": caller,
                         "ids": ids,
                         "user_id": user_id,
                         "workspace_id": artifact.workspace_id,

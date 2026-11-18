@@ -27,6 +27,7 @@ from src.server.database.workspace_folders import (
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.models.computer_cause import StartCause
 from src.server.models.workspace import served_from_mirror
+from src.server.services.shared_workspaces.access import Access, workspace_access
 from src.server.services.ssh_computers import refuse_if_tunnel_down
 from src.server.services.workspace_file_containment import (
     contained_absolute_path,
@@ -38,7 +39,6 @@ from src.server.services.workspace_layout import (
     layout_from_binding,
 )
 from src.server.services.workspace_manager import WorkspaceManager
-from src.server.utils.api import require_workspace_owner
 from src.server.utils.error_sanitization import (
     sandbox_failure_http,
     sandbox_unreachable_detail,
@@ -57,17 +57,19 @@ HOME_NOT_ON_COMPUTER = "Home is not on a computer yet"
 HOME_NOT_ON_COMPUTER_REASON = "home_not_on_computer"
 
 
-async def owned_workspace_on_computer(workspace_id: str, user_id: str) -> dict[str, Any]:
-    """The caller's workspace, for a route that reaches its files or sandbox.
-
-    Refused as any owner check refuses, and with a 400 while it is Home not
-    yet on a computer.
-    """
+async def reached_workspace_on_computer(
+    workspace_id: str, user_id: str
+) -> tuple[dict[str, Any], Access]:
+    """The workspace, for a route that reaches its files or sandbox: its
+    owner's, or a shared workspace's members', who all see its files.
+    Refused as the access check refuses, and with a 400 while it is Home not
+    yet on a computer. The row's ``user_id`` is whose rows the workspace's
+    are (the holder's, for a shared one), never the caller's."""
     workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=user_id)
+    access = await workspace_access(workspace, user_id)
     if is_unbound(workspace):
         raise HTTPException(status_code=400, detail=HOME_NOT_ON_COMPUTER)
-    return workspace
+    return workspace, access
 
 
 def not_running_for_upload(workspace: dict[str, Any]) -> HTTPException:

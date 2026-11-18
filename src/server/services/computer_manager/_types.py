@@ -104,6 +104,8 @@ class ComputerBinding:
     provider_config: Optional[Dict[str, Any]] = None
     files_epoch: Optional[str] = None
     files_backup: bool = True
+    #: The machine's owner, whose policy decides whether work runs on it.
+    user_id: Optional[str] = None
 
     @property
     def provider_identity(self) -> Tuple[str, str]:
@@ -172,6 +174,9 @@ class WorkspaceToolView:
     # whose tools no snapshot or grant lets bind still has the settings the
     # rule describes.
     trading_rule: Optional["TradingRule"] = None
+    #: The organization's connector list this view was resolved from
+    #: (``ResolvedMCP.org_digest``); "" when it lists none.
+    org_digest: str = ""
     built_at: float = field(default_factory=time.monotonic)
 
     @classmethod

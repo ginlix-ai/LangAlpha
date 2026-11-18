@@ -511,6 +511,7 @@ async def claim_due_automations(
                     SELECT {AUTOMATION_COLUMNS}
                     FROM automations
                     WHERE status = 'active'
+                      AND trigger_type <> 'price'
                       AND next_run_at IS NOT NULL
                       AND next_run_at <= %s
                     ORDER BY next_run_at ASC
@@ -574,6 +575,7 @@ async def claim_price_firing(automation_id: str, server_id: str) -> Optional[str
                     UPDATE automations
                     SET status = 'executing', next_run_at = NULL, last_run_at = NOW()
                     WHERE automation_id = %s AND status = 'active'
+                      AND (next_run_at IS NULL OR next_run_at <= NOW())
                 """, (automation_id,))
                 if cur.rowcount == 0:
                     return None
@@ -610,7 +612,9 @@ async def update_automation_next_run(
 
 
 async def get_active_price_automations() -> List[Dict[str, Any]]:
-    """Get all active price-triggered automations (for PriceMonitorService)."""
+    """Get all active price-triggered automations (for PriceMonitorService),
+    but one whose firing was put off until ``next_run_at``
+    (``automation_executions.DEFER_INTERVAL``)."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
@@ -618,6 +622,7 @@ async def get_active_price_automations() -> List[Dict[str, Any]]:
                 FROM automations
                 WHERE trigger_type = 'price'
                   AND status = 'active'
+                  AND (next_run_at IS NULL OR next_run_at <= NOW())
             """)
             results = await cur.fetchall()
             return [dict(row) for row in results]

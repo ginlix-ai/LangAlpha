@@ -233,6 +233,9 @@ async def _research(
 
     config = agent_config
     if user_id:
+        from src.server.services.policy import is_policy_refusal
+        from src.server.services.account import policy_for
+
         try:
             from src.server.services.llm.config import resolve_llm_config
 
@@ -241,6 +244,19 @@ async def _research(
                 user_facing=False,
             )
         except Exception as exc:
+            # The user's policy, or an account it cannot be read for, holds
+            # this run too: the deployment's models were never held to it, so
+            # they stand in only for a user nothing restricts.
+            if is_policy_refusal(exc):
+                # The run's own failure is only logged, so the refusal is
+                # recorded here or nowhere.
+                from src.server.services.activity import record_refusal
+
+                record_refusal(exc, user_id)
+                raise
+            policy = await policy_for(user_id)
+            if policy is None or not policy.unrestricted:
+                raise
             logger.warning(f"[MARKET_INSIGHT] Could not resolve user LLM, falling back to system: {exc}")
 
     if config.llm is None:

@@ -226,7 +226,9 @@ async def build_ptc_graph(
         workspace=workspace,
         store=store,
         on_signed_url=on_signed_url,
+        # A build with one account: the sender's own workspace.
         user_id=user_id,
+        owner_id=user_id,
         user_data_counts=user_data_counts,
         tool_summary=getattr(session, "mcp_tool_summary", None),
     )
@@ -246,6 +248,8 @@ async def build_ptc_graph_with_session(
     checkpointer: Any | None = None,
     background_registry: Any | None = None,
     user_id: str | None = None,
+    owner_id: str | None = None,
+    own_data: bool = True,
     user_profile: dict[str, Any] | None = None,
     thread_id: str | None = None,
     store: Any | None = None,
@@ -263,6 +267,7 @@ async def build_ptc_graph_with_session(
     cancel_notices: CancelNotices | None = None,
     reached_computers: set[str] | None = None,
     claude_code_launcher: Any | None = None,
+    thread_history: Any | None = None,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path).
 
@@ -278,6 +283,10 @@ async def build_ptc_graph_with_session(
     ``tool_view`` is the project's frozen registry and summary. The session's
     own fields belong to whichever project on the machine resolved last.
 
+    ``user_id`` is the turn's sender, ``owner_id`` the workspace's owner and
+    ``own_data`` whether the build may use the sender's own data
+    (``PTCAgent.create_agent``).
+
     ``subagent_switch`` reads the thread's subagent switch on every call; a
     build without one leaves subagents as built. ``window_coverage`` lets the
     main agent trim its checkpoint to its window (see ``compaction.window``);
@@ -285,7 +294,9 @@ async def build_ptc_graph_with_session(
     the user's cancels of its wakeups; a build without one tells it of none.
     ``reached_computers`` collects the user's other computers a Chief of Staff
     turn ran calls on, for the turn's end to back up. ``claude_code_launcher``
-    says where a Claude Code turn's CLI runs (``PTCAgent.create_agent``).
+    says where a Claude Code turn's CLI runs (``PTCAgent.create_agent``), and
+    ``thread_history`` serves the thread's own transcript to the file tools
+    (``PTCAgent.create_agent``).
     """
     mcp_registry = (
         tool_view.mcp_registry if tool_view is not None else session.mcp_registry
@@ -312,7 +323,7 @@ async def build_ptc_graph_with_session(
         workspace,
         (harness_blocks, computers),
     ) = await asyncio.gather(
-        fetch_user_data_counts(user_id),
+        fetch_user_data_counts(user_id if own_data else None),
         asyncio.to_thread(PTCAgent, config),
         _read_workspace_naming(
             project.owner_id if project else "",
@@ -325,13 +336,13 @@ async def build_ptc_graph_with_session(
         ),
     )
 
-    if workspace_id and user_id:
+    if workspace_id and owner_id:
         from src.server.database.user_vault_secrets import get_user_secrets_decrypted
 
         # Leak detection redacts the owner's whole vault, read fresh: every
         # workspace can read every secret, and the sandbox's cached copy is
         # process-local, so a rotation handled by another worker leaves it stale.
-        vault_secrets = await get_user_secrets_decrypted(user_id)
+        vault_secrets = await get_user_secrets_decrypted(owner_id)
     else:
         vault_secrets = dict(getattr(session.sandbox, "vault_secrets", None) or {})
 
@@ -352,6 +363,8 @@ async def build_ptc_graph_with_session(
         on_signed_url=on_signed_url,
         vault_secrets=vault_secrets,
         user_id=user_id,
+        owner_id=owner_id,
+        own_data=own_data,
         user_data_counts=user_data_counts,
         # Session-cached tool summary (precomputed once per session) so the per
         # turn create_agent never recomputes it — keeps the prompt-cache prefix
@@ -368,6 +381,7 @@ async def build_ptc_graph_with_session(
         cancel_notices=cancel_notices,
         computers=computers,
         claude_code_launcher=claude_code_launcher,
+        thread_history=thread_history,
     )
 
     logger.debug(

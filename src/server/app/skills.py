@@ -35,10 +35,6 @@ from ptc_agent.agent.middleware.skills import (
 )
 from src.server.database.account_disables import list_account_disables
 from src.server.database.user_skills import (
-    MAX_SKILL_TOTAL_BYTES_PER_USER,
-    MAX_SKILLS_PER_USER,
-    SkillCapReached,
-    SkillTriggerTaken,
     delete_user_skill,
     get_user_skill,
     list_all_user_skills,
@@ -50,7 +46,6 @@ from src.server.database.user_skills import (
     set_user_skill_command,
     set_user_skill_enabled,
     set_workspace_skill_disable,
-    upsert_user_skill,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.models.skill import (
@@ -68,14 +63,11 @@ from src.server.services.features import (
     set_builtin_skill_disabled,
 )
 from src.server.services.user_skills import (
-    SkillNamesUnavailable,
-    SkillValidationError,
     configured_skill_dirs,
     drop_archive_if_unused,
     fetch_skill_archive,
     reserved_skill_names,
     valid_command,
-    validate_skill_archive,
 )
 from src.server.services.user_skills.browse import (
     DiskFolder,
@@ -87,7 +79,10 @@ from src.server.services.user_skills.commands import (
     effective_trigger,
     ensure_free_of_platform,
     set_platform_alias,
-    upload_seed,
+)
+from src.server.services.user_skills.store import (
+    refused,
+    store_skill_archive,
 )
 from src.server.services.user_skills.limits import (
     MAX_SKILL_ARCHIVE_BYTES,
@@ -119,25 +114,6 @@ _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 def _validate_name_param(name: str) -> None:
     if len(name) > 64 or not _NAME_RE.match(name):
         raise HTTPException(status_code=404, detail="Skill not found")
-
-
-def _refused(status: int, code: str, message: str, **params: object) -> HTTPException:
-    """A refusal a client explains in its own words: ``code`` says which one,
-    ``params`` fill its sentence, and ``message`` serves any client that does
-    not know the code."""
-    return HTTPException(
-        status_code=status, detail={"code": code, "message": message, **params}
-    )
-
-
-def _conflict(e: SkillTriggerTaken | SkillCapReached) -> HTTPException:
-    if isinstance(e, SkillTriggerTaken):
-        return _refused(409, e.code, str(e), **e.params)
-    if e.limit == "count":
-        return _refused(409, "skill_count_cap", str(e), max=MAX_SKILLS_PER_USER)
-    return _refused(
-        409, "skill_storage_cap", str(e), max=MAX_SKILL_TOTAL_BYTES_PER_USER
-    )
 
 
 def _validated_patch_fields(body: SkillEnabledInput) -> set[str]:
@@ -459,103 +435,23 @@ async def _upload_skill_archive(
 ) -> SkillInfo:
     """Shared upload pipeline for both scopes.
 
-    Re-uploading an existing name replaces it in place (within its scope).
-    Mirrors the memo upload's phase ordering: the slow object PUT happens
-    before the DB write; on DB failure the object is deleted; a replaced
-    row's superseded object is deleted after commit (unless another
-    same-content row still references it).
+    Mirrors the memo upload's phase ordering (:func:`store_skill_archive`).
     """
     try:
         raw = await read_capped(file, MAX_SKILL_ARCHIVE_BYTES)
     except HTTPException as e:
         if e.status_code != 413:
             raise
-        raise _refused(
+        raise refused(
             413,
             "upload_too_large",
             str(e.detail),
             size=file.size,
             max=MAX_SKILL_ARCHIVE_BYTES,
         ) from e
-    try:
-        # Unzip + re-zip + hash over as much as 8 MB: off the event loop.
-        validated = await asyncio.to_thread(validate_skill_archive, raw, upload=True)
-    except SkillValidationError as e:
-        raise _refused(400, e.code, str(e), **e.params) from e
-
-    # The name is itself a live trigger (effective_trigger falls back to it),
-    # so it has to clear the platform tier the same way an alias does — a
-    # builtin the user renamed to this name would otherwise be shadowed by
-    # the upload. Renaming onto an existing row is already blocked in
-    # set_platform_alias; this is the same rule in the other order.
-    try:
-        await ensure_free_of_platform(user_id, validated.name)
-    except SkillTriggerTaken as e:
-        raise _conflict(e) from e
-    except SkillNamesUnavailable as e:
-        # Not the upload's fault and not a name conflict: a directory skills
-        # ship from would not list, so the reservation is short rather than
-        # clear. Refusing here is also what keeps the row out of the database,
-        # since everything that writes runs below this line.
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    command_seed = await upload_seed(user_id, validated, workspace_id)
-
-    archive_key: str | None = None
-    archive_blob: bytes | None = None
-    if skill_archive_storage.is_configured():
-        try:
-            archive_key = await skill_archive_storage.store_archive(
-                user_id=user_id,
-                content=validated.canonical_zip,
-                content_hash=validated.content_hash,
-            )
-        # Base class, not just the upload subclass: a key the adapter refuses
-        # to build is still a storage failure the caller should see as one,
-        # and the reconciler's copy of this call already catches the base.
-        except skill_archive_storage.SkillArchiveStorageError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail="Could not store the skill archive — please retry.",
-            ) from exc
-    else:
-        if len(validated.canonical_zip) > MAX_SKILL_INLINE_BLOB_BYTES:
-            raise _refused(
-                400,
-                "upload_too_large",
-                "Object storage is not configured on this deployment; "
-                f"skill archives are limited to {MAX_SKILL_INLINE_BLOB_BYTES} "
-                "bytes",
-                size=len(validated.canonical_zip),
-                max=MAX_SKILL_INLINE_BLOB_BYTES,
-            )
-        archive_blob = validated.canonical_zip
-
-    try:
-        row, superseded_key = await upsert_user_skill(
-            user_id,
-            validated.name,
-            description=validated.description,
-            license=validated.license,
-            frontmatter=validated.frontmatter,
-            allowed_tools=validated.allowed_tools,
-            confirmed=True,
-            content_hash=validated.content_hash,
-            archive_key=archive_key,
-            archive_blob=archive_blob,
-            archive_bytes=len(validated.canonical_zip),
-            file_count=validated.file_count,
-            workspace_id=workspace_id,
-            command=command_seed,
-        )
-    except (SkillTriggerTaken, SkillCapReached) as e:
-        await drop_archive_if_unused(user_id, archive_key)
-        raise _conflict(e) from e
-    except BaseException:
-        await drop_archive_if_unused(user_id, archive_key)
-        raise
-
-    await drop_archive_if_unused(user_id, superseded_key)
-    return _user_row_to_info(row)
+    return _user_row_to_info(
+        await store_skill_archive(user_id, raw, workspace_id=workspace_id)
+    )
 
 
 @router.post("", response_model=SkillInfo, status_code=201)
@@ -728,7 +624,7 @@ async def move_skill(name: str, body: SkillMoveInput, user_id: CurrentUserId):
 async def _refuse_plugin_owned(user_id: str, name: str) -> None:
     owned = await get_user_skill(user_id, name)
     if owned is not None and owned["plugin_id"]:
-        raise _refused(
+        raise refused(
             409,
             "skill_plugin_owned",
             "This skill came with a plugin and goes with it: uninstall the "

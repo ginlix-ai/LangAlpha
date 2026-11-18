@@ -55,6 +55,8 @@ ADMISSION_CONFLICT_CODES = {
     "workspace_moving",
     # A send of file comments that another send, or a delete, left empty.
     "comments_unavailable",
+    # A shared workspace's thread whose running turn another member sent.
+    "another_member",
 }
 
 
@@ -215,6 +217,7 @@ async def wait_or_steer(
     steer_job_id: str | None = None,
     agent: AgentSteer | None = None,
     artifact_comments: ShownSend | None = None,
+    shared: bool = False,
     checked_computer_id: str | None = None,
     on_model: str | None = None,
 ) -> tuple[bool, str | HandOffSteered | None]:
@@ -251,10 +254,12 @@ async def wait_or_steer(
     primer, which has no SSE reader, as does a copy of it that finds its
     steer still one; a run that reports to another Home thread is a 409.
     ``artifact_comments`` rides a steer of a send carrying file comments, for
-    the reader to be shown them rather than the message. ``on_model`` is the
-    model a hand-off names: it steers only a run started on that model, read
-    off the run here rather than by the sender before its approval wait, and
-    meets any other run with a 409, since a running turn keeps its model.
+    the reader to be shown them rather than the message. ``shared`` marks a
+    shared workspace's thread, whose steer is taken in only by a turn of its
+    sender's. ``on_model`` is the model a hand-off names: it steers only a run
+    started on that model, read off the run here rather than by the sender
+    before its approval wait, and meets any other run with a 409, since a
+    running turn keeps its model.
 
     Admission states (see ``LocalRunExecutor.wait_for_admission``):
     - ``"fresh"``     → start a new turn ``(True, None)``; with ``steer_only``,
@@ -296,6 +301,17 @@ async def wait_or_steer(
                 status_code=409, detail=admission_conflict_detail(state)
             )
 
+        running_sender = active_row.get("user_id")
+        if running_sender is not None and running_sender != user_id:
+            # Only in a shared workspace: everywhere else every turn of a
+            # thread is its owner's. Read off the same admission row, so no
+            # worker steers one member's message into another's turn.
+            from src.server.services.shared_workspaces.turns import another_member_detail
+
+            raise HTTPException(
+                status_code=409, detail=await another_member_detail(running_sender)
+            )
+
         active_run_id = str(active_row["conversation_response_id"])
         payload = steer_payload(
             user_input,
@@ -306,6 +322,7 @@ async def wait_or_steer(
             request_key=request_key,
             origin=agent.origin if agent else None,
             artifact_comments=artifact_comments,
+            member=user_id if shared else None,
             checked_computer_id=checked_computer_id,
             llm_model=on_model,
         )

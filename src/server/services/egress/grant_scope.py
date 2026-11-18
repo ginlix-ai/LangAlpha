@@ -10,7 +10,9 @@ The kind is decided by what authenticates the server, never by what it is
 named. An OAuth connection means the relay spends its token; otherwise a
 remote row authenticates with its own headers, and the grant names the row so
 the relay can resolve them per request. A relay-bound built-in authenticates
-with a key the host holds for the user, and earns the platform kind.
+with a key the host holds for the user, and earns the platform kind. An
+organization connector always earns an ``org_mcp`` grant, since its sandbox
+entry reaches it through the relay alone.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from src.server.database.egress_grants import (
     GRANT_KIND_OAUTH_MCP,
     GRANT_KIND_PLATFORM_MCP,
     GrantRef,
+    OrgGrantRef,
 )
 from src.server.database.mcp_tool_schemas import get_user_tool_schemas
 from src.server.models.mcp_server import probe_ok
@@ -102,6 +105,20 @@ async def grant_refs(
                     )
                 )
             continue
+        if entry.origin is Origin.ORG:
+            server = entry.config
+            if server.org_connector_id and server.url:
+                refs.append(
+                    OrgGrantRef(
+                        server_name=entry.name,
+                        connection_id=server.oauth_connection_id,
+                        connector_id=server.org_connector_id,
+                        destination_url=server.url,
+                    )
+                )
+            continue
+        # Otherwise the user tier only: a grant resolves its credential from
+        # the catalog row or the connection behind it.
         if entry.origin is not Origin.USER:
             continue
         server = entry.config

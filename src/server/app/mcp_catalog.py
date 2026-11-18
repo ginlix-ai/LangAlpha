@@ -60,6 +60,8 @@ from src.server.models.mcp_server import (
     catalog_row_to_response,
     parse_mcp_servers_payload,
 )
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.services.mcp_catalog import apply_catalog_enabled, detach_warning
 from src.server.services.mcp_catalog_view import (
     catalog_write_warnings,
@@ -67,7 +69,12 @@ from src.server.services.mcp_catalog_view import (
     decorate_rows,
     snapshot_of,
 )
-from src.server.services.mcp_import import catalog_import_scope, run_mcp_import
+from src.server.services.mcp_import import (
+    catalog_import_scope,
+    record_import,
+    refuse_user_connector_import,
+    run_mcp_import,
+)
 from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
 from src.server.services.mcp_probe import probe_configured, probe_result
 from src.server.services.mcp_saves import CatalogAdd, ServerEdit, parse_server
@@ -310,6 +317,7 @@ async def import_servers(
             detail='No MCP servers found. Expected a JSON object like '
             '{"mcpServers": { "<name>": { ... } }}.',
         )
+    await refuse_user_connector_import(user_id, parsed)
 
     landed_enabled: set[str] = set()
 
@@ -342,6 +350,7 @@ async def import_servers(
     # path purges its snapshot, bumps the version, or pushes to a live sandbox.
     # One fan-out for the batch, not one vault push per secret.
     await after_secrets_changed(user_id, report.secrets_created)
+    record_import(user_id, report)
     # After the secrets landed, so a row whose header refs one of them probes
     # with the value rather than a missing-secret error. Only for a row that
     # landed switched on: the background pass refuses an inert one, so the
@@ -565,5 +574,9 @@ async def delete_server(name: str, user_id: CurrentUserId) -> dict:
         found = await delete_catalog_server(user_id, name)
     if not found:
         raise HTTPException(status_code=404, detail="MCP server not found")
+    activity.record(
+        user_id, Action.CONNECTOR_REMOVED, resource=("mcp_server", name),
+        detail={"name": name},
+    )
     return {"ok": True}
 

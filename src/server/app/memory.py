@@ -21,7 +21,8 @@ from src.server.app._store_helpers import (
     validate_key,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
-from src.server.utils.api import CurrentUserId, require_workspace_owner
+from src.server.services.shared_workspaces.access import workspace_access
+from src.server.utils.api import CurrentUserId
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,12 @@ async def list_workspace_memory(
     workspace_id: str,
     user_id: CurrentUserId,
 ) -> MemoryListResponse:
-    """List all workspace-tier memory entries for the caller's workspace."""
+    """List all workspace-tier memory entries for the caller's workspace, or
+    a shared workspace's (its holder's tier, never a member's own memory)."""
     workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=user_id)
+    access = await workspace_access(workspace, user_id)
     store = require_store(setup.store)
-    namespace = workspace_memory_namespace(user_id, workspace_id)
+    namespace = workspace_memory_namespace(access.owner_id, workspace_id)
     entries, truncated = await paginate_namespace(store, namespace, _value_to_entry)
     return MemoryListResponse(
         tier="workspace", entries=entries, truncated=truncated
@@ -132,9 +134,9 @@ async def read_workspace_memory(
     """Read one workspace-tier memory file by its key."""
     validate_key(key)
     workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=user_id)
+    access = await workspace_access(workspace, user_id)
     store = require_store(setup.store)
-    namespace = workspace_memory_namespace(user_id, workspace_id)
+    namespace = workspace_memory_namespace(access.owner_id, workspace_id)
     item = await aget(store, namespace, key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory entry not found")

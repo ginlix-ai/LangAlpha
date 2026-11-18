@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from src.server.contracts.notices import Notice, SettleNews
 from src.server.contracts.status import to_public
+from src.server.database.conversation import thread_reach
 from src.server.services.thread_lifecycle import interrupt_reason_for
 from src.server.services.workspace_status_pubsub import (
     ChannelWaitFn,
@@ -40,9 +41,26 @@ EVENT_VERSION = 1
 # SSE event name the feed endpoint emits for every forwarded payload.
 LIFECYCLE_EVENT = "thread_lifecycle"
 
+#: On a shared workspace's run event: who sent the run, for each member's
+#: feed connection to word it for its viewer; taken off before it is passed on.
+SENDER_KEY = "sender"
+#: On a shared workspace's event about a thread its starter keeps private:
+#: that starter, the one member it is passed to; taken off before.
+PRIVATE_TO_KEY = "private_to"
+#: A thread was shared with its workspace or made private: passed to everyone
+#: reaching the workspace, so a member with a now private thread open leaves it.
+VISIBILITY_EVENT = "thread_visibility"
+
 
 def user_events_channel(user_id: str) -> str:
     return f"user:events:{user_id}"
+
+
+def shared_events_channel(org_id: str) -> str:
+    """An organization's shared workspaces' events: every member's feed
+    connection listens and passes on only those of the workspaces its
+    account reaches at that moment (``services.shared_workspaces.feed``)."""
+    return f"org:shared-events:{org_id}"
 
 
 def build_lifecycle_event(
@@ -126,27 +144,61 @@ def build_notification_event(
     )
 
 
-async def publish_user_event_strict(user_id: str, event: Dict[str, Any]) -> None:
+async def publish_user_event_strict(
+    user_id: Optional[str],
+    event: Dict[str, Any],
+    *,
+    shared_org: Optional[str] = None,
+) -> None:
     """Raising publisher — the outbox executor's transport.
 
     A Redis failure must SURFACE so the drainer's nack/backoff owns the retry;
     a swallowing publisher would ack-and-discard the settle event. Redis
     disabled by config is a clean no-op (nothing to retry into).
+
+    ``shared_org`` names the organization of a shared workspace the event is
+    about: it goes to that organization's channel instead of one person's.
     """
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         return
-    await cache.client.publish(user_events_channel(user_id), json.dumps(event))
+    if shared_org:
+        event = await _addressed(event)
+        channel = shared_events_channel(shared_org)
+    elif user_id:
+        channel = user_events_channel(user_id)
+    else:
+        return
+    await cache.client.publish(channel, json.dumps(event))
+
+
+async def _addressed(event: Dict[str, Any]) -> Dict[str, Any]:
+    """A shared workspace's event as its organization's feeds pass it on: one
+    about a thread its starter keeps private names them (``PRIVATE_TO_KEY``),
+    read once here rather than by every member's connection. A delete names
+    them itself, since its row is gone by then."""
+    thread_id = event.get("thread_id")
+    if (
+        PRIVATE_TO_KEY in event
+        or not isinstance(thread_id, str)
+        or event.get("type") == VISIBILITY_EVENT
+    ):
+        return event
+    starter = await thread_reach.private_to(thread_id)
+    return event if starter is None else {**event, PRIVATE_TO_KEY: starter}
 
 
 async def publish_user_event(
-    user_id: Optional[str], event: Dict[str, Any]
+    user_id: Optional[str],
+    event: Dict[str, Any],
+    *,
+    shared_org: Optional[str] = None,
 ) -> None:
     """Best-effort publisher for advisory sites (start, title, delete)."""
-    if not user_id:
+    if not user_id and not shared_org:
         return
     try:
-        await publish_user_event_strict(user_id, event)
+        await publish_user_event_strict(user_id, event, shared_org=shared_org)
     except Exception as exc:
         logger.debug(
             "user-feed publish failed (type=%s thread=%s): %s",
@@ -165,10 +217,13 @@ async def publish_run_started(
     run_seq: Optional[int],
     origin: Optional[str] = None,
     notification: Optional[Notice] = None,
+    shared_org: Optional[str] = None,
 ) -> None:
-    await publish_user_event(
-        user_id,
-        build_lifecycle_event(
+    """In a shared workspace the start goes to every member who reaches it,
+    and a notice it carries only to its sender, on their own channel."""
+
+    def started(notice: Optional[Notice]) -> Dict[str, Any]:
+        return build_lifecycle_event(
             type="run_started",
             thread_id=thread_id,
             workspace_id=workspace_id,
@@ -176,9 +231,17 @@ async def publish_run_started(
             run_seq=run_seq,
             status="running",
             origin=origin,
-            notification=notification,
-        ),
+            notification=notice,
+        )
+
+    if not shared_org:
+        await publish_user_event(user_id, started(notification))
+        return
+    await publish_user_event(
+        None, {**started(None), SENDER_KEY: user_id}, shared_org=shared_org
     )
+    if notification is not None:
+        await publish_user_event(user_id, started(notification))
 
 
 async def publish_thread_title(
@@ -188,6 +251,7 @@ async def publish_thread_title(
     workspace_id: Optional[str],
     title: str,
     updated_at: Optional[datetime | str] = None,
+    shared_org: Optional[str] = None,
 ) -> None:
     """``updated_at`` is the title write's row timestamp — the event's version.
 
@@ -207,6 +271,7 @@ async def publish_thread_title(
                 else updated_at
             ),
         ),
+        shared_org=shared_org,
     )
 
 
@@ -275,15 +340,17 @@ async def publish_thread_deleted(
     user_id: Optional[str],
     thread_id: str,
     workspace_id: Optional[str],
+    shared_org: Optional[str] = None,
+    private_to: Optional[str] = None,
 ) -> None:
-    await publish_user_event(
-        user_id,
-        build_lifecycle_event(
-            type="thread_deleted",
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-        ),
+    event = build_lifecycle_event(
+        type="thread_deleted",
+        thread_id=thread_id,
+        workspace_id=workspace_id,
     )
+    if private_to is not None:
+        event[PRIVATE_TO_KEY] = private_to
+    await publish_user_event(user_id, event, shared_org=shared_org)
 
 
 async def publish_thread_archived(
@@ -291,6 +358,7 @@ async def publish_thread_archived(
     user_id: Optional[str],
     thread_id: str,
     workspace_id: Optional[str],
+    shared_org: Optional[str] = None,
 ) -> None:
     """Prune hint: an archived thread leaves the snapshot's live/unseen sets.
 
@@ -304,6 +372,7 @@ async def publish_thread_archived(
             thread_id=thread_id,
             workspace_id=workspace_id,
         ),
+        shared_org=shared_org,
     )
 
 
@@ -312,6 +381,7 @@ async def publish_thread_unarchived(
     user_id: Optional[str],
     thread_id: str,
     workspace_id: Optional[str],
+    shared_org: Optional[str] = None,
 ) -> None:
     """Reappearance hint: the row must leave other tabs' archived views and
     rejoin their live lists (via the refetch the event triggers)."""
@@ -322,6 +392,7 @@ async def publish_thread_unarchived(
             thread_id=thread_id,
             workspace_id=workspace_id,
         ),
+        shared_org=shared_org,
     )
 
 
@@ -374,19 +445,22 @@ async def _exec_user_feed(job: Dict[str, Any]) -> None:
             payload.get("run_id") or job.get("run_id"),
         )
         return
-    await publish_user_event_strict(
-        user_id,
-        build_lifecycle_event(
-            type="run_settled",
-            thread_id=str(thread_id),
-            workspace_id=payload.get("workspace_id"),
-            run_id=str(payload.get("run_id") or job.get("run_id")),
-            run_seq=payload.get("run_seq"),
-            status=payload.get("status"),
-            interrupt_reason=payload.get("interrupt_reason"),
-            last_seen_run_seq=payload.get("last_seen_run_seq"),
-        ),
+    shared_org = payload.get("shared_org_id")
+    event = build_lifecycle_event(
+        type="run_settled",
+        thread_id=str(thread_id),
+        workspace_id=payload.get("workspace_id"),
+        run_id=str(payload.get("run_id") or job.get("run_id")),
+        run_seq=payload.get("run_seq"),
+        status=payload.get("status"),
+        interrupt_reason=payload.get("interrupt_reason"),
+        # A shared thread's seen pointer is each member's own, carried in
+        # their rows; the next snapshot tells each member where theirs is.
+        last_seen_run_seq=None if shared_org else payload.get("last_seen_run_seq"),
     )
+    if shared_org:
+        event[SENDER_KEY] = user_id
+    await publish_user_event_strict(user_id, event, shared_org=shared_org)
 
 
 def register_outbox_executors() -> None:

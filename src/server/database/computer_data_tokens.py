@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 
 from src.server.database.pool import get_db_connection
 from src.server.database.sql_fences import FENCE_BINDABLE
+from src.server.database.shared_workspaces import is_holder
 
 
 @dataclass(frozen=True)
@@ -23,20 +24,24 @@ class DataTokenRow:
     held_by: str | None = None
     #: What a save names to replace this row; 0 with no row.
     generation: int = 0
+    #: The account the last token was minted as.
+    user_id: str | None = None
 
 
 async def load(computer_id: str) -> DataTokenRow:
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT expires_at, held_by, generation FROM computer_data_tokens"
-                " WHERE computer_id = %s",
+                "SELECT expires_at, held_by, generation, user_id"
+                " FROM computer_data_tokens WHERE computer_id = %s",
                 (computer_id,),
             )
             row = await cur.fetchone()
     if row is None:
         return DataTokenRow()
-    return DataTokenRow(row["expires_at"], row["held_by"], int(row["generation"]))
+    return DataTokenRow(
+        row["expires_at"], row["held_by"], int(row["generation"]), row["user_id"]
+    )
 
 
 @dataclass(frozen=True)
@@ -75,8 +80,11 @@ async def save(
             await cur.execute(
                 f"""
                 WITH serving AS (
-                    SELECT computer_id, user_id FROM computers
-                    WHERE computer_id = %(computer_id)s AND user_id = %(user_id)s
+                    -- A shared workspace's computer takes a token minted as
+                    -- the member whose turn acquired it.
+                    SELECT computer_id, %(user_id)s::text AS user_id FROM computers
+                    WHERE computer_id = %(computer_id)s
+                      AND (user_id = %(user_id)s OR user_id LIKE 'shared-%%')
                       AND provider_ref = %(sandbox_id)s
                       AND {FENCE_BINDABLE}
                     FOR SHARE
@@ -140,10 +148,11 @@ class Revocation:
 
 
 def _users(*user_ids: Any) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(u) for u in user_ids if u))
+    # A holder never had a token minted for it, so none is revoked for it.
+    return tuple(dict.fromkeys(str(u) for u in user_ids if u and not is_holder(u)))
 
 
-async def revoke(computer_id: str) -> Revocation | None:
+async def revoke(computer_id: str, *, member: str | None = None) -> Revocation | None:
     """Leave the row with no token and a new generation, inserting it if the
     computer has none, record the revocation as owed until the last token it
     covers runs out, and answer what to send the platform.
@@ -154,6 +163,11 @@ async def revoke(computer_id: str) -> Revocation | None:
     until the last token saved since the previous stop runs out, a bound it
     clears for the next stop, so a stop recorded while an earlier one is still
     owed keeps the later of the two, and the users of both.
+
+    ``member``, someone who lost a shared workspace, is forgotten as the
+    account the row mints as when it is that one: the row then names the
+    computer's holder, for whom nothing mints, so the next token waits for a
+    member's turn.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -168,6 +182,8 @@ async def revoke(computer_id: str) -> Revocation | None:
                 FROM computers WHERE computer_id = %(computer_id)s
                 ON CONFLICT (computer_id) DO UPDATE
                     SET expires_at = NULL, held_by = NULL, tokens_until = NULL,
+                        user_id = CASE WHEN t.user_id = %(member)s
+                                       THEN EXCLUDED.user_id ELSE t.user_id END,
                         generation = t.generation + 1,
                         revoke_until = GREATEST(
                             t.revoke_until, t.tokens_until, t.expires_at
@@ -188,7 +204,7 @@ async def revoke(computer_id: str) -> Revocation | None:
                         updated_at = NOW()
                 RETURNING generation, revoke_users
                 """,
-                {"computer_id": computer_id},
+                {"computer_id": computer_id, "member": member},
             )
             row = await cur.fetchone()
     if row is None:
@@ -367,10 +383,16 @@ async def claim_due(
                            OR t.attempted_at < NOW() - %(retry_after)s
                     RETURNING t.computer_id
                 )
-                SELECT c.computer_id, c.user_id, c.provider_ref, c.kind,
+                -- A shared workspace's computer refreshes for the member
+                -- its token was last minted as.
+                SELECT c.computer_id,
+                       CASE WHEN c.user_id LIKE 'shared-%%' THEN t.user_id
+                            ELSE c.user_id END AS user_id,
+                       c.provider_ref, c.kind,
                        c.provider_config, c.root_dir, c.is_always_on,
                        COALESCE(c.last_activity_at, c.updated_at) AS last_activity
                 FROM claimed JOIN computers c USING (computer_id)
+                LEFT JOIN computer_data_tokens t USING (computer_id)
                 """,
                 {
                     "refresh_below": refresh_below,

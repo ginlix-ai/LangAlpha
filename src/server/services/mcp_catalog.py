@@ -31,7 +31,8 @@ from src.server.database.mcp_servers import (
     set_catalog_server_enabled,
     update_catalog_server,
 )
-from src.server.models.mcp_server import McpServerInput, sandbox_name_error
+from src.server.models.mcp_names import sandbox_name_error
+from src.server.models.mcp_server import McpServerInput
 from src.server.services.brokerages import brokerage_by_name, brokerage_names
 from src.server.services.mcp_config import builtin_names, same_consented_url
 from src.server.services.mcp_dial import consented_bearer, dial_moved
@@ -424,18 +425,30 @@ async def apply_catalog_enabled(
 
     Switching on a row that needs a sign-in it does not have raises the 409
     that starts one (``sign_in_missing``), and writes nothing. Switching off
-    is always allowed.
+    is always allowed. So is it under a policy that withholds the user's own
+    connectors, which refuses switching one on (403).
     """
     from src.server.services.mcp_oauth.lifecycle import revoke_live_grants
+    from src.server.services.account import refuse_user_connector
 
     if enabled:
         current = await get_catalog_server(user_id, name)
         if current is None:
             return None, None
+        await refuse_user_connector(
+            user_id, "Turning on a connector", url=current.get("url")
+        )
         await refuse_missing_sign_in(user_id, current)
     row = await set_catalog_server_enabled(user_id, name, enabled)
     if row is None:
         return None, None
+    from src.server.services import activity
+    from src.server.services.activity import Action
+
+    activity.record(
+        user_id, Action.CONNECTOR_ON if enabled else Action.CONNECTOR_OFF,
+        resource=("mcp_server", name), detail={"name": name, "scope": "account"},
+    )
     if enabled:
         from src.server.services.mcp_descriptions.worker import requeue_server
 

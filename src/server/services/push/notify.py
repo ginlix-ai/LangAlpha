@@ -17,10 +17,12 @@ from typing import Any, Dict, Mapping
 from src.server.contracts.notices import PushKind
 from src.server.database import push_devices as push_db
 from src.server.database.conversation.threads_read import count_threads_needing_attention
+from src.server.database.conversation.viewer_threads import count_shared_attention
 from src.server.database.runs import outbox as outbox_db
 from src.server.services.notices import settle_job_ids, settle_news
 from src.server.services.push.apns import ApnsClient, ApnsOutcome, get_apns_client
 from src.server.services.push.config import push_available
+from src.server.services.shared_workspaces.feed import reach_of
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,15 @@ async def _deliver(
     return result.outcome
 
 
+async def _badge(user_id: str) -> int:
+    """What the app icon counts: the threads the feed badges, the shared
+    workspaces' threads the user reaches among them."""
+    reach = await reach_of(user_id)
+    if reach is not None and reach.workspace_ids:
+        return await count_shared_attention(user_id, sorted(reach.workspace_ids))
+    return await count_threads_needing_attention(user_id)
+
+
 async def execute_push(job: Dict[str, Any]) -> None:
     # From the claim, so the reads before the sends count against the lease.
     deadline = time.time() + SEND_SECONDS
@@ -119,7 +130,7 @@ async def execute_push(job: Dict[str, Any]) -> None:
         "aps": {
             "alert": {"title": message.title, "body": message.body},
             "sound": "default",
-            "badge": await count_threads_needing_attention(user_id),
+            "badge": await _badge(user_id),
             "thread-id": thread_id,
         },
         # expo-notifications reads a remote push's data from userInfo.body.

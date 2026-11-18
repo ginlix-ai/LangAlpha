@@ -25,6 +25,7 @@ from ptc_agent.core.sandbox.runtime import (
 )
 
 from src.config.settings import get_max_workflow_retries
+from src.server.services.computer_errors import ComputerUnavailableError
 from src.server.database import conversation as qr_db
 from src.server.services.runs.stream_errors import unreachable_failure, unreachable_kind
 from src.server.services.runs.pending_input import (
@@ -69,6 +70,23 @@ def _classify_non_recoverable_error_type(e: Exception) -> str:
     return "workflow_error"
 
 
+def _classified(e: Exception) -> Exception:
+    """What a failure is classified as: one whose words alone were changed
+    for the person retries, and is labelled for gateways, as its cause."""
+    if isinstance(e, ComputerUnavailableError) and isinstance(e.__cause__, Exception):
+        return e.__cause__
+    return e
+
+
+def _error_text(e: Exception, prefix: str = "") -> str:
+    """The failure as a run row and a frame keep it: the class names the
+    fault for whoever reads the logs, after ``prefix``, but an error worded
+    for the person who sent the turn is shown as it is."""
+    if isinstance(e, ComputerUnavailableError):
+        return str(e)
+    return f"{prefix}{type(e).__name__}: {str(e)}"
+
+
 def classify_error(e: Exception) -> dict:
     """Classify an exception as recoverable or non-recoverable.
 
@@ -76,6 +94,10 @@ def classify_error(e: Exception) -> dict:
     ``error_type`` is one of ``"connection_error"``, ``"timeout_error"``,
     ``"api_error"``, ``"transient_error"``, or ``None`` for non-recoverable.
     """
+    # One with no cause (see ``_classified``) retries only while it starts.
+    if isinstance(e, ComputerUnavailableError):
+        return {"is_recoverable": e.starting, "is_non_recoverable": False,
+                "error_type": "timeout_error" if e.starting else None}
     # A recovering host refuses starts for minutes, longer than the immediate
     # retry offered here, so the turn ends on the provider's own words asking
     # the person to retry in a few moments. A user's own machine that did not
@@ -259,7 +281,8 @@ async def handle_workflow_error(
     error occurred before the workspace was resolved.
     ``turn_context`` is None only before START, where nothing is finalized.
 
-    Every ``retry`` and failure ``error`` frame names its ``recovery``:
+    Every ``retry`` and failure ``error`` frame but a refusal by policy
+    names its ``recovery``:
     ``retry`` when a failed run is on the ledger for ``/retry`` to chain
     onto, ``resend`` when none was started, so the client sends its request
     again.
@@ -332,7 +355,7 @@ async def handle_workflow_error(
             return False
         records = token_callback.get_per_call_records() if token_callback else None
         tools = handler.get_tool_usage() if handler else None
-        if not (run_handle.workspace_id and run_handle.user_id):
+        if not (run_handle.workspace_id and run_handle.recorded_as):
             records = None
             tools = None
         try:
@@ -425,6 +448,10 @@ async def handle_workflow_error(
             "error_class": type(e).__name__,
             "code": detail["code"],
         }
+        # A shared thread's refusal names the member whose turn is running,
+        # for the composer to say who.
+        if isinstance(detail.get("member"), dict):
+            error_payload["member"] = detail["member"]
         # The run it cancelled stays the thread's latest attempt, which the
         # client names on its next edit, so the frame names it too.
         if run_handle is not None:
@@ -499,7 +526,15 @@ async def handle_workflow_error(
         ),
     ):
         await scope.release_slot()
-        if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError)):
+        running_sender = (
+            (e.active_run or {}).get("user_id") if isinstance(e, RunSlotBusyError) else None
+        )
+        if running_sender is not None and running_sender != scope.user_id:
+            # Two members' sends raced for a shared thread's one slot.
+            from src.server.services.shared_workspaces.turns import another_member_detail
+
+            detail = await another_member_detail(running_sender)
+        elif isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError)):
             detail = admission_conflict_detail("running")
         elif isinstance(e, WorkspaceMovingError):
             detail = admission_conflict_detail("workspace_moving")
@@ -576,13 +611,54 @@ async def handle_workflow_error(
         yield _emit_sse_error(handler, error_payload)
         return
 
+    # A refusal by policy (a turn on a machine the policy keeps work off,
+    # caught at acquire), or of a suspended account, stands until the policy
+    # or the account changes, so neither a retry nor a resend can help: the
+    # frame names no ``recovery``, which is what tells a client not to offer
+    # one, as the protocol refusals above do.
+    from src.server.services.account import ACCOUNT_SUSPENDED
+    from src.server.services.policy import POLICY_DENIED, PolicyDenied
+    from src.server.services.refusals import Refusal
+
+    if isinstance(e, Refusal):
+        await scope.release_slot()
+        detail = e.detail
+        if isinstance(e, PolicyDenied):
+            from src.server.services.activity import record_refusal
+
+            record_refusal(
+                e, user_id, workspace_id=workspace_id, thread_id=thread_id
+            )
+            fields = {"error_type": POLICY_DENIED, "rule": detail.get("rule")}
+            shown = {"set_by": detail.get("set_by")}
+        else:
+            fields = {"error_type": ACCOUNT_SUSPENDED}
+            shown = {"organization": detail.get("organization")}
+        if await _finalize_error(
+            str(e), {**fields, "error_class": type(e).__name__}
+        ):
+            return  # durable cancel won: no failure surface
+        error_payload = {
+            "thread_id": thread_id,
+            "error": str(e),
+            "type": "workflow_error",
+            "error_type": fields["error_type"],
+            "error_class": type(e).__name__,
+            **{k: v for k, v in fields.items() if k != "error_type"},
+            **shown,
+        }
+        if run_handle is not None:
+            error_payload["run_id"] = run_handle.run_id
+        yield _emit_sse_error(handler, error_payload)
+        return
+
     MAX_RETRIES = get_max_workflow_retries()
 
     # Release burst slot on error (setup errors before background task starts;
     # post-handoff this no-ops — the executor's terminal hooks own the release)
     await scope.release_slot()
 
-    classification = classify_error(e)
+    classification = classify_error(_classified(e))
     is_recoverable = classification["is_recoverable"]
     # A START that committed left this run as the thread's latest attempt,
     # which the client names on its next edit; a refused one left nothing.
@@ -602,9 +678,8 @@ async def handle_workflow_error(
                 f"thread_id={thread_id}: {type(e).__name__}: {str(e)[:100]}"
             )
 
-            error_msg = (
-                f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): "
-                f"{type(e).__name__}: {str(e)}"
+            error_msg = _error_text(
+                e, f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): "
             )
 
             if await _finalize_error(
@@ -642,7 +717,7 @@ async def handle_workflow_error(
             # generator is suspended at the yield would otherwise strand the
             # run in_progress with no executor.
             if await _finalize_error(
-                f"{type(e).__name__}: {str(e)}",
+                _error_text(e),
                 {
                     "error_type": error_type,
                     "error_class": type(e).__name__,
@@ -669,7 +744,7 @@ async def handle_workflow_error(
         # Non-recoverable error
         logger.exception(f"[PTC_ERROR] thread_id={thread_id}: {e}")
 
-        error_type_label = _classify_non_recoverable_error_type(e)
+        error_type_label = _classify_non_recoverable_error_type(_classified(e))
         # The user's own machine not answering is worded by the client in the
         # user's terms, so it carries its own kind, the connect code and which
         # machine, as a turn whose machine went mid-run does.

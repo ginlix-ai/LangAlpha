@@ -183,11 +183,11 @@ async def _summarize_and_install(row: dict[str, Any], thread: _Thread, held: Asy
         config=config,
         user_id=user_id,
         held=held,
-        role=thread.route.role,
+        route=thread.route,
         checkpoint_id=row["base_checkpoint_id"],
     )
     # Ends with ``held``, after the install.
-    tracker = await held.enter_async_context(_recorded(agent, user_id, "idle_compact"))
+    tracker = await held.enter_async_context(_recorded(agent, "idle_compact"))
     if isinstance(target, ClaudeCodeTarget):
         write, kind = await _session_summary(agent, row, target)
     else:

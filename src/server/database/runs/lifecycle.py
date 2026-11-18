@@ -40,13 +40,21 @@ from src.server.database.runs.outbox import (
 )
 from src.server.contracts.status import (
     RESTART_INTERRUPTED_META,
+    SUSPENSION_STOP_META,
     TERMINAL_STATUSES,
+    Stopper,
+    gives_back,
     is_restart_interrupted,
+    stopper_of,
+    stops_mark,
 )
 from src.server.database.claude_code_hosted import CLI_COMPUTER
+from src.server.database.conversation.shared_thread_reads import (
+    keep_members_seen_over_quiet,
+)
 from src.server.database.home_workspace import STAND_IN_COMPUTER
 from src.server.database.provenance import MAIN_PROVENANCE_LANE
-from src.server.database.runs.hook_jobs import is_unchanged_quiet
+from src.server.database.runs.hook_jobs import SHARED_ORG_META, is_unchanged_quiet
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
 
 logger = logging.getLogger(__name__)
@@ -678,9 +686,10 @@ async def finalize_run(
     the row first wins — the row lock linearizes cancel vs finalize).
     Callers must read the terminal status from the returned row, not from
     what they asked for. Pre-existing intent stamps metadata.cancelled_by_user
-    regardless of the requested status (intent only ever comes from a user
-    /cancel) and drops a restart's stamp, since nothing resumes a user's
-    stop; a requested 'cancelled' finalize backfills cancel_requested_at
+    regardless of the requested status (true, unless the intent is the
+    account's suspension's, ``SUSPENSION_STOP_META``, which is no user stop)
+    and drops a restart's stamp, since nothing resumes a stop someone asked
+    for; a requested 'cancelled' finalize backfills cancel_requested_at
     so terminal cancelled rows are self-consistent — on terminal rows the
     flag is the user-provenance marker, the timestamp only the decision time. usage_writer runs inside the transaction on the
     same connection so a persist failure aborts the terminal transition
@@ -737,9 +746,11 @@ async def finalize_run(
                             END,
                             metadata = (COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 || CASE
-                                    WHEN cancel_requested_at IS NOT NULL
-                                        THEN '{"cancelled_by_user": true}'::jsonb
-                                    ELSE '{}'::jsonb
+                                    WHEN cancel_requested_at IS NULL
+                                        THEN '{}'::jsonb
+                                    WHEN COALESCE(metadata->>%s, '') = 'true'
+                                        THEN '{"cancelled_by_user": false}'::jsonb
+                                    ELSE '{"cancelled_by_user": true}'::jsonb
                                 END) - CASE
                                     WHEN cancel_requested_at IS NOT NULL THEN %s::text
                                     ELSE ''
@@ -765,6 +776,7 @@ async def finalize_run(
                             outcome.interrupt_reason,
                             status,
                             SafeJson(run_metadata),
+                            SUSPENSION_STOP_META,
                             RESTART_INTERRUPTED_META,
                             outcome.warnings or [],
                             outcome.errors or [],
@@ -806,9 +818,16 @@ async def finalize_run(
 
                 seen_run_seq = None
                 if final_status == "completed" and is_unchanged_quiet(run_meta):
-                    seen_run_seq = await _keep_seen_over_quiet(
-                        conn, thread_id, run_row["run_seq"]
-                    )
+                    if run_meta.get(SHARED_ORG_META):
+                        # A shared thread's seen pointer is each member's.
+                        if run_row["run_seq"] is not None:
+                            await keep_members_seen_over_quiet(
+                                conn, thread_id, run_row["run_seq"]
+                            )
+                    else:
+                        seen_run_seq = await _keep_seen_over_quiet(
+                            conn, thread_id, run_row["run_seq"]
+                        )
 
                 await qr_db._sync_provenance_for_response(
                     conn,
@@ -870,15 +889,7 @@ async def finalize_run(
                     thread_id=thread_id,
                     run_id=run_id,
                     final_status=final_status,
-                    user_cancel=(
-                        final_status == "cancelled"
-                        and bool(run_meta.get("cancelled_by_user"))
-                        and not run_meta.get("stopped_by_agent")
-                    ),
-                    agent_stop=(
-                        final_status == "cancelled"
-                        and bool(run_meta.get("stopped_by_agent"))
-                    ),
+                    stopper=stopper_of(run_row),
                 )
 
                 if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
@@ -918,7 +929,10 @@ async def _get_finalize_row(run_id: str) -> Optional[Dict[str, Any]]:
 
 
 async def request_run_cancel(
-    run_id: str, thread_id: Optional[str] = None, *, by_user: bool = True
+    run_id: str,
+    thread_id: Optional[str] = None,
+    *,
+    by: Stopper = "user",
 ) -> Dict[str, Any]:
     """Durable cancel intent: honest, idempotent, never a recorded losing cancel.
 
@@ -937,16 +951,18 @@ async def request_run_cancel(
     row as in_progress — one lap would misreport that as already_requested
     while no intent ever landed. The second lap stamps the now-visible row.
 
-    ``by_user=False`` is an agent's stop: it marks the run ``stopped_by_agent``
-    and leaves the user's steers for the run's ending to keep.
+    A stop by anyone but the user (``by``) leaves the user's steers for the
+    run's ending to keep, and marks the run with ``stops_mark(by)`` in the
+    stamp's own UPDATE, so the first stop stamped is the one recorded.
     """
+    by_user = gives_back(by)
     sql = """
         UPDATE conversation_responses
         SET cancel_requested_at = NOW()"""
-    if not by_user:
-        sql += """,
-            metadata = COALESCE(metadata, '{}'::jsonb)
-                || '{"stopped_by_agent": true}'::jsonb"""
+    if (mark := stops_mark(by)) is not None:
+        sql += f""",
+            metadata = COALESCE(metadata, '{{}}'::jsonb)
+                || jsonb_build_object('{mark}', true)"""
     sql += """
         WHERE conversation_response_id = %s
           AND status = 'in_progress'
@@ -1123,6 +1139,57 @@ async def get_active_run(thread_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def open_runs_of_user(
+    user_id: str, *, started_before: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """The user's turns still in progress, started before ``started_before``
+    when given: ``conversation_response_id`` and ``conversation_thread_id``
+    of each."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT conversation_response_id, conversation_thread_id
+                FROM conversation_responses
+                WHERE user_id = %s AND status = 'in_progress'
+                  AND (%s::timestamptz IS NULL OR created_at < %s::timestamptz)
+                """,
+                (user_id, started_before, started_before),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def user_has_running_work(user_id: str) -> bool:
+    """Whether the user has anything an account stop acts on: a turn, a
+    subagent run or a background command in progress, or a running
+    computer. The first three are found through their status indexes, so
+    each reads every row in progress on the deployment, not the user's: a
+    cost the size of the work running at the time, paid once per notice.
+    Notices are rare, and an index by user would be paid at every run's
+    start; computers have one."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS (
+                           SELECT 1 FROM conversation_responses
+                           WHERE user_id = %(u)s AND status = 'in_progress')
+                    OR EXISTS (
+                           SELECT 1 FROM subagent_runs
+                           WHERE user_id = %(u)s AND status = 'in_progress')
+                    OR EXISTS (
+                           SELECT 1 FROM command_runs
+                           WHERE user_id = %(u)s AND status = 'running')
+                    OR EXISTS (
+                           SELECT 1 FROM computers
+                           WHERE user_id = %(u)s AND status = 'running')
+                """,
+                {"u": user_id},
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
 async def workspace_has_active_run(workspace_id: str) -> bool:
     """Any live root run on any thread of the workspace — cross-worker,
     unlike the in-process task map."""
@@ -1143,6 +1210,24 @@ async def workspace_has_active_run(workspace_id: str) -> bool:
             return bool((await cur.fetchone())[0])
 
 
+def live_runs_exist(workspace: str) -> str:
+    """SQL true when any root or background run is in progress on the threads
+    of the workspace ``workspace`` names (a placeholder or a column), so every
+    reader asking whether a workspace is busy asks the same question."""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM conversation_responses r
+            JOIN conversation_threads t
+              ON t.conversation_thread_id = r.conversation_thread_id
+            WHERE t.workspace_id = {workspace} AND r.status = 'in_progress'
+            UNION ALL
+            SELECT 1 FROM subagent_runs r
+            JOIN conversation_threads t
+              ON t.conversation_thread_id = r.thread_id
+            WHERE t.workspace_id = {workspace} AND r.status = 'in_progress'
+        )"""
+
+
 async def workspace_has_live_runs(cur, workspace_id: str) -> bool:
     """Any root or background run in progress on the workspace's threads.
 
@@ -1151,19 +1236,7 @@ async def workspace_has_live_runs(cur, workspace_id: str) -> bool:
     FOR SHARE until its run row commits.
     """
     await cur.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM conversation_responses r
-            JOIN conversation_threads t
-              ON t.conversation_thread_id = r.conversation_thread_id
-            WHERE t.workspace_id = %(workspace_id)s AND r.status = 'in_progress'
-            UNION ALL
-            SELECT 1 FROM subagent_runs r
-            JOIN conversation_threads t
-              ON t.conversation_thread_id = r.thread_id
-            WHERE t.workspace_id = %(workspace_id)s AND r.status = 'in_progress'
-        ) AS busy
-        """,
+        f"SELECT {live_runs_exist('%(workspace_id)s')} AS busy",
         {"workspace_id": workspace_id},
     )
     return (await cur.fetchone())["busy"]

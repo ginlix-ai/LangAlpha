@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 from uuid import uuid4
 
+from src.server.contracts.status import SUSPENSION_STOPPER, is_suspension_stop
 from src.server.contracts.status import unreachable_facts
 from src.server.contracts.turn_kinds import RUN_ORIGIN_META, classify_origin
 from src.server.database.runs import lifecycle as tl_db
@@ -113,7 +114,10 @@ class RunHandle:
     turn_index: int
     attempt_no: int
     workspace_id: Optional[str] = None
+    #: The sender, whom the run's row names.
     user_id: Optional[str] = None
+    #: The account its usage rows name (``TurnIdentity.recorded_as``).
+    recorded_as: Optional[str] = None
     is_byok: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     finalized: bool = False
@@ -193,6 +197,7 @@ class RunCoordinator:
         request_key: Optional[str] = None,
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        recorded_as: Optional[str] = None,
         is_byok: bool = False,
         query: Optional[QuerySpec] = None,
         fork: Optional[ForkSpec] = None,
@@ -282,6 +287,7 @@ class RunCoordinator:
                 attempt_no=row["attempt_no"],
                 workspace_id=workspace_id,
                 user_id=user_id,
+                recorded_as=recorded_as,
                 is_byok=is_byok,
                 started_at=row["created_at"],
                 guard=guard,
@@ -301,6 +307,7 @@ class RunCoordinator:
             #   (unlike run_settled, which rides the outbox). Time-bounded, and
             #   a timeout is swallowed HERE so it can't reach the guard-release
             #   below and fail the turn over a hint.
+            from src.server.database.runs.hook_jobs import SHARED_ORG_META
             from src.server.services.notices import compose_started
             from src.server.services.thread_control_stream import (
                 announce_run_started,
@@ -324,6 +331,7 @@ class RunCoordinator:
                                 row.get("thread_title"),
                                 metadata.get("automation_name"),
                             ),
+                            shared_org=metadata.get(SHARED_ORG_META),
                         ),
                         timeout=1.0,
                     )
@@ -552,6 +560,7 @@ class RunCoordinator:
                 run_id,
                 final_status,
                 error_frame=error_frame if final_status == "error" else None,
+                stopped_by=SUSPENSION_STOPPER if is_suspension_stop(result.run) else None,
             )
         return result
 
@@ -723,7 +732,7 @@ class RunCoordinator:
             usage = UsagePersistenceService(
                 thread_id=handle.thread_id,
                 workspace_id=handle.workspace_id,
-                user_id=handle.user_id,
+                user_id=handle.recorded_as,
             )
             if outcome.per_call_records:
                 await usage.track_llm_usage(outcome.per_call_records)

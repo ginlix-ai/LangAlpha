@@ -27,7 +27,8 @@ from pydantic import BaseModel
 from src.llms.claude_code import FEATURE, is_token_text, rows_available
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn, exchange_failure
 from src.server.models.claude_code import CodeBody, TokenBody
-from src.server.services import claude_oauth
+from src.server.services import activity, claude_oauth
+from src.server.services.activity import Action
 from src.server.services.features import user_feature_enabled
 from src.utils.cache.redis_cache import get_cache_client
 
@@ -66,6 +67,7 @@ class TokenHome[Status: BaseModel](Protocol):
     ``remove_s`` what a removal spends.
     """
 
+    user_id: str
     lock: str
     sign_in: PendingSignIn
     who: str
@@ -229,7 +231,17 @@ async def _save[S: BaseModel](
 ) -> S:
     async with home.placed(token, held=held, retryable=retryable) as launcher:
         await require_works(launcher, rejected=rejected, retryable=retryable)
-    return await home.keep(token, held=held, email=email, expires_at=expires_at, token_uuid=token_uuid)
+    kept = await home.keep(token, held=held, email=email, expires_at=expires_at, token_uuid=token_uuid)
+    _record(home, Action.MODEL_SIGN_IN_CONNECTED)
+    return kept
+
+
+def _record(home: TokenHome[BaseModel], action: Action) -> None:
+    computer_id = getattr(home, "computer_id", None)
+    activity.record(
+        home.user_id, action, resource=("computer", computer_id) if computer_id else None,
+        detail={"provider": "claude-code", "on_computer": computer_id is not None},
+    )
 
 
 async def start_sign_in(home: TokenHome[BaseModel]) -> dict:
@@ -274,3 +286,4 @@ async def remove(home: TokenHome[BaseModel]) -> None:
     await home.ready(install=False)
     async with changing(home.lock, hold_s=home.remove_s) as held:
         await home.remove(held=held)
+    _record(home, Action.MODEL_SIGN_IN_DISCONNECTED)

@@ -17,5 +17,12 @@
     "comps",
     "equity-research",
     "earnings"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "portfolio-diagnosis": { "needs_own_data": true }
+      }
+    }
+  }
 }

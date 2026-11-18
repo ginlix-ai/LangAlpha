@@ -5,10 +5,17 @@ This module defines response models for workspace thread endpoints that work wit
 the query-response schema (workspaces, thread, query, response).
 """
 
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any, Literal
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from src.server.models.report import PlatformStatus, ReportClient, ReportFollowUp
 
@@ -18,11 +25,42 @@ from src.server.utils.thread_stamp import SCANNED_CHARS
 
 # ==================== Workspace Thread Response Models ====================
 
+class ThreadSender(BaseModel):
+    user_id: str
+    name: Optional[str] = None
+
+
+class SharedThreadInfo(BaseModel):
+    """Who started a shared workspace's thread and who sent its latest turn,
+    and whether it is shared with the workspace or its starter's alone."""
+
+    created_by: Optional[ThreadSender] = None
+    last_sender: Optional[ThreadSender] = None
+    shared_with_workspace: bool = True
+    #: Someone other than its starter has sent a turn there, so it can no
+    #: longer be made private.
+    others_sent: bool = False
+
+
+class ThreadVisibilityRequest(BaseModel):
+    """Body of PUT /api/v1/threads/{id}/visibility."""
+
+    shared_with_workspace: bool = Field(
+        ...,
+        description="True shares the thread with everyone in its shared "
+        "workspace; False makes it its starter's alone again, refused once "
+        "anyone else has sent a turn in it.",
+    )
+
+
 class WorkspaceThreadListItem(BaseModel):
     """Response model for a thread in list view."""
     thread_id: str = Field(..., description="Thread ID")
     workspace_id: str = Field(..., description="Workspace ID")
-    thread_index: int = Field(..., description="Thread index within workspace")
+    thread_index: Optional[int] = Field(
+        None,
+        description="Thread index within workspace; absent in a shared workspace",
+    )
     current_status: str = Field(..., description="Thread status")
     msg_type: Optional[str] = Field(None, description="Message type")
     title: Optional[str] = Field(None, description="User-editable thread title")
@@ -97,6 +135,20 @@ class WorkspaceThreadListItem(BaseModel):
     )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+    shared: Optional["SharedThreadInfo"] = Field(
+        None,
+        description="Only on a thread in a shared workspace (absent elsewhere): "
+        "who started it and who sent its latest turn.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_shared(self, handler):
+        # A personal thread's item keeps exactly its shape from before shared
+        # workspaces, rather than carrying a null for them.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("shared") is None:
+            data.pop("shared", None)
+        return data
 
     # Lifecycle enrichment (thread-lifecycle v6) — derived from the latest
     # attempt on the run ledger. All optional: only the list queries join the
@@ -319,6 +371,12 @@ class ThreadCreateRequest(BaseModel):
         description="The thread's own fast mode; omitted, the thread follows "
         "the user's Settings until a PATCH sets one.",
     )
+    shared_with_workspace: bool = Field(
+        default=False,
+        description="In a shared workspace, start the thread shared with "
+        "everyone in it; omitted, it is the starter's alone until they share "
+        "it. Ignored anywhere else.",
+    )
 
     @model_validator(mode="after")
     def _something_titles_the_thread(self) -> "ThreadCreateRequest":
@@ -338,7 +396,7 @@ class ThreadCreateResponse(BaseModel):
     """
     thread_id: str
     workspace_id: str
-    thread_index: int
+    thread_index: Optional[int] = None
     title: Optional[str] = None
     msg_type: str
     subagents_allowed: Optional[bool] = Field(
@@ -461,6 +519,14 @@ class SharePermissions(BaseModel):
             "workspace."
         ),
     )
+    # Absent means anyone, which every token minted so far opens to.
+    audience: Literal["public", "organization"] = Field(
+        "public",
+        description=(
+            "Who the link opens to: anyone with it, or only members of the "
+            "owner's organization, who sign in to open it."
+        ),
+    )
 
     @model_validator(mode="after")
     def download_requires_files(self):
@@ -484,6 +550,10 @@ class ThreadShareResponse(BaseModel):
     share_url: Optional[str] = Field(None, description="Full share URL")
     permissions: SharePermissions = Field(
         default_factory=SharePermissions, description="Current share permissions"
+    )
+    audiences: List[Literal["public", "organization"]] = Field(
+        default_factory=lambda: ["public"],
+        description="The audiences the owner may choose for the link now",
     )
 
 

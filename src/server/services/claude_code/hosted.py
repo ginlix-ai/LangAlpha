@@ -579,7 +579,7 @@ async def stop_stored_turns(user_id: str) -> int:
 
     if HOST_MODE != "platform":
         return 0
-    stops = [partial(cancel_workflow, thread_id, run_id, by_user=False) for thread_id, run_id in await live_stored_turns(user_id)]
+    stops = [partial(cancel_workflow, thread_id, run_id, by="agent") for thread_id, run_id in await live_stored_turns(user_id)]
     stops += [
         partial(cancel_subagent_task, thread_id, task_id, task_run_id=run_id)
         for thread_id, task_id, run_id in await live_stored_task_runs(user_id)

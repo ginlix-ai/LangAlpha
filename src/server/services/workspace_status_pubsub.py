@@ -263,6 +263,26 @@ async def subscribe_to_channel(
     fallback. Subscribers MUST re-read the authoritative state after
     subscribing — the channel may have published before SUBSCRIBE completed.
     """
+    async with _subscribe((channel,), tagged=False) as wait:
+        yield wait
+
+
+@asynccontextmanager
+async def subscribe_to_channels(
+    *channels: str,
+) -> AsyncIterator[Optional[ChannelWaitFn]]:
+    """:func:`subscribe_to_channel` on several channels at once, over one
+    connection. A message's payload comes as ``{"channel", "data"}``, so the
+    caller can tell which channel it came by."""
+    async with _subscribe(tuple(channels), tagged=True) as wait:
+        yield wait
+
+
+@asynccontextmanager
+async def _subscribe(
+    channels: Tuple[str, ...], *, tagged: bool
+) -> AsyncIterator[Optional[ChannelWaitFn]]:
+    label = ",".join(channels)
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         yield None
@@ -277,11 +297,11 @@ async def subscribe_to_channel(
 
     pubsub = client.pubsub()
     try:
-        await pubsub.subscribe(channel)
+        await pubsub.subscribe(*channels)
     except Exception as exc:
         # warning, not debug: this is where pool exhaustion surfaces, and it
         # silently downgrades five subsystems to their DB-poll fallbacks.
-        logger.warning("Failed to subscribe to %s: %s", channel, exc)
+        logger.warning("Failed to subscribe to %s: %s", label, exc)
         try:
             await pubsub.aclose()
         except Exception:
@@ -298,7 +318,7 @@ async def subscribe_to_channel(
                 timeout=timeout,
             )
         except Exception as exc:
-            logger.debug("Pubsub get_message error on %s: %s", channel, exc)
+            logger.debug("Pubsub get_message error on %s: %s", label, exc)
             return ("error", None)
         if not msg or msg.get("type") != "message":
             return ("timeout", None)
@@ -314,6 +334,11 @@ async def subscribe_to_channel(
             return ("timeout", None)
         if not isinstance(payload, dict):
             return ("timeout", None)
+        if tagged:
+            channel = msg.get("channel")
+            if isinstance(channel, bytes):
+                channel = channel.decode("utf-8", "replace")
+            return ("message", {"channel": channel, "data": payload})
         return ("message", payload)
 
     try:
@@ -328,7 +353,7 @@ async def subscribe_to_channel(
         # the pool for the process lifetime.
         with anyio.CancelScope(shield=True):
             try:
-                await pubsub.unsubscribe(channel)
+                await pubsub.unsubscribe(*channels)
             except Exception:
                 pass
             try:

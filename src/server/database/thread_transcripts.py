@@ -17,6 +17,7 @@ from psycopg.errors import ForeignKeyViolation
 from psycopg.rows import dict_row
 
 from ptc_agent.core.paths import THREAD_DIR_NAME
+from src.server.database.conversation.thread_reach import reaches_sql, served_on_computer_sql
 from src.server.database.pool import get_db_connection
 
 # The fingerprint of a copy compaction saved live, from the messages in hand
@@ -145,20 +146,42 @@ async def workspace_checkpoints(workspace_id: str) -> list[tuple[str, str]]:
             return [(str(row[0]), row[1]) for row in await cur.fetchall()]
 
 
-async def workspace_transcripts(workspace_id: str) -> list[str]:
+@dataclass(frozen=True)
+class Scope:
+    """Which of a workspace's threads a transcript read serves: a condition on
+    ``t`` and its parameters."""
+
+    condition: str
+    params: tuple[str, ...] = ()
+
+
+#: The threads a workspace's computer serves to any agent there.
+ON_COMPUTER = Scope(f" AND {served_on_computer_sql('t')}")
+
+
+def own_thread(thread_id: str, sender: str) -> Scope:
+    """One thread, for a turn whose sender keeps it private, while they still
+    reach it."""
+    return Scope(
+        f" AND t.conversation_thread_id = %s::uuid AND {reaches_sql('t', '%s')}",
+        (thread_id, sender),
+    )
+
+
+async def workspace_transcripts(workspace_id: str, *, scope: Scope) -> list[str]:
     """Ids of the workspace's threads that have a stored transcript."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT t.conversation_thread_id FROM conversation_threads t
-                WHERE t.workspace_id = %s
+                WHERE t.workspace_id = %s{scope.condition}
                   AND EXISTS (
                       SELECT 1 FROM thread_transcripts s
                       WHERE s.conversation_thread_id = t.conversation_thread_id
                   )
                 """,
-                (workspace_id,),
+                (workspace_id, *scope.params),
             )
             return [str(row[0]) for row in await cur.fetchall()]
 
@@ -168,11 +191,21 @@ async def workspace_transcripts(workspace_id: str) -> list[str]:
 # are numbered alike, so serving either there would answer a path written for
 # the other with the wrong conversation. The prefix is a uuid range, so the
 # primary key finds it.
+def _thread_by_short_id(
+    workspace_id: str, bounds: tuple[str, str], scope: Scope
+) -> tuple[str, tuple[str, ...]]:
+    """The query naming the thread, and its parameters."""
+    return (
+        _THREAD_BY_SHORT_ID.replace("{served}", scope.condition),
+        (workspace_id, *scope.params, *bounds),
+    )
+
+
 _THREAD_BY_SHORT_ID = """
     WITH thread AS (
         SELECT (array_agg(t.conversation_thread_id))[1] AS id
         FROM conversation_threads t
-        WHERE t.workspace_id = %s
+        WHERE t.workspace_id = %s{served}
           AND t.conversation_thread_id BETWEEN %s::uuid AND %s::uuid
           AND EXISTS (
               SELECT 1 FROM thread_transcripts s
@@ -193,23 +226,24 @@ def _short_id_range(short_id: str) -> tuple[str, str] | None:
 
 
 async def list_transcript(
-    workspace_id: str, short_id: str
+    workspace_id: str, short_id: str, *, scope: Scope
 ) -> dict[str, tuple[str, int]] | None:
     """Every file of the transcript directory ``short_id`` names, by its path
     in it, with its sha256 and size; None when there is no such directory."""
     bounds = _short_id_range(short_id)
     if bounds is None:
         return None
+    thread, params = _thread_by_short_id(workspace_id, bounds, scope)
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                _THREAD_BY_SHORT_ID
+                thread
                 + """
                 SELECT f.path, f.sha256, f.byte_len
                 FROM thread_transcript_files f
                 JOIN thread ON f.conversation_thread_id = thread.id
                 """,
-                (workspace_id, *bounds),
+                params,
             )
             rows = await cur.fetchall()
     return {path: (sha256, int(byte_len)) for path, sha256, byte_len in rows} or None
@@ -227,7 +261,12 @@ class ListedFile:
 
 
 async def list_transcript_tree(
-    workspace_id: str, short_id: str | None, limit: int, *, newest_first: bool = False
+    workspace_id: str,
+    short_id: str | None,
+    limit: int,
+    *,
+    newest_first: bool = False,
+    scope: Scope,
 ) -> list[ListedFile]:
     """The first ``limit`` files of the workspace's transcript directories,
     or of the one ``short_id`` names, in directory order, each directory
@@ -242,13 +281,13 @@ async def list_transcript_tree(
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 WITH thread AS (
                     SELECT (array_agg(t.conversation_thread_id))[1] AS id,
                         left(t.conversation_thread_id::text, 8) AS short_id,
                         max(t.updated_at) AS updated_at
                     FROM conversation_threads t
-                    WHERE t.workspace_id = %s
+                    WHERE t.workspace_id = %s{scope.condition}
                       AND t.conversation_thread_id BETWEEN %s::uuid AND %s::uuid
                       AND EXISTS (
                           SELECT 1 FROM thread_transcripts s
@@ -263,7 +302,7 @@ async def list_transcript_tree(
                 ORDER BY CASE WHEN %s THEN thread.updated_at END DESC NULLS LAST, 2, 3
                 LIMIT %s
                 """,
-                (workspace_id, *bounds, newest_first, limit),
+                (workspace_id, *scope.params, *bounds, newest_first, limit),
             )
             rows = await cur.fetchall()
     return [
@@ -297,23 +336,28 @@ async def load_transcript_contents(files: list[ListedFile]) -> dict[ListedFile, 
 
 
 async def load_transcript_file(
-    workspace_id: str, short_id: str, path: str
+    workspace_id: str,
+    short_id: str,
+    path: str,
+    *,
+    scope: Scope,
 ) -> StoredFile | None:
     """One file of the transcript directory ``short_id`` names, in one round
     trip."""
     bounds = _short_id_range(short_id)
     if bounds is None:
         return None
+    thread, params = _thread_by_short_id(workspace_id, bounds, scope)
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                _THREAD_BY_SHORT_ID
+                thread
                 + """
                 SELECT f.user_id, f.sha256, f.content FROM thread_transcript_files f
                 JOIN thread ON f.conversation_thread_id = thread.id
                 WHERE f.path = %s
                 """,
-                (workspace_id, *bounds, path),
+                (*params, path),
             )
             row = await cur.fetchone()
     if row is None:

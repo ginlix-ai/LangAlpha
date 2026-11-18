@@ -311,7 +311,7 @@ def _bounded(text: str, limit: int = PROBE_ERROR_MAX_CHARS) -> str:
 _MIN_SECRET_CHARS = 8
 
 
-def _sent_secrets(
+def sent_secrets(
     url: str, headers: Mapping[str, str], vault_values: Iterable[str] = ()
 ) -> tuple[str, ...]:
     """Every value this dial puts on the wire that a server could quote back.
@@ -411,7 +411,7 @@ async def _preflight(
     Returns a terminal outcome when the handshake cannot proceed, else None and
     the auth requirement the answer implied. ``credential`` is whether the
     headers carry one (``sends_credential``), which is what a refusal means;
-    ``secrets`` is the dial's ``_sent_secrets``, for what this logs.
+    ``secrets`` is the dial's ``sent_secrets``, for what this logs.
     """
     send = {**_PREFLIGHT_HEADERS, **headers}
     async with oauth_http_client() as client:
@@ -572,7 +572,7 @@ async def probe_remote_server(
     sent = strip_configured_headers(headers)
     if credential is None:
         credential = sends_credential(sent)
-    secrets = _sent_secrets(url, sent, vault_values)
+    secrets = sent_secrets(url, sent, vault_values)
     outcome = await _probe(
         url, sent, credential=credential, timeout_s=timeout_s, secrets=secrets
     )

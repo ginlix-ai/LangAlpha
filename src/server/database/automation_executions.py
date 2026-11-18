@@ -119,6 +119,9 @@ async def transition_execution(
             return dict(row) if row else None
 
 
+# How long a one-shot whose firing was put off waits to come due again.
+DEFER_INTERVAL = "interval '1 hour'"
+
 # What a settled firing leaves on its automation. A close only lands while the
 # automation is still on the firing being settled: a reschedule, pause or
 # disable made during the run wins, and a manual run never closes anything.
@@ -142,9 +145,25 @@ _SCHEDULE_SQL = {
         WHERE automation_id = %s AND status = 'executing'
           AND (last_run_at = %s OR last_run_at IS NULL)
     """,
+    # Put off rather than used up: due again after DEFER_INTERVAL, which is
+    # what keeps a firing refused for as long as a suspension lasts from
+    # coming due on every pass. A price alert's ``next_run_at`` is when it
+    # watches again (``get_active_price_automations``).
+    "defer_once": f"""
+        UPDATE automations SET next_run_at = NOW() + {DEFER_INTERVAL}
+        WHERE automation_id = %s AND status = 'active'
+          AND next_run_at IS NULL AND last_run_at = %s
+    """,
+    "defer_price": f"""
+        UPDATE automations SET status = 'active', next_run_at = NOW() + {DEFER_INTERVAL}
+        WHERE automation_id = %s AND status = 'executing'
+          AND (last_run_at = %s OR last_run_at IS NULL)
+    """,
 }
 
-ScheduleAction = Literal["close_once", "close_price", "rearm_price"]
+ScheduleAction = Literal[
+    "close_once", "close_price", "rearm_price", "defer_once", "defer_price"
+]
 
 
 async def settle_execution(

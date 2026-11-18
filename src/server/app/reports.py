@@ -18,7 +18,7 @@ from src.server.services.reports import (
     post_report,
     reports_enabled,
 )
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces import access as shared_access
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
@@ -52,7 +52,7 @@ async def create_report(
     if not reports_enabled():
         raise HTTPException(status_code=404, detail="Reports are not enabled")
     if body.thread_id:
-        await auth_api.require_thread_owner(str(body.thread_id), user_id)
+        await shared_access.thread_access(str(body.thread_id), user_id)
 
     try:
         report = await build_report(body, user_id=user_id)

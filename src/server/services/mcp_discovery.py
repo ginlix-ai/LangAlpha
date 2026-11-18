@@ -22,8 +22,8 @@ from ptc_agent.core.mcp_sanitize import (
     unsalvageable_required_params,
 )
 
-from src.server.database import mcp_servers as mcp_db
 from src.server.database.mcp_tool_schemas import upsert_tool_schemas
+from src.server.database.org_keys import org_key
 from src.server.services.mcp_descriptions.jobs import enqueue_if_new
 from src.server.services.mcp_identity import bounded_identity
 
@@ -120,7 +120,14 @@ class ToolSnapshotIndex:
         next one, except on an OAuth server, which reads its user tier alone.
         """
         key = (server.name, mcp_discovery_fingerprint(server))
-        if getattr(server, "source", None) != "user":
+        source = getattr(server, "source", None)
+        if source == "org":
+            # Discovered on the host alone, per member, under the connector's
+            # id: its name is the organization's to change, and a user server
+            # may hold the same one.
+            key = (org_key(server.org_connector_id or ""), key[1])
+            tiers = (self._user,)
+        elif source != "user":
             tiers = (self._workspace,)
         elif getattr(server, "oauth_connection_id", None):
             # The sandbox never holds this server's credential, so its
@@ -226,9 +233,12 @@ async def _stale_server_names(
         workspace = await get_workspace(workspace_id)
         user_id = (workspace or {}).get("user_id")
         if user_id:
+            from src.server.services.mcp_sources import user_tier_rows
+
+            # A server the policy withholds, or all of them while it is
+            # unknown, reads as stale: its result is dropped, never cached.
             user_rows = {
-                r["name"]: r
-                for r in await mcp_db.list_enabled_user_servers(str(user_id))
+                r["name"]: r for r in await user_tier_rows(str(user_id)) or ()
             }
     stale: set[str] = set()
     for server in servers:
