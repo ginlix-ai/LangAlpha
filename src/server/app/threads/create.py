@@ -136,7 +136,6 @@ async def create_thread_endpoint(
             conversation_thread_id=thread_id,
             workspace_id=workspace_id,
             current_status="completed",
-            thread_index=None,
             title=title_stamp,
             platform=request.platform,
             subagents_allowed=request.subagents_allowed,
