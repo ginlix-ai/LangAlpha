@@ -1,0 +1,59 @@
+/* Covers the view it speaks for. A view with a toolbar above sets
+   --status-card-top so the toolbar stays clear. */
+.status-card-overlay {
+  position: absolute;
+  inset: 0;
+  top: var(--status-card-top, 0px);
+  z-index: 3;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-bg-page) 75%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.status-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 28px 36px;
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.status-card-icon {
+  color: var(--color-text-tertiary);
+}
+
+.status-card-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.status-card-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.status-card-detail {
+  font-size: 0.6875rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  color: var(--color-text-tertiary);
+}
+
+.status-card-body {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  margin-top: 4px;
+}
+
+.status-card-action {
+  margin-top: 4px;
+}
