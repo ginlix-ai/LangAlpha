@@ -3,11 +3,12 @@
  * canvas, and only pages near the viewport are drawn at all, so a comment is
  * saved by its page and its words, and found again on that page once its
  * text layer is drawn; until then it waits in the page's slot (`parked`).
- * There is nothing to click on a page: words are selected.
+ * A drag off the words draws a box on the page instead (`pdfRegions`).
  */
 import type { TextAnchor } from '@/types/artifacts';
 import { MAX_SELECTION, clip, findQuote, squash, wordsAround } from '../spotKit';
 import type { Found, SpotStrategy } from '../spotStrategy';
+import { regionSpots, type RegionSurfaces } from '../region/regionSpots';
 
 const PAGE = '.pdf-page[data-pdf-slot]';
 const LAYER = '.textLayer';
@@ -92,4 +93,32 @@ export function pdfSpots(root: Element): SpotStrategy {
       return anchor.kind === 'text' ? findWords(anchor) : null;
     },
   };
+}
+
+/** A PDF's pages as surfaces a box is drawn on: each page's slot, which has the page's size before the page is drawn. */
+function pdfSurfaces(root: Element): RegionSurfaces {
+  return {
+    points: false,
+    // By the slots' boxes: the point a drag began at may have scrolled out of view, where nothing is under it.
+    at(x, y) {
+      for (const slot of root.querySelectorAll<HTMLElement>(PAGE)) {
+        const r = slot.getBoundingClientRect();
+        if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+        const index = Number(slot.getAttribute('data-pdf-slot'));
+        return Number.isInteger(index) ? { el: slot, page: index + 1 } : null;
+      }
+      return null;
+    },
+    of(page) {
+      if (!page) return null;
+      if (!root.querySelector(PAGE)) return { parked: root };
+      const slot = root.querySelector(`.pdf-page[data-pdf-slot="${page - 1}"]`);
+      return slot instanceof HTMLElement ? { el: slot, page } : null;
+    },
+  };
+}
+
+/** A PDF's comments: words selected on a page, or boxes drawn on it. */
+export function pdfRegions(root: Element): SpotStrategy {
+  return regionSpots(pdfSurfaces(root), pdfSpots(root));
 }

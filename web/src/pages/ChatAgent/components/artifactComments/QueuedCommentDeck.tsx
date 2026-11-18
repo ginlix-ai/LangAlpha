@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import type { QueuedArtifactComment } from '@/types/api';
 import { commentsByFile, latestOwnerWords } from './artifactCommentSend';
 import type { ArtifactCommentRef } from './artifactCommentReply';
-import { anchorLabel, areaTitle, outlineOf } from './anchorKinds';
+import { anchorLabel, areaTitle, outlineOf, spotPhrase } from './anchorKinds';
 import { PinBadge } from './PinBadge';
 import type { QueuedCommentDeck as Deck } from './useQueuedCommentDeck';
 
@@ -84,9 +84,10 @@ function Row({ comment, onOpen, onKeep }: {
 }): React.ReactElement {
   const { t } = useTranslation();
   // An area's parts would starve in this slot; its size says what it is.
-  const area = comment.anchor.kind === 'area';
-  const place = anchorLabel(comment.anchor)?.trim();
-  const label = area ? areaTitle(t, comment.anchor) : place;
+  // Boxes have no place: their heading ("On a box on page 3") is the label.
+  const { anchor } = comment;
+  const place = anchorLabel(anchor)?.trim();
+  const label = anchor.kind === 'area' ? areaTitle(t, anchor) : anchor.kind === 'region' ? spotPhrase(t, anchor) : place;
   const body = (
     <>
       <PinBadge number={comment.number} state="queued" className="justify-self-center" />
@@ -98,7 +99,7 @@ function Row({ comment, onOpen, onKeep }: {
         className="max-w-[120px] truncate text-xs @max-[420px]:hidden"
         style={{ color: 'var(--color-text-tertiary)' }}
         // A list's names starve here too: they show on hover.
-        title={outlineOf(comment.anchor) === 'list' ? place : undefined}
+        title={outlineOf(anchor) === 'list' ? place : undefined}
       >
         {label}
       </span>

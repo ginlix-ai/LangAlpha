@@ -4,7 +4,7 @@
  */
 import type { TFunction } from 'i18next';
 import type {
-  AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, PartEntry,
+  AreaAnchor, ArtifactCommentAnchor, ArtifactCommentRegionBox, BlockAnchor, CellsAnchor, PartEntry, RegionAnchor,
 } from '@/types/api';
 import { oneLine } from './commentModel';
 
@@ -17,7 +17,7 @@ interface Facets<A extends ArtifactCommentAnchor> {
   /** The entries it lists its parts by, in its order, when it lists every part it holds; else null. */
   partEntries(anchor: A): PartEntry[] | null;
   /** Each part by a short name, for a spot that is a list of parts. */
-  partLabels(anchor: A): string[] | null;
+  partLabels(anchor: A, t: TFunction): string[] | null;
   /** A new comment's spot as its box names it, and what it holds under the name. */
   heading(t: TFunction, anchor: A): Heading;
   /** Where a comment is, as its card's spot line says it. */
@@ -50,6 +50,14 @@ function onLines(t: TFunction, lines: string): string {
 /** An area by its size, the composer's header: "Selected area · 3 elements". */
 export function areaTitle(t: TFunction, anchor: Pick<ArtifactCommentAnchor, 'count' | 'elements'>): string {
   return t('pageViewer.comments.areaTitle', { count: anchor.count ?? anchor.elements?.length ?? 0 });
+}
+
+/** One box or point by itself, as a draft's heading and a card's spot line name it. */
+function regionPhrase(t: TFunction, a: RegionAnchor): string {
+  if (a.boxes.length > 1) return t('pageViewer.comments.partsTitle', { count: a.boxes.length });
+  const [box] = a.boxes as [ArtifactCommentRegionBox];
+  if (box.w === 0) return t('pageViewer.comments.onPoint');
+  return box.page ? t('pageViewer.comments.onBoxOnPage', { page: box.page }) : t('pageViewer.comments.onBox');
 }
 
 const onLabel = (t: TFunction, label: string) => t('pageViewer.comments.onLabel', { label });
@@ -113,6 +121,19 @@ const KINDS = {
     phrase: (t, a) => onLabel(t, oneLine(cellsPlace(a), 60)),
     outline: 'list',
   },
+  // Boxes are named by their order and page: what they hold is in the picture.
+  region: {
+    place: () => undefined,
+    partEntries: (a) => a.boxes,
+    partLabels: (a, t) => a.boxes.map((b, i) => {
+      const n = i + 1;
+      if (b.w === 0) return t('pageViewer.comments.partPoint', { n });
+      return b.page ? t('pageViewer.comments.partBoxOnPage', { n, page: b.page }) : t('pageViewer.comments.partBox', { n });
+    }),
+    heading: (t, a) => ({ label: regionPhrase(t, a), quote: null }),
+    phrase: regionPhrase,
+    outline: 'list',
+  },
 } satisfies { [K in Kind]: Facets<Extract<ArtifactCommentAnchor, { kind: K }>> };
 
 function facets<A extends ArtifactCommentAnchor>(anchor: A): Facets<A> {
@@ -147,9 +168,9 @@ export function outlineOf(anchor: ArtifactCommentAnchor): Facets<ArtifactComment
  * or takes a part out. Null for words, and for an area too large to list,
  * which a modifier click starts afresh.
  */
-export function partLabels(anchor: ArtifactCommentAnchor): string[] | null {
+export function partLabels(t: TFunction, anchor: ArtifactCommentAnchor): string[] | null {
   const kind = facets(anchor);
-  return kind.outline === 'list' && !listsEvery(anchor) ? null : kind.partLabels(anchor);
+  return kind.outline === 'list' && !listsEvery(anchor) ? null : kind.partLabels(anchor, t);
 }
 
 export function draftHeading(t: TFunction, anchor: ArtifactCommentAnchor): Heading {

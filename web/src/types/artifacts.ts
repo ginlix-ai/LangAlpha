@@ -186,8 +186,23 @@ export interface ArtifactCommentCellRange {
   values?: string;
 }
 
-/** A part as its anchor lists it: an area's element, or a range of cells. */
-export type PartEntry = ArtifactCommentAreaElement | ArtifactCommentCellRange;
+/**
+ * A box drawn on an image or a PDF page, as fractions of it from its
+ * top-left; a click is a box of no size, a point. `picture` is the image of
+ * the box written for the agent as the comment was sent.
+ */
+export interface ArtifactCommentRegionBox {
+  /** The PDF page it is on; absent on an image. */
+  page?: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  picture?: string;
+}
+
+/** A part as its anchor lists it: an area's element, a range of cells, or a box. */
+export type PartEntry = ArtifactCommentAreaElement | ArtifactCommentCellRange | ArtifactCommentRegionBox;
 
 /** Where on an anchored element, or area, the pin sits, as fractions of its box. */
 export interface AnchorPoint {
@@ -234,6 +249,13 @@ interface CellsAnchorFields {
   point?: AnchorPoint;
 }
 
+interface RegionAnchorFields {
+  kind: 'region';
+  /** In the order they were picked, all on pages or none. */
+  boxes: ArtifactCommentRegionBox[];
+  point?: AnchorPoint;
+}
+
 interface AreaAnchorFields {
   kind: 'area';
   /** Its elements in document order: a drag's first 8, or every part picked one by one (up to 64). */
@@ -248,7 +270,7 @@ interface AreaAnchorFields {
 }
 
 type AnchorKey = Exclude<
-  keyof TextAnchorFields | keyof BlockAnchorFields | keyof CellsAnchorFields | keyof AreaAnchorFields,
+  keyof TextAnchorFields | keyof BlockAnchorFields | keyof CellsAnchorFields | keyof AreaAnchorFields | keyof RegionAnchorFields,
   'kind'
 >;
 
@@ -267,6 +289,9 @@ export type BlockAnchor = Only<BlockAnchorFields>;
 /** Cells of a sheet, by their ranges. */
 export type CellsAnchor = Only<CellsAnchorFields>;
 
+/** Boxes, or points, on an image or a PDF's pages. */
+export type RegionAnchor = Only<RegionAnchorFields>;
+
 /** A spot the file names itself. */
 export type NamedAnchor = Only<SpotAnchorFields & { kind: 'named' }>;
 
@@ -277,7 +302,7 @@ export type AreaAnchor = Only<AreaAnchorFields>;
  * What the owner pinned a comment to on the live file, read off it so it can
  * be found again after the file changes. The comment's `path` names the file.
  */
-export type ArtifactCommentAnchor = ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor | BlockAnchor | CellsAnchor;
+export type ArtifactCommentAnchor = ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor | BlockAnchor | CellsAnchor | RegionAnchor;
 
 export interface ArtifactCommentMessage {
   message_id: string;

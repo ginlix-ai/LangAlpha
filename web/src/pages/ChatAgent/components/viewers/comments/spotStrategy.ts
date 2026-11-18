@@ -5,7 +5,7 @@
  * comment protocol the same way for every viewer, as a framed HTML file's
  * bridge does it for a page. What the strategies share is in `spotKit`.
  */
-import type { AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, TextAnchor } from '@/types/artifacts';
+import type { AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, RegionAnchor, TextAnchor } from '@/types/artifacts';
 
 /** A box in client coordinates. */
 export interface Edges {
@@ -22,8 +22,8 @@ export interface Edges {
  */
 export type Found = { parts: (Element[] | null)[] } | { range: Range } | { parked: Element; show?: () => void };
 
-/** What a click in the app saves: a Markdown block or a run of code, a range of cells, or several as an area. */
-export type SpotAnchor = BlockAnchor | CellsAnchor | AreaAnchor;
+/** What a click in the app saves: a Markdown block or a run of code, a range of cells, several as an area, or boxes on a picture. */
+export type SpotAnchor = BlockAnchor | CellsAnchor | AreaAnchor | RegionAnchor;
 
 /** What a click or a drag picks, in a viewer whose content has spots: a Markdown block, a line of code, a range of cells. */
 export interface SpotPicker {
@@ -53,6 +53,14 @@ export interface SpotPicker {
    * the cells and ranges inside it. Left out, the DOM's nesting.
    */
   holds?(part: Element, spot: Element): boolean;
+  /**
+   * What a box dragged from `from` picks, in a viewer whose spots are drawn
+   * rather than found (a box on an image or a PDF page): the spot it draws,
+   * or none. Left out, a drag picks the spots it touches (`spotsIn`).
+   */
+  draw?(box: Edges, from: { x: number; y: number }): Element[];
+  /** A click at (x, y) on no spot, as a spot of its own (a point on an image); left out, such a click picks nothing. */
+  pointAt?(x: number, y: number): Element | null;
 }
 
 export interface SpotStrategy {
@@ -64,7 +72,9 @@ export interface SpotStrategy {
    * lets go of the last pass's reading here.
    */
   fresh?(): void;
-  /** Left out where nothing is clicked (a PDF's page): every drag is then the browser's own selection. */
+  /** A pass of `find`s has ended: what none of its anchors named can go now, not a pass later. */
+  settled?(): void;
+  /** Left out where nothing is clicked or drawn: every drag is then the browser's own selection. */
   spots?: SpotPicker;
   /** The anchor of words selected in the content, already grown to whole words; left out where words take none (a sheet's cells). */
   words?(range: Range): TextAnchor | null;

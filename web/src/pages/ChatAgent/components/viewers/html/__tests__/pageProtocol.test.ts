@@ -308,3 +308,25 @@ describe('lines and cells, as the API takes them', () => {
     for (const range of ['A0', 'XFE1', 'A1:A1048577']) expect(pick({ kind: 'cells', ranges: [{ range }] })).toBeNull();
   });
 });
+
+describe('boxes on a picture, as the API takes them', () => {
+  const box = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+
+  it('keeps boxes and points, on pages or on none', () => {
+    expect(pick({ kind: 'region', boxes: [box, { x: 0.5, y: 0.5, w: 0, h: 0 }] })?.anchor).toEqual({
+      kind: 'region', boxes: [box, { x: 0.5, y: 0.5, w: 0, h: 0 }],
+    });
+    expect(pick({ kind: 'region', boxes: [{ page: 2, ...box }, { page: 3, ...box }] })?.anchor).toMatchObject({ boxes: [{ page: 2 }, { page: 3 }] });
+  });
+
+  it('never takes a picture from the page: the app writes it', () => {
+    expect(pick({ kind: 'region', boxes: [{ ...box, picture: '../secret.png' }] })?.anchor).toEqual({ kind: 'region', boxes: [box] });
+  });
+
+  it('refuses a box past its edge, half a point, and boxes on pages and off them', () => {
+    expect(pick({ kind: 'region', boxes: [{ x: 0.9, y: 0, w: 0.2, h: 0.1 }] })).toBeNull();
+    expect(pick({ kind: 'region', boxes: [{ x: 0.1, y: 0.1, w: 0.2, h: 0 }] })).toBeNull();
+    expect(pick({ kind: 'region', boxes: [{ page: 1, ...box }, box] })).toBeNull();
+    expect(pick({ kind: 'region', boxes: [] })).toBeNull();
+  });
+});

@@ -96,6 +96,7 @@ export class PageAnchors {
         t.found = null;
       }
     }
+    this.strategy.settled?.();
     this.stale = false;
     this.paint();
   }
