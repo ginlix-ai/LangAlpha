@@ -9,7 +9,8 @@ A computer's token (``lac1.``, what the ``la`` CLI presents from inside a
 computer) is held by agent code, and every computer's is held to one rule.
 It reaches all of the user's computers and Home, since the Chief of Staff
 manages everything through ``la`` and an analyst reads the workspaces and
-threads it builds on. It adds no computer, leaves its own computer running,
+threads it builds on, but nothing a shared workspace holds, which is no
+place of the user's own. It adds no computer, leaves its own computer running,
 answers no approval, rewrites no history, and sends nothing into the thread
 its call came from or the one that sent that thread its current turn. What
 cannot be undone, what adds a place for work to go, and what starts work on
@@ -32,10 +33,19 @@ from starlette.types import Scope
 
 from src.server.auth import computer_token_core, oauth_resource, pats
 from src.server.database import order_attempts, turn_targets
+from src.server.database.computer import get_computer
+from src.server.database.workspace import get_workspace
 from src.server.models.chat import ChatRequest, ThreadOrigin
-from src.server.services import cli_tokens
+from src.server.services import account, cli_tokens, membership
+from src.server.services.shared_workspaces import access as reach
 from src.server.services.livefs import outcomes
-from src.server.utils.api import _service_token_user_id, get_current_user_id
+from src.server.utils.api import (
+    _service_token_user_id,
+    admit_caller,
+    get_user_id_any_state,
+    note_caller,
+    refuse_holder_credential,
+)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -152,8 +162,24 @@ async def get_principal(
 
     The server's own token comes first, as in ``get_current_user_id``; then a
     bearer of a token kind is that kind's alone, so a refused one never falls
-    through to the session check.
+    through to the session check. Every kind is refused for a suspended
+    account, as ``get_current_user_id`` refuses a session, before the call is
+    noted, so a refused call is recorded nowhere (``cli_calls``).
     """
+    principal = await _principal(request, credentials)
+    refuse_holder_credential(principal.user_id)
+    try:
+        await admit_caller(request, principal.user_id)
+    except HTTPException:
+        (request.scope.get("state") or {}).pop(_CLI_CALL, None)
+        raise
+    note_caller(request, principal.user_id, principal.auth, principal.client_id)
+    return principal
+
+
+async def _principal(
+    request: Request, credentials: HTTPAuthorizationCredentials | None
+) -> Principal:
     matched, service_user = _service_token_user_id(request)
     if matched:
         if not service_user:
@@ -171,7 +197,7 @@ async def get_principal(
             user_id=app.user_id, auth="oauth", client_id=app.client_id, scopes=app.scopes
         )
     return Principal(
-        user_id=await get_current_user_id(request, credentials), auth="session"
+        user_id=await get_user_id_any_state(request, credentials), auth="session"
     )
 
 
@@ -211,6 +237,76 @@ async def refuse_loop(principal: Principal, call: CliCall | None, thread_id: Any
         )
 
 
+SHARED_WORKSPACE_REFUSAL = "A computer's token does not reach a shared workspace"
+
+# Where a route names what a shared workspace may hold: its path, or for a
+# workspace and a thread the query too, as a list's filter.
+_PATH_IDS: Final = ("workspace_id", "thread_id", "computer_id")
+_QUERY_IDS: Final = ("workspace_id", "thread_id")
+
+
+async def reaches_shared(
+    user_id: str,
+    *,
+    workspace_id: str | None = None,
+    thread_id: str | None = None,
+    computer_id: str | None = None,
+) -> bool:
+    """Whether the user reaches, as a member, a shared workspace one of these
+    ids names, or its thread or its computer. Asked only once
+    ``in_shared_workspace`` has found one, so no other request pays for it.
+    What the user does not reach (another organization's, another member's
+    private thread) is left to its route, which answers it with the 404 a
+    made-up id gets: refusing it here would tell the token that the id exists
+    and is shared. An account that cannot be read is the route's 503 too."""
+
+    async def member(check) -> bool:
+        found = await reach.verdict(check)
+        if found == "unknown":
+            raise account.AccountUnknown()
+        return found == "member"
+
+    thread, workspace = uuid_or_none(thread_id), uuid_or_none(workspace_id)
+    computer = uuid_or_none(computer_id)
+    if thread is not None and await member(reach.thread_access(thread, user_id)):
+        return True
+    if workspace is not None and await member(
+        reach.workspace_access(await get_workspace(workspace), user_id)
+    ):
+        return True
+    return computer is not None and await member(
+        reach.computer_access(await get_computer(computer), user_id)
+    )
+
+
+async def _refuse_shared(request: Request, principal: Principal) -> None:
+    """A computer's token is its user's own agent, which a shared
+    workspace's members never let in, so it reaches nothing a shared
+    workspace holds (its threads and its computer included) whatever the
+    user may do there in the app. Ids a body carries are the route's
+    (``cli_approval.admit_turn``, ``threads.create``). With the ``teams``
+    door shut no one reaches a shared workspace, so its routes answer 404
+    on their own and nothing is read here."""
+    if not membership.teams_door_open():
+        return
+    named = {k: request.query_params[k] for k in _QUERY_IDS if k in request.query_params}
+    params = request.path_params
+    named.update({k: params[k] for k in _PATH_IDS if k in params})
+    computer_id = named.get("computer_id")
+    # Its own computer is the user's, never a holder's: nothing to read.
+    if computer_id is not None and uuid_or_none(computer_id) == principal.computer_id:
+        computer_id = None
+    ids = {
+        "workspace_id": named.get("workspace_id"),
+        "thread_id": named.get("thread_id"),
+        "computer_id": computer_id,
+    }
+    if await turn_targets.in_shared_workspace(**ids) and await reaches_shared(
+        principal.user_id, **ids
+    ):
+        raise forbidden(SHARED_WORKSPACE_REFUSAL)
+
+
 async def _computer_limits(
     request: Request,
     principal: Principal,
@@ -234,6 +330,7 @@ async def _computer_limits(
         and uuid_or_none(params["computer_id"]) == principal.computer_id
     ):
         raise forbidden("A computer cannot stop, archive or remove itself")
+    await _refuse_shared(request, principal)
     # A command that runs in no thread has none to loop into.
     if own_thread or call is None or call.running_thread() is None:
         return

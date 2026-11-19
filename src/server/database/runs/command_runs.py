@@ -38,6 +38,7 @@ from typing import (
 from psycopg.rows import dict_row
 
 from src.server.database import pool
+from src.server.database.shared_workspaces import former_member_sql
 from src.server.models.chart_layer import CommandOutbox
 from src.server.models.command import CommandStatus, FailureReason, StopMark
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid, strip_pg_nul_str
@@ -816,11 +817,16 @@ async def list_for_thread(
 
 
 def _one_scope(
-    caller: str, thread_id: Optional[str], workspace_id: Optional[str]
+    caller: str,
+    thread_id: Optional[str],
+    workspace_id: Optional[str],
+    user_id: Optional[str] = None,
 ) -> Tuple[str, Optional[str]]:
     """The column and normalized id of the one scope given."""
     scopes = {"conversation_thread_id": thread_id, "workspace_id": workspace_id}
     given = [(col, normalize_uuid(v)) for col, v in scopes.items() if v is not None]
+    if user_id is not None:
+        given.append(("user_id", user_id or None))
     if len(given) != 1:
         raise ValueError(f"{caller}: give exactly one scope")
     return given[0]
@@ -830,12 +836,15 @@ async def request_stops(
     *,
     thread_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     by: StopMark,
     grace_s: float = 0.0,
     supersede: Sequence[StopMark] = (),
+    started_before: Optional[datetime] = None,
 ) -> List[str]:
-    """Mark every running command of one thread or workspace that nobody has
-    asked to stop yet as stopped by ``by``; the ids marked.
+    """Mark every running command of one thread, workspace or user that
+    nobody has asked to stop yet, started before ``started_before`` when
+    given, as stopped by ``by``; the ids marked.
 
     ``request_stop`` over each row read unmarked. With no grace, no stopper
     of its own is at work, so the watcher's next pass ends each job and
@@ -843,14 +852,38 @@ async def request_stops(
     passes ``STOP_GRACE_S``, as ``request_stop`` does. A row already marked
     keeps its stopper, unless its mark is one of ``supersede``: that stopper,
     finalizing the row as it judged it, then loses its CAS."""
-    column, value = _one_scope("request_stops", thread_id, workspace_id)
+    column, value = _one_scope("request_stops", thread_id, workspace_id, user_id)
     if value is None:
         return []
     rows = await _mark_stops(
-        f"{column} = %s AND (stopped_by IS NULL OR stopped_by = ANY(%s))",
-        (value, list(supersede)),
+        f"{column} = %s AND (stopped_by IS NULL OR stopped_by = ANY(%s))"
+        " AND (%s::timestamptz IS NULL OR started_at < %s::timestamptz)",
+        (value, list(supersede), started_before, started_before),
         by=by,
         grace_s=grace_s,
+    )
+    return [str(r["command_id"]) for r in rows]
+
+
+async def request_former_member_stops(
+    workspace_id: str, user_id: Optional[str]
+) -> List[str]:
+    """Mark as ``removed`` the running commands in a shared workspace of
+    ``user_id``, or with None of anyone not listed on it now, that nobody
+    has asked to stop yet; the ids marked. The watcher's next pass ends
+    each, as it does a suspension's."""
+    workspace_id = normalize_uuid(workspace_id)
+    if workspace_id is None:
+        return []
+    one = user_id is not None
+    who = former_member_sql(
+        "command_runs.user_id", "command_runs.workspace_id", "%s" if one else None
+    )
+    rows = await _mark_stops(
+        f"workspace_id = %s AND stopped_by IS NULL AND {who}",
+        (workspace_id, user_id) if one else (workspace_id,),
+        by="removed",
+        grace_s=0.0,
     )
     return [str(r["command_id"]) for r in rows]
 

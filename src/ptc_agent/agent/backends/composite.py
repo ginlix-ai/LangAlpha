@@ -70,7 +70,10 @@ class FilesystemRoute(Protocol):
     ``searched_only_inside`` (False when absent) marks a route Grep searches
     only when its path is at or inside the route's root, never from above:
     where the file mount serves such files they sit behind a link, which rg
-    follows only when it is the path it was given.
+    follows only when it is the path it was given. ``link_dir`` (the root
+    when absent) names that link where it sits above the root, as a thread's
+    own folder sits inside the transcripts link: a Grep of the link searches
+    the route too, as rg given the link walks into the folder.
 
     ``takes_walk`` (False when absent) marks a route whose ``agrep_rich``
     takes ``searches``, the walk's verdict on a file of its own by path, and
@@ -136,6 +139,14 @@ def _finds_below(
     """Whether a walk from ``start``, where the route's root is ``rel``,
     searches the route's file ``path``."""
     return walk.finds(start, _spelled_below(route, rel, path))
+
+
+def _within(path: str, directory: str | None) -> bool:
+    """Whether ``path`` is ``directory`` or below it; never for no directory."""
+    if not directory:
+        return False
+    directory = directory.rstrip("/")
+    return path == directory or path.startswith(directory + "/")
 
 
 def _page(entries: list[Any], offset: int, head_limit: int | None) -> list[Any]:
@@ -337,6 +348,7 @@ class CompositeFilesystemBackend:
             (route, rel)
             for route, rel in below
             if not getattr(route, "searched_only_inside", False)
+            or _within(start, getattr(route, "link_dir", None))
         ]
         if self._spelling(start) != "":
             return [(route, rel, start) for route, rel in below]

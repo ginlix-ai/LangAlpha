@@ -129,7 +129,7 @@ async def _download(row: dict, range_header: str | None = None):
             "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=workspace),
         ),
-        patch(f"{_CRUD}.owner_work_dir", return_value="/home/workspace/reports"),
+        patch("src.server.app.workspace_files._shared.owner_work_dir", return_value="/home/workspace/reports"),
         patch(
             f"{_BACKUP}.FilePersistenceService.get_file_content",
             AsyncMock(return_value=row),

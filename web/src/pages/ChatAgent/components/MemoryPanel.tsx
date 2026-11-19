@@ -5,6 +5,7 @@ import { formatBytes, paddedClockTime, shortMonthDay } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { useTranslation } from 'react-i18next';
+import { useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import {
   useUserMemory,
   useWorkspaceMemory,
@@ -56,14 +57,17 @@ function sortEntries(entries: MemoryEntry[]): MemoryEntry[] {
 export default function MemoryPanel({
   workspaceId,
   targetKey,
-  targetTier,
+  targetTier: askedTier,
   onTargetHandled,
   onOpenFile,
 }: MemoryPanelProps) {
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const [tier, setTier] = useState<Tier>(targetTier ?? 'user');
+  const workspaceOnly = !useWorkspaceCapabilities(workspaceId).userMemory;
+  const targetTier = workspaceOnly && askedTier ? 'workspace' : askedTier;
+  const [tierChoice, setTier] = useState<Tier>(targetTier ?? 'user');
+  const tier: Tier = workspaceOnly ? 'workspace' : tierChoice;
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [notFoundKey, setNotFoundKey] = useState<string | null>(null);
 
@@ -107,7 +111,7 @@ export default function MemoryPanel({
 
   // Both tiers must be active when we're chasing a target so the entry can
   // be located regardless of which tier the user was last viewing.
-  const user = useUserMemory(tier === 'user' || (targetKey != null && targetTier === 'user'));
+  const user = useUserMemory(!workspaceOnly && (tier === 'user' || (targetKey != null && targetTier === 'user')));
   const ws = useWorkspaceMemory(
     workspaceId,
     tier === 'workspace' || (targetKey != null && targetTier === 'workspace'),
@@ -231,7 +235,7 @@ export default function MemoryPanel({
            style={{ borderColor: 'var(--color-border-muted)' }}>
         <div className="flex gap-1 rounded-md p-0.5"
              style={{ backgroundColor: 'var(--color-border-muted)' }}>
-          {(['user', 'workspace'] as Tier[]).map((tierId) => {
+          {((workspaceOnly ? ['workspace'] : ['user', 'workspace']) as Tier[]).map((tierId) => {
             const active = tier === tierId;
             return (
               <button

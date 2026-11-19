@@ -24,43 +24,12 @@ from typing import Annotated, Optional, get_args
 
 from fastapi import Depends, HTTPException
 
-from src.config.settings import HOST_MODE, AUTH_SERVICE_URL
+from src.config.settings import AUTH_SERVICE_URL, HOST_MODE
 from src.server.models.computer import ResourceTierId
+from src.server.services import membership, platform_client
 from src.server.utils.api import get_current_user_id
-from src.server.utils.http_client import get_http_client
 
 logger = logging.getLogger(__name__)
-
-
-class QuotaServiceUnavailable(Exception):
-    """The quota service could not be asked at all.
-
-    Distinct from it answering "no": a denial arrives as a 200 whose ``quota``
-    says ``allowed: false``. Everything else (transport failure, 5xx, a token
-    the service rejects) means we have no verdict, and only the caller knows
-    whether proceeding without one is acceptable.
-    """
-
-
-# The quota service deploys in place and refuses connections while it restarts,
-# for about five seconds. Strict callers retry on this schedule, 7.5 s of waiting
-# in all, so a check that lands in that gap waits it out; an outage that outlasts
-# it is real, and they fail closed. Deterministic 4xx answers (a rejected service
-# token, a malformed request) are not retried: they will not change.
-#
-# Only ``strict`` callers retry. For everyone else an unanswered check already
-# means "carry on", so more attempts buy a slightly better answer at the cost of
-# seconds per call, including inside the always-on reconciler, which probes once
-# per owner. The caller that pays for accuracy is the one that blocks on it.
-_VALIDATE_RETRY_DELAYS = (0.5, 1.0, 2.0, 2.0, 2.0)  # seconds before each retry
-# The schedule assumes a refused connection, which fails at once. A service that
-# accepts and then hangs costs the client timeout per attempt, so no wait starts
-# that would end past this, and only the attempt already under way runs over.
-_VALIDATE_RETRY_WINDOW = 8.0  # seconds from the first attempt
-
-# Long enough that a retry lands after an in-place restart, short enough that a
-# client which honours it does not look hung.
-_SERVICE_UNAVAILABLE_RETRY_AFTER = 15  # seconds
 
 # Default burst limit when the auth/quota service doesn't specify one
 _DEFAULT_MAX_CONCURRENT = int(os.getenv("BURST_MAX_CONCURRENT") or "10")
@@ -82,62 +51,6 @@ def _burst_reap_horizon() -> int:
 
     return get_workflow_timeout() + _BURST_REAP_MARGIN
 
-# -- the declared surface other modules call this one through ------------------
-# Three names are the whole of how this service talks to the quota service:
-# whose client (``get_http_client``, kept in ``src.server.utils.http_client``
-# so the auth layer borrows it without importing this module), whether to talk
-# at all, and what it authenticates with. They are public because the credit
-# gate's port needs the same three, and a borrowed underscore name is a
-# dependency no refactor here can see.
-
-
-def platform_gating_active() -> bool:
-    """True when platform scope/quota gates should run (not OSS and an auth URL set)."""
-    return HOST_MODE != "oss" and bool(AUTH_SERVICE_URL)
-
-
-def service_headers(user_id: Optional[str] = None) -> dict:
-    """Headers for a service-to-service call to the quota service.
-
-    The token is a shared secret, not a JWT, and is omitted when unset — which
-    is a deployment fault rather than a mode: every gated endpoint answers 401
-    without it. Callers that fail open on a non-200 cannot tell that apart from
-    an outage, so they check for it themselves.
-    """
-    headers = {}
-    if user_id:
-        headers["X-User-Id"] = user_id
-    token = os.getenv("INTERNAL_SERVICE_TOKEN", "")
-    if token:
-        headers["X-Service-Token"] = token
-    return headers
-
-
-def service_token_missing() -> bool:
-    """Platform gating is on but nothing is configured to authenticate with."""
-    return platform_gating_active() and not os.getenv(
-        "INTERNAL_SERVICE_TOKEN", ""
-    ).strip()
-
-
-def quota_service_unavailable() -> HTTPException:
-    """The 503 for a request the quota service gave no verdict on.
-
-    One shape for every gate that refuses rather than guess, so a client shows
-    an outage and retries instead of reading the status as a quota denial or a
-    missing plan.
-    """
-    return HTTPException(
-        status_code=503,
-        detail={
-            # Same wording the quota service uses for its own guard, so the
-            # user reads one sentence whichever side went dark.
-            "message": "Service temporarily unavailable. Please try again shortly.",
-            "type": "service_unavailable",
-            "retry_after": _SERVICE_UNAVAILABLE_RETRY_AFTER,
-        },
-        headers={"Retry-After": str(_SERVICE_UNAVAILABLE_RETRY_AFTER)},
-    )
 
 
 @dataclass
@@ -150,6 +63,10 @@ class ChatAuthResult:
     # be asked and no membership is on record for this user.
     access_tier: Optional[int] = -1
     burst_slot_id: Optional[str] = None  # ZSET member held for this request
+    # Whether the user's policy lets their own sign-ins count, which
+    # ``has_oauth`` already reflects; a refusal reads it to not offer a
+    # reconnect the turn would not use.
+    own_subscriptions: bool = True
 
 
 
@@ -247,20 +164,24 @@ async def chat_limit_for(user_id: str) -> ChatAuthResult:
 
     In OSS mode (HOST_MODE="oss"), BYOK is still checked so custom models work;
     burst guard and platform tier checks are skipped.
+
+    Own keys and sign-ins the user's policy denies read as absent, so such a
+    turn is admitted as one on the deployment's credential, plan check and
+    all. An account whose policy is unknown is refused here.
     """
-    from src.server.database.api_keys import is_byok_active
+    from src.server.services.policy import OWN_SUBSCRIPTIONS
+    from src.server.services.account import own_access
 
     if HOST_MODE == "oss":
-        byok = await is_byok_active(user_id)
-        return ChatAuthResult(user_id=user_id, is_byok=byok)
+        own = await own_access(user_id, sign_ins=False)
+        return ChatAuthResult(
+            user_id=user_id, is_byok=own.api_keys,
+            own_subscriptions=own.policy.allows(OWN_SUBSCRIPTIONS),
+        )
 
-    from src.server.database.oauth_tokens import has_any_oauth_token
-
-    # Two independent DB queries — run in parallel to cut TTFT latency.
-    is_byok, has_oauth = await asyncio.gather(
-        is_byok_active(user_id),
-        has_any_oauth_token(user_id),
-    )
+    own = await own_access(user_id)
+    is_byok, has_oauth = own.api_keys, bool(own.subscriptions)
+    policy = own.policy
 
     # Burst guard runs after DB queries succeed so the INCR'd slot
     # isn't leaked if a DB connection error propagates above.
@@ -280,7 +201,7 @@ async def chat_limit_for(user_id: str) -> ChatAuthResult:
     # has no own-key path (BYOK or OAuth already grants access).
     tier: Optional[int] = -1
     if HOST_MODE != "oss" and AUTH_SERVICE_URL and not is_byok and not has_oauth:
-        tier = await _fetch_platform_tier(user_id)
+        tier = await membership.access_tier(user_id)
 
     return ChatAuthResult(
         user_id=user_id,
@@ -288,6 +209,7 @@ async def chat_limit_for(user_id: str) -> ChatAuthResult:
         has_oauth=has_oauth,
         access_tier=tier,
         burst_slot_id=burst_result.get("slot_id"),
+        own_subscriptions=policy.allows(OWN_SUBSCRIPTIONS),
     )
 
 
@@ -339,7 +261,7 @@ async def spendable_credits(user_id: str) -> float | None:
         value = math.nan
     if not math.isfinite(value):
         logger.warning("auth/quota service sent spendable_credits %r; refusing", spendable)
-        raise quota_service_unavailable()
+        raise platform_client.quota_service_unavailable()
     return value
 
 
@@ -348,16 +270,16 @@ async def _admitted_quota(
 ) -> dict | None:
     """The chat quota the platform allowed, raising 429 on a denial and 503
     with no verdict; None when nothing was checked."""
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return None
 
     try:
-        result = await _call_validate_for_user(
+        result = await platform_client.call_validate(
             user_id, check_quota="chat", byok=byok, surface=surface, strict=True
         )
-    except QuotaServiceUnavailable as e:
+    except platform_client.QuotaServiceUnavailable as e:
         logger.error("Credit gate closed — quota service gave no verdict (%s)", e)
-        raise quota_service_unavailable() from e
+        raise platform_client.quota_service_unavailable() from e
 
     if result is None:
         return None  # OSS mode reached this only via a race on HOST_MODE; nothing to check.
@@ -386,79 +308,6 @@ async def _admitted_quota(
     )
 
 
-async def _call_validate_for_user(
-    user_id: str,
-    check_quota: Optional[str] = None,
-    byok: bool = False,
-    strict: bool = False,
-    surface: str | None = None,
-) -> Optional[dict]:
-    """POST to the auth/quota service at /api/auth/validate.
-
-    Returns None in OSS mode. When the service cannot be reached, ``strict``
-    callers get :class:`QuotaServiceUnavailable` once the retry schedule runs
-    out, and everyone else gets None on the first failure, which most of them
-    read as "carry on". See the fail-open notes at those call sites for why that
-    is safe there and not at the credit gate.
-    """
-    if not platform_gating_active():
-        return None
-
-    client = await get_http_client()
-    headers = service_headers(user_id)
-
-    body = {}
-    if check_quota:
-        body["check_quota"] = check_quota
-    if byok:
-        body["byok"] = True
-    if surface:
-        body["surface"] = surface
-
-    url = f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/validate"
-    reason = "unknown"
-    delays = _VALIDATE_RETRY_DELAYS if strict else ()
-    give_up_at = time.monotonic() + _VALIDATE_RETRY_WINDOW
-
-    for attempt in range(len(delays) + 1):
-        if attempt:
-            delay = delays[attempt - 1]
-            if time.monotonic() + delay > give_up_at:
-                break
-            await asyncio.sleep(delay)
-        try:
-            resp = await client.post(url, json=body if body else None, headers=headers)
-        except Exception as e:
-            reason = f"unreachable: {e}"
-            logger.warning("auth/quota service unreachable (attempt %d): %s", attempt + 1, e)
-            continue
-
-        if resp.status_code == 200:
-            try:
-                return resp.json()
-            except Exception as e:
-                # A 200 we cannot read is still no verdict: an interposed proxy
-                # serving its own HTML, a truncated body. It has to rejoin the
-                # no-verdict path here, or it escapes as an unhandled 500 and
-                # the gate that exists to fail closed fails differently instead.
-                reason = f"unparseable 200: {e}"
-                logger.warning(
-                    "auth/quota service returned an unreadable 200 (attempt %d): %s",
-                    attempt + 1, e,
-                )
-                continue
-
-        reason = f"HTTP {resp.status_code}"
-        logger.warning(
-            "auth/quota service validate returned %d (attempt %d): %s",
-            resp.status_code, attempt + 1, resp.text[:200],
-        )
-        if resp.status_code < 500:
-            break  # deterministic answer; a retry returns the same thing
-
-    if strict:
-        raise QuotaServiceUnavailable(reason)
-    return None
 
 
 async def enforce_computer_limit(
@@ -493,10 +342,10 @@ async def enforce_computer_count(user_id: str) -> None:
 
 async def _enforce_computer_quota(user_id: str, check_quota: str) -> None:
     """Raise the platform's 429 when ``check_quota``'s computer count is full."""
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return
 
-    result = await _call_validate_for_user(user_id, check_quota=check_quota)
+    result = await platform_client.call_validate(user_id, check_quota=check_quota)
 
     if result is None:
         return  # Fail-open
@@ -523,126 +372,6 @@ async def _enforce_computer_quota(user_id: str, check_quota: str) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Platform membership (access tier + plan display name)
-# ---------------------------------------------------------------------------
-
-_PLATFORM_MEMBERSHIP_CACHE_TTL = 300  # 5 minutes
-
-# The last membership the platform gave, kept to stand in while it cannot be
-# asked. Long, because it is read only during an outage and the credit gate
-# still asks about every turn: a plan that changed meanwhile is wrong for the
-# length of the outage at most, and spends nothing the gate did not allow.
-_PLATFORM_MEMBERSHIP_LAST_KNOWN_TTL = 30 * 24 * 3600  # 30 days
-
-# After a failed ask, requests for that user stop asking for this long and read
-# the last-known membership instead, so a down or hanging platform is not called
-# on every request. Matches the Retry-After an unknown membership answers with,
-# so a client that honours it asks again once the pause is over.
-_PLATFORM_MEMBERSHIP_PAUSE_TTL = _SERVICE_UNAVAILABLE_RETRY_AFTER
-
-
-def platform_membership_cache_key(user_id: str) -> str:
-    return f"platform_membership:{user_id}"
-
-
-def _membership_last_known_key(user_id: str) -> str:
-    return f"platform_membership:last_known:{user_id}"
-
-
-def _membership_pause_key(user_id: str) -> str:
-    return f"platform_membership:unreachable:{user_id}"
-
-
-def _is_membership(value: object) -> bool:
-    return isinstance(value, dict) and "access_tier" in value
-
-
-async def _fetch_platform_membership(
-    user_id: str, *, refresh: bool = False, recheck: bool = False
-) -> Optional[dict]:
-    """The user's platform membership: ``{"access_tier", "plan_display_name"}``.
-
-    ``access_tier`` -1 is the platform's own answer that the user has no access.
-    None means there is no answer: the platform could not be asked and has not
-    answered for this user within the last-known TTL. An outage is not a plan,
-    so no caller may read None as -1. While the platform is unreachable the last
-    membership it gave stands in. ``refresh`` asks now, past the 5-minute cache
-    and any pause, for a plan known to have changed. ``recheck`` asks past the
-    cache only, for one that may have, and leaves the cache to the user's other
-    reads meanwhile. No-op in OSS mode.
-    """
-    if not platform_gating_active():
-        return {"access_tier": -1, "plan_display_name": None}
-
-    from src.utils.cache.redis_cache import get_cache_client
-
-    cache = get_cache_client()
-    cached, last_known, paused = await cache.mget([
-        platform_membership_cache_key(user_id),
-        _membership_last_known_key(user_id),
-        _membership_pause_key(user_id),
-    ])
-    if not _is_membership(last_known):
-        last_known = None
-    if refresh:
-        # Dropped, not only skipped: should this ask fail, later requests must
-        # not take the plan it was asked to replace back from the cache.
-        await cache.delete(platform_membership_cache_key(user_id))
-    else:
-        if not recheck and _is_membership(cached):
-            # An entry an older worker wrote has no last-known record beside it.
-            # Not from a -1, which an older worker also caches for a failed ask.
-            if last_known is None and int(cached.get("access_tier", -1)) >= 0:
-                await cache.set(
-                    _membership_last_known_key(user_id),
-                    cached,
-                    ttl=_PLATFORM_MEMBERSHIP_LAST_KNOWN_TTL,
-                )
-            return cached
-        if paused:
-            return last_known
-
-    result = await _call_validate_for_user(user_id)
-    if result is not None:
-        membership = {
-            "access_tier": int(result.get("access_tier", -1)),
-            "plan_display_name": result.get("plan_display_name"),
-        }
-        await cache.set_many([
-            (platform_membership_cache_key(user_id), membership,
-             _PLATFORM_MEMBERSHIP_CACHE_TTL),
-            (_membership_last_known_key(user_id), membership,
-             _PLATFORM_MEMBERSHIP_LAST_KNOWN_TTL),
-        ])
-        return membership
-
-    # The failure is recorded beside the membership, never in its place: a
-    # cached -1 here is what used to send a paying user to the setup wizard.
-    await cache.set(
-        _membership_pause_key(user_id), True, ttl=_PLATFORM_MEMBERSHIP_PAUSE_TTL
-    )
-    return last_known
-
-
-async def _fetch_platform_tier(user_id: str, *, recheck: bool = False) -> Optional[int]:
-    """Only the access tier, from the same cache; None when it is unknown."""
-    membership = await _fetch_platform_membership(user_id, recheck=recheck)
-    if membership is None:
-        return None
-    return int(membership.get("access_tier", -1))
-
-
-async def get_platform_access_tier(user_id: str) -> int | None:
-    """Public access tier for plan gates: the tier, or None for no access.
-
-    Normalizes the ``-1`` no-access sentinel to None so callers can fail closed
-    on ``tier is None`` instead of leaking the sentinel into tier comparisons.
-    An unknown tier is None too: a plan gate stays shut on a plan it cannot
-    confirm, which costs a feature for the length of an outage, not a turn.
-    """
-    tier = await _fetch_platform_tier(user_id)
-    return tier if tier is not None and tier >= 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -682,14 +411,13 @@ async def _get_user_scopes(user_id: str, *, max_age: float = _SCOPE_CACHE_TTL) -
     one*, is the platform's definitive answer and is enforced, so a user the
     platform grants no scopes can't slip through as if the service were down.
     """
-    import time
 
     now = time.time()
     cached = _scope_cache.get(user_id)
     if cached and cached[1] > now and now - (cached[1] - _scope_ttl(cached[0])) <= max_age:
         return cached[0]
 
-    result = await _call_validate_for_user(user_id)
+    result = await platform_client.call_validate(user_id)
     scopes = result["scopes"] if result and "scopes" in result else None
     # A read again that the platform cannot answer keeps the list still
     # cached: reading past the cache must not turn a definitive answer into
@@ -697,7 +425,7 @@ async def _get_user_scopes(user_id: str, *, max_age: float = _SCOPE_CACHE_TTL) -
     if scopes is None and cached and cached[0] is not None and cached[1] > now:
         return cached[0]
 
-    # Brief negative TTL (mirrors _fetch_platform_membership) so a platform
+    # Brief negative TTL (mirrors read_membership) so a platform
     # blip doesn't leave gating disabled for the full 5 minutes.
     _scope_cache[user_id] = (scopes, now + _scope_ttl(scopes))
     return scopes
@@ -718,7 +446,7 @@ async def _lacks_scope(user_id: str, scope: str, *, plan_changed: bool = False) 
 def require_scope(scope: str):
     """FastAPI dependency factory — checks user has scope. No-op in OSS mode."""
     async def check(user_id: str = Depends(get_current_user_id)):
-        if not platform_gating_active():
+        if not platform_client.platform_gating_active():
             return user_id  # OSS mode: everything allowed
         if await _lacks_scope(user_id, scope):
             raise HTTPException(403, detail=f"Requires scope: {scope}")
@@ -737,7 +465,7 @@ async def require_workspace_scope(user_id: str, scope: str, *, plan_changed: boo
     omits scopes (``_get_user_scopes`` returns None). A definitive list —
     including an empty one — is enforced.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return
     if await _lacks_scope(user_id, scope, plan_changed=plan_changed):
         raise HTTPException(403, detail=f"Requires scope: {scope}")
@@ -812,10 +540,10 @@ async def enforce_capacity(
     gives it up for the one it asks for. No-op in OSS mode and fail-open when
     the platform is unreachable or omits the quota object.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return
 
-    result = await _call_validate_for_user(user_id, check_quota=check_quota)
+    result = await platform_client.call_validate(user_id, check_quota=check_quota)
     if result is None:
         return  # Fail-open
 
@@ -854,10 +582,10 @@ async def get_capacity_status(user_id: str, check_quota: str) -> Optional[dict]:
     unreachable, or when it reports no counts for ``check_quota``. Never raises — this
     backs a UI hint, not a gate.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return None
 
-    result = await _call_validate_for_user(user_id, check_quota=check_quota)
+    result = await platform_client.call_validate(user_id, check_quota=check_quota)
     if not result:
         return None
 
@@ -890,7 +618,7 @@ async def get_entitlement_statuses(
     read again, as the gate reads a scope a cached list lacks, so a plan just
     upgraded shows what it opens.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return {key: None for key in entitlements}
     scopes = await _get_user_scopes(user_id, max_age=_reread_age(plan_changed))
 
@@ -935,10 +663,10 @@ async def computer_slot_granted(user_id: str, *, running: bool = False) -> bool:
     gate: unreachable, ambiguous or OSS is no, so a blip never builds or
     starts a machine nobody asked for.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return False
     try:
-        result = await _call_validate_for_user(
+        result = await platform_client.call_validate(
             user_id, check_quota="workspace" if running else COMPUTER_COUNT_QUOTA
         )
     except Exception:
@@ -965,10 +693,10 @@ async def plan_spec_tier(
     ``current_tier`` is the size the computer holds now, whose slot it gives
     back for a bigger one (as ``assert_spec_allowed``). Standard in OSS mode.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return "standard"
     try:
-        result = await _call_validate_for_user(user_id)
+        result = await platform_client.call_validate(user_id)
         scopes = (result or {}).get("scopes")
         if not isinstance(scopes, list):
             return None
@@ -978,7 +706,7 @@ async def plan_spec_tier(
                 continue
             if tier == current_tier:
                 return tier
-            counted = await _call_validate_for_user(user_id, check_quota=entitlement[1])
+            counted = await platform_client.call_validate(user_id, check_quota=entitlement[1])
             later = (counted or {}).get("scopes")
             if isinstance(later, list):
                 # The newer list decides the smaller sizes tried after this.
@@ -1076,8 +804,13 @@ async def assert_provider_allowed(
 
     Scope only, with no count quota: the computer cap already meters every
     machine the deployment provides, and none its owner brings (``metered``).
-    No-op in OSS mode, fail-open when the platform is unreachable.
+    No-op in OSS mode, fail-open when the platform is unreachable. The
+    policy's ``own_machines`` rule is asked first, of every kind including
+    the default, and never fails open.
     """
+    from src.server.services.account import refuse_machine_use
+
+    await refuse_machine_use(kind, user_id)
     if kind == default_kind:
         return
     await require_workspace_scope(user_id, provider_scope(kind))
@@ -1090,15 +823,27 @@ async def get_provider_allowances(
 
     None is the gate's own fail-open reading (OSS mode, an unreachable
     platform), so a picker built on this never disables a kind the gate would
-    take. Scopes are read once, from the same cache the gate uses.
+    take. Scopes are read once, from the same cache the gate uses. A kind of
+    machine its owner brings is False while the policy keeps work off one,
+    or cannot be read, since the gate refuses both.
     """
+    from ptc_agent.core.sandbox.providers import OWN_MACHINE_KINDS
+    from src.server.services.policy import OWN_MACHINES
+    from src.server.services.account import policy_for
+
+    own_refused = False
+    if any(k in OWN_MACHINE_KINDS for k in kinds):
+        policy = await policy_for(user_id)
+        own_refused = policy is None or not policy.allows(OWN_MACHINES)
     scopes = (
         await _get_user_scopes(user_id)
-        if platform_gating_active() and any(k != default_kind for k in kinds)
+        if platform_client.platform_gating_active() and any(k != default_kind for k in kinds)
         else None
     )
 
     def allowed(kind: str) -> Optional[bool]:
+        if own_refused and kind in OWN_MACHINE_KINDS:
+            return False
         if kind == default_kind:
             return True
         if scopes is None:
@@ -1135,9 +880,9 @@ async def _scope_entitlement_lost(user_id: str, scope: str) -> bool:
     validate call directly (not the cached ``_get_user_scopes``) so a failed
     fetch is distinguishable from a 200 that simply lacks the scope.
     """
-    if not platform_gating_active():
+    if not platform_client.platform_gating_active():
         return False
-    result = await _call_validate_for_user(user_id)
+    result = await platform_client.call_validate(user_id)
     if result is None:
         return False  # validate failed / unreachable → keep
     scopes = result.get("scopes")

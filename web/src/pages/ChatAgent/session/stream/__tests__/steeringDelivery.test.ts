@@ -104,6 +104,13 @@ describe('deliveredEntryRow', () => {
     expect(row).toMatchObject({ requestKey: 'rk-1' });
   });
 
+  it('names the account a steer came from, and no account on an agent\'s', () => {
+    expect(deliveredEntryRow(steer('margins', { user_id: 'u-maya' }), id, 2))
+      .toMatchObject({ sender: { userId: 'u-maya', name: null } });
+    const cos = deliveredEntryRow(steer('bridge', { user_id: 'u-maya', origin: { type: 'agent', agent: 'chief_of_staff' } }), id, 2);
+    expect(cos).not.toHaveProperty('sender');
+  });
+
   it('draws nothing for what a share leaves of a report', () => {
     expect(deliveredEntryRow(steer(''), id, 2)).toBeNull();
   });

@@ -325,7 +325,7 @@ async def _finish_collected(
     """
     await persist_subagent_usage(
         buf.response_id, collected_tasks, buf.thread_id, buf.workspace_id,
-        buf.user_id, is_byok=is_byok,
+        buf.recorded_as, is_byok=is_byok,
     )
     if publish_wake:
         await publish_settled_wake(buf.thread_id)
@@ -340,7 +340,7 @@ async def collect_subagent_results_for_turn(
     response_id: str,
     tasks: list,
     workspace_id: str,
-    user_id: str,
+    recorded_as: str,
     timeout: float | None = None,
     is_byok: bool = False,
     sandbox=None,
@@ -356,7 +356,7 @@ async def collect_subagent_results_for_turn(
         pending = _owned_pending(tasks, response_id)
         await _claim_settled_parents(thread_id, tasks, response_id, pending)
 
-        buf = ArchiveBuffer(response_id, thread_id, workspace_id, user_id, sandbox)
+        buf = ArchiveBuffer(response_id, thread_id, workspace_id, recorded_as, sandbox)
         await _replay_settled(tasks, pending, buf)
         await buf.flush()
 
@@ -400,7 +400,7 @@ async def collect_subagent_results_for_turn(
                     unwritten=buf.unwritten[:],
                     tasks=orphaned_tasks,
                     workspace_id=workspace_id,
-                    user_id=user_id,
+                    recorded_as=recorded_as,
                     is_byok=is_byok,
                     sandbox=sandbox,
                 ),
@@ -546,7 +546,7 @@ async def collect_orphaned_subagent_results(
     unwritten: list[dict],
     tasks: list,
     workspace_id: str,
-    user_id: str,
+    recorded_as: str,
     is_byok: bool = False,
     sandbox=None,
 ) -> None:
@@ -556,7 +556,7 @@ async def collect_orphaned_subagent_results(
     try:
         # ``unwritten``: the turn collector's events that have not landed yet.
         buf = ArchiveBuffer(
-            response_id, thread_id, workspace_id, user_id, sandbox, unwritten
+            response_id, thread_id, workspace_id, recorded_as, sandbox, unwritten
         )
 
         _settle_finished(tasks, response_id)
@@ -698,7 +698,7 @@ async def claim_turn_subagents(
     run_id: str,
     metadata: dict,
     workspace_id: Optional[str],
-    user_id: Optional[str],
+    recorded_as: Optional[str],
 ) -> list:
     """Claim a finished turn's subagents and bill the ones already settled.
 
@@ -726,7 +726,7 @@ async def claim_turn_subagents(
             exc_info=True,
         )
         return []
-    if tasks and workspace_id and user_id:
+    if tasks and workspace_id and recorded_as:
         try:
             _settle_finished(tasks, response_id)
             await _claim_settled_parents(thread_id, tasks, response_id, {})
@@ -735,7 +735,7 @@ async def claim_turn_subagents(
                 _billable_at_run_end(tasks, response_id),
                 thread_id,
                 workspace_id,
-                user_id,
+                recorded_as,
                 is_byok=metadata.get("is_byok", False),
             )
         except Exception:
@@ -753,12 +753,12 @@ def spawn_subagent_collector(
     tasks: list,
     metadata: dict,
     workspace_id: Optional[str],
-    user_id: Optional[str],
+    recorded_as: Optional[str],
     *,
     collect_for_turn: Callable[..., Any],
 ) -> None:
     """Collect the claimed subagents' events post-terminal."""
-    if tasks and workspace_id and user_id:
+    if tasks and workspace_id and recorded_as:
         _retain_collector(
             asyncio.create_task(
                 collect_for_turn(
@@ -766,7 +766,7 @@ def spawn_subagent_collector(
                     response_id=run_id,
                     tasks=tasks,
                     workspace_id=workspace_id,
-                    user_id=user_id,
+                    recorded_as=recorded_as,
                     is_byok=metadata.get("is_byok", False),
                     sandbox=metadata.get("sandbox"),
                 ),
@@ -779,7 +779,7 @@ async def end_run_subagents(
     thread_id: str,
     run_id: str,
     workspace_id: Optional[str],
-    user_id: Optional[str],
+    recorded_as: Optional[str],
     *,
     claimed_at_stop: list,
     carried_events: list[dict],
@@ -823,9 +823,9 @@ async def end_run_subagents(
                 workspace_id,
                 sandbox,
             )
-            if bill and user_id:
+            if bill and recorded_as:
                 await _bill_after_unwind(
-                    run_id, claimed, thread_id, workspace_id, user_id, is_byok
+                    run_id, claimed, thread_id, workspace_id, recorded_as, is_byok
                 )
 
 
@@ -872,7 +872,7 @@ async def _bill_after_unwind(
     tasks: list,
     thread_id: str,
     workspace_id: str,
-    user_id: str,
+    recorded_as: str,
     is_byok: bool,
 ) -> None:
     """Bill claimed tasks once their writers can no longer add to the usage.
@@ -884,7 +884,7 @@ async def _bill_after_unwind(
     writers = [writer for task in tasks for writer in task.live_writers]
     if not writers:
         await persist_subagent_usage(
-            response_id, tasks, thread_id, workspace_id, user_id, is_byok=is_byok
+            response_id, tasks, thread_id, workspace_id, recorded_as, is_byok=is_byok
         )
         return
 
@@ -897,7 +897,7 @@ async def _bill_after_unwind(
                 f"{SUBAGENT_TAIL_TIMEOUT:.0f}s; billing without their usage"
             )
         await persist_subagent_usage(
-            response_id, tasks, thread_id, workspace_id, user_id, is_byok=is_byok
+            response_id, tasks, thread_id, workspace_id, recorded_as, is_byok=is_byok
         )
 
     _retain_collector(

@@ -32,6 +32,13 @@ import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { basename, dirname } from '../utils/fileRefResolver';
 import { shareLinkHref } from '../utils/api/shareLinks';
 import { refusalIn, usePublish, type PublishBody, type PublishRefusal } from './filePanel/usePublish';
+import { useAccount } from '@/hooks/useAccount';
+import { useLinkStanding } from '@/hooks/useLinkStanding';
+import { RULE } from '@/lib/accountRules';
+import { LinkRuleNote } from '@/components/organization/LinkRuleNote';
+import { AudiencePicker } from '@/components/organization/AudiencePicker';
+import { LibraryPublishRow } from '@/components/organization/LibraryPublishRow';
+import type { ShareAudience } from '@/types/api';
 
 /** The server takes a label of 1 to 200 characters. */
 const LABEL_MAX = 200;
@@ -319,9 +326,10 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   // Read once before the scout loads the page, naming the code it will run,
   // and again once it has heard the page out.
   const statusQuery = useArtifactStatus(artifact, { always: true, report: true, enabled: scout.reads });
-  const { unshare, keepUpdated } = useArtifactPublishing();
+  const { unshare, keepUpdated, audience: audienceChange } = useArtifactPublishing();
   const changingList = useFileLeftOutPending(artifact?.artifact_id ?? '');
   const publish = usePublish(t('publish.failed'));
+  const { setterName, orgT } = useAccount();
   const { copy, copiedCode } = useCopyShareLink();
 
   const [label, setLabel] = useState('');
@@ -329,7 +337,7 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   const [keepDraft, setKeepDraft] = useState<boolean | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  const busy = publish.pending || unshare.isPending || keepUpdated.isPending;
+  const busy = publish.pending || unshare.isPending || keepUpdated.isPending || audienceChange.isPending;
   useEffect(() => {
     busyRef.current = busy;
   }, [busy, busyRef]);
@@ -363,7 +371,19 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   const upToDate = shared && status?.changed === false && !hasDrift;
   // Publishing sends the list on screen, so it waits for one that is current.
   const listReady = !!status && !overCap && !statusQuery.isFetching && !statusQuery.isError && !scout.holding && !changingList;
-  const canPublish = !!artifact && listReady && files.length > 0 && !busy && !upToDate;
+  // A rule against public links refuses publishing; unsharing never is. A
+  // page published before it keeps its row, and visitors wait for the rule.
+  // A member held by the workspace's managers reads the file's link but
+  // does not publish, update, unshare or keep it updated.
+  const standing = useLinkStanding(workspaceId, {
+    surface: 'file',
+    linkOn: shared,
+    audience: artifact?.audience,
+    audiences: artifact?.audiences,
+  });
+  const { membersOnly, lockedOut } = standing;
+  const blocked = standing.state !== 'open';
+  const canPublish = !!artifact && listReady && files.length > 0 && !busy && !upToDate && !lockedOut;
   const keepOn = shared ? !!artifact?.keep_updated : keepDraft ?? !!artifact?.keep_updated;
   const recordFailed = !!owned.error;
   const href = artifact ? shareLinkHref(artifact.code) : '';
@@ -421,13 +441,22 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
     if (!busy) onClose();
   };
 
+  const chooseAudience = (to: ShareAudience) => {
+    if (!artifact || busy) return;
+    audienceChange.mutate(
+      { artifactId: artifact.artifact_id, audience: to },
+      { onError: (err) => failed(err, t('publish.changeFailed')) },
+    );
+  };
+
   // A link shared before versions whose files were past the caps: visitors
   // get nothing until a publish, which clears it.
   const legacyRefused = shared && !!artifact?.legacy_refused;
   let stateHint: string;
-  if (!shared) stateHint = latestSeq > 0 ? t('publish.privateWithVersions') : t('publish.privateHint');
+  if (standing.state === 'paused') stateHint = t('organization.share.pausedShort', { whoMid: setterName(RULE.publicLinks).mid });
+  else if (!shared) stateHint = latestSeq > 0 ? t('publish.privateWithVersions') : t('publish.privateHint');
   else if (legacyRefused) stateHint = t('publish.legacyRefused');
-  else if (visitorsAt === 0 || status?.changed == null) stateHint = t('publish.sharedHint');
+  else if (visitorsAt === 0 || status?.changed == null) stateHint = membersOnly ? orgT('organization.share.fileMembersHint') : t('publish.sharedHint');
   else if (upToDate) stateHint = t('publish.upToDate', { seq: visitorsAt });
   else stateHint = t('publish.changedSince', { seq: visitorsAt });
 
@@ -520,13 +549,23 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
                 size="sm"
                 className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
                 onClick={stop}
-                disabled={busy}
+                disabled={busy || lockedOut}
               >
                 {unshare.isPending && <Loader size={12} style={{ color: 'inherit' }} />}
                 {t('publish.unshare')}
               </Button>
             )}
           </div>
+          {standing.picker && (
+            <div className="px-3 py-2.5" style={{ borderColor: 'var(--color-border-muted)' }}>
+              <AudiencePicker
+                {...standing.picker}
+                disabled={!artifact || busy}
+                onChange={chooseAudience}
+              />
+            </div>
+          )}
+          {!blocked && (
           <div
             className="flex items-center justify-between gap-3 px-3 py-2.5"
             style={{ borderColor: 'var(--color-border-muted)' }}
@@ -545,12 +584,15 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
                 <ToggleSwitch
                   checked={keepOn}
                   onChange={toggleKeep}
-                  disabled={!artifact || busy}
+                  disabled={!artifact || busy || (shared && lockedOut)}
                   ariaLabel={t('publish.keepUpdated')}
                 />
               )}
           </div>
+          )}
         </div>
+
+        <LinkRuleNote note={standing.note} />
 
         {latestSeq > 0 && <VersionList artifactId={artifact?.artifact_id} />}
 
@@ -589,7 +631,7 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
         )}
 
         {/* A refusal has no list to show, nor does a record that failed to load. */}
-        {!recordFailed && !blocking && (
+        {!recordFailed && !blocking && !blocked && (
           <ReviewList
             artifactId={artifact?.artifact_id ?? ''}
             heading={status ? listHeading : null}
@@ -605,6 +647,7 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
         )}
 
         {/* The version's note */}
+        {!blocked && (
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
             {t('publish.label')}
@@ -624,10 +667,19 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
             className="h-8 sm:text-xs bg-(--color-bg-input) border-(--color-border-muted) text-(--color-text-primary)"
           />
         </label>
+        )}
+
+        {artifact && (
+          <LibraryPublishRow
+            target={{ kind: 'file', artifactId: artifact.artifact_id }}
+            linkOn={shared}
+            hint={t('organization.library.publishFileHint')}
+          />
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 pt-1">
-          {shared ? (
+          {shared && !membersOnly ? (
             <a
               href={`${href}?as=visitor`}
               target="_blank"
@@ -643,10 +695,12 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
             <Button variant="outline" size="sm" onClick={close} disabled={busy}>
               {t('common.close')}
             </Button>
+            {!blocked && (
             <Button size="sm" className="gap-1.5" onClick={() => void send()} disabled={!canPublish}>
               {publish.pending && <Loader size={14} style={{ color: 'inherit' }} />}
               {shared ? t('publish.update') : t('publish.publish')}
             </Button>
+            )}
           </div>
         </div>
       </div>

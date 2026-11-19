@@ -31,6 +31,8 @@ export interface EnsureThreadIdArgs {
    *  send carries on its own. */
   reasoningEffortOverride?: string;
   fastModeOverride?: boolean;
+  /** In a shared workspace, the thread starts shared with everyone there. */
+  sharedWithWorkspace?: boolean;
   queryClient: QueryClient;
   /** Kept in sync so in-flight closures see the real id immediately. */
   threadIdRef: { current: string };
@@ -59,6 +61,7 @@ export async function ensureThreadId({
   subagentsAllowed,
   reasoningEffortOverride,
   fastModeOverride,
+  sharedWithWorkspace,
   queryClient,
   threadIdRef,
   setThreadId,
@@ -82,6 +85,7 @@ export async function ensureThreadId({
       subagentsAllowed,
       reasoningEffort: reasoningEffortOverride,
       fastMode: fastModeOverride,
+      sharedWithWorkspace,
     });
     // Stop landed during the round-trip: adopting the id now (navigate,
     // optimistic row, nav bump) would resurrect the UI the stop finalized.

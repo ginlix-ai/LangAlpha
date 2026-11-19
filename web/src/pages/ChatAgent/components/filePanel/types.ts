@@ -60,7 +60,9 @@ export interface ApiAdapter {
  * whatever acts on it. Only the owner publishes, comments, and has a file's
  * record made by looking at it. A read-only panel is the owner looking at a
  * sibling's files, served under the grant like their own but changed in no
- * way, a record included. A share's visitor reads under the share's prefix.
+ * way, a record included. A member of a shared workspace is its owner
+ * here: the records, publishing and comments are the workspace's, which
+ * every member keeps. A share's visitor reads under the share's prefix.
  */
 export type PanelAccess =
   | { kind: 'owner' }

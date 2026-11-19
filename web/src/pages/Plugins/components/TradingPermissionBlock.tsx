@@ -4,6 +4,9 @@ import { Link } from 'react-router';
 import { cn } from '@/lib/utils';
 import { useTradingPermission } from '@/hooks/useTradingPermission';
 import { TRADING_LEVEL_INFO, TRADING_PERMISSION_HREF } from '@/lib/tradingPermission';
+import { useRule } from '@/hooks/useAccount';
+import { RULE } from '@/lib/accountRules';
+import { RuleNote } from '@/components/organization/RuleRow';
 
 /**
  * The user's trading permission, read where brokerages are connected, with the
@@ -17,6 +20,15 @@ export function TradingPermissionBlock() {
   const info = data ? TRADING_LEVEL_INFO[data.level] : null;
   const warning = info?.warning ?? false;
   const Icon = warning ? AlertTriangle : ShieldCheck;
+  const trading = useRule(RULE.trading);
+  if (!trading.allowed) {
+    return (
+      <section className="detail-aside-block">
+        <h3>{t('settings.tradingPermission.title')}</h3>
+        <RuleNote>{t('organization.trading.off', { who: trading.who.start })}</RuleNote>
+      </section>
+    );
+  }
   return (
     <section className="detail-aside-block">
       <h3>{t('settings.tradingPermission.title')}</h3>

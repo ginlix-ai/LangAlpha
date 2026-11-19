@@ -14,7 +14,7 @@ import pytest
 
 from src.server.services.automation_executor import ABANDONED_AFTER_SECONDS
 from src.server.services.automation_scheduler import AutomationScheduler
-from src.server.services.automation_settlement import INTERRUPTED_ERROR, Outcome
+from src.server.services.automation_outcomes import INTERRUPTED_ERROR, Outcome
 
 _MOD = "src.server.services.automation_scheduler"
 _WAIT = "src.server.services.automation_computer_wait"

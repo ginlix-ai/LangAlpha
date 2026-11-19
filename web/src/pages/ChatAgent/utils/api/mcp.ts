@@ -647,6 +647,32 @@ export async function getMcpCatalog(): Promise<CatalogServerList> {
   };
 }
 
+/** One connector the account's organization sets up, as a member sees it:
+ *  never its address, and nothing the member edits or removes. */
+export interface OrgConnector {
+  id: string;
+  name: string;
+  description: string;
+  /** `shared`: one sign-in the organization holds. `member`: each member
+   *  signs in with their own account. */
+  auth: 'shared' | 'member';
+  /** The member's own sign-in to a `member` connector; null before one. */
+  connection_status: McpOauthStatus | null;
+  disabled_workspace_ids: string[];
+  managed: true;
+  /** What the member's last listing of its tools found. Absent from an
+   *  older server, which reads as not listed yet. */
+  discovery?: 'ok' | 'error' | 'pending';
+  tool_count?: number;
+}
+
+/** The organization's connectors this member may use. Rejects with 503 while
+ *  the account's organization cannot be read. */
+export async function getOrgConnectors(): Promise<OrgConnector[]> {
+  const { data } = await api.get<{ connectors?: OrgConnector[] }>('/api/v1/mcp/org-connectors');
+  return data.connectors ?? [];
+}
+
 /** The discovered tool snapshot for one catalog server (hash-gated server
  * side to the row's current config — empty until a discovery has run). */
 export async function getMcpCatalogServerTools(name: string): Promise<{

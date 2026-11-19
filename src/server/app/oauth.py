@@ -31,6 +31,10 @@ from src.server.services.oauth_protocol import (
     TokenSet,
 )
 from src.server.services.features import user_feature_enabled
+from src.server.services import activity
+from src.server.services.activity import Action
+from src.server.services.policy import OWN_SUBSCRIPTIONS
+from src.server.services.account import require_policy
 from src.server.services.oauth_providers import SUBSCRIPTIONS
 from src.server.services.oauth_signin import (
     OAuthRefusal,
@@ -74,6 +78,10 @@ async def _save(cache, key: str, raw, user_id: str, provider: str, tokens: Token
         logger.exception(f"[oauth] Saving {provider} tokens failed for user_id={user_id}")
         raise _fail(500, "save_failed", "The account could not be saved. Start again.", retryable=False)
     await connection_changed(user_id)
+    activity.record(
+        user_id, Action.MODEL_SIGN_IN_CONNECTED, resource=("model_provider", provider),
+        detail={"provider": provider},
+    )
     return True
 
 
@@ -121,7 +129,9 @@ async def device_initiate(key: str, user_id: CurrentUserId):
     verification_url_has_code, interval, expires_at}``, where
     ``verification_url_has_code`` says the page already carries the code. Poll
     every ``interval`` seconds until ``status`` is no longer ``pending``."""
-    return await _device_initiate(_device_flow(key), user_id)
+    flow = _device_flow(key)
+    (await require_policy(user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a model sign-in")
+    return await _device_initiate(flow, user_id)
 
 
 @router.post("/{key}/device/poll")
@@ -131,7 +141,9 @@ async def device_poll(key: str, user_id: CurrentUserId):
     account_id}), ``denied`` or ``expired`` (``code`` says whether the code
     expired or no flow is pending); the last two mean start again. A retryable
     error (``upstream_unavailable``) means poll again."""
-    return await _device_poll(_device_flow(key), user_id)
+    flow = _device_flow(key)
+    (await require_policy(user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a model sign-in")
+    return await _device_poll(flow, user_id)
 
 
 # Each start asks the provider for a code from the deployment's one address,
@@ -302,6 +314,7 @@ async def _sign_in_feature_allows(user_id: str, provider: str) -> bool:
 
 
 async def _require_claude_sign_in(user_id: str) -> None:
+    (await require_policy(user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a model sign-in")
     provider = claude_oauth.CLAUDE_PROVIDER
     if await _sign_in_feature_allows(user_id, provider) or await get_oauth_connection(user_id, provider) is not None:
         return
@@ -425,5 +438,9 @@ async def oauth_disconnect(key: str, user_id: CurrentUserId):
             await cache.client.delete(flow_key)
         await delete_oauth_tokens(user_id, provider, conn=conn)
     await connection_changed(user_id)
+    activity.record(
+        user_id, Action.MODEL_SIGN_IN_DISCONNECTED, resource=("model_provider", provider),
+        detail={"provider": provider},
+    )
     logger.info(f"[oauth] {provider} disconnected for user_id={user_id}")
     return {"success": True}

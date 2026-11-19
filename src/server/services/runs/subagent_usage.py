@@ -17,7 +17,7 @@ async def persist_subagent_usage(
     tasks: list,
     thread_id: str,
     workspace_id: str,
-    user_id: str,
+    recorded_as: str,
     is_byok: bool = False,
 ) -> None:
     """Persist each subagent's token usage as a separate row with msg_type='task'."""
@@ -38,7 +38,7 @@ async def persist_subagent_usage(
         claimed = take_task_usage(tasks, response_id)
 
     await _persist_takes(
-        claimed, response_id, thread_id, workspace_id, user_id, is_byok
+        claimed, response_id, thread_id, workspace_id, recorded_as, is_byok
     )
 
 
@@ -51,6 +51,7 @@ async def bill_resumed_round(thread_id: str, take) -> None:
     """
     from src.server.contracts.status import bills_subagents
     from src.server.database.runs.lifecycle import get_run_ending
+    from src.server.services.shared_workspaces.turn import carried_recorded_as
 
     ending = await get_run_ending(take.response_id)
     if not bills_subagents(ending):
@@ -66,7 +67,7 @@ async def bill_resumed_round(thread_id: str, take) -> None:
         take.response_id,
         thread_id,
         str(ending["workspace_id"]),
-        str(ending["user_id"]),
+        carried_recorded_as(ending),
         bool(metadata.get("is_byok", False)),
     )
 
@@ -76,7 +77,7 @@ async def _persist_takes(
     response_id: str,
     thread_id: str,
     workspace_id: str,
-    user_id: str,
+    recorded_as: str,
     is_byok: bool,
 ) -> None:
     from src.server.services.persistence.usage import UsagePersistenceService
@@ -93,7 +94,7 @@ async def _persist_takes(
             usage_service = UsagePersistenceService(
                 thread_id=thread_id,
                 workspace_id=workspace_id,
-                user_id=user_id,
+                user_id=recorded_as,
             )
             await usage_service.track_llm_usage(records)
 

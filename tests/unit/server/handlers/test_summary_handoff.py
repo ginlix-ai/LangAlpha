@@ -172,7 +172,7 @@ async def _switch(
 
     graph, state = MagicMock(), MagicMock(values=thread.values)
     build = AsyncMock(
-        return_value=ThreadAgent("thread-1", graph, state, [], "ws-1", None, None)
+        return_value=ThreadAgent("thread-1", graph, state, [], "ws-1", None, None, recorded_as="user-1")
     )
     update = AsyncMock()
     ask = ask or AsyncMock(return_value=written)
@@ -224,7 +224,7 @@ class TestHandOffOnSwitch:
         assert run.runner.released == [("thread-1", "handoff")]
         build = run.build.await_args.kwargs
         assert build["checkpointer"] == "fence-saver"
-        assert build["role"] == "analyst"
+        assert build["route"].role == "analyst"
         assert build["config"].get_llm_client() is thread.models["m-old"]
         assert run.ask.await_args.args[2] == HandOff()
         values = run.update.await_args.args[2]

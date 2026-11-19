@@ -328,15 +328,21 @@ class MCPServerConfig(BaseModel):
     tool_exposure_mode: Literal["summary", "detailed"] | None = None  # Per-server override
     vault_blueprints: list[VaultBlueprint] = Field(default_factory=list)
     # 'builtin' = from agent_config.yaml; 'user' = user-level server inherited
-    # by every workspace of the user unless that workspace switched it off.
-    # User servers are untrusted: vault-only secret resolution, neutral prompt
+    # by every workspace of the user unless that workspace switched it off;
+    # 'org' = a connector the user's organization sets up. User and org
+    # servers are untrusted: vault-only secret resolution, neutral prompt
     # framing, sanitized discovery.
-    source: Literal["builtin", "user"] = "builtin"
+    source: Literal["builtin", "user", "org"] = "builtin"
     discovery_uses_secrets: bool = False  # user servers: resolve vault secrets during discovery (default off = secret-less probe)
     # Set at resolve time when the user has a non-revoked OAuth connection for
     # this server — the server is then bound through the egress relay and its
     # sandbox config carries a grant reference instead of the vendor URL.
     oauth_connection_id: str | None = None
+    # An organization connector's id and revision (``source='org'`` only). Its
+    # url is dialled by the relay alone and it carries no headers: the sandbox
+    # entry is relay-bound whatever the connector authenticates with.
+    org_connector_id: str | None = None
+    org_revision: str | None = None
     # The credential a built-in http server is reached with. ``data_token`` is
     # the computer's own data token, read from the token file the server keeps
     # current, so the server holds no key of its own; the client resends such a
@@ -352,8 +358,16 @@ class MCPServerConfig(BaseModel):
 
     @property
     def relay_bound(self) -> bool:
-        """Whether the sandbox reaches this server only through the egress relay."""
-        return self.oauth_connection_id is not None or self.auth not in (None, "data_token")
+        """Whether the sandbox reaches this server only through the egress relay.
+
+        An organization connector is relay-bound whether or not the member
+        holds a connection: its credential is resolved per call host-side.
+        """
+        return (
+            self.oauth_connection_id is not None
+            or self.source == "org"
+            or self.auth not in (None, "data_token")
+        )
 
     @model_validator(mode="after")
     def _auth_is_builtin_http_only(self) -> Self:

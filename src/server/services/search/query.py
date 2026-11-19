@@ -86,6 +86,7 @@ async def search(
     cursor: str | None = None,
     workspace_id: str | None = None,
     thread_id: str | None = None,
+    shared: Sequence[str] = (),
 ) -> SearchResponse:
     """Each group of ``kinds`` for ``q``. Inside one thread there are no
     threads or files to list. A kind whose read runs past its timeout comes
@@ -108,7 +109,8 @@ async def search(
         if "threads" not in kinds:
             return [], None
         rows = await db.search_threads(
-            user_id, terms, limit=limit + 1, workspace_id=workspace_id, after=after
+            user_id, terms, limit=limit + 1, workspace_id=workspace_id, after=after,
+            shared=shared,
         )
         return _page("threads", rows, limit, lambda row: _thread(row, terms))
 
@@ -123,6 +125,7 @@ async def search(
             workspace_id=workspace_id,
             thread_id=thread_id,
             after=after,
+            shared=shared,
         )
         return _page("turns", rows, limit, lambda row: _turn(row, terms))
 
@@ -137,6 +140,7 @@ async def search(
             root_excluded=STORED_FILE_ROOT_EXCLUDED_LIKE,
             workspace_id=workspace_id,
             after=after,
+            shared=shared,
         )
         return _page("files", rows, limit, lambda row: _file(row, terms))
 
@@ -222,13 +226,19 @@ def _clip(text: str) -> str:
 
 
 async def preview(
-    user_id: str, thread_id: str, turn_index: int | None
+    user_id: str,
+    thread_id: str,
+    turn_index: int | None,
+    *,
+    shared: Sequence[str] = (),
 ) -> TurnPreview | None:
     """A turn's message and answer as indexed, each clipped to
     ``PREVIEW_CHARS``; the thread's newest indexed turn without
     ``turn_index``. None when the thread is not the user's or the turn has
     no row."""
-    row = await db.get_turn_texts(user_id, thread_id, turn_index, clip=PREVIEW_CHARS)
+    row = await db.get_turn_texts(
+        user_id, thread_id, turn_index, clip=PREVIEW_CHARS, shared=shared
+    )
     if row is None:
         return None
     return TurnPreview(

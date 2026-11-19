@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from src.server.dependencies import principal as principal_mod
 from src.server.dependencies.principal import Principal
 from tests.conftest import create_test_app
+from tests.unit.server.access_stub import owner_access
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RUN_ID = "33333333-3333-4333-8333-333333333333"
@@ -28,7 +29,7 @@ async def _cancel(app, caller: Principal, query: str = "", *, status: int = 200)
     app.dependency_overrides[principal_mod._RUN] = lambda: caller
     cancel = AsyncMock(return_value={"cancelled": True})
     with (
-        patch("src.server.app.threads.messaging.auth_api.require_thread_owner", new=AsyncMock()),
+        patch("src.server.app.threads.messaging.thread_access", new=owner_access(OWNER_ID)),
         patch("src.server.services.cancel_dispatch.cancel_workflow", new=cancel),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -41,14 +42,14 @@ async def _cancel(app, caller: Principal, query: str = "", *, status: int = 200)
 async def test_a_computers_stop_keeps_the_users_queued_messages(app):
     cancel = await _cancel(app, Principal(OWNER_ID, "computer", computer_id="c-1"), f"?run_id={RUN_ID}")
 
-    cancel.assert_awaited_once_with(THREAD_ID, RUN_ID, by_user=False)
+    cancel.assert_awaited_once_with(THREAD_ID, RUN_ID, by="agent")
 
 
 @pytest.mark.asyncio
 async def test_a_persons_stop_gets_them_back(app):
     cancel = await _cancel(app, Principal(OWNER_ID, "session"))
 
-    cancel.assert_awaited_once_with(THREAD_ID, None, by_user=True)
+    cancel.assert_awaited_once_with(THREAD_ID, None)
 
 
 @pytest.mark.asyncio

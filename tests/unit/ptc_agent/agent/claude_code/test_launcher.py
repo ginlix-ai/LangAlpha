@@ -177,3 +177,46 @@ async def test_a_run_on_the_saved_setup_token_names_it_to_the_plan_once_read(mon
     await LocalLauncher(saved=_Store(Credential("sk-ant-oat01-saved")), plan=plan)._ready()
     await LocalLauncher(token="sk-ant-oat01-checked", plan=plan)._ready()
     plan.took.assert_awaited_once_with("sk-ant-oat01-saved")
+
+
+class _Exiting:
+    """A CLI whose closed stdin is seen before its exit is reaped."""
+
+    def __init__(self, exits: bool) -> None:
+        self.returncode: int | None = None
+        self._exits = exits
+
+    async def wait(self) -> int:
+        if not self._exits:
+            await anyio.sleep_forever()
+        self.returncode = 1
+        return 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exits", [True, False], ids=["exiting", "running"])
+async def test_a_write_that_fails_as_the_cli_exits_fails_in_the_clis_words(monkeypatch, exits):
+    """An exiting CLI closes its stdin before its exit is reaped, so the
+    write that fails then would say only that the pipe broke. It waits for
+    the exit; a CLI still running keeps the write's own error."""
+    from collections import deque
+
+    from claude_agent_sdk import CLIConnectionError, ProcessError
+
+    from ptc_agent.agent.claude_code import launcher
+    from ptc_agent.agent.claude_code.launcher import ScopedEnvTransport
+
+    async def broken(self, data):
+        raise CLIConnectionError("Failed to write to process stdin: ")
+
+    monkeypatch.setattr(SubprocessCLITransport, "write", broken)
+    monkeypatch.setattr(launcher, "EXIT_REAP_WAIT_S", 0.05)
+    transport = ScopedEnvTransport.__new__(ScopedEnvTransport)
+    transport._process = _Exiting(exits)
+    transport._stderr = deque(["enterprise MCP config is present"])
+    transport._stderr_task = None
+
+    with pytest.raises(ProcessError if exits else CLIConnectionError) as raised:
+        await transport.write("{}\n")
+    if exits:
+        assert raised.value.exit_code == 1 and "enterprise MCP config" in raised.value.stderr

@@ -275,6 +275,8 @@ export const queryKeys = {
     all:       ['mcp'],
     // The account's servers (not workspace-scoped).
     catalog:   () => [...queryKeys.mcp.all, 'catalog'],
+    // The account's organization's connectors, as this member sees them.
+    orgConnectors: () => [...queryKeys.mcp.all, 'orgConnectors'],
     // Process-global builtins with the user's account-wide toggles.
     builtins:  () => [...queryKeys.mcp.all, 'builtins'],
     // Effective per-workspace server list (builtins + account servers).
@@ -367,6 +369,20 @@ export const queryKeys = {
   // The user's order attempts. The list is paged by the server on a keyset
   // cursor, so a filter set is its own list rather than a client-side view of
   // one: the key carries the filters, and changing one starts a new page 1.
+  // The organization library. A publish or removal anywhere changes every
+  // list and the share dialogs' lookups, so all of them sit under `all`.
+  orgLibrary: {
+    all:       ['orgLibrary'],
+    lists:     () => [...queryKeys.orgLibrary.all, 'list'],
+    list:      (kind: string) => [...queryKeys.orgLibrary.lists(), kind],
+    published: (target: string) => [...queryKeys.orgLibrary.all, 'published', target],
+  },
+  sharedWorkspaces: {
+    all:     ['sharedWorkspaces'],
+    list:    () => [...queryKeys.sharedWorkspaces.all, 'list'],
+    members: (wsId: string) => [...queryKeys.sharedWorkspaces.all, 'members', wsId],
+    team:    (wsId: string) => [...queryKeys.sharedWorkspaces.all, 'team', wsId],
+  },
   orders: {
     all:    ['orders'],
     lists:  () => [...queryKeys.orders.all, 'list'],

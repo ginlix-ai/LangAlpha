@@ -171,12 +171,12 @@ export const reconnectToStream = async (
   deps: RecoveryDeps,
   { activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs, resetSubagentProjection = true, onDrop, owned, unheardEndIsDrop = false }: ReconnectOptions = {},
 ) => {
-  // Reconnect targets the LATCHED thread, not the threadId prop. A brand-new
+  if (runId) rt.pause.attach(runId);
+  // Reconnect targets the LATCHED thread, not the threadId prop: a brand-new
   // chat keeps the prop at '__default__' until the first SSE event updates the
-  // route, but Content-Location already latched the real id into threadIdRef.
-  // Keying off the prop would bail this whole first-answer window (the most
-  // common "ask, background the tab, come back" moment). Snapshot once so the
-  // id stays stable across this single reconnect attempt.
+  // route, though Content-Location already latched the real id. Keying off the
+  // prop would bail the whole first-answer window (the most common "ask,
+  // background the tab, come back" moment). Snapshot once for this attempt.
   const tid = rt.threadIdRef.current;
   if (!tid || tid === '__default__') return;
 

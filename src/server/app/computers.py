@@ -23,6 +23,8 @@ from ptc_agent.core.sandbox.providers.ssh_errors import (
 )
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.services.persistence.sync_result import BackupIncomplete
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.services.background_starts import schedule_start
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.app.status_stream import (
@@ -50,13 +52,13 @@ from src.server.database.workspace import (
     get_live_workspace_folders_for_computer,
 )
 from src.server.database.workspace_move import MoveRefused
+from src.server.services.platform_client import platform_gating_active
 from src.server.dependencies.usage_limits import (
     assert_provider_allowed,
     assert_spec_allowed,
     enforce_computer_count,
     enforce_computer_limit,
     get_provider_allowances,
-    platform_gating_active,
     tier_rank,
 )
 from src.server.database.user import get_user
@@ -149,6 +151,7 @@ from src.server.dependencies.principal import (
 )
 from src.server.utils.api import CurrentUserId
 from src.server.utils.error_sanitization import sandbox_failure_http
+from src.server.services.shared_workspaces.access import computer_access
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +386,16 @@ def _intent(computer: Dict[str, Any], key: str, model: type[BaseModel]) -> Any:
 async def _owned_computer(computer_id: str, user_id: str) -> Dict[str, Any]:
     computer = await get_computer(computer_id)
     require_computer_owner(computer, user_id=user_id)
+    return computer  # type: ignore[return-value]
+
+
+async def _reached_computer(
+    computer_id: str, user_id: str, *, manage: bool = False
+) -> Dict[str, Any]:
+    """:func:`_owned_computer`, or a shared workspace's computer for one of
+    its members (a manager for ``manage``)."""
+    computer = await get_computer(computer_id)
+    await computer_access(computer, user_id, manage=manage)
     return computer  # type: ignore[return-value]
 
 
@@ -751,7 +764,7 @@ async def _counted_response(computer: Dict[str, Any]) -> ComputerResponse:
 
 @router.get("/{computer_id}", response_model=ComputerResponse)
 async def get_computer_details(computer_id: str, x_user_id: ReadUserId):
-    return await _counted_response(await _owned_computer(computer_id, x_user_id))
+    return await _counted_response(await _reached_computer(computer_id, x_user_id))
 
 
 @router.patch("/{computer_id}", response_model=ComputerResponse)
@@ -873,6 +886,13 @@ async def remove_computer(
         removed = await manager.remove_computer_for_owner(
             computer, named, delete_files=delete_files, remove_key=remove_key
         )
+        activity.record(
+            x_user_id, Action.COMPUTER_REMOVED, resource=("computer", computer_id),
+            detail={
+                "kind": computer.get("kind"), "name": computer.get("name"),
+                "workspaces_deleted": len(removed.deleted), "files_deleted": delete_files,
+            },
+        )
     return removed.response()
 
 
@@ -937,7 +957,7 @@ async def get_computer_storage(computer_id: str, x_user_id: ReadUserId):
 @router.get("/{computer_id}/session", response_model=ComputerSessionResponse)
 async def get_computer_session(computer_id: str, x_user_id: ReadUserId):
     """Resolve sessions only when Postgres says running so this read cannot provision."""
-    computer = await _owned_computer(computer_id, x_user_id)
+    computer = await _reached_computer(computer_id, x_user_id)
     response = ComputerSessionResponse(
         computer_id=str(computer["computer_id"]),
         status=computer["status"],
@@ -965,7 +985,7 @@ async def get_computer_session(computer_id: str, x_user_id: ReadUserId):
 
 @router.get("/{computer_id}/events")
 async def computer_status_events(computer_id: str, x_user_id: ReadUserId):
-    computer = await _owned_computer(computer_id, x_user_id)
+    computer = await _reached_computer(computer_id, x_user_id)
 
     def _frame(
         status: str,
@@ -1014,10 +1034,10 @@ async def start_computer(
 ):
     async with _computer_action_errors("start", computer_id):
         manager = _computer_manager()
-        computer = await _owned_computer(computer_id, x_user_id)
+        computer = await _reached_computer(computer_id, x_user_id)
         if computer["status"] == "stopping":
             await manager.reconcile_stopping_computer(computer_id)
-            computer = await _owned_computer(computer_id, x_user_id)
+            computer = await _reached_computer(computer_id, x_user_id)
         status = computer["status"]
 
         if status == "running":
@@ -1069,7 +1089,7 @@ async def start_computer(
 @router.post("/{computer_id}/stop", response_model=ComputerActionResponse)
 async def stop_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("stop", computer_id):
-        await _owned_computer(computer_id, x_user_id)
+        await _reached_computer(computer_id, x_user_id, manage=True)
         with computer_cause("user"):
             updated = await _computer_manager().stop_computer(computer_id)
         logger.info(f"Stopped computer {computer_id}")
@@ -1083,7 +1103,7 @@ async def stop_computer(computer_id: str, x_user_id: ComputerEndUserId):
 @router.post("/{computer_id}/archive", response_model=ComputerActionResponse)
 async def archive_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("archive", computer_id):
-        await _owned_computer(computer_id, x_user_id)
+        await _reached_computer(computer_id, x_user_id, manage=True)
         with computer_cause("archive"):
             updated = await _computer_manager().archive_computer(computer_id)
         logger.info(f"Archived computer {computer_id}")

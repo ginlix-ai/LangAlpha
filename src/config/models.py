@@ -7,7 +7,7 @@ These models define the schema for config.yaml (infrastructure settings).
 from datetime import date
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 
 class BackgroundExecutionConfig(BaseModel):
@@ -347,6 +347,82 @@ class FeatureFlagOverride(BaseModel):
     )
 
 
+class ModelsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allowed: Optional[List[StrictStr]] = Field(
+        default=None, description="The models a turn may run; null allows any"
+    )
+
+
+class OwnModelAccessPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    api_keys: StrictBool = Field(
+        default=True,
+        description="The user's own provider API keys, custom models and custom providers",
+    )
+    subscriptions: StrictBool = Field(
+        default=True,
+        description="The user's own model sign-ins and a connected Claude Code subscription",
+    )
+
+
+class OrgLibraryPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    publish: StrictBool = Field(
+        default=True,
+        description="Publishing the user's threads, files and skills to their organization's library",
+    )
+
+
+class SharedWorkspacesPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    create: StrictBool = Field(
+        default=True,
+        description="Creating a workspace shared with others in the user's organization",
+    )
+
+
+class PolicyLayer(BaseModel):
+    """Restrictions on what users may do, one layer of the effective policy.
+
+    The deployment's (``policy:`` in config.yaml) and an organization's share
+    this schema. Closed and strictly typed at every level: a key or a value
+    this version cannot enforce must fail loudly, never read as no restriction.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    models: ModelsPolicy = Field(default_factory=ModelsPolicy)
+    own_model_access: OwnModelAccessPolicy = Field(default_factory=OwnModelAccessPolicy)
+    public_links: StrictBool = Field(
+        default=True,
+        description="Links to the user's threads and files that open without signing in as them",
+    )
+    trading: StrictBool = Field(
+        default=True,
+        description="The agent placing, changing or cancelling a live order for the user",
+    )
+    own_machines: StrictBool = Field(
+        default=True,
+        description="The user's work running on a machine the user brings (an SSH computer)",
+    )
+    user_connectors: StrictBool = Field(
+        default=True,
+        description=(
+            "MCP servers the user adds themselves, from a plugin or an import "
+            "included; a brokerage is governed by trading instead"
+        ),
+    )
+    org_library: OrgLibraryPolicy = Field(default_factory=OrgLibraryPolicy)
+    shared_workspaces: SharedWorkspacesPolicy = Field(
+        default_factory=SharedWorkspacesPolicy
+    )
+
+
 class MarketWatchConfig(BaseModel):
     """Market watch tuning (the on/off flag lives in the features registry)."""
 
@@ -505,6 +581,20 @@ class WorkflowOrchestrationConfig(BaseModel):
         return self
 
 
+class SharedWorkspacesConfig(BaseModel):
+    """Limits on shared workspaces (the on/off flag lives in the features
+    registry)."""
+
+    max_per_organization: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Live shared workspaces one organization may hold; each has a "
+            "computer of its own that counts against no member's limit"
+        ),
+    )
+
+
 class PromptConfig(BaseModel):
     """Deployment-wide prompt settings."""
 
@@ -584,6 +674,14 @@ class InfrastructureConfig(BaseModel):
     # in src/config/features.py). Distinct from the infra toggles above, which
     # are operator-only and never exposed to users.
     features: Dict[str, FeatureFlagOverride] = Field(default_factory=dict)
+
+    # What every user of this deployment is restricted to; an organization's
+    # policy can only narrow it (src/server/services/policy.py).
+    policy: Optional[PolicyLayer] = None
+
+    shared_workspaces: SharedWorkspacesConfig = Field(
+        default_factory=SharedWorkspacesConfig
+    )
 
     # SSE Event Logging
     sse_event_log_enabled: bool = Field(default=True, description="Enable SSE event logging")

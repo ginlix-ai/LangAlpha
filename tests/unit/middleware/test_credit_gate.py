@@ -128,7 +128,7 @@ async def join_quiet(lease: CreditLease, member: CreditGateState) -> None:
 async def make_gate(**overrides) -> CreditGateState:
     port = overrides.pop("port", None) or FakePort()
     lease = overrides.pop("lease", None) or CreditLease(
-        user_id="user-1", run_ref="run-1", port=port
+        recorded_as="user-1", sender="user-1", run_ref="run-1", port=port
     )
     params = {"run_ref": "run-1", "kind": "run", "port": port, "lease": lease}
     params.update(overrides)
@@ -550,13 +550,13 @@ async def test_the_lease_relays_whose_key_the_turn_runs_on():
     for admission and for this, so a lease that cannot see an own-key turn
     answers it out of a pool that does not apply to it."""
     port = FakePort([LeaseVerdict(granted=True, ceiling_credits=50.0, ttl_seconds=60)])
-    lease = CreditLease(user_id="u", run_ref="r", port=port, is_byok=True)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=port, is_byok=True)
     await lease._acquire(0.0)
     assert port.byoks == [True]
 
     # Default off, so a build that never resolved a credential source sends the
     # payload a platform-funded turn has always sent.
-    plain = CreditLease(user_id="u", run_ref="r", port=FakePort([]))
+    plain = CreditLease(recorded_as="u", sender="u", run_ref="r", port=FakePort([]))
     assert plain.is_byok is False
 
 

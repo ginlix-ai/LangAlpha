@@ -89,8 +89,8 @@ export interface AnswerBoardDeps {
 export interface AnswerBoard {
   /** Drop every answer and every armed id (thread switch, or a resume going out). */
   clear(): void;
-  /** Re-arm the board from the interrupts a replay left unanswered. */
-  arm(interruptIds: Array<string | undefined>): void;
+  /** Wait on these interrupts too, keeping any already armed. */
+  track(interruptIds: Array<string | undefined>): void;
   /** Record one interrupt's answer. Returns the whole `hitl_response` map once
    *  every armed interrupt has one, and null while the batch is short. */
   answer(interruptId: string, entry: HitlResumeEntry): HitlResponseBody | null;
@@ -163,8 +163,7 @@ export function createAnswerBoard(deps: AnswerBoardDeps): AnswerBoard {
   return {
     clear,
 
-    arm(interruptIds) {
-      clear();
+    track(interruptIds) {
       for (const id of interruptIds) if (id) deps.pendingIds.current.add(id);
     },
 

@@ -18,6 +18,10 @@ vi.mock('@/config/hostMode', () => ({
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 
+// The shell has read the account long before this dialog opens, so its
+// rules are cached; left unread here, the read would land mid-entrance.
+vi.mock('@/hooks/useUser', () => ({ useUser: () => ({ user: null, isLoading: false, isError: false }) }));
+
 vi.mock('../../utils/api', () => import('./computersDialogApi').then((m) => m.computersApi()));
 
 import { createComputer, getComputerProviders, getComputers, getWorkspaceQuota, getWorkspaces } from '../../utils/api';

@@ -87,7 +87,7 @@ from src.server.services.plugins.grants import (
     disclose_undeclared_refs,
     disclose_vaulted_literals,
 )
-from src.server.services.plugins.mcp import McpEntryPlan
+from src.server.services.plugins.mcp import McpEntryPlan, withhold_own_connectors
 from src.server.services.plugins.package import (
     ValidatedPackage,
     pending_secret_declarations,
@@ -940,6 +940,9 @@ async def update_plugin_package(
         document_dropped=package.mcp_document_invalid,
     )
     disclose_undeclared_refs(package.entry_plans, grants)
+    # A withheld entry reads as one that cannot land: a row it owns is kept as
+    # it stands, and a new one is reported skipped.
+    await withhold_own_connectors(user_id, package.entry_plans)
     if grants.preexisting:
         report.diagnostics.append(
             Diagnostic(
@@ -1011,5 +1014,12 @@ async def update_plugin_package(
     logger.info(
         f"[plugins] update user_id={user_id} name={plugin['name']} "
         f"components={len(report.components)} complete={report.landed_whole}"
+    )
+    from src.server.services import activity
+    from src.server.services.activity import Action
+
+    activity.record(
+        user_id, Action.PLUGIN_UPDATED, resource=("plugin", plugin["name"]),
+        detail={"name": plugin["name"], "version": package.version},
     )
     return row or plugin, report

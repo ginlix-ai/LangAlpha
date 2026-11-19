@@ -10,10 +10,12 @@
  * round-trip — matching the `patchWorkspace` pattern in useNavigationData.
  */
 import type { QueryClient } from '@tanstack/react-query';
+import { refreshArtifactThreads } from '@/lib/artifactCache';
 import { registerAuthReset } from '@/lib/authResets';
 import { queryKeys } from '@/lib/queryKeys';
 import { isArchivedThreadsKey, mapThreadCacheEntry, patchThreadRows } from '@/lib/threadRowActions';
 import type { SearchThreadHit } from '@/api/search';
+import { pruneThread } from '@/lib/threadLifecycle/store';
 import type { Thread } from '@/types/api';
 
 /**
@@ -34,6 +36,30 @@ export function insertOptimisticThread(queryClient: QueryClient, thread: Thread)
       skipKey: isArchivedThreadsKey,
     },
   );
+}
+
+/**
+ * A thread left the viewer's view: deleted, archived, or made private by a
+ * colleague who started it. Its rows leave every cached list at once, since
+ * the sidebar's page-0 observers are cache-only and an invalidate would not
+ * reach them; comment destinations and each comment's `thread_hidden` are
+ * read again, so a queued comment for it leaves Send all; the lifecycle store
+ * forgets it. An archived row keeps its archived-view entries.
+ */
+export function dropThreadFromViews(
+  queryClient: QueryClient,
+  threadId: string,
+  workspaceId: string | null | undefined,
+  { keepArchived = false }: { keepArchived?: boolean } = {},
+): void {
+  patchThreadRows<Thread>(
+    queryClient,
+    workspaceId ? queryKeys.threads.byWorkspace(workspaceId) : queryKeys.threads.all,
+    (rows) => (rows.some((t) => t.thread_id === threadId) ? rows.filter((t) => t.thread_id !== threadId) : rows),
+    keepArchived ? { skipKey: isArchivedThreadsKey } : {},
+  );
+  refreshArtifactThreads(queryClient);
+  pruneThread(threadId);
 }
 
 /**

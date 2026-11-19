@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from src.server.models.mcp_names import sandbox_name_error
 from src.server.models.mcp_server import (
     McpServerInput,
     ProbeInput,
@@ -20,7 +21,6 @@ from src.server.models.mcp_server import (
     isolation_warnings,
     normalize_transport,
     parse_mcp_servers_payload,
-    sandbox_name_error,
     validate_remote_url,
 )
 

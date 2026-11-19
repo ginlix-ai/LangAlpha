@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { reportRefusal, type ReportRefusal } from '@/api/reports';
 import { apiErrorObject } from '@/api/errors';
+import { OTHERS_TURN_REWRITE } from '@/lib/turnRefusal';
 import { refusalMessage } from '@/components/report/refusalMessage';
 import { submitFeedback, removeFeedback, getThreadFeedback, followUpFeedback, type ThreadFeedback } from '../utils/api';
 
@@ -94,6 +95,10 @@ export function useChatFeedback(threadId: string) {
       return { rating: 'thumbs_down' };
     } catch (e) {
       console.error('[Feedback] Error:', e);
+      // A shared thread: a human review is its sender's to ask for.
+      if (apiErrorObject(e)?.type === OTHERS_TURN_REWRITE) {
+        toast({ description: t('sharedWorkspace.reviewOthersTurn') });
+      }
       return null;
     }
   }, [threadId, t]);

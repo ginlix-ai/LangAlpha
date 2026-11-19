@@ -52,6 +52,7 @@ from src.server.database.workspace import (
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_manager._attach_only import attaching_only, refuse_start
 from src.server.services.computer_manager._providers import host_outage_of
+from src.server.services.account import refuse_machine_use
 from src.server.services.computer_manager._types import ComputerBinding
 from src.server.services.computer_usage.events import note_stop_phases
 from src.server.services.computer_start_failure import record_start_failure
@@ -155,7 +156,9 @@ class SessionLifecycleMixin:
 
         Observe reconnect state for archived-restore SSE without an extra SDK probe.
         A changed skills_signature bypasses cooldown so warm sandboxes converge;
-        None skips only that comparison, while transitions still sync."""
+        None skips only that comparison, while transitions still sync.
+        ``user_id`` is the caller, which nothing here reads for the machine:
+        it only rides into a retry."""
         _t0 = time.time()
         _session_phases: dict[str, float] = {}
 
@@ -166,6 +169,9 @@ class SessionLifecycleMixin:
             _t0 = now
 
         binding = await self.resolve_binding(workspace_id)
+        # Ahead of the warm path: a session opened before the policy is no
+        # way around it.
+        await refuse_machine_use(binding.kind, binding.user_id)
         computer_id = binding.computer_id
         machine = self._machine(computer_id)
         _was_cached = machine.session is not None
@@ -175,7 +181,10 @@ class SessionLifecycleMixin:
         needs_deferred_sync = False
         pending_start_wait = False
         pending_stop_wait = False
-        workspace_user_id = user_id
+        # Everything the computer is given (vault, connectors, skills) is its
+        # owner's, never the caller's: on a computer more than one person's
+        # turns reach, the caller is only whoever acquired it this time.
+        workspace_user_id = binding.user_id
         # Versions piggyback the slow-path row read; early warm returns leave None.
         ws_mcp_version: int | None = None
         ws_platform_secret_version: int | None = None
@@ -266,7 +275,6 @@ class SessionLifecycleMixin:
 
             status = workspace["status"]
             sandbox_id_from_db = workspace.get("sandbox_id")
-            workspace_user_id = workspace.get("user_id") or user_id
             ws_mcp_version = (
                 int(workspace.get("mcp_config_version") or 0)
                 if workspace.get("mcp_config_version") is not None

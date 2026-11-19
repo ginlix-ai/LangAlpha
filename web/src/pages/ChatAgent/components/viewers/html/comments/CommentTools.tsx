@@ -219,7 +219,8 @@ function SendAll({ comments, artifactId, workspaceId, docPath, sends, bar }: {
   const queryClient = useQueryClient();
   const sender = useArtifactCommentSender();
   const { targetFor } = useCommentDestinations(workspaceId, docPath);
-  const queued = comments.filter((c) => c.status === 'open' && c.delivery === 'queued');
+  // One waiting for a thread the viewer cannot open is not theirs to send.
+  const queued = comments.filter((c) => c.status === 'open' && c.delivery === 'queued' && !c.thread_hidden);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<SendAllOutcome | null>(null);
   useEffect(() => {

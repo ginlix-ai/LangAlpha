@@ -34,7 +34,7 @@ const PROVIDER_UI: Partial<Record<string, ProviderUi>> = {
  * offers no tier, spec change or always-on for it.
  */
 export function providerManagesSpec(kind: string): boolean {
-  return !providerUi(kind)?.ownMachine;
+  return !providerIsOwnMachine(kind);
 }
 
 /**
@@ -54,7 +54,7 @@ export function providerIsOwnMachine(kind: string): boolean {
  * asks for it to go; on every other provider the disk goes with the computer.
  */
 export function providerKeepsFilesOnRemove(kind: string): boolean {
-  return !!providerUi(kind)?.ownMachine;
+  return providerIsOwnMachine(kind);
 }
 
 /**
@@ -62,7 +62,7 @@ export function providerKeepsFilesOnRemove(kind: string): boolean {
  * there, so removing the computer can take it out; a sandbox has no such line.
  */
 export function providerHoldsOurKey(kind: string): boolean {
-  return !!providerUi(kind)?.ownMachine;
+  return providerIsOwnMachine(kind);
 }
 
 // hasOwn: a wire value like 'constructor' must not resolve to a prototype member.
@@ -111,21 +111,35 @@ export function computerCapReached(quota: WorkspaceQuota | null | undefined): bo
 }
 
 /**
- * Why a new computer cannot go on this provider, or null when it can: the
- * plan lacks the provider, or `atCap` and the provider's computers count.
+ * What locks providers for a new computer beyond the plan: the plan's
+ * computer cap reached, and a rule against machines the user brings, as the
+ * sentence that says it (null when there is none).
  */
-export function providerLock(provider: ComputerProviderOption, atCap: boolean): 'not_on_plan' | 'at_cap' | null {
+export interface ProviderGate {
+  atCap: boolean;
+  ownMachinesRule: string | null;
+}
+
+/**
+ * Why a new computer cannot go on this provider, or null when it can: a rule
+ * against machines the user brings, the plan lacks the provider, or the cap
+ * is reached and the provider's computers count toward it.
+ */
+export function providerLock(provider: ComputerProviderOption, gate: ProviderGate): 'not_on_plan' | 'at_cap' | 'rule' | null {
+  // A rule against machines the user brings outranks the plan: nothing about
+  // the plan would open it.
+  if (gate.ownMachinesRule !== null && providerIsOwnMachine(provider.kind)) return 'rule';
   if (provider.allowed === false) return 'not_on_plan';
-  return atCap && providerCountsTowardCap(provider.kind) ? 'at_cap' : null;
+  return gate.atCap && providerCountsTowardCap(provider.kind) ? 'at_cap' : null;
 }
 
-export function isProviderLocked(provider: ComputerProviderOption, atCap = false): boolean {
-  return providerLock(provider, atCap) !== null;
+export function isProviderLocked(provider: ComputerProviderOption, gate: ProviderGate): boolean {
+  return providerLock(provider, gate) !== null;
 }
 
-/** The deployment default when the plan allows it, else the first one it does. */
-export function defaultProviderKind(providers: readonly ComputerProviderOption[], atCap = false): string | null {
-  const open = providers.filter((p) => !isProviderLocked(p, atCap));
+/** The deployment default when it is open, else the first one that is. */
+export function defaultProviderKind(providers: readonly ComputerProviderOption[], gate: ProviderGate): string | null {
+  const open = providers.filter((p) => !isProviderLocked(p, gate));
   return (open.find((p) => p.is_default) ?? open[0])?.kind ?? null;
 }
 
@@ -140,18 +154,16 @@ export function rowsShowProvider(
   return (providers?.length ?? 0) > 1 || new Set(computers.map((c) => c.kind)).size > 1;
 }
 
-export function providerOptions(
-  t: Translate,
-  providers: readonly ComputerProviderOption[],
-  atCap = false,
-): RadioCardOption<string>[] {
+/** The provider cards; a rule's lock takes its sentence as the description. */
+export function providerOptions(t: Translate, providers: readonly ComputerProviderOption[], gate: ProviderGate): RadioCardOption<string>[] {
   return providers.map((p) => {
-    const lock = providerLock(p, atCap);
+    const lock = providerLock(p, gate);
     return {
       value: p.kind,
       title: providerLabel(p.kind, t),
-      description: providerDescription(p.kind, t),
-      note: lock === 'not_on_plan'
+      description: lock === 'rule' && gate.ownMachinesRule !== null ? gate.ownMachinesRule : providerDescription(p.kind, t),
+      note: lock === 'rule' ? t('organization.machines.notAllowed')
+        : lock === 'not_on_plan'
         ? t('workspace.quotaNotOnPlan', 'Not on your plan')
         : lock === 'at_cap' ? t('computer.provider.capReached', 'Limit reached') : null,
       disabled: lock !== null,
@@ -170,7 +182,16 @@ export const THIS_MAC_OPTION = 'this-mac';
 export type ThisMacCard = 'offered' | 'added' | 'needsApp' | 'windows';
 
 /** This Mac's card, after the hosted providers: offered in the desktop app on a Mac, held elsewhere. */
-export function thisMacOption(t: Translate, state: ThisMacCard): RadioCardOption<string> {
+export function thisMacOption(t: Translate, state: ThisMacCard, gate: ProviderGate): RadioCardOption<string> {
+  if (gate.ownMachinesRule !== null && state !== 'windows') {
+    return {
+      value: THIS_MAC_OPTION,
+      title: t('computer.remoteControl.cardTitle', 'This Mac'),
+      description: gate.ownMachinesRule,
+      note: t('organization.machines.notAllowed'),
+      disabled: true,
+    };
+  }
   if (state === 'windows') {
     return {
       value: THIS_MAC_OPTION,

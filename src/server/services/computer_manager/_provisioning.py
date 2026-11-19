@@ -329,9 +329,7 @@ class ProvisioningMixin:
         logger.info(f"[SYNC_DETAIL] workspace_id={workspace_id} total={total:.0f}ms")
         return assets
 
-    async def refresh_project_assets(
-        self, workspace_id: str, user_id: str | None, sandbox: Any
-    ) -> Any:
+    async def refresh_project_assets(self, workspace_id: str, sandbox: Any) -> Any:
         """Force one project's assets back in sync on a machine already running.
 
         The refresh route's half of the acquisition-path sync, and the same
@@ -339,11 +337,15 @@ class ProvisioningMixin:
         derived from the binding, which is the manager's to resolve. A route
         that rebuilt either would drift from the path that provisions. No
         command runs next, so the file mount waits for the next turn.
+
+        It takes no caller: what the machine is given is its owner's, as on
+        the acquisition path, and whoever asked for the refresh may be another
+        member whose own secrets and skills must never land on it.
         """
         binding = await self.resolve_binding(workspace_id)
         return await self._sync_project_assets(
             binding,
-            user_id,
+            binding.user_id,
             sandbox,
             reusing_sandbox=True,
             force_refresh=True,

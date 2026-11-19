@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from src.server.services import membership
+
 from . import logger
 
 #: Whether the user's plan reaches a manifest min tier. Fetches the tier at
@@ -33,9 +35,7 @@ class PlanTier:
         """The user's tier; None when the platform has given no answer, which
         is an outage, not a plan."""
         if not self._read:
-            from src.server.dependencies.usage_limits import _fetch_platform_tier
-
-            self._tier = await _fetch_platform_tier(self._user_id)
+            self._tier = await membership.access_tier(self._user_id)
             self._read = True
         return self._tier
 
@@ -44,13 +44,11 @@ class PlanTier:
         not rest on a plan the user may have changed minutes ago. Every refusal
         asks, as every admitted turn asks the credit check, so two at once each
         see the new plan; the outage pause still holds."""
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
-
-        self._tier = await _fetch_platform_tier(self._user_id, recheck=True)
+        self._tier = await membership.access_tier(self._user_id, recheck=True)
         self._read = True
 
     async def __call__(self, min_tier: int) -> bool:
-        from src.server.dependencies.usage_limits import platform_gating_active
+        from src.server.services.platform_client import platform_gating_active
 
         # A deployment with no platform to ask has no plans, rather than every
         # user on the no-access tier.

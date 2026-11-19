@@ -20,6 +20,7 @@ from src.server.services import automation_delivery
 from src.server.services.automation_delivery import DELIVERY_KEY, Delivery, Target
 from src.server.services.report_back.handoff.carry import PriorAttempt, carried_delivery
 from src.server.services.turn_runtime import TurnRoute
+from src.server.services.shared_workspaces.turn import TurnIdentity
 
 PTC = "src.server.handlers.chat.ptc_run"
 _LATEST = "src.server.database.runs.lifecycle.get_latest_attempt"
@@ -135,7 +136,7 @@ async def _stamped(
         patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=PriorThread())),
         patch(f"{PTC}.wait_or_steer", new=AsyncMock(return_value=(True, None))),
         patch(f"{PTC}.read_disk_notice", new=AsyncMock(return_value=(None, False))),
-        patch(f"{PTC}.get_user_profile_for_prompt", new=AsyncMock(return_value=None)),
+        patch("src.server.services.shared_workspaces.turn.get_user_profile_for_prompt", new=AsyncMock(return_value=None)),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}._resolve_origin_meta", new=AsyncMock(return_value={})),
         patch(f"{PTC}.carry.carried_pair", new=MagicMock(return_value={})),
@@ -150,7 +151,8 @@ async def _stamped(
             run_id="r-1",
             user_input="",
             user_id="u-1",
-            route=TurnRoute("ws-1", "analyst"),
+            route=TurnRoute("ws-1", "analyst", "u-1"),
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             is_byok=False,
             config=config,
             run_metadata=run_metadata,

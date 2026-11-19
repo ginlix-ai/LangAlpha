@@ -114,7 +114,7 @@ async def _write_held(thread_id: str, user_id: str, reader: str | None, mutation
         async with AsyncExitStack() as held:
             agent = await _thread_agent(
                 thread_id, "handoff", config=writer.config, checkpointer=mutation.saver,
-                user_id=user_id, held=held, role=route.role,
+                user_id=user_id, held=held, route=route,
             )
             values = agent.state.values
             # Read again under the fence: a turn or another switch may have
@@ -123,7 +123,7 @@ async def _write_held(thread_id: str, user_id: str, reader: str | None, mutation
             # then have nothing to resume.
             if not brief_owed(values) or agent.state.interrupts:
                 return
-            if (brief := await _write(agent, user_id, writer, values)) is not None:
+            if (brief := await _write(agent, writer, values)) is not None:
                 await agent.write({BRIEF_KEY: kept(brief)}, "handoff")
                 return
 
@@ -173,7 +173,8 @@ async def brief_for_turn(
     thread_id = inputs.thread_id
     try:
         async with asyncio.timeout(_budget()):
-            resolve = await _resolver(user_id, thread_id, await get_thread_auth_meta(thread_id) or {}, route)
+            meta = await get_thread_auth_meta(thread_id) or {}
+            resolve = await _resolver(user_id, thread_id, meta, route, inputs.identity)
             async for writer in _writers(thread_id, resolve, reader):
                 try:
                     built = await build_ptc_graph_with_session(
@@ -186,8 +187,9 @@ async def brief_for_turn(
                 agent = ThreadAgent(
                     thread_id=thread_id, graph=built, state=None, messages=values["messages"],
                     workspace_id=inputs.workspace_id, backend=None, project=inputs.project,
+                    recorded_as=inputs.identity.recorded_as,
                 )
-                if (brief := await _write(agent, user_id, writer, values)) is not None:
+                if (brief := await _write(agent, writer, values)) is not None:
                     return brief
     except TimeoutError:
         logger.info(f"[handoff] thread {thread_id}: the turn's brief given up past the compaction budget")
@@ -256,7 +258,7 @@ async def _reader_room(resolve: Callable[[str | None], Awaitable[Any]], reader: 
     return settings.token_threshold // 2 if settings.enabled and settings.token_threshold else WriteBrief.room
 
 
-async def _write(agent: ThreadAgent, user_id: str, writer: _Writer, values: dict) -> HandOffBrief | None:
+async def _write(agent: ThreadAgent, writer: _Writer, values: dict) -> HandOffBrief | None:
     """The brief of ``values``, through their last reply, written in
     ``agent`` (``WriteBrief``), its usage recorded as the thread's; None when
     it failed."""
@@ -264,7 +266,7 @@ async def _write(agent: ThreadAgent, user_id: str, writer: _Writer, values: dict
 
     began = time.monotonic()
     try:
-        async with _recorded(agent, user_id, "handoff"):
+        async with _recorded(agent, "handoff"):
             compaction = await agent.ask(writer.ask, values)
     except Exception as e:
         logger.warning(

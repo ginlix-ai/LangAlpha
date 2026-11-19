@@ -89,6 +89,24 @@ end
 return 0
 """
 
+# Write the first ARGV[3] of KEYS[2..] and delete the rest, only while the
+# counter at KEYS[1] reads ARGV[1] (absent reads 0), renewing the counter's TTL
+# to ARGV[2] when it exists. ARGV then holds a value and a TTL per key written.
+_SET_WHILE_COUNTER_LUA = """
+if (tonumber(redis.call('get', KEYS[1])) or 0) ~= tonumber(ARGV[1]) then
+    return 0
+end
+redis.call('expire', KEYS[1], ARGV[2])
+local n = tonumber(ARGV[3])
+for i = 1, n do
+    redis.call('set', KEYS[i + 1], ARGV[2 * i + 2], 'EX', ARGV[2 * i + 3])
+end
+for i = n + 2, #KEYS do
+    redis.call('del', KEYS[i])
+end
+return 1
+"""
+
 # Compare-and-set, keeping the key's TTL.
 _SWAP_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -370,8 +388,91 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return False
 
-    async def mget(self, keys: list) -> list:
-        """Get many keys in one round trip; result aligns with *keys* (None = miss)."""
+    async def set_many_fenced(
+        self,
+        items: list[tuple[str, Any, Optional[int]]],
+        *,
+        counter: tuple[str, int, int],
+        delete: tuple[str, ...] = (),
+    ) -> bool:
+        """Write ``items`` and remove ``delete`` only while the counter
+        :meth:`bump` keeps reads as expected; False when refused.
+
+        ``counter`` is ``(key, value, ttl)``, checked atomically with the
+        write, so a value read before a bump never lands after it. A write
+        renews an existing counter's TTL to ``ttl``, so a counter outlives the
+        values written under it.
+        """
+        if not items and not delete:
+            return True
+        if not self.enabled or not self.client:
+            return False
+
+        counter_key, expected, counter_ttl = counter
+        args: list[Any] = [expected, counter_ttl, len(items)]
+        try:
+            for _, value, ttl in items:
+                args.append(json.dumps(value, ensure_ascii=False, cls=DateTimeEncoder))
+                args.append(ttl if ttl and ttl > 0 else SAFETY_TTL)
+            written = await self.client.eval(
+                _SET_WHILE_COUNTER_LUA,
+                len(items) + len(delete) + 1,
+                counter_key,
+                *(key for key, _, _ in items),
+                *delete,
+                *args,
+            )
+        except (TypeError, ValueError) as e:
+            logger.error(f"Failed to serialize values for set_many_fenced: {e}")
+            self.stats["errors"] += 1
+            return False
+        except Exception as e:
+            self._log_error(f"Cache set_many_fenced error ({len(items)} keys)", e)
+            self.stats["errors"] += 1
+            return False
+        if written:
+            self.stats["sets"] += len(items)
+        return bool(written)
+
+    async def bump(
+        self,
+        key: str,
+        ttl: int,
+        *,
+        also_set: Optional[tuple[str, Any, int]] = None,
+        also_delete: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        """Increment the counter at ``key`` and set its TTL; the new value.
+
+        ``also_set`` (``(key, value, ttl)``) and ``also_delete`` are written in
+        the same transaction, so of two bumps the later one's write is the one
+        left standing. None when the cache is off. Raises when Redis cannot
+        take it, since a caller bumping to fence off stale writes must know it
+        did not.
+        """
+        if not self.enabled or not self.client:
+            return None
+        async with self.client.pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, ttl)
+            if also_set is not None:
+                set_key, set_value, set_ttl = also_set
+                pipe.setex(
+                    set_key,
+                    set_ttl,
+                    json.dumps(set_value, ensure_ascii=False, cls=DateTimeEncoder),
+                )
+            if also_delete:
+                pipe.delete(*also_delete)
+            value, *_ = await pipe.execute()
+        return int(value)
+
+    async def mget(self, keys: list, *, strict: bool = False) -> list:
+        """Get many keys in one round trip; result aligns with *keys* (None = miss).
+
+        ``strict`` raises a Redis error instead of reading it as a miss, for
+        a caller whose miss path is costlier than an error path.
+        """
         if not keys:
             return []
         if not self.enabled or not self.client:
@@ -382,6 +483,8 @@ class RedisCacheClient:
         except Exception as e:
             self._log_error("Cache mget error", e)
             self.stats["errors"] += 1
+            if strict:
+                raise
             return [None] * len(keys)
 
         out = []
@@ -399,21 +502,21 @@ class RedisCacheClient:
                 out.append(None)
         return out
 
-    async def delete(self, key: str) -> bool:
+    async def delete(self, key: str, *more: str) -> bool:
         """
-        Delete key from cache.
+        Delete key (and any ``more``) from cache in one command.
 
         Args:
             key: Cache key
 
         Returns:
-            True if key was deleted, False otherwise
+            True if any key was deleted, False otherwise
         """
         if not self.enabled or not self.client:
             return False
 
         try:
-            deleted = await self.client.delete(key)
+            deleted = await self.client.delete(key, *more)
             self.stats["deletes"] += 1
 
             if deleted:

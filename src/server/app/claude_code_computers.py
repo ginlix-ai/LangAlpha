@@ -21,6 +21,8 @@ from src.server.services.claude_code import flow
 from src.server.services.claude_code.flow import pasted_code, pasted_token, require, rows_on
 from src.server.services.claude_code.hosted import cloud_view, picks_own, runs_on_view
 from src.server.services.claude_code.machine import MachineHome, check_now, list_computers, set_clis
+from src.server.services.policy import OWN_SUBSCRIPTIONS
+from src.server.services.account import require_policy
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/claude-code/computers", tags=["claude-code"])
@@ -40,12 +42,14 @@ async def get_computers(x_user_id: CurrentUserId):
 @router.post("/{computer_id}/sign-in")
 async def start_sign_in(computer_id: str, x_user_id: CurrentUserId):
     require(await rows_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     return await flow.start_sign_in(await MachineHome.of(x_user_id, computer_id))
 
 
 @router.post("/{computer_id}/sign-in/code", response_model=ClaudeCodeComputer)
 async def finish_sign_in(computer_id: str, body: CodeBody, x_user_id: CurrentUserId):
     require(await rows_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     raw = pasted_code(body)
     return await flow.finish_sign_in(await MachineHome.of(x_user_id, computer_id), raw)
 
@@ -53,6 +57,7 @@ async def finish_sign_in(computer_id: str, body: CodeBody, x_user_id: CurrentUse
 @router.put("/{computer_id}/token", response_model=ClaudeCodeComputer)
 async def save_token(computer_id: str, body: TokenBody, x_user_id: CurrentUserId):
     require(await rows_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     token, rejected = pasted_token(body)
     return await flow.paste(await MachineHome.of(x_user_id, computer_id), token, rejected)
 

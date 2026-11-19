@@ -30,6 +30,7 @@ from psycopg.rows import class_row
 
 from src.server.database import pool
 from src.server.database.conversation import _sql
+from src.server.database.conversation.thread_reach import visible_sql
 from src.server.database.search.sql import Keyset, Terms
 from src.server.utils.pg_sanitize import normalize_uuid
 
@@ -52,14 +53,31 @@ _AUTOMATION_NAME = """
 
 
 def _owned(
-    params: dict[str, Any], user_id: str, workspace_id: str | None, *, thread: bool = True
+    params: dict[str, Any],
+    user_id: str,
+    workspace_id: str | None,
+    *,
+    thread: bool = True,
+    shared: Sequence[str] = (),
 ) -> str:
     """The user's live rows of ``w`` (and its thread ``t``, unless the read
-    has none), inside ``workspace_id`` when one is given."""
+    has none), inside ``workspace_id`` when one is given. ``shared`` adds the
+    shared workspaces the user reaches now, whose rows are their holders'."""
     params["user_id"] = user_id
-    sql = "w.user_id = %(user_id)s AND w.status <> 'deleted'"
+    if shared:
+        params["shared"] = list(shared)
+        sql = (
+            "(w.user_id = %(user_id)s OR w.workspace_id = ANY(%(shared)s::uuid[]))"
+            " AND w.status <> 'deleted'"
+        )
+    else:
+        sql = "w.user_id = %(user_id)s AND w.status <> 'deleted'"
     if thread:
         sql += " AND t.archived_at IS NULL"
+        if shared:
+            # Another's thread there is one shared with its workspace or
+            # theirs: the thread rule every list applies.
+            sql += f" AND {visible_sql('t', 'w.user_id', '%(user_id)s')}"
     if workspace_id is not None:
         params["workspace_id"] = workspace_id
         sql += " AND w.workspace_id = %(workspace_id)s::uuid"
@@ -105,12 +123,13 @@ async def search_threads(
     limit: int,
     workspace_id: str | None = None,
     after: Sequence[Any] | None = None,
+    shared: Sequence[str] = (),
 ) -> list[ThreadMatch]:
     """The user's threads whose shown title holds every term, most recently
     updated first. ``BadKey`` for an ``after`` that is no thread's key."""
     match = Terms(terms)
     params: dict[str, Any] = {**match.params, "limit": limit}
-    owned = _owned(params, user_id, workspace_id)
+    owned = _owned(params, user_id, workspace_id, shared=shared)
     keyset = _THREAD_PAGE.after(after, params)
     # ``TITLE_OR_FIRST_QUERY``, its first message read once, for the match
     # and the title shown alike.
@@ -172,6 +191,7 @@ async def search_turns(
     workspace_id: str | None = None,
     thread_id: str | None = None,
     after: Sequence[Any] | None = None,
+    shared: Sequence[str] = (),
 ) -> list[TurnMatch]:
     """The user's turns whose message or answer holds every term, newest
     first, at most ``per_thread`` from any thread (the same on every page)
@@ -188,7 +208,7 @@ async def search_turns(
     """
     match = Terms(terms)
     params: dict[str, Any] = {**match.params, "limit": limit}
-    owned = _owned(params, user_id, workspace_id)
+    owned = _owned(params, user_id, workspace_id, shared=shared)
     if thread_id is not None:
         params["thread_id"] = thread_id
         owned += " AND t.conversation_thread_id = %(thread_id)s::uuid"
@@ -283,6 +303,7 @@ async def search_files(
     root_excluded: str,
     workspace_id: str | None = None,
     after: Sequence[Any] | None = None,
+    shared: Sequence[str] = (),
 ) -> list[FileMatch]:
     """The user's backed-up files whose path holds every term, those whose
     name holds them all first, newest first within each. ``BadKey`` for an
@@ -305,7 +326,7 @@ async def search_files(
         "excluded": list(excluded),
         "root_excluded": root_excluded,
     }
-    owned = _owned(params, user_id, workspace_id, thread=False)
+    owned = _owned(params, user_id, workspace_id, thread=False, shared=shared)
     in_name = f"({match.on('f.file_name')})"
     page = Keyset(((in_name, bool), (_FILE_AT, datetime), ("f.workspace_file_id", UUID)))
     keyset = page.after(after, params)
@@ -362,7 +383,12 @@ class TurnTexts:
 
 
 async def get_turn_texts(
-    user_id: str, thread_id: str, turn_index: int | None, *, clip: int
+    user_id: str,
+    thread_id: str,
+    turn_index: int | None,
+    *,
+    clip: int,
+    shared: Sequence[str] = (),
 ) -> TurnTexts | None:
     """A turn's indexed texts, each cut to ``clip`` characters plus one so a
     caller can tell a cut text; the thread's newest indexed turn when
@@ -376,7 +402,7 @@ async def get_turn_texts(
         "turn_index": turn_index,
         "cut": clip + 1,
     }
-    owned = _owned(params, user_id, None)
+    owned = _owned(params, user_id, None, shared=shared)
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=class_row(TurnTexts)) as cur:
             await cur.execute(

@@ -15,7 +15,7 @@ define, while the cost of refusing would be the whole package.
 
 from __future__ import annotations
 
-from src.server.models.mcp_server import DESCRIPTION_MAX, INSTRUCTION_MAX
+from src.server.models.mcp_names import DESCRIPTION_MAX, INSTRUCTION_MAX
 from src.server.models.plugin import Diagnostic
 from src.server.services.plugins.extension import (
     LangalphaExtension,

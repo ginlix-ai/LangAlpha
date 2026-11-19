@@ -595,7 +595,7 @@ async def test_a_retransmit_carries_what_its_first_copy_did_and_not_words_added_
     )
 
     (claimed,) = await artifacts.claim_comments(
-        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k"
+        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller=_U
     )
 
     assert claimed.message_ids == ["m1"]
@@ -617,11 +617,30 @@ async def test_a_new_send_takes_every_unsent_word(mock_cursor, monkeypatch):
     )
 
     (claimed,) = await artifacts.claim_comments(
-        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k"
+        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller=_U
     )
 
     assert claimed.message_ids == ["m2"]
     assert claimed.earlier == [("user", "m1"), ("agent", "r1")]
+
+
+@pytest.mark.asyncio
+async def test_a_member_s_send_leaves_out_a_comment_for_a_thread_they_do_not_reach(
+    mock_cursor,
+):
+    """A colleague's Send all must not carry words queued for another
+    member's private thread somewhere else; the comment's owner, a personal
+    workspace's, sees every thread of theirs."""
+    mock_cursor.fetchall.return_value = []
+
+    await artifacts.claim_comments(
+        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller="lee"
+    )
+
+    (sql,) = _sql(mock_cursor)
+    reach = "AND NOT EXISTS ( SELECT 1 FROM conversation_threads ct WHERE ct.conversation_thread_id = c.thread_id AND NOT (c.user_id = %(caller)s OR (ct.workspace_shared_at IS NOT NULL OR ct.created_by = %(caller)s)))"
+    assert reach in sql
+    assert mock_cursor.execute.call_args_list[0].args[1]["caller"] == "lee"
 
 
 @pytest.mark.asyncio

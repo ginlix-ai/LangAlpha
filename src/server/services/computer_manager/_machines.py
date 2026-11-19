@@ -60,6 +60,9 @@ from src.server.database.workspace import (
 )
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
+from src.server.services import activity
+from src.server.services.activity import Action
+from src.server.services.account import refuse_machine_use
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_errors import (
     NeedsComputer,
@@ -78,6 +81,7 @@ from src.server.services.computer_manager._types import (
     ComputerBinding,
     WorkspaceNotOnComputer,
 )
+from src.server.database.shared_workspaces import is_holder
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +92,19 @@ _HOME_BIND_ATTEMPTS = 3
 def default_computer_name(kind: str) -> str:
     return provider_class(kind).default_computer_name
 
+
+
+def _record_added(
+    user_id: str, computer: Dict[str, Any], *, automatic: bool = False
+) -> None:
+    activity.record(
+        user_id, Action.COMPUTER_ADDED, resource=("computer", computer["computer_id"]),
+        detail={
+            "kind": computer.get("kind"), "name": computer.get("name"),
+            "primary": bool(computer.get("is_primary")),
+            **({"automatic": True} if automatic else {}),
+        },
+    )
 
 class MachineLifecycleMixin:
     @asynccontextmanager
@@ -132,6 +149,7 @@ class MachineLifecycleMixin:
         root_dir: Optional[str] = None,
         default_name: Optional[str] = None,
         files_backup: bool = True,
+        record: bool = True,
     ) -> Dict[str, Any]:
         """Stopped and unprovisioned unless ``prepare``, so billing begins only on start.
 
@@ -177,9 +195,13 @@ class MachineLifecycleMixin:
             )
 
         if name:
-            return await insert(name)
-        base = (default_name or "").strip() or default_computer_name(kind)
-        return await insert_under_free_name(user_id, base, insert)
+            computer = await insert(name)
+        else:
+            base = (default_name or "").strip() or default_computer_name(kind)
+            computer = await insert_under_free_name(user_id, base, insert)
+        if record:
+            _record_added(user_id, computer)
+        return computer
 
     async def ensure_primary_computer(
         self,
@@ -220,8 +242,12 @@ class MachineLifecycleMixin:
             default_name=default_name,
             resource_tier=resource_tier,
             is_primary=True,
+            record=False,
         )
         if computer.get("is_primary"):
+            # Made because a workspace, a Home turn or an automation needed
+            # one, not because the member asked for a computer.
+            _record_added(user_id, computer, automatic=True)
             return computer
 
         computer_id = str(computer["computer_id"])
@@ -251,10 +277,8 @@ class MachineLifecycleMixin:
         replaced), or a plan that grants none or cannot be read. Under the
         capacity lock, so loads racing settle on one.
         """
-        from src.server.dependencies.usage_limits import (
-            computer_slot_granted,
-            platform_gating_active,
-        )
+        from src.server.dependencies.usage_limits import computer_slot_granted
+        from src.server.services.platform_client import platform_gating_active
 
         kind = self.config.sandbox.provider
         if (
@@ -962,9 +986,8 @@ class MachineLifecycleMixin:
     async def _claim_start_with_capacity(
         self, computer_id: str, *, from_status: str,
     ) -> Optional[Dict[str, Any]]:
-        from src.server.dependencies.usage_limits import (
-            enforce_computer_limit, platform_gating_active,
-        )
+        from src.server.services.platform_client import platform_gating_active
+        from src.server.dependencies.usage_limits import enforce_computer_limit
 
         # Creating already consumes capacity; running replacements consume no
         # additional slot. Stopped -> starting is the allocation boundary.
@@ -974,6 +997,11 @@ class MachineLifecycleMixin:
         if computer is None:
             return None
         if not provider_class(computer["kind"]).metered:
+            return await try_claim_computer_for_start(computer_id, from_status=from_status)
+        if is_holder(computer["user_id"]):
+            # A shared workspace's computer counts for nobody's limit: its
+            # owner is no account of the auth service's, and the
+            # organization's cap on shared workspaces bounds them instead.
             return await try_claim_computer_for_start(computer_id, from_status=from_status)
         async with computer_capacity_lock(computer["user_id"]) as conn:
             current = await get_computer(computer_id, conn=conn)
@@ -1038,6 +1066,9 @@ class MachineLifecycleMixin:
                     f"Computer {computer_id} is in error state. "
                     "Please delete and recreate."
                 )
+            # Ahead of the live handle, which a session opened before the
+            # policy would otherwise hand back.
+            await refuse_machine_use(computer["kind"], computer.get("user_id"))
 
             if status in CLAIMABLE_FOR_START:
                 claimed = await self._claim_start_with_capacity(

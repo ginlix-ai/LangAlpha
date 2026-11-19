@@ -9,8 +9,9 @@ import codecs
 import hashlib
 import logging
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from functools import cached_property
 from typing import Any
 
 from charset_normalizer import from_bytes
@@ -26,6 +27,7 @@ from ptc_agent.core.paths import (
     logged_path,
 )
 from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
+from src.server.database.shared_workspaces import is_holder
 from src.server.database.blob_keys import RELAY_MAX_BYTES
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.database.workspace_folders import is_top_level
@@ -37,8 +39,15 @@ from src.server.services.persistence.resolve import (
     too_large_to_serve,
 )
 from src.server.services.workspace_file_containment import normalize_requested_path
-from src.server.services.served_paths import SYSTEM_DIR_PREFIXES
-from src.server.services.workspace_files import layout_for
+from src.server.services.served_paths import SYSTEM_DIR_PREFIXES, is_always_hidden_path
+from src.server.services.thread_folders import ThreadFolderGate
+from src.server.services.workspace_files import (
+    layout_for,
+    owner_layout,
+    owner_work_dir,
+    previous_dir_names_of,
+    to_client_path,
+)
 from src.server.utils.error_sanitization import single_line
 from src.server.utils.http_headers import content_disposition
 
@@ -131,8 +140,11 @@ async def _virtual_files_in_scope(requested_path: str, user_id: str) -> list[str
     """The virtual files a listing rooted at ``requested_path`` covers.
 
     A root inside a virtual directory covers all of its files, so a listing of
-    one of them still shows its siblings.
+    one of them still shows its siblings. A shared workspace has none: its
+    owner is a holder, whose user data no one has.
     """
+    if is_holder(user_id):
+        return []
     paths: list[str] = []
     for route in USER_DATA_ROUTES:
         directory = route.directory
@@ -155,7 +167,7 @@ async def _virtual_files_in_scope(requested_path: str, user_id: str) -> list[str
 async def _present_virtual_file(client_path: str, user_id: str) -> bool:
     """Whether ``client_path`` is a virtual file the user has."""
     route = _virtual_file(client_path)
-    if route is None:
+    if route is None or is_holder(user_id):
         return False
     try:
         return client_path.rsplit("/", 1)[-1] in await route.names(user_id)
@@ -309,6 +321,74 @@ def _is_system_path(client_path: str) -> bool:
     if _virtual_file(client_path) or _is_virtual_dir(client_path):
         return False
     return any(client_path.startswith(prefix) for prefix in SYSTEM_DIR_PREFIXES)
+
+
+class RoutePaths:
+    """One request's paths in a workspace's folder, built from the row its
+    access was checked against. A file route takes every path it serves
+    through here, as the client asked it and as it resolved on the sandbox,
+    and one the caller may not see (a private thread's folder in a shared
+    workspace, ``ThreadFolderGate``) answers as a missing file, so no route
+    serves it by judging one spelling and forgetting the other."""
+
+    def __init__(self, workspace: Mapping[str, Any], gate: ThreadFolderGate) -> None:
+        self.workspace = workspace
+        self._gate = gate
+
+    @classmethod
+    def of(cls, workspace: Mapping[str, Any], caller: str) -> RoutePaths:
+        return cls(workspace, ThreadFolderGate.of(workspace, caller))
+
+    def at(self, workspace: Mapping[str, Any]) -> RoutePaths:
+        """The same request against the row an acquisition left, whose folder
+        may have moved."""
+        return RoutePaths(workspace, self._gate)
+
+    @cached_property
+    def layout(self) -> Any:
+        return owner_layout(self.workspace)
+
+    @cached_property
+    def work_dir(self) -> str:
+        return owner_work_dir(self.workspace)
+
+    @cached_property
+    def previous_dirs(self) -> tuple[str, ...]:
+        return previous_dir_names_of(self.workspace)
+
+    def asked(self, path: str) -> str:
+        """``path`` folded into the folder, not yet judged."""
+        return normalize_requested_path(path, self.work_dir, self.previous_dirs)
+
+    async def requested(self, path: str) -> str:
+        """``path`` folded into the folder, as the client asked it."""
+        asked = self.asked(path)
+        await self.refuse(asked)
+        return asked
+
+    async def resolved(self, sandbox: Any, canonical: str, *, detail: str = "File not found") -> str:
+        """The client path of ``canonical``, where a symlink led."""
+        client_path = to_client_path(sandbox, canonical, self.work_dir)
+        await self.refuse(client_path, detail=detail)
+        return client_path
+
+    async def served(self, sandbox: Any, canonical: str) -> str:
+        """:meth:`resolved`, for a file a route sends: one always hidden is
+        missing too."""
+        client_path = to_client_path(sandbox, canonical, self.work_dir)
+        if is_always_hidden_path(client_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        await self.refuse(client_path)
+        return client_path
+
+    async def refuse(self, *paths: str, detail: str = "File not found") -> None:
+        await self._gate.refuse(*paths, detail=detail)
+
+    async def hidden(self, paths: Iterable[str]) -> set[str]:
+        return await self._gate.hidden(paths)
+
+    async def visible(self, paths: list[str]) -> list[str]:
+        return await self._gate.keep(paths)
 
 
 def work_dir_for(workspace: dict[str, Any], *, manager: Any = None) -> str:

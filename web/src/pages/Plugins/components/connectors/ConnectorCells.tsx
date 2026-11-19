@@ -40,8 +40,12 @@ export function ConnectorCell({
   onOpen,
   onConnect,
   menu,
+  heldBack = false,
 }: {
   server: CatalogServer;
+  /** A rule keeps the user's own connectors off: the row stays theirs to
+   *  switch off, edit or remove, and says it is held back. */
+  heldBack?: boolean;
   /** The shipped brokerage this row's URL resolves to, `null` for none and
    *  `undefined` while the registry is unanswered, which holds Connect. */
   vendor: Brokerage | null | undefined;
@@ -110,7 +114,9 @@ export function ConnectorCell({
       ? partialReachText(t, server, workspaces, home)
       : null;
 
-  const trailing =
+  const trailing = heldBack ? (
+    <span className="surface-state-off">{t('organization.connectors.heldBack')}</span>
+  ) :
     state.kind === 'connect' ? (
       // The row's own connect button, drawn as the cell's action: the vendor
       // gate, the focusable refusal and the note it points at all come with it.
@@ -155,10 +161,10 @@ export function ConnectorCell({
         />
       }
       name={server.name}
-      meta={meta}
-      line={line}
-      lineTone={lineTone}
-      off={state.kind === 'off'}
+      meta={heldBack ? null : meta}
+      line={heldBack ? server.description || line : line}
+      lineTone={heldBack ? 'default' : lineTone}
+      off={heldBack || state.kind === 'off'}
       trailing={trailing}
       onOpen={onOpen}
       menu={menu}

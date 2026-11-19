@@ -17,16 +17,22 @@ from typing import Any
 from fastapi import HTTPException
 
 from ptc_agent.agent.middleware.runtime_context import TurnContext
-from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed, claude_replied_last, is_claude_code_model
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
+from src.server.handlers.claude_code_refusals import (
+    claude_code_failure,
+    refuse_claude_code,
+    refuse_while_awaiting_user,
+)
 from src.server.services.computer_manager import ComputerNotRunning, attaching_only
 from src.server.services.history.projector import context_window_record
 from src.server.services.home_placement import runs_in as home_runs_in
+from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.services.thread_agent import thread_route
+from src.server.services.turn_runtime import TurnRoute
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
@@ -56,6 +62,8 @@ class ThreadAgent:
     project: ProjectContext | None
     #: Whether the thread runs on Claude Code, whose graph runs a CLI session.
     claude_code: bool = False
+    #: The account its calls' usage row names (``TurnIdentity.recorded_as``).
+    recorded_as: str | None = None
 
     async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
@@ -119,7 +127,7 @@ async def _thread_agent(
     user_id=None,
     *,
     held: AsyncExitStack,
-    role: AgentRole = "analyst",
+    route: TurnRoute | None = None,
     checkpoint_id: str | None = None,
 ) -> ThreadAgent:
     """Validate thread, build graph, get state, build backend.
@@ -128,10 +136,12 @@ async def _thread_agent(
     ``checkpointer`` overrides the global pooled saver — a mutation passes its
     fence-bound saver so checkpoint writes die with the lock session (I2).
     ``user_id`` identifies the caller to the session acquire, whose MCP resolve
-    is owner-scoped. ``held`` is the caller's stack, which keeps the backend's
-    folder in place until the caller's block ends.
+    is owner-scoped. ``route`` gives the role and the workspace's owner, whose
+    machine and workspace the build reads; None builds an analyst as the
+    caller. ``held`` is the caller's stack, which keeps the backend's folder
+    in place until the caller's block ends.
 
-    The agent is built as the thread's next turn would build it, in ``role``,
+    The agent is built as the thread's next turn would build it, in its role,
     from the inputs the turn's build reads (``AgentInputs``): the tools and
     the prompt a model call between turns sends have to be that turn's, or
     the provider's cache misses and a provider's own compaction is refused.
@@ -196,7 +206,7 @@ async def _thread_agent(
     # which a later delete of the workspace would leave behind. No run keeps a
     # settle off this folder: ``held`` keeps the folder in place, and the row,
     # and the project the agent is built on, are read under it.
-    backend = None
+    layout = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
         try:
             await held.enter_async_context(workspace_folder_in_use(runs_in))
@@ -210,7 +220,6 @@ async def _thread_agent(
                 detail=sandbox_unreachable_detail(WorkspaceFolderMoving(runs_in)),
             )
         layout = SandboxLayout(session.sandbox.working_dir).for_workspace(dir_name)
-        backend = SandboxBackend(session.sandbox, layout.workspace)
 
     # Graph
     checkpointer = checkpointer if checkpointer is not None else get_checkpointer()
@@ -219,18 +228,20 @@ async def _thread_agent(
         raise HTTPException(
             status_code=500, detail="Agent configuration not initialized"
         )
-    from src.server.database.user import get_user_profile_for_prompt
     from src.server.services.thread_agent import AgentInputs
 
+    identity = await TurnIdentity.of(user_id, route.owner_id if route else user_id)
     inputs = await AgentInputs.read(
         session,
-        user_id=user_id,
+        identity=identity,
         workspace_id=runs_in,
         thread_id=thread_id,
-        role=role,
-        user_profile=await get_user_profile_for_prompt(user_id) if user_id else None,
+        role=route.role if route else "analyst",
+        user_profile=await identity.profile(),
         acting_for=workspace_id,
     )
+    # A summary written here points at the transcript where the turns' agent finds it.
+    backend = layout and SandboxBackend(session.sandbox, layout.workspace, history=inputs.thread_history)
     graph = await build_ptc_graph_with_session(
         session=session,
         config=effective_config,
@@ -271,6 +282,7 @@ async def _thread_agent(
         backend=backend,
         project=inputs.project,
         claude_code=isinstance(getattr(effective_config, "llm_client", None), ClaudeCodeTarget),
+        recorded_as=identity.recorded_as,
     )
 
 
@@ -447,8 +459,8 @@ async def _resolver(user_id: str, thread_id: str, meta: dict, route):
     latest run the subagents its tools name, as that run's build was given
     them: tools that differ from the turn's miss its whole cached prefix. A
     failed read builds the default subagents."""
-    from src.server.database.api_keys import is_byok_active
     from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.account import own_access
     from src.server.services.thread_agent import thread_resolver
 
     try:
@@ -460,8 +472,9 @@ async def _resolver(user_id: str, thread_id: str, meta: dict, route):
         user_id,
         thread_id,
         route,
+        identity=await TurnIdentity.of(user_id, route.owner_id),
         thread=meta,
-        is_byok=await is_byok_active(user_id),
+        is_byok=(await own_access(user_id, sign_ins=False)).api_keys,
         enabled_subagents=((latest or {}).get("metadata") or {}).get("subagents_enabled"),
     )
 
@@ -492,12 +505,12 @@ async def _summarize(agent: ThreadAgent, config):
 
 
 @asynccontextmanager
-async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
+async def _recorded(agent: ThreadAgent, verb: str):
     """Record the model calls made inside in the usage records, as a turn's
     are. They find the token tracker a turn gets on the runnable config around
     them, which ``ask_between_turns`` and the summarizer both call the model
     under, and land on a row of their own: no run is open between turns to
-    hold them. The row is the thread's, under the caller, with ``verb`` on
+    hold them. The row is the thread's, under ``agent.recorded_as``, with ``verb`` on
     its token usage to tell it from a turn's, and is written once the
     operation has ended, so its status is the operation's. Yields the
     tracker, whose records the caller may read as the calls end."""
@@ -525,14 +538,12 @@ async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
     finally:
         var_child_runnable_config.reset(token)
         records = tracker.get_per_call_records()
-        if records and user_id:
+        if records and agent.recorded_as:
             # A Stop landing here still owes the calls that answered.
-            await asyncio.shield(_record_usage(agent, user_id, verb, records, status))
+            await asyncio.shield(_record_usage(agent, verb, records, status))
 
 
-async def _record_usage(
-    agent: ThreadAgent, user_id: str, verb: str, records: list, status: str
-) -> None:
+async def _record_usage(agent: ThreadAgent, verb: str, records: list, status: str) -> None:
     from src.server.services.persistence.usage import persist_between_turns
 
     # The calls' own billing types, for when pricing fails and the row
@@ -541,7 +552,7 @@ async def _record_usage(
     if not await persist_between_turns(
         thread_id=agent.thread_id,
         workspace_id=agent.workspace_id,
-        user_id=user_id,
+        user_id=agent.recorded_as,
         verb=verb,
         records=records,
         status=status,
@@ -555,59 +566,10 @@ async def _record_usage(
         )
 
 
-def _refuse_claude_code(on_claude_code: bool) -> None:
-    """Refuse an offload on a Claude Code thread, or a summary its own model does not make. Claude Code manages its own
-    session, and the thread's messages are only the record replay and
-    transcripts read, so rewriting them changes nothing Claude sees, while a
-    write through the ordinary graph drops what the runtime keeps beside them.
-    Called inside the mutation fence, which orders it against a model switch."""
-    if on_claude_code:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "type": "claude_code_compacts_itself",
-                "message": "Claude Code manages this thread's context itself.",
-            },
-        )
-
-
-def _refuse_while_awaiting_user(agent: ThreadAgent) -> None:
-    """Refuse a compaction while a call Claude Code deferred waits for the
-    user: the compaction's CLI would load the session with that call pending
-    and nothing to run it, and run until the compaction budget."""
-    from ptc_agent.agent.claude_code.session import awaiting_user
-
-    if awaiting_user(agent.state.values.get("claude_session"), agent.messages):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "awaiting_input",
-                "verb": "compact",
-                "message": "Cannot compact while a question or approval is waiting on this thread. Answer or dismiss it, then try again.",
-            },
-        )
-
-
-def _claude_code_failure(e: ClaudeTurnFailed, model: str) -> HTTPException:
-    """A compaction the CLI failed, answered as a turn that failed the same
-    way is: in admission's words for what admission refuses, else with the
-    status its answer carried."""
-    from src.server.services.llm.claude_code import claude_code_refusal
-    from src.server.services.runs.stream_errors import classify_stream_exception
-    from src.server.utils.error_sanitization import sanitize_error_text
-
-    refusal = claude_code_refusal(e, model)
-    if refusal is not None:
-        return HTTPException(status_code=400, detail=refusal)
-    failure = classify_stream_exception(e)
-    status = failure["status_code"] or (502 if failure["kind"] == "upstream" else 500)
-    return HTTPException(status_code=status, detail=f"Failed to trigger compaction: {sanitize_error_text(str(e))}")
-
-
 async def _compaction_config(
     thread_id: str, user_id: str | None, *, clear_dead: bool = True
-) -> tuple[Any, AgentRole]:
-    """The config and role a manual compaction runs on, resolved as the
+) -> tuple[Any, TurnRoute | None]:
+    """The config and route a manual compaction runs on, resolved as the
     thread's next turn would be. A summary changes no answer, so it runs on
     the default rather than wait on a reconnect, except that only Claude Code
     compacts a Claude Code session: a thread holding one of its models falls
@@ -616,7 +578,7 @@ async def _compaction_config(
     (``thread_model.turn_model``)."""
     agent_cfg = setup.agent_config
     if not (user_id and agent_cfg is not None):
-        return agent_cfg, "analyst"
+        return agent_cfg, None
     meta, route = await thread_route(thread_id, user_id)
     on_claude_code = is_claude_code_model(meta.get("llm_model"))
     try:
@@ -647,7 +609,7 @@ async def _compaction_config(
             "falling back to base agent_config"
         )
         agent_cfg = setup.agent_config
-    return agent_cfg, route.role
+    return agent_cfg, route
 
 
 async def _installed(agent: ThreadAgent, write: SummaryWrite) -> dict:
@@ -689,22 +651,22 @@ async def trigger_compaction(
             _hold_thread_mutation(thread_id, "compact") as mutation,
             AsyncExitStack() as held,
         ):
-            agent_cfg, role = await _compaction_config(thread_id, user_id)
+            agent_cfg, route = await _compaction_config(thread_id, user_id)
             agent = await _thread_agent(
                 thread_id, "compact", config=agent_cfg,
-                checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
+                checkpointer=mutation.saver, user_id=user_id, held=held, route=route,
             )
-            await held.enter_async_context(_recorded(agent, user_id, "compact"))
+            await held.enter_async_context(_recorded(agent, "compact"))
             # Only Claude Code compacts a thread Claude last replied on, and it
             # compacts no other: its session would not be the one the thread runs on.
             on_claude_code = isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget)
-            _refuse_claude_code(on_claude_code != claude_replied_last(agent.messages))
+            refuse_claude_code(on_claude_code != claude_replied_last(agent.messages))
             if on_claude_code:
-                _refuse_while_awaiting_user(agent)
+                refuse_while_awaiting_user(agent.state.values.get("claude_session"), agent.messages)
                 try:
                     session = await agent.compact_claude_code()
                 except ClaudeTurnFailed as e:
-                    raise _claude_code_failure(e, agent_cfg.llm_client.model) from e
+                    raise claude_code_failure(e, agent_cfg.llm_client.model) from e
                 if session is None:
                     raise HTTPException(status_code=400, detail=NOTHING_TO_COMPACT)
                 return await _installed(agent, session_compaction_write(session))
@@ -773,13 +735,18 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             _hold_thread_mutation(thread_id, "offload") as mutation,
             AsyncExitStack() as held,
         ):
-            _refuse_claude_code(is_claude_code_model((await get_thread_auth_meta(thread_id) or {}).get("llm_model")))
+            meta = await get_thread_auth_meta(thread_id) or {}
+            refuse_claude_code(is_claude_code_model(meta.get("llm_model")))
+            # The machine and the workspace are read as their owner's: a
+            # shared workspace's holder, when a member offloads.
+            owner = meta.get("user_id")
+            route = TurnRoute(str(meta.get("workspace_id")), "analyst", owner) if owner else None
             agent = await _thread_agent(
-                thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
+                thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held, route=route
             )
             messages, state = agent.messages, agent.state
             # A thread following a Claude Code default holds no model of its own.
-            _refuse_claude_code(claude_replied_last(messages))
+            refuse_claude_code(claude_replied_last(messages))
 
             # Set: resolving the graph above refuses to run without it.
             settings = OffloadSettings.from_config(setup.agent_config.compaction)
@@ -913,7 +880,7 @@ async def hand_off_on_switch(
 
 
 async def _hand_off_config(thread_id: str, user_id: str, model: str | None):
-    """The config ``model`` runs under on the thread and the role it runs in,
+    """The config ``model`` runs under on the thread and the thread's route,
     when the summary is still to hand off, the thread's model cannot read it,
     and ``model`` can; else None."""
     from src.llms.provider_compaction import replays
@@ -939,7 +906,7 @@ async def _hand_off_config(thread_id: str, user_id: str, model: str | None):
     if not readable:
         logger.info(f"[handoff] thread {thread_id}: {model!r} cannot read the summary")
         return None
-    return config, route.role
+    return config, route
 
 
 async def _hand_off(
@@ -960,17 +927,17 @@ async def _hand_off(
             target = await _hand_off_config(thread_id, user_id, model)
             if target is None:
                 return
-            config, role = target
+            config, route = target
             started.set_result(True)
             # A send waiting on the hand-off is held at least this long, so
             # the hand-off ends, written or given up, before it is refused.
             async with asyncio.timeout(get_compaction_timeout()):
                 agent = await _thread_agent(
                     thread_id, "handoff", config=config,
-                    checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
+                    checkpointer=mutation.saver, user_id=user_id, held=held, route=route,
                 )
                 # Ends with ``held``, after the write and outside the timeout.
-                await held.enter_async_context(_recorded(agent, user_id, "handoff"))
+                await held.enter_async_context(_recorded(agent, "handoff"))
                 try:
                     written = await agent.ask(HandOff())
                 except NoCompaction:

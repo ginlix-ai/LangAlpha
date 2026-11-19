@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from src.config.settings import get_mcp_descriptions_config
 from src.server.database import mcp_descriptions as db
-from src.server.models.mcp_server import DESCRIPTION_MAX
+from src.server.models.mcp_names import DESCRIPTION_MAX
 from src.server.services.brokerage_capabilities import denied_tools
 from src.server.services.brokerages import brokerage_by_name
 from src.server.services.mcp_descriptions.jobs import enqueue_if_new, owners_of

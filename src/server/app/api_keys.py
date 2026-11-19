@@ -34,6 +34,10 @@ from src.server.database.api_keys import (
     update_base_url,
 )
 from src.server.services.llm.provider_models import invalidate_available_models
+from src.server.services import activity
+from src.server.services.activity import Action
+from src.server.services.policy import OWN_API_KEYS
+from src.server.services.account import policy_for, require_policy
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +198,32 @@ async def _get_custom_providers(user_id: str) -> list:
     return model_pref.get("custom_providers") or []
 
 
+async def _keys_view(user_id: str, custom_providers: list) -> dict:
+    """The stored keys, masked, with whether the user's policy lets them count.
+
+    ``own_keys_allowed`` is null while the policy is unknown: the keys are
+    still the user's to list and remove, so a read never waits on it.
+    """
+    data = await get_user_api_keys(user_id)
+    policy = await policy_for(user_id)
+    return {
+        **_format_response(
+            data["byok_enabled"], data["keys"], data.get("base_urls"),
+            custom_providers=custom_providers,
+        ),
+        "own_keys_allowed": policy.allows(OWN_API_KEYS) if policy is not None else None,
+    }
+
+
 @router.get("/api/v1/users/me/api-keys")
 async def get_api_keys(user_id: CurrentUserId):
-    """Get user's BYOK configuration (keys are masked)."""
-    data = await get_user_api_keys(user_id)
-    custom_providers = await _get_custom_providers(user_id)
-    return _format_response(
-        data["byok_enabled"], data["keys"], data.get("base_urls"),
-        custom_providers=custom_providers,
-    )
+    """Get user's BYOK configuration (keys are masked).
+
+    ``own_keys_allowed`` false means the user's policy keeps their keys from
+    being used: they stay listed, to remove, and a turn runs as if they were
+    not there. Null means the policy is unknown for now.
+    """
+    return await _keys_view(user_id, await _get_custom_providers(user_id))
 
 
 class UpdateApiKeysRequest(BaseModel):
@@ -282,6 +303,12 @@ async def update_api_keys(body: UpdateApiKeysRequest, user_id: CurrentUserId):
     - byok_enabled: toggle the global switch
     - api_keys: { "openai": "sk-..." } to set, { "openai": null } to delete
     """
+    # Turning keys on, or saving one, is a new connection; removing one is not.
+    if body.byok_enabled or any(
+        value is not None
+        for value in (*(body.api_keys or {}).values(), *(body.base_urls or {}).values())
+    ):
+        (await require_policy(user_id)).require(OWN_API_KEYS, "Connecting your own API keys")
     custom_providers = await _get_custom_providers(user_id)
     allowed = _get_allowed_providers(custom_providers)
 
@@ -298,6 +325,7 @@ async def update_api_keys(body: UpdateApiKeysRequest, user_id: CurrentUserId):
         await _refuse_base_urls(body.base_urls)
 
     # All or nothing, so a failed write leaves the keys as they were.
+    redirected: list[str] = []
     async with key_writes(user_id) as conn:
         # Toggle BYOK if requested
         if body.byok_enabled is not None:
@@ -327,22 +355,37 @@ async def update_api_keys(body: UpdateApiKeysRequest, user_id: CurrentUserId):
                 if body.api_keys and provider in body.api_keys:
                     continue
                 # Update base_url on existing key row
-                await update_base_url(user_id, provider, url, conn=conn)
+                if await update_base_url(user_id, provider, url, conn=conn):
+                    redirected.append(provider)
 
     # Invalidate cached BYOK status so the next chat picks up key changes
     await invalidate_byok_cache(user_id)
     await invalidate_available_models(user_id)
+    base_urls = body.base_urls or {}
+    for provider, key_value in (body.api_keys or {}).items():
+        saved = key_value is not None or bool(base_urls.get(provider))
+        activity.record(
+            user_id, Action.MODEL_KEY_SAVED if saved else Action.MODEL_KEY_REMOVED,
+            resource=("model_provider", provider),
+            detail={
+                "provider": provider,
+                **({"host": activity.host_of(base_urls[provider])} if base_urls.get(provider) else {}),
+            },
+        )
+    # A key sent somewhere else is as much a change as a new key.
+    for provider in redirected:
+        activity.record(
+            user_id, Action.MODEL_KEY_ENDPOINT_CHANGED,
+            resource=("model_provider", provider),
+            detail={"provider": provider, "host": activity.host_of(base_urls[provider])},
+        )
 
     # Auto-complete personalization if keys were added
     from src.server.services.onboarding import maybe_complete_personalization
     await maybe_complete_personalization(user_id)
 
     # Return updated state
-    data = await get_user_api_keys(user_id)
-    return _format_response(
-        data["byok_enabled"], data["keys"], data.get("base_urls"),
-        custom_providers=custom_providers,
-    )
+    return await _keys_view(user_id, custom_providers)
 
 
 @router.delete("/api/v1/users/me/api-keys/{provider}")
@@ -360,11 +403,11 @@ async def remove_api_key(provider: str, user_id: CurrentUserId):
     # As on PUT: the cached BYOK status still lists the deleted key.
     await invalidate_byok_cache(user_id)
     await invalidate_available_models(user_id)
-    data = await get_user_api_keys(user_id)
-    return _format_response(
-        data["byok_enabled"], data["keys"], data.get("base_urls"),
-        custom_providers=custom_providers,
+    activity.record(
+        user_id, Action.MODEL_KEY_REMOVED, resource=("model_provider", provider),
+        detail={"provider": provider},
     )
+    return await _keys_view(user_id, custom_providers)
 
 
 # ── Key Test Endpoint ────────────────────────────────────────────────────

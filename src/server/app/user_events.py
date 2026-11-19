@@ -22,6 +22,12 @@ Redis is transport only: a runtime pub/sub failure abandons the subscription
 and degrades to the 30s DB cadence with ≥30s-paced resubscribe attempts —
 never a 1 Hz error loop.
 
+An account that reaches shared workspaces also listens on its organization's
+shared channel, passes on only the events of the workspaces it reaches at
+that moment, and its snapshot carries their threads with its own seen cursor
+(``services/shared_workspaces/feed.py``). An account that reaches none runs
+exactly as before: one channel, the personal snapshot.
+
 "Snapshot on attach" is best-effort, not guaranteed: a DB read that raises
 degrades to a keepalive rather than killing the stream. The attach read has no
 "next reconcile tick" of its own, but a failure leaves ``last_snapshot`` unset,
@@ -37,12 +43,16 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from src.server.database.conversation import get_thread_lifecycle_rows
+from src.server.database.conversation.viewer_threads import shared_lifecycle_rows
 from src.server.services import cli_approvals, vendor_terms
+from src.server.services.shared_workspaces.feed import REACH_EVENT, SharedFeed
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
     LIFECYCLE_EVENT,
     subscribe_to_user_events,
+    user_events_channel,
 )
+from src.server.services.workspace_status_pubsub import subscribe_to_channels
 from src.server.utils.api import CurrentUserId
 
 logger = logging.getLogger(__name__)
@@ -61,10 +71,15 @@ _UNSEEN_CAP = 256
 _PING = ": ping\n\n"
 
 
-async def _read_snapshot(user_id: str) -> dict:
-    rows, as_of_seq = await get_thread_lifecycle_rows(
-        user_id, unseen_cap=_UNSEEN_CAP
-    )
+async def _read_snapshot(user_id: str, shared: SharedFeed | None = None) -> dict:
+    if shared is not None and shared.workspace_ids:
+        rows, as_of_seq = await shared_lifecycle_rows(
+            user_id, shared.workspace_ids, unseen_cap=_UNSEEN_CAP
+        )
+    else:
+        rows, as_of_seq = await get_thread_lifecycle_rows(
+            user_id, unseen_cap=_UNSEEN_CAP
+        )
     live: list[dict] = []
     unseen: list[dict] = []
     for r in rows:
@@ -131,6 +146,7 @@ async def user_thread_events(x_user_id: CurrentUserId):
     async def event_generator():
         started = time.monotonic()
         last_snapshot: str | None = None
+        shared = await SharedFeed.open(user_id)
 
         async def snapshot_frame(force: bool = False) -> str | None:
             """The next frame to emit: a snapshot, None when unchanged, or a
@@ -141,7 +157,11 @@ async def user_thread_events(x_user_id: CurrentUserId):
             """
             nonlocal last_snapshot
             try:
-                frame = await _read_snapshot(user_id)
+                frame = await (
+                    _read_snapshot(user_id)
+                    if shared is None
+                    else _read_snapshot(user_id, shared)
+                )
             except Exception as exc:
                 logger.warning(
                     "thread-feed snapshot read failed (user=%s): %s",
@@ -155,11 +175,67 @@ async def user_thread_events(x_user_id: CurrentUserId):
             last_snapshot = encoded
             return f"event: snapshot\ndata: {json.dumps(frame, default=str)}\n\n"
 
+        def lifecycle_frame(payload: dict) -> str:
+            return f"event: {LIFECYCLE_EVENT}\ndata: {json.dumps(payload)}\n\n"
+
+        async def rebound() -> bool:
+            """Whether the connection listens to another organization's
+            channel from now on, and must attach again.
+
+            None at open is not for good: the account may join an
+            organization while the tab stays open, or its account may have
+            been unreadable just then. Asked at each reconcile and on the
+            account's own reach event, so the connection takes up its
+            organization's channel without waiting to be reopened. A feed
+            whose account moved to another organization is replaced by one
+            for that organization."""
+            nonlocal shared
+            if shared is None:
+                shared = await SharedFeed.open(user_id)
+                return shared is not None
+            moved = shared.moved_on()
+            if moved is None:
+                return False
+            shared = moved
+            return True
+
+        async def reconcile_frames():
+            """The reach read again before the snapshot that uses it, and
+            what it lost said once."""
+            if shared is not None:
+                for lost in await shared.reconcile():
+                    yield lifecycle_frame(lost)
+            event = await snapshot_frame()
+            if event:
+                yield event
+
+        def subscribe():
+            if shared is None:
+                return subscribe_to_user_events(user_id)
+            return subscribe_to_channels(
+                user_events_channel(user_id), shared.channel
+            )
+
+        async def message_frames(payload: dict):
+            if shared is None:
+                yield lifecycle_frame(payload)
+                return
+            if payload.get("channel") != shared.channel:
+                data = payload.get("data") or {}
+                if data.get("type") == REACH_EVENT:
+                    for lost in await shared.reconcile():
+                        yield lifecycle_frame(lost)
+                yield lifecycle_frame(data)
+                return
+            for frame in await shared.on_event(payload.get("data") or {}):
+                yield lifecycle_frame(frame)
+
         yield await snapshot_frame(force=True)
 
         while time.monotonic() - started < _MAX_DURATION_S:
             subscription_broke = False
-            async with subscribe_to_user_events(user_id) as wait:
+            resubscribe = False
+            async with subscribe() as wait:
                 if wait is not None:
                     # Gapless attach: a publish between the snapshot read and
                     # the SUBSCRIBE would otherwise be lost — re-read.
@@ -177,16 +253,26 @@ async def user_thread_events(x_user_id: CurrentUserId):
                         # sub-timeout arrivals (parallel subagent settles)
                         # would otherwise starve the 30s backstop — the very
                         # guarantee the outbox's no-dead-letter stance leans on.
+                        ask_reach = False
                         if kind != "error" and time.monotonic() >= next_reconcile:
                             next_reconcile = time.monotonic() + _RECONCILE_S
-                            event = await snapshot_frame()
-                            if event:
+                            ask_reach = True
+                            async for event in reconcile_frames():
                                 yield event
                         if kind == "message":
-                            yield (
-                                f"event: {LIFECYCLE_EVENT}\n"
-                                f"data: {json.dumps(payload)}\n\n"
-                            )
+                            if shared is None and payload.get("type") == REACH_EVENT:
+                                ask_reach = True
+                            async for event in message_frames(payload):
+                                yield event
+                        # With a feed, the reads above have already said
+                        # whether the account moved; without one, only a
+                        # reconcile or its reach event asks.
+                        if (ask_reach or shared is not None) and await rebound():
+                            # Attach again, to the organization's channel
+                            # this connection now listens to.
+                            resubscribe = True
+                            break
+                        if kind == "message":
                             continue
                         if kind == "error":
                             # Broken pub/sub connection: abandon it — the DB
@@ -195,6 +281,8 @@ async def user_thread_events(x_user_id: CurrentUserId):
                             break
                         # Quiet interval: keepalive.
                         yield _PING
+                    if resubscribe:
+                        continue
                     if not subscription_broke:
                         break  # duration cap reached while subscribed
 
@@ -205,8 +293,8 @@ async def user_thread_events(x_user_id: CurrentUserId):
             if remaining <= 0:
                 break
             await asyncio.sleep(min(_RECONCILE_S, remaining))
-            event = await snapshot_frame()
-            if event:
+            await rebound()
+            async for event in reconcile_frames():
                 yield event
             yield _PING
 

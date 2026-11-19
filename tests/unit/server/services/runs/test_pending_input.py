@@ -16,7 +16,9 @@ import pytest
 from fastapi import HTTPException
 
 from src.server.models.workflow import RetryRequest
+from tests.unit.server.access_stub import as_owner
 from src.server.services.runs import admission
+from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.services.runs.pending_input import (
     PendingInput,
     can_retry,
@@ -254,7 +256,7 @@ async def test_rerun_chains_onto_the_turn_without_a_second_query_row():
             thread_id="t-1",
             run_id="run-2",
             workspace_id="ws-1",
-            user_id="u-1",
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             is_byok=False,
             query_content="what moved NVDA?",
             query_type="follow_up",
@@ -284,7 +286,7 @@ def _begin(scope):
         thread_id="t-1",
         run_id="run-2",
         workspace_id="ws-1",
-        user_id="u-1",
+        identity=TurnIdentity("u-1", "u-1", "u-1"),
         is_byok=False,
         query_content="hi",
         query_type="follow_up",
@@ -437,7 +439,7 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
     send = AsyncMock(return_value="stream")
     auth = SimpleNamespace(user_id="u-1", burst_slot_id=None)
 
-    with patch.object(messaging.auth_api, "require_thread_owner", new=AsyncMock()), \
+    with as_owner("src.server.app.threads.messaging"), \
          patch.object(messaging, "_assert_stream_transport_ready", new=AsyncMock()), \
          patch.object(messaging, "_handle_send_message", new=send), \
          patch(
@@ -489,7 +491,7 @@ async def test_retry_route_on_a_cancelled_run(metadata, runs_again):
     send = AsyncMock(return_value="stream")
     auth = SimpleNamespace(user_id="u-1", burst_slot_id=None)
 
-    with patch.object(messaging.auth_api, "require_thread_owner", new=AsyncMock()), \
+    with as_owner("src.server.app.threads.messaging"), \
          patch.object(messaging, "_assert_stream_transport_ready", new=AsyncMock()), \
          patch.object(messaging, "_handle_send_message", new=send), \
          patch(
@@ -558,7 +560,6 @@ async def test_a_retried_report_back_reaches_its_run_as_one(monkeypatch):
     keeps the type and report a client's body could not set."""
     from httpx import ASGITransport, AsyncClient
 
-    from src.server.app.threads import messaging
     from tests.unit.server.app.test_threads_authz import (
         CALLER,
         _app_for,
@@ -577,7 +578,7 @@ async def test_a_retried_report_back_reaches_its_run_as_one(monkeypatch):
     with (
         _stub_downstream(owner_id=CALLER),
         patch("src.server.handlers.chat.astream_ptc_workflow", workflow),
-        patch.object(messaging.auth_api, "require_thread_owner", new=AsyncMock()),
+        as_owner("src.server.app.threads.messaging"),
         patch(
             "src.server.database.runs.lifecycle.get_latest_attempt",
             new=AsyncMock(return_value=failed),

@@ -26,6 +26,8 @@ import pytest
 from src.server.services.turn_runtime import TurnRoute
 from src.server.services.report_back.handoff.carry import PriorAttempt
 
+from src.server.services.shared_workspaces.turn import TurnIdentity
+
 PTC = "src.server.handlers.chat.ptc_run"
 
 
@@ -149,7 +151,7 @@ async def _run_to_sentinel(
             return_value=admit,
         ),
         patch(
-            f"{PTC}.get_user_profile_for_prompt",
+            "src.server.services.shared_workspaces.turn.get_user_profile_for_prompt",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -175,7 +177,8 @@ async def _run_to_sentinel(
             run_id="r-1",
             user_input="hi",
             user_id="u-1",
-            route=TurnRoute("ws-1", "analyst"),
+            route=TurnRoute("ws-1", "analyst", "u-1"),
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             is_byok=False,
             config=config or _make_config(),
             named_model=named_model,

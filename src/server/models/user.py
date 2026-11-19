@@ -278,6 +278,73 @@ class UserUpdate(UserBase):
     )
 
 
+class OrganizationTeam(BaseModel):
+    id: str
+    name: str
+    role: Literal["admin", "member"]
+
+
+class OrganizationResponse(BaseModel):
+    #: Null, with the name, when only the account's suspension is known: the
+    #: auth service said so in its change notice and cannot be asked since.
+    id: Optional[str] = None
+    name: Optional[str] = None
+    suspended: bool = Field(
+        default=False,
+        description=(
+            "The account's access through this organization has ended: every "
+            "route but this one answers 403 account_suspended"
+        ),
+    )
+    teams: List[OrganizationTeam] = Field(
+        default_factory=list,
+        description="The account's teams in the organization, with its role in each",
+    )
+
+
+
+class ModelsPolicyResponse(BaseModel):
+    allowed: Optional[List[str]] = Field(
+        default=None, description="The models a turn may run; null allows any"
+    )
+
+
+class OwnModelAccessPolicyResponse(BaseModel):
+    api_keys: bool = Field(
+        description="Whether the user's own API keys, custom models and custom providers are used"
+    )
+    subscriptions: bool = Field(
+        description="Whether the user's own model sign-ins and Claude Code subscription are used"
+    )
+
+
+class PolicyResponse(BaseModel):
+    """What the user may do, for a client to grey out what would be refused."""
+
+    models: ModelsPolicyResponse
+    own_model_access: OwnModelAccessPolicyResponse
+    public_links: bool = Field(
+        default=True,
+        description="Whether the user's threads and files may be shared by a link that opens without signing in",
+    )
+    trading: bool = Field(
+        default=True,
+        description="Whether the agent may place, change or cancel a live order for the user",
+    )
+    own_machines: bool = Field(
+        default=True,
+        description="Whether the user's work may run on a machine they bring (an SSH computer)",
+    )
+    user_connectors: bool = Field(
+        default=True,
+        description="Whether MCP servers the user adds themselves are used (brokerages aside)",
+    )
+    set_by: Dict[str, Literal["deployment", "organization"]] = Field(
+        default_factory=dict,
+        description="Each restricted rule (e.g. 'models.allowed') and who set it",
+    )
+
+
 class UserResponse(UserBase):
     """Response model for user details."""
 
@@ -304,6 +371,17 @@ class UserResponse(UserBase):
     plan_display_name: Optional[str] = Field(
         default=None,
         description="Display name of the user's active plan (e.g. 'Pro'). None when no subscription.",
+    )
+    organization: Optional[OrganizationResponse] = Field(
+        default=None,
+        description="The organization the account belongs to, when this deployment acts on one",
+    )
+    policy: Optional[PolicyResponse] = Field(
+        default=None,
+        description=(
+            "The user's effective policy, on GET /users/me; null there means it is "
+            "unknown, and turns are refused until it is known again"
+        ),
     )
     auth_provider: Optional[str] = Field(
         None, description="Authentication provider (e.g. google, github, email)"

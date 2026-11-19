@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from src.server.services.features import (
     FeatureNotOverridableError,
     FeatureOffFailed,
+    FeatureSetByOrganizationError,
     FeatureState,
     UnknownFeatureError,
     list_user_features,
@@ -43,6 +44,11 @@ async def put_feature_override(
         features = await set_feature_override(x_user_id, key, request.enabled)
     except UnknownFeatureError:
         raise HTTPException(status_code=404, detail=f"Unknown feature: {key}")
+    except FeatureSetByOrganizationError:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Feature is set by your organization: {key}",
+        )
     except FeatureNotOverridableError:
         raise HTTPException(
             status_code=403,

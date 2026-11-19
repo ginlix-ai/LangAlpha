@@ -155,6 +155,10 @@ async def _prepare(*, body: bytes | None = None, headers=None, attempt=_UNSET):
             ),
         ),
         patch("src.server.services.egress.relay.EGRESS_RELAY_SECRET", SECRET),
+        patch(
+            "src.server.services.egress.relay.pin_public_url",
+            AsyncMock(return_value=_Pinned()),
+        ),
     ):
         prepared = await prepare_relay(
             GRANT_ID,
@@ -320,7 +324,8 @@ async def test_an_expired_token_is_refused():
 
 
 class _Pinned:
-    """``pin_public_url``'s answer, with the triple the sender applies."""
+    """``pin_public_url``'s answer, with the triple the sender applies; the
+    pin is taken when the call is prepared."""
 
     def pinned_kwargs(self, headers=None):
         return "https://203.0.113.10/mcp", dict(headers or {}), {}
@@ -332,10 +337,6 @@ async def _open(prepared, *, claimed: str | None):
     client.build_request = MagicMock(return_value=object())
     client.send = AsyncMock(return_value=SimpleNamespace(status_code=200))
     with (
-        patch(
-            "src.server.services.egress.relay.pin_public_url",
-            AsyncMock(return_value=_Pinned()),
-        ),
         patch("src.server.services.egress.relay.get_relay_client", lambda: client),
         patch(
             "src.server.services.egress.relay.claim_dispatch",

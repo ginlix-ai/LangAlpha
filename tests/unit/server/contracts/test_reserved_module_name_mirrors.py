@@ -15,7 +15,7 @@ import keyword
 import re
 from pathlib import Path
 
-from src.server.models import mcp_server
+from src.server.models import mcp_names
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -53,7 +53,7 @@ def _migration_names() -> frozenset[str]:
 def test_every_copy_reserves_the_hard_keywords_and_the_runtime_module():
     """Hard keywords only: a soft keyword such as ``match`` is a legal module,
     so ``keyword.softkwlist`` stays out of every copy."""
-    assert mcp_server._PY_KEYWORDS == set(keyword.kwlist)
-    reserved = {mcp_server._RUNTIME_MODULE, *mcp_server._PY_KEYWORDS}
+    assert mcp_names.PY_KEYWORDS == set(keyword.kwlist)
+    reserved = {mcp_names.RUNTIME_MODULE, *mcp_names.PY_KEYWORDS}
     assert _form_names() == reserved
     assert _migration_names() == reserved

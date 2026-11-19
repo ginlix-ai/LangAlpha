@@ -27,8 +27,17 @@ import { PING_STREAM_BEAT_MS } from '@/lib/streamSilence';
 import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
 import { createEmitter } from '@/lib/emitter';
-import { patchThreadTitle, threadRowsOf } from '@/lib/threadListCache';
+import { dropThreadFromViews, patchThreadTitle, threadRowsOf } from '@/lib/threadListCache';
 import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
+import {
+  applySharedWorkspaceEvent,
+  isCachedSharedWorkspace,
+  isSharedWorkspaceEvent,
+  refreshSharedFiles,
+  resyncSharedWorkspaces,
+  tellSharedThreadDeleted,
+  type SharedWorkspaceEvent,
+} from '@/lib/sharedWorkspaceFeed';
 import {
   getAuthHeaders,
   streamFetch,
@@ -74,6 +83,9 @@ interface ClientState {
   pendingFullInvalidate: boolean;
   /** An automation joined or left a thread's line since the last flush. */
   pendingAutomations: boolean;
+  /** A turn ended in a shared workspace since the last flush: the shared
+   *  list says per workspace whether one is unread, so it is read again. */
+  pendingSharedUnread: boolean;
   invalidateTimer: ReturnType<typeof setTimeout> | null;
   unsubscribeCache: (() => void) | null;
   detachWindow: (() => void) | null;
@@ -97,6 +109,7 @@ const client: ClientState =
     resyncOnSnapshot: false,
     pendingFullInvalidate: false,
     pendingAutomations: false,
+    pendingSharedUnread: false,
     invalidateTimer: null,
     unsubscribeCache: null,
     detachWindow: null,
@@ -151,6 +164,10 @@ function scheduleInvalidate(workspaceId?: string | null): void {
     client.pendingFullInvalidate = false;
     const automations = client.pendingAutomations;
     client.pendingAutomations = false;
+    if (client.pendingSharedUnread) {
+      client.pendingSharedUnread = false;
+      void qc.invalidateQueries({ queryKey: queryKeys.sharedWorkspaces.list() });
+    }
     const workspaces = [...client.pendingWorkspaces];
     client.pendingWorkspaces.clear();
     if (full) {
@@ -209,6 +226,8 @@ function onFeedEvent(raw: Record<string, unknown>): void {
       client.resyncOnSnapshot = false;
       client.pendingFullInvalidate = true;
       scheduleInvalidate();
+      const qc = getLifecycleQueryClient();
+      if (qc) void resyncSharedWorkspaces(qc);
       return;
     }
     // Scope the refetch to the workspaces the frame actually touches — a
@@ -226,6 +245,11 @@ function onFeedEvent(raw: Record<string, unknown>): void {
     return;
   }
   if (eventName !== 'thread_lifecycle') return; // 'timeout' → loop re-attaches
+  if (isSharedWorkspaceEvent(raw.type as string | undefined)) {
+    const qc = getLifecycleQueryClient();
+    if (qc) applySharedWorkspaceEvent(qc, raw as SharedWorkspaceEvent);
+    return;
+  }
 
   const evt = raw as {
     type?: string;
@@ -253,6 +277,11 @@ function onFeedEvent(raw: Record<string, unknown>): void {
         evt.thread_id === getActiveThreadId()
       ) {
         markWatchedThreadSeen(evt.thread_id, evt.run_id);
+      }
+      if (evt.type === 'run_settled') {
+        const qc = getLifecycleQueryClient();
+        if (qc) refreshSharedFiles(qc, evt.workspace_id);
+        if (qc && isCachedSharedWorkspace(qc, evt.workspace_id)) client.pendingSharedUnread = true;
       }
       // A background run's start carries its notification. After the store
       // has the run, so a listener reading it sees the run it is told about.
@@ -345,25 +374,19 @@ function onFeedEvent(raw: Record<string, unknown>): void {
     case 'thread_deleted':
     case 'thread_archived': {
       const qc = getLifecycleQueryClient();
-      if (qc && evt.thread_id) {
-        const tid = evt.thread_id;
-        // Drop the row from the cached lists + the nav tree's Show-more store
-        // directly: the invalidate below only reaches enabled observers, and
-        // the sidebar's page-0 observers are cache-only — without this, a
-        // thread archived in another tab lingers in the tree until reload.
-        // Archived rows keep their archived-view entries (that list gains the
-        // row via the invalidate instead).
-        patchThreadRows<Thread>(
-          qc,
-          evt.workspace_id ? queryKeys.threads.byWorkspace(evt.workspace_id) : queryKeys.threads.all,
-          (rows) => (rows.some((t) => t.thread_id === tid) ? rows.filter((t) => t.thread_id !== tid) : rows),
-          evt.type === 'thread_archived' ? { skipKey: isArchivedThreadsKey } : {},
-        );
-        refreshArtifactThreads(qc);
-      }
-      if (evt.thread_id) {
-        if (evt.type === 'thread_archived') markThreadArchived(evt.thread_id, true);
-        pruneThread(evt.thread_id);
+      const tid = evt.thread_id;
+      const archived = evt.type === 'thread_archived';
+      if (tid) {
+        // Marked before the rows leave, for the nav tree's reveal to read as
+        // they do, as a local archive does.
+        if (archived) markThreadArchived(tid, true);
+        // The debounced invalidate below brings the archived view its row.
+        if (qc) {
+          dropThreadFromViews(qc, tid, evt.workspace_id, { keepArchived: archived });
+          if (!archived) tellSharedThreadDeleted(qc, tid, evt.workspace_id);
+        } else {
+          pruneThread(tid);
+        }
       }
       scheduleInvalidate(evt.workspace_id);
       return;
@@ -587,5 +610,6 @@ export function stopThreadLifecycleFeed(): void {
   client.pendingWorkspaces.clear();
   client.resyncOnSnapshot = false;
   client.pendingFullInvalidate = false;
+  client.pendingSharedUnread = false;
   client.backoffMs = BACKOFF_START_MS;
 }

@@ -19,6 +19,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.database.user_vault_secrets import (
     MAX_SECRETS_PER_USER,
     SecretExists,
@@ -151,6 +153,10 @@ async def create_secret(body: CreateSecretRequest, user_id: CurrentUserId):
         ) from e
 
     await after_secret_change(user_id, body.name)
+    activity.record(
+        user_id, Action.SECRET_CREATED, resource=("vault_secret", body.name),
+        detail={"name": body.name},
+    )
     return {"name": body.name}
 
 
@@ -164,6 +170,11 @@ async def update_secret(name: str, body: UpdateSecretRequest, user_id: CurrentUs
         raise HTTPException(status_code=404, detail="Secret not found")
 
     await after_secret_change(user_id, name, value_changed=body.value is not None)
+    if body.value is not None:
+        activity.record(
+            user_id, Action.SECRET_REPLACED, resource=("vault_secret", name),
+            detail={"name": name},
+        )
     return {"name": name}
 
 
@@ -184,4 +195,8 @@ async def delete_secret(name: str, user_id: CurrentUserId):
         raise HTTPException(status_code=404, detail="Secret not found")
 
     await after_secret_change(user_id, name)
+    activity.record(
+        user_id, Action.SECRET_DELETED, resource=("vault_secret", name),
+        detail={"name": name},
+    )
     return {"ok": True}

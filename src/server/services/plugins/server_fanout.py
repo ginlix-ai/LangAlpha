@@ -31,7 +31,7 @@ from src.server.models.plugin import ComponentResult, InstallReport
 from src.server.services.mcp_import import catalog_import_scope, run_mcp_import
 from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
 from src.server.services.plugins.checks import NOT_CHECKED_REASON, CheckedServers
-from src.server.services.plugins.mcp import McpEntryPlan
+from src.server.services.plugins.mcp import McpEntryPlan, withhold_own_connectors
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,10 @@ async def fan_out_servers(
     """Create a catalog row per installable plan, reporting every plan.
 
     ``checked`` is what the caller's check passed; a server outside it is
-    reported ``error`` and not written.
+    reported ``error`` and not written. One the user's policy withholds is
+    reported ``skipped``.
     """
+    await withhold_own_connectors(user_id, plans)
     installable = [p for p in plans if p.installable]
     sse_plans = [
         p for p in plans if p.skip_code is None and p.transport == "sse"

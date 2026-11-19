@@ -574,6 +574,10 @@ class AgentConfig(BaseModel):
     # with ``SkillsConfig.user_skills_dir``, a config-file path.
     user_skills: list[Any] = Field(default_factory=list, exclude=True)
     disabled_skills: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    # Shipped skills the turn's computer does not carry (a shared workspace's
+    # leaves out those whose work is a person's own data). Not a disable: a
+    # skill another one requires still goes, and the filesystem scan skips it.
+    withheld_skills: frozenset[str] = Field(default_factory=frozenset, exclude=True)
     user_skill_dir: str | None = Field(default=None, exclude=True)
     # Workspace-tier bodies: a second host dir, because the sandbox delivery
     # path uploads ``user_skill_dir`` wholesale and must not touch these.

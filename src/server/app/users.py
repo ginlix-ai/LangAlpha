@@ -1,11 +1,12 @@
 """User Management API Router — user profile and preferences endpoints."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import File, UploadFile
 from pydantic import BaseModel
 from src.llms.preferences import (
@@ -62,6 +63,8 @@ from src.server.models.onboarding import (
 )
 from src.server.models.profile_vocabulary import STRUCTURED_PREFERENCES, check_profile
 from src.server.models.user import (
+    OrganizationResponse,
+    PolicyResponse,
     UserBase,
     UserPreferencesResponse,
     UserPreferencesUpdate,
@@ -70,7 +73,13 @@ from src.server.models.user import (
     UserUpdate,
     UserWithPreferencesResponse,
 )
-from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not_found
+from src.server.utils.api import (
+    AnyStateServiceUserId,
+    AnyStateUserId,
+    CurrentUserId,
+    handle_api_exceptions,
+    raise_not_found,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +257,7 @@ async def create_user(
 @router.get("/users/me", response_model=UserWithPreferencesResponse)
 @handle_api_exceptions("get user", logger)
 async def get_current_user(
-    user_id: CurrentUserId,
+    user_id: AnyStateUserId,
     refresh_tier: bool = Query(False, description="Bust cached platform tier (use after invitation redemption)"),
 ):
     """Get current user profile and preferences.
@@ -256,7 +265,9 @@ async def get_current_user(
     Set ``refresh_tier=true`` to bust the cached platform tier (e.g. after
     invitation redemption). Access tier and plan display name are cached 5 min.
     While the platform is unreachable they are its last answer, and 503 when
-    it has given none.
+    it has given none, unless the account is known to be suspended, which is
+    answered with no access. A suspended account still gets its answer, which
+    is how a client learns it is suspended (``organization.suspended``).
     """
     result = await get_user_with_preferences(user_id)
 
@@ -268,17 +279,35 @@ async def get_current_user(
     # Populate platform membership: access tier + plan display name.
     # Both fields share a single Redis cache entry (5 min TTL) so this never
     # costs more than one platform-service round-trip per user per 5 minutes.
-    from src.server.dependencies.usage_limits import (
-        _fetch_platform_membership,
-        quota_service_unavailable,
-    )
-    membership = await _fetch_platform_membership(user_id, refresh=refresh_tier)
-    if membership is None:
-        # Any tier written here is one the web acts on, and -1 sends the user
-        # to the setup wizard. A 503 leaves a client on what it already holds.
-        raise quota_service_unavailable()
-    user_response.access_tier = int(membership.get("access_tier", -1))
-    user_response.plan_display_name = membership.get("plan_display_name")
+    from src.server.services.platform_client import quota_service_unavailable
+    from src.server.services.membership import read_membership, plan_unknown
+    membership = await read_membership(user_id, refresh=refresh_tier)
+    # Read after the membership, so a refresh above is what it sees.
+    from src.server.services.account import read_standing
+
+    standing = await read_standing(user_id)
+    if plan_unknown(membership):
+        # A tier written here is one the web acts on, so with nothing on
+        # record a 503 leaves a client on what it already holds. A suspended
+        # account is answered all the same, with no access (-1): the web's
+        # setup gate then asks the routes the suspension refuses, and sends
+        # no one to setup on a refused read.
+        if not standing.suspended:
+            raise quota_service_unavailable()
+    else:
+        user_response.access_tier = int(membership.get("access_tier", -1))
+        user_response.plan_display_name = membership.get("plan_display_name")
+    account = standing.account
+    if account is not None and account.org is not None:
+        user_response.organization = OrganizationResponse(
+            id=account.org.id, name=account.org.name, suspended=account.org.suspended,
+            teams=[{"id": t.id, "name": t.name, "role": t.role} for t in account.teams],
+        )
+    elif standing.suspended:
+        # Only the hint is known: the organization is not, its suspension is.
+        user_response.organization = OrganizationResponse(suspended=True)
+    if standing.policy is not None:
+        user_response.policy = PolicyResponse.model_validate(standing.policy.for_client())
     from src.server.services.llm.config import deployment_serves_default
 
     user_response.deployment_serves = deployment_serves_default()
@@ -291,6 +320,51 @@ async def get_current_user(
         user=user_response,
         preferences=preferences_response,
     )
+
+
+@router.post("/users/me/membership-changed", status_code=204)
+async def membership_changed(
+    user_id: AnyStateServiceUserId, request: Request
+) -> None:
+    """The auth service's notice that the user's plan or organization changed.
+
+    Service token only. The user's next read asks the auth service again, so
+    someone removed from an organization does not keep it for the five
+    minutes the membership is cached. Send it once the change is visible to
+    ``/api/auth/validate``. An account the change suspended has what it runs
+    stopped, after the answer and never failing it, and so does someone the
+    change left unable to use a shared workspace, for what they run there.
+
+    The body may be ``{"suspended": true}`` or ``{"suspended": false}``, the
+    account's suspension after the change, which holds while the auth service
+    cannot be asked again; anything else says nothing about it.
+    """
+    from src.server.services.account import on_membership_changed
+    from src.server.services.membership import teams_door_open
+
+    suspended = await _notice_suspended(request) if teams_door_open() else None
+    await on_membership_changed(user_id, suspended)
+
+
+# The hint is a few bytes; a body past this is not one, and is not read on.
+_NOTICE_BODY_LIMIT = 1024
+
+
+async def _notice_suspended(request: Request) -> Optional[bool]:
+    # Nothing about the body may fail the notice: a body that cannot be read
+    # or parsed (cut off, too deep for the parser) carries no hint.
+    try:
+        raw = b""
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > _NOTICE_BODY_LIMIT:
+                return None
+        body = json.loads(raw or b"null")
+    except Exception:
+        return None
+    if isinstance(body, dict) and isinstance(body.get("suspended"), bool):
+        return body["suspended"]
+    return None
 
 
 @router.put("/users/me", response_model=UserWithPreferencesResponse)
@@ -514,6 +588,24 @@ def _validate_subagents_default(other_pref: dict) -> None:
         )
 
 
+async def _refuse_new_own_models(user_id: str, model_pref: dict, stored: dict) -> None:
+    """Refuse adding a custom model or custom provider the user's policy does
+    not allow. Removing one, or changing one already saved, stays open."""
+    def added(key: str) -> bool:
+        before = {e.get("name") for e in stored.get(key) or () if isinstance(e, dict)}
+        return any(
+            isinstance(e, dict) and e.get("name") not in before
+            for e in model_pref.get(key) or ()
+        )
+
+    if not (added("custom_models") or added("custom_providers")):
+        return
+    from src.server.services.policy import OWN_API_KEYS
+    from src.server.services.account import require_policy
+
+    (await require_policy(user_id)).require(OWN_API_KEYS, "Connecting a custom model or provider")
+
+
 def _sets_structured_key(patches: dict[str, dict | None]) -> bool:
     return any(
         (patch or {}).get(key) is not None
@@ -589,6 +681,8 @@ async def update_preferences(
                 effective.get("custom_providers") or [],
                 stored_model_pref,
             )
+
+        await _refuse_new_own_models(user_id, model_pref, stored_model_pref)
 
         if model_pref.get("custom_models"):
             await refuse_custom_model_endpoints(

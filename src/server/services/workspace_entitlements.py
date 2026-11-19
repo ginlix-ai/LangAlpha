@@ -29,6 +29,7 @@ from src.server.database.workspace import (
 )
 from src.server.database.workspace_names import WorkspaceNameTaken, copy_name
 from src.server.models.computer import ComputerStatus
+from src.server.services.account import read_standing
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.computer_manager._types import ComputerBinding
 from src.server.services.spec_change import sized_by_owner, spec_change_from_row
@@ -131,10 +132,8 @@ class WorkspaceEntitlementsMixin:
         cannot both take a slot the plan gives once, and the write is fenced
         on the row still unbuilt in the status read under it.
         """
-        from src.server.dependencies.usage_limits import (
-            platform_gating_active,
-            tier_rank,
-        )
+        from src.server.dependencies.usage_limits import tier_rank
+        from src.server.services.platform_client import platform_gating_active
 
         if not platform_gating_active():
             return None
@@ -374,9 +373,9 @@ class WorkspaceEntitlementsMixin:
                         raise RuntimeError(
                             "Always-on isn't available for this computer's provider"
                         )
+                from src.server.services.platform_client import platform_gating_active
                 from src.server.dependencies.usage_limits import (
                     assert_always_on_allowed,
-                    platform_gating_active,
                 )
 
                 if (
@@ -516,15 +515,41 @@ class WorkspaceEntitlementsMixin:
         falls through to idle reaping (reaped now if idle; stops on a later tick
         if in use, no mid-use yank). The entitlement check runs once per
         distinct owner (bounded-concurrent) so several always-on computers for
-        one user trigger a single platform validate.
+        one user trigger a single platform validate. A suspended owner's
+        machines, their own included, are not exempt either, and keep the flag.
         """
         from src.server.dependencies.usage_limits import always_on_entitlement_lost
+        from src.server.services.membership import teams_door_open
 
         exempt: set[str] = set()
+        # One cached read per distinct owner, none with ``teams`` off.
+        semaphore = asyncio.Semaphore(5)
+
+        async def _suspended(uid: str) -> tuple[str, bool]:
+            async with semaphore:
+                standing = await read_standing(uid, unknown_on_cache_error=True)
+                return uid, standing.suspended
+
+        flagged = [c for c in running_computers if c.get("is_always_on")]
+        suspended = (
+            {
+                uid
+                for uid, is_suspended in await asyncio.gather(
+                    *(_suspended(uid) for uid in {str(c["user_id"]) for c in flagged})
+                )
+                if is_suspended
+            }
+            if teams_door_open()
+            else set()
+        )
 
         always_on_rows = []
-        for c in running_computers:
-            if not c.get("is_always_on"):
+        for c in flagged:
+            # A suspended owner's computer does no more work, so it is not
+            # kept up: it stops once idle, and nothing starts it again while
+            # the suspension lasts. Its setting is left as the owner chose,
+            # for an account that is reinstated.
+            if str(c["user_id"]) in suspended:
                 continue
             # An unmetered machine is the user's own, so no plan can lapse it
             # and there is nothing to probe.
@@ -532,10 +557,9 @@ class WorkspaceEntitlementsMixin:
                 exempt.add(str(c["computer_id"]))
                 continue
             always_on_rows.append(c)
+
         # One platform validate per distinct owner, bounded-concurrent so a
         # large always-on fleet doesn't serialize the reaper cycle on RTTs.
-        semaphore = asyncio.Semaphore(5)
-
         async def _probe(uid: str) -> tuple[str, bool]:
             async with semaphore:
                 return uid, await always_on_entitlement_lost(uid)

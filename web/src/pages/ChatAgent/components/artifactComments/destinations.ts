@@ -58,12 +58,13 @@ export interface CommentDestinations {
   /**
    * Where `intent` takes the words: a new comment's (`comment` null) to the
    * thread picked in its "To:" menu, else the default; an existing one's to
-   * the thread it waits for or went to, unless archived, else the default. A queue needs a
+   * the thread it waits for or went to, unless archived, else the default,
+   * and nowhere when that thread is one the viewer cannot open. A queue needs a
    * thread, so where the default is a new thread there is only a send. Null
    * where it cannot go yet.
    */
   targetFor: (
-    comment: Pick<ArtifactComment, 'thread_id' | 'thread_archived'> | null,
+    comment: Pick<ArtifactComment, 'thread_id' | 'thread_archived' | 'thread_hidden'> | null,
     intent: CommentIntent,
     picked?: CommentTarget | null,
   ) => CommentRoute | null;
@@ -115,6 +116,8 @@ export function commentDestinations(
 
   const targetFor: CommentDestinations['targetFor'] = (comment, intent, picked = null) => {
     if (intent === 'note') return { kind: 'note' };
+    // Its words are for a thread the viewer cannot open; no other takes them.
+    if (comment?.thread_hidden) return null;
     // An archived thread takes nothing, so it is no more a destination than a deleted one.
     const own: CommentTarget | null = comment?.thread_id && !comment.thread_archived ? { threadId: comment.thread_id } : null;
     const to = (comment ? own : picked) ?? fallback;

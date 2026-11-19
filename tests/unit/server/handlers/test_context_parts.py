@@ -10,6 +10,7 @@ import pytest
 from ptc_agent.agent.middleware.compaction import NoCompaction, Parts
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.sandbox.attach_only import SandboxNotRunning, attaching_only
+from src.server.services.turn_runtime import TurnRoute
 
 HANDLER = "src.server.handlers.thread_maintenance"
 ASK = "ptc_agent.agent.middleware.compaction.ask_between_turns"
@@ -29,7 +30,9 @@ def _thread(*, build=None, ask=None):
         return ThreadAgent(thread_id, MagicMock(), state, [], "ws-1", None, ProjectContext("ws-1", "Macro"))
 
     built.attach_only = None
-    resolved = AsyncMock(return_value=(MagicMock(llm_client=None), "analyst"))
+    resolved = AsyncMock(
+        return_value=(MagicMock(llm_client=None), TurnRoute("ws-1", "analyst", "u-1"))
+    )
     with (
         patch(f"{HANDLER}._compaction_config", new=resolved),
         patch(f"{HANDLER}._thread_agent", new=build or built) as agent,
@@ -49,7 +52,7 @@ async def test_the_parts_are_asked_of_the_threads_agent_without_starting_its_com
     assert isinstance(asked.await_args.args[2], Parts)
     # A panel is not activity: the computer is used only while it runs.
     assert agent.attach_only is True
-    assert agent.kwargs["user_id"] == "u-1" and agent.kwargs["role"] == "analyst"
+    assert agent.kwargs["user_id"] == "u-1" and agent.kwargs["route"].role == "analyst"
     # It writes nothing, so it reads on the pooled saver, outside any fence.
     assert "checkpointer" not in agent.kwargs
 

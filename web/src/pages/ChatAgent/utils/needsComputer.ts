@@ -7,12 +7,10 @@
  * its backup off can't hold Home either, and that refusal (`needs_backup`)
  * offers the computer, where backup is turned on.
  */
-import type { useTranslation } from 'react-i18next';
-
 import { apiErrorCoded } from '@/api/errors';
 import type { StructuredError } from '@/utils/rateLimitError';
 
-type Translate = ReturnType<typeof useTranslation>['t'];
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export const NEEDS_COMPUTER = 'needs_computer';
 

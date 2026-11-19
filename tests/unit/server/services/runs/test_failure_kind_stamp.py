@@ -54,7 +54,7 @@ async def _failed_metadata(exc: BaseException) -> dict:
         handler=None,
         cancelled_by_user=False,
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
         exc=exc,
     )
     return outcome.metadata
@@ -454,7 +454,7 @@ async def test_a_run_the_tunnel_gateway_ended_settles_its_firing_as_our_outage()
     so the automation that ran it took a strike for the service's outage, as
     the same outage before the turn already did not."""
     from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
-    from src.server.services.automation_settlement import Outcome, ledger_outcome
+    from src.server.services.automation_outcomes import Outcome, ledger_outcome
 
     try:
         raise RuntimeError("acquire failed") from SSHConnectError(

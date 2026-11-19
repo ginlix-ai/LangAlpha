@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_serializer,
+    model_serializer,
     BeforeValidator,
     field_validator,
     model_validator,
@@ -66,6 +67,17 @@ class ArtifactResponse(BaseModel):
     #: A link shared before versions whose files are past the caps: visitors
     #: get a 404 until the owner publishes.
     legacy_refused: Literal["too_many_files", "too_many_bytes"] | None = None
+    #: Who the link opens to: anyone with it, or members of the owner's
+    #: organization only.
+    audience: Literal["public", "organization"] = "public"
+    #: The audiences the owner may choose now.
+    audiences: list[Literal["public", "organization"]] = Field(
+        default_factory=lambda: ["public"]
+    )
+
+
+class AudienceRequest(BaseModel):
+    audience: Literal["public", "organization"]
 
 
 class ArtifactLookupResponse(BaseModel):
@@ -437,6 +449,19 @@ class CommentMessageResponse(BaseModel):
     #: thread it answered from.
     thread_id: str | None
     created_at: datetime
+    #: In a shared workspace, the member who wrote a person's message and
+    #: their name. Left out of the answer otherwise, so a personal
+    #: workspace's comments read as they always have.
+    written_by: str | None = None
+    written_by_name: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _writer_only_when_named(self, handler: Any) -> dict[str, Any]:
+        out = handler(self)
+        if self.written_by is None:
+            out.pop("written_by", None)
+            out.pop("written_by_name", None)
+        return out
 
 
 class CommentResponse(BaseModel):
@@ -460,6 +485,14 @@ class CommentResponse(BaseModel):
     messages: list[CommentMessageResponse]
     read_through: int
     unread: int
+    thread_hidden: bool = False
+
+    @model_serializer(mode="wrap")
+    def _hidden_only_when_so(self, handler: Any) -> dict[str, Any]:
+        out = handler(self)
+        if not self.thread_hidden:
+            out.pop("thread_hidden", None)
+        return out
 
     @field_serializer("anchor")
     def _stored_shape(self, anchor: CommentAnchor) -> dict[str, Any]:

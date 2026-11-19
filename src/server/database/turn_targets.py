@@ -18,6 +18,7 @@ from src.server.database.home_workspace import (
     is_home_row,
 )
 from src.server.database.pool import get_db_connection
+from src.server.database.shared_workspaces import is_holder
 from src.server.database.sql_fences import FENCE_NOT_DELETED
 from src.server.utils.pg_sanitize import normalize_uuid
 
@@ -81,6 +82,39 @@ async def turn_place(
         home = await _home_place(user_id)
         return Place(str(found_id), name, home.computer_id, home.computer_name, False)
     return Place(str(found_id), name, str(computer_id), computer_name, False)
+
+
+async def in_shared_workspace(
+    *,
+    workspace_id: str | None = None,
+    thread_id: str | None = None,
+    computer_id: str | None = None,
+) -> bool:
+    """Whether the workspace, or the thread's, is a shared one, or the
+    computer is a shared workspace's (its holder's). Its row is its
+    holder's, so ``turn_place`` finds it for no one, and its computer is
+    none of the caller's. One read whatever is named, none when nothing is."""
+    workspace, thread = normalize_uuid(workspace_id), normalize_uuid(thread_id)
+    computer = normalize_uuid(computer_id)
+    if workspace is None and thread is None and computer is None:
+        return False
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM shared_workspaces s
+                     WHERE s.workspace_id = %(workspace)s::uuid
+                        OR s.workspace_id = (
+                            SELECT t.workspace_id FROM conversation_threads t
+                             WHERE t.conversation_thread_id = %(thread)s::uuid)),
+                       (SELECT c.user_id FROM computers c
+                         WHERE c.computer_id = %(computer)s::uuid)
+                """,
+                {"workspace": workspace, "thread": thread, "computer": computer},
+            )
+            row = await cur.fetchone()
+    return bool(row and (row[0] or is_holder(row[1])))
 
 
 async def _home_place(user_id: str) -> Place:

@@ -24,13 +24,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.config.settings import HOST_MODE
 from src.server.database.conversation import create_thread
+from src.server.database.shared_workspaces import is_holder
 from src.server.services.turn_runtime import requested_workspace, turn_route
 from src.server.models.conversation import (
     ThreadCreateRequest,
     ThreadCreateResponse,
 )
 from src.server.services.thread_title import schedule_title_generation
-from src.server.dependencies.principal import RunPrincipal
+from src.server.dependencies.principal import (
+    SHARED_WORKSPACE_REFUSAL,
+    RunPrincipal,
+    refuse_computer,
+)
 from src.server.utils.thread_stamp import stamped_title
 
 from ._deps import SSE_HEADERS, logger, router
@@ -100,26 +105,29 @@ async def create_thread_endpoint(
     """
     x_user_id = principal.user_id
     workspace = await requested_workspace(x_user_id, request.workspace_id)
-
-    # Same credit gate the follow-up /messages call enforces — a quota-blocked
-    # client must not mint durable rows + platform title calls through this
-    # door. byok and the surface are reported the same way the message path
-    # reports them, so both doors get the same verdict for the same user.
-    if HOST_MODE != "oss":
-        from src.server.database.api_keys import is_byok_active
-        from src.server.database.oauth_tokens import has_any_oauth_token
-        from src.server.dependencies.usage_limits import enforce_credit_limit
-
-        is_byok, has_oauth = await asyncio.gather(
-            is_byok_active(x_user_id), has_any_oauth_token(x_user_id)
-        )
-        await enforce_credit_limit(
-            x_user_id, byok=is_byok or has_oauth, surface=request.platform
-        )
-
     # Decided where the message path decides it, so the thread is born in the
     # workspace its runs will actually use.
     route = turn_route(x_user_id, workspace)
+    if route.owner_id != x_user_id:
+        # Refused here as the send refuses it, so the token leaves no empty
+        # thread in a workspace it cannot work in.
+        refuse_computer(principal, SHARED_WORKSPACE_REFUSAL)
+
+    # Same credit gate the follow-up /messages call enforces — a quota-blocked
+    # client must not mint durable rows + platform title calls through this
+    # door. The account, byok and the surface are reported the same way the
+    # message path reports them, so both doors get the same verdict.
+    if HOST_MODE != "oss":
+        from src.server.dependencies.usage_limits import enforce_credit_limit
+        from src.server.services.account import own_access
+        from src.server.services.shared_workspaces.turn import TurnIdentity
+
+        identity = await TurnIdentity.of(x_user_id, route.owner_id)
+        await enforce_credit_limit(
+            identity.recorded_as,
+            byok=(await own_access(x_user_id)).any,
+            surface=request.platform,
+        )
     route = await route.bind(x_user_id, workspace, place=False)
     workspace_id = route.workspace_id
 
@@ -141,6 +149,8 @@ async def create_thread_endpoint(
             subagents_allowed=request.subagents_allowed,
             reasoning_effort=request.reasoning_effort,
             fast_mode=request.fast_mode,
+            created_by=x_user_id if is_holder(route.owner_id) else None,
+            shared_with_workspace=request.shared_with_workspace,
         )
     except Exception as e:
         logger.exception(f"Error pre-creating thread: {e}")
@@ -157,7 +167,9 @@ async def create_thread_endpoint(
     payload = ThreadCreateResponse(
         thread_id=thread_id,
         workspace_id=str(workspace_id),
-        thread_index=row["thread_index"],
+        # A shared workspace's numbers would count the threads a member
+        # cannot see (``viewer_threads``).
+        thread_index=None if is_holder(route.owner_id) else row["thread_index"],
         title=title_stamp,
         msg_type=row["msg_type"],
         subagents_allowed=row["subagents_allowed"],

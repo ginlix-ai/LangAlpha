@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from psycopg.rows import dict_row
 
-from src.server.database.artifacts.routing import require_destination
+from src.server.database.artifacts.routing import require_destination, require_reached
 from src.server.database.artifacts.records import ArtifactNotFound, clip_title
 from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import SafeJson
@@ -46,6 +46,10 @@ class CommentMessage:
     #: thread it answered from.
     thread_id: str | None
     created_at: datetime
+    #: In a shared workspace, the member who wrote a person's message, and
+    #: their name; None for a personal workspace's and for the agent's.
+    written_by: str | None = None
+    written_by_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,11 +134,13 @@ async def messages_by_comment(
         return {}
     await cur.execute(
         """
-        SELECT message_id::text, comment_id::text, seq, author, body, sent_at,
-               request_key::text, thread_id::text, created_at
-          FROM artifact_comment_messages
-         WHERE comment_id = ANY(%s::uuid[])
-         ORDER BY comment_id, seq
+        SELECT m.message_id::text, m.comment_id::text, m.seq, m.author, m.body,
+               m.sent_at, m.request_key::text, m.thread_id::text, m.created_at,
+               m.written_by, u.name AS written_by_name
+          FROM artifact_comment_messages m
+          LEFT JOIN users u ON u.user_id = m.written_by
+         WHERE m.comment_id = ANY(%s::uuid[])
+         ORDER BY m.comment_id, m.seq
         """,
         (comment_ids,),
     )
@@ -187,6 +193,7 @@ async def append_message(
     author: Literal["user", "agent"],
     body: str,
     thread_id: str | None = None,
+    written_by: str | None = None,
 ) -> int:
     """Add a message to a comment's thread under the next ``seq``; returns it.
 
@@ -198,15 +205,15 @@ async def append_message(
     await cur.execute(
         """
         INSERT INTO artifact_comment_messages
-            (comment_id, author, body, thread_id, seq)
-        VALUES (%s, %s, %s, %s, (
+            (comment_id, author, body, thread_id, written_by, seq)
+        VALUES (%s, %s, %s, %s, %s, (
             SELECT COALESCE(MAX(seq), 0) + 1
               FROM artifact_comment_messages
              WHERE comment_id = %s
         ))
         RETURNING seq
         """,
-        (comment_id, author, body, thread_id, comment_id),
+        (comment_id, author, body, thread_id, written_by, comment_id),
     )
     return (await cur.fetchone())["seq"]
 
@@ -238,6 +245,13 @@ async def _lock_owned_comment(
     return row
 
 
+def _writer(user_id: str, caller: str) -> str | None:
+    """Who a person's message names as its writer: a member writing in a
+    shared workspace, whose messages are all its holder's (``user_id``);
+    nobody in a personal one, whose messages are all its owner's."""
+    return caller if caller != user_id else None
+
+
 async def _queue_thread(
     cur,
     *,
@@ -245,20 +259,27 @@ async def _queue_thread(
     workspace_id: str,
     current: dict[str, Any] | None,
     thread_id: str | None,
+    caller: str,
 ) -> str | None:
     """The thread a comment queued now waits for: the one named, checked,
     else the one it already waits for.
 
     A comment already queued keeps its thread unasked, even one a delete has
     cleared, which the app then shows waiting for the default; one newly
-    queued must name a thread.
+    queued must name a thread. ``caller`` must see the thread either way, so
+    no words of a member's wait for a private thread they cannot open.
     """
     if thread_id is not None:
         await require_destination(
-            cur, user_id=user_id, workspace_id=workspace_id, thread_id=thread_id
+            cur, user_id=user_id, workspace_id=workspace_id, thread_id=thread_id,
+            caller=caller,
         )
         return thread_id
     if current is not None and current["delivery"] == "queued":
+        if current["thread_id"]:
+            await require_reached(
+                cur, user_id=user_id, thread_id=current["thread_id"], caller=caller
+            )
         return current["thread_id"]
     raise CommentConflict(
         "destination_required", "Name the thread the comment waits for."
@@ -275,8 +296,10 @@ async def create_comment(
     thread_id: str | None = None,
     file_sha256: str | None = None,
     title: str | None = None,
+    caller: str,
 ) -> Comment:
-    """The owner's new comment on the live file, with its first message.
+    """The owner's new comment on the live file, with its first message,
+    written by ``caller`` (:func:`_writer`).
 
     The record row is locked while the comment takes the next number, so two
     comments never share one. A queued comment waits for ``thread_id``, which
@@ -309,6 +332,7 @@ async def create_comment(
                         workspace_id=record["workspace_id"],
                         current=None,
                         thread_id=thread_id,
+                        caller=caller,
                     )
                 else:
                     thread_id = None
@@ -336,7 +360,8 @@ async def create_comment(
                 # The row is this transaction's until it commits: no other
                 # writer can reach it, so the lock is already held.
                 seq = await append_message(
-                    cur, comment_id=comment_id, author="user", body=body
+                    cur, comment_id=comment_id, author="user", body=body,
+                    written_by=_writer(user_id, caller),
                 )
                 await _advance_cursor(
                     cur, comment_id=comment_id, user_id=user_id, through=seq
@@ -359,6 +384,7 @@ async def add_owner_message(
     body: str,
     delivery: Literal["note", "queued"] | None,
     thread_id: str | None = None,
+    caller: str,
 ) -> tuple[Comment, str | None]:
     """The owner writes again on a comment, which reopens it if resolved.
 
@@ -388,11 +414,13 @@ async def add_owner_message(
                         workspace_id=current["workspace_id"],
                         current=current,
                         thread_id=thread_id,
+                        caller=caller,
                     )
                 else:
                     thread_id = None
                 seq = await append_message(
-                    cur, comment_id=comment_id, author="user", body=body
+                    cur, comment_id=comment_id, author="user", body=body,
+                    written_by=_writer(user_id, caller),
                 )
                 await _advance_cursor(
                     cur, comment_id=comment_id, user_id=user_id, through=seq
@@ -418,9 +446,10 @@ async def update_comment(
     delivery: Literal["note", "queued"] | None = None,
     thread_id: str | None = None,
     status: Status | None = None,
+    caller: str,
 ) -> tuple[Comment, str | None]:
     """Move a comment between note and queued, send it to another thread's
-    queue, resolve or reopen it.
+    queue, resolve or reopen it, as ``caller`` (:func:`_queue_thread`).
 
     Only words that have not reached the agent can wait, so a sent comment
     cannot be moved. Resolving a queued comment drops it back to a note, and
@@ -461,6 +490,7 @@ async def update_comment(
                         workspace_id=current["workspace_id"],
                         current=current,
                         thread_id=thread_id,
+                        caller=caller,
                     )
                 elif new_delivery == "note":
                     new_thread = None

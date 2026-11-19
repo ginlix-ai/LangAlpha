@@ -229,3 +229,16 @@ async def test_a_caller_that_asks_again_by_the_clock_hears_at_once_there_is_no_r
 
     assert await _post(session, refusal_fails_fast=True, room_fails_fast=True) == ("full", None)
     assert session.posts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("waits", "outcome"), [(False, "drop"), (True, "suspended")])
+async def test_a_suspended_accounts_refusal_waits_only_for_a_caller_that_keeps_its_message(
+    waits, outcome
+):
+    session = _Session([
+        _Resp(403, {"detail": {"type": "account_suspended", "organization": "Acme"}})
+    ])
+
+    assert await _post(session, suspension_waits=waits) == (outcome, None)
+    assert session.posts == 1

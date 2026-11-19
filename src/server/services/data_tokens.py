@@ -25,6 +25,8 @@ from typing import Any, Literal
 from src.config.env import AUTH_SERVICE_URL, GINLIX_DATA_URL, PUBLIC_API_BASE_URL
 from src.server.auth import computer_token_core
 from src.server.database import computer_data_tokens as db
+from src.server.database.shared_workspaces import is_holder
+from src.server.services.shared_workspaces.holder import refuse_holder
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +101,16 @@ async def keep(
 ) -> None:
     """Write a fresh token into ``sandbox_id``, the computer's own sandbox,
     when it is owed one."""
-    if not user_id or not sandbox_id or not configured():
+    # A shared workspace's holder has no plan to mint for: its computer's
+    # token is minted as the member whose turn acquires it.
+    if not user_id or not sandbox_id or not configured() or is_holder(user_id):
         return
     try:
         row = await db.load(str(computer_id))
-        if due(row, sandbox_id):
+        # On a shared workspace's computer a turn by another member than the
+        # last one mints anew, so the token's scopes are the sender's seat.
+        # On anyone else's computer the two are always its owner.
+        if due(row, sandbox_id) or (row.user_id is not None and row.user_id != user_id):
             await push(
                 str(computer_id),
                 user_id,
@@ -132,6 +139,9 @@ async def push(
     """Mint a token, record it over the row read at ``generation``, and write
     it into the sandbox; True once the sandbox holds it. A ``patient`` mint
     retries for up to ``MINT_PATIENCE``."""
+    if not user_id or is_holder(user_id):
+        # A shared computer whose token no member has minted yet.
+        return False
     minted = await _mint(user_id, computer_id, patient=patient)
     if minted is None:
         return False
@@ -151,15 +161,17 @@ async def push(
     return True
 
 
-async def revoke(computer_id: Any) -> None:
+async def revoke(computer_id: Any, *, member: str | None = None) -> None:
     """End every token the computer was given, at a stop or delete, rather
     than when the last one would have run out. Best effort: never fails the
-    stop, and one the platform does not confirm stays owed for the sweep."""
+    stop, and one the platform does not confirm stays owed for the sweep.
+    ``member`` is forgotten as the account its next token mints as
+    (``db.revoke``)."""
     if not configured():
         return
     computer_id = str(computer_id)
     try:
-        revocation = await db.revoke(computer_id)
+        revocation = await db.revoke(computer_id, **({"member": member} if member else {}))
     except Exception as e:
         logger.warning(
             "Market-data token row not revoked for computer %s (%s)",
@@ -292,8 +304,8 @@ async def _mint_once(
     user_id: str, computer_id: str, timeout: float
 ) -> tuple[Minted | None, str, bool]:
     """One mint: the token, or why not and whether another try may succeed."""
-    from src.server.dependencies.usage_limits import get_http_client, service_headers
-
+    from src.server.services.platform_client import get_http_client, service_headers
+    refuse_holder(user_id, "data token mint")
     try:
         client = await get_http_client()
         resp = await client.post(
@@ -316,8 +328,8 @@ async def _mint_once(
 
 
 async def _revoke_upstream(user_id: str, computer_id: str) -> RevokeAnswer:
-    from src.server.dependencies.usage_limits import get_http_client, service_headers
-
+    from src.server.services.platform_client import get_http_client, service_headers
+    refuse_holder(user_id, "data token revoke")
     outcome = ""
     answer: RevokeAnswer = "unreachable"
     for attempt in range(_REVOKE_ATTEMPTS):

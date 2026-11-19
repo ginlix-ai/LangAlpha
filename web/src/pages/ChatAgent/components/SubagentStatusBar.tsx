@@ -103,8 +103,9 @@ function SubagentStatusBar({ agent, onSendInstruction }: SubagentStatusBarProps)
   const isError = effectiveStatus === 'error';
   const isTerminal = isCompleted || isCancelled || isError;
 
-  // Can send: subagent is not terminal (running/initializing).
-  const canSend = !isTerminal;
+  // Can send: subagent is not terminal (running/initializing), and there is
+  // somewhere to send it (a shared workspace's member has not).
+  const canSend = !isTerminal && !!onSendInstruction;
 
   // Terminal outcome wins over the derived current tool: a task reaped
   // mid-tool-call leaves that call forever "in progress", but the run is

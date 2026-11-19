@@ -2,7 +2,9 @@
 in them, files by path, and a turn's text for the preview pane.
 
 A person's surface: a computer's token is refused whatever its scopes, and
-its agent finds threads through the list and read routes ``la`` calls.
+its agent finds threads through the list and read routes ``la`` calls. It
+reads the person's own workspaces and the shared workspaces they reach at the
+time of the search, never one they have lost.
 """
 
 import logging
@@ -17,6 +19,7 @@ from src.server.services.search import query as search_service
 from src.server.services.search.text import Kind
 from src.server.utils.api import handle_api_exceptions
 from src.utils.cache.throttle import throttle
+from src.server.services.shared_workspaces.feed import reach_of
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,13 @@ def _searcher(bucket: str, per_window: int):
 # since moving through the results asks for one per row.
 SearchingUserId = Annotated[str, Depends(_searcher("search", 60))]
 PreviewingUserId = Annotated[str, Depends(_searcher("search_preview", 60))]
+
+
+async def _reached(user_id: str) -> list[str]:
+    """The shared workspaces the person reaches now; none, reading nothing
+    more, for an account that can have none."""
+    reach = await reach_of(user_id)
+    return sorted(reach.workspace_ids) if reach else []
 
 
 def _kinds(raw: Optional[str]) -> list[Kind]:
@@ -91,6 +101,7 @@ async def search(
             cursor=cursor,
             workspace_id=str(workspace_id) if workspace_id else None,
             thread_id=str(thread_id) if thread_id else None,
+            shared=await _reached(user_id),
         )
     except search_service.BadSearch as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
@@ -107,7 +118,9 @@ async def search_preview(
     thread_id: UUID = Query(...),
     turn_index: Optional[int] = Query(None, ge=0, le=2**31 - 1),
 ):
-    found = await search_service.preview(user_id, str(thread_id), turn_index)
+    found = await search_service.preview(
+        user_id, str(thread_id), turn_index, shared=await _reached(user_id)
+    )
     if found is None:
         raise HTTPException(status_code=404, detail="Turn not found")
     return found

@@ -15,6 +15,9 @@ import { useReportsState } from '@/hooks/useReportsEnabled';
 
 interface ThumbDownModalProps {
   isOpen: boolean;
+  /** False where the review is not the viewer's to ask for (another
+   *  member's turn in a shared thread): the consent is not offered. */
+  humanReview?: boolean;
   onSubmit: (issueCategories: string[], comment: string | null, consentHumanReview: boolean) => void;
   onCancel: () => void;
 }
@@ -26,7 +29,7 @@ interface ThumbDownModalProps {
  * Allows selecting issue categories, adding comments, and
  * optionally consenting to anonymous human review for credit refund.
  */
-function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): React.ReactElement {
+function ThumbDownModal({ isOpen, humanReview = true, onSubmit, onCancel }: ThumbDownModalProps): React.ReactElement {
   const { t } = useTranslation();
   // The server sends a thumbs-down to the team whenever it takes reports, so
   // the dialog says so unless this deployment is known not to. A review is
@@ -50,7 +53,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
     onSubmit(
       Array.from(selectedCategories),
       comment.trim() || null,
-      reports === true && consentHumanReview,
+      reports === true && humanReview && consentHumanReview,
     );
   };
 
@@ -70,7 +73,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
             {t('report.thumbs.title')}
           </DialogTitle>
           <DialogDescription className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t(reports === false ? 'report.thumbs.descriptionLocal' : 'report.thumbs.description')}
+            {t(reports === false ? 'report.thumbs.descriptionLocal' : humanReview ? 'report.thumbs.description' : 'report.thumbs.descriptionNoReview')}
           </DialogDescription>
         </DialogHeader>
 
@@ -118,7 +121,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
 
         {/* Human review consent, only where a report reaches the team: elsewhere
             nobody would review it. */}
-        {reports === true && (
+        {reports === true && humanReview && (
           <div
             className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
             style={{

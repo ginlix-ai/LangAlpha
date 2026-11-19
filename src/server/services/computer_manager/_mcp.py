@@ -15,6 +15,7 @@ from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.session import Session
 
 from src.server.services.mcp_tool_split import build_direct_entries
+from src.server.services.org_connectors import current_org_digest
 from src.server.services.trading_rule import trading_rule
 from src.server.services.egress.session_binding import (
     maybe_remint_egress_jwt,
@@ -178,10 +179,11 @@ class McpSecretsMixin:
             if computer_id is None or computer_id in sandboxes:
                 continue
             identity = await db_get_workspace_identity(workspace_id)
-            session = self.get_session_if_ready(
+            session = await self.get_session_if_ready_for_work(
                 workspace_id,
                 expected_sandbox_id=(identity or {}).get("sandbox_id"),
                 target=MachineTarget.of_workspace(identity),
+                owner_id=user_id,
             )
             if session is not None:
                 sandboxes[computer_id] = session.sandbox
@@ -267,7 +269,14 @@ class McpSecretsMixin:
     async def _keep_computer_tokens(
         self, computer_id: str, user_id: str | None, sandbox: Any
     ) -> None:
-        """Every token the server writes into a computer's sandbox."""
+        """Every token the server writes into a computer's sandbox.
+
+        ``user_id`` is one account for both: an acquire's caller, or the
+        owner where the lifecycle rebuilds a sandbox. The two tokens want
+        different accounts once a computer is not its sender's (the data
+        token's scopes are a person's plan; the CLI's token acts as an
+        account on the machine), so this is where they would part.
+        """
         await _each(
             self._keep_data_token(computer_id, user_id, sandbox),
             self._keep_cli_token(computer_id, user_id, sandbox),
@@ -305,6 +314,10 @@ class McpSecretsMixin:
         # An unchanged workspace entry adds no resolution reads. Config versions
         # are per workspace, so a sibling's matching number says nothing here,
         # and a built-in server reconnected since changes what one number means.
+        # The organization's connector list is asked last, and costs nothing
+        # where the deployment serves none: a change to it bumps the version
+        # through its notice, and the digest covers a notice this worker's
+        # membership cache has not seen yet.
         if (
             prior is not None
             and prior.mcp_config_version is not None
@@ -312,6 +325,7 @@ class McpSecretsMixin:
             and prior.mcp_config_version == ws_version
             and prior.mcp_tool_summary is not None
             and not prior.builtins_superseded()
+            and prior.org_digest == await current_org_digest(user_id)
         ):
             # The relay JWT ages independently of the config version.
             relay_session = SimpleNamespace(
@@ -396,7 +410,30 @@ class McpSecretsMixin:
             view = replace(view, mcp_config_version=None)
         self._store_tool_view(binding.computer_id, view)
         self._mirror_tool_view_on_session(session, view)
+        self._kick_org_discovery(user_id, resolved, view)
         return resolved
+
+    @staticmethod
+    def _kick_org_discovery(
+        user_id: str | None, resolved: Any, view: WorkspaceToolView
+    ) -> None:
+        """Discover, from the host, the organization connectors this view has
+        no tools for yet; the sandbox holds no credential to probe them with.
+        Throttled across workers by ``org_discovery``."""
+        connectors = getattr(resolved, "org_connectors", ())
+        if not user_id or not connectors:
+            return
+        from src.server.services.mcp_config import Origin, State
+        from src.server.services.mcp_oauth.org_discovery import schedule_org_discovery
+
+        pending = {
+            e.name
+            for e in resolved.entries
+            if e.origin is Origin.ORG
+            and e.state is State.ACTIVE
+            and e.name not in view.mcp_settled_servers
+        }
+        schedule_org_discovery(user_id, [c for c in connectors if c.name in pending])
 
     async def _install_session_composite(
         self,
@@ -432,7 +469,7 @@ class McpSecretsMixin:
             from src.server.services.mcp_discovery import ToolSnapshotIndex
 
             user_rows: list[dict] = []
-            if user_id and any(s.source == "user" for s in untrusted_servers):
+            if user_id and any(s.source in ("user", "org") for s in untrusted_servers):
                 user_rows = await get_user_tool_schemas(user_id)
             snapshots = ToolSnapshotIndex(
                 # Home's stand-in serves Home's servers, so their snapshots
@@ -482,6 +519,7 @@ class McpSecretsMixin:
             mcp_servers=tuple(resolved.servers),
             mcp_settled_servers=frozenset(settled),
             trading_rule=trading_rule(resolved),
+            org_digest=getattr(resolved, "org_digest", ""),
         )
         self._mirror_tool_view_on_session(session, view)
         return view
@@ -759,15 +797,18 @@ class McpSecretsMixin:
         ws = await db_get_workspace(workspace_id)
         if not ws or not ws.get("sandbox_id"):
             return
-        session = self.get_session_if_ready(
+        # The skills the computer holds are its owner's, whoever asked.
+        owner_id = ws.get("user_id") or user_id
+        session = await self.get_session_if_ready_for_work(
             workspace_id,
             expected_sandbox_id=str(ws["sandbox_id"]),
             target=MachineTarget.of_workspace(ws),
+            owner_id=owner_id,
         )
         if session is None:
             return
         await self._reconcile_skills(
-            workspace_id, user_id, session.sandbox, source=source
+            workspace_id, owner_id, session.sandbox, source=source
         )
 
     async def proactively_apply_mcp_config(

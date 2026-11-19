@@ -20,6 +20,7 @@ never touch this module.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from dataclasses import dataclass
@@ -334,6 +335,31 @@ def bundled_skill_dirs() -> list[Path]:
 
     A bundle carries its skills as directories rather than as a list, so a
     package that ships one is read the same way whether it arrived in the
-    image or as an upload. Nothing reads the manifest's ``skills`` key.
+    image or as an upload. The manifest's ``skills`` key never says which
+    skills there are; it only describes ones the bundle carries.
     """
     return [d for p in _bundle_dirs() if (d := p / "skills").is_dir()]
+
+
+@functools.lru_cache(maxsize=1)
+def skills_needing_own_data() -> frozenset[str]:
+    """Shipped skills whose work is the sender's own data (their profile,
+    portfolio, dashboard or vault), declared in the bundle's namespace block
+    as ``"skills": {"<name>": {"needs_own_data": true}}``.
+
+    A turn that may not use that data, as in a shared workspace, cannot do
+    what these skills are for, so it is not offered them. Read once per
+    process: ``plugins/`` is not written while the server runs, and every
+    turn asks.
+    """
+    names: set[str] = set()
+    for bundle in bundles():
+        declared = bundle.namespace.get("skills")
+        if not isinstance(declared, dict):
+            continue
+        names.update(
+            name
+            for name, meta in declared.items()
+            if isinstance(meta, dict) and meta.get("needs_own_data") is True
+        )
+    return frozenset(names)

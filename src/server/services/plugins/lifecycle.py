@@ -43,6 +43,8 @@ from src.server.database.plugin_subagents import (
     list_user_plugin_subagent_names,
 )
 from src.server.database.pool import get_db_connection
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.database.user_skills import delete_user_skill, list_user_skills
 from src.server.database.user_vault_secrets import get_user_secret_names
 from src.server.models.plugin import (
@@ -76,7 +78,7 @@ from src.server.services.plugins.grants import (
     disclose_undeclared_refs,
     disclose_vaulted_literals,
 )
-from src.server.services.plugins.mcp import McpEntryPlan
+from src.server.services.plugins.mcp import McpEntryPlan, withhold_own_connectors
 from src.server.services.plugins.package import (
     ValidatedPackage,
     pending_secret_declarations,
@@ -258,6 +260,7 @@ async def _plan_install(
         extension, plans, grants.granted,
         document_dropped=package.mcp_document_invalid,
     )
+    await withhold_own_connectors(user_id, plans)
     prospects = _creatable(plans, by_name, grants.held, supplied)
     refuse_vault_overflow(
         grants.held, [*supplied, *(n for p in prospects for n in p.literals)]
@@ -352,6 +355,7 @@ async def install_plugin_package(
     secrets: Mapping[str, str] | None = None,
     checked: CheckedServers | None = None,
     progress: InstallProgress | None = None,
+    record: bool = True,
 ) -> tuple[dict[str, Any], InstallReport]:
     """Check the plugin's servers, then write its secrets, row and components.
 
@@ -362,7 +366,8 @@ async def install_plugin_package(
     Without it the check runs here first (``check_plugin_install``), so no
     caller writes a server that never passed. ``progress`` is filled in once
     the plugin row exists, so a caller can still find what was written when a
-    later step raises.
+    later step raises. ``record`` False leaves the activity log to a caller
+    that may still take the install back (:func:`record_installed`).
 
     Raises PluginFatal (from the caller's validate_package), PluginRejected or
     PluginRefused for the request's secrets, McpCheckFailed or
@@ -452,11 +457,25 @@ async def install_plugin_package(
         f"servers={report.servers_created} skills={report.skills_created} "
         f"subagents={report.subagents_created} complete={report.landed_whole}"
     )
+    if record:
+        record_installed(user_id, package, source_type, report)
     return plugin_row, report
 
 
+def record_installed(
+    user_id: str, package: ValidatedPackage, source_type: str, report: InstallReport
+) -> None:
+    activity.record(
+        user_id, Action.PLUGIN_INSTALLED, resource=("plugin", package.name),
+        detail={
+            "name": package.name, "version": package.version, "source": source_type,
+            "servers": report.servers_created,
+        },
+    )
+
+
 async def uninstall_plugin(
-    user_id: str, plugin: dict[str, Any]
+    user_id: str, plugin: dict[str, Any], *, record: bool = True
 ) -> UninstalledComponents:
     """Delete a plugin and every component it still owns, in one transaction.
 
@@ -529,6 +548,11 @@ async def uninstall_plugin(
         f"[plugins] uninstall user_id={user_id} name={name} "
         f"servers={len(servers)} skills={len(skills)} subagents={len(subagents)}"
     )
+    if record:
+        activity.record(
+            user_id, Action.PLUGIN_REMOVED, resource=("plugin", name),
+            detail={"name": name, "servers": [s["name"] for s in servers]},
+        )
     return UninstalledComponents(
         servers=[s["name"] for s in servers],
         skills=[s["name"] for s in skills],

@@ -5,6 +5,8 @@ import { useSkills } from '@/hooks/useSkills';
 import { BUILTIN_SLASH_COMMANDS, findTriggerIndex, slashRank } from './chat-input.helpers';
 import type { SlashCommand } from './chat-input.types';
 
+const NO_SKILLS: never[] = [];
+
 /**
  * The `/command` machine: skill fetching, trigger detection, ranking,
  * selection, pill bookkeeping and menu keyboard navigation. Rendering lives in
@@ -15,11 +17,14 @@ export function useSlashCommands({
   message,
   setMessage,
   workspaceId,
+  skillsAllowed,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
   workspaceId?: string | null;
+  /** False where the workspace withholds its skills (`capabilitiesOf`). */
+  skillsAllowed: boolean;
 }) {
   const { t } = useTranslation();
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
@@ -32,8 +37,10 @@ export function useSlashCommands({
   // Enabled-only skills, via React Query so a skill uploaded or toggled on the
   // Plugins page reaches this menu without a reload. Inside a workspace this
   // is the workspace-effective view, so workspace-scoped skills surface here
-  // too.
-  const { data: skills = [] } = useSkills({ workspaceId });
+  // too. Where the workspace withholds them, the menu holds the built-in
+  // commands alone.
+  const { data: skillRows = [] } = useSkills({ workspaceId, enabled: skillsAllowed });
+  const skills = skillsAllowed ? skillRows : NO_SKILLS;
 
   const filtered = useMemo(() => {
     if (!open) return [];

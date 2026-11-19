@@ -68,6 +68,65 @@ features:
     enabled: true
     gate: opt_in
 
+# What every user of this deployment may do. Unset allows everything. An
+# organization's own policy (from the auth service) can only narrow it. A key
+# or value this version does not know fails startup rather than being ignored.
+#   models.allowed:                  the models a turn may run, for every role
+#                                    (main, background, compaction, fetch,
+#                                    fallbacks, subagents); null allows any.
+#                                    Where the deployment's default is not
+#                                    allowed, the first model listed that the
+#                                    user can be served is their default (the
+#                                    organization's order when it sets a list).
+#                                    A user's custom models are refused under
+#                                    a list, whatever they are named.
+#   own_model_access.api_keys:       the user's own provider API keys, custom
+#                                    models and custom providers (default true)
+#   own_model_access.subscriptions:  the user's own model sign-ins and a
+#                                    connected Claude Code subscription
+#                                    (default true)
+#   public_links:                    links to the user's threads and files
+#                                    that open without signing in as them
+#                                    (default true). False refuses sharing
+#                                    one, and links shared before stop
+#                                    opening for anyone but the owner while
+#                                    it stands; they open again unchanged
+#                                    once it is lifted.
+#   trading:                         the agent placing, changing or
+#                                    cancelling a live order for the user
+#                                    (default true). False leaves those tools
+#                                    unbound and refused at every call, an
+#                                    approved order included, and refuses
+#                                    granting them; paper, preview and staged
+#                                    orders stay.
+#   own_machines:                    the user's work running on a machine
+#                                    they bring: an SSH computer, including
+#                                    one reached through the tunnel gateway
+#                                    or the desktop helper (default true).
+#                                    False refuses adding one and starting or
+#                                    using one already added; stopping,
+#                                    renaming and removing it still work.
+#   user_connectors:                 MCP servers the user adds themselves,
+#                                    by hand, by import or from a plugin
+#                                    (default true). False refuses adding or
+#                                    turning one on, and the ones already
+#                                    added are not used while it stands;
+#                                    they come back unchanged once it is
+#                                    lifted. Turning one off or deleting it
+#                                    still works. A plugin's skills still
+#                                    install. Brokerages are governed by
+#                                    trading instead.
+# policy:
+#   models:
+#     allowed: [claude-sonnet-5-5, claude-haiku-5-5]
+#   own_model_access:
+#     api_keys: false
+#     subscriptions: false
+#   public_links: false
+#   trading: false
+#   own_machines: false
+#   user_connectors: false
+
 # SSE Event Logging
 sse_event_log_enabled: false
 sse_event_log_level: info

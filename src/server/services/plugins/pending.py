@@ -35,6 +35,7 @@ from src.server.services.plugins.lifecycle import (
     InstallProgress,
     check_plugin_install,
     install_plugin_package,
+    record_installed,
     uninstall_plugin,
 )
 from src.server.services.plugins.package import ValidatedPackage, validate_package
@@ -156,9 +157,19 @@ async def refuse_pending_commit(user_id: str, pending: PendingPluginInstall) -> 
 @dataclass(frozen=True)
 class CommittedPluginInstall:
     """What the commit wrote, for the callback to take back if the connection
-    it was for cannot be stored."""
+    it was for cannot be stored, or to record once it was."""
 
     progress: InstallProgress
+    package: ValidatedPackage
+    source_type: str
+
+    def record(self, user_id: str) -> None:
+        """The install, in the activity log, once it stands: one taken back
+        never happened."""
+        if self.progress.report is not None:
+            record_installed(
+                user_id, self.package, self.source_type, self.progress.report
+            )
 
 
 async def commit_pending_plugin_install(
@@ -201,6 +212,7 @@ async def commit_pending_plugin_install(
             secrets=pending.secrets,
             checked=pending.checked,
             progress=progress,
+            record=False,
         )
     except BaseException:
         if progress.plugin is not None:
@@ -215,7 +227,7 @@ async def commit_pending_plugin_install(
     if not landed or not report.landed_whole:
         await undo_pending_plugin_install(user_id, progress)
         raise ValueError(_not_installed(report, pending, sign_in_landed=landed))
-    return CommittedPluginInstall(progress)
+    return CommittedPluginInstall(progress, package, pending.source_type)
 
 
 def _not_installed(
@@ -276,7 +288,7 @@ async def undo_pending_plugin_install(user_id: str, progress: InstallProgress) -
     introduced.update(progress.introduced)
     if progress.report is not None:
         introduced.update(progress.report.secrets_created)
-    await uninstall_plugin(user_id, plugin)
+    await uninstall_plugin(user_id, plugin, record=False)
     await drop_secrets(user_id, sorted(introduced))
     # The install pushed them to running sandboxes, and the uninstall's version
     # bump may already have been consumed with them still in the vault.

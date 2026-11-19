@@ -26,7 +26,7 @@ async def _finalized_metadata(agent_config) -> dict:
         handler=handler,
         cancelled_by_user=False,
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
     )
     return outcome.metadata
 

@@ -66,8 +66,8 @@ async def _one_event_gen(*args, **kwargs):
 # ---------------------------------------------------------------------------
 
 _PATCHES = {
-    "is_byok_active": "src.server.services.automation_executor.is_byok_active",
-    "has_any_oauth": "src.server.services.automation_executor.has_any_oauth_token",
+    "is_byok_active": "src.server.database.api_keys.is_byok_active",
+    "has_any_oauth": "src.server.database.oauth_tokens.has_any_oauth_token",
     "enforce_credit": "src.server.services.automation_executor.enforce_credit_limit",
     "auto_db": "src.server.services.automation_executor",
     "settlement_db": "src.server.services.automation_settlement",

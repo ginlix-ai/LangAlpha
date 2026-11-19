@@ -4,6 +4,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import { FAIL_FAST_OFFLINE } from '../lib/network';
 import { needsDiscoveryProbe, PROBE_KICK_WINDOW_MS } from '../pages/ChatAgent/components/mcp/mcpState';
+import { useAccount } from './useAccount';
 import {
   getWorkspaceMcpServers,
   addWorkspaceMcpServer,
@@ -12,6 +13,7 @@ import {
   discoverWorkspaceMcpServer,
   importWorkspaceMcpServers,
   getMcpCatalog,
+  getOrgConnectors,
   getMcpCatalogServerTools,
   getBuiltinMcpServers,
   getBuiltinMcpServerTools,
@@ -340,6 +342,19 @@ export async function waitForServerTools(
 }
 
 /** Discovered tools for one catalog server — powers the detail overlay. */
+/** The organization's connectors, read only for an account that belongs to
+ *  one: everyone else has none, and the page renders as it always has. */
+export function useOrgConnectors() {
+  const { organization } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.mcp.orgConnectors(),
+    queryFn: getOrgConnectors,
+    enabled: !!organization,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 export function useMcpCatalogServerTools(name: string | null) {
   return useQuery({
     queryKey: queryKeys.mcp.serverTools(name ?? ''),

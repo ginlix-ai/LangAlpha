@@ -4,7 +4,7 @@ A file is shared by publishing its artifact (``app/artifacts``), which cuts
 the version visitors see; these routes find a file's or an app's link and
 stop one, and never share.
 
-Endpoints, all owner-only:
+Endpoints, for the workspace's owner, or a shared workspace's members:
 - POST  /api/v1/workspaces/{id}/file-grant          - a path grant for the owner's viewer
 - POST  /api/v1/workspaces/{id}/share-links         - get or create an item's link (file or app)
 - GET   /api/v1/workspaces/{id}/share-links         - the shared links here
@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.server.app.artifacts.records import artifact_path
+from src.server.services.artifacts.snapshot import record_unshared
 from src.server.database import artifacts as artifacts_db
 from src.server.database.share_codes import share_path
 from src.server.database.share_links import (
@@ -35,8 +36,16 @@ from src.server.database.share_links import (
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.artifacts.events import publish_artifact_change
-from src.server.services.file_grants import grant_prefix, mint_file_grant, seconds_left
-from src.server.services.workspace_files import owned_workspace_on_computer
+from src.server.services.file_grants import (
+    grant_prefix,
+    mint_file_grant,
+    mint_shared_file_grant,
+    seconds_left,
+)
+from src.server.database.shared_workspaces import is_holder
+from src.server.services.shared_workspaces.access import member_or_404, workspace_access
+from src.server.services.shared_workspaces.share_out import refuse_link_change
+from src.server.services.workspace_files import reached_workspace_on_computer
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Share Links"])
@@ -106,9 +115,13 @@ async def _owned_link(workspace: dict[str, Any], code: str) -> ShareLink:
 async def mint_workspace_file_grant(
     workspace_id: str, x_user_id: CurrentUserId
 ) -> FileGrantResponse:
-    """A path grant for the owner's own viewers; see ``services/file_grants``."""
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
-    grant = await mint_file_grant(str(workspace["workspace_id"]))
+    """A path grant for the caller's own viewers; see ``services/file_grants``.
+    A shared workspace's member gets one bound to them."""
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
+    if is_holder(workspace["user_id"]):
+        grant = await mint_shared_file_grant(str(workspace["workspace_id"]), x_user_id)
+    else:
+        grant = await mint_file_grant(str(workspace["workspace_id"]))
     return FileGrantResponse(
         prefix=grant_prefix(grant), expires_in=seconds_left(grant.expires_at)
     )
@@ -120,7 +133,7 @@ async def get_or_create_share_link(
 ) -> ShareLinkResponse:
     """The item's one link, private on first sight. A file's is its artifact
     record, so this is also how a file gets one before a comment or a publish."""
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
 
     if body.kind == KIND_APP:
         if body.port is None:
@@ -138,7 +151,7 @@ async def list_share_links(
     workspace_id: str, x_user_id: CurrentUserId
 ) -> dict[str, list[ShareLinkResponse]]:
     """Only shared links: a private one is found through its item."""
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
     links = await list_shared(str(workspace["workspace_id"]))
     return {"links": [_to_model(link) for link in links]}
 
@@ -151,7 +164,8 @@ async def update_share_link(
     the version visitors see, so asking to share one here is a 409 naming the
     artifact to publish; an app link is never shared.
     """
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, access = await reached_workspace_on_computer(workspace_id, x_user_id)
+    owner_id = str(workspace["user_id"])
     link = await _owned_link(workspace, code)
 
     if link.kind == KIND_FILE:
@@ -160,13 +174,15 @@ async def update_share_link(
                 status_code=409,
                 detail={"code": "publish_required", "artifact_id": link.artifact_id},
             )
+        await refuse_link_change(access)
         try:
             artifact = await artifacts_db.unshare(
-                user_id=x_user_id, artifact_id=link.artifact_id or ""
+                user_id=owner_id, artifact_id=link.artifact_id or ""
             )
         except artifacts_db.ArtifactNotFound:
             raise HTTPException(status_code=404, detail="Share link not found") from None
-        await publish_artifact_change(x_user_id, artifact)
+        record_unshared(x_user_id, artifact)
+        await publish_artifact_change(owner_id, artifact)
         return _to_model(file_link(artifact))
 
     if body.shared:
@@ -186,6 +202,9 @@ async def get_share_link(code: str, x_user_id: CurrentUserId) -> ShareLinkRespon
     """
     link = await get_link(code)
     workspace = await db_get_workspace(link.workspace_id) if link else None
-    if link is None or workspace is None or workspace.get("user_id") != x_user_id:
+    if link is None or workspace is None:
         raise HTTPException(status_code=404, detail="Share link not found")
+    if workspace.get("user_id") != x_user_id:
+        # A shared workspace's link opens in place for its members.
+        await member_or_404(workspace_access(workspace, x_user_id), "Share link not found")
     return _to_model(link)

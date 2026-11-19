@@ -17,6 +17,7 @@ import pytest
 from src.server.handlers.chat.request_prep import PriorThread, build_turn_context
 from src.server.models.chat import ChatRequest
 from src.server.services.turn_runtime import TurnRoute
+from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.services.report_back.handoff.carry import PriorAttempt
 
 PTC = "src.server.handlers.chat.ptc_run"
@@ -61,7 +62,7 @@ async def _start(request: ChatRequest, prior: PriorThread, failed_run: dict):
         patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=prior)),
         patch(f"{PTC}.wait_or_steer", new=AsyncMock(return_value=(True, None))),
         patch(f"{PTC}.read_disk_notice", new=AsyncMock(return_value=(None, False))),
-        patch(f"{PTC}.get_user_profile_for_prompt", new=AsyncMock(return_value=None)),
+        patch("src.server.services.shared_workspaces.turn.get_user_profile_for_prompt", new=AsyncMock(return_value=None)),
         patch(f"{PTC}.build_turn_context", side_effect=_capture),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}._resolve_origin_meta", new=AsyncMock(return_value={})),
@@ -79,7 +80,8 @@ async def _start(request: ChatRequest, prior: PriorThread, failed_run: dict):
             run_id="r-1",
             user_input="",
             user_id="u-1",
-            route=TurnRoute("ws-1", "analyst"),
+            route=TurnRoute("ws-1", "analyst", "u-1"),
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             is_byok=False,
             config=config,
         )

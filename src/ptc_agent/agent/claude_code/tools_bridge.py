@@ -163,7 +163,8 @@ class ToolResults:
 
     def pass_gate(self, tool_use_id: str) -> None:
         """Mark the batch's last call as one the credit gate stopped by the
-        time it returned (``AfterTool``)."""
+        time it returned, or that returned for an account that may no longer
+        work (``AfterTool``)."""
         self._call(tool_use_id).past_gate = True
 
     def owes_gate(self, tool_use_id: str | None = None) -> bool:

@@ -44,7 +44,8 @@ from src.server.models.automation import (
     on_clock,
 )
 from src.server.services.automation_scheduler import AutomationScheduler
-from src.server.services.automation_settlement import Outcome, settle
+from src.server.services.automation_outcomes import Outcome
+from src.server.services.automation_settlement import settle
 from src.server.services.llm import user_models
 from src.server.services.llm.claude_code import claude_code_off_message
 from src.server.utils.api import (

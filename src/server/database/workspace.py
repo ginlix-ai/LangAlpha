@@ -268,6 +268,29 @@ async def create_workspace(
         raise
 
 
+async def workspace_status(workspace_id: str) -> Optional[str]:
+    """A workspace's status, ``deleted`` included, or None for no row."""
+    workspace_id = normalize_uuid(workspace_id)
+    if workspace_id is None:
+        return None
+    async with _ws_cursor() as cur:
+        await cur.execute(
+            "SELECT status FROM workspaces WHERE workspace_id = %s", (workspace_id,)
+        )
+        row = await cur.fetchone()
+    return row["status"] if row else None
+
+
+_WORKSPACE_READ = f"""
+    SELECT {_ws_cols("w")}, c.root_dir AS computer_root_dir,
+           c.name AS computer_name,
+           c.kind AS computer_kind,
+           c.provider_config AS computer_provider_config
+    FROM workspaces w
+    LEFT JOIN computers c ON c.computer_id = w.computer_id
+"""
+
+
 async def get_workspace(
     workspace_id: str,
     conn=None,
@@ -281,15 +304,7 @@ async def get_workspace(
     try:
         async with _ws_cursor(conn) as cur:
             await cur.execute(
-                f"""
-                SELECT {_ws_cols("w")}, c.root_dir AS computer_root_dir,
-                       c.name AS computer_name,
-                       c.kind AS computer_kind,
-                       c.provider_config AS computer_provider_config
-                FROM workspaces w
-                LEFT JOIN computers c ON c.computer_id = w.computer_id
-                WHERE w.workspace_id = %s AND w.status != 'deleted'
-                """,
+                f"{_WORKSPACE_READ} WHERE w.workspace_id = %s AND w.status != 'deleted'",
                 (workspace_id,),
             )
             result = await cur.fetchone()
@@ -301,6 +316,18 @@ async def get_workspace(
     except Exception as e:
         logger.error(f"Error getting workspace {workspace_id}: {e}")
         raise
+
+
+async def get_workspaces(workspace_ids: list[str]) -> dict[str, Dict[str, Any]]:
+    """Live workspaces by id, each as :func:`get_workspace` reads it."""
+    if not workspace_ids:
+        return {}
+    async with _ws_cursor() as cur:
+        await cur.execute(
+            f"{_WORKSPACE_READ} WHERE w.workspace_id = ANY(%s::uuid[]) AND w.status != 'deleted'",
+            (workspace_ids,),
+        )
+        return {str(row["workspace_id"]): dict(row) for row in await cur.fetchall()}
 
 
 async def get_workspace_placement(workspace_id: str) -> Optional[Dict[str, Any]]:

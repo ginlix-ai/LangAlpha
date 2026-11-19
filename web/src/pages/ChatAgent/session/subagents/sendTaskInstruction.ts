@@ -12,6 +12,8 @@
  * bubble a frame is about.
  */
 import { randomUUID } from '@/lib/randomUUID';
+import { apiErrorObject } from '@/api/errors';
+import { OTHERS_TASK } from '@/lib/turnRefusal';
 import { apiErrorStatus, sendSubagentMessage } from '../../utils/api';
 import { taskIdFromAgentId } from '../../utils/agentId';
 import type { SubagentRuntime } from '../runtime';
@@ -43,10 +45,13 @@ export async function sendTaskInstruction(
     const taskRefs = rt.subagentStateRefsRef.current[agentId];
     if (!rt.updateSubagentCard || !taskRefs || !hasPendingInstruction(taskRefs, inputId)) return;
     // A 409 is the task settling before the instruction got in, so it reads as
-    // a return; any other failure says only that it was not sent.
+    // a return; in a shared workspace another member's task refuses it; any
+    // other failure says only that it was not sent.
     const notice = apiErrorStatus(err) === 409
       ? 'chat.taskSteeringReturnedNotification'
-      : 'chat.taskSteeringNotSentNotification';
+      : apiErrorObject(err)?.type === OTHERS_TASK
+        ? 'sharedWorkspace.anotherMembersTask'
+        : 'chat.taskSteeringNotSentNotification';
     returnTaskInstruction(taskRefs, { inputId, content }, rt.t(notice));
     rt.updateSubagentCard(agentId, { messages: taskRefs.messages });
   }

@@ -103,5 +103,12 @@ export function useChatViewCache() {
     setEntries(prev => (prev.some(gone) ? prev.filter(e => !gone(e)) : prev));
   }, []);
 
-  return { entries, mounted, touch, updateKey, evict };
+  // Drop a thread's views made under any workspace but `workspaceId`, its
+  // own: the route named another before the thread's own was read.
+  const keepOnlyIn = useCallback((threadId: string, workspaceId: string) => {
+    const stray = (e: CacheEntry) => e.threadId === threadId && e.workspaceId !== workspaceId;
+    setEntries(prev => (prev.some(stray) ? prev.filter(e => !stray(e)) : prev));
+  }, []);
+
+  return { entries, mounted, touch, updateKey, evict, keepOnlyIn };
 }

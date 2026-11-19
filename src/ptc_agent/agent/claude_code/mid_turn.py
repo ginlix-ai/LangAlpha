@@ -144,6 +144,14 @@ def credit_stops() -> bool:
     return gate is not None and gate.lease.should_stop(gate.lease.spend())
 
 
+async def account_ends() -> bool:
+    """Whether the run's account may no longer work, asked where
+    :func:`credit_stops` is, for the same reason: the CLI's next request
+    after a batch has no model step of ours ahead of it."""
+    gate = current_credit_gate.get()
+    return gate is not None and await gate.lease.account_refusal() is not None
+
+
 class BeforeTool:
     """The hook the CLI calls before each of our calls runs.
 
@@ -193,7 +201,8 @@ class AfterTool:
     Whether the CLI stops is decided once the batch's last result is in, so
     every call of the batch runs first, as a langalpha turn's round does. It
     stops before it asks Claude again when a result ended the turn (a quiet
-    wake turn's), or when the credit gate stops by then (``ToolResults.owes_gate``),
+    wake turn's), or when the credit gate stops by then, or the account may no
+    longer work (``ToolResults.owes_gate``),
     which a quota refresh can do while a call runs, with no PreToolUse after
     it to catch the CLI's next request, or when the Claude plan is used up
     under Stop (``PlanWatch.gate``), which ends the run there. It then
@@ -242,7 +251,9 @@ class AfterTool:
         ends = any(self.results.ends_turn(t) for t in self._batch or {tool_use_id})
         at_end = not ends and tool_use_id in self._batch
         plan_stops = at_end and await self.plan.gate()
-        if at_end and not plan_stops and credit_stops():
+        if at_end and not plan_stops and (credit_stops() or await account_ends()):
+            # The gate's ``before_model`` ahead of the next CLI ends the run
+            # for an account that may no longer work.
             self.results.pass_gate(tool_use_id)
         if ends or plan_stops or self.results.owes_gate(tool_use_id):
             return {"continue": False, **({"hookSpecificOutput": out} if len(out) > 1 else {})}

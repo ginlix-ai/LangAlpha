@@ -63,7 +63,7 @@ async def _finalize(handler, status, hook=None):
         handler=handler,
         cancelled_by_user=False,
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
     )
     return hook, outcome
 

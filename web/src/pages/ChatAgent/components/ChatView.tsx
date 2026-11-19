@@ -1,8 +1,13 @@
+import { RuleRow } from '@/components/organization/RuleRow';
+import { othersTurnWords } from '@/lib/turnRefusal';
+import { SharedThreadContext } from './messageList/SharedThreadContext';
+import { useSharedThreadView } from '../hooks/useSharedThreadView';
+import { useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import React, { Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { MessageSelectionQuote } from './selectionQuote/MessageSelectionQuote';
-import { ArrowLeft, PanelRight, Menu } from 'lucide-react';
+import { ArrowLeft, PanelRight, Menu, Users } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useLatestRef } from '@/hooks/useLatestRef';
@@ -141,6 +146,8 @@ import { usePanelFiles } from './chatView/usePanelFiles';
 import { usePanelChart } from './chatView/usePanelChart';
 import { SelectionChips } from '@/pages/MarketView/components/SelectionChips';
 import { useMessageActionBundles } from './chatView/useMessageActionBundles';
+import { ThreadPrivacyRow } from './chatView/threadPrivacy';
+import { useThreadPrivacy } from './chatView/useThreadPrivacy';
 
 
 // Clears the composer floating over the transcript's bottom edge (its height
@@ -394,6 +401,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     hydrateTaskTranscript,
     sendSubagentInstruction,
   } = chat;
+  const { view: sharedThreadView, othersTurn } = useSharedThreadView(workspaceId, messages, isLoading, pendingInterrupt);
+  const capabilities = useWorkspaceCapabilities(workspaceId);
+  // Who sees the conversation, in a shared workspace; null in one's own.
+  const { privacy, sendOptions: privacySendOptions, chip: privacyChip, dialog: shareDialog } = useThreadPrivacy(currentThreadId, workspaceId);
 
   const threadModel = useThreadModel({
     threadId: currentThreadId,
@@ -442,7 +453,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       return t('chat.placeholderStopped');
     if (isLoading) return t('chat.placeholderLoading');
     if (hasActiveSubagents) return t('chat.placeholderSubagentsRunning');
-    return t('chat.placeholderDefault');
+    // The input's own default, which knows a shared workspace has no skills.
+    return undefined;
   }, [wasStopped, isLoading, pendingInterrupt, hasActiveSubagents, t]);
 
   // A market watch is running, so a watch call's row opens the watch's live
@@ -665,7 +677,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // which always run after commit, so they never see a stale function.
   const stableSendMessage = useStableHandler(handleSendMessage);
   // What every send from this chat carries beside its own.
-  const composerSendOptions = useStableHandler((options: SendOptions): SendOptions => ({ ...options, subagentsAllowed: subagentsToSend, ...tuningToSend }));
+  const composerSendOptions = useStableHandler((options: SendOptions): SendOptions => ({
+    ...options, subagentsAllowed: subagentsToSend, ...tuningToSend, ...privacySendOptions,
+  }));
   // The file comments queued for this thread's next send, shown above the
   // text box and carried by its send, and the sender the file panel uses.
   const commentSends = useChatCommentSends({
@@ -1303,6 +1317,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         hiddenOpener,
         threadTitle,
         handoff,
+        sharedWithWorkspace: landingShared,
       } = location.state;
       const mergedContext = mergeSkills(additionalContext, skills);
       // Clear navigation state to prevent re-sending on re-renders
@@ -1317,6 +1332,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           chartViews,
           subagentsAllowed: subagentsToSend,
           ...tuningToSend,
+          sharedWithWorkspace: landingShared,
           hiddenOpener,
           threadTitle,
         });
@@ -1560,6 +1576,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           </div>
         </div>
 
+        {privacy && activeAgentId === 'main' && <ThreadPrivacyRow privacy={privacy} isMobile={isMobile} />}
+        {shareDialog}
+
         {/* Content area: Chat Window (+ nav drawer on mobile — desktop nav
             lives in the app-shell AppSidebar now) */}
         <div className="flex-1 flex overflow-hidden" style={{ position: 'relative', containerType: 'inline-size' }}>
@@ -1585,6 +1604,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 stay React.memo'd. */}
             <SubagentTelemetryContext value={subagentTelemetry}>
             <WorkflowRunContext value={resolveWorkflowRun}>
+            <SharedThreadContext value={sharedThreadView}>
             <TranscriptDisplayContext value={transcriptDisplay}>
             <div
               ref={msgAreaRef}
@@ -1759,6 +1779,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               )}
             </div>
             </TranscriptDisplayContext>
+            </SharedThreadContext>
             </WorkflowRunContext>
             </SubagentTelemetryContext>
 
@@ -1814,7 +1835,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       />
                     )}
                     {isHome && <HomePlacementNotice />}
-                    {workspaceRecord?.computer_id && (
+                    {workspaceRecord?.computer_id && capabilities.restoreOffer && (
                       <ChatRestoreOffer
                         workspaceId={workspaceId}
                         computerId={workspaceRecord.computer_id}
@@ -1840,6 +1861,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     {/* One row: the drawer is a tab tucked under the composer's top
                         edge, so no status row may come between them, and the
                         parent's sibling gap must not either. */}
+                    {othersTurn && (
+                      <RuleRow
+                        icon={Users}
+                        title={othersTurnWords(t, othersTurn.name, othersTurn.waiting)}
+                      />
+                    )}
                     <div data-handoff="composer">
                       <TodoDrawer
                         todoData={cards['todo-list-card']?.todoData ?? null}
@@ -1850,6 +1877,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         onSend={handleSendWithAttachments}
                         {...composerDeck}
                         disabled={isLoadingHistory || !workspaceId || !!pendingInterrupt}
+                        sendHeld={!!othersTurn}
                         onStop={handleStopButton}
                         isLoading={isLoading}
                         isCompacting={!!isCompacting}
@@ -1868,8 +1896,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         onPickFastMode={threadTuning.setFastMode}
                         selectedWorkspaceId={workspaceId}
                         inHome={isHome}
-                        toolbarStatus={trayContents && (
-                          <TrayDock ref={trayDockRef} phase={trayPhase} contents={trayContents} onOpen={peekTray} />
+                        toolbarStatus={(privacyChip || trayContents) && (
+                          <>
+                            {privacyChip}
+                            {trayContents && <TrayDock ref={trayDockRef} phase={trayPhase} contents={trayContents} onOpen={peekTray} />}
+                          </>
                         )}
                       />
                     </div>

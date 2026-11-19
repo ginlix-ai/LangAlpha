@@ -588,6 +588,7 @@ class TestMarkCancelledUserLabeling:
         task_info.metadata = {
             "workspace_id": "ws-1",
             "user_id": "user-1",
+            "recorded_as": "user-1",
             "run_handle": run_handle,
         }
         btm.executions[(task_info.thread_id, task_info.run_id)] = task_info
@@ -677,6 +678,7 @@ class TestFailedRunRecordsItsModelCall:
         task_info.metadata = {
             "workspace_id": "ws-1",
             "user_id": "user-1",
+            "recorded_as": "user-1",
             "run_handle": MagicMock(),
             "handler": handler,
         }
@@ -734,6 +736,7 @@ class TestThrownFinalizeLeavesEntryRunning:
         task_info.metadata = {
             "workspace_id": "ws-1",
             "user_id": "user-1",
+            "recorded_as": "user-1",
             "run_handle": run_handle,
         }
         btm.executions[(task_info.thread_id, task_info.run_id)] = task_info
@@ -2356,7 +2359,7 @@ class TestRunEndCountsSettledSubagents:
             error=None,
             metadata={"is_byok": False},
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     @pytest.mark.asyncio

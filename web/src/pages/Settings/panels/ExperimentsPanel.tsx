@@ -1,7 +1,8 @@
 import { AlertTriangle } from 'lucide-react';
 import { Trans, useTranslation } from 'react-i18next';
 import { useFeatures, useSetFeatureOverride } from '@/hooks/useFeatures';
-import { SettingsCardBody, SettingsGroup, ToggleRow } from '../components/SettingsLayout';
+import { SettingRow, SettingsCardBody, SettingsGroup, ToggleRow } from '../components/SettingsLayout';
+import { useAccount } from '@/hooks/useAccount';
 import { SETTINGS } from '../sections';
 import { useSaveFailureToast } from './usePreferenceWrite';
 
@@ -15,6 +16,7 @@ export function ExperimentsPanel() {
   const { data: featuresData, isLoading: isFeaturesLoading } = useFeatures();
   const setFeatureOverrideMutation = useSetFeatureOverride();
   const { t } = useTranslation();
+  const { organizationName } = useAccount();
 
   // A feature turned on elsewhere (`home`) is not offered here as well.
   const overridable = (featuresData ?? []).filter((f) => (f.gate === 'opt_in' || f.gate === 'opt_out') && !f.home);
@@ -34,11 +36,33 @@ export function ExperimentsPanel() {
         overridable.map((feature, index) => {
           const copyKey = `settings.featureCatalog.${feature.key}`;
           const description = t(`${copyKey}.description`, { defaultValue: feature.description });
+          const label = t(`${copyKey}.label`, { defaultValue: feature.label });
+          // The organization decides it and an override is refused, so the
+          // row says the state and who set it, with nothing to press.
+          if (feature.set_by_organization) {
+            const who = organizationName ?? t('organization.who.yourOrganizationStart');
+            return (
+              <SettingRow
+                key={feature.key}
+                id={index === 0 ? SETTINGS.experiments.anchor : undefined}
+                label={label}
+                description={t('organization.twoSentences', {
+                  first: description,
+                  next: t(feature.enabled ? 'organization.features.keptOn' : 'organization.features.turnedOff', { who }),
+                })}
+                inline
+              >
+                <span className="text-[0.8125rem]" style={{ color: 'var(--color-text-secondary)' }}>
+                  {feature.enabled ? t('organization.features.on') : t('organization.features.off')}
+                </span>
+              </SettingRow>
+            );
+          }
           return (
             <ToggleRow
               key={feature.key}
               id={index === 0 ? SETTINGS.experiments.anchor : undefined}
-              label={t(`${copyKey}.label`, { defaultValue: feature.label })}
+              label={label}
               description={feature.tradeoffs ? (
                 <>
                   {description}

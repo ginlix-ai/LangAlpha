@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from src.server.app.workspaces import _workspace_to_response
+from src.server.app.workspaces import workspace_response
 from src.server.database.home_away import list_handbacks, mark_handback_seen
 from src.server.database.home_workspace import get_home_stand_in_id
 from src.server.database.workspace import (
@@ -57,7 +57,7 @@ async def get_home_workspace(principal: ReadPrincipal):
     if principal.unlimited:
         # The app's own load only: a token that may not add computers adds none.
         schedule_start(f"stand-in-host:{x_user_id}", lambda: _make_stand_in_host(x_user_id))
-    return _workspace_to_response(workspace)
+    return workspace_response(workspace)
 
 
 async def _make_stand_in_host(user_id: str) -> None:

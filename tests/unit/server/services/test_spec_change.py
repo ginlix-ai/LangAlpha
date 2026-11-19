@@ -225,7 +225,7 @@ def run_env(manager):
         patch(f"{_SPEC}.settle_computer_spec_change", AsyncMock(side_effect=settle)),
         patch(f"{_SPEC}.publish_computer_status_change", AsyncMock()) as publish,
         patch(
-            "src.server.dependencies.usage_limits.platform_gating_active",
+            "src.server.services.platform_client.platform_gating_active",
             return_value=False,
         ),
     ):
@@ -301,7 +301,7 @@ class TestRunSettles:
 
         with (
             patch(
-                "src.server.dependencies.usage_limits.platform_gating_active",
+                "src.server.services.platform_client.platform_gating_active",
                 return_value=True,
             ),
             patch(f"{_SPEC}.computer_capacity_lock", capacity),

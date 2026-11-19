@@ -46,6 +46,10 @@ ComponentStatus = Literal[
 ]
 
 
+#: The skip code of a plugin's server the user's policy withholds.
+WITHHELD_BY_POLICY = "user_connectors"
+
+
 class ComponentResult(BaseModel):
     """The outcome for one declared component (an mcp.json entry, a skill or a subagent)."""
 
@@ -60,6 +64,9 @@ class ComponentResult(BaseModel):
     status: ComponentStatus
     reason: str = ""
     warnings: list[str] = Field(default_factory=list)
+    #: Skipped only because the user's policy withholds their own connectors,
+    #: which a lifted rule undoes: never a settled outcome.
+    withheld: bool = False
 
     @classmethod
     def of(
@@ -87,6 +94,10 @@ class ComponentResult(BaseModel):
             status=status,
             reason=reason,
             warnings=list(warnings or []),
+            withheld=(
+                status == "skipped"
+                and getattr(plan, "skip_code", None) == WITHHELD_BY_POLICY
+            ),
         )
 
 
@@ -123,14 +134,17 @@ class InstallReport(BaseModel):
         the component, because the package never looks changed. Every
         remaining status is intrinsic to the package (a schema fault, a
         disallowed command, a reserved builtin name) and re-running reproduces
-        it, so those settle honestly.
+        it, so those settle honestly; a server the policy withholds does not.
         """
         return not self.unsettled
 
     @property
     def unsettled(self) -> list[ComponentResult]:
         """The components that keep ``landed_whole`` false."""
-        return [c for c in self.components if c.status in ("error", "exists")]
+        return [
+            c for c in self.components
+            if c.status in ("error", "exists") or c.withheld
+        ]
 
 
 class PluginComponentRef(BaseModel):
@@ -165,6 +179,10 @@ class PluginInfo(BaseModel):
     installed_at: Optional[str] = None
     updated_at: Optional[str] = None
     components: list[PluginComponentRef] = Field(default_factory=list)
+    #: The ``mcp.json`` keys of the connectors a rule on the user's own
+    #: connectors keeps from landing right now. They install on the plugin's
+    #: next update once the rule allows them.
+    withheld: list[str] = Field(default_factory=list)
 
 
 class PluginListResponse(BaseModel):
@@ -215,6 +233,7 @@ def plugin_row_to_info(
     *,
     components: list[PluginComponentRef] | None = None,
     icon_url: str | None = None,
+    withheld: list[str] | None = None,
 ) -> PluginInfo:
     """Project a user_plugins row (+ manifest metadata) onto the wire model.
 
@@ -240,4 +259,5 @@ def plugin_row_to_info(
         installed_at=row.get("installed_at"),
         updated_at=row.get("updated_at"),
         components=components or [],
+        withheld=withheld or [],
     )

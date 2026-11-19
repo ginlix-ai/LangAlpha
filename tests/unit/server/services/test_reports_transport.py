@@ -20,7 +20,7 @@ def _client(status: int, body: dict) -> AsyncMock:
 
 async def _withdraw_against(status: int, body: dict) -> reports.PlatformResult:
     with patch("src.server.utils.http_client.get_http_client", AsyncMock(return_value=_client(status, body))), \
-         patch("src.server.dependencies.usage_limits.service_headers", return_value={}):
+         patch("src.server.services.platform_client.service_headers", return_value={}):
         return await reports._withdraw("rep1", "u1")
 
 
@@ -48,7 +48,7 @@ async def test_a_call_that_outlives_its_deadline_is_unavailable(monkeypatch):
     client.post.side_effect = slow
     monkeypatch.setattr(reports, "_FORWARD_TIMEOUT_S", 0.05)
     with patch("src.server.utils.http_client.get_http_client", AsyncMock(return_value=client)), \
-         patch("src.server.dependencies.usage_limits.service_headers", return_value={}):
+         patch("src.server.services.platform_client.service_headers", return_value={}):
         assert (await reports._withdraw("rep1", "u1")).status == "unavailable"
 
 

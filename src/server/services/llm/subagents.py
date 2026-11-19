@@ -27,7 +27,9 @@ from src.llms.model_identity import catalog_model
 from src.llms.preferences import resolve_tuning
 
 from . import logger, user_models
-from .availability import model_on_plan
+from src.server.services.policy import Policy
+
+from .availability import model_on_plan, policy_refuses
 from .capabilities import TierPermits, gate_search
 from .claude_code import role_resolves
 from .clients import LLMRole
@@ -53,6 +55,17 @@ async def read_user_subagents(user_id: str, subagents: SubagentsConfig | None) -
         rows = await list_user_subagents(user_id, conn=conn)
         bases, offered = await roster(user_id, subagents, conn=conn)
     return rows, bases, offered
+
+
+async def builtin_subagent_reads(subagents: SubagentsConfig | None) -> SubagentReads:
+    """:func:`read_user_subagents` with nothing of any one person's: the
+    deployment's subagents alone, for a turn in a shared workspace."""
+    from ptc_agent.agent.subagents.merge import add_plugin_bases, base_subagents
+    from src.server.services.subagents.context import _agent_config
+
+    subagents = subagents or _agent_config().subagents
+    bases, offered = add_plugin_bases(base_subagents(subagents), subagents.enabled, ())
+    return [], bases, offered
 
 
 def pins_claude_code(reads: SubagentReads) -> bool:
@@ -86,6 +99,7 @@ async def resolve_user_subagents(
     search_depth: str,
     requested: list[str] | None = None,
     claude_code: bool = False,
+    policy: Policy,
 ) -> ResolvedSubagents:
     """The roster this user's turn compiles, before any client is built.
 
@@ -117,7 +131,7 @@ async def resolve_user_subagents(
         )
     resolved = await _demote_unservable(
         user_id, resolved, bases, model_pref=model_pref, permits=permits, is_byok=is_byok,
-        claude_code=claude_code,
+        claude_code=claude_code, policy=policy,
     )
     return await _gate_search(
         user_id, resolved, search_api=search_api, search_depth=search_depth, permits=permits,
@@ -180,12 +194,14 @@ async def _demote_unservable(
     permits: TierPermits,
     is_byok: bool,
     claude_code: bool = False,
+    policy: Policy,
 ) -> ResolvedSubagents:
     """Pinned models this turn cannot run, as Inherit.
 
     By name for every pin, since a name the manifest lacks fails the build,
     and so does a Claude Code row where Claude Code does not run the turn's
-    subagents (``claude_code``).
+    subagents (``claude_code``), and by the policy for every pin, the
+    deployment's own included.
     By plan only for a model the user chose, a plugin's pin included since
     the user installed it: a deployment's own pin is the operator's call, and
     gating it would change the turn of a user who never touched their
@@ -198,7 +214,10 @@ async def _demote_unservable(
         defn = definitions[name]
         if not defn.model:
             continue
-        if role_resolves(model_pref, defn.model, claude_code=claude_code) and (
+        if (
+            role_resolves(model_pref, defn.model, claude_code=claude_code)
+            and policy_refuses(policy, model_pref, defn.model) is None
+        ) and (
             not plan_gated(defn, bases.get(name))
             or await model_on_plan(
                 user_id, defn.model, model_pref=model_pref, permits=permits,

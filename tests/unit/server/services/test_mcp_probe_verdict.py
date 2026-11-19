@@ -342,7 +342,7 @@ async def test_the_fan_out_follows_what_the_write_replaced(writes, bump):
     surface no workspace was ever told to re-resolve."""
     outcome = _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
 
-    writes.replaced = discovery._schema_digest(outcome.tools)
+    writes.replaced = discovery.schema_digest(outcome.tools)
     writes.replaced_verdict = "ok"
     await _writer().settle(outcome)
 
@@ -442,7 +442,7 @@ async def test_a_recovery_with_the_same_tools_fans_the_bump_out(writes, bump):
     vendor outage that ends comes back with the tool surface it left with, so
     the digest matches and the retired grant would never be re-issued."""
     outcome = _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
-    writes.replaced = discovery._schema_digest(outcome.tools)
+    writes.replaced = discovery.schema_digest(outcome.tools)
     writes.replaced_verdict = "unreachable"
 
     await _writer().settle(outcome)

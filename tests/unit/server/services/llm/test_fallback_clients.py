@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.server.services.policy import ALLOW_ALL
+
 from ptc_agent.config.agent import CredentialSource
 from src.server.services.llm import clients
 from src.server.services.llm.clients import ResolvedClient
@@ -25,7 +27,7 @@ def ladder(monkeypatch):
 
     async def _resolve(user_id, model_name, *, is_byok, cache_key=None, reasoning_effort=None,
                        service_tier=None, allow_platform_fallback=False, _pref_cache=None,
-                       _byok_cache=None):
+                       _byok_cache=None, policy=None):
         credential = state.own.get(model_name)
         if credential is None and allow_platform_fallback:
             credential = CredentialSource.PLATFORM
@@ -44,7 +46,7 @@ async def _fallbacks(credential: CredentialSource, *names: str) -> list[str]:
         llm=SimpleNamespace(fallback=list(names)),
     )
     await clients._resolve_fallback_clients(
-        config, "user-1", {}, {}, is_byok=True, cache_key="t-1",
+        config, "user-1", {}, {}, is_byok=True, cache_key="t-1", policy=ALLOW_ALL,
     )
     assert [c.model for c in config.fallback_llm_clients] == config.fallback_llm_names
     return config.fallback_llm_names

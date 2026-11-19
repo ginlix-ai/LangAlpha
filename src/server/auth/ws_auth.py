@@ -15,6 +15,7 @@ from fastapi import WebSocket, WebSocketException, status
 
 from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
 from src.server.auth.jwt_bearer import _decode_token
+from src.server.services.account import ACCOUNT_SUSPENDED, AccountSuspended, admit
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,17 @@ async def authenticate_websocket(websocket: WebSocket) -> str:
 
     try:
         auth_info = await _decode_token(token)
-        return auth_info.user_id
     except Exception as exc:
         logger.warning("WS auth failed: %s", exc)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token")
         raise WebSocketException(
             code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token"
         ) from exc
+    try:
+        await admit(auth_info.user_id)
+    except AccountSuspended:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=ACCOUNT_SUSPENDED)
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION, reason=ACCOUNT_SUSPENDED
+        ) from None
+    return auth_info.user_id

@@ -20,8 +20,8 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol
 
 from src.server.contracts.status import (
+    asked_for,
     is_restart_interrupted,
-    is_user_stop,
     restart_resume_expired,
 )
 
@@ -144,9 +144,10 @@ def stop_already_covered(parent: Mapping[str, Any] | None, settled_at: datetime 
 
     Undecidable without both stamps, and silence is the worse failure, so a
     missing one notifies. A shutdown or recovery cancels a turn too, and asked
-    for nothing, so only the user's own stop counts.
+    for nothing, so only the user's own stop counts, and the account's
+    suspension's, after which no turn may run for the report.
     """
-    if not is_user_stop(parent):
+    if not asked_for(parent):
         return False
     stopped_at = parent.get("cancel_requested_at")
     if stopped_at is None or settled_at is None:
@@ -637,6 +638,7 @@ async def post_notification_turn(
     on_unanswered=None,
     on_plan_limited=None,
     room_fails_fast: bool = False,
+    suspension_waits: bool = False,
     route: str = "messages",
 ) -> tuple[str, str | None]:
     """POST a synthetic turn to ``thread_id``, deferring through admission.
@@ -659,7 +661,10 @@ async def post_notification_turn(
     each such POST, for a caller that must record it outlasting this call.
     ``busy_fails_fast`` returns ``"busy"`` on the first 409 that is not our
     own duplicate, for a caller with a better move than waiting out the
-    thread's run (handing its message to that run).
+    thread's run (handing its message to that run). A turn refused for a
+    suspended account is ``"drop"`` at once, or ``"suspended"`` with
+    ``suspension_waits``, for a caller that keeps its message for the account
+    to come back to (``SUSPENDED_WAIT_S``).
     ``refusal_fails_fast`` returns ``"refused"`` on the first refusal no wait
     here outlives (``_lasting_refusal``), for a caller that can hand its
     message to the thread's next turn instead of retrying it.
@@ -768,6 +773,22 @@ async def post_notification_turn(
                             return "taken", None
                         if busy_fails_fast:
                             return "busy", None
+                    if await _account_suspended(resp):
+                        if suspension_waits:
+                            logger.info(
+                                f"{log_prefix} The account is suspended; the "
+                                f"notification for {subject or 'background work'} "
+                                f"on thread {thread_id} waits"
+                            )
+                            return "suspended", None
+                        # Lifted only by the organization, and a turn started
+                        # after that would not be the one this was for.
+                        logger.info(
+                            f"{log_prefix} The account is suspended; dropping "
+                            f"the notification for {subject or 'background work'} "
+                            f"on thread {thread_id}"
+                        )
+                        return "drop", None
                     if on_plan_limited is not None and (plan := await _plan_limited(resp)):
                         logger.info(
                             f"{log_prefix} The Claude plan refused the notification "
@@ -839,6 +860,19 @@ async def post_notification_turn(
                 return "cap", None
 
 
+async def _account_suspended(resp) -> bool:
+    """A turn refused because the account is suspended."""
+    from src.server.services.account import ACCOUNT_SUSPENDED
+
+    if resp.status != 403:
+        return False
+    try:
+        detail = (await resp.json()).get("detail")
+    except Exception:
+        return False
+    return isinstance(detail, dict) and detail.get("type") == ACCOUNT_SUSPENDED
+
+
 async def _plan_limited(resp) -> dict | None:
     """The detail of a turn admission refused because the Claude plan is used
     up until ``held_until`` (``require_plan``), else None."""
@@ -861,6 +895,13 @@ async def _plan_limited(resp) -> dict | None:
 # How long a notification refused for the user's Claude Code turns at once
 # waits before it asks again (``room_fails_fast``).
 TURN_ROOM_WAIT_S = 60
+
+# How long a notification refused for a suspended account waits before it
+# asks again (``suspension_waits``): as long as a one-time automation's
+# firing is put off (``automation_executions.DEFER_INTERVAL``), so a
+# reinstated account gets it within the hour, and a long suspension costs
+# one refused request an hour.
+SUSPENDED_WAIT_S = 3600
 
 
 async def _too_many_turns(resp) -> bool:

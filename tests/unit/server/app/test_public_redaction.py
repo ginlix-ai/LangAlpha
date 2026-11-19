@@ -58,6 +58,7 @@ def _make_thread(**overrides):
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": _WORKSPACE_ID,
         "share_permissions": {"allow_files": True, "allow_download": True},
+        "owner_id": "owner-1",
         "title": "Test Thread",
         "msg_type": "ptc",
         "created_at": "2026-01-01T00:00:00Z",

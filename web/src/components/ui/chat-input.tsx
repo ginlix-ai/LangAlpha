@@ -9,6 +9,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useTurnModels } from '@/hooks/useTurnModels';
 import { useEffectiveTuning, useModelProfileWriter } from '@/hooks/useModelProfile';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
+import { useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import { homeWorkspaceQuery } from '@/hooks/useHomeWorkspace';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
@@ -54,6 +55,8 @@ import { useDeviceTuningLift } from './chat-input.useDeviceTuningLift';
 import { readSubagentsDefault } from '@/lib/subagentsDefault';
 import { readGivenBack, spellOutQuotes } from './chat-input.quoteTokens';
 import { formatContextBlock } from './chat-input.wire';
+import { useAccount } from '@/hooks/useAccount';
+import { modelRefusedBy, modelRuleRowKey } from '@/lib/accountRules';
 
 /** Autosize cap for the composer textarea; past this the box scrolls. */
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -112,6 +115,9 @@ export interface ChatInputProps {
   /** The send is also the box as the person wrote it, for `giveBack` should it fail. */
   onSend: (send: ComposerSend) => void;
   disabled?: boolean;
+  /** The draft may be written but not sent yet: another person's turn is
+   *  running in the thread. The box keeps what is in it. */
+  sendHeld?: boolean;
   isLoading?: boolean;
   /**
    * A compaction is in progress with no streaming turn (manual /compact|/offload
@@ -217,6 +223,7 @@ function settleAfterSend(field: HTMLTextAreaElement | null): void {
 function ChatInput({
   onSend,
   disabled = false,
+  sendHeld = false,
   isLoading = false,
   isCompacting = false,
   onStop,
@@ -284,6 +291,7 @@ function ChatInput({
     select: (workspace) => workspace.workspace_id,
   });
   const slashWorkspaceId = scope === 'all' ? homeWorkspaceId : selectedWorkspaceId;
+  const capabilities = useWorkspaceCapabilities(slashWorkspaceId);
   // Read when a file starts uploading, which is outside any render.
   const targetWorkspaceRef = useRef<string | null>(null);
   const {
@@ -415,7 +423,7 @@ function ChatInput({
   useEffect(() => {
     targetWorkspaceRef.current = slashWorkspaceId ?? null;
   }, [slashWorkspaceId]);
-  const slash = useSlashCommands({ textareaRef, message, setMessage, workspaceId: slashWorkspaceId });
+  const slash = useSlashCommands({ textareaRef, message, setMessage, workspaceId: slashWorkspaceId, skillsAllowed: capabilities.skills });
   const {
     mentionedFiles, setMentionedFiles, pruneRemoved: pruneMentions, detectTrigger: detectMention,
     close: closeMentions, reset: resetMentions, handleKeyDown: mentionKeyDown, open: mentionsOpen, addMention, removeMention,
@@ -721,7 +729,7 @@ function ChatInput({
 
   /** Whether it sent. */
   const handleSend = useCallback((): boolean => {
-    if (!hasContent || disabled || filesHold) return false;
+    if (!hasContent || disabled || sendHeld || filesHold) return false;
 
     // System action commands (/compact, /offload) are standalone: they run on
     // send rather than starting a chat turn. If any are present, fire them and
@@ -784,7 +792,7 @@ function ChatInput({
     setDeckFanned(false);
     settleAfterSend(textareaRef.current);
     return true;
-  }, [hasContent, disabled, filesHold, message, effectiveMarketWatch, draftSubagents, discardFiles, takeFiles, onSend, onAction,
+  }, [hasContent, disabled, sendHeld, filesHold, message, effectiveMarketWatch, draftSubagents, discardFiles, takeFiles, onSend, onAction,
     heldMentions, quotes, chips, resetMentions, slashCommands, resetSlash,
     sentModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, t]);
   useEffect(() => {
@@ -792,10 +800,10 @@ function ChatInput({
     sendRef.current = () => {
       // Held by its files, the draft is still there to send, and the hint
       // beside Send says what it waits on; nothing went.
-      if (!hasContent || disabled || filesHold) return false;
+      if (!hasContent || disabled || sendHeld || filesHold) return false;
       return handleSend();
     };
-  }, [hasContent, disabled, filesHold, handleSend]);
+  }, [hasContent, disabled, sendHeld, filesHold, handleSend]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -901,6 +909,7 @@ function ChatInput({
   const foldedItems = foldItems.filter((i) => fold.folded.includes(i.id));
 
   const favorites = useFavoriteModels();
+  const account = useAccount();
   const { entryFor } = useProviderCatalog();
   // A Claude Code model runs a turn while the token where the turn's
   // workspace (Home's for the Chief of Staff) runs it works or could not be
@@ -930,7 +939,15 @@ function ChatInput({
   const recentModels = deriveRecentModels({ selectedModel: pillModel, threadModels: threadModelsProp, validModelNames })
     .filter((m) => !favorites.models.includes(m));
   const modelRowStatus = (m: string, now: number): ModelRowStatus => {
+    // A favorite or a thread's model a rule keeps a turn off stays listed and
+    // says which rule; nothing the user does here frees it.
+    const refusedBy = modelRefusedBy(account.policy, modelMetadata, m);
+    if (refusedBy) {
+      const who = account.setterName(refusedBy);
+      return { unavailable: t(modelRuleRowKey(refusedBy, modelMetadata[m]), { who: who.start, whoMid: who.mid }) };
+    }
     if (isClaudeCodeModel(modelMetadata[m])) {
+      if (!capabilities.claudeCode) return { unavailable: t('sharedWorkspace.unavailable') };
       if (mediumHold) return mediumHold;
       const hold = claudeCodeHold(claudeCode.state, turn.workspaceId, {
         home: chiefOfStaff, cliComputerName: claudeCode.cliComputerName,
@@ -1080,7 +1097,7 @@ function ChatInput({
               // Named apart from the placeholder, which says what state the
               // thread is in and is empty while listening.
               aria-label={t("chat.composer.messageLabel")}
-              placeholder={isListening || chips.length > 0 ? "" : (placeholder ?? t("chat.placeholderDefault"))}
+              placeholder={isListening || chips.length > 0 ? "" : (placeholder ?? t(capabilities.placeholderKey))}
               className={`relative font-content w-full bg-transparent border-0 text-(--color-text-primary) ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-(--color-text-tertiary) resize-none overflow-y-auto leading-relaxed block transition-opacity ${isListening ? 'opacity-20' : 'opacity-100'}`}
               rows={minRows}
               disabled={disabled}
@@ -1196,7 +1213,7 @@ function ChatInput({
               {filesHold && <FilesHoldHint uploading={uploadingCount} failed={failedCount} />}
               <SendStopButton
                 running={isLoading || isCompacting}
-                canSend={!!hasContent && !disabled && !filesHold}
+                canSend={!!hasContent && !disabled && !sendHeld && !filesHold}
                 onSend={handleSend}
                 onStop={onStop}
               />

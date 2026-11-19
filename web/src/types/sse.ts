@@ -309,6 +309,9 @@ export interface DeliveredSteer {
   platform?: string;
   /** The key its send went out under; absent on older checkpoints. */
   request_key?: string;
+  /** The account that sent it: in a shared workspace, the member whose name
+   *  its caption carries. */
+  user_id?: string;
   /** The agent that sent it (the Chief of Staff, Flash); absent when the user did. */
   origin?: ThreadOrigin;
   /** On a steer that sent file comments, what the chat shows for it. */

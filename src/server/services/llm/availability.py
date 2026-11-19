@@ -25,6 +25,7 @@ from .capabilities import PlanTier, TierPermits
 
 if TYPE_CHECKING:
     from src.server.services.oauth_providers import SubscriptionProvider
+    from src.server.services.policy import Policy
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -254,7 +255,7 @@ async def model_on_plan(
     model with no tier is one no plan includes, which the list offers only to
     such a user.
     """
-    from src.server.dependencies.usage_limits import platform_gating_active
+    from src.server.services.platform_client import platform_gating_active
 
     if not platform_gating_active():
         return True
@@ -386,6 +387,84 @@ async def drop_off_plan_models(
         view["fallback_models"] = [m for m in fallback if not is_off("fallback_models", m)]
         dropped.extend(("fallback_models", m) for m in fallback if is_off("fallback_models", m))
     return view, dropped
+
+
+def policy_refuses(policy: Policy, model_pref: dict, name: str) -> str | None:
+    """The rule by which ``policy`` refuses running ``name``, or None.
+
+    By name, before any credential is looked at: a custom model or a custom
+    provider runs only on the user's own key, and a Claude Code row or a
+    subscription's model only on the user's own sign-in, so with that access
+    denied there is nothing it could run on. Under an allow-list a custom
+    entry is refused whatever it is named, for a caller that has not read
+    the prefs through :func:`builtins_only`, as every turn does.
+    """
+    if policy.unrestricted:
+        return None
+    from src.llms.claude_code import is_claude_code_model
+    from src.llms.preferences import custom_model
+    from src.server.services.policy import (
+        MODELS_ALLOWED,
+        OWN_API_KEYS,
+        OWN_SUBSCRIPTIONS,
+    )
+
+    if not policy.allows_model(name):
+        return MODELS_ALLOWED
+    entry = custom_model(model_pref, name)
+    providers = model_pref.get("custom_providers")
+    own_entry = entry is not None or any(
+        isinstance(cp, dict) and cp.get("name") == name
+        for cp in (providers if isinstance(providers, list) else [])
+    )
+    if own_entry and policy.models_allowed is not None:
+        return MODELS_ALLOWED
+    if own_entry and not policy.allows(OWN_API_KEYS):
+        return OWN_API_KEYS
+    if not policy.allows(OWN_SUBSCRIPTIONS):
+        from src.llms.llm import LLM as LLMFactory
+
+        from .clients import subscription_route
+
+        if is_claude_code_model(name) or subscription_route(
+            name, LLMFactory.get_model_config(), custom_entry=entry
+        ):
+            return OWN_SUBSCRIPTIONS
+    return None
+
+
+def builtins_only(policy: Policy, model_pref: dict) -> dict:
+    """``model_pref`` without the user's custom models and providers while the
+    policy holds an allow-list, so every name resolves against the manifest.
+
+    A list of model names vouches only for the models the manifest gives those
+    names; a custom entry can point anywhere, and one named like an allowed
+    model would otherwise stand in for it. Read this way from the start, a
+    turn naming an allowed name runs the manifest's model, a custom-only name
+    is refused by the list that lacks it, and the first allowed default is
+    found among the manifest's models. Nothing is deleted: the policy may
+    change.
+    """
+    if policy.models_allowed is None or not (
+        model_pref.get("custom_models") or model_pref.get("custom_providers")
+    ):
+        return model_pref
+    return {
+        k: v for k, v in model_pref.items() if k not in ("custom_models", "custom_providers")
+    }
+
+
+def drop_policy_refused(policy: Policy, model_pref: dict) -> tuple[dict, list[tuple[str, str]]]:
+    """``model_pref`` as if every saved model ``policy`` refuses had never been
+    saved, as an off-plan one reads. Nothing is deleted: the policy may change."""
+    if policy.unrestricted:
+        return model_pref, []
+    return drop_models(
+        model_pref,
+        _MODEL_PREF_KEYS,
+        # Anything but a name is left to the checks that already judge it.
+        lambda m: not isinstance(m, str) or policy_refuses(policy, model_pref, m) is None,
+    )
 
 
 def raise_model_not_on_plan(model_name: str) -> NoReturn:

@@ -26,6 +26,7 @@ have.
 """
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -149,6 +150,7 @@ async def start_task_run(
     stored_token: bool = False,
     cli_cap: Optional[tuple[str, int]] = None,
     cli_computer: Optional[str] = None,
+    spending_run_id: Optional[str] = None,
     model_override: Optional[str] = None,
     conn=None,
 ) -> Dict[str, Any]:
@@ -174,8 +176,19 @@ async def start_task_run(
     ``model_override``, the catalog name a Task named for the run, lands
     there too: a resume that names none runs the task on it again, on
     whichever worker takes it.
+
+    ``spending_run_id`` is the turn that launched the run, whose sender the
+    row's ``user_id`` names: the in-flight spend is summed per account by
+    that column, and the account is the person whose turn it is, not the
+    workspace's owner. A run with no such row (none named, or a row from
+    before ``user_id`` was recorded) names the thread's owner, as before.
     """
     conflict: Optional[str] = None
+    try:
+        # Malformed reads as none, so the start falls back rather than fails.
+        spending_run = str(uuid.UUID(str(spending_run_id))) if spending_run_id else None
+    except ValueError:
+        spending_run = None
     facts = {
         **({"model": model} if model else {}),
         **({"model_override": model_override} if model_override else {}),
@@ -229,15 +242,20 @@ async def start_task_run(
                             start_checkpoint_id, replay_facts, user_id
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            -- Denormalized owner for the in-flight spend
-                            -- aggregate. Derived here rather than threaded
-                            -- through the agent-side ledger port: the port's
-                            -- callers don't carry user identity, and the
-                            -- thread's owner is one indexed hop away.
-                            (SELECT w.user_id
-                             FROM conversation_threads t
-                             JOIN workspaces w ON w.workspace_id = t.workspace_id
-                             WHERE t.conversation_thread_id = %s)
+                            -- Denormalized account for the in-flight spend
+                            -- aggregate: the sender of the launching turn,
+                            -- read off its own response row rather than
+                            -- threaded through the agent-side ledger port,
+                            -- whose callers carry run ids but no identity.
+                            COALESCE(
+                                (SELECT r.user_id
+                                 FROM conversation_responses r
+                                 WHERE r.conversation_response_id = %s::uuid),
+                                (SELECT w.user_id
+                                 FROM conversation_threads t
+                                 JOIN workspaces w ON w.workspace_id = t.workspace_id
+                                 WHERE t.conversation_thread_id = %s)
+                            )
                         )
                         RETURNING *
                         """,
@@ -251,6 +269,7 @@ async def start_task_run(
                             cause,
                             start_checkpoint_id,
                             SafeJson(facts) if facts else None,
+                            spending_run,
                             thread_id,
                         ),
                     )
@@ -390,6 +409,25 @@ async def cancel_requested_task_runs(task_run_ids: List[str]) -> set[str]:
                 (task_run_ids,),
             )
             return {str(row["task_run_id"]) for row in await cur.fetchall()}
+
+
+async def open_task_runs_of_user(
+    user_id: str, *, started_before: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """The user's subagent runs still in progress, started before
+    ``started_before`` when given: ``thread_id``, ``task_id`` and
+    ``task_run_id`` of each."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT thread_id, task_id, task_run_id FROM subagent_runs
+                WHERE user_id = %s AND status = 'in_progress'
+                  AND (%s::timestamptz IS NULL OR started_at < %s::timestamptz)
+                """,
+                (user_id, started_before, started_before),
+            )
+            return [dict(r) for r in await cur.fetchall()]
 
 
 async def ran_on_claude_code(thread_id: str, task_id: str) -> bool:

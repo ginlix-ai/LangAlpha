@@ -17,6 +17,13 @@ signature; a visitor's opens one version, and only while the link it was
 minted from still says so, which the server reads from the link's row on
 every fetch (``database/artifacts.get_shared_version_file``). The separate
 key is what keeps the two from ever being read as each other.
+
+A shared workspace's member is not its owner, so the grant they get names
+them too: ``m1.<artifact>.<viewer>.<exp>.<sig>``, an hour long. It opens what
+the owner's opens, but only while that member still reaches the workspace,
+which the proxy reads on every fetch, so leaving it or the organization ends
+the grant at once. It is signed with the owner's key: the version is part of
+what is signed, so neither can be read as the other.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from src.server.services.member_grants import VIEWER
 from src.server.services.signed_grants import COUNT, GrantCodec
 
 __all__ = [
@@ -32,16 +40,22 @@ __all__ = [
     "ArtifactGrant",
     "ArtifactGrantError",
     "ArtifactShareGrant",
+    "MEMBER_TTL_SECONDS",
     "grant_prefix",
+    "is_member_grant",
     "is_share_grant",
     "mint_artifact_grant",
+    "mint_artifact_member_grant",
     "mint_artifact_share_grant",
     "verify_artifact_grant",
+    "verify_artifact_member_grant",
     "verify_artifact_share_grant",
 ]
 
 # The viewer re-mints well before it runs out, as it does a file grant.
 DEFAULT_TTL_SECONDS = 12 * 3600
+#: A shared workspace member's grant, as their workspace file grant.
+MEMBER_TTL_SECONDS = 3600
 
 #: The API-origin route a grant opens versions under: ``<route><token>/v/...``.
 ARTIFACT_GRANT_ROUTE = "/api/v1/artifacts/g/"
@@ -60,6 +74,13 @@ _OWNER = GrantCodec(
     claim_patterns=(None,),
     error=ArtifactGrantError,
     label="artifact grant",
+)
+_MEMBER = GrantCodec(
+    key_name="artifact_grant",
+    version="m1",
+    claim_patterns=(None, VIEWER),
+    error=ArtifactGrantError,
+    label="artifact member grant",
 )
 _VISITOR = GrantCodec(
     key_name="artifact_share_grant",
@@ -105,6 +126,32 @@ async def verify_artifact_grant(token: str, *, now: int | None = None) -> str:
     """
     (artifact_id,), _ = await _OWNER.verify(token, now=now)
     return artifact_id
+
+
+async def mint_artifact_member_grant(
+    artifact_id: str,
+    viewer_id: str,
+    *,
+    ttl: int = MEMBER_TTL_SECONDS,
+    now: int | None = None,
+) -> ArtifactGrant:
+    """A shared workspace member's grant, bound to them."""
+    token, expires_at = await _MEMBER.mint((artifact_id, viewer_id), ttl=ttl, now=now)
+    return ArtifactGrant(token=token, artifact_id=artifact_id, expires_at=expires_at)
+
+
+def is_member_grant(token: str) -> bool:
+    return _MEMBER.claims_token(token)
+
+
+async def verify_artifact_member_grant(
+    token: str, *, now: int | None = None
+) -> tuple[str, str]:
+    """The artifact and member a live member's grant names, or
+    ``ArtifactGrantError``; whether the member still reaches the workspace
+    is the caller's to read."""
+    (artifact_id, viewer_id), _ = await _MEMBER.verify(token, now=now)
+    return artifact_id, viewer_id
 
 
 def is_share_grant(token: str) -> bool:

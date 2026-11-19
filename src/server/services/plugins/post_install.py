@@ -54,7 +54,11 @@ from src.server.services.plugins.grants import (
     disclose_vaulted_literals,
 )
 from src.server.services.plugins.manifest import manifest_extension
-from src.server.services.plugins.mcp import McpEntryPlan, validate_mcp_document
+from src.server.services.plugins.mcp import (
+    McpEntryPlan,
+    validate_mcp_document,
+    withhold_own_connectors,
+)
 from src.server.services.plugins.server_fanout import fan_out_servers
 from src.server.services.plugins.subagent_fanout import relink_subagents
 from src.server.services.plugins.supplied_secrets import (
@@ -128,6 +132,8 @@ async def _check_upgrades(
     room) is not dialled; it is reported there.
     """
     plans, _grants = await _stored_entry_plans(user_id, plugin)
+    # Not dialled: the fan-out reports it skipped, with the reason.
+    await withhold_own_connectors(user_id, plans)
     by_key = {
         p.key: p for p in plans if p.skip_code is None and p.transport == "sse"
     }

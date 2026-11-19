@@ -24,12 +24,14 @@ from src.server.app import cli_approvals as approvals_app
 from src.server.dependencies import cli_approval
 from src.server.services import cli_approvals as store
 from tests.conftest import create_test_app
+from tests.unit.server.access_stub import owner_access
 from tests.unit.server.dependencies.reach_world import (
     AUTOMATION,
     OTHER_COMPUTER,
     OTHER_THREAD,
     OTHER_WORKSPACE,
     USER,
+    ReachWorld,
     act_as_computer,
 )
 
@@ -188,7 +190,10 @@ def gated_app(monkeypatch):
     app = create_test_app(threads_router, workspaces.router, automations.router, computers.router)
     # A command that names no call: its loop guards have nothing to check.
     act_as_computer(app, call_thread=None)
+    # None of what the routes name is a shared workspace's.
+    ReachWorld(monkeypatch)
     monkeypatch.setattr("src.server.utils.api.require_thread_owner", AsyncMock())
+    monkeypatch.setattr("src.server.app.threads.crud.thread_access", owner_access(USER))
     monkeypatch.setattr(
         "src.server.app.threads.crud.get_thread_by_id",
         AsyncMock(return_value={"workspace_id": OTHER_WORKSPACE, "title": "Old notes"}),

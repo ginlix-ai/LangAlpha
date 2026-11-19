@@ -44,6 +44,7 @@ async def test_public_stream_is_the_shared_page_through_redaction(client):
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": "ws-1",
         "share_permissions": {},
+        "owner_id": "owner-1",
     }
     row = {"conversation_thread_id": _THREAD_ID, "latest_checkpoint_id": None}
     queries = [{"turn_index": 0, "content": "hi", "metadata": {}}]
@@ -129,6 +130,7 @@ async def _shared(client, row: dict, responses: list[dict], read_page=None) -> s
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": "ws-1",
         "share_permissions": {},
+        "owner_id": "owner-1",
     }
     patches = [
         patch(_THREAD_BY_TOKEN, new=AsyncMock(return_value=thread)),
@@ -256,6 +258,7 @@ async def test_a_shared_task_card_gets_its_status_and_never_the_failure(client):
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": "ws-1",
         "share_permissions": {},
+        "owner_id": "owner-1",
     }
     row = {"conversation_thread_id": _THREAD_ID, "latest_checkpoint_id": None}
     with (

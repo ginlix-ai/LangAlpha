@@ -183,7 +183,7 @@ async def test_home_is_bound_only_once_the_admission_gates_pass(admitted):
     credit = AsyncMock(
         side_effect=None if admitted else HTTPException(status_code=402, detail="quota")
     )
-    route = MagicMock(return_value=TurnRoute("home-ws", "chief_of_staff"))
+    route = MagicMock(return_value=TurnRoute("home-ws", "chief_of_staff", USER))
     bind = AsyncMock(return_value="home-ws")
     with (
         _send_stubs(owner_id=USER),

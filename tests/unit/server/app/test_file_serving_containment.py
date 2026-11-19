@@ -75,9 +75,9 @@ _SHARE_FP = "src.server.app.share_files.FilePersistenceService"
 _SHARE_VAULT = "src.server.app.share_files.get_vault_secrets_for_redaction"
 _SHARE_WSMGR = "src.server.services.warm_files.WorkspaceManager"
 _CRUD_DBWS = "src.server.app.workspace_files.crud.db_get_workspace"
-_CRUD_OWNER = "src.server.app.workspace_files.crud.require_workspace_owner"
+_CRUD_OWNER = "src.server.app.workspace_files.crud.workspace_access"
 _CRUD_ACQUIRE_TO_CHANGE = "src.server.app.workspace_files.crud.acquire_sandbox_to_change"
-_CRUD_WD = "src.server.app.workspace_files.crud.owner_work_dir"
+_CRUD_WD = "src.server.app.workspace_files._shared.owner_work_dir"
 # The row a URL-only route re-reads after a live read, to prove the folder the
 # read went to was still this workspace's.
 _RECHECK = "src.server.app.workspace_files._shared.db_get_workspace"
@@ -218,6 +218,7 @@ def _shared_thread(perms: dict | None = None) -> dict:
         "conversation_thread_id": "thread-containment-1",
         "workspace_id": WS_ID,
         "share_permissions": perms or {"allow_files": True, "allow_download": True},
+        "owner_id": "owner-1",
     }
 
 
@@ -840,7 +841,7 @@ async def test_workspace_download_denies_a_symlink_out_of_the_root(tree) -> None
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
     ):
@@ -883,7 +884,7 @@ async def test_workspace_download_past_the_exec_limit_uses_the_provider(
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
         patch(_EXEC_CAP, 4),
@@ -912,7 +913,7 @@ async def test_a_whole_read_fits_in_what_the_runtime_keeps_of_its_output(tree) -
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
         patch(_CRUD_STORAGE, return_value=False),
@@ -933,7 +934,7 @@ async def test_a_streamed_download_holds_the_folder_until_the_response_is_sent(t
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace(), events)),
         patch(_EXEC_CAP, 4),
@@ -965,7 +966,7 @@ async def test_workspace_download_fails_the_send_when_the_file_grows(tree) -> No
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
         patch(_EXEC_CAP, 4),
@@ -985,7 +986,7 @@ async def test_workspace_download_past_the_exec_limit_still_denies_an_escape(
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
         patch(_EXEC_CAP, 1),
@@ -1004,7 +1005,7 @@ async def test_workspace_read_denies_a_symlink_out_of_the_root(tree) -> None:
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
     ):
@@ -1021,7 +1022,7 @@ async def test_workspace_download_returns_a_contained_file(tree) -> None:
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace())),
     ):
@@ -1098,7 +1099,7 @@ async def _ranged_download(
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_OWNER, AsyncMock()),
         patch(_CRUD_WD, return_value=tree.root),
         patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(tree.sandbox, _workspace(), events)),
         patch(_CRUD_VAULT, AsyncMock(return_value={"API_KEY": VAULT_SECRET})),
@@ -1504,7 +1505,7 @@ async def test_a_range_the_live_read_gave_up_on_still_reaches_the_backup(tree) -
         response = await _ranged_download(tree, "bytes=0-3")
 
     assert response.status_code == 206
-    assert whole.await_args.args[4] is None
+    assert whole.await_args.args[5] is None
     assert from_backup.await_args.args[5] == (0, 3)
 
 

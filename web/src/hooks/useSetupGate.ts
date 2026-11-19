@@ -1,6 +1,11 @@
 import { claudeCodeTokenAdded } from '@/lib/claudeCode';
 import { useClaudeCodeSetup } from './useClaudeCode';
 import { useUser } from './useUser';
+import { allows, RULE } from '@/lib/accountRules';
+import type { AccountPolicy } from '@/types/api';
+
+const nothingOwnToConnect = (policy: AccountPolicy | null) =>
+  !!policy && !allows(policy, RULE.ownApiKeys) && !allows(policy, RULE.ownSubscriptions);
 
 const SKIP_KEY = 'ginlix_setup_skipped';
 
@@ -33,6 +38,9 @@ export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
     || Boolean(user.has_oauth_token)
     || (user.access_tier ?? -1) >= 0
     || Boolean(user.deployment_serves)
+    // Rules that keep both the user's own keys and sign-ins off leave setup
+    // nothing to connect: the account's models are provided.
+    || nothingOwnToConnect(user.policy ?? null)
   );
   const claudeCode = useClaudeCodeSetup({ enabled: !!user && !skipped && !covered });
 

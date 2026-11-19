@@ -73,7 +73,7 @@ async def _assemble(handler, status, *, stop_events=None):
         handler=handler,
         cancelled_by_user=status == "cancelled",
         workspace_id=None,
-        user_id=None,
+        recorded_as=None,
         stop_events=stop_events,
     )
 

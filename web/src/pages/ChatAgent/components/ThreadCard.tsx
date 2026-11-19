@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, Edit2, Link2, Archive, ArchiveRestore } from 'lucide-react';
+import { Trash2, Edit2, Link2, Archive, ArchiveRestore, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useLocale } from '@/hooks/useLocale';
@@ -7,16 +7,22 @@ import { useTitleFade } from '@/hooks/useTitleFade';
 import { shortMonthDay } from '@/lib/format';
 import { useThreadFlags } from '@/lib/threadLifecycle/store';
 import { cn } from '@/lib/utils';
+import { PersonAvatar } from '@/components/organization/PersonAvatar';
+import { personLabel, threadByline } from '@/lib/sharedThreads';
+import type { Thread } from '@/types/api';
 
 
 interface ThreadCardProps {
-  thread: Record<string, unknown>;
-  onClick: (thread: Record<string, unknown>) => void;
-  onDelete?: (thread: Record<string, unknown>) => void;
-  onRename?: (thread: Record<string, unknown>) => void;
+  thread: Thread;
+  onClick: (thread: Thread) => void;
+  onDelete?: (thread: Thread) => void;
+  onRename?: (thread: Thread) => void;
   /** Archive (active view) — mutually exclusive with onUnarchive (archived view). */
-  onArchive?: (thread: Record<string, unknown>) => void;
-  onUnarchive?: (thread: Record<string, unknown>) => void;
+  onArchive?: (thread: Thread) => void;
+  onUnarchive?: (thread: Thread) => void;
+  /** The reader's user id, in a shared workspace: each card then names who
+   *  started the thread and who wrote in it last. */
+  sharedMe?: string;
 }
 
 /**
@@ -29,7 +35,7 @@ interface ThreadCardProps {
  * - Delete icon that triggers deletion confirmation
  * - Click handler to navigate to the thread conversation
  */
-function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchive }: ThreadCardProps) {
+function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchive, sharedMe }: ThreadCardProps) {
   const { t } = useTranslation();
   const locale = useLocale();
   const isMobile = useIsMobile();
@@ -48,8 +54,9 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
       : runStatus === 'failed'
       ? 'var(--color-loss)'
       : 'var(--color-text-tertiary)';
-  const cardTitle = (thread.title as string) || `Thread ${(thread.thread_index as number | undefined) !== undefined ? (thread.thread_index as number) + 1 : ''}`;
+  const cardTitle = (thread.title as string) || t('nav.untitledThread');
   const titleFading = useTitleFade(cardTitle);
+  const byline = threadByline(sharedMe ? thread.shared : undefined, sharedMe);
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent card click when clicking delete icon
     if (onDelete) {
@@ -104,7 +111,16 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
             </span>
           )}
         </h3>
-        {!!thread.updated_at && (
+        {byline.starter ? (
+          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }} data-testid="thread-byline">
+            <PersonAvatar name={byline.starter.name} size={14} />
+            <span className="min-w-0 truncate">
+              {byline.starter.mine ? t('sharedWorkspace.threads.startedByMe') : t('sharedWorkspace.threads.startedBy', { name: personLabel(t, byline.starter) })}
+              {byline.last && <> · {byline.last.mine ? t('sharedWorkspace.threads.lastByMe') : t('sharedWorkspace.threads.lastBy', { name: personLabel(t, byline.last) })}</>}
+              {!!thread.updated_at && <> · {shortMonthDay(new Date(thread.updated_at as string), locale)}</>}
+            </span>
+          </p>
+        ) : !!thread.updated_at && (
           <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
             {shortMonthDay(new Date(thread.updated_at as string), locale)}
           </p>
@@ -158,6 +174,22 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
             </button>
           )}
         </div>
+      )}
+
+      {/* A shared workspace's thread its whole workspace sees; one its
+          starter keeps private carries nothing, as one's own threads do. Last,
+          so it stays flush right while the hover actions keep their room. */}
+      {sharedMe && thread.shared?.shared_with_workspace && (
+        <span
+          role="img"
+          aria-label={t('sharedWorkspace.privacy.sharedMark')}
+          title={t('sharedWorkspace.privacy.sharedMark')}
+          className="inline-flex shrink-0"
+          style={{ color: 'var(--color-text-tertiary)' }}
+          data-testid="thread-shared-mark"
+        >
+          <Users className="h-3.5 w-3.5" aria-hidden />
+        </span>
       )}
     </div>
   );

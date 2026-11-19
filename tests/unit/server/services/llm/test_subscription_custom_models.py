@@ -105,7 +105,7 @@ async def test_plan_gate_passes_a_subscription_custom_model_under_a_builtin_name
         return False
 
     with (
-        patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=True),
+        patch("src.server.services.platform_client.platform_gating_active", return_value=True),
         patch("src.llms.llm.LLM.get_model_config", return_value=mc),
     ):
         assert await model_on_plan(

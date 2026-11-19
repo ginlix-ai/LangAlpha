@@ -1,5 +1,6 @@
 """Background-subagent task endpoints: status, stream, steer."""
 
+from contextlib import aclosing
 from typing import Annotated, Optional
 
 
@@ -7,15 +8,13 @@ from fastapi import Header, Path, Query
 from fastapi.responses import StreamingResponse
 
 from src.server.dependencies.principal import ReadUserId, RunUserId
-# require_thread_owner is called through the module (auth_api.…) so a single
-# definition-site patch governs every route — a consumer-site patch that stops
-# intercepting after a move would silently bypass auth in tests.
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces.access import ThreadWatch, thread_access
 from src.server.models.chat import SubagentMessageRequest
 
 
 
 from ._deps import SSE_HEADERS, router
+from src.server.services.shared_workspaces.turns import refuse_others_task
 
 
 @router.get("/{thread_id}/tasks/{task_id}/status")
@@ -32,7 +31,7 @@ async def get_subagent_task_status(
     ``{status, error}`` on demand so the view can hydrate without a full
     thread reload — the same ledger truth replay stamps at load time.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.services.history.task_status import (
         resolve_task_details,
         run_telemetry,
@@ -75,7 +74,7 @@ async def get_subagent_task_history(
     items replay emits (empty for an unknown or still-running task, whose
     transcript belongs to its live stream).
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.services.history.replay.run_lane import (
         project_task_transcript,
     )
@@ -100,7 +99,7 @@ async def stream_subagent_task(
     ``Last-Event-ID`` HTTP header. Served from the v2 per-run stream
     (v1-identical wire shape); pre-ledger tasks fall back to the v1 reader.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    watch = ThreadWatch.of(thread_id, x_user_id, await thread_access(thread_id, x_user_id))
     from src.server.handlers.chat.task_run_sse_reader import stream_task_run_sse
 
     if last_event_id is None and last_event_id_header is not None:
@@ -109,8 +108,20 @@ async def stream_subagent_task(
         except ValueError:
             pass
 
+    frames = stream_task_run_sse(thread_id, task_id, last_event_id)
+
+    async def watched():
+        # A shared thread's task stream ends, as a dropped one does, once the
+        # viewer may no longer read the thread; the client's reconnect then
+        # meets the route's refusal.
+        async with aclosing(frames):
+            async for frame in frames:
+                if not await watch.ok():
+                    return
+                yield frame
+
     return StreamingResponse(
-        stream_task_run_sse(thread_id, task_id, last_event_id),
+        frames if watch is None else watched(),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -125,7 +136,7 @@ async def cancel_subagent_task(
     x_user_id: RunUserId,
 ):
     """Stop one background task (e.g. a workflow run) without touching the turn."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.services.cancel_dispatch import cancel_subagent_task
 
     return await cancel_subagent_task(thread_id, task_id)
@@ -138,8 +149,11 @@ async def send_subagent_message(
     request: SubagentMessageRequest,
     x_user_id: RunUserId,
 ):
-    """Send a message/instruction to a running background subagent."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    """Send a message/instruction to a running background subagent. In a
+    shared workspace, only the member whose turn launched it instructs it."""
+    access = await thread_access(thread_id, x_user_id)
+    if access.is_shared:
+        await refuse_others_task(thread_id, task_id, x_user_id)
     from src.server.handlers.chat import steer_subagent
 
     return await steer_subagent(

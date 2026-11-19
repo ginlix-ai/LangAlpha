@@ -1,7 +1,8 @@
 /** Core API types — User, Workspace, Thread, and response wrappers */
 
 import type { CommandFailureReason, CommandTool } from './commands';
-import type { ArtifactCommentSendFields } from './artifacts';
+import type { ArtifactCommentSendFields, ShareAudience } from './artifacts';
+import type { SharedThreadInfo } from './sharedWorkspaces';
 import type { ChartView } from '@/pages/MarketView/types/chartView';
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
 
@@ -24,6 +25,14 @@ export interface User {
   personalization_completed?: boolean;
   /** Completed the legacy first-run onboarding flow. */
   onboarding_completed?: boolean;
+  /** The organization the account belongs to; null or absent for none. Only
+   *  `suspended` is set when the server knows the suspension and not yet
+   *  which organization it is. */
+  organization?: AccountOrganization | null;
+  /** What the account may do. Absent from a server that predates rules, which
+   *  restricts nothing; null when the account's rules cannot be read right
+   *  now, which is not "no rules": the server refuses turns until they can. */
+  policy?: AccountPolicy | null;
   /** Where the user chose to work, asked once by the desktop app's first run; null when never asked. */
   computer_choice?: ComputerChoice | null;
   created_at?: string;
@@ -31,6 +40,40 @@ export interface User {
   [key: string]: unknown;
 }
 
+export interface AccountOrganization {
+  id: string | null;
+  name: string | null;
+  suspended?: boolean;
+  /** The account's teams in the organization; absent from a server that
+   *  sends none. */
+  teams?: AccountTeam[];
+}
+
+/** A team of the account's organization it is in, with its role there. */
+export interface AccountTeam {
+  id: string;
+  name: string;
+  role: 'admin' | 'member';
+}
+
+/** Who set a rule: the organization the account belongs to, or the
+ *  deployment the app runs on. */
+export type RuleSetter = 'organization' | 'deployment';
+
+export interface AccountPolicy {
+  /** The models a turn may run, in the order the server picks a default
+   *  from; null allows any. */
+  models: { allowed: string[] | null };
+  own_model_access: { api_keys: boolean; subscriptions: boolean };
+  public_links: boolean;
+  trading: boolean;
+  own_machines: boolean;
+  user_connectors: boolean;
+  /** Each restricted rule (`models.allowed`, `own_model_access.api_keys`,
+   *  `public_links`, ...) and who set it. A rule that restricts nothing is
+   *  not listed. */
+  set_by: Record<string, RuleSetter>;
+}
 /**
  * `own_machine` keeps a cloud computer from being built for a user with no
  * computer Home can live on; `cloud` keeps the default.
@@ -93,6 +136,8 @@ export interface FeatureState {
   /** Where the user turns it on when not in Experiments: Claude Code's
    *  opt-in is made by connecting it under Model access. */
   home?: 'model_access' | null;
+  /** The account's organization decides it, so an override is refused. */
+  set_by_organization?: boolean;
 }
 
 // --- Workspace ---
@@ -786,6 +831,9 @@ export interface Thread {
   latest_run_id?: string | null;
   last_seen_run_seq?: number;
   run_started_at?: string | null;
+  /** Who started a shared workspace's thread and wrote in it last; absent
+   *  on any other thread. */
+  shared?: SharedThreadInfo;
   [key: string]: unknown;
 }
 
@@ -826,6 +874,8 @@ export interface ThreadSharePermissions {
   allow_files?: boolean;
   allow_download?: boolean;
   root_path?: string;
+  /** Who the link opens to; absent means anyone. */
+  audience?: ShareAudience;
 }
 
 export interface ThreadShareStatus {
@@ -833,6 +883,8 @@ export interface ThreadShareStatus {
   share_token: string;
   share_url: string;
   permissions: ThreadSharePermissions;
+  /** The audiences the owner may choose now. Absent from an older server. */
+  audiences?: ShareAudience[];
 }
 
 // --- Share links (files and apps) ---

@@ -6,9 +6,9 @@ import ThumbDownModal from '../ThumbDownModal';
 const state = vi.hoisted(() => ({ reports: undefined as boolean | undefined }));
 vi.mock('@/hooks/useReportsEnabled', () => ({ useReportsState: () => state.reports }));
 
-function open(reports: boolean | undefined) {
+function open(reports: boolean | undefined, humanReview = true) {
   state.reports = reports;
-  renderWithProviders(<ThumbDownModal isOpen onSubmit={vi.fn()} onCancel={vi.fn()} />);
+  renderWithProviders(<ThumbDownModal isOpen humanReview={humanReview} onSubmit={vi.fn()} onCancel={vi.fn()} />);
 }
 
 // The server forwards a thumbs-down whenever the deployment takes reports, so
@@ -29,6 +29,13 @@ describe('ThumbDownModal: what it says about where the rating goes', () => {
   it('keeps it local where the deployment takes no reports', () => {
     open(false);
     expect(screen.getByText('Help us improve the quality of responses')).toBeInTheDocument();
+    expect(screen.queryByText('Request human review')).not.toBeInTheDocument();
+  });
+
+  it("offers no review on another member's turn, and does not mention one", () => {
+    open(true, false);
+    expect(screen.getByText(/The messages in it are not shared/)).toBeInTheDocument();
+    expect(screen.queryByText(/ask for a human review/)).not.toBeInTheDocument();
     expect(screen.queryByText('Request human review')).not.toBeInTheDocument();
   });
 });

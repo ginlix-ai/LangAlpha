@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { runAuthResets } from '@/lib/authResets';
-import { holdThreadTitle, patchThreadTitle } from '@/lib/threadListCache';
+import { dropThreadFromViews, holdThreadTitle, patchThreadTitle } from '@/lib/threadListCache';
 
 describe('patchThreadTitle', () => {
   it('reaches the hand-off cards\' and the roster\'s liveness reads, which stop polling once a run settles', () => {
@@ -157,5 +157,41 @@ describe('holdThreadTitle', () => {
     runAuthResets();
     await fetchDetail(qc, 'Server');
     expect(qc.getQueryData(queryKeys.threads.detail('t-1'))).toMatchObject({ title: 'Server' });
+  });
+});
+
+describe('dropThreadFromViews', () => {
+  const W = 'ws-1';
+  const rows = (...ids: string[]) => ({ threads: ids.map((thread_id) => ({ thread_id })), total: ids.length });
+  const ids = (qc: QueryClient, key: readonly unknown[]) =>
+    (qc.getQueryData(key) as { threads: { thread_id: string }[] }).threads.map((t) => t.thread_id);
+
+  it('takes the row out of every list and reads the comment destinations again', () => {
+    const qc = new QueryClient();
+    const page = queryKeys.threads.page(W, 20);
+    const archived = queryKeys.threads.gallery(W, true);
+    const destinations = queryKeys.artifacts.destinationsOf('a-1');
+    qc.setQueryData(page, rows('t-1', 't-2'));
+    qc.setQueryData(archived, rows('t-1'));
+    qc.setQueryData(destinations, { threads: [] });
+
+    dropThreadFromViews(qc, 't-1', W);
+
+    expect(ids(qc, page)).toEqual(['t-2']);
+    expect(ids(qc, archived)).toEqual([]);
+    expect(qc.getQueryState(destinations)?.isInvalidated).toBe(true);
+  });
+
+  it('leaves an archived row in the archived views', () => {
+    const qc = new QueryClient();
+    const page = queryKeys.threads.page(W, 20);
+    const archived = queryKeys.threads.gallery(W, true);
+    qc.setQueryData(page, rows('t-1'));
+    qc.setQueryData(archived, rows('t-1'));
+
+    dropThreadFromViews(qc, 't-1', W, { keepArchived: true });
+
+    expect(ids(qc, page)).toEqual([]);
+    expect(ids(qc, archived)).toEqual(['t-1']);
   });
 });

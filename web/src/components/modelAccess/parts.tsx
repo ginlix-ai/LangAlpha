@@ -25,6 +25,8 @@ const DOTTED = {
   off: { key: 'modelAccess.status.off', color: 'var(--color-text-quaternary)' },
   needs_computer: { key: 'modelAccess.status.needsComputer', color: 'var(--color-text-quaternary)' },
   unknown: { key: 'modelAccess.status.unknown', color: 'var(--color-text-quaternary)' },
+  // Saved, and unused while a rule keeps the user's own access off.
+  not_allowed: { key: 'modelAccess.status.notAllowed', color: 'var(--color-text-quaternary)' },
 } as const;
 
 /** Any row's status. */

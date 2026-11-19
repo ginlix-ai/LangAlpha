@@ -236,7 +236,7 @@ class TestPlanGate:
 
         async def _fetch(_user_id, tier):
             monkeypatch.setattr(
-                "src.server.dependencies.usage_limits._fetch_platform_tier",
+                "src.server.services.membership.access_tier",
                 AsyncMock(return_value=tier),
             )
             with patch(
@@ -260,3 +260,137 @@ class TestPlanGate:
         # wiring and unlocks the feature.
         granted = await _fetch(USER_ID, 2)
         assert granted["enabled"] is True
+
+
+class TestOrganizationTier:
+    @staticmethod
+    def _member(**features):
+        from src.server.services.account_contract import Account, Org
+
+        return Account(org=Org(id="org-1", name="Acme"), features={"teams": True, **features})
+
+    @pytest.mark.asyncio
+    async def test_an_org_off_is_listed_as_the_orgs_and_refuses_the_users_toggle(
+        self, features_client
+    ):
+        upsert = AsyncMock()
+        with (
+            patch(
+                "src.server.services.account.account_for",
+                new=AsyncMock(return_value=self._member(market_watch=False)),
+            ),
+            patch(
+                "src.server.services.features.get_user_preferences",
+                new=AsyncMock(return_value=_prefs({"market_watch": True})),
+            ),
+            patch("src.server.services.features.upsert_user_preferences", new=upsert),
+        ):
+            listed = await features_client.get("/api/v1/features")
+            put = await features_client.put(
+                "/api/v1/features/market_watch", json={"enabled": True}
+            )
+        mw = {f["key"]: f for f in listed.json()["features"]}["market_watch"]
+        assert mw["enabled"] is False
+        assert mw["set_by_organization"] is True
+        assert put.status_code == 403
+        assert "organization" in put.json()["detail"]
+        upsert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_teams_resolves_on_exactly_when_the_door_is_open(self):
+        from src.server.services.account_contract import NO_ORG
+        from src.server.services.features import effective_flags_for_user
+
+        for account, expected in ((self._member(), True), (NO_ORG, False), (None, False)):
+            with patch(
+                "src.server.services.account.account_for",
+                new=AsyncMock(return_value=account),
+            ):
+                flags = await effective_flags_for_user(USER_ID, {"teams": True})
+            assert flags["teams"] is expected
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_account_lists_every_feature_off_and_keeps_the_toggle(
+        self, features_client
+    ):
+        """Off, whatever the gate; the user's own setting is still theirs to save."""
+        upsert = AsyncMock()
+        with (
+            patch(
+                "src.server.services.account.account_for",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "src.server.services.features.get_user_preferences",
+                new=AsyncMock(return_value=_prefs({"market_watch": True})),
+            ),
+            patch("src.server.services.features.upsert_user_preferences", new=upsert),
+            patch("src.server.services.features.invalidate_user_prefs_cache", new=AsyncMock()),
+        ):
+            listed = await features_client.get("/api/v1/features")
+            put = await features_client.put(
+                "/api/v1/features/market_watch", json={"enabled": True}
+            )
+        assert listed.status_code == 200
+        assert not any(f["enabled"] for f in listed.json()["features"])
+        assert put.status_code == 200
+        upsert.assert_awaited_once()
+
+
+class TestRequires:
+    @staticmethod
+    def _member(**features):
+        from src.server.services.account_contract import Account, Org
+
+        return Account(org=Org(id="org-1", name="Acme"), features={"teams": True, **features})
+
+    @pytest.fixture
+    def child(self, monkeypatch):
+        """A grant feature that requires ``teams``, on in the deployment."""
+        import src.config.features as features_module
+        from src.config.features import FEATURES, FeatureGate, FeatureSpec
+        from src.config.models import FeatureFlagOverride, InfrastructureConfig
+
+        monkeypatch.setitem(
+            FEATURES,
+            "child",
+            FeatureSpec(key="child", label="c", description="", enabled=True,
+                        gate=FeatureGate.GRANT, requires=("teams",)),
+        )
+        cfg = InfrastructureConfig(features={"teams": FeatureFlagOverride(enabled=True)})
+        monkeypatch.setattr(features_module, "get_infrastructure_config", lambda: cfg)
+
+    @pytest.mark.asyncio
+    async def test_a_child_of_teams_follows_the_door(self, child):
+        from src.server.services.account_contract import NO_ORG
+        from src.server.services.features import effective_flags_for_user
+
+        cases = ((self._member(child=True), True), (NO_ORG, False), (None, False))
+        for account, expected in cases:
+            with patch(
+                "src.server.services.account.account_for",
+                new=AsyncMock(return_value=account),
+            ):
+                # A user grant alone never opens it while the door is shut.
+                flags = await effective_flags_for_user(USER_ID, {"child": True})
+            assert flags["child"] is expected, account
+
+    @pytest.mark.asyncio
+    async def test_the_listing_omits_a_child_whose_parent_is_kill_switched(
+        self, child, features_client, monkeypatch
+    ):
+        import src.config.features as features_module
+        from src.config.models import InfrastructureConfig
+
+        with patch(
+            "src.server.services.features.get_user_preferences",
+            new=AsyncMock(return_value=_prefs()),
+        ):
+            listed = await features_client.get("/api/v1/features")
+            by_key = {f["key"]: f for f in listed.json()["features"]}
+            assert by_key["child"]["requires"] == ["teams"]
+            monkeypatch.setattr(
+                features_module, "get_infrastructure_config", InfrastructureConfig
+            )
+            listed = await features_client.get("/api/v1/features")
+        assert "child" not in {f["key"] for f in listed.json()["features"]}

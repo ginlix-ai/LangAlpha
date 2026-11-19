@@ -25,8 +25,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from src.server.contracts.status import (
+    asked_for,
     is_restart_interrupted,
-    is_user_stop,
     restart_resume_expired,
 )
 from src.server.database.runs.hook_jobs import RESTART_RESUME_HOOK
@@ -159,9 +159,9 @@ async def resume_verdict(job: Mapping[str, Any]) -> OwedResume | NotOwed | NotYe
     ):
         return NotYet("a subagent it stopped is still settling", wait_s=_FINALIZE_WAIT_S)
     interrupted = is_restart_interrupted(state)
-    # A user's stop covers the subagents of the turn they stopped, not the
-    # ones an earlier turn left running.
-    user_stopped = is_user_stop(state)
+    # A user's stop, or a suspension's, covers the subagents of the turn it
+    # stopped, not the ones an earlier turn left running.
+    user_stopped = asked_for(state)
     tasks = [
         StoppedTask(task["task_id"], task["subagent_type"], task["description"])
         for task in await rr_db.list_restart_stopped_tasks(thread_id, state["created_at"])
@@ -172,7 +172,7 @@ async def resume_verdict(job: Mapping[str, Any]) -> OwedResume | NotOwed | NotYe
     if pending is not None:
         if (state["metadata"] or {}).get("automation_execution_id"):
             return FiringRunsAgain("its firing runs its turn again", wake=False)
-        if pending.resend or pending.context:
+        if pending.needs_client:
             return NotOwed("only the client can send its input again", wake=False)
         retry_run_id = str(run_id)
     if not interrupted and not tasks:

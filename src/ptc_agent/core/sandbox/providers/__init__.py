@@ -33,6 +33,12 @@ PROVIDER_KINDS = tuple(_PROVIDERS)
 # ``reports_metrics``, ``reports_allocation``) for the callers holding one kind,
 # and a test holds the two equal.
 METERED_KINDS: tuple[str, ...] = ("daytona", "docker", "e2b")
+# The kinds whose machine its owner brings rather than the deployment
+# providing it, which a policy may keep the user's work off; every kind not
+# metered, since the owner brings exactly the machines no cap counts.
+OWN_MACHINE_KINDS: tuple[str, ...] = tuple(
+    kind for kind in _PROVIDERS if kind not in METERED_KINDS
+)
 METRIC_KINDS: tuple[str, ...] = ("daytona", "e2b")
 ALLOCATION_KINDS: tuple[str, ...] = ("daytona", "e2b")
 # Kinds whose provider stops an idle sandbox on its own at ``auto_stop_interval``

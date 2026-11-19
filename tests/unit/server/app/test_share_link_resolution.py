@@ -48,7 +48,7 @@ SHARED_FILES = ["report.html", "charts/a.png"]
 _ACCESS_LINK = "src.server.app.share_access.get_link"
 _ACCESS_WS = "src.server.app.share_access.db_get_workspace"
 _ACCESS_THREAD = "src.server.app.share_access.get_thread_by_share_token"
-_PUBLIC_THREAD = "src.server.app.public.get_shared_thread"
+_PUBLIC_THREAD = "src.server.app.public.get_thread_by_share_token"
 _PUBLIC_PREVIEW_URL = "src.server.app.public.owner_preview"
 _PUBLIC_URL_EXPIRY = "src.server.app.public.signed_url_expires_at"
 _SERVE_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
@@ -185,6 +185,7 @@ async def test_non_code_token_falls_through_to_thread_rules():
         "conversation_thread_id": "thread-fake-1",
         "workspace_id": WS_ID,
         "share_permissions": {"allow_files": False},
+        "owner_id": "owner-1",
     }
     with (
         patch(_ACCESS_LINK, AsyncMock()) as link,
@@ -204,6 +205,7 @@ async def test_a_thread_token_still_opens_its_subtree():
         "conversation_thread_id": "thread-fake-1",
         "workspace_id": WS_ID,
         "share_permissions": {"allow_files": True, "root_path": "out"},
+        "owner_id": "owner-1",
     }
     with (
         patch(_ACCESS_THREAD, AsyncMock(return_value=thread)),
@@ -310,6 +312,7 @@ async def test_metadata_thread_token_answers_the_thread():
         "conversation_thread_id": "thread-fake-1",
         "workspace_id": WS_ID,
         "share_permissions": {"allow_files": True},
+        "owner_id": "owner-1",
         "title": "T",
         "root_dir": "/home/dev/langalpha",
         # A turn from before a move spells its paths under the root it left.
@@ -340,6 +343,7 @@ async def test_metadata_without_files_leaves_out_the_roots_a_move_left():
         "conversation_thread_id": "thread-fake-1",
         "workspace_id": WS_ID,
         "share_permissions": {"allow_files": False},
+        "owner_id": "owner-1",
         "root_dir": "/home/dev/langalpha",
         "previous_root_dirs": ["/home/old/langalpha"],
         "dir_name": "NVDA",
@@ -371,6 +375,7 @@ async def test_metadata_shared_file_is_its_latest_version_to_anyone():
     assert body == {
         "kind": "file",
         "access": "public",
+        "audience": "public",
         "artifact_id": ARTIFACT,
         "name": "report.html",
         "path": "report.html",
@@ -641,6 +646,7 @@ async def test_metadata_while_the_keys_are_unreachable_never_says_not_found(
         patch(_ACCESS_LINK, AsyncMock(return_value=link)),
         patch(_ACCESS_WS, AsyncMock(return_value=_workspace())),
         patch(_ACCESS_THREAD, AsyncMock(return_value=None)),
+        patch(_PUBLIC_THREAD, AsyncMock(return_value=None)),
         patch(_ARTIFACTS_DB, _versions()),
     ):
         async with _client(override_viewer=False) as client:

@@ -24,7 +24,8 @@ from src.server.models.chart_layer import make_chart_id
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.dependencies.principal import DataReadUserId
 from src.server.models.user import normalize_symbol
-from src.server.utils.api import CurrentUserId, require_workspace_owner
+from src.server.services.shared_workspaces.access import workspace_access
+from src.server.utils.api import CurrentUserId
 from src.tools.chart_annotation.schemas import Timeframe
 
 logger = logging.getLogger(__name__)
@@ -76,9 +77,11 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 async def _ensure_owner(workspace_id: str, user_id: str) -> None:
-    """Look up the workspace and verify the caller owns it (404 / 403)."""
+    """Look up the workspace and verify the caller reaches it: its owner, or
+    a member of a shared workspace, whose charts every member sees (404 /
+    403)."""
     workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=user_id)
+    await workspace_access(workspace, user_id)
 
 
 @router.get(

@@ -486,14 +486,17 @@ def build_effective_skill_registry(
     user_skills: Sequence[Any] = (),
     user_skill_dir: str | None = None,
     workspace_skill_dir: str | None = None,
+    withheld: Iterable[str] = (),
 ) -> dict[str, SkillDefinition]:
     """Assemble the per-build registry every agent surface consumes.
 
     Feature gating, minus the user's builtin disables (as
     ``resolve_disabled_skills`` reads them), plus the user's uploaded
-    skills. The one assembly path shared by the agent build, the subagent
-    compiler and the server's per-turn checks, so a gate applied in one
-    can't be missed in another.
+    skills, minus what the turn's computer does not carry (``withheld``,
+    the config's ``withheld_skills``, which no ``requires`` keeps). The one
+    assembly path shared by the agent build, the subagent compiler and the
+    server's per-turn checks, so a gate applied in one can't be missed in
+    another.
     """
     registry = get_skill_registry(feature_resolver=feature_resolver)
     for name in resolve_disabled_skills(disabled_skills):
@@ -505,6 +508,8 @@ def build_effective_skill_registry(
             workspace_source_dir=workspace_skill_dir,
         )
     )
+    for name in withheld:
+        registry.pop(name, None)
     return registry
 
 

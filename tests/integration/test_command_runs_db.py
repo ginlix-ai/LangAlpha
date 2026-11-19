@@ -371,6 +371,20 @@ async def test_a_workspace_stop_supersedes_the_hours_mark_and_its_finalize(threa
     assert (await cr.get_command(asked))["stopped_by"] == "agent"
 
 
+async def test_a_suspensions_stop_marks_only_commands_started_before_its_notice(thread):
+    """Started 23 minutes ago, the command is older than a notice now and
+    newer than one an hour ago, which a reinstatement has since overtaken."""
+    command_id = (await _handoff(thread))["command_id"]
+    now = datetime.now(timezone.utc)
+
+    assert await cr.request_stops(
+        user_id=thread.user_id, by="suspended", started_before=now - timedelta(hours=1)
+    ) == []
+    assert await cr.request_stops(
+        user_id=thread.user_id, by="suspended", started_before=now
+    ) == [command_id]
+
+
 async def test_a_delete_reads_its_running_commands_on_its_own_session(thread, test_db_pool):
     running = (await _handoff(thread))["command_id"]
     async with test_db_pool.connection() as conn:

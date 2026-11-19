@@ -115,7 +115,7 @@ async def test_a_finalize_keeps_the_start_stamp(status):
         handler=None,
         cancelled_by_user=False,
         workspace_id="ws-1",
-        user_id="u-1",
+        recorded_as="u-1",
     )
 
     # finalize writes ``metadata || outcome.metadata`` onto the START row, so

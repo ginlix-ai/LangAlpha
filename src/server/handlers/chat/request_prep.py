@@ -858,6 +858,7 @@ def turn_skill_names(config) -> set[str] | None:
             user_skills=getattr(config, "user_skills", None) or (),
             user_skill_dir=getattr(config, "user_skill_dir", None),
             workspace_skill_dir=getattr(config, "workspace_skill_dir", None),
+            withheld=getattr(config, "withheld_skills", None) or (),
         )
     )
 

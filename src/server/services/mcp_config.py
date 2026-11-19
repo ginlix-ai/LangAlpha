@@ -7,12 +7,19 @@ servers, and a workspace's selection rows into one deterministic effective set:
     effective = built-ins (config order)
                 MINUS names disabled by a (source='builtin', enabled=false) row
                 MINUS names disabled account-wide (server or owning bundle)
-                PLUS  enabled user-level servers (alphabetical)
+                PLUS  the organization's connectors (alphabetical;
+                      ``services.org_connectors``)
+                MINUS connectors disabled by a (source='org', enabled=false)
+                      row, keyed by ``org_key(id)``
+                PLUS  enabled user-level servers the policy lets a turn
+                      use (alphabetical; ``services.mcp_sources``)
                 MINUS names disabled by a (source='user', enabled=false) row
 
 Servers are installed per user and selected per workspace, so a name means
 the same server in every workspace of its user. Built-in names are reserved:
-a user server can never shadow one.
+no other server can shadow one. An organization connector shadows a user
+server of the same name, which is left untouched and comes back as it was
+once the organization's list no longer names it.
 
 User-level mutations bump every workspace of the user (one transaction), so
 the single per-workspace ``mcp_config_version`` remains the only drift signal
@@ -27,14 +34,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from ptc_agent.config.core import MCPServerConfig
-from src.server.database.mcp_oauth import ConnectionStatus
+from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus
+from src.server.database.org_keys import org_key
+from src.server.database.shared_workspaces import is_holder
+from src.server.services.account_contract import OrgConnector
+from src.server.services.shared_workspaces.holder import withheld_from_holder
 from src.server.services.tool_binding import (
     BindingPlan,
     inputs_from_row,
@@ -49,6 +61,10 @@ from src.server.services.mcp_descriptions.prompt_text import (
     effective_description,
     profiles_by_server,
 )
+from src.server.services import org_connectors, platform_client
+
+if TYPE_CHECKING:
+    from src.server.models.mcp_server import OrgConnectorEntry
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -100,6 +116,7 @@ class Origin(StrEnum):
     """Which tier defined a server. Matches the wire value of ``origin``."""
 
     BUILTIN = "builtin"
+    ORG = "org"
     USER = "user"
 
 
@@ -127,7 +144,8 @@ class ResolvedServer:
     # "OAuth but needs repair". A revoked connection is history and leaves this
     # None: the row is served by its own headers from then on, and the Plugins
     # catalog, which keeps the revoked status on its own rows, is where the
-    # reconnect is offered. Only ever set on ``USER``-origin entries.
+    # reconnect is offered. Set on ``USER``-origin entries, and on ``ORG``
+    # entries that members sign in to, from the member's own connection.
     oauth_status: ConnectionStatus | None = None
     # DISABLED built-ins only: whether the disable came from this workspace's
     # marker row or the account-wide user disable. A scalar, not a new State —
@@ -166,8 +184,10 @@ class ResolvedServer:
         junk failure. A revoked connection makes no such claim, so the row is
         served by its own headers and discovered like any header row.
         """
-        return bool(self.config.oauth_connection_id) or (
-            self.origin is Origin.USER and self.oauth_status is not None
+        return (
+            self.origin is Origin.ORG
+            or bool(self.config.oauth_connection_id)
+            or (self.origin is Origin.USER and self.oauth_status is not None)
         )
 
 
@@ -185,6 +205,12 @@ class ResolvedMCP:
 
     entries: tuple[ResolvedServer, ...]
     version: int
+    #: ``org_connectors.org_digest`` of the list this set was resolved from,
+    #: so a warm computer can tell when the organization's list has moved.
+    org_digest: str = ""
+    #: The organization's connectors this set was resolved from, for the
+    #: host-side discovery an acquire kicks for those not yet discovered.
+    org_connectors: tuple[OrgConnector, ...] = ()
 
     def _names(self, origin: Origin, state: State) -> frozenset[str]:
         return frozenset(
@@ -241,17 +267,29 @@ class ServerRef:
     row: dict | None = None
 
 
-def builtin_names() -> set[str]:
-    """Names of the process-global built-in MCP servers (from agent_config).
+@dataclass(frozen=True, kw_only=True)
+class OrgServerRef(ServerRef):
+    """An organization connector's ref."""
 
-    Built-in names are reserved across every tier, so this is the one place
-    that reads them — the routers and the resolver must agree on the set.
-    """
+    origin: Origin = Origin.ORG
+    #: The connector's id, which its workspace marker is keyed by.
+    connector_id: str
+
+
+def builtin_names(*, enabled_only: bool = False) -> set[str]:
+    """Names of the process-global built-in MCP servers (from agent_config),
+    reserved across every tier; the routers and the resolver must agree on
+    the set. A user server may take none of them, a disabled one included;
+    an organization connector only stays off the ones a workspace resolves
+    (``enabled_only``), as the resolver reserves for it."""
     from src.server.app import setup
 
     if setup.agent_config is None:
         return set()
-    return {s.name for s in setup.agent_config.mcp.servers}
+    return {
+        s.name for s in setup.agent_config.mcp.servers
+        if not enabled_only or getattr(s, "enabled", True)
+    }
 
 
 async def account_disabled_builtins(user_id: str) -> frozenset[str]:
@@ -311,22 +349,44 @@ def user_row_to_server_config(
 
 
 async def classify_server_name(
-    workspace_id: str, user_id: str, name: str
+    workspace_id: str, user_id: str, name: str, *, disabling: bool = False
 ) -> ServerRef | None:
     """Classify one MCP name for a workspace mutation, or ``None`` if unknown.
 
-    Reads the two mutable tiers directly (workspace rows, then the Plugins
-    catalog) rather than going through ``resolve_mcp_config`` — mutations need
-    the raw row, not the merged set, and the built-in tier is checked by the
-    caller against the process config. A stale ``source='builtin'`` marker
-    only classifies as ``BUILTIN`` once the Plugins tier has been ruled out.
+    Reads the mutable tiers directly (the organization's connectors, workspace
+    rows, then the Plugins catalog) rather than going through
+    ``resolve_mcp_config``: mutations need the raw row, not the merged set,
+    and the built-in tier is checked by the caller against the process
+    config. A stale ``source='builtin'`` marker only classifies as ``BUILTIN``
+    once the Plugins tier has been ruled out. An organization connector's ref
+    carries its ``source='org'`` marker as ``row``, None while it is on.
+
+    ``disabling`` lets a switch-off go on while the organization's connectors
+    are unknown: it can only narrow what the workspace reaches, and a connector
+    is refused at the relay through the outage anyway. A name that then
+    classifies as nothing stays unknown rather than not found.
     """
     from src.server.database.mcp_servers import (
         get_catalog_server,
         list_workspace_servers,
     )
 
+
     rows = {r["name"]: r for r in await list_workspace_servers(workspace_id)}
+    # The organization's connectors outrank the user's own servers, so a name
+    # they share addresses the connector.
+    connectors = await org_connectors.org_connectors_for(user_id)
+    if connectors is None and not disabling:
+        raise platform_client.quota_service_unavailable()
+    if connectors and (connector := org_connectors.connector_named(connectors, name)) is not None:
+        marker = rows.get(org_key(connector.id))
+        disabled = marker is not None and not marker.get("enabled")
+        return OrgServerRef(
+            name=name,
+            state=State.DISABLED if disabled else State.ACTIVE,
+            row=marker,
+            connector_id=connector.id,
+        )
     row = rows.get(name)
     source = (row or {}).get("source")
     if source == "user":
@@ -339,6 +399,8 @@ async def classify_server_name(
         return ServerRef(name, Origin.USER, State.ACTIVE, catalog)
     if source == "builtin":
         return ServerRef(name, Origin.BUILTIN, State.DISABLED, row)
+    if connectors is None:
+        raise platform_client.quota_service_unavailable()
     return None
 
 
@@ -359,11 +421,9 @@ async def resolve_mcp_config(
     downstream.
     """
     from src.server.database.mcp_oauth import list_connections
-    from src.server.database.mcp_servers import (
-        get_workspace_servers_and_version,
-        list_enabled_user_servers,
-    )
+    from src.server.database.mcp_servers import get_workspace_servers_and_version
     from src.server.models.mcp_server import probe_ok, snapshot_probe
+    from src.server.services.mcp_sources import user_tier_rows
 
     # Built-ins from the global config, enabled only, in declaration order.
     builtin_servers = [
@@ -371,6 +431,10 @@ async def resolve_mcp_config(
         if getattr(s, "enabled", True)
     ]
     builtin_name_set = {s.name for s in builtin_servers}
+    if is_holder(user_id):
+        # Not a disable a member could undo: the holder's computer never
+        # carries them, so they are left out rather than listed as off.
+        builtin_servers = [s for s in builtin_servers if not withheld_from_holder(s)]
 
     # Version is read BEFORE the rows (READ COMMITTED, not a snapshot) so a
     # concurrent mutation can only skew toward (older version, newer rows) —
@@ -387,15 +451,22 @@ async def resolve_mcp_config(
     # A switched-off bundle is not a tier of its own: it expands into the
     # names of the built-ins it ships, and every rule below applies to them
     # unchanged. That expansion is what account_disabled_builtins does.
-    user_rows, connections, user_disabled_builtins = await asyncio.gather(
-        list_enabled_user_servers(user_id),
+    # Each source beside the built-ins comes gated from ``mcp_sources``, None
+    # when the policy that gates it is unknown: an outage must not resolve a
+    # set the policy narrows as if it did not.
+    # The organization's list reads nothing unless the deployment serves it.
+    user_rows, connections, user_disabled_builtins, connectors = await asyncio.gather(
+        user_tier_rows(user_id),
         list_connections(user_id),
         account_disabled_builtins(user_id),
+        org_connectors.org_connectors_for(user_id),
     )
+    if user_rows is None or connectors is None:
+        raise platform_client.quota_service_unavailable()
 
     # Short-circuit: nothing user-level and no workspace rows ⇒ the effective
     # set IS the built-in list (same objects, no copies).
-    if not rows and not user_rows and not user_disabled_builtins:
+    if not rows and not user_rows and not user_disabled_builtins and not connectors:
         return ResolvedMCP(
             entries=tuple(
                 ResolvedServer(config=s, origin=Origin.BUILTIN, state=State.ACTIVE)
@@ -440,6 +511,7 @@ async def resolve_mcp_config(
 
     disabled_builtins: set[str] = set()
     tombstoned_user_names: set[str] = set()
+    disabled_org_keys: set[str] = set()
     for row in rows:
         if row["source"] == "builtin":
             # Disable-marker: only acts when it turns a built-in off.
@@ -448,6 +520,18 @@ async def resolve_mcp_config(
         elif row["source"] == "user" and not row["enabled"]:
             # Tombstone: removes an inherited user server from THIS workspace.
             tombstoned_user_names.add(row["name"])
+        elif row["source"] == "org" and not row["enabled"]:
+            # Keyed by the connector's id, so it survives a rename and never
+            # shares a slot with a user server's tombstone of the same name.
+            disabled_org_keys.add(row["name"])
+
+    org_entries, org_names = _org_entries(
+        connectors,
+        user_id=user_id,
+        reserved=builtin_name_set,
+        disabled_keys=disabled_org_keys,
+        connections=connections,
+    )
 
     inherited_servers: list[MCPServerConfig] = []
     tombstoned_inherited: list[MCPServerConfig] = []
@@ -460,6 +544,14 @@ async def resolve_mcp_config(
             logger.warning(
                 "[MCP] Skipping user server %r for user %s: name collides "
                 "with a built-in (API should reject at write).", name, user_id,
+            )
+            continue
+        if name in org_names:
+            # Shadowed, never changed: the row and its tombstones stand as
+            # they are, and it comes back once the organization drops the name.
+            logger.warning(
+                "[MCP] Skipping user server %r for user %s: an organization "
+                "connector of the same name takes precedence.", name, user_id,
             )
             continue
         connection = connection_by_server.get(name)
@@ -609,6 +701,7 @@ async def resolve_mcp_config(
             if s.name not in disabled_builtins
             and s.name not in user_disabled_builtins
         ),
+        *(e for e in org_entries if e.state is State.ACTIVE),
         *(_user_entry(s, State.ACTIVE) for s in inherited_servers),
         *(
             ResolvedServer(
@@ -624,6 +717,151 @@ async def resolve_mcp_config(
             for s in builtin_servers
             if s.name in disabled_builtins or s.name in user_disabled_builtins
         ),
+        *(e for e in org_entries if e.state is not State.ACTIVE),
         *(_user_entry(s, State.TOMBSTONED) for s in tombstoned_inherited),
     ]
-    return ResolvedMCP(entries=tuple(entries), version=version)
+    return ResolvedMCP(
+        entries=tuple(entries),
+        version=version,
+        org_digest=org_connectors.org_digest(connectors),
+        org_connectors=tuple(connectors),
+    )
+
+
+def org_server_config(connector: OrgConnector) -> MCPServerConfig:
+    """An organization connector as the server config a workspace runs.
+
+    No headers and no env: whatever it authenticates with is resolved by the
+    relay per call, and the sandbox entry generated from this is relay-bound,
+    so the url is read on the host alone.
+    """
+    return MCPServerConfig(
+        name=connector.name,
+        enabled=True,
+        description=connector.description,
+        instruction=connector.instruction,
+        transport="http",
+        url=connector.url,
+        source="org",
+        org_connector_id=connector.id,
+        org_revision=connector.revision,
+    )
+
+
+def _org_entries(
+    connectors: Sequence[OrgConnector],
+    *,
+    user_id: str,
+    reserved: set[str],
+    disabled_keys: set[str],
+    connections: list[dict],
+) -> tuple[list[ResolvedServer], set[str]]:
+    """The organization's connectors as resolved entries, alphabetical, with
+    the names they claim from the user tier.
+
+    The sandbox path only: no binding plan, so nothing is bound directly, and
+    no consent filter, since no brokerage is among them. A connector members
+    sign in to carries the member's own connection when its consent was given
+    for the connector's current url.
+    """
+    by_key = {c["server_name"]: c for c in connections}
+    entries: list[ResolvedServer] = []
+    names: set[str] = set()
+    usable = org_connectors.resolvable_connectors(connectors, reserved=reserved, user_id=user_id)
+    for connector in sorted(usable, key=lambda c: c.name):
+        names.add(connector.name)
+        cfg = org_server_config(connector)
+        status, connection_id = member_sign_in(connector, by_key.get(org_key(connector.id)))
+        if connection_id is not None:
+            cfg = cfg.model_copy(update={"oauth_connection_id": connection_id})
+        entries.append(
+            ResolvedServer(
+                config=cfg,
+                origin=Origin.ORG,
+                state=(
+                    State.DISABLED
+                    if org_key(connector.id) in disabled_keys
+                    else State.ACTIVE
+                ),
+                oauth_status=status,
+            )
+        )
+    return entries, names
+
+
+def member_sign_in(
+    connector: OrgConnector, connection: Mapping[str, Any] | None
+) -> tuple[ConnectionStatus | None, str | None]:
+    """The member's sign-in to ``connector`` as a listing shows it, and the
+    connection a workspace carries for it. A revoked connection is history,
+    as for a user server: the member has not signed in. One given for
+    another url must be given again."""
+    if connector.auth != "member" or connection is None:
+        return None, None
+    current = ConnectionStatus(connection["status"])
+    if current is ConnectionStatus.REVOKED:
+        return None, None
+    if not same_consented_url(connection.get("server_url"), connector.url):
+        return ConnectionStatus.NEEDS_REAUTH, None
+    return current, str(connection["connection_id"])
+
+
+def servable_member_connection(connector: OrgConnector, connection: Any) -> bool:
+    """Whether a call to ``connector`` may spend ``connection``: the member's
+    own for it, live, and given for its current url."""
+    return (
+        connection is not None
+        and connection.status in SERVABLE
+        and connection.server_name == org_key(connector.id)
+        and same_consented_url(connection.server_url, connector.url)
+    )
+
+
+async def member_listing(user_id: str) -> list[OrgConnectorEntry]:
+    """The organization's connectors this member may use, with their own
+    sign-in, discovery and the workspaces each is switched off in, read as a
+    workspace's server list reads them so the two never disagree; 503 while
+    the account cannot be read. Reads nothing more where none is usable."""
+    from src.server.database.mcp_oauth import list_connections
+    from src.server.database.mcp_servers import list_scope_markers_for_user
+    from src.server.database.mcp_tool_schemas import get_user_tool_schemas
+    from src.server.models.mcp_server import OrgConnectorEntry
+    from src.server.services.mcp_discovery import ToolSnapshotIndex
+
+    connectors = await org_connectors.org_connectors_for(user_id)
+    if connectors is None:
+        raise platform_client.quota_service_unavailable()
+    reserved = builtin_names(enabled_only=True)
+    usable = {
+        c.name: c
+        for c in org_connectors.resolvable_connectors(connectors, reserved=reserved, user_id=user_id)
+    }
+    if not usable:
+        return []
+    entries, _ = _org_entries(
+        list(usable.values()), user_id=user_id, reserved=reserved,
+        disabled_keys=set(), connections=await list_connections(user_id),
+    )
+    snapshots = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
+    off: dict[str, list[str]] = {}
+    for m in await list_scope_markers_for_user(user_id):
+        if m["source"] == "org":
+            off.setdefault(m["name"], []).append(m["workspace_id"])
+    listing = []
+    for entry in entries:
+        connector = usable[entry.config.name]
+        snapshot = snapshots.snapshot(entry.config) or {}
+        found = snapshot.get("status")
+        listing.append(
+            OrgConnectorEntry(
+                id=connector.id,
+                name=connector.name,
+                description=connector.description,
+                auth=connector.auth,
+                connection_status=entry.oauth_status,
+                disabled_workspace_ids=sorted(off.get(org_key(connector.id), [])),
+                discovery="ok" if found == "ok" else "error" if found == "error" else "pending",
+                tool_count=len(snapshot.get("tools") or []) if found == "ok" else 0,
+            )
+        )
+    return listing

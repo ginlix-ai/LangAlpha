@@ -10,11 +10,7 @@ import asyncio
 from fastapi import Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# require_thread_owner is called through the module (auth_api.…) so a single
-# definition-site patch governs every route — a consumer-site patch that stops
-# intercepting after a move would silently bypass auth in tests.
 from src.config.settings import get_sse_keepalive_interval
-from src.server.utils import api as auth_api
 from src.server.utils.api import (
     CurrentUserId,
     database_unavailable,
@@ -34,6 +30,16 @@ from src.server.contracts.status import to_public
 from src.server.contracts.turn_kinds import ANNOUNCED_KEYS
 from src.server.database.pool import DATABASE_UNAVAILABLE
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
+from src.server.services.shared_workspaces.access import ThreadWatch, thread_access
+from src.server.services.shared_workspaces.turn import TurnIdentity
+from src.server.services.shared_workspaces.viewer import name_steer_senders, name_turn_senders
+from src.server.database.shared_workspaces import is_holder
+from src.server.services.shared_workspaces.turns import (
+    refuse_crossing_workspaces,
+    refuse_others_retry,
+    refuse_others_turns,
+    stop_target,
+)
 from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
     Principal,
@@ -41,12 +47,8 @@ from src.server.dependencies.principal import (
     RunPrincipal,
     stamp_origin,
 )
-from src.server.dependencies.usage_limits import (
-    ChatAuthResult,
-    ChatLimit,
-    ChatLimiter,
-    quota_service_unavailable,
-)
+from src.server.services.platform_client import quota_service_unavailable
+from src.server.dependencies.usage_limits import ChatAuthResult, ChatLimit, ChatLimiter
 
 from src.observability import (
     observe_background_chat_turn,
@@ -364,8 +366,12 @@ async def _reject_duplicate_request(
         ),
     }
     # Fail closed: an unresolvable owner (thread deleted mid-probe) gets the
-    # bare conflict, never another user's run identity.
-    if owner_id is not None and owner_id == user_id:
+    # bare conflict, never another user's run identity. In a shared
+    # workspace the run is disclosed to the member who sent it.
+    if owner_id is not None and (
+        owner_id == user_id
+        or (is_holder(owner_id) and existing.get("user_id") == user_id)
+    ):
         detail.update(
             thread_id=existing_thread,
             run_id=str(existing["conversation_response_id"]),
@@ -494,7 +500,7 @@ async def _handle_send_message(
             from src.server.services.llm.availability import raise_oauth_reauth_required
             from src.server.services.oauth_providers import SUBSCRIPTIONS
 
-            flagged = await flagged_oauth_connection(user_id)
+            flagged = await flagged_oauth_connection(user_id) if auth.own_subscriptions else None
             subscription = SUBSCRIPTIONS.get(flagged["provider"]) if flagged else None
             if subscription is not None:
                 raise_oauth_reauth_required(subscription, None, flagged["last_error_code"])
@@ -537,7 +543,8 @@ async def _handle_send_message(
         thread_meta = await get_thread_auth_meta(thread_id) if thread_id else None
         owner_id = thread_meta["user_id"] if thread_meta else None
         if owner_id is not None and owner_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+            # A shared workspace's member sends into any of its threads.
+            await thread_access(thread_id, user_id, meta=thread_meta)
 
         # A fork deletes rows from the turn it replaces, and that turn is the
         # one its checkpoint forks, not the number the client counted. Every
@@ -545,6 +552,15 @@ async def _handle_send_message(
         # read) takes it from the request, so it is settled here, once, with
         # the branch tip it was read off for START to hold it to.
         request = await _settle_against_branch(thread_id, request, user_id)
+        if is_holder(owner_id):
+            from src.server.handlers.checkpoint_handler import first_turn_replaced
+
+            await refuse_others_turns(
+                thread_id,
+                request,
+                user_id,
+                replaced=await first_turn_replaced(thread_id, request),
+            )
 
         workspace_id = named_workspace_id(workspace_id, thread_meta)
 
@@ -560,7 +576,9 @@ async def _handle_send_message(
         # guard above. Home is bound once the admission gates below pass.
         workspace = await requested_workspace(user_id, workspace_id)
         route = turn_route(user_id, workspace)
+        refuse_crossing_workspaces(thread_meta, route.workspace_id, route.owner_id)
         workspace_id = route.workspace_id
+        identity = await TurnIdentity.of(user_id, route.owner_id)
 
         user_input = request.message_text()
 
@@ -593,6 +611,7 @@ async def _handle_send_message(
             user_id,
             thread_id,
             route,
+            identity=identity,
             thread=thread_meta,
             is_byok=is_byok,
             reasoning_effort=getattr(request, "reasoning_effort", None),
@@ -621,7 +640,7 @@ async def _handle_send_message(
         # Credit check: always ask, whoever's key this is. Which pools apply to
         # an own-key turn is the quota service's call, not ours, and so is what
         # the surface the turn came from means for it.
-        await enforce_credit_limit(user_id, byok=is_byok, surface=request.platform)
+        await enforce_credit_limit(identity.recorded_as, byok=is_byok, surface=request.platform)
 
         # I6: Redis down at START = 503 before any durable row. Ordered after
         # the auth/authz/credit gates (their statuses are more meaningful and
@@ -658,6 +677,7 @@ async def _handle_send_message(
         user_input=user_input,
         user_id=user_id,
         route=route,
+        identity=identity,
         is_byok=is_byok,
         config=config,
         dispatched=is_dispatch,
@@ -930,7 +950,7 @@ async def reconnect_to_stream(
     ``run_id`` targets a specific turn. If omitted, falls back to the
     latest run on the thread (matches the single-turn happy path).
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    watch = ThreadWatch.of(thread_id, x_user_id, await thread_access(thread_id, x_user_id))
     from src.server.handlers.chat import reconnect_to_workflow_stream
     from src.server.handlers.chat.reconnect_admission import classify_reconnect
 
@@ -951,6 +971,11 @@ async def reconnect_to_stream(
             async for event in reconnect_to_workflow_stream(
                 thread_id, effective_run_id, last_event_id
             ):
+                # A shared thread's run stream ends, as a dropped one does,
+                # once the viewer may no longer read the thread: the client's
+                # reconnect then meets the route's refusal.
+                if watch and not await watch.ok():
+                    return
                 yield event
         except Exception as e:
             logger.error(f"[PTC_RECONNECT] Error: {e}", exc_info=True)
@@ -961,6 +986,8 @@ async def reconnect_to_stream(
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
 
 
 @router.get("/{thread_id}/watch")
@@ -977,15 +1004,27 @@ async def watch_thread(thread_id: str, x_user_id: ReadUserId):
     Sends keepalive pings every 45 seconds.  Auto-closes after 30 minutes
     to prevent leaked connections from abandoned browser tabs.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    access_watch = ThreadWatch.of(thread_id, x_user_id, await thread_access(thread_id, x_user_id))
 
     from src.utils.cache.redis_cache import get_cache_client
     from src.server.services.report_back.handoff.core import watch_wakes
 
     async def watch_generator():
         cache = get_cache_client()
-        async for frame in watch_wakes(cache, thread_id):
-            yield frame
+        gen = watch_wakes(cache, thread_id)
+        try:
+            async for frame in gen:
+                # A shared thread's watch ends, as a timed out one does, once
+                # the viewer may no longer read it: before any wake it would
+                # pass on, and every half minute while it only pings.
+                if access_watch and not await access_watch.ok(
+                    force=not frame.startswith(": ping")
+                ):
+                    yield "event: timeout\ndata: {}\n\n"
+                    return
+                yield frame
+        finally:
+            await gen.aclose()
 
     return StreamingResponse(
         watch_generator(),
@@ -1062,7 +1101,8 @@ async def replay_thread_messages(
         if rows is None:
             raise HTTPException(status_code=404, detail="Thread not found")
         if rows.owner_id != x_user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+            # A member of a shared workspace reads every thread in it.
+            await thread_access(thread_id, x_user_id)
 
         from src.server.services.history.replay import (
             CheckpointReplayUnavailable,
@@ -1095,6 +1135,8 @@ async def replay_thread_messages(
         # here from current liveness (see history/task_status.py).
         replay_lines = page.lines
         await finish_lines(thread_id, replay_lines)
+        if is_holder(rows.owner_id):
+            await name_turn_senders(thread_id, replay_lines)
         paged = limit is not None or before_turn is not None
 
         async def event_generator():
@@ -1194,7 +1236,7 @@ async def get_thread_status(
     if meta is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if meta["user_id"] != x_user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+        await thread_access(thread_id, x_user_id, meta=meta)
     if fields == "report_back":
         from src.server.services.report_back.handoff.status import read_report_back_slice
 
@@ -1211,7 +1253,12 @@ async def get_thread_status(
     # The user's steers no run has read yet, such as those an errored turn
     # left parked: the next turn reads them, and the view shows them queued
     # until it does.
-    status["pending_steers"] = await outbox_db.list_pending_steers(thread_id)
+    if is_holder(meta["user_id"]):
+        status["pending_steers"] = await name_steer_senders(
+            await outbox_db.list_pending_steers(thread_id, with_sender=True)
+        )
+    else:
+        status["pending_steers"] = await outbox_db.list_pending_steers(thread_id)
     return status
 
 
@@ -1379,14 +1426,20 @@ async def cancel_thread(
     turn started after the stopped one ended (defaults to latest active run).
     A computer's token is an agent's `la`, so its stop is an agent's: the
     user's queued messages stay queued rather than going back to a command
-    that cannot show them.
+    that cannot show them. It never reaches a shared thread
+    (``require_scopes``), whose stop is a person's.
     """
-    await auth_api.require_thread_owner(thread_id, principal.user_id)
+    x_user_id = principal.user_id
+    access = await thread_access(thread_id, x_user_id)
     from src.server.services.cancel_dispatch import cancel_workflow
 
-    return await cancel_workflow(
-        thread_id, str(run_id) if run_id else None, by_user=principal.computer_id is None
-    )
+    target = str(run_id) if run_id else None
+    if access.is_shared:
+        target, by = await stop_target(thread_id, target, x_user_id)
+        return await cancel_workflow(thread_id, target, by=by)
+    if principal.computer_id is not None:
+        return await cancel_workflow(thread_id, target, by="agent")
+    return await cancel_workflow(thread_id, target)
 
 
 @router.post("/{thread_id}/summarize", status_code=200)
@@ -1401,7 +1454,7 @@ async def summarize_thread(
     Endpoint path ``/summarize`` and function name preserved for REST contract
     compatibility — clients may call the older URL.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.handlers.thread_maintenance import trigger_compaction
 
     return await trigger_compaction(thread_id, user_id=x_user_id)
@@ -1410,7 +1463,7 @@ async def summarize_thread(
 @router.post("/{thread_id}/offload", status_code=200)
 async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
     """Hide large tool arguments and stale Read results from the model (Tier 1 only)."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.handlers.thread_maintenance import trigger_offload
 
     return await trigger_offload(thread_id, user_id=x_user_id)
@@ -1420,7 +1473,7 @@ async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
 async def get_thread_context(thread_id: str, x_user_id: ReadUserId):
     """What the thread's next model call sends ahead of its messages, in
     tokens by part. Counted on request, for the composer's context panel."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.handlers.thread_context import read_context_parts
 
     return await read_context_parts(thread_id, user_id=x_user_id)
@@ -1436,7 +1489,7 @@ async def get_thread_turns(thread_id: str, x_user_id: ReadUserId):
     - regenerate_checkpoint_id: fork AFTER user message, BEFORE AI response (for regenerating)
     - retry_checkpoint_id: most recent checkpoint (for retrying after failure)
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     from src.server.handlers.checkpoint_handler import (
         get_thread_turns as _get_thread_turns,
     )
@@ -1487,7 +1540,7 @@ async def retry_thread(
     scope = RunScope(user_id=auth.user_id, burst_slot_id=auth.burst_slot_id)
 
     try:
-        await auth_api.require_thread_owner(thread_id, auth.user_id)
+        access = await thread_access(thread_id, auth.user_id)
 
         # I6: refuse before any durable row when the event transport is down.
         await _assert_stream_transport_ready()
@@ -1506,6 +1559,8 @@ async def retry_thread(
                 status_code=404, detail=f"Thread {thread_id} has no runs to retry"
             )
         latest_run_id = str(latest["conversation_response_id"])
+        if access.is_shared:
+            await refuse_others_retry(latest_run_id, auth.user_id)
         if body and body.run_id and body.run_id != latest_run_id:
             raise HTTPException(
                 status_code=409,
@@ -1627,7 +1682,7 @@ async def thread_stream_mux_endpoint(
     included. The retired v1 contract (per-task epoch channels) 400s rather
     than silently changing shape under a stale pre-cutover client.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    access = await thread_access(thread_id, x_user_id)
     if contract != "v2":
         raise HTTPException(
             status_code=400, detail="unsupported stream contract; use contract=v2"
@@ -1643,6 +1698,7 @@ async def thread_stream_mux_endpoint(
             parse_mux_cursors_v2(cursors),
             since_age_s,
             open_turn=open_turn,
+            watch=ThreadWatch.of(thread_id, x_user_id, access),
         ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,

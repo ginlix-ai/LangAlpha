@@ -306,14 +306,35 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
 
     ``{}`` for the turn's time limit and a Claude Code token refused mid-turn:
     their frames are worded for the user and carry no kind, and the reload
-    replays them unchanged.
+    replays them unchanged. A run its account's suspension ended is stamped
+    with that ``error_type``, which settling its automation reads.
     """
     # Lazy: sse_producer imports this module.
     from src.server.services.runs.sse_producer import TurnTimeLimitError
 
     if isinstance(exc, TurnTimeLimitError) or claude_code_refusal(exc, None) is not None:
         return {}
+    if (ended := account_suspended_frame(exc)) is not None:
+        return {"error_type": ended["error_type"]}
     return unreachable_kind(exc) or {"error_kind": failure_kind(exc)["kind"]}
+
+
+def account_suspended_frame(exc: BaseException) -> Optional[Dict[str, Any]]:
+    """The frame fields of a run its account's suspension ended, as an
+    admission refusal of one words them (``handle_workflow_error``), with no
+    ``recovery``: neither a retry nor a resend can help. None for any other
+    failure."""
+    from src.server.services.account import ACCOUNT_SUSPENDED, AccountSuspended
+
+    if not isinstance(exc, AccountSuspended):
+        return None
+    return {
+        "error": str(exc),
+        "type": "workflow_error",
+        "error_type": ACCOUNT_SUSPENDED,
+        "error_class": type(exc).__name__,
+        "organization": exc.detail.get("organization"),
+    }
 
 
 def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
@@ -445,6 +466,8 @@ def error_event_data(
     """
     if exc is not None and (refusal := claude_code_refusal(exc, model)):
         return {"thread_id": thread_id, "error": refusal["message"], **refusal}
+    if exc is not None and (ended := account_suspended_frame(exc)):
+        return {"thread_id": thread_id, **ended}
     data: Dict[str, Any] = {
         "thread_id": thread_id,
         "error": sanitize_error_text(error_message),

@@ -11,8 +11,10 @@ import logoOnDark from '../../assets/img/logo.svg';
 import logoOnLight from '../../assets/img/logo-dark.svg';
 
 interface ShareUnavailableProps {
-  /** `unavailable` is the uniform 404; `failed` is any other error, with a retry. */
-  variant?: 'unavailable' | 'failed';
+  /** `unavailable` is the uniform 404; `membersOnly` a signed-out visitor of a
+   *  link that opens to members of an organization; `failed` is any other
+   *  error, with a retry. */
+  variant?: 'unavailable' | 'membersOnly' | 'failed';
   onRetry?: () => void;
 }
 
@@ -31,7 +33,7 @@ export default function ShareUnavailable({ variant = 'unavailable', onRetry }: S
   const { theme } = useTheme();
   const { isLoggedIn, isInitialized } = useAuth();
   const logo = theme === 'light' ? logoOnLight : logoOnDark;
-  const offerSignIn = variant === 'unavailable' && isPlatformMode && isInitialized && !isLoggedIn;
+  const offerSignIn = variant !== 'failed' && isPlatformMode && isInitialized && !isLoggedIn;
 
   // The whole link comes back, so an app opened at a page reopens there.
   const signIn = () => {
@@ -46,12 +48,14 @@ export default function ShareUnavailable({ variant = 'unavailable', onRetry }: S
     >
       <img src={logo} alt="LangAlpha" className="h-8 opacity-60" />
       <h1 className="text-lg font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
-        {variant === 'failed' ? t('shareLink.loadFailedTitle') : t('shareLink.unavailableTitle')}
+        {variant === 'failed' ? t('shareLink.loadFailedTitle')
+          : variant === 'membersOnly' ? t('shareLink.membersOnlyTitle') : t('shareLink.unavailableTitle')}
       </h1>
       <p className="text-sm max-w-sm" style={{ color: 'var(--color-text-secondary)' }}>
         {variant === 'failed'
           ? t('shareLink.loadFailedBody')
-          : offerSignIn ? t('shareLink.unavailableSignInBody') : t('shareLink.unavailableBody')}
+          : variant === 'membersOnly' ? t('shareLink.membersOnlyBody')
+            : offerSignIn ? t('shareLink.unavailableSignInBody') : t('shareLink.unavailableBody')}
       </p>
       <div className="flex items-center gap-3 pt-1">
         {variant === 'failed' && onRetry && (

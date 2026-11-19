@@ -76,6 +76,10 @@ instead of bending `mcp.json`:
   printable ASCII characters with no `$`. The portable `mcp.json` stays free of
   credentials either way; the reference is written only into the installed
   server.
+- **`skills`** describes skills the bundle carries, keyed by directory name.
+  `"needs_own_data": true` marks one whose work is the user's own data (their
+  profile, portfolio, dashboard or vault), which a turn in a shared workspace
+  cannot read, so those turns are not offered it. Read from a bundle only.
 - **`icon`** names the site that owns the plugin's mark, or the `https`
   address of the image itself when no site serves it as an icon. The plugin's
   servers wear it too unless one names its own, here or in the handshake. Ours

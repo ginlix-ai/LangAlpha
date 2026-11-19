@@ -13,6 +13,7 @@ import { apiErrorStatus } from '@/api/errors';
 import { registerAuthReset } from '@/lib/authResets';
 import { createEmitter } from '@/lib/emitter';
 import { patchThreadSeen } from '@/lib/threadListCache';
+import { refreshSharedUnreadAfterSeen } from '@/lib/sharedWorkspaceFeed';
 import { applySeenCursors, raiseSeenToEffective } from './store';
 
 /**
@@ -103,6 +104,7 @@ function stamp(threadId: string, runId: string, order: number, deferred = false)
       if (qc && typeof data?.last_seen_run_seq === 'number') {
         patchThreadSeen(qc, threadId, data.last_seen_run_seq);
         announceSeen(threadId, data.last_seen_run_seq);
+        refreshSharedUnreadAfterSeen(qc, threadId);
       }
     } catch (err) {
       if (epoch !== authEpoch) return;

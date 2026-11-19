@@ -1,7 +1,7 @@
 import {
   useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type Ref, type RefObject,
 } from 'react';
-import { Check, Settings, Star } from 'lucide-react';
+import { Building2, Check, Settings, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   Button, GridList, GridListHeader, GridListItem, GridListSection, ToggleButton, ToggleButtonGroup,
@@ -20,6 +20,8 @@ import { isImeComposing } from '@/lib/ime';
 import type { ModelConnection, ModelGroup } from '@/lib/modelGroups';
 import { isSubscription, subscriptionPayer, type Payer } from '@/lib/modelPayer';
 import { usePayerLabel } from '@/hooks/usePayerLabel';
+import { useAccount } from '@/hooks/useAccount';
+import { MODEL_RULE_COPY, modelsRule } from '@/lib/accountRules';
 import { useNow } from '@/hooks/useNow';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { ModelMark, MarkedModelName } from '@/components/model/ModelMark';
@@ -156,6 +158,10 @@ function ModelList({
   const { t } = useTranslation();
   const payerLabel = usePayerLabel();
   const now = useNow();
+  // A rule that narrows the models is named once under the list, so a model
+  // the user remembers and cannot find here is explained.
+  const account = useAccount();
+  const narrowedBy = modelsRule(account.policy);
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<string | null>(null);
   const [connectionTab, setConnectionTab] = useState<string | null>(null);
@@ -360,6 +366,14 @@ function ModelList({
           </GridList>
         </div>
       </div>
+      {narrowedBy && (
+        <p className="rule-t flex flex-none items-start gap-2 px-3 py-2 text-xs text-(--color-text-tertiary)">
+          <Building2 aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+          <span className="min-w-0">
+            {t(`organization.picker.foot.${MODEL_RULE_COPY[narrowedBy]}`, { who: account.setterName(narrowedBy).start })}
+          </span>
+        </p>
+      )}
     </>
   );
 }

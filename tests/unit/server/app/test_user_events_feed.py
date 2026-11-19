@@ -368,3 +368,207 @@ async def test_unchanged_snapshot_is_not_resent_on_reconcile_ticks(monkeypatch):
 
     snapshots = [f for f in frames if f.startswith("event: snapshot")]
     assert len(snapshots) == 1, frames
+
+
+# ---------------------------------------------------------------------------
+# Shared workspaces on the feed
+# ---------------------------------------------------------------------------
+
+
+def _stub_snapshot(monkeypatch):
+    async def _snap(user_id, shared=None):
+        return {"as_of_seq": 1, "live": [], "unseen": []}
+
+    monkeypatch.setattr(user_events, "_read_snapshot", _snap)
+
+
+@pytest.mark.asyncio
+async def test_an_account_that_reaches_no_shared_workspace_subscribes_as_before(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from src.server.services.shared_workspaces import feed
+
+    async def _none(user_id, **_):
+        return None
+
+    @asynccontextmanager
+    async def _never(*channels):
+        raise AssertionError("no second channel for an account with no shared workspace")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(feed, "reach_of", _none)
+    monkeypatch.setattr(user_events, "subscribe_to_channels", _never)
+    _stub_snapshot(monkeypatch)
+    monkeypatch.setattr(user_events, "_MAX_DURATION_S", 0.0)
+
+    frames = await _collect_stream(monkeypatch)
+
+    assert frames[0].startswith("event: snapshot")
+
+
+@pytest.mark.asyncio
+async def test_a_members_connection_passes_on_only_the_workspaces_it_reaches(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from src.server.services import thread_lifecycle_feed as tlf
+    from src.server.services.shared_workspaces import feed
+
+    org_channel = tlf.shared_events_channel("org-n")
+
+    async def _reach(user_id, **_):
+        return feed.Reach("org-n", frozenset({"ws-desk"}))
+
+    queued = [
+        ("message", {"channel": tlf.user_events_channel("u-1"), "data": {"type": "thread_title", "workspace_id": "home"}}),
+        ("message", {"channel": org_channel, "data": {"type": "run_started", "workspace_id": "ws-desk", tlf.SENDER_KEY: "maya"}}),
+        ("message", {"channel": org_channel, "data": {"type": "run_started", "workspace_id": "ws-closed", tlf.SENDER_KEY: "maya"}}),
+    ]
+    subscribed: list[tuple] = []
+
+    @asynccontextmanager
+    async def _channels(*channels):
+        subscribed.append(channels)
+
+        async def _wait(timeout):
+            if queued:
+                return queued.pop(0)
+            await asyncio.sleep(0.01)
+            return "timeout", None
+
+        yield _wait
+
+    import asyncio
+
+    monkeypatch.setattr(feed, "reach_of", _reach)
+    monkeypatch.setattr(user_events, "subscribe_to_channels", _channels)
+    _stub_snapshot(monkeypatch)
+    monkeypatch.setattr(user_events, "_MAX_DURATION_S", 0.1)
+
+    frames = await _collect_stream(monkeypatch)
+
+    assert subscribed[0] == (tlf.user_events_channel("u-1"), org_channel)
+    events = [
+        json.loads(f.split("data: ", 1)[1])
+        for f in frames
+        if f.startswith("event: thread_lifecycle")
+    ]
+    assert [(e["type"], e["workspace_id"]) for e in events] == [
+        ("thread_title", "home"),
+        ("run_started", "ws-desk"),
+    ]
+    assert tlf.SENDER_KEY not in events[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("told", [True, False], ids=["reach-event", "reconcile"])
+async def test_a_connection_opened_with_no_shared_feed_takes_one_up_when_it_can(
+    monkeypatch, told
+):
+    """None at open is the account's reach just then: it may join an
+    organization with the tab open, or its account may have been unreadable.
+    Its own reach event, or the next reconcile, attaches the connection to
+    the organization's channel too."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from src.server.services import thread_lifecycle_feed as tlf
+    from src.server.services.shared_workspaces import feed
+
+    asked = 0
+
+    async def _reach(user_id, **_):
+        nonlocal asked
+        asked += 1
+        return None if asked == 1 else feed.Reach("org-n", frozenset({"ws-desk"}))
+
+    personal = [("message", {"v": 1, "type": feed.REACH_EVENT})] if told else []
+    subscribed: list[tuple] = []
+
+    def _subscription(*channels):
+        @asynccontextmanager
+        async def _open():
+            subscribed.append(channels)
+
+            async def _wait(timeout):
+                if len(subscribed) == 1 and personal:
+                    return personal.pop(0)
+                await asyncio.sleep(0.01)
+                return "timeout", None
+
+            yield _wait
+
+        return _open()
+
+    monkeypatch.setattr(feed, "reach_of", _reach)
+    monkeypatch.setattr(user_events, "subscribe_to_user_events", lambda user_id: _subscription("personal"))
+    monkeypatch.setattr(user_events, "subscribe_to_channels", _subscription)
+    _stub_snapshot(monkeypatch)
+    monkeypatch.setattr(user_events, "_MAX_DURATION_S", 0.3)
+    # Only the reach event may ask before the connection ends when told.
+    monkeypatch.setattr(user_events, "_RECONCILE_S", 30.0 if told else 0.02)
+
+    response = await user_events.user_thread_events("u-1")
+    frames = [c if isinstance(c, str) else c.decode() async for c in response.body_iterator]
+
+    assert subscribed == [
+        ("personal",),
+        (tlf.user_events_channel("u-1"), tlf.shared_events_channel("org-n")),
+    ]
+    if told:
+        # The event itself still reaches the page, which reads its list again.
+        events = [json.loads(f.split("data: ", 1)[1]) for f in frames if f.startswith("event: thread_lifecycle")]
+        assert [e["type"] for e in events] == [feed.REACH_EVENT]
+
+
+@pytest.mark.asyncio
+async def test_a_connection_follows_its_account_to_another_organization(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from src.server.services import thread_lifecycle_feed as tlf
+    from src.server.services.shared_workspaces import feed
+
+    asked = 0
+
+    async def _reach(user_id, **_):
+        nonlocal asked
+        asked += 1
+        org = "org-n" if asked == 1 else "org-h"
+        return feed.Reach(org, frozenset({f"ws-{org}"}))
+
+    async def _not_deleted(workspace_id, user_id):
+        return False
+
+    subscribed: list[tuple] = []
+
+    @asynccontextmanager
+    async def _channels(*channels):
+        subscribed.append(channels)
+
+        async def _wait(timeout):
+            await asyncio.sleep(0.01)
+            return "timeout", None
+
+        yield _wait
+
+    monkeypatch.setattr(feed, "reach_of", _reach)
+    monkeypatch.setattr(feed, "_deleted", _not_deleted)
+    monkeypatch.setattr(user_events, "subscribe_to_channels", _channels)
+    _stub_snapshot(monkeypatch)
+    monkeypatch.setattr(user_events, "_MAX_DURATION_S", 0.3)
+    monkeypatch.setattr(user_events, "_RECONCILE_S", 0.02)
+
+    response = await user_events.user_thread_events("u-1")
+    frames = [c if isinstance(c, str) else c.decode() async for c in response.body_iterator]
+
+    mine = tlf.user_events_channel("u-1")
+    assert subscribed == [
+        (mine, tlf.shared_events_channel("org-n")),
+        (mine, tlf.shared_events_channel("org-h")),
+    ]
+    events = [json.loads(f.split("data: ", 1)[1]) for f in frames if f.startswith("event: thread_lifecycle")]
+    assert [(e["type"], e["workspace_id"]) for e in events] == [("shared_access_ended", "ws-org-n")]

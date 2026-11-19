@@ -307,3 +307,4 @@
   .tool-param { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
   .tool-doc, .tool-row.has-check .tool-doc { padding-left: 10px; }
 }
+.connector-rule-note { margin-bottom: 12px; }

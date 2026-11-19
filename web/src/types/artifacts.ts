@@ -53,7 +53,17 @@ export interface Artifact {
    * 404 until the owner publishes (with the files under the version caps).
    */
   legacy_refused?: 'too_many_files' | 'too_many_bytes' | null;
+  /** Who the link opens to. Absent from an older server, where it is anyone. */
+  audience?: ShareAudience;
+  /** The audiences the owner may choose now. Absent from an older server. */
+  audiences?: ShareAudience[];
 }
+
+/**
+ * Who a link opens to: anyone with it, or only members of the owner's
+ * organization, who sign in to open it.
+ */
+export type ShareAudience = 'public' | 'organization';
 
 /** `GET /workspaces/{id}/artifacts?path=`: null for a file never recorded. */
 export interface ArtifactLookup {
@@ -281,6 +291,10 @@ export interface ArtifactCommentMessage {
   /** An owner's message: the thread it was sent to. An agent's: the thread it answered from. */
   thread_id: string | null;
   created_at: string;
+  /** In a shared workspace, the member who wrote a person's message and their
+   *  name; absent elsewhere, where every such message is the owner's. */
+  written_by?: string;
+  written_by_name?: string | null;
 }
 
 /**
@@ -307,6 +321,9 @@ export interface ArtifactComment {
   thread_id: string | null;
   thread_title: string | null;
   thread_archived: boolean;
+  /** In a shared workspace, its thread is another member's private one: not
+   *  named, and nothing the viewer sends carries the comment. */
+  thread_hidden?: boolean;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
@@ -445,6 +462,9 @@ export interface SharedArtifactVisitorMetadata {
   frame_base: string;
   isolated: boolean;
   expires_in: number;
+  /** `organization` when the link opens to members only, and `frame_base`
+   *  carries a grant bound to this viewer. Absent from an older server. */
+  audience?: ShareAudience;
 }
 
 export type SharedArtifactMetadata = SharedArtifactOwnerMetadata | SharedArtifactVisitorMetadata;

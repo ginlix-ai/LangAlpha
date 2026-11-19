@@ -76,6 +76,8 @@ vi.mock('@/hooks/useMcpServers', () => ({
     refetch: refetchBuiltins,
   }),
   useToggleBuiltinMcpServer: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // An account with no organization lists none.
+  useOrgConnectors: () => ({ data: undefined, isLoading: false, error: null }),
   useSetMcpServerEnabledInWorkspace: () => ({ mutateAsync: mutateAsync.wsEnable, isPending: false }),
   useSetMcpServerNewWorkspaces: () => ({ mutateAsync: mutateAsync.newWorkspaces, isPending: false }),
   // What a connector's own page reads beside its row, which no test here is about.

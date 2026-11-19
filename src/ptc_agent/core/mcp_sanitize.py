@@ -214,6 +214,11 @@ def discovery_affecting_payload(server, *, include_identity: bool = False) -> di
         "env": {k: env[k] for k in sorted(env)},
         "headers": {k: headers[k] for k in sorted(headers)},
     }
+    # An organization connector's revision moves when its admin edits the
+    # credential, which the url and headers here cannot show. Written only
+    # when set, so every other server's payload is unchanged.
+    if revision := getattr(server, "org_revision", None):
+        payload["org_revision"] = revision
     if include_identity:
         payload["name"] = getattr(server, "name", None)
         payload["enabled"] = bool(getattr(server, "enabled", True))

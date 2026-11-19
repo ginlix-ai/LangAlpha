@@ -113,4 +113,15 @@ describe('buildRateLimitError', () => {
     expect(result.message).toBe('Rate limit exceeded. Please try again later.');
     expect(result.links).toBeUndefined();
   });
+
+  it("shows an organization seat's used allowance as a limit, in the server's words, with no links", () => {
+    const result = buildRateLimitError(
+      { type: 'seat_allowance_used', message: "Your organization seat's credits for this period are used up." },
+      PORTAL,
+    );
+    expect(result).toEqual({
+      message: "Your organization seat's credits for this period are used up.",
+      ruleStop: { kind: 'limit' },
+    });
+  });
 });

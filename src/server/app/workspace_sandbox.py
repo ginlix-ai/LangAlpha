@@ -38,8 +38,9 @@ from src.server.database.workspace_folders import is_top_level, workspace_folder
 from src.server.services.workspace_files import (
     held_workspace_row,
     layout_for,
-    owned_workspace_on_computer,
+    reached_workspace_on_computer,
 )
+from src.server.database.shared_workspaces import is_holder
 from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
 from src.server.utils.error_sanitization import sandbox_failure_http
 from src.server.services.computer_usage.causes import computer_cause
@@ -154,9 +155,15 @@ _PACKAGE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+([<>=!~]+.*)?$")
 # ---------------------------------------------------------------------------
 
 
+def _viewer(workspace: dict[str, Any], user_id: str) -> str | None:
+    """The member a shared workspace's preview is minted for; None for the
+    owner's own workspace, whose previews are as before."""
+    return user_id if is_holder(workspace.get("user_id")) else None
+
+
 async def _get_sandbox(workspace_id: str, user_id: str, cause: StartCause) -> Any:
     """Validate the workspace and return its sandbox, starting the computer if stopped."""
-    await owned_workspace_on_computer(workspace_id, user_id)
+    await reached_workspace_on_computer(workspace_id, user_id)
 
     manager = WorkspaceManager.get_instance()
     try:
@@ -347,7 +354,7 @@ async def get_sandbox_stats(
     For stopped/archived workspaces: returns metadata only (state, resources, intervals)
     from Daytona API without starting the sandbox.
     """
-    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
 
     if workspace.get("status") == "running":
         return await _get_full_sandbox_stats(workspace_id, x_user_id, workspace)
@@ -642,6 +649,7 @@ async def owner_preview(
                 sandbox, workspace_id, port,
                 command=command, force=force, expires_in=expires_in,
                 folder=_preview_layout(workspace),
+                viewer_id=_viewer(workspace, user_id),
             )
             return OwnerPreview(url, command_key(command))
     except HTTPException:
@@ -745,7 +753,7 @@ async def check_preview_health(
     which the card shows as stopped. Uses the sandbox's standard preview link
     (cached) to avoid repeated provider API calls on the polling interval.
     """
-    await owned_workspace_on_computer(workspace_id, x_user_id)
+    workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
     stopped = HTTPException(status_code=503, detail="Computer is stopped")
     manager = WorkspaceManager.get_instance()
     try:
@@ -775,7 +783,9 @@ async def check_preview_health(
 
     # Invalidate cached signed URL when server is down so next resolve gets a fresh one
     if not reachable:
-        await delete_cached_signed_url(sandbox.sandbox_id, body.port)
+        await delete_cached_signed_url(
+            sandbox.sandbox_id, body.port, _viewer(workspace, x_user_id)
+        )
 
     # On the runtime itself: the sandbox's own call path reconnects, which
     # would start a computer that stopped on its idle timer. A live preview

@@ -42,7 +42,8 @@ async def set_trading_permission(
     refuses every real-money order let through unasked and not yet sent, in the
     same transaction, so no earlier answer outlives the one stored here. The
     current row names an agreement only while its level needs one; every
-    acceptance stays on the history rows.
+    acceptance stays on the history rows. The row returned also names the
+    ``previous_level`` it replaced (None for none), read in the same statement.
     """
     accepted = agreement_version if level.needs_agreement else None
     async with get_db_connection() as db, db.transaction():
@@ -53,6 +54,9 @@ async def set_trading_permission(
             await lock_user_writes(cur, user_id)
             await cur.execute(
                 """
+                WITH previous AS (
+                    SELECT level FROM trading_permissions WHERE user_id = %(user_id)s
+                )
                 INSERT INTO trading_permissions
                     (user_id, level, agreement_version, agreed_at, updated_at)
                 VALUES (%(user_id)s, %(level)s, %(version)s,
@@ -63,7 +67,8 @@ async def set_trading_permission(
                     agreement_version = EXCLUDED.agreement_version,
                     agreed_at = EXCLUDED.agreed_at,
                     updated_at = NOW()
-                RETURNING level, agreement_version, agreed_at, updated_at
+                RETURNING level, agreement_version, agreed_at, updated_at,
+                          (SELECT level FROM previous) AS previous_level
                 """,
                 {"user_id": user_id, "level": level.value, "version": accepted},
             )

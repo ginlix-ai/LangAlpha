@@ -152,7 +152,7 @@ class TestTheToolsExistOnlyWithAGateway:
 
 
 class TestBothRolesBindThem:
-    def _ptc_build(self, role: str = "analyst"):
+    def _ptc_build(self, role: str = "analyst", own_data: bool = True):
         """Build the PTC agent far enough to see the tools it binds, and the
         tools its subagents inherit."""
         from unittest.mock import MagicMock, patch
@@ -204,6 +204,8 @@ class TestBothRolesBindThem:
                 mcp_registry=MagicMock(),
                 tool_summary="",
                 user_id="u",
+                owner_id="u",
+                own_data=own_data,
                 role=role,
             )
         self.captured = captured
@@ -220,6 +222,13 @@ class TestBothRolesBindThem:
         assert {"send_message", "list_message_targets"} <= set(main)
         # A subagent reports to its parent, never to a person.
         assert not {"send_message", "list_message_targets"} & set(inherited)
+
+    def test_a_shared_workspace_turn_has_neither(self, configured):
+        # The tools act as the sender on their own chats, and other members
+        # write what steers a shared workspace's agent.
+        main, _ = self._ptc_build(own_data=False)
+
+        assert not {"send_message", "list_message_targets"} & set(main)
 
     def test_ptc_has_neither_by_default(self, monkeypatch):
         monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
@@ -265,6 +274,40 @@ class TestBothRolesBindThem:
         self._ptc_build()
 
         assert "## Over Chat" not in self.captured["system_prompt"]
+
+
+class TestNotInASharedWorkspace:
+    """Whatever builds the tools, a turn in a shared workspace neither lists
+    nor sends as its sender."""
+
+    @pytest.fixture
+    def shared(self, monkeypatch):
+        async def _shared(workspace_id):
+            return "org-1" if workspace_id == "ws-1" else None
+
+        monkeypatch.setattr(messaging, "shared_org_of", _shared)
+
+    @pytest.mark.asyncio
+    async def test_a_send_is_refused_and_nothing_reaches_the_gateway(self, gateway, shared):
+        text = await _call(_tool("send_message"), {"text": "hello"})
+
+        assert "not available in a shared workspace" in text
+        assert gateway.requests == []
+
+    @pytest.mark.asyncio
+    async def test_the_targets_are_not_listed(self, gateway, shared):
+        text = await _call(_tool("list_message_targets"), {})
+
+        assert "not available in a shared workspace" in text
+        assert gateway.requests == []
+
+    @pytest.mark.asyncio
+    async def test_a_personal_workspace_still_sends(self, gateway, shared):
+        await _call(
+            _tool("send_message"), {"text": "hello"}, {**CONFIGURABLE, "workspace_id": "ws-2"}
+        )
+
+        assert len(gateway.requests) == 1
 
 
 # -- what goes out --------------------------------------------------------------

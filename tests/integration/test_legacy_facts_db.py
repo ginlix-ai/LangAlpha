@@ -129,7 +129,7 @@ async def test_a_legacy_row_replays_with_the_facts_its_read_returns(turn):
 async def test_a_credit_pause_settles_on_its_stamped_words(turn, seed_response):
     from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE
     from src.server.database.automation_executions import get_settling_run
-    from src.server.services.automation_settlement import run_failure_message
+    from src.server.services.automation_outcomes import run_failure_message
 
     response_id = str(uuid.uuid4())
     await seed_response(response_id, turn.thread_id, 1, status="interrupted")

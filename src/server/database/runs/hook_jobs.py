@@ -147,6 +147,9 @@ class UserFeedPayload(TypedDict):
     # over a wakeup's check that ended quietly with nothing changed. Absent
     # when the settle left it.
     last_seen_run_seq: NotRequired[int]
+    # The organization of the shared workspace the run is in: the settle goes
+    # to its members, not to the sender alone. Absent everywhere else.
+    shared_org_id: NotRequired[str]
 
 
 class SettleNewsPayload(TypedDict):
@@ -178,6 +181,10 @@ SETTLE_NEWS_GRACE_SECONDS = 8.0
 #: Run metadata key for where an attempt ran ({"platform", ...}), stamped at
 #: START by ``request_prep.surface_stamp``.
 SURFACE_META = "surface"
+
+#: Run metadata key naming the organization of the shared workspace a run is
+#: in, stamped at START; absent on every other run.
+SHARED_ORG_META = "shared_org_id"
 
 #: Run metadata key for how a wake turn ended quietly: {"changed"}.
 WAKEUP_QUIET_META = "wakeup_quiet"
@@ -214,6 +221,7 @@ def build_finalize_jobs(
     push_enabled: bool = False,
     restart_interrupted: bool = False,
     idle_compaction: bool = False,
+    shared_org_id: Optional[str] = None,
 ) -> Callable[[str], List[HookJob]]:
     """The one decision table mapping a run's final status to its hook jobs.
 
@@ -256,6 +264,8 @@ def build_finalize_jobs(
             )
             if last_seen_run_seq is not None:
                 feed["last_seen_run_seq"] = last_seen_run_seq
+            if shared_org_id:
+                feed["shared_org_id"] = shared_org_id
             jobs.append(
                 HookJob(
                     hook_type="user_feed",
@@ -436,6 +446,7 @@ def build_finalize_jobs_from_run_row(
         push_enabled=env.APNS_ENABLED,
         restart_interrupted=not as_ordinary_stop and is_restart_interrupted(run),
         idle_compaction=meta.get(IDLE_COMPACTION_META) is True,
+        shared_org_id=meta.get(SHARED_ORG_META),
     )
 
 

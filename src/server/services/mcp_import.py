@@ -56,6 +56,7 @@ from src.server.services.mcp_validation import (
     check_secrets,
 )
 from src.server.utils.error_sanitization import validation_error_text
+from src.server.models.mcp_names import sandbox_name_error
 
 if TYPE_CHECKING:
     from src.server.models.mcp_server import McpServerInput, ParsedMcpServer
@@ -191,8 +192,6 @@ def import_refusal(
     more rows the account takes (None for a caller that refuses an overflow
     whole instead).
     """
-    from src.server.models.mcp_server import sandbox_name_error
-
     # Every import and install door mints its names here, and the model leaves
     # this check to the doors. Parsing renames a reserved key already; this
     # holds for a caller handing over a name it did not coerce.
@@ -501,3 +500,41 @@ def plan_vault_extraction(
         config["args"] = new_args
 
     return EntryPlan(secrets=tuple(secrets), refs=refs)
+
+
+def record_import(
+    user_id: str, report: ImportReport, *, workspace_id: str | None = None
+) -> None:
+    """The organization's record of what an import added: each server, and
+    each vault secret a literal credential became, by name."""
+    from src.server.services import activity
+    from src.server.services.activity import Action
+
+    for result in report.results:
+        if result.get("status") == "created":
+            activity.record(
+                user_id, Action.CONNECTOR_ADDED, resource=("mcp_server", result["name"]),
+                workspace_id=workspace_id,
+                detail={"name": result["name"], "imported": True},
+            )
+    for name in report.secrets_created:
+        activity.record(
+            user_id, Action.SECRET_CREATED, resource=("vault_secret", name),
+            detail={"name": name, "imported": True},
+        )
+
+
+async def refuse_user_connector_import(
+    user_id: str, parsed: Sequence[ParsedMcpServer]
+) -> None:
+    """Refuse an import while the policy withholds the user's own connectors
+    (403), before anything is vaulted or checked. An import of brokerages
+    alone passes: their rows are the ``trading`` rule's."""
+    from src.server.services.policy import governed_by_user_connectors
+    from src.server.services.account import refuse_user_connector
+
+    for entry in parsed:
+        url = entry.config.get("url")
+        if governed_by_user_connectors(url):
+            await refuse_user_connector(user_id, "Importing connectors", url=url)
+            return

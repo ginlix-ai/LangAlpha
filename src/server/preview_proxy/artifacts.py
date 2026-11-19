@@ -11,7 +11,8 @@ which costs the version its storage but still keeps it out of the app.
 A version never changes, so its files come from Postgres and object storage
 alone, never a sandbox: a version opens while its computer is stopped.
 
-The owner's grant opens any version, read only. A visitor who came through
+The owner's grant opens any version, read only, and so does a shared
+workspace member's, while that member still reaches the workspace. A visitor who came through
 the artifact's link holds a grant for one version instead, which every fetch
 checks against the link's row, so an unshare or an Update holds on the next
 request on every worker. Either way a document carries the page bridge read
@@ -28,21 +29,36 @@ from dataclasses import dataclass
 from typing import Any
 
 import psycopg
+from fastapi import HTTPException
 
 from src.server.database.blob_keys import BlobError
 from src.server.database.artifacts import (
     StoredVersionFile,
+    artifact_workspace_id,
     get_shared_version_file,
     get_version_file,
 )
+from src.server.database.workspace import get_workspace
 from src.server.database.workspace_file_blobs import fetch_blob
 from src.server.preview_proxy.page_bridge import bridge_for, with_bridge
 from src.server.services.artifacts.grants import (
     ArtifactGrantError,
+    is_member_grant,
     is_share_grant,
     verify_artifact_grant,
+    verify_artifact_member_grant,
     verify_artifact_share_grant,
 )
+from src.server.services import account as accounts
+from src.server.services.account import AccountUnknown
+from src.server.services.member_grants import (
+    MemberGrantError,
+    is_file_grant,
+    verify_file_grant,
+)
+from src.server.services.account import serves_public_links
+from src.server.services.share_audience import admits_member
+from src.server.services.shared_workspaces.access import verdict, workspace_access
 from src.server.utils.html_policy import html_document_csp
 
 __all__ = [
@@ -229,6 +245,48 @@ async def _owner_file(
         logger.info("Refusing artifact request: grant is for another artifact")
         return None
     try:
+        stored = await get_version_file(artifact_id, seq, path)
+    except psycopg.Error as e:
+        raise ArtifactFileUnavailable(f"artifact file lookup failed: {e}") from e
+    # The grant outlives the account's access; it ends with it.
+    if stored is not None and (
+        await accounts.read_standing(stored.user_id, unknown_on_cache_error=True)
+    ).suspended:
+        logger.info("Refusing artifact request: the owner's account is suspended")
+        return None
+    return stored
+
+
+async def _workspace_member_file(
+    grant: str, seq: int, path: str, host_artifact_id: str | None
+) -> StoredVersionFile | None:
+    """The file under a shared workspace member's grant: any version, as the
+    owner's, while the member it names still reaches the workspace, read on
+    every fetch, so a removal or a suspension holds on the next request."""
+    try:
+        artifact_id, viewer_id = await verify_artifact_member_grant(grant)
+    except ArtifactGrantError as e:
+        logger.info("Refusing artifact request: %s", e)
+        return None
+    except psycopg.Error as e:
+        raise ArtifactFileUnavailable(f"artifact grant key unreadable: {e}") from e
+    if host_artifact_id is not None and artifact_id != host_artifact_id:
+        logger.info("Refusing artifact request: grant is for another artifact")
+        return None
+    try:
+        workspace_id = await artifact_workspace_id(artifact_id)
+        workspace = await get_workspace(workspace_id) if workspace_id else None
+    except psycopg.Error as e:
+        raise ArtifactFileUnavailable(f"artifact workspace lookup failed: {e}") from e
+    if workspace is None:
+        return None
+    reach = await verdict(workspace_access(workspace, viewer_id))
+    if reach == "unknown":
+        raise ArtifactFileUnavailable("the member's access is unreadable")
+    if reach != "member":
+        logger.info("Refusing artifact request: the member no longer reaches it")
+        return None
+    try:
         return await get_version_file(artifact_id, seq, path)
     except psycopg.Error as e:
         raise ArtifactFileUnavailable(f"artifact file lookup failed: {e}") from e
@@ -238,7 +296,8 @@ async def _visitor_file(
     grant: str, seq: int, path: str, host_artifact_id: str | None
 ) -> StoredVersionFile | None:
     """The file under a visitor's grant: only the version it names, and only
-    while the link's row still opens that version to anyone."""
+    while the link's row still opens that version to anyone and its owner may
+    keep public links."""
     try:
         shared = await verify_artifact_share_grant(grant)
     except ArtifactGrantError as e:
@@ -255,7 +314,7 @@ async def _visitor_file(
         logger.info("Refusing shared artifact request: grant is for another version")
         return None
     try:
-        return await get_shared_version_file(
+        stored = await get_shared_version_file(
             code=shared.code,
             artifact_id=shared.artifact_id,
             revision=shared.revision,
@@ -266,6 +325,52 @@ async def _visitor_file(
         raise ArtifactFileUnavailable(
             f"shared artifact file lookup failed: {e}"
         ) from e
+    if stored is None or not await serves_public_links(stored.owner_id):
+        return None
+    return stored
+
+
+async def _member_file(
+    grant: str, seq: int, path: str, host_artifact_id: str | None
+) -> StoredVersionFile | None:
+    """The file under a member's grant: as a visitor's, while the link still
+    opens to members only and the viewer the grant names is still an active
+    member of the owner's organization, both read on every fetch."""
+    try:
+        member = await verify_file_grant(grant)
+    except MemberGrantError as e:
+        logger.info("Refusing members-only artifact request: %s", e)
+        return None
+    except psycopg.Error as e:
+        raise ArtifactFileUnavailable(f"artifact member grant key unreadable: {e}") from e
+    if host_artifact_id is not None and member.artifact_id != host_artifact_id:
+        logger.info("Refusing members-only artifact request: grant is for another artifact")
+        return None
+    if seq != member.seq:
+        logger.info("Refusing members-only artifact request: grant is for another version")
+        return None
+    try:
+        stored = await get_shared_version_file(
+            code=member.code,
+            artifact_id=member.artifact_id,
+            revision=member.revision,
+            seq=member.seq,
+            path=path,
+            members=True,
+        )
+    except psycopg.Error as e:
+        raise ArtifactFileUnavailable(
+            f"members-only artifact file lookup failed: {e}"
+        ) from e
+    if stored is None:
+        return None
+    try:
+        admitted = await admits_member(member.viewer_id, stored.owner_id)
+    except (AccountUnknown, HTTPException) as e:
+        # Whose organization either account is in cannot be read: refused
+        # as unavailable, never guessed.
+        raise ArtifactFileUnavailable(f"membership unreadable: {e}") from e
+    return stored if admitted else None
 
 
 async def load_artifact_file(
@@ -295,8 +400,15 @@ async def load_artifact_file(
     """
     if _SEQ.fullmatch(seq) is None or not _valid_path(path):
         return None
-    visitor = is_share_grant(grant)
-    load = _visitor_file if visitor else _owner_file
+    # A member's file, like a visitor's, is asked for again each time, so a
+    # browser that kept it cannot reopen it once the member is removed.
+    visitor = is_share_grant(grant) or is_file_grant(grant) or is_member_grant(grant)
+    if is_file_grant(grant):
+        load = _member_file
+    elif is_member_grant(grant):
+        load = _workspace_member_file
+    else:
+        load = _visitor_file if visitor else _owner_file
     stored = await load(grant, int(seq), path, host_artifact_id)
     if stored is None:
         return None

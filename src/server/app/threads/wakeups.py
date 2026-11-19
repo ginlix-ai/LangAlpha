@@ -15,7 +15,7 @@ from src.server.models.wakeup import (
 )
 from src.server.services.wakeups import cancel as wakeups_cancel
 from src.server.services.wakeups.listing import thread_wakeups, thread_wakeups_response
-from src.server.utils import api as auth_api
+from src.server.services.shared_workspaces.access import thread_access
 from src.server.utils.api import CurrentUserId
 
 from ._deps import logger, router
@@ -44,13 +44,13 @@ async def _cancel(thread_id: str, ids: Optional[List[str]]) -> WakeupCancelRespo
 async def list_wakeups(thread_id: str, x_user_id: CurrentUserId):
     """Open wakeups, those that ended in the last day, and the thread's price
     targets from before wakeups."""
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     return await thread_wakeups_response(thread_id, x_user_id)
 
 
 @router.delete("/{thread_id}/wakeups/{wakeup_id}", response_model=WakeupCancelResponse)
 async def cancel_wakeup(thread_id: str, wakeup_id: str, x_user_id: CurrentUserId):
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     return await _cancel(thread_id, [wakeup_id])
 
 
@@ -58,5 +58,5 @@ async def cancel_wakeup(thread_id: str, wakeup_id: str, x_user_id: CurrentUserId
 async def cancel_wakeups(
     thread_id: str, request: WakeupCancelRequest, x_user_id: CurrentUserId
 ):
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await thread_access(thread_id, x_user_id)
     return await _cancel(thread_id, None if request.all else request.wakeup_ids)

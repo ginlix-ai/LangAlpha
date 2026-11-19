@@ -1,0 +1,21 @@
+/* The Orders page's frame: the scroll port is a child of the root so the
+   desktop shell's drag strip can sit above it and stay put. */
+.library-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-page);
+}
+
+.library-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--page-top) clamp(16px, 3vw, 32px) 48px;
+  scrollbar-gutter: stable;
+}
+
+.library-container {
+  max-width: 760px;
+  margin: 0 auto;
+}

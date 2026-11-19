@@ -6,6 +6,8 @@ Endpoints:
 - POST   /api/v1/mcp/oauth/start-pending/upload    → the same, for an uploaded plugin
 - GET    /api/v1/mcp/oauth/callback                → 302 back into the app
 - DELETE /api/v1/mcp/servers/{name}/oauth          → disconnect
+- POST   /api/v1/mcp/org-connectors/{id}/oauth/start → {authorize_url}, a member's own sign-in
+- DELETE /api/v1/mcp/org-connectors/{id}/oauth       → the member signs out of it
 - POST   /api/v1/mcp/servers/{name}/oauth/refresh-schemas → host-side re-discovery
 
 The callback carries NO session auth by design: it is the AS redirecting the
@@ -31,7 +33,10 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from src.server.database.org_keys import org_key
 from src.config.env import SERVER_BASE_URL
+from src.server.services import activity
+from src.server.services.activity import Action
 from src.server.services.mcp_catalog import apply_catalog_enabled
 from src.server.services.mcp_oauth import TokenUnavailable, disconnect_server
 from src.server.services.mcp_oauth.connect import (
@@ -39,11 +44,13 @@ from src.server.services.mcp_oauth.connect import (
     McpOAuthError,
     McpServerMoved,
     McpServerNotFound,
+    OrgAccountUnknown,
     StartedConnect,
     complete_callback,
     start_connect,
     start_pending_connect,
 )
+from src.server.services.mcp_oauth.org_connect import start_org_connect
 from src.server.services.mcp_oauth.finish import PreparedSignIn
 from src.server.services.mcp_oauth.redirects import DEFAULT_RETURN_TO, CallbackError
 from src.server.services.mcp_saves import (
@@ -438,7 +445,55 @@ async def oauth_disconnect(name: str, user_id: CurrentUserId) -> dict:
     found = await disconnect_server(user_id, name)
     if not found:
         raise HTTPException(status_code=404, detail="No OAuth connection found")
+    activity.record(
+        user_id, Action.CONNECTOR_SIGNED_OUT, resource=("mcp_server", name),
+        detail={"name": name},
+    )
     await apply_catalog_enabled(user_id, name, False)
+    return {"ok": True}
+
+
+@router.post("/org-connectors/{connector_id}/oauth/start")
+@handle_api_exceptions("start organization connector sign-in", logger)
+async def org_connector_oauth_start(
+    connector_id: str,
+    user_id: CurrentUserId,
+    request: Request,
+    response: Response,
+    body: dict | None = Body(default=None),
+) -> dict:
+    """Sign the member in to an organization connector its members sign in
+    to; 404 for one the organization does not list that way, 503 while the
+    account cannot be read."""
+    try:
+        started = await start_org_connect(
+            user_id,
+            connector_id,
+            return_to=(body or {}).get("return_to"),
+            web_origin=request.headers.get("origin"),
+            loopback_redirect=(body or {}).get("redirect_uri"),
+        )
+    except OrgAccountUnknown:
+        from src.server.services.platform_client import quota_service_unavailable
+
+        raise quota_service_unavailable()
+    except McpServerNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except McpOAuthError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return _started_response(started, response)
+
+
+@router.delete("/org-connectors/{connector_id}/oauth")
+@handle_api_exceptions("sign out of organization connector", logger)
+async def org_connector_oauth_disconnect(connector_id: str, user_id: CurrentUserId) -> dict:
+    """Sign the member out of an organization connector. Asks nothing of the
+    organization: leaving is always possible, listed or not."""
+    if not await disconnect_server(user_id, org_key(connector_id)):
+        raise HTTPException(status_code=404, detail="No OAuth connection found")
+    activity.record(
+        user_id, Action.CONNECTOR_SIGNED_OUT, resource=("org_connector", connector_id),
+    )
     return {"ok": True}
 
 

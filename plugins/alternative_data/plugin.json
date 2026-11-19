@@ -41,6 +41,9 @@
           "tool_exposure_mode": "summary",
           "icon": "https://raw.githubusercontent.com/D4Vinci/Scrapling/e7ca95cc051757b0d8036d047a1c56980600d421/docs/assets/logo.png"
         }
+      },
+      "skills": {
+        "x-api": { "needs_own_data": true }
       }
     }
   }

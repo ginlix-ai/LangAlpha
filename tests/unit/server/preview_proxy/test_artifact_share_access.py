@@ -41,6 +41,7 @@ _STORED = StoredVersionFile(
     byte_len=len(HTML),
     content_type="text/html",
     content=HTML,
+    owner_id="owner-1",
 )
 
 
@@ -153,6 +154,8 @@ async def test_the_row_query_gets_what_the_grant_claims(
         "revision": 3,
         "seq": 11,
         "path": "index.html",
+        # Public by default; a member's grant reads the link as members-only.
+        "audience": None,
     }
 
 

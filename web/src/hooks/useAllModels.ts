@@ -15,6 +15,8 @@ import { modelPrefs } from '@/lib/modelPreferences';
 import { ownKeyRule, payerResolver, type Payer } from '@/lib/modelPayer';
 import { CLAUDE_CODE_CONNECTION, isClaudeCodeModel } from '@/lib/claudeCode';
 import { useClaudeCodeStatus } from './useClaudeCode';
+import { useAccount } from './useAccount';
+import { allows, modelRefusedBy, restrictsModels, RULE, withoutRefusedModels } from '@/lib/accountRules';
 
 export interface SystemDefaults {
   default_model?: string;
@@ -121,7 +123,15 @@ export function useAllModels(): UseAllModelsResult {
   const { models: modelsData, isLoading: modelsLoading } = useModels();
   const { preferences, isLoading: prefsLoading, isLoaded: prefsLoaded } = usePreferences();
   const { platform: rawPlatform, isLoading: platformLoading } = usePlatformModels();
-  const { providers: configuredProviders, byokEnabled, isLoading: configuredLoading } = useConfiguredProviders();
+  const { providers: configuredProviders, byokEnabled: byokSwitch, isLoading: configuredLoading } = useConfiguredProviders();
+  // The account's rules: the server runs no turn on the user's own keys or
+  // sign-ins while a rule keeps them off, so none reaches or pays for a model
+  // here either. A model a rule keeps a turn off is not offered to pick
+  // anywhere (`models`, `slotModels`), though it still counts as a model
+  // (`validModelNames`), so a favorite or a thread's model can say why.
+  const { policy } = useAccount();
+  const byokEnabled = byokSwitch && allows(policy, RULE.ownApiKeys);
+  const ownSignIns = allows(policy, RULE.ownSubscriptions);
   // Claude Code runs on a setup token kept for it, on the user's computer or
   // on the server, not on a connection of the user's: its models are listed
   // while it is on for them, and offered for a turn where that token works.
@@ -181,8 +191,8 @@ export function useAllModels(): UseAllModelsResult {
   // and a local or user-defined provider have no list here.
   const listedProviders = useMemo(() => configuredProviders
     .filter((p) => !p.is_custom && p.access_type !== 'local')
-    .filter((p) => (p.access_type === 'oauth' ? p.state === 'connected' : !isPlatformMode || byokEnabled))
-    .map((p) => p.provider), [configuredProviders, byokEnabled]);
+    .filter((p) => (p.access_type === 'oauth' ? ownSignIns && p.state === 'connected' : !isPlatformMode || byokEnabled))
+    .map((p) => p.provider), [configuredProviders, byokEnabled, ownSignIns]);
   const { missingByProvider: listedMissing, isLoading: listsLoading } = useMissingModels(listedProviders);
   // A plan slug run on a key held under another answers to that key's list.
   const missingByProvider = useMemo(() => {
@@ -322,12 +332,29 @@ export function useAllModels(): UseAllModelsResult {
     return out;
   }, [visible, platform, modelsData, customModels, configuredProviders, byokEnabled]);
 
+  const offered = useMemo(
+    () => withoutRefusedModels(visible.models, policy, visible.metadata),
+    [visible, policy],
+  );
+  const offeredSlots = useMemo(
+    () => withoutRefusedModels(slotModels, policy, visible.metadata),
+    [slotModels, visible, policy],
+  );
+
+  // A model a rule refuses names no payer: nothing would pay for a turn on it.
+  const offeredPayers = useMemo(() => {
+    if (!restrictsModels(policy)) return payers;
+    return Object.fromEntries(Object.entries(payers).filter(([m]) => (
+      modelRefusedBy(policy, visible.metadata, m) === null
+    )));
+  }, [payers, policy, visible]);
+
   return {
-    models: visible.models,
-    slotModels,
+    models: offered,
+    slotModels: offeredSlots,
     metadata: visible.metadata,
     rawModels: visible.rawModels,
-    payers,
+    payers: offeredPayers,
     keylessModels,
     lockedModels,
     offPlanModels,

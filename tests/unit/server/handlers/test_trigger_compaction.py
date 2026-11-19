@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.server.services.shared_workspaces.turn import TurnIdentity
+
 from ptc_agent.config.agent import AgentConfig, LLMConfig
 from ptc_agent.config.core import (
     DaytonaConfig,
@@ -27,6 +29,7 @@ from ptc_agent.core.project_context import ProjectContext
 from fastapi import HTTPException
 
 from src.server.database.workspace_folders import WorkspaceFolderMoving
+from src.server.services.turn_runtime import TurnRoute
 
 
 HANDLER = "src.server.handlers.thread_maintenance"
@@ -117,13 +120,14 @@ def _stub_thread_agent():
     backend = None
 
     async def _stub(
-        thread_id, verb, config=None, checkpointer=None, user_id=None, held=None, role="analyst"
+        thread_id, verb, config=None, checkpointer=None, user_id=None, held=None, route=None,
     ):
         _stub.captured_config = config
         _stub.captured_checkpointer = checkpointer
         _stub.captured_user_id = user_id
-        _stub.captured_role = role
-        return ThreadAgent(thread_id, graph, state, messages, "ws-1", backend, PROJECT)
+        _stub.captured_role = route.role if route else "analyst"
+        _stub.captured_owner_id = route.owner_id if route else None
+        return ThreadAgent(thread_id, graph, state, messages, "ws-1", backend, PROJECT, recorded_as=user_id)
 
     _stub.captured_config = None
     _stub.captured_checkpointer = None
@@ -436,9 +440,11 @@ async def test_the_compact_resolves_as_the_threads_next_turn(base_config, thread
         thread_id="thread-1",
         enabled_subagents=None,
         workspace_id=workspace_id,
+        identity=TurnIdentity("user-1", "user-1", "user-1"),
         role=role,
     )
     assert stub_resolve.captured_role == role
+    assert stub_resolve.captured_owner_id == "user-1"
 
 
 @pytest.mark.asyncio
@@ -1220,7 +1226,7 @@ class TestSessionAcquireIdentity:
             ) as build,
             patch(f"{HANDLER}.turn_base_checkpoint_id", new=AsyncMock(return_value=None)),
             patch(
-                "src.server.database.user.get_user_profile_for_prompt",
+                "src.server.services.shared_workspaces.turn.get_user_profile_for_prompt",
                 new=AsyncMock(return_value={"name": "profile"}),
             ),
             patch(
@@ -1236,7 +1242,7 @@ class TestSessionAcquireIdentity:
                 checkpointer=MagicMock(),
                 user_id="user-1",
                 held=AsyncExitStack(),
-                role="chief_of_staff",
+                route=TurnRoute("ws-1", "chief_of_staff", "user-1"),
             )
 
         built = build.await_args.kwargs

@@ -49,6 +49,9 @@ from src.server.database.user_vault_secrets import (
     get_user_secret_names,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services import activity
+from src.server.database.org_keys import org_key
+from src.server.services.activity import Action
 from src.server.services.brokerages import brokerage_names
 from src.server.services.computer_manager import MachineTarget
 from src.server.services.mcp_apply import (
@@ -59,6 +62,7 @@ from src.server.services.mcp_catalog import detach_warning, refuse_missing_sign_
 from src.server.services.mcp_catalog_view import catalog_write_warnings
 from src.server.services.mcp_config import (
     Origin,
+    OrgServerRef,
     ResolvedServer,
     State,
     account_disabled_builtins,
@@ -73,7 +77,13 @@ from src.server.services.mcp_oauth.discovery import (
     schedule_catalog_discovery,
 )
 from src.server.services.mcp_oauth.lifecycle import TokenUnavailable
-from src.server.services.mcp_import import catalog_import_scope, run_mcp_import
+from src.server.services.mcp_import import (
+    catalog_import_scope,
+    record_import,
+    refuse_user_connector_import,
+    run_mcp_import,
+)
+from src.server.services.account import refuse_user_connector
 from src.server.services.mcp_saves import (
     NOT_FOUND,
     ServerEdit,
@@ -233,7 +243,8 @@ def _effective_server(
         discovery_uses_secrets=bool(getattr(srv, "discovery_uses_secrets", False)),
         command=srv.command,
         args=list(srv.args or []),
-        url=srv.url,
+        # An organization connector's address is the relay's to dial.
+        url=None if origin is Origin.ORG else srv.url,
         config_version=config_version,
     )
 
@@ -388,6 +399,7 @@ async def import_servers(
             detail='No MCP servers found. Expected a JSON object like '
             '{"mcpServers": { "<name>": { ... } }}.',
         )
+    await refuse_user_connector_import(user_id, parsed)
 
     async def persist(
         conn, server: McpServerInput, entry: ParsedMcpServer
@@ -414,6 +426,7 @@ async def import_servers(
     # so it gets the same fan-out as one saved on the vault page, once for the
     # batch rather than one vault push per secret.
     await after_secrets_changed(user_id, report.secrets_created)
+    record_import(user_id, report, workspace_id=workspace_id)
     for result in report.results:
         if result.get("status") == "created":
             schedule_catalog_discovery(user_id, result["name"], reason="import")
@@ -507,13 +520,27 @@ async def set_enabled(
             await upsert_workspace_server(
                 workspace_id, name, source="builtin", enabled=False, config=None
             )
-        await _apply_toggle_now(workspace, workspace_id, user_id)
+        await _apply_toggle_now(
+            workspace, workspace_id, user_id, disabling=not body.enabled
+        )
         return {"name": name, "enabled": body.enabled}
 
-    ref = await classify_server_name(workspace_id, user_id, name)
+    ref = await classify_server_name(
+        workspace_id, user_id, name, disabling=not body.enabled
+    )
     if ref is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     match (ref.origin, ref.state):
+        case (Origin.ORG, _) if isinstance(ref, OrgServerRef):
+            # Its marker is keyed by the connector's id, so a rename keeps the
+            # choice and a user server of the same name keeps its own.
+            key = org_key(ref.connector_id)
+            if body.enabled:
+                await delete_workspace_server(workspace_id, key)
+            else:
+                await upsert_workspace_server(
+                    workspace_id, key, source="org", enabled=False, config=None
+                )
         case (Origin.USER, State.TOMBSTONED):
             # An existing tombstone for an inherited server; enabling = delete
             # it. (Disabling again is a no-op: it's already tombstoned.) While
@@ -525,6 +552,9 @@ async def set_enabled(
                 # below refuses it under its lock): signing in would not
                 # turn on a server the account keeps off.
                 if catalog is not None and runs_on_account(catalog):
+                    await refuse_user_connector(
+                        user_id, "Turning on a connector", url=catalog.get("url")
+                    )
                     await refuse_missing_sign_in(user_id, catalog)
                 match await untombstone_user_server(
                     user_id, workspace_id, name, ref.row["workspace_mcp_server_id"]
@@ -539,6 +569,9 @@ async def set_enabled(
             # tombstone; enabling is a no-op (it's already live via inheritance).
             if body.enabled:
                 _refuse_account_disabled(ref.row)
+                await refuse_user_connector(
+                    user_id, "Turning on a connector", url=ref.row.get("url")
+                )
                 await refuse_missing_sign_in(user_id, ref.row)
             elif not await tombstone_user_server(
                 user_id, workspace_id, name, ref.row["user_mcp_server_id"]
@@ -549,12 +582,25 @@ async def set_enabled(
         case _:
             # A disable-marker whose built-in no longer exists: nothing to toggle.
             raise HTTPException(status_code=404, detail=NOT_FOUND)
-    await _apply_toggle_now(workspace, workspace_id, user_id)
+    await _apply_toggle_now(workspace, workspace_id, user_id, disabling=not body.enabled)
+    if ref.origin is Origin.ORG:
+        activity.record(
+            user_id,
+            Action.ORG_CONNECTOR_ON if body.enabled else Action.ORG_CONNECTOR_OFF,
+            resource=("org_connector", ref.connector_id), workspace_id=workspace_id,
+            detail={"name": name},
+        )
+    else:
+        activity.record(
+            user_id, Action.CONNECTOR_ON if body.enabled else Action.CONNECTOR_OFF,
+            resource=("mcp_server", name), workspace_id=workspace_id,
+            detail={"name": name, "scope": "workspace"},
+        )
     return {"name": name, "enabled": body.enabled}
 
 
 async def _apply_toggle_now(
-    workspace: dict, workspace_id: str, user_id: str
+    workspace: dict, workspace_id: str, user_id: str, *, disabling: bool
 ) -> None:
     """Retire the toggled-off grants now, and warm the change in if there is a sandbox.
 
@@ -563,8 +609,21 @@ async def _apply_toggle_now(
     the turn that binds Home applies the config then. Its grants are still
     synced: they are scoped to the row while it has no computer, and the order
     reconcile reads through any active grant of the user's.
+
+    A switch-off is saved before this runs, so an account that cannot be read
+    now does not fail it: the version bump makes the next acquire resync, and
+    the relay refuses the server's calls meanwhile. A switch-on still answers
+    the 503, since nothing would serve it.
     """
-    await _sync_sandbox_grants_now(workspace_id, user_id)
+    try:
+        await _sync_sandbox_grants_now(workspace_id, user_id)
+    except HTTPException as e:
+        if not (disabling and _account_unknown(e)):
+            raise
+        logger.warning(
+            "[mcp] switched off in workspace %s; its grants resync once the "
+            "account can be read", workspace_id,
+        )
     if not is_unbound(workspace):
         schedule_proactive_apply(workspace_id, user_id)
 
@@ -602,6 +661,8 @@ async def discover_server(
     ):
         raise HTTPException(status_code=404, detail="MCP server not found")
     server = entry.config
+    if entry.origin is Origin.ORG:
+        return await _discover_org_connector(workspace_id, user_id, resolved, entry)
     if entry.origin is Origin.USER and server.transport in REMOTE_TRANSPORTS:
         # An inherited remote row is discovered from the host, whatever it
         # authenticates with: the OAuth bearer never enters a sandbox, and a
@@ -647,7 +708,7 @@ async def discover_server(
     if cached is not None:
         return {"server": _discovery_row_to_dict(cached)}
 
-    sandbox = _get_live_sandbox(workspace_id, workspace)
+    sandbox = await _get_live_sandbox(workspace_id, workspace)
     rows = await discover_and_cache(workspace_id, sandbox, [server])
     row = rows[0] if rows else None
     if row is not None and row.get("status") == "ok":
@@ -657,6 +718,67 @@ async def discover_server(
         # sees the same tools the UI now shows.
         schedule_session_mcp_refresh(workspace_id, user_id)
     return {"server": _discovery_row_to_dict(row)}
+
+
+_ORG_CHANGED = (
+    "Your organization changed this connector while it was being checked; "
+    "try again."
+)
+_ORG_SIGN_IN = "Sign in to this connector from Plugins before its tools can be listed."
+_ORG_CHECKING = (
+    "This connector is already being checked and nothing is stored yet; "
+    "try again in a couple of minutes."
+)
+
+
+async def _discover_org_connector(
+    workspace_id: str, user_id: str, resolved: Any, entry: ResolvedServer
+) -> dict:
+    """An organization connector is discovered from the host, with the
+    credential the relay would send.
+
+    Each probe asks the auth service for a credential and dials the vendor, so
+    clicks share the background kick's window: one probe per member,
+    connector and configuration across workers, and a click inside it gets
+    whatever that probe stored.
+    """
+    from src.server.services.mcp_oauth.org_discovery import (
+        claim_probe,
+        discover_org_connector,
+        needs_sign_in,
+    )
+
+    snapshots = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
+    cached = snapshots.snapshot(entry.config, accept=_settled_and_fresh)
+    if cached is not None:
+        return {"server": _discovery_row_to_dict(cached)}
+    connector = next(
+        (c for c in resolved.org_connectors if c.name == entry.name), None
+    )
+    if connector is None:
+        raise HTTPException(status_code=409, detail=_ORG_CHANGED)
+    if await needs_sign_in(user_id, connector):
+        raise HTTPException(status_code=409, detail=_ORG_SIGN_IN)
+    if not await claim_probe(user_id, connector):
+        stored = snapshots.snapshot(entry.config)
+        if stored is not None:
+            return {"server": _discovery_row_to_dict(stored)}
+        raise HTTPException(status_code=409, detail=_ORG_CHECKING)
+    row = await discover_org_connector(user_id, connector)
+    if row is None:
+        # Either the member's sign-in went away while the probe was out, or
+        # the connector changed and its snapshot was dropped.
+        detail = (
+            _ORG_SIGN_IN if await needs_sign_in(user_id, connector) else _ORG_CHANGED
+        )
+        raise HTTPException(status_code=409, detail=detail)
+    if row.get("status") == "ok":
+        schedule_session_mcp_refresh(workspace_id, user_id)
+    return {"server": _discovery_row_to_dict(row)}
+
+
+def _account_unknown(e: HTTPException) -> bool:
+    return isinstance(e.detail, dict) and e.detail.get("type") == "service_unavailable"
 
 
 async def _sync_sandbox_grants_now(workspace_id: str, user_id: str) -> None:
@@ -698,23 +820,25 @@ async def _sync_sandbox_grants_now(workspace_id: str, user_id: str) -> None:
     )
 
 
-def _get_live_sandbox(workspace_id: str, workspace: dict) -> Any | None:
+async def _get_live_sandbox(workspace_id: str, workspace: dict) -> Any | None:
     """Return the in-memory live sandbox if one is ready, else None.
 
     Reads the cached session directly (no lock, no acquire) so discovery never
     races the warm/Phase-2 machinery, but fenced against the row's binding: a
     handle for a replaced sandbox would have discovery probe the dead one and
-    persist its schemas under this workspace. A stopped/cold workspace, or a
-    superseded handle, ⇒ None, which ``discover_and_cache`` turns into
-    ``pending`` rows.
+    persist its schemas under this workspace. A stopped/cold workspace, a
+    superseded handle, or a machine the owner's policy keeps work off (a probe
+    starts the user's server processes there) ⇒ None, which
+    ``discover_and_cache`` turns into ``pending`` rows.
     """
     if not _sandbox_running(workspace):
         return None
     try:
-        session = WorkspaceManager.get_instance().get_session_if_ready(
+        session = await WorkspaceManager.get_instance().get_session_if_ready_for_work(
             workspace_id,
             expected_sandbox_id=workspace.get("sandbox_id"),
             target=MachineTarget.of_workspace(workspace),
+            owner_id=workspace.get("user_id"),
         )
         return session.sandbox if session else None
     except Exception:

@@ -1,0 +1,1241 @@
+{
+ "connect|own_model_access.api_keys|a custom model or provider|both": [
+  403,
+  {
+   "message": "Connecting a custom model or provider is not allowed: your organization does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.api_keys|a custom model or provider|deployment": [
+  403,
+  {
+   "message": "Connecting a custom model or provider is not allowed: this deployment does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.api_keys|a custom model or provider|organization": [
+  403,
+  {
+   "message": "Connecting a custom model or provider is not allowed: your organization does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.api_keys|allowed": null,
+ "connect|own_model_access.api_keys|your own API keys|both": [
+  403,
+  {
+   "message": "Connecting your own API keys is not allowed: your organization does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.api_keys|your own API keys|deployment": [
+  403,
+  {
+   "message": "Connecting your own API keys is not allowed: this deployment does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.api_keys|your own API keys|organization": [
+  403,
+  {
+   "message": "Connecting your own API keys is not allowed: your organization does not allow your own API keys, custom models or custom providers.",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a Claude Code subscription|both": [
+  403,
+  {
+   "message": "Connecting a Claude Code subscription is not allowed: your organization does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a Claude Code subscription|deployment": [
+  403,
+  {
+   "message": "Connecting a Claude Code subscription is not allowed: this deployment does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a Claude Code subscription|organization": [
+  403,
+  {
+   "message": "Connecting a Claude Code subscription is not allowed: your organization does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a model sign-in|both": [
+  403,
+  {
+   "message": "Connecting a model sign-in is not allowed: your organization does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a model sign-in|deployment": [
+  403,
+  {
+   "message": "Connecting a model sign-in is not allowed: this deployment does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|a model sign-in|organization": [
+  403,
+  {
+   "message": "Connecting a model sign-in is not allowed: your organization does not allow your own model sign-ins or a Claude Code subscription.",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "connect|own_model_access.subscriptions|allowed": null,
+ "for_client|allow_all": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {},
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|api_keys|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": false,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.api_keys": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|api_keys|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": false,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.api_keys": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|api_keys|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": false,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.api_keys": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|mixed": {
+  "models": {
+   "allowed": [
+    "c",
+    "b"
+   ]
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "models.allowed": "organization",
+   "org_library.publish": "organization",
+   "trading": "deployment",
+   "user_connectors": "organization"
+  },
+  "trading": false,
+  "user_connectors": false
+ },
+ "for_client|models|both": {
+  "models": {
+   "allowed": [
+    "a",
+    "b"
+   ]
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "models.allowed": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|models|deployment": {
+  "models": {
+   "allowed": [
+    "a",
+    "b"
+   ]
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "models.allowed": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|models|organization": {
+  "models": {
+   "allowed": [
+    "a",
+    "b"
+   ]
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "models.allowed": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|org_library|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "org_library.publish": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|org_library|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "org_library.publish": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|org_library|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "org_library.publish": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|own_machines|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": false,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_machines": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|own_machines|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": false,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_machines": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|own_machines|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": false,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "own_machines": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|public_links|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": false,
+  "set_by": {
+   "public_links": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|public_links|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": false,
+  "set_by": {
+   "public_links": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|public_links|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": false,
+  "set_by": {
+   "public_links": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|shared_workspaces|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "shared_workspaces.create": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|shared_workspaces|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "shared_workspaces.create": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|shared_workspaces|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "shared_workspaces.create": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|subscriptions|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": false
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.subscriptions": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|subscriptions|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": false
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.subscriptions": "deployment"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|subscriptions|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": false
+  },
+  "public_links": true,
+  "set_by": {
+   "own_model_access.subscriptions": "organization"
+  },
+  "trading": true,
+  "user_connectors": true
+ },
+ "for_client|trading|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "trading": "organization"
+  },
+  "trading": false,
+  "user_connectors": true
+ },
+ "for_client|trading|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "trading": "deployment"
+  },
+  "trading": false,
+  "user_connectors": true
+ },
+ "for_client|trading|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "trading": "organization"
+  },
+  "trading": false,
+  "user_connectors": true
+ },
+ "for_client|user_connectors|both": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "user_connectors": "organization"
+  },
+  "trading": true,
+  "user_connectors": false
+ },
+ "for_client|user_connectors|deployment": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "user_connectors": "deployment"
+  },
+  "trading": true,
+  "user_connectors": false
+ },
+ "for_client|user_connectors|organization": {
+  "models": {
+   "allowed": null
+  },
+  "own_machines": true,
+  "own_model_access": {
+   "api_keys": true,
+   "subscriptions": true
+  },
+  "public_links": true,
+  "set_by": {
+   "user_connectors": "organization"
+  },
+  "trading": true,
+  "user_connectors": false
+ },
+ "library_publish|allowed": null,
+ "library_publish|both": [
+  403,
+  {
+   "message": "Publishing to the library is not allowed: your organization does not allow it.",
+   "rule": "org_library.publish",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "library_publish|deployment": [
+  403,
+  {
+   "message": "Publishing to the library is not allowed: this deployment does not allow it.",
+   "rule": "org_library.publish",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "library_publish|organization": [
+  403,
+  {
+   "message": "Publishing to the library is not allowed: your organization does not allow it.",
+   "rule": "org_library.publish",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "live_orders_text|allowed": null,
+ "live_orders_text|both": "No order was sent: your organization does not allow trading, so live orders and brokerage tools not known to be safe are withheld. Tell the user.",
+ "live_orders_text|deployment": "No order was sent: this deployment does not allow trading, so live orders and brokerage tools not known to be safe are withheld. Tell the user.",
+ "live_orders_text|organization": "No order was sent: your organization does not allow trading, so live orders and brokerage tools not known to be safe are withheld. Tell the user.",
+ "live_orders_text|unknown": "No order was sent: live orders and brokerage tools not known to be safe are withheld while this account's policy cannot be read. Tell the user.",
+ "machine_use|allowed": null,
+ "machine_use|both": [
+  403,
+  {
+   "message": "Your own machines cannot be used: your organization does not allow work on a machine you bring. Use another computer instead.",
+   "rule": "own_machines",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "machine_use|deployment": [
+  403,
+  {
+   "message": "Your own machines cannot be used: this deployment does not allow work on a machine you bring. Use another computer instead.",
+   "rule": "own_machines",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "machine_use|no_owner": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "machine_use|organization": [
+  403,
+  {
+   "message": "Your own machines cannot be used: your organization does not allow work on a machine you bring. Use another computer instead.",
+   "rule": "own_machines",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "machine_use|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "model_denied|models.allowed|both": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'x' is not allowed: your organization limits which models can be used. Pick another model.",
+   "model": "x",
+   "rule": "models.allowed",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|models.allowed|deployment": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'x' is not allowed: this deployment limits which models can be used. Pick another model.",
+   "model": "x",
+   "rule": "models.allowed",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|models.allowed|organization": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'x' is not allowed: your organization limits which models can be used. Pick another model.",
+   "model": "x",
+   "rule": "models.allowed",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.api_keys|both": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: your organization does not allow your own API keys, custom models or custom providers. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.api_keys|deployment": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: this deployment does not allow your own API keys, custom models or custom providers. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.api_keys",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.api_keys|organization": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: your organization does not allow your own API keys, custom models or custom providers. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.api_keys",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.subscriptions|both": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: your organization does not allow your own model sign-ins or a Claude Code subscription. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.subscriptions|deployment": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: this deployment does not allow your own model sign-ins or a Claude Code subscription. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "model_denied|own_model_access.subscriptions|organization": [
+  400,
+  {
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "Model 'm' cannot be used: your organization does not allow your own model sign-ins or a Claude Code subscription. Pick another model.",
+   "model": "m",
+   "rule": "own_model_access.subscriptions",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "no_model_allowed|both": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "No model this turn could run is allowed: your organization limits which models can be used. Pick an allowed model.",
+   "model": "d",
+   "rule": "models.allowed",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "no_model_allowed|deployment": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "No model this turn could run is allowed: this deployment limits which models can be used. Pick an allowed model.",
+   "model": "d",
+   "rule": "models.allowed",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "no_model_allowed|organization": [
+  400,
+  {
+   "allowed": [
+    "a",
+    "b"
+   ],
+   "link": {
+    "label": "Open Settings",
+    "url": "/settings?tab=model"
+   },
+   "message": "No model this turn could run is allowed: your organization limits which models can be used. Pick an allowed model.",
+   "model": "d",
+   "rule": "models.allowed",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "own_connectors_withheld|allowed": null,
+ "own_connectors_withheld|both": "your organization does not allow your own connectors",
+ "own_connectors_withheld|deployment": "this deployment does not allow your own connectors",
+ "own_connectors_withheld|organization": "your organization does not allow your own connectors",
+ "own_connectors_withheld|unknown": "this account's policy could not be read, so your own connectors are held back",
+ "public_link|allowed": null,
+ "public_link|both": [
+  403,
+  {
+   "message": "Sharing a public link is not allowed: your organization does not allow links that open without signing in.",
+   "rule": "public_links",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "public_link|deployment": [
+  403,
+  {
+   "message": "Sharing a public link is not allowed: this deployment does not allow links that open without signing in.",
+   "rule": "public_links",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "public_link|organization": [
+  403,
+  {
+   "message": "Sharing a public link is not allowed: your organization does not allow links that open without signing in.",
+   "rule": "public_links",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "set_by_model|both": [
+  "organization",
+  "organization"
+ ],
+ "set_by_model|deployment": [
+  "deployment",
+  "deployment"
+ ],
+ "set_by_model|organization": [
+  "organization",
+  "organization"
+ ],
+ "shared_workspace_create|allowed": null,
+ "shared_workspace_create|both": [
+  403,
+  {
+   "message": "Creating a shared workspace is not allowed: your organization does not allow it.",
+   "rule": "shared_workspaces.create",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "shared_workspace_create|deployment": [
+  403,
+  {
+   "message": "Creating a shared workspace is not allowed: this deployment does not allow it.",
+   "rule": "shared_workspaces.create",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "shared_workspace_create|organization": [
+  403,
+  {
+   "message": "Creating a shared workspace is not allowed: your organization does not allow it.",
+   "rule": "shared_workspaces.create",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Granting live orders|allowed": null,
+ "trading_grant|Granting live orders|both": [
+  403,
+  {
+   "message": "Granting live orders is not allowed: your organization does not allow trading.",
+   "rule": "trading",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Granting live orders|deployment": [
+  403,
+  {
+   "message": "Granting live orders is not allowed: this deployment does not allow trading.",
+   "rule": "trading",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Granting live orders|organization": [
+  403,
+  {
+   "message": "Granting live orders is not allowed: your organization does not allow trading.",
+   "rule": "trading",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Granting live orders|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "trading_grant|Raising the trading permission|allowed": null,
+ "trading_grant|Raising the trading permission|both": [
+  403,
+  {
+   "message": "Raising the trading permission is not allowed: your organization does not allow trading.",
+   "rule": "trading",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Raising the trading permission|deployment": [
+  403,
+  {
+   "message": "Raising the trading permission is not allowed: this deployment does not allow trading.",
+   "rule": "trading",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Raising the trading permission|organization": [
+  403,
+  {
+   "message": "Raising the trading permission is not allowed: your organization does not allow trading.",
+   "rule": "trading",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "trading_grant|Raising the trading permission|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "unknown_work": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "user_connectors_text|allowed": null,
+ "user_connectors_text|both": "No call was made: your organization does not allow the user's own connectors, so this one is withheld. Tell the user.",
+ "user_connectors_text|deployment": "No call was made: this deployment does not allow the user's own connectors, so this one is withheld. Tell the user.",
+ "user_connectors_text|organization": "No call was made: your organization does not allow the user's own connectors, so this one is withheld. Tell the user.",
+ "user_connectors_text|unknown": "No call was made: the user's own connectors are withheld while this account's policy cannot be read. Tell the user.",
+ "user_connector|Adding a connector|allowed": null,
+ "user_connector|Adding a connector|both": [
+  403,
+  {
+   "message": "Adding a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Adding a connector|deployment": [
+  403,
+  {
+   "message": "Adding a connector is not allowed: this deployment does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Adding a connector|organization": [
+  403,
+  {
+   "message": "Adding a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Adding a connector|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "user_connector|Connecting a connector|allowed": null,
+ "user_connector|Connecting a connector|both": [
+  403,
+  {
+   "message": "Connecting a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Connecting a connector|deployment": [
+  403,
+  {
+   "message": "Connecting a connector is not allowed: this deployment does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Connecting a connector|organization": [
+  403,
+  {
+   "message": "Connecting a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Connecting a connector|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "user_connector|Importing connectors|allowed": null,
+ "user_connector|Importing connectors|both": [
+  403,
+  {
+   "message": "Importing connectors is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Importing connectors|deployment": [
+  403,
+  {
+   "message": "Importing connectors is not allowed: this deployment does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Importing connectors|organization": [
+  403,
+  {
+   "message": "Importing connectors is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Importing connectors|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ],
+ "user_connector|Turning on a connector|allowed": null,
+ "user_connector|Turning on a connector|both": [
+  403,
+  {
+   "message": "Turning on a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Turning on a connector|deployment": [
+  403,
+  {
+   "message": "Turning on a connector is not allowed: this deployment does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "deployment",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Turning on a connector|organization": [
+  403,
+  {
+   "message": "Turning on a connector is not allowed: your organization does not allow your own connectors.",
+   "rule": "user_connectors",
+   "set_by": "organization",
+   "type": "policy_denied"
+  },
+  null
+ ],
+ "user_connector|Turning on a connector|unknown": [
+  503,
+  {
+   "message": "Service temporarily unavailable. Please try again shortly.",
+   "retry_after": 15,
+   "type": "service_unavailable"
+  },
+  {
+   "Retry-After": "15"
+  }
+ ]
+}

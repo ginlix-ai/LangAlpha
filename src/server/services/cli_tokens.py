@@ -29,6 +29,7 @@ from typing import Any
 from src.server.auth import computer_token_core as core
 from src.server.database import computer_cli_tokens as db
 from src.utils.cache.redis_cache import get_cache_client
+from src.server.database.shared_workspaces import is_holder
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,8 @@ async def keep(
     raises: a computer without the CLI's token still runs every turn."""
     from src.server.services.egress.reachability import effective_relay_base_url
 
-    if not user_id or not sandbox_id or not provider:
+
+    if not user_id or not sandbox_id or not provider or is_holder(user_id):
         return False
     computer_id = str(computer_id)
     try:

@@ -17,6 +17,8 @@ from src.server.utils.api import get_current_user_id
 from tests.conftest import create_test_app, pin_chat_limit
 from tests.unit.server.app.test_threads_thread_model import USER as SENDER, _send_stubs
 
+from tests.unit.server.access_stub import as_owner  # noqa: E402
+
 THREADS_MOD = "src.server.app.threads.crud"
 AUTH_MOD = "src.server.utils.api"
 USER = "test-user-123"
@@ -62,7 +64,7 @@ async def _request(method, path, body=None, app=None):
 @pytest.mark.asyncio
 async def test_patch_stores_the_switch_and_tells_other_tabs():
     with (
-        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        as_owner(THREADS_MOD),
         patch(
             f"{THREADS_MOD}.update_thread_fields",
             new=AsyncMock(return_value=_row(subagents_allowed=False)),
@@ -84,7 +86,7 @@ async def test_patch_stores_the_switch_and_tells_other_tabs():
 @pytest.mark.asyncio
 async def test_patch_null_returns_the_thread_to_the_default_and_tells_other_tabs():
     with (
-        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        as_owner(THREADS_MOD),
         patch(
             f"{THREADS_MOD}.update_thread_fields",
             new=AsyncMock(return_value=_row(subagents_allowed=None)),
@@ -113,7 +115,7 @@ async def test_patch_null_returns_the_thread_to_the_default_and_tells_other_tabs
 )
 async def test_patch_of_another_field_leaves_the_switch_alone(body, fields):
     with (
-        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        as_owner(THREADS_MOD),
         patch(
             f"{THREADS_MOD}.update_thread_fields",
             new=AsyncMock(return_value=_row(**fields)),
@@ -138,7 +140,7 @@ async def test_patch_of_another_field_leaves_the_switch_alone(body, fields):
 @pytest.mark.parametrize("stored", [True, False, None])
 async def test_get_thread_reports_the_stored_switch(stored):
     with (
-        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        as_owner(THREADS_MOD),
         patch(
             f"{THREADS_MOD}.get_thread_by_id",
             new=AsyncMock(return_value=_row(subagents_allowed=stored)),
@@ -189,7 +191,7 @@ async def test_create_hands_the_switch_to_the_insert_and_reports_the_row(extra, 
         ),
         patch(
             f"{CREATE_MOD}.turn_route",
-            return_value=TurnRoute("ws-1", "analyst"),
+            return_value=TurnRoute("ws-1", "analyst", USER),
         ),
         patch(
             f"{CREATE_MOD}.create_thread",

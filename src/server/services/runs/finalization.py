@@ -20,7 +20,8 @@ from src.server.contracts.status import (
     INTERRUPT_REASON_CREDIT_PAUSE,
     RESTART_INTERRUPTED_META,
     classify_interrupts,
-    is_user_stop,
+    bills_subagents,
+    is_suspension_stop,
 )
 from src.server.database.runs.hook_jobs import IDLE_COMPACTION_META, WAKEUP_QUIET_META
 from src.server.database.runs.lifecycle import (
@@ -51,14 +52,17 @@ class FinalizeVerdict:
 
     ``applied`` gates every terminal business effect: only the winner runs
     them, with the status it adopted. A loser carries the survivor's status
-    for its local mark and runs nothing. ``stopped_by_user`` is read off the
+    for its local mark and runs nothing. ``bills_subagents`` is read off the
     winning row, so a stop another worker took counts.
     """
 
     applied: bool
     status: str
     survivor_status: Optional[str] = None
-    stopped_by_user: bool = False
+    bills_subagents: bool = False
+    #: The winning row was cancelled by its account's suspension, which its
+    #: ``run_end`` says so a reader tells it from the user's own stop.
+    stopped_by_suspension: bool = False
 
     @property
     def concluded(self) -> bool:
@@ -139,7 +143,7 @@ async def assemble_finalize_artifacts(
     handler,
     cancelled_by_user: bool,
     workspace_id: Optional[str],
-    user_id: Optional[str],
+    recorded_as: Optional[str],
     stop_events: Optional[list[dict]] = None,
     exc: Optional[BaseException] = None,
     restart: bool = False,
@@ -208,7 +212,7 @@ async def assemble_finalize_artifacts(
     steering_inputs = await _delivered_steering_inputs(key)
     if steering_inputs:
         persist_metadata["steering_inputs"] = steering_inputs
-    if not (workspace_id and user_id):
+    if not (workspace_id and recorded_as):
         # Usage rows need both; without them the ledger transition still
         # happens, billing artifacts are simply absent.
         per_call_records = None
@@ -373,7 +377,10 @@ async def drive_finalize_cas(
                 )
                 status = final_status
             return FinalizeVerdict(
-                applied=True, status=status, stopped_by_user=is_user_stop(run)
+                applied=True,
+                status=status,
+                bills_subagents=bills_subagents(run),
+                stopped_by_suspension=is_suspension_stop(run),
             )
         survivor_status = run.get("status")
         logger.warning(

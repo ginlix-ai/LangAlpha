@@ -1,6 +1,7 @@
 import { RECONNECT_ACCOUNT_LINK, type StructuredError } from '@/utils/rateLimitError';
 import { readUpstreamDetail } from '@/lib/upstreamFailure';
 import { claudeCodeRefusal } from '@/lib/claudeCode';
+import type { TurnRefusal } from '@/lib/turnRefusal';
 import type { SSEEvent } from '../types';
 
 /**
@@ -15,7 +16,7 @@ import type { SSEEvent } from '../types';
  * and a reload both read it, so a failed turn shows the same card either way.
  */
 export function readStreamFailure(
-  event: SSEEvent, message: string, workspaceId: string, t: (key: string, opts?: Record<string, unknown>) => string,
+  event: SSEEvent, message: string, refusal: TurnRefusal | null, workspaceId: string, t: (key: string, opts?: Record<string, unknown>) => string,
 ): StructuredError | undefined {
   if (event.type === 'claude_code_off') {
     const { link, messageKey, messageValues, planRefusal } = claudeCodeRefusal(event, workspaceId);
@@ -24,10 +25,13 @@ export function readStreamFailure(
     if (link) return { message: worded, links: [link] };
     if (messageKey) return { message: worded };
   }
-  const kind = event.error_kind;
   // A replayed frame names its run as `response_id`.
   const runId = typeof event.run_id === 'string' ? event.run_id
     : typeof event.response_id === 'string' ? event.response_id : undefined;
+  // A rule kept the turn from running, or the account's suspension ended
+  // it: nothing broke, and neither a retry nor a resend changes the answer.
+  if (refusal?.kind === 'rule' || refusal?.kind === 'suspended') return { message, ruleStop: refusal, runId };
+  const kind = event.error_kind;
   // Worded where it is drawn, from the code and the computer that did not
   // answer: the one the frame names, else the workspace's.
   if (kind === 'computer_unreachable') {

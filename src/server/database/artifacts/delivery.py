@@ -18,6 +18,7 @@ from src.server.database.artifacts.comments import (
     append_message,
     messages_by_comment,
 )
+from src.server.database.conversation.thread_reach import visible_sql
 from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.pool import get_db_connection
 
@@ -159,8 +160,23 @@ class ClaimedComment:
     message_ids: list[str] = field(default_factory=list)
 
 
+#: Leaves out a comment that waits for, or went to, a thread the sender
+#: ``%(caller)s`` may not see: its words are for that thread, and the send
+#: would carry them somewhere else.
+_KEPT_FROM_NONE = f"""
+                       AND NOT EXISTS (
+                           SELECT 1 FROM conversation_threads ct
+                            WHERE ct.conversation_thread_id = c.thread_id
+                              AND NOT {visible_sql('ct', 'c.user_id', '%(caller)s')})"""
+
+
 async def claim_comments(
-    *, user_id: str, thread_id: str, comment_ids: list[str], request_key: str
+    *,
+    user_id: str,
+    thread_id: str,
+    comment_ids: list[str],
+    request_key: str,
+    caller: str,
 ) -> list[ClaimedComment]:
     """Take what a send on ``thread_id`` carries from each named comment,
     marked under its key and that thread.
@@ -171,7 +187,8 @@ async def claim_comments(
     already marked by this same ``request_key`` where any are, so a retransmit
     takes again what its first copy carried, and not words added since, which
     a copy that lost the race would mark sent and never deliver. One with
-    neither is left out. The comments
+    neither is left out, and so is one whose thread the sender ``caller``
+    may not see. The comments
     become ``sent`` to the thread and are reopened, since the owner is raising
     them again. Artifacts in the order they were recorded, pins by number.
     """
@@ -179,7 +196,7 @@ async def claim_comments(
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    """
+                    f"""
                     SELECT c.comment_id::text, c.artifact_id::text, c.number,
                            c.title, c.anchor, l.path, l.workspace_id::text,
                            l.created_at AS recorded_at
@@ -196,7 +213,7 @@ async def claim_comments(
                         ON tw.workspace_id = t.workspace_id
                        AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
                      WHERE c.comment_id = ANY(%(comment_ids)s::uuid[])
-                       AND c.user_id = %(user_id)s
+                       AND c.user_id = %(user_id)s{_KEPT_FROM_NONE}
                      ORDER BY c.comment_id
                        FOR UPDATE OF c
                     """,
@@ -205,6 +222,7 @@ async def claim_comments(
                         "thread_id": thread_id,
                         "home_id": get_home_workspace_id(user_id),
                         "comment_ids": comment_ids,
+                        "caller": caller,
                     },
                 )
                 rows = await cur.fetchall()

@@ -60,18 +60,20 @@ from src.server.database.conversation.threads_read import (
 )
 from src.server.database.home_workspace import is_home_row
 from src.server.database.runs import lifecycle as runs_db
-from src.server.database.turn_targets import Place, turn_place
+from src.server.database.turn_targets import Place, in_shared_workspace, turn_place
 from src.server.database.workspace import (
     free_workspace_name,
     get_live_workspace_ids_for_computer,
     get_workspace,
 )
 from src.server.dependencies.principal import (
+    SHARED_WORKSPACE_REFUSAL,
     CliCall,
     Principal,
     check_turn_body,
     computer_call,
     forbidden,
+    reaches_shared,
     refuse_loop,
     refuse_own,
     refuse_rewrite,
@@ -83,6 +85,7 @@ from src.server.models.computer import ComputerRemoveRequest
 from src.server.models.workflow import RetryRequest
 from src.server.models.workspace import WorkspaceCreate
 from src.server.services import cli_approvals as store
+from src.server.services import membership
 from src.server.services.home_placement import home_turn_computer
 from src.server.services.runs.admission import run_named_by_key
 from src.server.services.runs.pending_input import can_retry
@@ -485,6 +488,23 @@ async def computer_remove(
 # -- work started on another computer ---------------------------------------------
 
 
+async def _refuse_shared(
+    principal: Principal, *, workspace_id: Any = None, thread_id: Any = None
+) -> None:
+    """A computer's token starts no turn in a shared workspace its request's
+    body names, as ``require_scopes`` refuses one its path or query names.
+    The turn would run on the workspace's own computer, none of the user's,
+    so no OK of theirs covers it, and the token is their own agent's, which
+    the workspace's members did not let in. Read nothing with the ``teams``
+    door shut, and leave what the user does not reach to the route, as
+    ``require_scopes`` does (``reaches_shared``)."""
+    if principal.computer_id is None or not membership.teams_door_open():
+        return
+    ids = {"workspace_id": uuid_or_none(workspace_id), "thread_id": uuid_or_none(thread_id)}
+    if await in_shared_workspace(**ids) and await reaches_shared(principal.user_id, **ids):
+        raise forbidden(SHARED_WORKSPACE_REFUSAL)
+
+
 async def _turn_place(
     user_id: str, *, workspace_id: str | None = None, thread_id: str | None = None
 ) -> Place | None:
@@ -560,6 +580,10 @@ async def admit_turn(
     for a thread minted for it. Returns the computer it was checked to run
     on, for a computer's token, which its START holds it to (``_checked``)."""
     await check_turn_body(principal, request, body, thread_id, from_path=from_path)
+    # A path's thread is ``require_scopes``'s; an external id's is not.
+    await _refuse_shared(
+        principal, workspace_id=body.workspace_id, thread_id=None if from_path else thread_id
+    )
 
     async def build(call: CliCall | None) -> Ask | None:
         tid = uuid_or_none(thread_id) if thread_id is not None else None
@@ -614,6 +638,8 @@ async def admit_retry(
     refuses once admitted (none to retry, a stale run, a retransmit) is not
     asked. Returns the computer it was checked to run on, as ``admit_turn``."""
     refuse_rewrite(principal, body.checkpoint_id if body else None)
+    # The path's thread is ``require_scopes``'s.
+    await _refuse_shared(principal, workspace_id=body.workspace_id if body else None)
 
     async def build(call: CliCall | None) -> Ask | None:
         tid = uuid_or_none(thread_id)

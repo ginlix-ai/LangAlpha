@@ -51,6 +51,12 @@ import {
 } from './connectors/ConnectorCells';
 import { connectorNeedsUser } from './connectors/attention';
 import { connectorMatches, groupConnectors } from './connectors/groupConnectors';
+import { OrgConnectorsSection } from './connectors/OrgConnectors';
+import { RuleNote } from '@/components/organization/RuleRow';
+import { useAccount, useRule } from '@/hooks/useAccount';
+import { RULE, setterOf } from '@/lib/accountRules';
+import { ruleRefusalCopy } from '@/lib/ruleRefusal';
+import { connectorHeldBack } from './connectors/heldBack';
 import './connectors/connectors.css';
 
 /**
@@ -101,6 +107,10 @@ export function McpServers() {
   // is the user's to edit once it exists, so the vendor's constraints follow
   // wherever the URL still points.
   const vendorOf = useVendorOf();
+  // A rule may keep the user's own connectors off.
+  const ownConnectors = useRule(RULE.userConnectors);
+  const { policy, organizationName } = useAccount();
+  const heldBack = (server: CatalogServer) => connectorHeldBack(ownConnectors.allowed, vendorOf(server.url));
 
   const {
     oauth,
@@ -156,7 +166,15 @@ export function McpServers() {
   const registryUnavailable = !brokerages && !!brokeragesError;
   const [builtinTogglingName, setBuiltinTogglingName] = useState<string | null>(null);
 
-  useAddIntent({ server: openAdd, import: openImport });
+  // Nothing new can be added while the rule keeps the user's own off; the
+  // page says so rather than opening a form the server would refuse.
+  const refuseAdd = () => {
+    const copy = ruleRefusalCopy(t, { rule: RULE.userConnectors, setBy: setterOf(policy, RULE.userConnectors), message: '' }, organizationName, (model) => model);
+    toast({ title: copy.title, description: copy.body });
+  };
+  const addServer = ownConnectors.allowed ? openAdd : refuseAdd;
+  const addImport = ownConnectors.allowed ? openImport : refuseAdd;
+  useAddIntent({ server: addServer, import: addImport });
 
   const servers = catalog?.servers ?? [];
   // A save that went by way of a sign-in came back without finishing: its
@@ -183,7 +201,8 @@ export function McpServers() {
     isOn: (row) => isEffectivelyEnabled(row.server),
     // A built-in never needs the user: it has no sign-in and no key of its
     // own to go wrong.
-    needsUser: (row) => row.tier === 'catalog' && connectorNeedsUser(row.server),
+    // A held-back row needs nothing the user can give it.
+    needsUser: (row) => row.tier === 'catalog' && !heldBack(row.server) && connectorNeedsUser(row.server),
     justAdded: 'server',
     startWhen: !!catalog && servers.length === 0,
     invalidate: invalidateMcpFanout,
@@ -259,6 +278,7 @@ export function McpServers() {
         refreshing={oauth.refreshingName === server.name}
         onOpen={() => detail.open(server.name)}
         onConnect={() => connect(server)}
+        heldBack={heldBack(server)}
         menu={
           <ConnectorMenu
             server={server}
@@ -321,12 +341,21 @@ export function McpServers() {
       ? t('plugins.connectorsPage.capUsed', { used: servers.length, max: maxServers })
       : undefined;
 
+  // One line for every held-back row, where the user looks for their own.
+  const heldBackNote = servers.some(heldBack) && (
+    <RuleNote className="connector-rule-note">
+      {t('organization.connectors.ownOff', { who: ownConnectors.who.start })}
+    </RuleNote>
+  );
   let ownBody: ReactNode = null;
   if (groups.own.length > 0) {
     ownBody = (
-      <SurfaceGrid {...list.fold(OWN_ROWS, groups.own.map((s) => s.name))}>
-        {groups.own.map(renderCell)}
-      </SurfaceGrid>
+      <>
+        {heldBackNote}
+        <SurfaceGrid {...list.fold(OWN_ROWS, groups.own.map((s) => s.name))}>
+          {groups.own.map(renderCell)}
+        </SurfaceGrid>
+      </>
     );
   } else if (ownTotal === 0 && !list.narrowed && !list.showStart) {
     // Plugin connectors but none added by hand: the section stays, as the
@@ -334,7 +363,7 @@ export function McpServers() {
     ownBody = (
       <p className="connector-quiet">
         {t('plugins.connectorsPage.empty')}
-        <button type="button" onClick={openAdd}>
+        <button type="button" onClick={addServer}>
           {t('plugins.connectorsPage.addOne')}
         </button>
       </p>
@@ -411,7 +440,7 @@ export function McpServers() {
         {list.showStart && (
           <CatalogStart
             scope="connectors"
-            onAdd={(intent) => (intent === 'import' ? openImport() : openAdd())}
+            onAdd={(intent) => (intent === 'import' ? addImport() : addServer())}
           />
         )}
 
@@ -424,6 +453,11 @@ export function McpServers() {
             <SurfaceGrid>{groups.attention.map(renderCell)}</SurfaceGrid>
           </SurfaceSection>
         )}
+
+        <OrgConnectorsSection />
+
+        {/* No row of the user's own to sit above: the note leads the rest. */}
+        {groups.own.length === 0 && heldBackNote}
 
         {ownBody && (
           <SurfaceSection

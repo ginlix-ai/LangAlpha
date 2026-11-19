@@ -17,6 +17,8 @@ from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app, pin_chat_limit
 
+from tests.unit.server.access_stub import as_owner  # noqa: E402
+
 THREADS_MOD = "src.server.app.threads.messaging"
 AUTH_MOD = "src.server.utils.api"
 
@@ -161,7 +163,7 @@ class TestReconnectWiring:
             if False:
                 yield ""
 
-        with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), \
+        with as_owner(THREADS_MOD), \
              patch("src.server.handlers.chat.reconnect_admission.classify_reconnect", new=_fake_classify), \
              patch("src.server.handlers.chat.reconnect_to_workflow_stream", new=_fake_reconnect):
             resp = await threads_client.get(
@@ -190,7 +192,7 @@ class TestReconnectWiring:
             if False:
                 yield ""
 
-        with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), \
+        with as_owner(THREADS_MOD), \
              patch("src.server.handlers.chat.reconnect_admission.classify_reconnect", new=_fake_classify), \
              patch("src.server.handlers.chat.reconnect_to_workflow_stream", new=_fake_reconnect):
             resp = await threads_client.get(

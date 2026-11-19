@@ -193,8 +193,9 @@ async def invalidate_byok_cache(user_id: str) -> None:
             pass
 
 
-async def update_base_url(user_id: str, provider: str, base_url: str | None, conn=None) -> None:
-    """Update base_url on an existing API key row (no-op if row doesn't exist)."""
+async def update_base_url(user_id: str, provider: str, base_url: str | None, conn=None) -> bool:
+    """Update base_url on an existing API key row; False, and nothing
+    written, when there is none."""
     async with get_db_connection(conn) as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -210,6 +211,7 @@ async def update_base_url(user_id: str, provider: str, base_url: str | None, con
                 logger.info(
                     f"[api_keys_db] update_base_url user_id={user_id} provider={provider}"
                 )
+            return cur.rowcount > 0
 
 
 async def get_base_url_for_provider(user_id: str, provider: str) -> str | None:

@@ -26,6 +26,8 @@ from src.server.services.claude_code.flow import backend_on, pasted_code, pasted
 from src.server.services.claude_code.saved import SavedHome
 from src.server.services.claude_code.setup_state import chief_of_staff, setup_state
 from src.server.services.oauth_signin import OAuthRefusal
+from src.server.services.policy import OWN_SUBSCRIPTIONS
+from src.server.services.account import require_policy
 from src.server.utils.api import CurrentUserId, require_thread_owner
 
 router = APIRouter(prefix="/api/v1/claude-code", tags=["claude-code"])
@@ -56,18 +58,21 @@ async def get_status(x_user_id: CurrentUserId):
 @router.post("/sign-in")
 async def start_sign_in(x_user_id: CurrentUserId):
     require(await backend_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     return await flow.start_sign_in(SavedHome(x_user_id))
 
 
 @router.post("/sign-in/code", response_model=ClaudeCodeStatus)
 async def finish_sign_in(body: CodeBody, x_user_id: CurrentUserId):
     require(await backend_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     return await flow.finish_sign_in(SavedHome(x_user_id), pasted_code(body))
 
 
 @router.put("/token", response_model=ClaudeCodeStatus)
 async def save_token(body: TokenBody, x_user_id: CurrentUserId):
     require(await backend_on(x_user_id))
+    (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     token, rejected = pasted_token(body)
     return await flow.paste(SavedHome(x_user_id), token, rejected)
 
@@ -104,6 +109,9 @@ _CUSTODY_REFUSED = {
 
 @router.put("/custody", response_model=ClaudeCodeCustody)
 async def put_custody(body: CustodyBody, x_user_id: CurrentUserId):
+    # Storing the token keeps a credential; any other choice deletes it.
+    if body.mode == "stored":
+        (await require_policy(x_user_id)).require(OWN_SUBSCRIPTIONS, "Connecting a Claude Code subscription")
     try:
         chosen = await hosted.choose(x_user_id, body.mode, body.disclosure) if await flow.rows_on(x_user_id) else None
     except hosted.CustodyRefused as refused:

@@ -2264,6 +2264,7 @@ async def test_a_first_send_a_disconnect_stopped_at_start_is_regenerated_in_plac
         thread_id=new_thread.id,
         workspace_id=None,
         user_id=None,
+        recorded_as=None,
         is_byok=False,
     )
     coordinator = RunCoordinator()

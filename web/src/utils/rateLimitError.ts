@@ -9,6 +9,7 @@
 
 import type { PlanRefusal } from '@/api/model';
 import type { PlanLimit, UpstreamErrorHint, UpstreamPayer } from '@/lib/upstreamFailure';
+import type { RuleStop } from '@/lib/turnRefusal';
 import type { ErrorKind } from '@/types/sse';
 
 /** A 429's `detail`, as it comes off the wire. Only the two fields this module
@@ -85,6 +86,9 @@ export interface StructuredError {
    *  the computer that did not answer with its name, when the server knows
    *  which: a Chief of Staff reaches computers other than its page's. */
   unreachable?: { code?: string; computerId?: string; computerName?: string };
+  /** The account's standing kept the turn from running or ended it: drawn as
+   *  a neutral row, with nothing to retry. */
+  ruleStop?: RuleStop;
   /** A turn a Claude plan's limit ended, worded where it is drawn, in the
    *  reader's zone and language, under its own headline. */
   planRefusal?: PlanRefusal;
@@ -123,6 +127,11 @@ const OUR_OWN_LIMIT = 'burst_limit';
  *  user's account, and the portal is where they act on it. */
 const NOT_ABOUT_THE_ACCOUNT = new Set([OUR_OWN_LIMIT, 'service_unavailable']);
 
+/** An organization seat's allowance for the period is used up: a limit the
+ *  organization sets, not a failure, and not one the member's own plan pages
+ *  can lift. Shown in the server's words, with no link. */
+export const SEAT_ALLOWANCE_USED = 'seat_allowance_used';
+
 export function buildRateLimitError(
   info: RateLimitErrorInfo,
   platformUrl?: string | null,
@@ -133,6 +142,9 @@ export function buildRateLimitError(
   // deployment's answer for every self-hoster, printed "resets at midnight UTC"
   // to everyone outside UTC, and still covered only 5 of the 9 types the
   // service issues — the other 4 came out as "Rate limit exceeded".
+  if (info.type === SEAT_ALLOWANCE_USED && typeof info.message === 'string' && info.message) {
+    return { message: info.message, ruleStop: { kind: 'limit' } };
+  }
   const message =
     info.type === OUR_OWN_LIMIT
       ? 'Too many concurrent requests. Please wait a moment.'

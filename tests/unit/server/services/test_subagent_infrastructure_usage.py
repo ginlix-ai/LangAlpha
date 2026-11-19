@@ -55,7 +55,7 @@ async def test_persists_infra_usage_with_empty_per_call_records():
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     fake_service.record_tool_usage_batch.assert_called_once_with(
@@ -89,7 +89,7 @@ async def test_tool_only_rows_carry_task_identity():
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     service.persist_usage.assert_awaited_once()
@@ -121,7 +121,7 @@ async def test_no_tool_batch_when_tool_usage_empty():
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     fake_service.record_tool_usage_batch.assert_not_called()
@@ -143,7 +143,7 @@ async def test_task_with_no_records_and_no_tool_usage_skipped():
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     fake_service.persist_usage.assert_not_awaited()
@@ -204,7 +204,7 @@ async def _persist_with_registry(registry, task, response_id="resp-1"):
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
     return fake_service
 
@@ -299,7 +299,7 @@ async def test_no_registry_fallback_gates_on_ownership():
             tasks=[task],
             thread_id="thread-1",
             workspace_id="ws-1",
-            user_id="user-1",
+            recorded_as="user-1",
         )
 
     fake_service.persist_usage.assert_not_awaited()

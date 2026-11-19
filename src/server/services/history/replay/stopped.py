@@ -1,10 +1,14 @@
-"""The close a user-stopped turn owes its last assistant message."""
+"""The close a stopped turn owes its last assistant message."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from src.server.contracts.status import is_user_stop
+from src.server.contracts.status import (
+    SUSPENSION_STOPPER,
+    is_suspension_stop,
+    is_user_stop,
+)
 from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
 
 
@@ -21,10 +25,13 @@ def stop_close_item(
     close only for a message still streaming at the stop, and only when they
     replay its main lane verbatim. A stop during bring-up, before any
     assistant event, has no message to name, so its close carries no ``id``:
-    clients apply a close to the turn's bubble by ``turn_index``. System
-    cancels are not stops and get no close.
+    clients apply a close to the turn's bubble by ``turn_index``. A stop
+    the account's suspension asked for closes the same way and says so
+    (``stopped_by``), as its live ``run_end`` did; other system cancels are
+    not stops and get no close.
     """
-    if not is_user_stop(response):
+    suspended = is_suspension_stop(response)
+    if not suspended and not is_user_stop(response):
         return None
     last: dict[str, Any] | None = None
     closed: set[str] = set()
@@ -47,6 +54,8 @@ def stop_close_item(
         "role": "assistant",
         "finish_reason": "stopped",
     }
+    if suspended:
+        close["stopped_by"] = SUSPENSION_STOPPER
     if last is not None:
         close["id"] = last["id"]
         if last.get("agent"):

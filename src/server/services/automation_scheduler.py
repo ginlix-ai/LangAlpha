@@ -23,10 +23,8 @@ from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
     AutomationExecutor,
 )
-from src.server.services.automation_settlement import (
-    INTERRUPTED_ERROR,
-    settle_abandoned,
-)
+from src.server.services.automation_outcomes import INTERRUPTED_ERROR
+from src.server.services.automation_settlement import settle_abandoned
 from src.utils.timezone_utils import zone_or_none
 
 logger = logging.getLogger(__name__)

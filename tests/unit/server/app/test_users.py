@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from src.server.services.account_contract import ACCOUNT_CONTRACT
 from tests.conftest import create_test_app
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ async def test_get_current_user(client):
             return_value=result,
         ),
         patch("src.server.dependencies.usage_limits.HOST_MODE", "oss"),
+        patch("src.server.services.platform_client.HOST_MODE", "oss"),
     ):
         resp = await client.get("/api/v1/users/me")
 
@@ -160,6 +162,7 @@ async def test_get_current_user_no_preferences(client):
             return_value=result,
         ),
         patch("src.server.dependencies.usage_limits.HOST_MODE", "oss"),
+        patch("src.server.services.platform_client.HOST_MODE", "oss"),
     ):
         resp = await client.get("/api/v1/users/me")
 
@@ -691,7 +694,7 @@ async def test_get_user_access_tier_has_access(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_membership",
+            "src.server.services.membership.read_membership",
             new_callable=AsyncMock,
             return_value={"access_tier": 0, "plan_display_name": "Pro"},
         ),
@@ -714,7 +717,7 @@ async def test_get_user_access_tier_no_access(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_membership",
+            "src.server.services.membership.read_membership",
             new_callable=AsyncMock,
             return_value={"access_tier": -1, "plan_display_name": None},
         ),
@@ -738,7 +741,7 @@ async def test_get_user_unknown_membership_is_503_not_no_access(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_membership",
+            "src.server.services.membership.read_membership",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -760,7 +763,7 @@ async def test_get_user_refresh_tier_asks_past_the_cache(client):
             new_callable=AsyncMock,
             return_value=result,
         ),
-        patch("src.server.dependencies.usage_limits._fetch_platform_membership", new=fetch),
+        patch("src.server.services.membership.read_membership", new=fetch),
     ):
         resp = await client.get("/api/v1/users/me?refresh_tier=true")
 
@@ -768,34 +771,367 @@ async def test_get_user_refresh_tier_asks_past_the_cache(client):
     assert fetch.await_args.kwargs == {"refresh": True}
 
 
-# ---------------------------------------------------------------------------
-# _fetch_platform_membership / _fetch_platform_tier — direct unit tests
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_user_names_the_organization_only_through_the_door(client):
+    from src.server.services.account_contract import NO_ORG, Account, Org
+    from src.server.services.account import Standing
+
+    result = {"user": _user(), "preferences": _prefs()}
+    member = Account(org=Org(id="org-1", name="Acme"), features={"teams": True})
+    seen = []
+    for account in (member, NO_ORG, None):
+        with (
+            patch(f"{DB}.get_user_with_preferences", new_callable=AsyncMock, return_value=result),
+            patch(
+                "src.server.services.membership.read_membership",
+                new_callable=AsyncMock,
+                return_value={"access_tier": 0, "plan_display_name": "Pro"},
+            ),
+            patch(
+                "src.server.services.account.read_standing",
+                new_callable=AsyncMock,
+                return_value=Standing(account, account),
+            ),
+        ):
+            resp = await client.get("/api/v1/users/me")
+        seen.append(resp.json()["user"]["organization"])
+    assert seen == [{"id": "org-1", "name": "Acme", "suspended": False, "teams": []}, None, None]
 
 
-def _mock_cache(cached_value=None, *, last_known=None, paused=None):
-    """A cache holding the 5-minute entry, the last-known membership and the
-    unreachable pause, in the order the membership read asks for them."""
+@pytest.mark.asyncio
+async def test_get_user_reports_the_effective_policy(client):
+    from src.config.models import PolicyLayer
+    from src.server.services.account_contract import NO_ORG, Account, Org
+    from src.server.services.account import Standing
+
+    result = {"user": _user(), "preferences": _prefs()}
+    member = Account(
+        org=Org(id="org-1", name="Acme"),
+        features={"teams": True},
+        policy=PolicyLayer.model_validate(
+            {"models": {"allowed": ["m-b", "m-a"]}, "own_model_access": {"api_keys": False}}
+        ),
+    )
+    seen = []
+    for account in (member, NO_ORG, None):
+        with (
+            patch(f"{DB}.get_user_with_preferences", new_callable=AsyncMock, return_value=result),
+            patch(
+                "src.server.services.membership.read_membership",
+                new_callable=AsyncMock,
+                return_value={"access_tier": 0, "plan_display_name": "Pro"},
+            ),
+            patch(
+                "src.server.services.account.read_standing",
+                new_callable=AsyncMock,
+                return_value=Standing(account, account),
+            ),
+            patch("src.server.services.account.deployment_policy", return_value=None),
+        ):
+            resp = await client.get("/api/v1/users/me")
+        seen.append(resp.json()["user"]["policy"])
+    assert seen == [
+        {
+            "models": {"allowed": ["m-b", "m-a"]},
+            "own_model_access": {"api_keys": False, "subscriptions": True},
+            "public_links": True,
+            "trading": True,
+            "own_machines": True,
+            "user_connectors": True,
+            "set_by": {
+                "models.allowed": "organization",
+                "own_model_access.api_keys": "organization",
+            },
+        },
+        {
+            "models": {"allowed": None},
+            "own_model_access": {"api_keys": True, "subscriptions": True},
+            "public_links": True,
+            "trading": True,
+            "own_machines": True,
+            "user_connectors": True,
+            "set_by": {},
+        },
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_membership_change_notice_takes_the_service_token_only(client):
+    forget = AsyncMock()
+    with (
+        patch("src.server.utils.api._SERVICE_TOKEN", "svc"),
+        patch("src.server.services.membership.forget_membership", new=forget),
+    ):
+        refused = await client.post("/api/v1/users/me/membership-changed")
+        wrong = await client.post(
+            "/api/v1/users/me/membership-changed",
+            headers={"X-Service-Token": "nope", "X-User-Id": "user-9"},
+        )
+        ok = await client.post(
+            "/api/v1/users/me/membership-changed",
+            headers={"X-Service-Token": "svc", "X-User-Id": "user-9"},
+        )
+    assert (refused.status_code, wrong.status_code, ok.status_code) == (401, 401, 204)
+    forget.assert_awaited_once_with("user-9", suspended=None)
+
+
+@pytest.mark.asyncio
+async def test_forgetting_a_membership_drops_the_entry_and_the_pause_only():
     cache = AsyncMock()
-    cache.mget = AsyncMock(return_value=[cached_value, last_known, paused])
+    with _platform(AsyncMock(), cache):
+        from src.server.services.membership import forget_membership
+
+        await forget_membership("user-123")
+    cache.bump.assert_awaited_once_with(
+        "platform_membership:epoch:user-123", 31 * 24 * 3600, also_set=None, also_delete=()
+    )
+    deleted = [c.args[0] for c in cache.delete.await_args_list]
+    assert deleted == [
+        "platform_membership:user-123",
+        "platform_membership:unreachable:user-123",
+    ]
+
+
+class _MemoryCache:
+    """The cache calls the membership read makes, kept in a dict, with the
+    counter-guarded write checked at write time as Redis checks it."""
+
+    def __init__(self):
+        self.store: dict = {}
+
+    async def mget(self, keys, strict=False):
+        return [self.store.get(k) for k in keys]
+
+    async def set(self, key, value, ttl=None):
+        self.store[key] = value
+        return True
+
+    async def set_many(self, items):
+        for key, value, _ttl in items:
+            self.store[key] = value
+        return True
+
+    async def set_many_fenced(self, items, *, counter, delete=()):
+        key, expected, _ttl = counter
+        if int(self.store.get(key) or 0) != expected:
+            return False
+        await self.set_many(items)
+        for key in delete:
+            self.store.pop(key, None)
+        return True
+
+    async def delete(self, key, *more):
+        return any([self.store.pop(k, None) is not None for k in (key, *more)])
+
+    async def bump(self, key, ttl, *, also_set=None, also_delete=()):
+        self.store[key] = int(self.store.get(key) or 0) + 1
+        if also_set is not None:
+            self.store[also_set[0]] = also_set[1]
+        for k in also_delete:
+            self.store.pop(k, None)
+        return self.store[key]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_given_before_a_change_notice_never_lands_after_it():
+    """An ask that left before the notice and answers after it must not stand
+    for five minutes, nor replace the fresher last-known record."""
+    import asyncio
+
+    member = {"valid": True, "access_tier": 2, "org": {"id": "o", "name": "Acme"}}
+    removed = {"valid": True, "access_tier": 2}
+    answers = [asyncio.Event(), asyncio.Event()]
+    bodies = [member, removed]
+    calls = []
+
+    async def post(*_args, **_kwargs):
+        n = len(calls)
+        calls.append(n)
+        await answers[n].wait()
+        return httpx.Response(200, json=bodies[n])
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=post)
+    cache = _MemoryCache()
+
+    with _platform(mock_client, cache, door=True):
+        from src.server.services.membership import (
+            read_membership,
+            forget_membership,
+        )
+
+        stale = asyncio.create_task(read_membership("u"))
+        while not calls:
+            await asyncio.sleep(0)
+        await forget_membership("u")
+        fresh = asyncio.create_task(read_membership("u"))
+        answers[1].set()
+        assert "org" not in await fresh
+        answers[0].set()
+        # The caller that asked first still gets the answer it waited for.
+        assert (await stale)["org"] == {"id": "o", "name": "Acme"}
+
+        assert len(calls) == 2
+        again = await read_membership("u")
+        assert len(calls) == 2, "the fresh entry serves the next read"
+        assert "org" not in again
+        assert "org" not in cache.store[f"platform_membership:last_known:v{ACCOUNT_CONTRACT}:u"]
+
+
+@pytest.mark.asyncio
+async def test_an_entry_from_before_the_epoch_reads_as_absent():
+    """An entry written unguarded (an older worker) after a notice is not used."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(
+        return_value=httpx.Response(200, json={"valid": True, "access_tier": 3})
+    )
+    cache = _mock_cache(PRO, last_known=PRO, epoch=1)
+
+    with _platform(mock_client, cache, door=True):
+        from src.server.services.membership import read_membership
+
+        result = await read_membership("user-123")
+
+    assert result == {"access_tier": 3, "plan_display_name": None}
+    stamped = cache.set_many_fenced.await_args.args[0][0][1]
+    assert stamped["membership_epoch"] == 1
+    assert cache.set_many_fenced.await_args.kwargs["counter"] == (
+        "platform_membership:epoch:user-123", 1, 31 * 24 * 3600
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_last_known_record_from_before_a_notice_keeps_only_its_plan():
+    """The plan still stands in during an outage; the organization it names
+    is from before the change and reads as unknown."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    org = {"org": {"id": "o", "name": "Acme"}, "policy": {"x": 1}}
+    cache = _mock_cache(
+        None, last_known={**PRO, **org, "membership_epoch": 1}, epoch=4
+    )
+
+    with _platform(mock_client, cache, door=True):
+        from src.server.services.membership import read_membership
+
+        assert await read_membership("user-123") == {
+            **PRO, "account_unknown": True,
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_last_known_record_under_the_current_epoch_stands_in_whole():
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    org = {"org": {"id": "o", "name": "Acme"}}
+    cache = _mock_cache(None, last_known={**PRO, **org, "membership_epoch": 4}, epoch=4)
+
+    with _platform(mock_client, cache, door=True):
+        from src.server.services.membership import read_membership
+
+        assert await read_membership("user-123") == {**PRO, **org}
+
+
+@pytest.mark.asyncio
+async def test_a_notice_then_an_outage_leaves_the_organization_unknown():
+    """The organization tightens and says so; the next ask times out. The
+    answer from before the notice must not decide the organization."""
+    member = {"valid": True, "access_tier": 2, "plan_display_name": "Pro",
+              "org": {"id": "o", "name": "Acme"},
+              "features": {"teams": True}}
+    answers = [httpx.Response(200, json=member), httpx.ConnectError("timed out")]
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=answers)
+    cache = _MemoryCache()
+
+    with (
+        _platform(mock_client, cache, door=True),
+        patch("src.server.services.account.is_feature_enabled_system", lambda k: True),
+        patch("src.server.services.membership.is_feature_enabled_system", lambda k: True),
+    ):
+        from src.server.services.membership import forget_membership
+        from src.server.services.membership import access_tier
+        from src.server.services.account import account_for
+
+        assert (await account_for("u")).org.name == "Acme"
+        await forget_membership("u")
+        assert await account_for("u") is None
+        assert await access_tier("u") == 2, "the plan still stands in"
+
+
+@pytest.mark.asyncio
+async def test_an_ask_failing_after_a_notice_does_not_pause_the_user():
+    """An ask out when the notice cleared the pause must not put it back, or
+    reads would serve the old record without asking a reachable service."""
+    import asyncio
+
+    gate = asyncio.Event()
+
+    async def post(*_args, **_kwargs):
+        await gate.wait()
+        raise httpx.ConnectError("timed out")
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=post)
+    cache = _MemoryCache()
+
+    with _platform(mock_client, cache, door=True):
+        from src.server.services.membership import (
+            read_membership,
+            forget_membership,
+        )
+
+        stale = asyncio.create_task(read_membership("u"))
+        while not mock_client.post.await_count:
+            await asyncio.sleep(0)
+        await forget_membership("u")
+        gate.set()
+        await stale
+    assert "platform_membership:unreachable:u" not in cache.store
+
+
+# ---------------------------------------------------------------------------
+# read_membership / access_tier — direct unit tests
+# ---------------------------------------------------------------------------
+
+
+def _mock_cache(cached_value=None, *, last_known=None, paused=None, epoch=None):
+    """A cache holding the 5-minute entry, the last-known membership, the
+    unreachable pause and the change epoch, in the order the membership read
+    asks for them."""
+    cache = AsyncMock()
+    cache.mget = AsyncMock(return_value=[cached_value, last_known, paused, epoch, None])
     cache.set = AsyncMock(return_value=True)
     cache.set_many = AsyncMock(return_value=True)
+    cache.set_many_fenced = AsyncMock(return_value=True)
     return cache
 
 
 LIMITS = "src.server.dependencies.usage_limits"
 
 
+def _assert_paused_only(cache):
+    """The failed ask wrote the pause, as the read always has, and nothing else."""
+    cache.set_many.assert_not_awaited()
+    cache.set_many_fenced.assert_not_awaited()
+    cache.set.assert_awaited_once_with(
+        "platform_membership:unreachable:user-123", True, ttl=15
+    )
+
+
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_no_service_url():
+async def test_access_tier_no_service_url():
     """Returns -1 immediately when AUTH_SERVICE_URL is unset."""
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", ""),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result == -1
 
@@ -806,19 +1142,21 @@ async def test_fetch_platform_membership_oss_mode_short_circuits():
     mock_client = AsyncMock()
     with (
         patch(f"{LIMITS}.HOST_MODE", "oss"),
+        patch("src.server.services.platform_client.HOST_MODE", "oss"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{LIMITS}.get_http_client", return_value=mock_client),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        result = await _fetch_platform_membership("user-123")
+        result = await read_membership("user-123")
 
     assert result == {"access_tier": -1, "plan_display_name": None}
     mock_client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_returns_tier():
+async def test_access_tier_returns_tier():
     """Returns tier when platform responds with access_tier."""
     mock_response = httpx.Response(
         200, json={"valid": True, "access_tier": 0}
@@ -829,17 +1167,19 @@ async def test_fetch_platform_tier_returns_tier():
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}.get_http_client",
+            "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="service-token"),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result == 0
 
@@ -852,23 +1192,25 @@ async def test_fetch_platform_tier_returns_tier():
 
 
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_cache_hit():
+async def test_access_tier_cache_hit():
     """Returns cached value without calling platform."""
     cache = _mock_cache(cached_value={"access_tier": 1, "plan_display_name": "Pro"})
     mock_client = AsyncMock()
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}.get_http_client",
+            "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result == 1
     mock_client.post.assert_not_called()  # no HTTP call on cache hit
@@ -886,14 +1228,16 @@ async def test_fetch_platform_membership_caches_tier_and_plan_display_name_toget
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{LIMITS}.get_http_client", return_value=mock_client),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        result = await _fetch_platform_membership("user-123")
+        result = await read_membership("user-123")
 
     assert result == {"access_tier": 2, "plan_display_name": "Premium"}
     # The cached value carries both fields so a follow-up tier-only read is free.
@@ -903,7 +1247,7 @@ async def test_fetch_platform_membership_caches_tier_and_plan_display_name_toget
 
 
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_platform_error():
+async def test_access_tier_platform_error():
     """A 5xx is no answer: the tier is unknown, not -1, and nothing is cached
     in the membership's place."""
     mock_response = httpx.Response(500, text="Internal Server Error")
@@ -913,27 +1257,26 @@ async def test_fetch_platform_tier_platform_error():
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}.get_http_client",
+            "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result is None
-    cache.set_many.assert_not_awaited()
-    cache.set.assert_awaited_once_with(
-        "platform_membership:unreachable:user-123", True, ttl=15
-    )
+    _assert_paused_only(cache)
 
 
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_network_error():
+async def test_access_tier_network_error():
     """A refused connection is the platform restarting, not the user's plan."""
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
@@ -941,32 +1284,40 @@ async def test_fetch_platform_tier_network_error():
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}.get_http_client",
+            "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result is None
-    cache.set_many.assert_not_awaited()
-    cache.set.assert_awaited_once_with(
-        "platform_membership:unreachable:user-123", True, ttl=15
-    )
+    _assert_paused_only(cache)
 
 
-def _platform(mock_client, cache):
+def _platform(mock_client, cache, *, door=False):
+    """The auth service asked about users; ``door`` opens ``teams`` too."""
     from contextlib import ExitStack
 
     stack = ExitStack()
+    stack.enter_context(
+        patch("src.server.services.account.is_feature_enabled_system", lambda k: door)
+    )
+    stack.enter_context(
+        patch("src.server.services.membership.is_feature_enabled_system", lambda k: door)
+    )
     stack.enter_context(patch(f"{LIMITS}.HOST_MODE", "platform"))
+    stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
     stack.enter_context(patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch(f"{LIMITS}.get_http_client", return_value=mock_client))
+    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
     stack.enter_context(
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache)
     )
@@ -986,14 +1337,11 @@ async def test_unreachable_platform_stands_in_the_last_known_membership():
     cache = _mock_cache(None, last_known=PRO)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        assert await _fetch_platform_membership("user-123") == PRO
+        assert await read_membership("user-123") == PRO
 
-    cache.set_many.assert_not_awaited()
-    cache.set.assert_awaited_once_with(
-        "platform_membership:unreachable:user-123", True, ttl=15
-    )
+    _assert_paused_only(cache)
 
 
 @pytest.mark.asyncio
@@ -1004,9 +1352,9 @@ async def test_a_paused_user_is_not_asked_again():
     cache = _mock_cache(None, last_known=PRO, paused=True)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        assert await _fetch_platform_membership("user-123") == PRO
+        assert await read_membership("user-123") == PRO
 
     mock_client.post.assert_not_called()
 
@@ -1017,14 +1365,9 @@ async def test_a_paused_user_with_nothing_on_record_is_unknown():
     cache = _mock_cache(None, paused=True)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import (
-            _fetch_platform_tier,
-            get_platform_access_tier,
-        )
+        from src.server.services.membership import access_tier
 
-        assert await _fetch_platform_tier("user-123") is None
-        # Plan gates read unknown as no plan: a feature lost for the outage.
-        assert await get_platform_access_tier("user-123") is None
+        assert await access_tier("user-123") is None
 
     mock_client.post.assert_not_called()
 
@@ -1039,9 +1382,9 @@ async def test_refresh_asks_past_the_cache_and_the_pause():
     cache = _mock_cache(PRO, last_known=PRO, paused=True)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        result = await _fetch_platform_membership("user-123", refresh=True)
+        result = await read_membership("user-123", refresh=True)
 
     assert result["access_tier"] == 3
     mock_client.post.assert_awaited_once()
@@ -1056,9 +1399,9 @@ async def test_a_failed_refresh_does_not_keep_the_plan_it_replaces():
     cache = _mock_cache(PRO, last_known=PRO)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        assert await _fetch_platform_membership("user-123", refresh=True) == PRO
+        assert await read_membership("user-123", refresh=True) == PRO
 
     cache.delete.assert_awaited_once_with("platform_membership:user-123")
 
@@ -1074,9 +1417,9 @@ async def test_a_refusal_asks_past_the_cache_and_leaves_it_in_place():
     cache = _mock_cache(PRO, last_known=PRO)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        assert await _fetch_platform_tier("user-123", recheck=True) == 3
+        assert await access_tier("user-123", recheck=True) == 3
 
     mock_client.post.assert_awaited_once()
     cache.delete.assert_not_awaited()
@@ -1091,9 +1434,9 @@ async def test_a_refusal_during_the_outage_pause_takes_the_last_known_plan():
     cache = _mock_cache(PRO, last_known=PRO, paused=True)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        assert await _fetch_platform_tier("user-123", recheck=True) == 2
+        assert await access_tier("user-123", recheck=True) == 2
 
     mock_client.post.assert_not_called()
 
@@ -1106,9 +1449,9 @@ async def test_an_entry_without_a_last_known_record_seeds_one():
     cache = _mock_cache(PRO)
 
     with _platform(mock_client, cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        assert await _fetch_platform_membership("user-123") == PRO
+        assert await read_membership("user-123") == PRO
 
     cache.set.assert_awaited_once_with(
         "platform_membership:last_known:user-123", PRO, ttl=30 * 24 * 3600
@@ -1122,15 +1465,15 @@ async def test_a_cached_no_plan_seeds_nothing():
     cache = _mock_cache({"access_tier": -1, "plan_display_name": None})
 
     with _platform(AsyncMock(), cache):
-        from src.server.dependencies.usage_limits import _fetch_platform_membership
+        from src.server.services.membership import read_membership
 
-        await _fetch_platform_membership("user-123")
+        await read_membership("user-123")
 
     cache.set.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fetch_platform_tier_missing_field():
+async def test_access_tier_missing_field():
     """Returns -1 when response lacks access_tier field."""
     mock_response = httpx.Response(200, json={"valid": True})
     mock_client = AsyncMock()
@@ -1139,17 +1482,19 @@ async def test_fetch_platform_tier_missing_field():
 
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch("src.server.services.platform_client.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}.get_http_client",
+            "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
     ):
-        from src.server.dependencies.usage_limits import _fetch_platform_tier
+        from src.server.services.membership import access_tier
 
-        result = await _fetch_platform_tier("user-123")
+        result = await access_tier("user-123")
 
     assert result == -1
 
@@ -1255,6 +1600,39 @@ async def test_deleting_a_provider_a_stored_model_still_needs_is_rejected(client
     assert resp.status_code == 400
     assert "my-gw" in resp.json()["detail"]
     upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adding_a_custom_model_the_policy_denies_is_refused_and_editing_one_is_not(client):
+    from src.config.models import PolicyLayer
+    from src.server.services.policy import merge
+
+    denied = merge(None, PolicyLayer.model_validate({"own_model_access": {"api_keys": False}}))
+    stored = {"custom_models": [{"name": "mine", "model_id": "gpt-x", "provider": "openai"}]}
+    with patch(
+        "src.server.services.account.require_policy", new_callable=AsyncMock, return_value=denied
+    ) as policy:
+        async with _prefs_endpoint(stored) as upsert:
+            added = await client.put(
+                "/api/v1/users/me/preferences",
+                json={"model_preference": {"custom_models": [
+                    *stored["custom_models"],
+                    {"name": "new", "model_id": "gpt-y", "provider": "openai"},
+                ]}},
+            )
+            assert added.status_code == 403
+            assert added.json()["detail"]["rule"] == "own_model_access.api_keys"
+            upsert.assert_not_awaited()
+
+            policy.reset_mock()
+            edited = await client.put(
+                "/api/v1/users/me/preferences",
+                json={"model_preference": {"custom_models": [
+                    {"name": "mine", "model_id": "gpt-z", "provider": "openai"},
+                ]}},
+            )
+    assert edited.status_code == 200
+    policy.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1698,7 +2076,7 @@ async def test_users_me_reports_when_the_account_was_created(client):
     with (
         patch(f"{DB}.get_user_with_preferences", new_callable=AsyncMock, return_value=result),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_membership",
+            "src.server.services.membership.read_membership",
             new_callable=AsyncMock,
             return_value={},
         ),

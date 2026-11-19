@@ -3,8 +3,10 @@
 A grant stores a reference, never a value, so this is where the kinds part
 company: ``oauth_mcp`` mints a bearer from the connection's token store,
 ``header_mcp`` expands the catalog row's own headers against the user's vault,
-the tier the row's probe verdict was earned against, and ``platform_mcp``
-sends the key the host holds for the user, which no sandbox file carries.
+the tier the row's probe verdict was earned against, ``platform_mcp`` sends
+the key the host holds for the user, which no sandbox file carries, and
+``org_mcp`` asks the auth service for a shared connector's headers or mints
+the member's own bearer, after reading the account again.
 All are read fresh on every call, which is what makes a rotated key and a
 revoked connection take effect on the next request rather than at the next
 sync. A header value also rides the sandbox's vault file for every workspace
@@ -26,7 +28,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from src.server.database.egress_grants import GRANT_KIND_HEADER_MCP
+from src.server.database.egress_grants import (
+    GRANT_KIND_HEADER_MCP,
+    GRANT_KIND_ORG_MCP,
+)
 from src.server.database.mcp_oauth import (
     ConnectionStatus,
     get_connection,
@@ -67,17 +72,24 @@ class VendorCredential:
 
 
 async def resolve_vendor_credential(
-    grant: Mapping[str, Any], platform: PlatformServer | None = None
+    grant: Mapping[str, Any],
+    canonical: Any = None,
+    *,
+    platform: PlatformServer | None = None,
 ) -> VendorCredential:
     """Ready the credential for one authorized grant, or refuse the request.
 
-    ``platform`` is the built-in a platform grant names, already resolved by
-    ``platform_server``.
+    ``canonical`` is the frame being relayed, which an organization
+    connector's credential request names. ``platform`` is the built-in a
+    platform grant names, already resolved by ``platform_server``.
     """
     if platform is not None:
         return await _platform_credential(grant["user_id"], platform)
-    if grant.get("kind") == GRANT_KIND_HEADER_MCP:
+    kind = grant.get("kind")
+    if kind == GRANT_KIND_HEADER_MCP:
         return await _header_credential(grant)
+    if kind == GRANT_KIND_ORG_MCP:
+        return await _org_credential(grant, canonical)
     return await _oauth_credential(grant)
 
 
@@ -127,6 +139,96 @@ async def _oauth_credential(grant: Mapping[str, Any]) -> VendorCredential:
         if e.reason == "refresh_in_progress":
             raise RelayRejection(503, RelayError.REFRESH_IN_PROGRESS)
         raise RelayRejection(401, RelayError.NEEDS_REAUTH, e.reason)
+    return VendorCredential(headers={"authorization": token.header()}, token=token)
+
+
+def _org_unavailable(grant: Mapping[str, Any], why: str) -> RelayRejection:
+    logger.warning(
+        "[egress_relay] organization connector %r refused for user %s: %s",
+        grant.get("server_name"), grant.get("user_id"), why,
+    )
+    return RelayRejection(
+        403,
+        RelayError.ORG_CONNECTOR_UNAVAILABLE,
+        "this connector is not offered by the user's organization",
+    )
+
+
+def _org_unreachable() -> RelayRejection:
+    return RelayRejection(
+        503,
+        RelayError.ORG_UNREACHABLE,
+        "the organization connector's credential could not be obtained",
+        retry_after=30,
+    )
+
+
+async def _org_credential(
+    grant: Mapping[str, Any], canonical: Any
+) -> VendorCredential:
+    """An organization connector's credential, with the account read again.
+
+    The definitions come from the cached membership, so a member removed, a
+    connector withdrawn or repointed, or an account that cannot be read is
+    refused here at its next call, whatever the grant row still says. Nothing
+    falls back to another credential: a shared connector's headers come from
+    the auth service for this call alone, and one members sign in to spends
+    only the member's own connection, given for the connector's url.
+    """
+    from src.server.services.mcp_config import same_consented_url, servable_member_connection
+    from src.server.services.org_connectors import (
+        CredentialRefused,
+        CredentialUnavailable,
+        connector_with_id,
+        org_connectors_for,
+        shared_credential,
+    )
+
+    user_id = str(grant["user_id"])
+    connectors = await org_connectors_for(user_id)
+    if connectors is None:
+        logger.warning(
+            "[egress_relay] organization connector %r refused for user %s: "
+            "the account is unknown",
+            grant.get("server_name"), user_id,
+        )
+        raise _org_unreachable()
+    connector_id = str((grant.get("resolver_config") or {}).get("connector_id") or "")
+    connector = connector_with_id(connectors, connector_id) if connector_id else None
+    if connector is None:
+        raise _org_unavailable(grant, "the organization no longer lists it")
+    if not same_consented_url(connector.url, grant.get("destination_url")):
+        raise _org_unavailable(grant, "it now points somewhere else")
+
+    if connector.auth == "shared":
+        try:
+            headers = await shared_credential(
+                user_id,
+                connector,
+                method=getattr(canonical, "method", None),
+                tool=getattr(canonical, "tool_name", None),
+            )
+        except CredentialRefused:
+            raise _org_unavailable(grant, "the auth service refused it") from None
+        except CredentialUnavailable:
+            raise _org_unreachable() from None
+        # No token: a static credential, so the vendor's 401 is its answer.
+        return VendorCredential(headers=headers)
+
+    connection_id = grant.get("connection_id")
+    connection = await get_connection_by_id(connection_id) if connection_id else None
+    if not servable_member_connection(connector, connection) or connection.user_id != user_id:
+        # Includes a grant written while the connector was shared: the
+        # member has not signed in to it since it became theirs to sign in to.
+        raise RelayRejection(
+            401, RelayError.ORG_SIGN_IN_REQUIRED, "sign in to this connector in Plugins"
+        )
+    try:
+        token = await ensure_fresh_access_token(connection.connection_id)
+    except TokenUnavailable as e:
+        if e.reason == "refresh_in_progress":
+            raise RelayRejection(503, RelayError.REFRESH_IN_PROGRESS)
+        raise RelayRejection(401, RelayError.ORG_SIGN_IN_REQUIRED, e.reason)
     return VendorCredential(headers={"authorization": token.header()}, token=token)
 
 

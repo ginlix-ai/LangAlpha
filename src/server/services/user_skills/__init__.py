@@ -11,6 +11,7 @@ from src.server.services.user_skills.materialize import (
     fetch_skill_archive,
     load_user_skill_bundle,
     sandbox_skill_sync_params,
+    shared_computer_withheld,
     skills_delivery_signature,
 )
 from src.server.services.user_skills.validate import (
@@ -32,6 +33,7 @@ __all__ = [
     "load_user_skill_bundle",
     "reserved_skill_names",
     "sandbox_skill_sync_params",
+    "shared_computer_withheld",
     "skills_delivery_signature",
     "valid_command",
     "validate_skill_archive",

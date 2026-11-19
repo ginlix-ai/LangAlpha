@@ -26,6 +26,7 @@ import type {
   PublishArtifactResponse,
   QueuedArtifactComment,
   UpdateArtifactCommentRequest,
+  ShareAudience,
 } from '@/types/api';
 import { sendChatMessageStream } from './messages';
 
@@ -130,6 +131,12 @@ export async function publishArtifact(artifactId: string, body: PublishArtifactR
 }
 
 /** Stop sharing; every version is kept and sharing again resumes at the same link. */
+/** Who the link opens to; on a shared link it holds from every visitor's next request. */
+export async function setArtifactAudience(artifactId: string, audience: ShareAudience): Promise<Artifact> {
+  const { data } = await api.put<Artifact>(`${artifactPath(artifactId)}/audience`, { audience });
+  return data;
+}
+
 export async function unshareArtifact(artifactId: string): Promise<Artifact> {
   const { data } = await api.post<Artifact>(`${artifactPath(artifactId)}/unshare`);
   return data;

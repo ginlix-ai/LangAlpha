@@ -116,7 +116,7 @@ def create_test_app(*routers) -> FastAPI:
         enforce_computer_limit,
     )
     from src.server.dependencies.principal import Principal, get_principal
-    from src.server.utils.api import get_current_user_id
+    from src.server.utils.api import get_current_user_id, get_user_id_any_state
 
     app = FastAPI()
     for router in routers:
@@ -142,6 +142,21 @@ def create_test_app(*routers) -> FastAPI:
         )
 
     app.dependency_overrides[get_principal] = principal_as_session
+
+    async def any_state_as_pinned(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Depends(
+            HTTPBearer(auto_error=False)
+        ),
+    ) -> str:
+        pinned = request.app.dependency_overrides.get(get_current_user_id)
+        if pinned is None:
+            return await get_user_id_any_state(request, credentials)
+        user = pinned()
+        return await user if inspect.isawaitable(user) else user
+
+    # The routes open to a suspended account follow the same pin.
+    app.dependency_overrides[get_user_id_any_state] = any_state_as_pinned
 
     # Override rate limits
     app.dependency_overrides[enforce_computer_limit] = lambda: "test-user-123"

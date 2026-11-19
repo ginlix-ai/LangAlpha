@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.server.models.conversation import ThreadCreateRequest
-from tests.unit.server.app.test_threads_subagents_allowed import _request, _row
+from tests.unit.server.app.test_threads_subagents_allowed import USER, _request, _row
 
 CREATE_MOD = "src.server.app.threads.create"
 
@@ -21,13 +21,17 @@ CREATE_MOD = "src.server.app.threads.create"
 async def _create(body):
     from src.server.services.turn_runtime import TurnRoute
 
+    return await _create_as(TurnRoute("ws-1", "analyst", USER), body)
+
+
+async def _create_as(route, body):
     with (
         patch(f"{CREATE_MOD}.HOST_MODE", "oss"),
         patch(
             f"{CREATE_MOD}.requested_workspace",
             new=AsyncMock(return_value={"workspace_id": "ws-1", "status": "active"}),
         ),
-        patch(f"{CREATE_MOD}.turn_route", return_value=TurnRoute("ws-1", "analyst")),
+        patch(f"{CREATE_MOD}.turn_route", return_value=route),
         patch(
             f"{CREATE_MOD}.create_thread", new=AsyncMock(return_value=_row())
         ) as create,
@@ -97,3 +101,19 @@ def test_a_named_title_is_capped_like_a_rename():
 def test_a_reply_after_a_long_quote_survives_the_clip():
     message = '<quote source="Analyst">' + "word " * 1000 + "</quote>\n<reply>why?</reply>"
     assert ThreadCreateRequest(first_query=message).first_query == message
+
+
+@pytest.mark.asyncio
+async def test_a_shared_workspaces_thread_is_created_with_no_number():
+    """A shared workspace numbers every member's threads in one sequence, so
+    the number a create answered with would count the private ones."""
+    from src.server.services.turn_runtime import TurnRoute
+
+    holder = "shared-00000000-0000-4000-8000-0000000000aa"
+    route = TurnRoute("ws-1", "analyst", holder)
+    with patch.object(TurnRoute, "bind", new=AsyncMock(return_value=route)):
+        shared, _, _ = await _create_as(route, {"workspace_id": "ws-1", "first_query": "hi"})
+    own, _, _ = await _create({"workspace_id": "ws-1", "first_query": "hi"})
+
+    assert shared.status_code == 201 and shared.json()["thread_index"] is None
+    assert own.json()["thread_index"] == _row()["thread_index"]

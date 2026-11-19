@@ -9,7 +9,7 @@ import { ownerOfToolCall } from '../toolCallOwner';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
 import type { ProvenanceEvent } from '@/types/sse';
-import type { AssistantMessage, ContentSegment, PendingToolCallChunk, ProvenanceRecord, SubagentTaskRecord, TextSegment } from '@/types/chat';
+import type { AssistantMessage, ContentSegment, PendingToolCallChunk, ProvenanceRecord, SubagentTaskRecord, TurnStop, TextSegment } from '@/types/chat';
 import { readPlanBilled } from '@/lib/claudeCodePlan';
 import { readCliQueue, type CliQueueFrame, type CliQueueSignal } from '@/lib/claudeCodeQueue';
 import { appendNotificationSegmentOnce } from '../../hooks/utils/messageFinalizers';
@@ -168,10 +168,12 @@ export function handleReasoningContent({ assistantMessageId, content, refs, setM
  * @param {Function} params.setMessages - State setter for messages
  * @returns {boolean} True if event was handled
  */
-export function handleTextContent({ assistantMessageId, content, finishReason, refs, setMessages, eventId, phase }: {
+export function handleTextContent({ assistantMessageId, content, finishReason, stop = true, refs, setMessages, eventId, phase }: {
   assistantMessageId: string;
   content: string;
   finishReason: string | undefined;
+  /** How a stopped turn was stopped. */
+  stop?: TurnStop;
   refs: StreamRefs;
   setMessages: SetMessages;
   eventId?: number | null;
@@ -200,7 +202,7 @@ export function handleTextContent({ assistantMessageId, content, finishReason, r
       setMessages((prev: MessageRecord[]) =>
         prev.map((msg: MessageRecord) =>
           msg.id === assistantMessageId
-            ? { ...withoutPending(msg), isStreaming: false, ...(isStopped ? { stopped: true } : {}) }
+            ? { ...withoutPending(msg), isStreaming: false, ...(isStopped ? { stopped: stop } : {}) }
             : msg
         )
       );

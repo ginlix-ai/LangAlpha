@@ -35,9 +35,11 @@ _PREVIEW_LAUNCH_LEASE_TTL_MS = 60_000
 _PREVIEW_LAUNCH_WAIT_S = 45.0
 
 
-def _preview_cache_key(sandbox_id: str, port: int) -> str:
-    """Redis key for cached signed preview URL."""
-    return f"preview:signed_url:{sandbox_id}:{port}"
+def _preview_cache_key(sandbox_id: str, port: int, viewer_id: str | None = None) -> str:
+    """Redis key for cached signed preview URL. A shared workspace's member
+    has their own, since the URL is minted for them."""
+    key = f"preview:signed_url:{sandbox_id}:{port}"
+    return key if viewer_id is None else f"{key}:{viewer_id}"
 
 
 def _preview_owner_key(sandbox_id: str, port: int) -> str:
@@ -101,10 +103,12 @@ async def delete_preview_owner(sandbox_id: str, port: int) -> None:
     await get_cache_client().delete(_preview_owner_key(sandbox_id, port))
 
 
-async def _get_cached_signed_url(sandbox_id: str, port: int) -> str | None:
+async def _get_cached_signed_url(
+    sandbox_id: str, port: int, viewer_id: str | None = None
+) -> str | None:
     """Get cached signed URL from Redis."""
     cache = get_cache_client()
-    return await cache.get(_preview_cache_key(sandbox_id, port))
+    return await cache.get(_preview_cache_key(sandbox_id, port, viewer_id))
 
 
 async def _set_cached_signed_url(
@@ -115,6 +119,7 @@ async def _set_cached_signed_url(
     expires_in: int | None = None,
     owner_workspace_id: str | None = None,
     url_expires_at: int | None = None,
+    viewer_id: str | None = None,
 ) -> None:
     """Cache a signed URL in Redis with TTL, and record when the URL itself lapses.
 
@@ -132,7 +137,7 @@ async def _set_cached_signed_url(
     now = int(time.time())
     url_expires_at = url_expires_at or now + SIGNED_URL_LIFETIME
     cache = get_cache_client()
-    await cache.set(_preview_cache_key(sandbox_id, port), url, ttl=ttl)
+    await cache.set(_preview_cache_key(sandbox_id, port, viewer_id), url, ttl=ttl)
     await cache.set(
         _preview_expiry_key(url), url_expires_at, ttl=max(url_expires_at - now, 1)
     )
@@ -150,6 +155,7 @@ async def _publish_and_cache(
     url_expires_at: int,
     cache_for: int | None = None,
     claim_owner: bool = True,
+    viewer_id: str | None = None,
 ) -> str:
     """Publish *info* and cache what a browser will be handed.
 
@@ -163,6 +169,7 @@ async def _publish_and_cache(
         port=port,
         workspace_id=workspace_id,
         expires_in=expires_in,
+        viewer_id=viewer_id,
     )
     await _set_cached_signed_url(
         sandbox_id,
@@ -171,6 +178,7 @@ async def _publish_and_cache(
         expires_in=cache_for,
         owner_workspace_id=workspace_id if claim_owner else None,
         url_expires_at=url_expires_at,
+        viewer_id=viewer_id,
     )
     return url
 
@@ -208,10 +216,12 @@ async def cache_tool_preview(
     )
 
 
-async def delete_cached_signed_url(sandbox_id: str, port: int) -> None:
+async def delete_cached_signed_url(
+    sandbox_id: str, port: int, viewer_id: str | None = None
+) -> None:
     """Delete a cached signed URL from Redis."""
     cache = get_cache_client()
-    await cache.delete(_preview_cache_key(sandbox_id, port))
+    await cache.delete(_preview_cache_key(sandbox_id, port, viewer_id))
 
 
 async def _is_preview_live_confirmed(sandbox_id: str, port: int) -> bool:
@@ -257,6 +267,7 @@ async def resolve_preview(
     force: bool = False,
     expires_in: int = SIGNED_URL_LIFETIME,
     folder: WorkspaceLayout,
+    viewer_id: str | None = None,
 ) -> str:
     """Core preview URL resolution, behind ``owner_preview``.
 
@@ -271,6 +282,10 @@ async def resolve_preview(
     Pass ``command=None`` to indicate "already looked up, no command stored"
     (skips the DB lookup).  Omit the argument (or pass ``UNSET``) to have
     this function look it up from the database.
+
+    ``viewer_id`` names the member of a shared workspace the URL is for: it
+    is cached for them alone and its capability serves only while they may
+    use the workspace.
     """
     # Resolve command: explicit arg → DB lookup (only when caller didn't provide)
     cmd = command
@@ -289,7 +304,7 @@ async def resolve_preview(
             # Short-lived cache (60s) when a command is stored — covers burst
             # asset requests (CSS/JS/images) without risking long-lived stale URLs.
             if not force:
-                cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port)
+                cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port, viewer_id)
                 if cached_url:
                     healthy = (
                         await _is_preview_live_confirmed(sandbox.sandbox_id, port)
@@ -319,6 +334,7 @@ async def resolve_preview(
                     expires_in=expires_in,
                     url_expires_at=url_expires_at,
                     cache_for=60,
+                    viewer_id=viewer_id,
                 )
             if owner not in (None, workspace_id):
                 if await sandbox._is_preview_reachable(port):
@@ -341,6 +357,7 @@ async def resolve_preview(
                     expires_in=expires_in,
                     url_expires_at=url_expires_at,
                     cache_for=60,
+                    viewer_id=viewer_id,
                 )
             except PreviewPortInUse as e:
                 # `owner` is the claim read before this try made its own.
@@ -370,7 +387,7 @@ async def resolve_preview(
 
         # No command known — try signed-URL cache, then generate fresh.
         if not force:
-            cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port)
+            cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port, viewer_id)
             if cached_url:
                 healthy = (
                     await _is_preview_live_confirmed(sandbox.sandbox_id, port)
@@ -382,7 +399,7 @@ async def resolve_preview(
                     )
                     return cached_url
 
-        await delete_cached_signed_url(sandbox.sandbox_id, port)
+        await delete_cached_signed_url(sandbox.sandbox_id, port, viewer_id)
         preview_info = await sandbox.get_preview_url(port, expires_in=expires_in)
         return await _publish_and_cache(
             sandbox.sandbox_id,
@@ -393,4 +410,5 @@ async def resolve_preview(
             url_expires_at=url_expires_at,
             cache_for=expires_in,
             claim_owner=False,
+            viewer_id=viewer_id,
         )

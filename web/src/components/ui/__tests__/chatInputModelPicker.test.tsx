@@ -18,6 +18,13 @@ vi.mock('@/hooks/usePayerLabel', async () => {
 });
 
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => false }));
+// An account with no organization: no rule narrows the picker.
+vi.mock('@/hooks/useAccount', () => ({
+  useAccount: () => ({
+    organization: null, policy: null, unknown: false, suspended: false, organizationName: null,
+    setterName: () => ({ start: '', mid: '' }),
+  }),
+}));
 
 const metadata = {
   'claude-opus': { display_name: 'Claude Opus 9', provider: 'anthropic', access_type: 'api_key' },

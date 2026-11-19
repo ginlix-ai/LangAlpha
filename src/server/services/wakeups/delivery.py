@@ -19,7 +19,9 @@ follows):
   outbox backoff, and once that runs out, or at once on one that does not
   (the user's usage limit), the job and its riders are held for the
   thread's next turn instead of dropped; one the Claude plan refused is
-  held until it resets, and its wake then says when it was due;
+  held until it resets, and its wake then says when it was due; one refused
+  for a suspended account asks again each hour, so a reinstated account
+  wakes as it would have;
 - the thread is archived, its workspace deleted, or its owner turned
   wakeups off: the wakeup is cancelled and the notice dropped, since nobody
   would see the turn it starts.
@@ -39,6 +41,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +274,7 @@ async def execute_wakeup(job: dict) -> None:
 
 async def _deliver(wake: _Wake) -> _Exit:
     from src.server.database import conversation as conv_db
+    from src.server.database.conversation.threads_read import thread_person
     from src.server.database import workspace as ws_db
     from src.server.database.runs import lifecycle as tl_db
     from src.server.database.runs import outbox as outbox_db
@@ -279,6 +283,7 @@ async def _deliver(wake: _Wake) -> _Exit:
     from src.server.services.features import user_feature_enabled
     from src.server.services.hook_outbox import LEASE_SECONDS, MAX_ATTEMPTS
     from src.server.services.report_back.notify_turn import (
+        SUSPENDED_WAIT_S,
         TURN_ROOM_WAIT_S,
         park_unless_ready,
         post_notification_turn,
@@ -337,10 +342,7 @@ async def _deliver(wake: _Wake) -> _Exit:
         )
         await end_wakeup(thread_id, wakeup_id, "workspace")
         return "settled"
-    user_id = wake.payload.get("user_id")
-    if not user_id:
-        meta = await conv_db.get_thread_auth_meta(thread_id)
-        user_id = (meta or {}).get("user_id")
+    user_id = wake.payload.get("user_id") or await thread_person(thread_id)
     if not user_id:
         logger.warning(f"{_LOG} No owner for thread {thread_id}; dropping {subject}")
         return "settled"
@@ -444,6 +446,7 @@ async def _deliver(wake: _Wake) -> _Exit:
             on_unanswered=_unanswered,
             on_plan_limited=_plan_limited,
             room_fails_fast=True,
+            suspension_waits=True,
         )
         if outcome == "dispatched":
             if run_id is None:
@@ -470,9 +473,12 @@ async def _deliver(wake: _Wake) -> _Exit:
             return "fence_lost"
         if outcome == "superseded":
             return "release"
-        if outcome == "full":
+        if outcome in ("full", "suspended"):
+            # A suspended account's wake waits by the clock too, still owed,
+            # so a reinstated account wakes as it would have.
             await _release_riders(wake)
-            if await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S):
+            wait_s = TURN_ROOM_WAIT_S if outcome == "full" else SUSPENDED_WAIT_S
+            if await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=wait_s):
                 return "parked"
             return "fence_lost"
         if outcome == "plan_limited":

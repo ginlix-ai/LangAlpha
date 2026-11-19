@@ -29,14 +29,14 @@ async def read_context_parts(thread_id: str, *, user_id: str | None = None) -> d
     from src.server.services.computer_manager import attach_only
 
     try:
-        agent_cfg, role = await _compaction_config(thread_id, user_id, clear_dead=False)
+        agent_cfg, route = await _compaction_config(thread_id, user_id, clear_dead=False)
     except HTTPException:
         return _no_parts(thread_id, "refused")
     try:
         with attach_only():
             async with AsyncExitStack() as held:
                 agent = await _thread_agent(
-                    thread_id, "count", config=agent_cfg, user_id=user_id, held=held, role=role
+                    thread_id, "count", config=agent_cfg, user_id=user_id, held=held, route=route,
                 )
                 parts = await agent.ahead_parts()
     except SandboxNotRunning:

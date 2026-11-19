@@ -182,6 +182,7 @@ async def append_run_end_event(
     next_summary: Optional[Dict[str, Any]] | object = UNREAD,
     images: Optional[Dict[str, str]] = None,
     closing_frames: Sequence[str] = (),
+    stopped_by: Optional[str] = None,
     redis_event_ttl: int,
     max_stored_messages: int,
 ) -> None:
@@ -270,6 +271,10 @@ async def append_run_end_event(
         # live view swaps them in, as a reload of the turn would show it.
         if images:
             frame_data["images"] = images
+        # Who stopped a cancelled run when it was not its user: a reader
+        # shows the account's suspension as that, not as a stop they made.
+        if stopped_by:
+            frame_data["stopped_by"] = stopped_by
         data = json.dumps(frame_data, ensure_ascii=False)
         payload = f"event: {RUN_END_EVENT_TYPE}\ndata: {data}\n\n".encode(
             "utf-8"

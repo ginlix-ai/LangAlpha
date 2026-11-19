@@ -21,7 +21,7 @@ from src.server.services.file_grants import (
     FileGrantError,
     grant_prefix,
     narrowed_file_grant,
-    verify_file_grant,
+    verify_grant_viewer,
 )
 from src.server.utils.error_sanitization import single_line
 from src.server.utils.html_policy import html_document_csp
@@ -55,9 +55,11 @@ from src.server.services.served_paths import (
 from src.server.services.workspace_files import previous_dir_names_of, record_fs_bytes
 
 from ._shared import (
+    RoutePaths,
     folder_unmoved,
     work_dir_for,
 )
+from src.server.services.shared_workspaces.access import member_or_404, workspace_access
 
 
 def _owner_visible(client_path: str) -> bool:
@@ -375,6 +377,24 @@ async def render_workspace_file_pdf(
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
+async def _unless_owner_suspended(workspace_id: str) -> dict[str, Any] | None:
+    """The workspace an owner's grant opens, read ahead so the grant, which
+    outlives the account's access, ends with it: the uniform 404 for a
+    suspended owner. None with the ``teams`` flag off, where nothing more is
+    read here and serving reads the workspace as before."""
+    from src.server.services.account import read_standing
+    from src.server.services.membership import teams_door_open
+
+    if not teams_door_open():
+        return None
+    workspace = await db_get_workspace(workspace_id)
+    if not workspace or (
+        await read_standing(str(workspace["user_id"]), unknown_on_cache_error=True)
+    ).suspended:
+        raise HTTPException(status_code=404, detail="Not found")
+    return workspace
+
+
 @wsfiles_router.get("/wsfiles/g/{grant}/{path:path}")
 async def serve_workspace_file_endpoint(
     grant: str,
@@ -412,7 +432,7 @@ async def serve_workspace_file_endpoint(
     and ``branding`` apply only with ``format=pdf``.
     """
     try:
-        workspace_id = await verify_file_grant(grant)
+        workspace_id, viewer_id = await verify_grant_viewer(grant)
         if format == "pdf":
             # Not the caller's own grant, which a PDF that prints its address
             # would carry out for the rest of a day.
@@ -420,10 +440,21 @@ async def serve_workspace_file_endpoint(
     except FileGrantError as e:
         logger.info(f"Refusing wsfiles request: {single_line(str(e))}")
         raise HTTPException(status_code=404, detail="Not found") from None
+    if viewer_id is not None:
+        # Judged on every request, so leaving the workspace or the
+        # organization ends every grant the member holds at once.
+        workspace = await db_get_workspace(workspace_id)
+        await member_or_404(workspace_access(workspace, viewer_id))
+        # The page gate keeps ``.agents`` out as spelled; a disk that ignores
+        # case opens other spellings of the same folders.
+        await RoutePaths.of(workspace, viewer_id).refuse(path, detail="Not found")
+    else:
+        workspace = await _unless_owner_suspended(workspace_id)
     if format == "pdf":
         return await render_workspace_file_pdf(
             workspace_id,
             path,
+            workspace=workspace,
             scale=scale,
             page_numbers=page_numbers,
             branding=branding,
@@ -440,6 +471,7 @@ async def serve_workspace_file_endpoint(
         path,
         visible=_owner_visible,
         inject="nested" if framed else asked,
+        workspace=workspace,
     )
     if asked is None and _is_html_content_type(response.media_type or ""):
         # One URL with two bodies: a download, a fetch of the file or the PDF

@@ -16,6 +16,8 @@ import pytest
 from src.server.services.turn_runtime import TurnRoute
 from src.server.services.report_back.handoff.carry import PriorAttempt
 
+from src.server.services.shared_workspaces.turn import TurnIdentity
+
 PTC = "src.server.handlers.chat.ptc_run"
 CODE = "claude-haiku-5-5-code"
 
@@ -67,7 +69,6 @@ async def _resume_as(role: str, model: str):
             ("_resolve_fork", MagicMock(return_value=("Q", None))),
             ("begin_run", AsyncMock(return_value=MagicMock(turn_index=1, finalized=False))),
             ("wait_or_steer", AsyncMock(return_value=(True, None))),
-            ("get_user_profile_for_prompt", AsyncMock(return_value=None)),
             ("process_hitl_response", MagicMock(return_value=SimpleNamespace(
                 feedback_action=None, query_content="", metadata={},
             ))),
@@ -91,6 +92,7 @@ async def _resume_as(role: str, model: str):
             stack.enter_context(patch(f"{PTC}.{target}", value))
         for target, value in [
             ("src.server.services.user_skills.skills_delivery_signature", MagicMock(return_value="skills")),
+            ("src.server.services.shared_workspaces.turn.get_user_profile_for_prompt", AsyncMock(return_value=None)),
             ("src.server.services.thread_agent.AgentInputs.read", AsyncMock(return_value=MagicMock(build_kwargs=dict))),
             ("src.server.services.egress.direct_tools.order_ledger_for_turn", MagicMock()),
             ("src.server.services.wakeups.cancel_notice.ThreadCancelNotices", MagicMock()),
@@ -105,7 +107,8 @@ async def _resume_as(role: str, model: str):
             run_id="r-1",
             user_input="",
             user_id="u-1",
-            route=TurnRoute("ws-1", role),
+            route=TurnRoute("ws-1", role, "u-1"),
+            identity=TurnIdentity("u-1", "u-1", "u-1"),
             is_byok=False,
             config=config,
         )

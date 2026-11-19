@@ -49,6 +49,11 @@ class PendingInput:
     # Context sent beside the text, which no row keeps.
     context: bool = False
 
+    @property
+    def needs_client(self) -> bool:
+        """No row holds all of it, so nothing the server starts runs it again."""
+        return self.resend or self.context
+
 
 def _held_by_query_row(messages: list[ChatMessage]) -> bool:
     if len(messages) != 1 or messages[0].role not in ("user", "human"):

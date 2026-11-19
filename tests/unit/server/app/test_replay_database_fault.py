@@ -44,7 +44,7 @@ _SHARE_READS = {
 def _answers():
     thread = {"conversation_thread_id": THREAD, "latest_checkpoint_id": "cp-tip"}
     return {
-        "lookup": {"conversation_thread_id": THREAD, "share_permissions": {}},
+        "lookup": {"conversation_thread_id": THREAD, "share_permissions": {}, "owner_id": "owner-1"},
         "rows": replay_rows(thread, [], [], owner_id="test-user-123"),
     }
 

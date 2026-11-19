@@ -14,7 +14,8 @@ from typing import Any, Callable, Dict, Optional
 
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
-from src.server.services.automation_settlement import Outcome, runs_once, settle
+from src.server.services.automation_outcomes import Outcome, runs_once
+from src.server.services.automation_settlement import settle
 
 logger = logging.getLogger(__name__)
 

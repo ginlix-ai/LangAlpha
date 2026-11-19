@@ -59,7 +59,6 @@ import { ClaudeCodeTokenModal, RemoveClaudeCodeTokenDialog } from '@/components/
 import { computerTokenTarget, type SheetAction } from '@/components/modelAccess/tokenTarget';
 import { PlanUpgradeHint } from './planUpgradeHint';
 import {
-  computerCapReached,
   isProviderLocked,
   providerHoldsOurKey,
   providerIsOwnMachine,
@@ -67,6 +66,7 @@ import {
   rowsShowProvider,
   THIS_MAC_OPTION,
 } from './providerUi';
+import { useProviderGate } from '../hooks/useProviderGate';
 import { apiErrorObject, apiErrorReason, apiErrorStatus } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
 import { folderMarkedOwner } from '../utils/sshLimit';
@@ -184,8 +184,8 @@ function ComputersPanel({
   // added. With none of those open there is nothing for the form to offer,
   // so the button holds and says why rather than opening onto a dead end.
   // Waits for the providers: until then which ones are open is unknown.
-  const atCap = computerCapReached(quota);
-  const createHeld = atCap && !!providerData && !providerData.providers.some((p) => !isProviderLocked(p, true));
+  const gate = useProviderGate(quota);
+  const createHeld = gate.atCap && !!providerData && !providerData.providers.some((p) => !isProviderLocked(p, gate));
   // The form lays its cards out by the providers, the plan and whether this
   // Mac is one, so it opens once all three are known: opened before the
   // desktop app answers, it would enter on three cards and reflow to four.

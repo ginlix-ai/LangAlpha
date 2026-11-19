@@ -47,6 +47,7 @@ async def _replay(client, response_row: dict) -> list[dict]:
         "conversation_thread_id": _THREAD_ID,
         "workspace_id": "ws-1",
         "share_permissions": {},
+        "owner_id": "owner-1",
     }
     queries = [
         {

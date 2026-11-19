@@ -20,10 +20,14 @@ CommandStatus = Literal["running", "completed", "failed", "stopped"]
 FailureReason = Literal["exit", "lost", "vanished", "after_turn_limit"]
 
 #: Who asked a running command to stop, as ``stopped_by`` records it: the
-#: agent, the user, its thread archived or deleted, its workspace deleted, or
-#: the after-turn hour. A stopped command keeps the mark; one the hour stopped
-#: ends ``failed`` and loses it.
-StopMark = Literal["agent", "user", "archive", "delete", "workspace", "after_turn_limit"]
+#: agent, the user, its thread archived or deleted, its workspace deleted, the
+#: after-turn hour, the account suspended, or the person who ran it no longer
+#: a member of the shared workspace. A stopped command keeps the mark; one the
+#: hour stopped ends ``failed`` and loses it.
+StopMark = Literal[
+    "agent", "user", "archive", "delete", "workspace", "after_turn_limit", "suspended",
+    "removed",
+]
 
 
 class CommandOut(BaseModel):

@@ -21,9 +21,9 @@ TIERS = {"m-free": 0, "m-paid": 1, "m-pro": 2, "m-pro-2": 2, "m-deploy": 3, "m-d
 @pytest.fixture
 def platform(monkeypatch):
     monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: True)
+    monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: True)
     fetch = AsyncMock(return_value=PLAN_TIER)
-    monkeypatch.setattr("src.server.dependencies.usage_limits._fetch_platform_tier", fetch)
+    monkeypatch.setattr("src.server.services.membership.access_tier", fetch)
 
     custom: set[str] = set()
 
@@ -200,7 +200,7 @@ async def test_an_unknown_tier_refuses_a_model_that_needs_one_as_unavailable(pla
 
 @pytest.mark.asyncio
 async def test_nothing_is_refused_or_dropped_when_gating_is_inactive(platform, base_config, monkeypatch):
-    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+    monkeypatch.setattr("src.server.services.platform_client.platform_gating_active", lambda: False)
     pref = {"preferred_model": "m-pro", "fallback_models": ["m-pro-2"]}
 
     view = await _gate(base_config, pref, request_model="m-pro")

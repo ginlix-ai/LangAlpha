@@ -18,7 +18,7 @@ from src.server.database import push_devices as push_db
 from src.server.services.push.config import push_available
 from src.server.contracts.notices import PUSH_KINDS, PushKind
 from src.server.services.push.notify import device_wants
-from src.server.utils.api import CurrentUserId, handle_api_exceptions
+from src.server.utils.api import AnyStateUserId, CurrentUserId, handle_api_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,8 @@ async def update_push_device(
 
 @router.delete("/{push_device_id}", status_code=204)
 @handle_api_exceptions("remove push device", logger)
-async def delete_push_device(push_device_id: UUID, user_id: CurrentUserId):
+async def delete_push_device(push_device_id: UUID, user_id: AnyStateUserId):
+    """Open to a suspended account: signing out of a device unregisters it."""
     if not await push_db.delete_push_device(user_id, str(push_device_id)):
         raise HTTPException(status_code=404, detail="Push device not found")
     return Response(status_code=204)

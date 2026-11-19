@@ -37,6 +37,7 @@ from src.server.services.livefs.tokens import (
     authenticate,
 )
 from src.server.services.livefs.tree import LivefsTree
+from src.server.utils.api import admit_caller
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def _caller(
     request: Request, authorization: str | None = Header(None)
 ) -> LivefsIdentity:
     try:
-        return await authenticate(authorization)
+        identity = await authenticate(authorization)
     except LivefsAuthError:
         raise HTTPException(
             status_code=401,
@@ -69,6 +70,9 @@ async def _caller(
             detail="Too many file requests from this computer",
             headers={"Retry-After": str(exc.retry_after)},
         ) from None
+    # What the mount serves is the account's, so it closes with the account.
+    await admit_caller(request, identity.user_id)
+    return identity
 
 
 def _error(exc: LivefsError) -> JSONResponse:

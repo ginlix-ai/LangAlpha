@@ -26,6 +26,8 @@ from src.server.database.runs.outbox import MAX_RESUME_REFUSALS
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.steering import TaskResume
 
+from src.server.services.report_back._owner import turn_owner
+
 logger = logging.getLogger(__name__)
 
 _LOG = "[TASK_STEER]"
@@ -471,25 +473,6 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
         return False
 
 
-async def _owner(payload: dict, thread_id: str) -> tuple[str | None, str | None]:
-    user_id = payload.get("user_id")
-    workspace_id = payload.get("workspace_id")
-    if user_id and workspace_id:
-        return str(user_id), str(workspace_id)
-    from src.server.database import conversation as conv_db
-
-    if not user_id:
-        meta = await conv_db.get_thread_auth_meta(thread_id)
-        user_id = meta.get("user_id") if meta else None
-    if not workspace_id:
-        row = await conv_db.get_thread_by_id(thread_id)
-        workspace_id = row.get("workspace_id") if row else None
-    return (
-        str(user_id) if user_id else None,
-        str(workspace_id) if workspace_id else None,
-    )
-
-
 def _resume_notice(task_id: str) -> str:
     return (
         "<system>\n"
@@ -552,7 +535,7 @@ async def execute_task_steer(job: dict) -> None:
 
     if await _divert(thread_id, task_id, jobs, fence=claimed):
         return
-    user_id, workspace_id = await _owner(payload, thread_id)
+    user_id, workspace_id = await turn_owner(payload, thread_id)
     if not user_id:
         await settle("the thread has no owner")
         return

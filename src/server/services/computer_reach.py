@@ -53,9 +53,11 @@ from src.server.database.workspace_binding import (
     get_computers_with_folders,
 )
 from src.server.models.computer import ComputerStatus
+from src.server.services.account import ACCOUNT_SUSPENDED
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.persistence.ship import StoreUnreachable, ship_via_store
 from src.server.services.persistence.transfer import TransferRuntimeError, transfer_mode
+from src.server.services.policy import OWN_MACHINES, POLICY_DENIED
 from src.tools.messaging.tools import ATTACH_MAX_BYTES, SEND_MAX_BYTES
 from src.tools.secretary.utils import spoken_computer_name
 
@@ -153,8 +155,34 @@ def pick_computer(rows: Sequence[Mapping[str, Any]], wanted: str) -> Mapping[str
 def _why_not(name: str, error: BaseException) -> str:
     """The agent's sentence for a computer that could not be woken."""
     if isinstance(error, HTTPException):
-        # The plan's computer limit; its message is the platform's own copy.
         detail = error.detail if isinstance(error.detail, dict) else {}
+        if detail.get("type") == "service_unavailable":
+            # Its copy asks a person to try again; read by the agent, that
+            # only repeats the call into the same refusal.
+            return (
+                f'Computer "{name}" was not used: whether this account may use '
+                "it could not be checked, so nothing ran there. Tell the user."
+            )
+        # A refusal's own copy speaks to the person it refuses ("your
+        # organization", "ask an admin"); these two are said to the agent.
+        if detail.get("type") == ACCOUNT_SUSPENDED:
+            return (
+                f'Computer "{name}" was not used: this account\'s access through '
+                "the user's organization has ended, so nothing ran there. Tell "
+                "the user."
+            )
+        if detail.get("type") == POLICY_DENIED and detail.get("rule") == OWN_MACHINES:
+            by = (
+                "the user's organization"
+                if detail.get("set_by") == "organization"
+                else "this deployment"
+            )
+            return (
+                f'Computer "{name}" was not used: {by} does not allow work on '
+                "the user's own machines, so nothing ran there. Use a computer "
+                "the user did not bring, or tell the user."
+            )
+        # The plan's computer limit, in its own copy.
         reason = str(detail.get("message") or "the user's plan does not allow it now")
         return f'Computer "{name}" could not start: {reason}'
     if isinstance(error, SSHConnectError):
@@ -459,10 +487,32 @@ class TurnComputers:
             _wakes.add(wake)
             wake.add_done_callback(_wakes.discard)
             wake.add_done_callback(partial(_log_failure, computer_id))
+        elif row is not None:
+            # A wake remembered from earlier in the turn passed the policy as
+            # it stood then; one set since must stop this call too.
+            from src.server.services.account import refuse_machine_use
+
+            try:
+                await refuse_machine_use(row.get("kind"), row.get("user_id"))
+            except HTTPException as e:
+                self._record_refusal(e, computer_id)
+                raise ComputerUnreachable(_why_not(name, e)) from e
         try:
             return await asyncio.shield(wake)
         except Exception as e:
+            self._record_refusal(e, computer_id)
             raise ComputerUnreachable(_why_not(name, e)) from e
+
+    def _record_refusal(self, error: BaseException, computer_id: str) -> None:
+        """A policy refusal becomes the agent's text here and never reaches
+        a handler, so it is recorded here, once a window for the computer
+        however often the agent asks for it again."""
+        from src.server.services.activity import AGENT, record_refusal
+
+        record_refusal(
+            error, self._user_id, detail={"computer_id": computer_id},
+            once=(self._user_id, "computer", computer_id), auth=AGENT,
+        )
 
     async def in_use(self, target: ComputerTarget) -> None:
         await self._keep_alive(target.computer_id, target.session)

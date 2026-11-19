@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from src.server.services.shared_workspaces.turn import TurnIdentity
+
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.sandbox_launcher import SandboxLink
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
@@ -297,7 +299,8 @@ def test_a_turn_on_an_own_computer_that_names_none_is_refused():
 
 def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
     inputs = AgentInputs(
-        user_id="user-1", thread_id="t-1", workspace_id="ws-1", role="analyst", project=None, tool_view=MagicMock(),
+        identity=TurnIdentity("user-1", "user-1", "user-1"), thread_id="t-1", workspace_id="ws-1", role="analyst", project=None,
+        tool_view=MagicMock(),
         user_profile=None, direct_mcp=MagicMock(), computer_id="c-1",
     )
     sandbox = _ssh_sandbox()

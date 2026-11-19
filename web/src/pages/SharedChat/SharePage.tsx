@@ -5,7 +5,7 @@ import { Loader } from '@/components/ui/loader';
 import { GRANT_RENEW_MARGIN_MS, MIN_RENEW_INTERVAL_MS, msUntilRenewal } from '@/lib/expiry';
 import { queryKeys } from '@/lib/queryKeys';
 import { useAuth } from '../../contexts/AuthContext';
-import { apiErrorStatus, retryUnlessClientError } from '@/api/errors';
+import { apiErrorObject, apiErrorStatus, retryUnlessClientError } from '@/api/errors';
 import { isHtmlFile } from '../ChatAgent/utils/filePaths';
 import { getSharedMetadata, type ShareMetadata } from './api';
 import ShareUnavailable from './ShareUnavailable';
@@ -26,6 +26,10 @@ const APP_URL_MARGIN_MS = 5 * 60_000;
 function renewalDelay({ data, dataUpdatedAt }: { data?: ShareMetadata; dataUpdatedAt: number }): number | null {
   if (data?.kind === 'app') return msUntilRenewal(data.expires_in, dataUpdatedAt, APP_URL_MARGIN_MS);
   if (data?.kind === 'file') return msUntilRenewal(data.expires_in, dataUpdatedAt, GRANT_RENEW_MARGIN_MS);
+  // A member's grant on a thread link; a link open to anyone carries none.
+  if (data?.kind === 'thread' && data.grant && data.expires_in != null) {
+    return msUntilRenewal(data.expires_in, dataUpdatedAt, GRANT_RENEW_MARGIN_MS);
+  }
   return null;
 }
 
@@ -108,9 +112,13 @@ export default function SharePage(): React.ReactElement {
   // is a stop, not a failure: its files already refuse the grant on screen.
   const data = metadata.data;
   const gone = metadata.isError && apiErrorStatus(metadata.error) === 404;
-  if (!data || (gone && followsLink(data))) {
+  // A link that opens to members only, asked for signed out.
+  const membersOnly = metadata.isError && apiErrorStatus(metadata.error) === 401
+    && apiErrorObject(metadata.error)?.type === 'members_only';
+  if (!data || ((gone || membersOnly) && followsLink(data))) {
     if (!metadata.isError) return <Loading />;
     if (gone) return <ShareUnavailable />;
+    if (membersOnly) return <ShareUnavailable variant="membersOnly" />;
     return <ShareUnavailable variant="failed" onRetry={() => void metadata.refetch()} />;
   }
 
@@ -118,7 +126,7 @@ export default function SharePage(): React.ReactElement {
     case 'thread':
       return (
         <Suspense fallback={<Loading />}>
-          <SharedChatView key={shareToken} shareToken={shareToken} metadata={data} />
+          <SharedChatView key={shareToken} shareToken={shareToken} access={data.grant} metadata={data} />
         </Suspense>
       );
     case 'file':

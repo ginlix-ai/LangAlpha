@@ -97,6 +97,7 @@ def resolve_identity_gates(
     *,
     store: Any | None,
     user_id: str | None,
+    own_data: bool,
     workspace_id: str | None,
     disable_subagents: bool,
     channels: bool = False,
@@ -105,6 +106,21 @@ def resolve_identity_gates(
 
     workflow = get_workflow_orchestration_config().enabled
     identified = store is not None and bool(user_id)
+    if not own_data:
+        # A shared workspace: its computer and its memory are a holder's,
+        # which has no person behind it. Only the workspace's own memory is
+        # there; nothing of any one member's (their memory, memos, profile
+        # and automation files, workflows, chat-app settings) is.
+        return IdentityGates(
+            user_memory=False,
+            workspace_memory=identified and bool(workspace_id),
+            memo=False,
+            user_data=False,
+            workflow=workflow,
+            workflow_fs=False,
+            workflow_tool=False,
+            channels=False,
+        )
     return IdentityGates(
         user_memory=identified,
         workspace_memory=identified and bool(workspace_id),

@@ -21,8 +21,6 @@ from fastapi import HTTPException
 from src.server.contracts.status import is_restart_interrupted, restart_resume_expired
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
-from src.server.database.api_keys import is_byok_active
-from src.server.database.oauth_tokens import has_any_oauth_token
 from src.server.database.runs import lifecycle as tl_db
 from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
@@ -32,16 +30,12 @@ from src.server.services.automation_computer_wait import (
     park_for_computer,
     stopped_meanwhile,
 )
-from src.server.services.automation_settlement import (
-    LIMITS,
-    Outcome,
-    clean_error_text,
-    plan_message,
-    settle,
-)
+from src.server.services.automation_outcomes import LIMITS, Outcome, clean_error_text
+from src.server.services.automation_settlement import plan_message, settle
 from src.server.database.runs.hook_jobs import AUTOMATION_HANDOFF_HOOK, automation_handoff_job
 from src.server.services.runs import restart_drain
 from src.server.services.runs.admission import BUSY_STATES
+from src.server.services.shared_workspaces.turn import TurnIdentity, carried_recorded_as
 from src.server.services.thread_lifecycle_feed import publish_automation_wait
 from src.server.services.turn_runtime import TurnRoute, turn_route
 from src.server.services.webhook_client import WebhookClient
@@ -337,12 +331,15 @@ def _our_failure(e: BaseException) -> bool:
 
 async def _failure_outcome(e: BaseException, user_id: str) -> tuple[Outcome, Optional[str]]:
     """How a firing that failed before its run took it over settles, and the
-    error it records: the computer not answering, a Claude plan or usage
-    limit (none a strike), an outage of ours, or the automation's own
-    failure."""
+    error it records: the account suspended, the computer not answering, a
+    Claude plan or usage limit (none a strike), an outage of ours, or the
+    automation's own failure."""
     # Lazy: the Claude Code services import the automation tools.
+    from src.server.services.account import AccountSuspended
     from src.server.services.llm.claude_code import plan_detail
 
+    if isinstance(e, AccountSuspended):
+        return Outcome.SUSPENDED, str(e)
     if _computer_unreachable(e):
         return Outcome.UNREACHABLE, None
     if (plan := plan_detail(e)) is not None:
@@ -360,12 +357,13 @@ async def _credentials(user_id: str) -> tuple[bool, bool]:
     has_cred is what the credit gate reports: an OAuth turn pays its own
     vendor bill just as a BYOK one does. The workflow's is_byok is a
     different question, whether to attempt the BYOK ladder, so it keys off
-    has_byok alone, or an OAuth-only user gets a futile BYOK prefetch.
+    has_byok alone, or an OAuth-only user gets a futile BYOK prefetch. Own
+    access the user's policy denies reads as absent.
     """
-    has_byok, has_oauth = await asyncio.gather(
-        is_byok_active(user_id), has_any_oauth_token(user_id)
-    )
-    return has_byok, has_byok or has_oauth
+    from src.server.services.account import own_access
+
+    own = await own_access(user_id)
+    return own.api_keys, own.any
 
 
 def _pinned_thread(automation: Dict[str, Any]) -> Optional[str]:
@@ -825,6 +823,7 @@ class AutomationExecutor:
         while True:
             automation = firing.automation
             user_id = automation["user_id"]
+            recorded_as = carried_recorded_as(automation)
             instruction = automation["instruction"]
             additional_context = automation.get("additional_context")
             run_metadata = {
@@ -876,6 +875,7 @@ class AutomationExecutor:
                 user_input=instruction,
                 user_id=user_id,
                 route=firing.route,
+                identity=await TurnIdentity.of(user_id, firing.route.owner_id, carried=recorded_as),
                 is_byok=has_byok,
                 from_server=True,
                 steerable=False,
@@ -915,6 +915,9 @@ class AutomationExecutor:
             if fresh is None:
                 return False
             firing.automation = fresh
+            from src.server.services.account import read_standing
+
+            (await read_standing(user_id)).refuse_if_suspended()
             # Where a Home turn runs is read again: the wait may outlast the
             # placement the route was bound with (Home back, or gone).
             firing.route = await firing.route.placed(user_id)
@@ -922,7 +925,7 @@ class AutomationExecutor:
             # the delivery the automation now has.
             await self._start_delivery(execution_id, firing)
             has_byok, has_cred = await _credentials(user_id)
-            await enforce_credit_limit(user_id, byok=has_cred)
+            await enforce_credit_limit(recorded_as, byok=has_cred)
 
     async def execute(self, automation: Dict[str, Any], execution_id: str) -> None:
         """Run one firing of ``automation`` until it settles or its run does.
@@ -979,6 +982,11 @@ class AutomationExecutor:
         )
         wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
         try:
+            # First, so a suspended account's firing starts no delivery.
+            from src.server.services.account import read_standing
+
+            (await read_standing(user_id)).refuse_if_suspended()
+
             # ─── Wait out a running turn ──────────────────────────
             # A run on a pinned thread is a turn of its own, so it waits for
             # the reader's turn to end rather than steering into it. It waits
@@ -1007,8 +1015,10 @@ class AutomationExecutor:
                 return
 
             # ─── Credential check + credit gate ───────────────────
+            # Again past the wait, which a suspension may have landed in.
+            (await read_standing(user_id)).refuse_if_suspended()
             has_byok, has_cred = await _credentials(user_id)
-            await enforce_credit_limit(user_id, byok=has_cred)
+            await enforce_credit_limit(carried_recorded_as(automation), byok=has_cred)
 
             # ─── Resolve workspace + thread ───────────────────────
             route = await route.bind(user_id, place.workspace)
@@ -1074,7 +1084,8 @@ class AutomationExecutor:
                 f"automation_id={automation_id} execution_id={execution_id} "
                 f"error={error_msg if error_msg is not None else type(e).__name__}"
             )
-            await self._start_delivery_unstarted(execution_id, firing)
+            if outcome is not Outcome.SUSPENDED:
+                await self._start_delivery_unstarted(execution_id, firing)
             settled = await settle(
                 firing.automation, execution_id, outcome,
                 thread_id=firing.thread_id, workspace_id=firing.workspace_id,
@@ -1083,7 +1094,9 @@ class AutomationExecutor:
             _exec_span.set_attribute(
                 "status",
                 "settled_elsewhere" if not settled
-                else "limited" if outcome in LIMITS else "failure",
+                else "limited" if outcome in LIMITS
+                else "suspended" if outcome is Outcome.SUSPENDED
+                else "failure",
             )
         except asyncio.CancelledError:
             # The server is stopping. A cancel inside a wait already skipped

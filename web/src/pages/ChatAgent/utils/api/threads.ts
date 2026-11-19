@@ -10,7 +10,8 @@ import type { CommandStopResponse, CommandsResponse } from '@/types/commands';
 export interface ThreadCreatedInfo {
   thread_id: string;
   workspace_id: string;
-  thread_index: number;
+  /** Null in a shared workspace, whose threads carry no number. */
+  thread_index: number | null;
   title: string;
   msg_type: string;
   /** The tuning overrides the create stored, echoed back; null follows Settings. */
@@ -40,6 +41,9 @@ export async function createThreadWithTitle(opts: {
   timezone?: string;
   /** Left out, the thread stores no value and follows the owner's default. */
   subagentsAllowed?: boolean;
+  /** In a shared workspace, start the thread shared with everyone there;
+   *  left out, it is the starter's alone. */
+  sharedWithWorkspace?: boolean;
   /** The thread's own effort and fast mode, picked before it existed. Left
    *  out, the thread follows Settings. */
   reasoningEffort?: string;
@@ -47,7 +51,8 @@ export async function createThreadWithTitle(opts: {
   timeoutMs?: number;
 }): Promise<ThreadCreatedInfo> {
   const {
-    workspaceId, firstQuery, title, platform, timezone, subagentsAllowed, reasoningEffort, fastMode, timeoutMs = 8000,
+    workspaceId, firstQuery, title, platform, timezone, subagentsAllowed, reasoningEffort, fastMode, sharedWithWorkspace,
+    timeoutMs = 8000,
   } = opts;
 
   const body: Record<string, unknown> = { first_query: firstQuery };
@@ -58,8 +63,24 @@ export async function createThreadWithTitle(opts: {
   if (subagentsAllowed !== undefined) body.subagents_allowed = subagentsAllowed;
   if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
   if (fastMode !== undefined) body.fast_mode = fastMode;
+  if (sharedWithWorkspace) body.shared_with_workspace = true;
 
   const { data } = await api.post<ThreadCreatedInfo>('/api/v1/threads', body, { timeout: timeoutMs });
+  return data;
+}
+
+/** The thread after the change, and whether making it private turned its link off. */
+export type ThreadVisibilityResult = Thread & { link_turned_off?: boolean };
+
+/**
+ * Share a shared workspace's thread with everyone in it, or make it its
+ * starter's alone again. Answers the thread as `getThread` reads it after the
+ * change; a 409 (`others_sent`) means someone else has written in it.
+ */
+export async function setThreadVisibility(threadId: string, sharedWithWorkspace: boolean): Promise<ThreadVisibilityResult> {
+  const { data } = await api.put<ThreadVisibilityResult>(`/api/v1/threads/${threadId}/visibility`, {
+    shared_with_workspace: sharedWithWorkspace,
+  });
   return data;
 }
 

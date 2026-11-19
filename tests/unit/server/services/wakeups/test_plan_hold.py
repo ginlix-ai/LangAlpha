@@ -195,6 +195,34 @@ async def test_a_wake_with_no_room_for_another_claude_code_turn_asks_again_by_th
 
 
 @pytest.mark.asyncio
+async def test_a_suspended_accounts_wake_asks_again_each_hour_still_owed(monkeypatch, refused):
+    """Not held for the thread's next turn, which a suspended account cannot
+    start: a reinstated account wakes as it would have, within the hour."""
+    room = AsyncMock(return_value=True)
+    exhaust = AsyncMock(return_value=True)
+    monkeypatch.setattr(outbox_db, "wait_for_room", room)
+    monkeypatch.setattr(outbox_db, "exhaust_alert", exhaust)
+    monkeypatch.setattr(riders_db, "gather_wakeup_riders", AsyncMock(return_value=[]))
+
+    async def suspended(**kw):
+        assert kw["suspension_waits"]
+        return "suspended", None
+
+    monkeypatch.setattr(notify_turn, "post_notification_turn", suspended)
+    wake = delivery._Wake(
+        job={**JOB, "attempts": MAX_ATTEMPTS}, thread_id=THREAD_ID, wakeup_id=WAKEUP_ID, subject="fire 1"
+    )
+
+    assert await delivery._deliver(wake) == "parked"
+    room.assert_awaited_once_with(
+        JOB["hook_outbox_id"], attempts=MAX_ATTEMPTS, wait_s=notify_turn.SUSPENDED_WAIT_S
+    )
+    assert notify_turn.SUSPENDED_WAIT_S == 3600
+    exhaust.assert_not_awaited()
+    refused.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_held_wake_whose_lease_was_lost_at_the_claim_leaves_it_to_its_new_owner(
     monkeypatch, refused
 ):

@@ -17,5 +17,12 @@
     "dashboards",
     "pptx",
     "xlsx"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "dashboard-page": { "needs_own_data": true }
+      }
+    }
+  }
 }
