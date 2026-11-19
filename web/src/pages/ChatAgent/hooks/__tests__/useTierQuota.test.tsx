@@ -19,14 +19,17 @@ vi.mock('../../utils/api', async (importOriginal) => ({
   getWorkspaceQuota: vi.fn(async () => ({ performance: null, max: null, xlarge: null, always_on: null })),
 }));
 
+vi.mock('@/pages/Dashboard/utils/api', () => ({ getCurrentUser: vi.fn(async () => ({})) }));
+
 import { getWorkspaceQuota } from '../../utils/api';
-import { readQuotaAfterPlanChange, useTierQuota } from '../useTierQuota';
+import { getCurrentUser } from '@/pages/Dashboard/utils/api';
+import { readPlanAfterChange, useTierQuota } from '../useTierQuota';
 
 describe('useTierQuota, back from the plan page', () => {
   it('asks for the plan again on the next read only', async () => {
     const { result, queryClient } = renderHookWithProviders(() => useTierQuota({ enabled: true }));
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    await act(() => readQuotaAfterPlanChange(queryClient));
+    await act(() => readPlanAfterChange(queryClient));
     await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() }));
     expect(vi.mocked(getWorkspaceQuota).mock.calls).toEqual([[false], [true], [false]]);
   });
@@ -36,9 +39,16 @@ describe('useTierQuota, back from the plan page', () => {
     const { result, queryClient } = renderHookWithProviders(() => useTierQuota({ enabled: true }));
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     vi.mocked(getWorkspaceQuota).mockRejectedValueOnce(new Error('timeout'));
-    await act(() => readQuotaAfterPlanChange(queryClient));
+    await act(() => readPlanAfterChange(queryClient));
     await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() }));
     await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() }));
     expect(vi.mocked(getWorkspaceQuota).mock.calls).toEqual([[false], [true], [true], [false]]);
+  });
+
+  it('reads the account past the cached plan', async () => {
+    const { result, queryClient } = renderHookWithProviders(() => useTierQuota({ enabled: true }));
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await act(() => readPlanAfterChange(queryClient));
+    expect(vi.mocked(getCurrentUser)).toHaveBeenCalledWith({ refresh_tier: true });
   });
 });

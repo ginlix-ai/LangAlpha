@@ -131,9 +131,9 @@ describe('useMediumAction, what gets it to Medium', () => {
     const { result } = renderHook(() => useMediumAction('c-1'), { wrapper });
     expect(result.current?.kind).toBe('resize');
     act(() => result.current?.go());
-    expect(h.openComputerSpec).toHaveBeenCalledWith('c-1', claudeCodeSpecRequest('c-1'));
-    expect(claudeCodeSpecRequest('c-1')).toEqual({
-      tier: 'performance', planUrl: planUrlFor('c-1'), leadKey: 'modelAccess.claudeCode.medium.rowPlan',
+    expect(h.openComputerSpec).toHaveBeenCalledWith('c-1', claudeCodeSpecRequest('c-1', undefined, 'max'));
+    expect(claudeCodeSpecRequest('c-1', undefined, 'max')).toEqual({
+      tier: 'performance', planUrl: planUrlFor('c-1', undefined, 'max'), leadKey: 'modelAccess.claudeCode.medium.rowPlan',
     });
   });
 
@@ -148,9 +148,9 @@ describe('useMediumAction, what gets it to Medium', () => {
     const { result } = renderHook(() => useMediumAction('c-1'), { wrapper });
     expect(result.current?.kind).toBe('plan');
     act(() => result.current?.go());
-    expect(h.openConsolePage).toHaveBeenCalledWith(planUrlFor('c-1'), { inPlace: false });
+    expect(h.openConsolePage).toHaveBeenCalledWith(planUrlFor('c-1', undefined, 'max'), { inPlace: false });
     expect(h.openConsolePage).toHaveBeenCalledWith(
-      '#plans?return=' + encodeURIComponent('/settings?tab=model&connect=claude-code-cloud&resize=c-1&plan_changed=1'),
+      '#plans?return=' + encodeURIComponent('/settings?tab=model&connect=claude-code-cloud&resize=c-1&plan_changed=1') + '&for=claude-code&largest=max',
       { inPlace: false },
     );
     expect(h.openComputerSpec).not.toHaveBeenCalled();
@@ -163,7 +163,7 @@ describe('useMediumAction, what gets it to Medium', () => {
       return useMediumAction('c-1');
     }, { wrapper });
     act(() => result.current?.go());
-    expect(h.openConsolePage).toHaveBeenCalledWith(planUrlFor('c-1'), { inPlace: true });
+    expect(h.openConsolePage).toHaveBeenCalledWith(planUrlFor('c-1', undefined, 'max'), { inPlace: true });
   });
 
   it('with no dialog host mounted, sends the user to Claude Code with the resize open instead of opening the dialog', () => {
@@ -187,17 +187,21 @@ describe('useMediumAction, from the setup wizard', () => {
     const { result } = renderHook(() => useMediumAction('c-1'), { wrapper: setup });
     act(() => result.current?.go());
     expect(h.openConsolePage).toHaveBeenCalledWith(
-      '#plans?return=' + encodeURIComponent('/setup/claude-code?resize=c-1&plan_changed=1'),
+      '#plans?return=' + encodeURIComponent('/setup/claude-code?resize=c-1&plan_changed=1') + '&for=claude-code&largest=max',
       { inPlace: false },
     );
   });
 });
 
 describe('planUrlFor', () => {
-  it('encodes the way back, with the computer in it and the plan marked as changed', () => {
+  it('encodes the way back, with the computer in it and the plan marked as changed, for Claude Code', () => {
     expect(planUrlFor('c 1')).toBe(
-      '#plans?return=' + encodeURIComponent('/settings?tab=model&connect=claude-code-cloud&resize=c%201&plan_changed=1'),
+      '#plans?return=' + encodeURIComponent('/settings?tab=model&connect=claude-code-cloud&resize=c%201&plan_changed=1') + '&for=claude-code',
     );
+  });
+
+  it('names the largest computer the provider builds, so the plan page names none bigger', () => {
+    expect(planUrlFor('c-1', undefined, 'max')).toMatch(/&for=claude-code&largest=max$/);
   });
 });
 

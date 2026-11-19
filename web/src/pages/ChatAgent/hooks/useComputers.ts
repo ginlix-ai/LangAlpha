@@ -12,7 +12,7 @@ import { QueryClient, queryOptions, useQuery, useQueryClient } from '@tanstack/r
 
 import { registerAuthReset } from '@/lib/authResets';
 import { queryKeys } from '@/lib/queryKeys';
-import type { Computer, ComputerStorage, ComputersResponse, SshPairingStatus } from '@/types/api';
+import type { Computer, ComputerProvidersResponse, ComputerStorage, ComputersResponse, SshPairingStatus } from '@/types/api';
 
 import {
   createSshPairing,
@@ -120,6 +120,10 @@ export function fetchComputerList(queryClient: QueryClient): Promise<ComputersRe
   return queryClient.fetchQuery({ ...computersList(), staleTime: 0 });
 }
 
+/** Home's computer: the primary on the list, unless it is being removed. */
+export const primaryComputer = (computers: readonly Computer[] | undefined): Computer | null =>
+  computers?.find((c) => c.is_primary && c.status !== 'deleted') ?? null;
+
 /** Names the create, so a decision that needs a new row on the list can wait for it to land. */
 export const CREATE_COMPUTER_MUTATION_KEY = ['computers', 'create'] as const;
 
@@ -161,6 +165,11 @@ const providersQuery = queryOptions({
  */
 export function useComputerProviders(options: { enabled: boolean }) {
   return useQuery({ ...providersQuery, enabled: options.enabled });
+}
+
+/** The providers, read now unless fresh in the cache. */
+export function fetchComputerProviders(queryClient: QueryClient): Promise<ComputerProvidersResponse> {
+  return queryClient.fetchQuery(providersQuery);
 }
 
 /** Read the providers ahead of the New computer form, which waits on them. */

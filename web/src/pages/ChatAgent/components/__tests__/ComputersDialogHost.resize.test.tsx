@@ -35,7 +35,10 @@ vi.mock('../../utils/api', async (importOriginal) => ({
   streamWorkspaceEvents: vi.fn(async () => {}),
 }));
 
+vi.mock('@/pages/Dashboard/utils/api', () => ({ getCurrentUser: vi.fn(async () => ({})) }));
+
 import { getComputers, getWorkspaceQuota, setComputerSpec } from '../../utils/api';
+import { getCurrentUser } from '@/pages/Dashboard/utils/api';
 import { closeComputerSpec, closeComputersPanel, useComputersPanel } from '../../hooks/computerPanelStore';
 import ComputersDialogHost from '../ComputersDialogHost';
 
@@ -52,6 +55,11 @@ const SMALL = {
   root_dir: '/home/workspace',
   provider_ref: 'sandbox-1',
   spec_change: null,
+} as Computer;
+
+const CHANGING = {
+  ...SMALL,
+  spec_change: { target_tier: 'performance', from_tier: 'standard', state: 'in_progress', started_at: '2026-11-19T00:00:00Z' },
 } as Computer;
 
 function Probe() {
@@ -131,6 +139,28 @@ describe('ComputersDialogHost, the resize query', () => {
     await waitFor(() => expect(setComputerSpec).toHaveBeenCalledWith('c-1', 'performance', false));
   });
 
+  it('opens nothing on a computer already Medium, and takes the query off', async () => {
+    vi.mocked(getComputers).mockResolvedValue({ computers: [{ ...SMALL, resource_tier: 'performance' }], total: 1 });
+    mount('/settings?tab=model&resize=c-1&plan_changed=1');
+    await waitFor(() => expect(getComputers).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=model spec:null/null'));
+    expect(screen.queryByRole('radio')).toBeNull();
+  });
+
+  it('opens a change to Medium already running as its progress', async () => {
+    vi.mocked(getComputers).mockResolvedValue({ computers: [CHANGING], total: 1 });
+    mount('/settings?tab=model&resize=c-1&plan_changed=1');
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=model spec:c-1/performance'));
+    expect(await screen.findByTestId('spec-change-progress')).toHaveTextContent('Upgrading to Medium');
+  });
+
+  it('back from the plan page with no resize, reads the plan again and takes the mark off', async () => {
+    host.platform = true;
+    mount('/settings?tab=model&connect=claude-code-cloud&plan_changed=1');
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=model&connect=claude-code-cloud spec:null/null'));
+    expect(getCurrentUser).toHaveBeenCalledWith({ refresh_tier: true });
+  });
+
   it('leaves the address and the dialog alone without it', async () => {
     mount('/settings?tab=model');
     await act(async () => {});
@@ -170,11 +200,21 @@ describe('ComputersDialogHost, the resize query for Home', () => {
     }
   });
 
-  it('never picks a size smaller than Home is now', async () => {
-    vi.mocked(getComputers).mockResolvedValue({ computers: [{ ...SMALL, resource_tier: 'max' }], total: 1 });
+  it('opens nothing where Home is already the size the plan opens, or larger, and takes the query off', async () => {
+    for (const resource_tier of ['performance', 'max'] as const) {
+      vi.mocked(getComputers).mockResolvedValue({ computers: [{ ...SMALL, resource_tier }], total: 1 });
+      const { unmount } = mount('/settings?resize=home&tier=performance');
+      await waitFor(() => expect(getComputers).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings spec:null/null'));
+      unmount();
+    }
+  });
+
+  it("opens Home's change already running to the size the plan opens as its progress", async () => {
+    vi.mocked(getComputers).mockResolvedValue({ computers: [CHANGING], total: 1 });
     mount('/settings?resize=home&tier=performance');
-    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings spec:c-1/max'));
-    expect(await screen.findByRole('radio', { name: /^Large/ })).toBeChecked();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings spec:c-1/performance'));
+    expect(await screen.findByTestId('spec-change-progress')).toHaveTextContent('Upgrading to Medium');
   });
 
   it("opens nothing where Home is on the user's own machine, or on no computer, and takes the query off", async () => {

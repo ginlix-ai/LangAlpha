@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { type QueryClient, queryOptions, useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import { getCurrentUser } from '../pages/Dashboard/utils/api';
 import { apiErrorStatus } from '@/api/errors';
@@ -28,6 +28,16 @@ export const userQueryOptions = queryOptions({
     apiErrorStatus(error) === 503 && failureCount < UNAVAILABLE_RETRIES,
   retryDelay: (_failureCount, error) => retryAfterMs(error),
 });
+
+/** Reads the account past the server's cached plan, then has every reader
+ *  read it again, so a plan just changed shows by its new name. A read that
+ *  fails leaves the account as it was. */
+export function readUserAfterPlanChange(queryClient: QueryClient) {
+  return getCurrentUser({ refresh_tier: true }).then(
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.user.me() }),
+    () => undefined,
+  );
+}
 
 /**
  * Shared hook for current user profile data.

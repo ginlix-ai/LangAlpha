@@ -51,6 +51,14 @@ function shownTierValue(computer: Pick<Computer, 'resource_tier' | 'spec_change'
   return computer?.resource_tier;
 }
 
+/** Whether `computer` is still smaller than `tier`, counting a change
+ *  already running as the size it moves to. */
+export function smallerThan(computer: Pick<Computer, 'resource_tier' | 'spec_change'>, tier: ResourceTier): boolean {
+  const change = activeSpecChange(computer);
+  const size = change ? normalizeTier(change.target_tier) : effectiveTier(computer);
+  return TIER_ORDER.indexOf(size) < TIER_ORDER.indexOf(tier);
+}
+
 /** "Upgrading to Performance…" or, for a move down, "Changing spec to Standard…". */
 export function specChangeLabel(t: Translate, change: ComputerSpecChange): string {
   const target = normalizeTier(change.target_tier);

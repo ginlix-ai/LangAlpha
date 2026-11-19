@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHookWithProviders } from '../../test/utils';
-import { useUser } from '../useUser';
+import { readUserAfterPlanChange, useUser } from '../useUser';
+import { createTestQueryClient } from '../../test/utils';
+import { queryKeys } from '../../lib/queryKeys';
 import { waitFor } from '@testing-library/react';
 
 vi.mock('../../pages/Dashboard/utils/api', () => ({
@@ -33,6 +35,23 @@ describe('useUser', () => {
     const { result } = renderHookWithProviders(() => useUser());
 
     await waitFor(() => expect(result.current.user).toEqual(raw));
+  });
+
+  it('reads the account past the cached plan after a plan change, then has every reader read it again', async () => {
+    mockGetCurrentUser.mockResolvedValue({});
+    const queryClient = createTestQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await readUserAfterPlanChange(queryClient);
+    expect(mockGetCurrentUser).toHaveBeenCalledWith({ refresh_tier: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.user.me() });
+  });
+
+  it('leaves the account as it was where that read fails', async () => {
+    mockGetCurrentUser.mockRejectedValue(new Error('down'));
+    const queryClient = createTestQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await expect(readUserAfterPlanChange(queryClient)).resolves.toBeUndefined();
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it('returns null as user while loading', () => {

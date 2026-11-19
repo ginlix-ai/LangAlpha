@@ -9,11 +9,12 @@
 import { type QueryClient, queryOptions, useQuery } from '@tanstack/react-query';
 
 import { isPlatformMode } from '@/config/hostMode';
+import { readUserAfterPlanChange } from '@/hooks/useUser';
 import { queryKeys } from '@/lib/queryKeys';
 
 import { getWorkspaceQuota } from '../utils/api';
 
-// Set by `readQuotaAfterPlanChange` and spent by the next read that
+// Set by `readPlanAfterChange` and spent by the next read that
 // succeeds, so a retry after a failed one asks again.
 let planChanged = false;
 
@@ -35,11 +36,15 @@ export function useTierQuota(options: { enabled: boolean }) {
 }
 
 /** The user is back from the plan page: the next quota read, and only that
- *  one, asks the server to read the plan again, so a size the new plan opens
- *  shows open however quickly the user came back. */
-export function readQuotaAfterPlanChange(queryClient: QueryClient) {
+ *  one, asks the server to read the plan again, and the account is read past
+ *  the server's cached plan, so a size the new plan opens shows open, and the
+ *  plan shows by its new name, however quickly the user came back. */
+export function readPlanAfterChange(queryClient: QueryClient) {
   planChanged = true;
-  return queryClient.invalidateQueries({ queryKey: quotaQuery.queryKey });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: quotaQuery.queryKey }),
+    readUserAfterPlanChange(queryClient),
+  ]);
 }
 
 /** Read the quota ahead of a picker the user is about to open. */
