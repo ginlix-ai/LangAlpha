@@ -456,7 +456,7 @@ describe('useChatMessages — reconnect-on-reactivation (cached view, run starte
     errors.mockRestore();
   });
 
-  it('declines until the whole load settles, so the caller asks again', async () => {
+  it('declines until the load settles, which the ratings read does not hold', async () => {
     mockStatus.mockResolvedValue(threadStatus({ status: 'idle' }));
     let finishReplay!: () => void;
     mockReplay.mockImplementationOnce(() => new Promise<void>((resolve) => { finishReplay = resolve; }));
@@ -466,18 +466,13 @@ describe('useChatMessages — reconnect-on-reactivation (cached view, run starte
     await waitFor(() => expect(mockReplay).toHaveBeenCalled());
 
     expect(await checkWith(result)).toBe(false);
-    // The replay is done but the load is not: a reload requested here would
-    // restart a load that has not recorded itself as settled yet.
     await act(async () => { finishReplay(); });
-    expect(result.current.isLoadingHistory).toBe(false);
-    expect(result.current.isLoadingThread).toBe(true);
-    expect(await checkWith(result)).toBe(false);
-
-    await act(async () => { finishFeedback(); });
     await settleMountEffect();
+    expect(result.current.isLoadingHistory).toBe(false);
     expect(result.current.isLoadingThread).toBe(false);
     expect(await checkWith(result)).toBe(true);
     expect(mockReplay).toHaveBeenCalledTimes(1);
+    await act(async () => { finishFeedback(); });
   });
 
   it('runs a reload a send overtook in its status read once that turn ends, not over it', async () => {
@@ -505,28 +500,27 @@ describe('useChatMessages — reconnect-on-reactivation (cached view, run starte
     await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
   });
 
-  it('leaves a turn sent after the reload\'s replay alone, reconnecting to no run the status named before it', async () => {
-    mockStatus.mockResolvedValue(threadStatus({ status: 'idle' }));
+  it('ends a reload at its replay, so a turn sent while the ratings are still out is not replayed again', async () => {
+    mockStatus.mockResolvedValue(threadStatus({ latest_turn_index: 0 }));
+    mockReplay.mockImplementation(replayTurns(0));
     const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th'));
     await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(1));
     await settleMountEffect();
 
-    mockStatus.mockResolvedValue(threadStatus({ can_reconnect: true, status: 'running', run_id: 'run-elsewhere' }));
+    mockStatus.mockResolvedValue(threadStatus({ latest_turn_index: 1 }));
+    mockReplay.mockImplementation(replayTurns(0, 1));
     let finishFeedback!: () => void;
     mockFeedback.mockImplementationOnce(() => new Promise((resolve) => { finishFeedback = () => resolve([]); }));
     expect(await checkWith(result)).toBe(false);
     await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(result.current.isLoadingHistory).toBe(false));
+    await waitFor(() => expect(result.current.isLoadingThread).toBe(false));
 
-    mockStatus.mockResolvedValue(threadStatus({ status: 'idle' }));
     const endTurn = await sendHeldTurn(result);
+    mockReplay.mockImplementation(replayTurns(0, 1, 2));
+    await endTurn();
     await act(async () => { finishFeedback(); });
     await settleMountEffect();
-    expect(mockReconnect).not.toHaveBeenCalled();
-
-    await endTurn();
-    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(3));
-    await settleMountEffect();
+    expect(mockReplay).toHaveBeenCalledTimes(2);
     expect(mockReconnect).not.toHaveBeenCalled();
   });
 
@@ -549,28 +543,6 @@ describe('useChatMessages — reconnect-on-reactivation (cached view, run starte
     await endTurn();
     await act(async () => { answerStatus(); });
     await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
-    await settleMountEffect();
-    expect(mockReconnect).not.toHaveBeenCalled();
-  });
-
-  it('runs a reload again when a turn sent after its replay has already ended, reconnecting to no run the status named before it', async () => {
-    mockStatus.mockResolvedValue(threadStatus({ status: 'idle' }));
-    const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th'));
-    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(1));
-    await settleMountEffect();
-
-    mockStatus.mockResolvedValue(threadStatus({ can_reconnect: true, status: 'running', run_id: 'run-elsewhere' }));
-    let finishFeedback!: () => void;
-    mockFeedback.mockImplementationOnce(() => new Promise((resolve) => { finishFeedback = () => resolve([]); }));
-    expect(await checkWith(result)).toBe(false);
-    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(result.current.isLoadingHistory).toBe(false));
-
-    mockStatus.mockResolvedValue(threadStatus({ status: 'idle' }));
-    const endTurn = await sendHeldTurn(result);
-    await endTurn();
-    await act(async () => { finishFeedback(); });
-    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(3));
     await settleMountEffect();
     expect(mockReconnect).not.toHaveBeenCalled();
   });

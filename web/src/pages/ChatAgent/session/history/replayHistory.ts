@@ -931,10 +931,12 @@ export async function loadConversationHistory(
       carry: { events: carryEvents, subagents: subagentHistoryByTaskId, steeredAgentIds },
     });
     // The thread's ratings (best-effort), started before the transcript shows
-    // so its turns read as loading rather than unrated.
-    const feedbackLoad = rt.threadId ? deps.loadFeedback(rt.threadId) : null;
+    // so its turns read as loading rather than unrated. Not awaited: the
+    // reveal opens the composer, and a turn sent while the load still waited
+    // on the ratings read as taking the load over, so the load ran again once
+    // that turn ended and replayed it.
+    if (rt.threadId) void deps.loadFeedback(rt.threadId);
     reveal(true);
-    await feedbackLoad;
     return true;
   } catch (error: unknown) {
     if (olderPage) throw error;
