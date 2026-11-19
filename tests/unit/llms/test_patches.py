@@ -474,7 +474,7 @@ class TestOpenAICompactionTrigger:
         assert "extra_body" not in payload
         assert payload["input"][-1] == {"type": "compaction_trigger"}
 
-    def test_codex_keeps_its_instructions_and_gets_the_trigger(self):
+    def test_codex_keeps_its_system_prompt_and_gets_the_trigger(self):
         from src.llms.extension.codex import ChatCodexOpenAI
 
         codex = ChatCodexOpenAI(
@@ -485,7 +485,7 @@ class TestOpenAICompactionTrigger:
         )
         payload = self._payload(codex, extra_body=self._MARKER)
 
-        assert payload["instructions"] == "sys"
+        assert payload["input"][0]["role"] == "developer"
         assert payload["input"][-1] == {"type": "compaction_trigger"}
 
     @pytest.mark.parametrize("extra_body", [None, {"reasoning_extra": 1}])

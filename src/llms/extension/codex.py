@@ -1,15 +1,14 @@
 """ChatOpenAI subclass for Codex store=false backends.
 
-Layers three Codex-specific fixes on ChatOpenAI: system messages are promoted to
-the top-level ``instructions`` field (the Codex API rejects ``role:"system"`` in
-the input array), a module-level guard coerces a null ``response.output`` —
-which the chatgpt.com backend sends on terminal stream frames — to ``[]`` before
-langchain iterates it, and the client marks its own streams so the Responses
-stream bridge replays tool-call arguments that backend sends only in ``.done``
-events. Cross-turn reasoning continuity relies on
-``include: ["reasoning.encrypted_content"]``; langchain-openai (>=1.3.4) drops
-unpersisted ids under store=false and keeps encrypted reasoning items itself, so
-no request-side id stripping is done here.
+Layers three Codex-specific fixes on ChatOpenAI: system messages go out as
+developer messages, the shape codex-rs sends; a module-level guard coerces a
+null ``response.output``, which the chatgpt.com backend has sent on terminal
+stream frames, to ``[]`` before langchain iterates it; and the client marks its
+own streams so the Responses stream bridge replays the arguments of parallel
+tool calls, which that backend sends only in ``.done`` events. Cross-turn
+reasoning continuity relies on ``include: ["reasoning.encrypted_content"]``;
+langchain-openai (>=1.3.4) drops unpersisted ids under store=false and keeps
+encrypted reasoning items itself, so no request-side id stripping is done here.
 """
 
 import logging
@@ -45,54 +44,11 @@ def codex_identity_headers() -> dict[str, str]:
     return {"originator": CODEX_ORIGINATOR, "User-Agent": f"{CODEX_ORIGINATOR}/{codex_client_version()}"}
 
 
-def _extract_system_to_instructions(payload: dict) -> None:
-    """Move system messages from input to the top-level ``instructions`` field.
-
-    The Codex API rejects ``role:"system"`` in the input array. The Responses
-    API equivalent is the top-level ``instructions`` parameter (what the
-    official Codex CLI uses). Mutates *payload* in place.
-    """
-    items = payload.get("input")
-    if not items:
-        return
-
-    system_parts: list[str] = []
-    filtered: list = []
-
-    for item in items:
-        if isinstance(item, dict) and item.get("role") == "system":
-            content = item.get("content", "")
-            if isinstance(content, str):
-                system_parts.append(content)
-            elif isinstance(content, list):
-                # langchain-openai emits {"type": "input_text", "text": "..."}
-                system_parts.extend(
-                    block["text"]
-                    for block in content
-                    if isinstance(block, dict) and block.get("type") in ("text", "input_text")
-                )
-        else:
-            filtered.append(item)
-
-    if len(filtered) < len(items):
-        # Always strip system messages from input (Codex rejects them)
-        payload["input"] = filtered
-        if system_parts:
-            extracted = "\n\n".join(system_parts)
-            existing = payload.get("instructions")
-            # Append any model-level instructions after the system prompt
-            payload["instructions"] = f"{extracted}\n\n{existing}" if existing else extracted
-            logger.debug("[codex] Promoted %d system message(s) to instructions", len(system_parts))
-        else:
-            logger.debug("[codex] Stripped system message(s) with no text content")
-
-
 class ChatCodexOpenAI(ScopedResponsesStream):
     """ChatOpenAI for Codex store=false backends.
 
-    Promotes system messages to the ``instructions`` field the Codex API
-    requires. Encrypted reasoning items are replayed as-is for cross-turn
-    continuity (langchain-openai handles store=false id dropping).
+    Encrypted reasoning items are replayed as-is for cross-turn continuity
+    (langchain-openai handles store=false id dropping).
     """
 
     def _stream_scope(self):
@@ -100,9 +56,17 @@ class ChatCodexOpenAI(ScopedResponsesStream):
         return _codex_pending_calls, {}
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        """Send each system message as a developer message where it stands.
+
+        Developer is what codex-rs sends, so it is the shape this backend is
+        built for; it refused ``role:"system"`` before and accepts it today only
+        unannounced. Never the top-level ``instructions`` field: GPT-6.2 leaves
+        it out of the cached prefix (7-33% warm hits against 95%).
+        """
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        # Codex API rejects role:"system" — promote to the instructions field.
-        _extract_system_to_instructions(payload)
+        for item in payload.get("input") or ():
+            if isinstance(item, dict) and item.get("role") == "system":
+                item["role"] = "developer"
         return payload
 
 

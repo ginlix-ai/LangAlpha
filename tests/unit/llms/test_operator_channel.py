@@ -415,11 +415,10 @@ def test_developer_message_reaches_the_wire_as_developer_role():
         ],
         stop=None,
     )
-    # The base system prompt is promoted to `instructions`; the developer item
-    # survives in the input array because the codex filter keys on role
-    # "system" alone.
-    assert codex_payload["instructions"] == "base prompt"
-    assert [item["role"] for item in codex_payload["input"]] == ["user", "developer"]
+    # The base system prompt goes out as the leading developer item; the
+    # envelope keeps its own place after the user message.
+    assert "instructions" not in codex_payload
+    assert [item["role"] for item in codex_payload["input"]] == ["developer", "user", "developer"]
 
 
 # ---------------------------------------------------------------------------

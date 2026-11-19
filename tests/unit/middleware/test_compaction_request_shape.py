@@ -1,10 +1,9 @@
 """
 Tests for the message shape sent to the compaction LLM.
 
-Regression coverage for the Codex OAuth 400 "Instructions are required" bug:
-the Codex Responses-API adapter only populates the top-level ``instructions``
-field from ``SystemMessage`` content in the input, so the summarization
-prompt MUST be framed as a ``SystemMessage`` rather than a bare user string.
+The summarization prompt is framed as a ``SystemMessage`` and the history as a
+user message, so the prompt stays a stable, cacheable prefix apart from the
+history it summarizes.
 """
 
 from __future__ import annotations
