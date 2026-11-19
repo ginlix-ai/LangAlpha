@@ -8,7 +8,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { MemoryRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { createTestQueryClient, renderWithProviders } from '@/test/utils';
 import { captureSetupReturn, readSetupReturn } from '@/lib/setupReturn';
 
@@ -73,6 +73,10 @@ import { SubscriptionConnect } from '../connectStep/SubscriptionConnect';
 import ProviderStep from '../ProviderStep';
 import ConnectStep from '../ConnectStep';
 import type { LocationState } from '../connectStep/shared';
+
+function ConnectedTo() {
+  return <p data-testid="connect-state">{JSON.stringify(useLocation().state)}</p>;
+}
 
 /**
  * The way back is a full page load, which jsdom will not perform. `assign` is an
@@ -386,6 +390,28 @@ describe('ProviderStep with a return', () => {
     expect(await screen.findByText('models step')).toBeInTheDocument();
     expect(h.assign).not.toHaveBeenCalled();
     expect(readSetupReturn()).toBe(returnUrl());
+  });
+
+  it('takes a custom provider without a key through its key first, from the answers', async () => {
+    h.catalog = [catalogEntry];
+    h.preferences = { model_preference: { custom_providers: [{ name: 'my-server', parent_provider: 'openai' }] } };
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/start" element={<Navigate to="/setup/provider" state={{ list: 'api_key', answering: true }} />} />
+        <Route path="/setup/provider" element={<ProviderStep />} />
+        <Route path="/setup/connect" element={<ConnectedTo />} />
+        <Route path="/setup/models" element={<p>models step</p>} />
+      </Routes>,
+      { route: '/start' },
+    );
+
+    await user.click(await screen.findByRole('button', { name: /my-server/ }));
+
+    const state = JSON.parse((await screen.findByTestId('connect-state')).textContent ?? '{}');
+    expect(state).toMatchObject({ provider: 'my-server', answering: true });
+    expect(state.isCustom).toBeUndefined();
+    expect(screen.queryByText('models step')).toBeNull();
   });
 
   it('without a return, moves on to the model step', async () => {

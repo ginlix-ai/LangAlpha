@@ -38,6 +38,6 @@ export const userQueryOptions = queryOptions({
  */
 export function useUser({ enabled = true }: { enabled?: boolean } = {}) {
   // Named fields, not a spread: see usePreferences.
-  const { data, isLoading, isError } = useQuery({ ...userQueryOptions, enabled });
-  return { user: data ?? null, isLoading, isError };
+  const { data, isLoading, isError, refetch } = useQuery({ ...userQueryOptions, enabled });
+  return { user: data ?? null, isLoading, isError, refetch };
 }

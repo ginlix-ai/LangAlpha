@@ -1,4 +1,6 @@
+import { registerAuthReset } from '@/lib/authResets';
 import { claudeCodeTokenAdded } from '@/lib/claudeCode';
+import { userSessionStorage } from '@/lib/userStorage';
 import { useClaudeCodeSetup } from './useClaudeCode';
 import { useUser } from './useUser';
 import { allows, RULE } from '@/lib/accountRules';
@@ -7,14 +9,25 @@ import type { AccountPolicy } from '@/types/api';
 const nothingOwnToConnect = (policy: AccountPolicy | null) =>
   !!policy && !allows(policy, RULE.ownApiKeys) && !allows(policy, RULE.ownSubscriptions);
 
-const SKIP_KEY = 'ginlix_setup_skipped';
+// Under the account that pressed it: another one signed in on the tab has its
+// own setup, a switch made where no auth reset runs (the hosted console, which
+// reloads the app) included. Named apart from the unscoped key it replaces,
+// which the first account to read it would otherwise adopt.
+const SKIP_KEY = 'ginlix_setup_exited';
 
 /**
  * Mark setup as skipped for this browser session.
  * Called by the wizard's "Exit setup" button so the gate lets them through.
  */
 export function skipSetup(): void {
-  sessionStorage.setItem(SKIP_KEY, '1');
+  userSessionStorage.setItem(SKIP_KEY, '1');
+}
+
+registerAuthReset(() => userSessionStorage.removeItem(SKIP_KEY));
+
+/** Whether this account pressed "Exit setup" this browser session. */
+export function setupSkipped(): boolean {
+  return Boolean(userSessionStorage.getItem(SKIP_KEY));
 }
 
 /**
@@ -28,11 +41,12 @@ export function skipSetup(): void {
  * token, setup has nothing left to ask.
  *
  * "Exit setup" sets a sessionStorage flag that suppresses the redirect for
- * the rest of this browser session.
+ * the rest of this browser session. `enabled` false asks nothing, for an
+ * account whose setup runs on its answers instead.
  */
-export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
+export function useSetupGate({ enabled = true }: { enabled?: boolean } = {}): { isLoading: boolean; needsSetup: boolean } {
   const { user, isLoading } = useUser();
-  const skipped = Boolean(sessionStorage.getItem(SKIP_KEY));
+  const skipped = setupSkipped();
   const covered = !!user && (
     Boolean(user.has_api_key)
     || Boolean(user.has_oauth_token)
@@ -42,8 +56,9 @@ export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
     // nothing to connect: the account's models are provided.
     || nothingOwnToConnect(user.policy ?? null)
   );
-  const claudeCode = useClaudeCodeSetup({ enabled: !!user && !skipped && !covered });
+  const claudeCode = useClaudeCodeSetup({ enabled: enabled && !!user && !skipped && !covered });
 
+  if (!enabled) return { isLoading: false, needsSetup: false };
   if (isLoading || !user) {
     return { isLoading: true, needsSetup: false };
   }

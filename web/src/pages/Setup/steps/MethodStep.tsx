@@ -1,7 +1,7 @@
 import { useState, useCallback, useId } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Ticket, Key, Monitor, ChevronDown, ChevronRight, ChevronUp, CheckCircle2 } from 'lucide-react';
+import { Ticket, Key, Monitor, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WizardStepHeader } from '@/components/ui/wizard';
 import { SetupFooter } from '../SetupFooter';
@@ -255,17 +255,6 @@ export default function MethodStep() {
       )}
       {removing && (
         <RemoveAccessDialog provider={removing} name={removing.display_name} onClose={() => setRemoving(null)} />
-      )}
-
-      {/* Invitation-redeemed note (when no other providers configured); the
-          way on from it is the footer's skip */}
-      {!userLoading && hasPlatformAccess && !hasConfigured && (
-        <div className="shell-box flex items-center gap-2 p-4">
-          <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-success)' }} />
-          <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.invitationRedeemed')}
-          </span>
-        </div>
       )}
 
       {/* Each way goes straight on, as the rows in Settings do. */}

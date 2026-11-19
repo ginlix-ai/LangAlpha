@@ -30,6 +30,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { cn } from '@/lib/utils';
 import { invalidateSubagents } from '@/hooks/useSubagents';
 import { markHandoffReady } from '@/pages/Onboarding/welcome/handoff';
+import { ChatAppsPromptCard } from '@/pages/Onboarding/ChatAppsPromptCard';
 import { cardDownloadKey, trackPending } from '../utils/downloadNotice';
 import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile, type NextSummary } from '../utils/api';
 import { downloadTarget } from '../utils/fileRefResolver';
@@ -1676,6 +1677,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           threadId={feedThreadId}
                           active={isActive}
                         />
+                        {/* Under a finished reply (hosted only, in one thread, on screen). */}
+                        {currentThreadId && currentThreadId !== '__default__' && (
+                          <ChatAppsPromptCard
+                            threadId={currentThreadId}
+                            active={isActive}
+                            idle={!isLoading && !isStreaming}
+                            replied={messages.some((m) => m.role === 'assistant')}
+                          />
+                        )}
                       </div>
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Children, useEffect, useId, useRef, useState } from 'react';
 import { AlertTriangle, Check, Copy, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
@@ -15,6 +15,7 @@ export type AccessStatus = 'connected' | 'needs_reauth' | 'working' | 'unknown';
  *  offline, off, no computer it can run on, or not known). */
 const DOTTED = {
   connected: { key: 'modelAccess.status.connected', color: 'var(--color-success)' },
+  paired: { key: 'modelAccess.status.paired', color: 'var(--color-success)' },
   needs_reauth: { key: 'modelAccess.status.needsReauth', color: 'var(--color-warning)' },
   refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
   withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
@@ -166,6 +167,55 @@ export function QuietNote({ children, className }: { children: React.ReactNode; 
     <p className={cn('text-xs', className)} style={{ color: 'var(--color-text-tertiary)' }}>
       {children}
     </p>
+  );
+}
+
+/** A card of rows: an open box in the open card styles, its rows parted by
+ *  a card's divider. */
+export const ROW_CARD = 'shell-box divide-y divide-[color:var(--color-shell-divider,hsl(var(--border)))] [&>*]:[border-style:var(--cs-rule-style,solid)]';
+
+/** A labelled card of rows, as Model access groups its connections; a
+ *  group with no rows says `empty` in their place, or nothing without it. */
+export function Group({ title, children, empty, subgrid = false }: {
+  title?: string;
+  children: React.ReactNode;
+  empty?: string;
+  /** Lays its rows on the columns of the grid it sits in, so the rows of
+   *  cards stacked in that grid line up with each other. */
+  subgrid?: boolean;
+}) {
+  const rows = Children.toArray(children);
+  return (
+    <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
+      {/* A section label, in the open card styles' label voice. */}
+      {title && (
+        <h3
+          className={cn('text-xs font-medium open-style:label-text', subgrid && 'col-span-full')}
+          style={{ color: 'var(--color-shell-label, var(--color-text-tertiary))' }}
+        >
+          {title}
+        </h3>
+      )}
+      {rows.length > 0 ? (
+        <ul className={cn(ROW_CARD, subgrid && 'col-span-full grid grid-cols-subgrid')}>{rows}</ul>
+      ) : empty && (
+        <QuietNote className={cn(subgrid && 'col-span-full')}>{empty}</QuietNote>
+      )}
+    </div>
+  );
+}
+
+/** A step's number in a short list, in a small round badge, or the mark of
+ *  where the step stands. */
+export function StepBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-medium"
+      style={{ background: 'var(--color-bg-tag)', color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
+    >
+      {children}
+    </span>
   );
 }
 

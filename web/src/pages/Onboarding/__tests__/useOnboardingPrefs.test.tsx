@@ -14,6 +14,7 @@ vi.mock('@/hooks/usePreferences', () => ({
 }));
 
 import { useOnboardingPrefs } from '../useOnboardingPrefs';
+import { runAuthResets } from '@/lib/authResets';
 import { emptyOnboardingPrefs } from '../onboardingPrefsSchema';
 import type { OnboardingPrefs } from '../types';
 
@@ -98,6 +99,33 @@ describe('useOnboardingPrefs', () => {
     expect(mockWrite).toHaveBeenCalledTimes(4);
   });
 
+  it('pinChatAppsPrompt sends the pin once per session, though a refused PUT rolls it back', () => {
+    const { result } = renderHook(() => useOnboardingPrefs());
+    act(() => result.current.pinChatAppsPrompt('t1'));
+    act(() => result.current.pinChatAppsPrompt('t1'));
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.resetAll();
+      result.current.pinChatAppsPrompt('t2');
+    });
+    expect(mockWrite).toHaveBeenCalledTimes(3);
+  });
+
+  it('starts the pin and the task attempts over for the next account to sign in', () => {
+    const { result } = renderHook(() => useOnboardingPrefs());
+    act(() => {
+      result.current.pinChatAppsPrompt('t1');
+      void result.current.markTaskDone('dashboard');
+    });
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+    runAuthResets();
+    act(() => {
+      result.current.pinChatAppsPrompt('t9');
+      void result.current.markTaskDone('dashboard');
+    });
+    expect(mockWrite).toHaveBeenCalledTimes(4);
+  });
+
   it('markTaskDone tries again after another tab lands a write, never on its own', () => {
     const { result } = renderHook(() => useOnboardingPrefs());
     act(() => void result.current.markTaskDone('dashboard'));
@@ -132,7 +160,7 @@ describe('useOnboardingPrefs', () => {
   // settle, and a write it sent has to land or fail first.
   it.each<[string, { loading?: boolean; tried?: boolean; refused?: boolean; settle?: Settle }]>([
     ['while prefs load, with nothing sent', { loading: true }],
-    ['for a task tried this session', { tried: true }],
+    ['for a task tried this session once that write lands', { tried: true, settle: 'onSuccess' }],
     ['when the writer refuses the write', { refused: true }],
     ['once the write lands', { settle: 'onSuccess' }],
     ['once the write fails', { settle: 'onError' }],

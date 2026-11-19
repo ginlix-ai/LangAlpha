@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { usePreferences } from '@/hooks/usePreferences';
+import { authSessionCheck } from '@/lib/authResets';
 import { migrateOnboardingPrefs, emptyOnboardingPrefs } from './onboardingPrefsSchema';
 import { useOnboardingPrefsWriter } from './onboardingPrefsWriter';
 import type { OnboardingPrefs } from './types';
@@ -15,7 +16,7 @@ function readOnboarding(preferences: unknown): unknown {
  * as `useDashboardPrefs.update`) and routed through the guarded writer.
  */
 export function useOnboardingPrefs() {
-  const { preferences, isLoading } = usePreferences();
+  const { preferences, isLoading, isLoaded } = usePreferences();
   const { writeOnboardingPrefs, remoteUpdateGen } = useOnboardingPrefsWriter();
 
   const prefs = useMemo<OnboardingPrefs>(
@@ -59,35 +60,51 @@ export function useOnboardingPrefs() {
   // another tab's write lands (it may have been a reset that un-stamped a
   // task this tab already tried); this tab's own failed PUTs never move that
   // count, so the loop the guard exists for stays closed.
-  const taskAttemptsRef = useRef({ gen: remoteUpdateGen.current, ids: new Set<string>() });
+  const taskAttemptsRef = useRef({ gen: remoteUpdateGen.current, ids: new Map<string, Promise<void>>() });
+  // The chat apps prompt's pin, once per session the same way: a refused PUT
+  // rolls it back, and the card's effect would send it again.
+  const pinTriedRef = useRef(false);
+  // Both are this account's: a sign-out or an account switch, which leaves
+  // the provider mounted, starts them over for the next one.
+  const sessionRef = useRef(authSessionCheck());
+  const forgetLastAccount = useCallback(() => {
+    if (sessionRef.current()) return;
+    sessionRef.current = authSessionCheck();
+    taskAttemptsRef.current.ids.clear();
+    pinTriedRef.current = false;
+  }, []);
 
   /**
    * Stamp a getting-started task complete. Resolves once the write lands or
    * fails, or at once when there is nothing to send, for a caller about to
-   * leave the page that would otherwise cut the write off. Never rejects.
+   * leave the page that would otherwise cut the write off; a task asked again
+   * while its write is out resolves with that write. Never rejects.
    */
   const markTaskDone = useCallback(
     (id: string): Promise<void> => {
       if (isLoading) return Promise.resolve();
+      forgetLastAccount();
       const attempts = taskAttemptsRef.current;
       if (attempts.gen !== remoteUpdateGen.current) {
         attempts.gen = remoteUpdateGen.current;
         attempts.ids.clear();
       }
-      if (attempts.ids.has(id)) return Promise.resolve();
-      return new Promise<void>((settle) => {
-        const accepted = writeOnboardingPrefs(
-          (cur) =>
-            cur.gettingStartedDoneAt[id] != null
-              ? null
-              : { ...cur, gettingStartedDoneAt: { ...cur.gettingStartedDoneAt, [id]: Date.now() } },
-          { fallbackOther, onSuccess: () => settle(), onError: () => settle() }
-        );
-        if (accepted) attempts.ids.add(id);
-        else settle();
-      });
+      const tried = attempts.ids.get(id);
+      if (tried) return tried;
+      let settle!: () => void;
+      const landed = new Promise<void>((resolve) => (settle = resolve));
+      const accepted = writeOnboardingPrefs(
+        (cur) =>
+          cur.gettingStartedDoneAt[id] != null
+            ? null
+            : { ...cur, gettingStartedDoneAt: { ...cur.gettingStartedDoneAt, [id]: Date.now() } },
+        { fallbackOther, onSuccess: () => settle(), onError: () => settle() }
+      );
+      if (!accepted) return Promise.resolve();
+      attempts.ids.set(id, landed);
+      return landed;
     },
-    [writeOnboardingPrefs, remoteUpdateGen, fallbackOther, isLoading]
+    [writeOnboardingPrefs, remoteUpdateGen, fallbackOther, isLoading, forgetLastAccount]
   );
 
   /** Hide the getting-started list permanently. */
@@ -157,18 +174,40 @@ export function useOnboardingPrefs() {
     );
   }, [writeOnboardingPrefs, fallbackOther, isLoading]);
 
+  const dismissChatAppsPrompt = useCallback(() => {
+    if (isLoading) return;
+    writeOnboardingPrefs(
+      (cur) => (cur.chatAppsPromptDismissedAt !== null ? null : { ...cur, chatAppsPromptDismissedAt: Date.now() }),
+      { fallbackOther }
+    );
+  }, [writeOnboardingPrefs, fallbackOther, isLoading]);
+
+  /** Pins the chat apps prompt to the thread it first showed in. */
+  const pinChatAppsPrompt = useCallback((threadId: string) => {
+    if (isLoading) return;
+    forgetLastAccount();
+    if (pinTriedRef.current) return;
+    pinTriedRef.current = writeOnboardingPrefs(
+      (cur) => (cur.chatAppsPromptThreadId !== null ? null : { ...cur, chatAppsPromptThreadId: threadId }),
+      { fallbackOther }
+    );
+  }, [writeOnboardingPrefs, fallbackOther, isLoading, forgetLastAccount]);
+
   /** Clear all onboarding state ("reset onboarding"). Returns false if the
    * write was refused (cold cache), so the caller can skip an empty toast. */
   const resetAll = useCallback((): boolean => {
     if (isLoading) return false;
     // A reset un-stamps every task, so the session's attempts start over too.
     taskAttemptsRef.current.ids.clear();
+    pinTriedRef.current = false;
     return writeOnboardingPrefs(emptyOnboardingPrefs(), { fallbackOther, clearMirror: true });
   }, [writeOnboardingPrefs, fallbackOther, isLoading]);
 
   return {
     prefs,
     isLoading,
+    /** The preferences were read; a failed read leaves `prefs` empty and refuses writes. */
+    isLoaded,
     markPageIntroSeen,
     markTaskDone,
     dismissGettingStarted,
@@ -176,6 +215,8 @@ export function useOnboardingPrefs() {
     setLastSeenReleaseVersion,
     ensureFirstRun,
     markWelcomeSkipped,
+    dismissChatAppsPrompt,
+    pinChatAppsPrompt,
     resetAll,
   };
 }

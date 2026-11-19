@@ -15,9 +15,11 @@ import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_DOCS, CLAUDE_CODE_UNRU
 import { cn } from '@/lib/utils';
 import { countdown } from './countdown';
 import { ProviderTitle } from './KeyProviderPicker';
-import { CopyButton, OpenProviderLink, ROW_BUTTON } from './parts';
+import { CopyButton, OpenProviderLink, ROW_BUTTON, StepBadge } from './parts';
+import { ConsentForm } from './ClaudeCodeConsentDialog';
 import { TOKEN_ACTIONS, type TokenAction } from './tokenLine';
 import { SAVED_TOKEN, tokenCopy, tokenSheetTitle, useTokenRoutes, type SheetAction, type TokenRoutes, type TokenTarget } from './tokenTarget';
+import { useTokenConsent } from './useTokenConsent';
 
 /** Claude Code's install page, where step one sends anyone without it. */
 const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
@@ -75,36 +77,48 @@ const FALLBACK_LIFETIME_MS = 10 * 60_000;
  * for, pasting one made with the CLI. Each way saves on its own and calls
  * `onSaved`. For one of the user's own computers the token goes onto that
  * computer, and the copy says so.
+ *
+ * Where storing the token needs the user's agreement (`askConsent`), what
+ * they agree to and the box they tick stand in place of the line on how the
+ * token is kept, and every way in, the sign-in's code included, waits on it
+ * (`useTokenConsent`).
  */
-export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }: {
+export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel, pasteOpen = false, askConsent = false }: {
   target?: TokenTarget;
   onSaved: () => void;
-  onCancel: () => void;
+  /** Puts the sheet away: the paste form's Cancel, absent where there is nothing to go back to. */
+  onCancel?: () => void;
+  /** The paste form open from the start, on a page whose one job is this token. */
+  pasteOpen?: boolean;
+  /** The user's agreement asked for before a token is stored. */
+  askConsent?: boolean;
 }) {
   const { t } = useTranslation();
-  const routes = useTokenRoutes(target);
+  const { routes, form, waiting } = useTokenConsent(useTokenRoutes(target), askConsent);
   const { keys, values } = tokenCopy(target);
   const pasteId = useId();
-  const [pasting, setPasting] = useState(false);
+  const [pasting, setPasting] = useState(pasteOpen);
   const [pasteSaving, setPasteSaving] = useState(false);
   return (
     <div className="flex flex-col gap-5">
-      <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <span>
-          {t(keys.separate, values)}{' '}
-          <a
-            href={CLAUDE_CODE_DOCS.setUp}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"
-          >
-            {t('modelAccess.claudeCode.setup.learnMore')}
-            <ExternalLink aria-hidden="true" className="h-3 w-3" />
-          </a>
-        </span>
-      </p>
-      <SignInSection routes={routes} intro={t(keys.signInIntro, values)} onSaved={onSaved} />
+      {form ? <ConsentForm {...form} /> : (
+        <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {t(keys.separate, values)}{' '}
+            <a
+              href={CLAUDE_CODE_DOCS.setUp}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"
+            >
+              {t('modelAccess.claudeCode.setup.learnMore')}
+              <ExternalLink aria-hidden="true" className="h-3 w-3" />
+            </a>
+          </span>
+        </p>
+      )}
+      <SignInSection routes={routes} intro={t(keys.signInIntro, values)} onSaved={onSaved} waiting={waiting} />
       <section className="flex flex-col">
         <button
           type="button"
@@ -120,7 +134,7 @@ export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }
         </button>
         <Disclosure open={pasting} id={pasteId}>
           <div className="pt-3">
-            <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} saving={pasteSaving} setSaving={setPasteSaving} />
+            <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} saving={pasteSaving} setSaving={setPasteSaving} waiting={waiting} />
           </div>
         </Disclosure>
       </section>
@@ -204,7 +218,13 @@ const EXPIRED: Refusal = { code: 'no_pending_flow', message: '', retryable: fals
  * checks before saving. A refusal the same code cannot get past starts the sign-in over,
  * since the code is spent; any other leaves the code to fix or send again.
  */
-function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro: string; onSaved: () => void }) {
+function SignInSection({ routes, intro, onSaved, waiting = false }: {
+  routes: TokenRoutes;
+  intro: string;
+  onSaved: () => void;
+  /** Held until the user agrees to the token being stored. */
+  waiting?: boolean;
+}) {
   const { t } = useTranslation();
   const fieldId = useId();
   const errorId = useId();
@@ -289,7 +309,7 @@ function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro:
         {failure && (
           <p role="alert" className="text-xs" style={{ color: 'var(--color-loss)' }}>{say(t, 'modelAccess.claudeCode.signIn', failure)}</p>
         )}
-        <Button type="button" onClick={start} disabled={starting} aria-busy={starting} className="gap-1.5">
+        <Button type="button" onClick={start} disabled={starting || waiting} aria-busy={starting} className="gap-1.5">
           {starting && <Loader size={14} className="text-current" />}
           {starting ? t('modelAccess.claude.starting') : t('modelAccess.claudeCode.signIn.start')}
         </Button>
@@ -343,7 +363,7 @@ function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro:
             spellCheck={false}
             disabled={submitting}
           />
-          <Button type="submit" disabled={!value || submitting} aria-busy={submitting} className="shrink-0 gap-1.5">
+          <Button type="submit" disabled={!value || submitting || waiting} aria-busy={submitting} className="shrink-0 gap-1.5">
             {submitting && <Loader size={14} className="text-current" />}
             {submitting ? t('modelAccess.claudeCode.checking') : t('modelAccess.claude.submit')}
           </Button>
@@ -362,14 +382,16 @@ function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro:
  * Anthropic taking the token, so a refused one is never saved. The token
  * lives in this form's field alone, and leaves with it.
  */
-function PastedTokenForm({ routes, onSaved, onCancel, saving, setSaving }: {
+function PastedTokenForm({ routes, onSaved, onCancel, saving, setSaving, waiting = false }: {
   routes: TokenRoutes;
   onSaved: () => void;
-  onCancel: () => void;
+  onCancel?: () => void;
   /** Whether a save is in flight, held by the sheet, which keeps the form
    *  from folding away while one is. */
   saving: boolean;
   setSaving: (saving: boolean) => void;
+  /** Held until the user agrees to the token being stored. */
+  waiting?: boolean;
 }) {
   const { t } = useTranslation();
   const fieldId = useId();
@@ -449,13 +471,7 @@ function PastedTokenForm({ routes, onSaved, onCancel, saving, setSaving }: {
       <ol className="flex flex-col gap-3">
         {steps.map((step, i) => (
           <li key={i} className="flex items-start gap-2.5 text-sm" style={{ color: 'var(--color-text-primary)' }}>
-            <span
-              aria-hidden="true"
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-medium"
-              style={{ background: 'var(--color-bg-tag)', color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
-            >
-              {i + 1}
-            </span>
+            <StepBadge>{i + 1}</StepBadge>
             <span className="min-w-0 pt-px">{step}</span>
           </li>
         ))}
@@ -491,10 +507,12 @@ function PastedTokenForm({ routes, onSaved, onCancel, saving, setSaving }: {
       </div>
 
       <div className="flex items-center justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
-          {t('common.cancel')}
-        </Button>
-        <Button type="submit" disabled={!value || saving} aria-busy={saving} className="gap-1.5">
+        {onCancel && (
+          <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
+            {t('common.cancel')}
+          </Button>
+        )}
+        <Button type="submit" disabled={!value || saving || waiting} aria-busy={saving} className="gap-1.5">
           {saving && <Loader size={14} className="text-current" />}
           {saving ? t('modelAccess.claudeCode.checking') : t('modelAccess.claudeCode.save')}
         </Button>

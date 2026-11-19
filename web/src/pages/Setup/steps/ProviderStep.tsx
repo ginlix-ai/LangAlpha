@@ -13,12 +13,13 @@ import { KeyProviderList } from '@/components/modelAccess/KeyProviderPicker';
 import { ProviderChoices } from '@/components/modelAccess/ProviderChoices';
 import { SubscriptionChoices } from '@/components/modelAccess/SubscriptionChoices';
 import { QuietNote } from '@/components/modelAccess/parts';
-import { NO_FILTER, startingOption, type KeyFilter, type ProviderGroup } from '@/components/modelAccess/providerOptions';
+import { NO_FILTER, type KeyFilter } from '@/components/modelAccess/providerOptions';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { claudeCodeChoice } from '@/lib/claudeCode';
-import { useProviderConnected, type LocationState, type ProviderList } from './connectStep/shared';
+import { cn } from '@/lib/utils';
+import { QUIET_LINK, connectedProviders, useProviderPick, type LocationState, type ProviderList } from './connectStep/shared';
 import { useAccount } from '@/hooks/useAccount';
-import { methodAllowed } from '@/lib/accountRules';
+import { allows, RULE } from '@/lib/accountRules';
 
 // ---------------------------------------------------------------------------
 // ProviderStep — Step 2: the provider, as Settings lists them
@@ -26,25 +27,30 @@ import { methodAllowed } from '@/lib/accountRules';
 
 export default function ProviderStep() {
   const navigate = useNavigate();
-  const connected = useProviderConnected();
   const location = useLocation();
   const { t } = useTranslation();
   const headingId = useId();
 
   const list: ProviderList = (location.state as LocationState | null)?.list ?? 'api_key';
   const { policy } = useAccount();
+  // Each credential under its own rule: on the subscriptions list, sign-ins
+  // under the subscriptions rule and coding plans, added with a key, under
+  // the keys rule; keys and local servers under the keys rule.
+  const ownKeys = allows(policy, RULE.ownApiKeys);
+  const ownSubscriptions = allows(policy, RULE.ownSubscriptions);
+  // Sent here by the answers' model step, which Back returns to.
+  const answering = (location.state as LocationState | null)?.answering === true;
 
   const { keyGroups, planGroups, localEntries, isLoading } = useProviderCatalog();
   const { preferences } = usePreferences();
-  const { providers } = useConfiguredProviders();
-  // What already works. A subscription that has to sign in again runs no turn,
-  // so choosing it goes through its sign-in like a new one.
+  const { providers, byokEnabled } = useConfiguredProviders();
   const configuredSet = useMemo(
-    () => new Set(providers.filter((p) => p.state !== 'needs_reauth').map((p) => p.provider)),
-    [providers],
+    () => connectedProviders(providers, { answering, byokEnabled }),
+    [providers, answering, byokEnabled],
   );
+  const { connected, goOn, pickKeyGroup } = useProviderPick({ configured: configuredSet, answering });
   const [filter, setFilter] = useState<KeyFilter>(NO_FILTER);
-  const { setup: claudeCode, unread: claudeCodeUnread } = useClaudeCodeSetup({ enabled: list === 'oauth' });
+  const { setup: claudeCode, unread: claudeCodeUnread } = useClaudeCodeSetup({ enabled: list === 'oauth' && !answering });
 
   // The user's own providers, which the key method also offers.
   const userCustomProviders = useMemo(() => {
@@ -53,41 +59,27 @@ export default function ProviderStep() {
     return Array.isArray(cp) ? cp : [];
   }, [preferences]);
 
-  const handleBack = useCallback(() => navigate('/setup/method'), [navigate]);
-
-  // Already connected: back to the page that sent the user here, or straight
-  // on to its models. Otherwise on to its key or sign-in, which reads the
-  // rest of what it needs from the catalog by the provider's name.
-  const goOn = useCallback((state: LocationState & { provider: string }) => {
-    if (configuredSet.has(state.provider)) connected(state);
-    else navigate('/setup/connect', { state });
-  }, [configuredSet, connected, navigate]);
-
-  // The key step opens on the region a key is saved for, and offers the
-  // rest. A coding plan's key form is reached from the subscriptions, which
-  // its Back returns to.
-  const pickKeyGroup = (from: ProviderList) => (group: ProviderGroup) => {
-    const option = startingOption(group, configuredSet);
-    goOn({ method: 'api_key', list: from, provider: option.provider, displayName: group.name, modelsFrom: option.models_from });
-  };
+  const handleBack = useCallback(() => navigate(answering ? '/setup/model' : '/setup/method'), [navigate, answering]);
 
   // A definition saved before its key is not a connection: without a key it
   // goes on to model management without consuming the return, which then
   // happens from the Done step. Settings lists only connections, so its models
-  // have never been picked.
+  // have never been picked. From the answers it goes through its key first,
+  // since their model step counts only a connection.
   const pickCustom = useCallback((name: string) => {
     const customState = { method: list, list, provider: name, displayName: name, modelsFrom: name };
-    if (configuredSet.has(name)) connected(customState);
-    else navigate('/setup/models', { state: { ...customState, justConnected: true } });
-  }, [list, configuredSet, connected, navigate]);
+    if (answering) goOn(customState);
+    else if (configuredSet.has(name)) connected(customState);
+    else navigate('/setup/models', { state: { ...customState, justConnected: true, answering } });
+  }, [list, configuredSet, connected, goOn, navigate, answering]);
 
   const addCustom = useCallback(() => {
-    navigate('/setup/connect', { state: { method: list, list, isCustom: true } });
-  }, [navigate, list]);
+    navigate('/setup/connect', { state: { method: list, list, isCustom: true, answering } });
+  }, [navigate, list, answering]);
 
   // A way a rule keeps off is not offered on the step before; a page reached
   // some other way goes back to it.
-  if (!methodAllowed(policy, list)) return <Navigate to="/setup/method" replace />;
+  if (!(list === 'oauth' ? ownSubscriptions || ownKeys : ownKeys)) return <Navigate to={answering ? '/setup/model' : '/setup/method'} replace />;
 
   if (isLoading) {
     return (
@@ -101,8 +93,7 @@ export default function ProviderStep() {
     <button
       type="button"
       onClick={addCustom}
-      className="self-start text-xs underline underline-offset-2 hover:opacity-80"
-      style={{ color: 'var(--color-text-secondary)' }}
+      className={cn('self-start', QUIET_LINK)}
     >
       {t('modelAccess.customProvider')}
     </button>
@@ -122,11 +113,13 @@ export default function ProviderStep() {
       <div className="flex flex-col gap-4">
         {list === 'oauth' && (
           <SubscriptionChoices
-            planGroups={planGroups}
+            planGroups={ownKeys ? planGroups : []}
+            signIns={ownSubscriptions}
             configured={configuredSet}
             onPickSignIn={(p) => goOn({ method: 'oauth', list: 'oauth', provider: p, displayName: t(`modelAccess.${subscriptionKey(p)}.name`), modelsFrom: p })}
             onPickPlan={pickKeyGroup('oauth')}
-            claudeCode={claudeCodeChoice(claudeCode, claudeCodeUnread, () => navigate('/setup/claude-code'))}
+            claudeSignIn={!answering}
+            claudeCode={answering ? undefined : claudeCodeChoice(claudeCode, claudeCodeUnread, () => navigate('/setup/claude-code'))}
           />
         )}
 

@@ -29,14 +29,14 @@ export type RemoteControlAttempt =
   | { step: 'starting'; token: string | null }
   | { step: 'enabled'; token: string }
   | { step: 'approval'; token: string }
-  | { step: 'failed'; message: string | null }
+  | { step: 'failed'; message: string | null; timedOut?: boolean }
   | { step: 'insecure' };
 
 export type RemoteControlPhase =
   | { kind: 'disclosure' }
   | { kind: 'working'; stage: 'turningOn' | 'connecting' }
   | { kind: 'approval' }
-  | { kind: 'failed'; message: string | null }
+  | { kind: 'failed'; message: string | null; timedOut?: boolean }
   | { kind: 'insecure' }
   | { kind: 'ready'; ready: SshReady };
 
@@ -53,7 +53,7 @@ const UNTOUCHED = new Set<RemoteControlError>(['cancelled', 'bad_url', 'unsuppor
  */
 export function remoteControlPhase(attempt: RemoteControlAttempt, pairing: SshPairingStatus | undefined): RemoteControlPhase {
   if (attempt.step === 'idle') return { kind: 'disclosure' };
-  if (attempt.step === 'failed') return { kind: 'failed', message: attempt.message };
+  if (attempt.step === 'failed') return { kind: 'failed', message: attempt.message, timedOut: attempt.timedOut };
   if (attempt.step === 'insecure') return { kind: 'insecure' };
   const ready = pairingReady(pairing);
   if (ready) return { kind: 'ready', ready };
@@ -82,6 +82,9 @@ export function attemptAfter(result: RemoteControlResult, token: string): Remote
       return { step: 'failed', message: result.message || null };
     case 'bad_url':
       return { step: 'insecure' };
+    // The helper gave up on its pairing deadline, which a page can name.
+    case 'timeout':
+      return { step: 'failed', message: null, timedOut: true };
     default:
       return { step: 'failed', message: null };
   }
@@ -168,8 +171,9 @@ export function useRemoteControlSetup(active: boolean, { computerId = null }: { 
 
   const action = actionFor(phase);
 
+  // A ready Mac that cannot run as a computer may be fixed and tried again.
   const start = () => {
-    if (!acknowledged || !action) return;
+    if (!acknowledged || (!action && !(phase.kind === 'ready' && !fields.create))) return;
     const id = ++attemptId.current;
     const current = () => attemptId.current === id && !disposed.current;
     setAttempt({ step: 'starting', token: null });

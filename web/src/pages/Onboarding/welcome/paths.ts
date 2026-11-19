@@ -6,6 +6,11 @@
 
 export const WELCOME_PATH = '/welcome';
 
+/** The router state setup arrives with: the flow fades in and writes its
+ *  first line, where a reload or a link opens on it standing. */
+export const FROM_SETUP = { fromSetup: true } as const;
+export const cameFromSetup = (state: unknown) => (state as { fromSetup?: unknown } | null)?.fromSetup === true;
+
 /** Every screen the flow can show, in the order a new user meets them. */
 export const WELCOME_STEPS = ['brokerage', 'experience', 'risk', 'markets', 'style', 'agent'] as const;
 export type WelcomeStepId = (typeof WELCOME_STEPS)[number];

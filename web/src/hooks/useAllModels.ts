@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useModels } from './useModels';
 import { usePreferences } from './usePreferences';
 import { getModelAccess, usePlatformModels } from './usePlatformModels';
@@ -102,6 +102,11 @@ export interface UseAllModelsResult {
    *  the catalog and the custom models have both loaded, so a name missing
    *  from it means gone, never not loaded yet. */
   catalogModelNames: Set<string>;
+  /** Whether it is confirmed that `model` cannot run for the user: gone from
+   *  the catalog, or dropped from every group that lists it by a plan read as
+   *  excluding it or by the own list of the connection that group runs on. A read that failed or is still
+   *  loading confirms nothing, though it leaves the model out of `models`. */
+  cannotRun: (model: string) => boolean;
   /** Compaction profile catalog from the models API (name → preset values). */
   compactionProfiles: CompactionProfileCatalog | null;
   /** Web-search provider catalog from the models API (name → tiers + depths). */
@@ -110,6 +115,11 @@ export interface UseAllModelsResult {
   rawApiResponse: ModelsResponse | null;
   /** True while any upstream query is still loading. */
   isLoading: boolean;
+  /** The catalog, the user's connections or whether Claude Code is on for
+   *  them were never read, so `models` may leave out what the user can run. */
+  unread: boolean;
+  /** The connections whose own list is read to hide what they cannot run. */
+  listedProviders: readonly string[];
 }
 
 /**
@@ -120,10 +130,10 @@ export interface UseAllModelsResult {
  * `buildVisibleModels()`.
  */
 export function useAllModels(): UseAllModelsResult {
-  const { models: modelsData, isLoading: modelsLoading } = useModels();
+  const { models: modelsData, isLoading: modelsLoading, isError: modelsError } = useModels();
   const { preferences, isLoading: prefsLoading, isLoaded: prefsLoaded } = usePreferences();
   const { platform: rawPlatform, isLoading: platformLoading } = usePlatformModels();
-  const { providers: configuredProviders, byokEnabled: byokSwitch, isLoading: configuredLoading } = useConfiguredProviders();
+  const { providers: configuredProviders, byokEnabled: byokSwitch, isLoading: configuredLoading, unread: configuredUnread } = useConfiguredProviders();
   // The account's rules: the server runs no turn on the user's own keys or
   // sign-ins while a rule keeps them off, so none reaches or pays for a model
   // here either. A model a rule keeps a turn off is not offered to pick
@@ -212,6 +222,7 @@ export function useAllModels(): UseAllModelsResult {
         metadata: {},
         rawModels: {},
         validModelNames: new Set(),
+        listedModelNames: new Set(),
         customPairs: new Set(),
       };
     }
@@ -243,6 +254,22 @@ export function useAllModels(): UseAllModelsResult {
     }
     return names;
   }, [visible.rawModels, prefsLoaded, preferences]);
+
+  // A model some group carries that the confirmed drops took out of every
+  // group. A custom provider's own name is in no group, so it is never one.
+  const unrunnable = useMemo(() => {
+    const names = new Set<string>();
+    for (const data of Object.values(visible.rawModels)) {
+      for (const m of data.models ?? []) if (!visible.listedModelNames.has(m)) names.add(m);
+    }
+    return names;
+  }, [visible]);
+
+  const catalogLoaded = prefsLoaded && !!modelsData;
+  const cannotRun = useCallback(
+    (model: string) => catalogLoaded && (!catalogModelNames.has(model) || unrunnable.has(model)),
+    [catalogLoaded, catalogModelNames, unrunnable],
+  );
 
   const slotModels = useMemo(() => {
     const out: Record<string, ProviderModelsData> = {};
@@ -363,9 +390,12 @@ export function useAllModels(): UseAllModelsResult {
     customModels,
     validModelNames: visible.validModelNames,
     catalogModelNames,
+    cannotRun,
     compactionProfiles,
     searchProviders,
     rawApiResponse: modelsData,
     isLoading: modelsLoading || prefsLoading || configuredLoading || platformLoading || listsLoading || claudeCode.isLoading,
+    unread: (modelsError && !modelsData) || !!configuredUnread || claudeCode.unread,
+    listedProviders,
   };
 }

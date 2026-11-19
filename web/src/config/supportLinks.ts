@@ -25,6 +25,9 @@ export const PLAN_URL: string | null = consoleUrl('plans');
 
 export const INTEGRATIONS_URL: string | null = consoleUrl('integrations');
 
+/** The hosted onboarding questions; null where this app asks them. */
+export const ONBOARDING_USE_URL: string | null = consoleUrl('onboarding/use');
+
 export const SUPPORT_EMAIL: string | null =
   (import.meta.env.VITE_CONTACT_EMAILS ?? '')
     .split(',')

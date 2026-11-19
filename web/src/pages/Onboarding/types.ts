@@ -16,4 +16,8 @@ export interface OnboardingPrefs {
   firstRunAt: number | null;
   /** When the user passed on the welcome flow; it never opens by itself again. */
   welcomeSkippedAt: number | null;
+  /** When the user said Not now to the chat apps prompt. */
+  chatAppsPromptDismissedAt: number | null;
+  /** The thread the chat apps prompt first showed in, the only one it shows in. */
+  chatAppsPromptThreadId: string | null;
 }

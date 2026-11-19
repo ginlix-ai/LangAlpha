@@ -7,6 +7,7 @@ import type { OnboardingPrefs } from '../types';
 
 let mockPrefs: OnboardingPrefs = emptyOnboardingPrefs();
 let mockLoading = false;
+let mockLoaded = true;
 const markPageIntroSeen = vi.fn();
 const markTaskDone = vi.fn();
 const dismissGettingStarted = vi.fn();
@@ -21,6 +22,7 @@ vi.mock('../useOnboardingPrefs', () => ({
   useOnboardingPrefs: () => ({
     prefs: mockPrefs,
     isLoading: mockLoading,
+    isLoaded: mockLoaded,
     markPageIntroSeen,
     markTaskDone,
     dismissGettingStarted,
@@ -49,6 +51,16 @@ vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }));
 // OSS mode (platform-only tasks filtered out).
 vi.mock('@/config/hostMode', () => ({ HOST_MODE: 'oss', isPlatformMode: false }));
 
+// Chat apps link through the hosted platform; a test turns the link on.
+const chatApps = vi.hoisted(() => ({ url: null as string | null, progress: null as Record<string, unknown> | null }));
+vi.mock('@/config/supportLinks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config/supportLinks')>()),
+  get INTEGRATIONS_URL() { return chatApps.url; },
+}));
+vi.mock('@/hooks/useOnboardingProgress', () => ({
+  useOnboardingProgress: () => ({ progress: chatApps.progress }),
+}));
+
 let mockWorkspaces: unknown[] = [];
 const useWorkspacesSpy = vi.fn((opts: { enabled?: boolean } = {}) => ({
   data: opts.enabled === false ? undefined : { workspaces: mockWorkspaces },
@@ -65,7 +77,7 @@ vi.mock('../OnboardingHost', () => {
   return { OnboardingHost: () => null };
 });
 
-import { OnboardingProvider, useOnboarding } from '../OnboardingProvider';
+import { OnboardingProvider, useChatAppsPrompt, useOnboarding } from '../OnboardingProvider';
 import { OnboardingHostGate } from '../OnboardingHostGate';
 import { PAGE_INTROS } from '../registry';
 
@@ -95,6 +107,7 @@ function Harness() {
       <button onClick={resetOnboarding}>reset</button>
       <NavButtons />
       <LocationProbe />
+      <ChatAppsProbe />
     </div>
   );
 }
@@ -115,6 +128,10 @@ function NavButtons() {
       <button onClick={() => navigate('/dashboard')}>go-dashboard</button>
     </>
   );
+}
+
+function ChatAppsProbe() {
+  return <span data-testid="chatApps">{useChatAppsPrompt()?.offered ? 'offered' : 'not offered'}</span>;
 }
 
 function LocationProbe() {
@@ -148,10 +165,13 @@ describe('OnboardingProvider', () => {
   beforeEach(() => {
     mockPrefs = emptyOnboardingPrefs();
     mockLoading = false;
+    mockLoaded = true;
     mockUser = { user_id: 'u1', onboarding_completed: true };
     mockWorkspaces = [];
     mockSnoozed = false;
     mockIsMobile = false;
+    chatApps.url = null;
+    chatApps.progress = null;
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
@@ -681,5 +701,27 @@ describe('OnboardingProvider', () => {
     mockPrefs = { ...mockPrefs, pageIntrosSeen: {} };
     renderAt('/market', { withHost: true });
     await waitFor(() => expect(hostChunkLoaded).toHaveBeenCalled());
+  });
+
+  it('offers the chat apps prompt only to an account whose setup ran the answers flow', () => {
+    chatApps.url = '/account/integrations';
+    renderAt('/settings');
+    expect(screen.getByTestId('chatApps')).toHaveTextContent('not offered');
+  });
+
+  it('offers the chat apps prompt once setup finished on the answers', () => {
+    chatApps.url = '/account/integrations';
+    chatApps.progress = { setup_completed_at: '2026-11-15T00:00:00Z' };
+    renderAt('/settings');
+    expect(screen.getByTestId('chatApps')).toHaveTextContent('offered');
+    expect(screen.getByTestId('chatApps')).not.toHaveTextContent('not offered');
+  });
+
+  it('offers the chat apps prompt only from preferences that were read', () => {
+    chatApps.url = '/account/integrations';
+    chatApps.progress = { setup_completed_at: '2026-11-15T00:00:00Z' };
+    mockLoaded = false;
+    renderAt('/settings');
+    expect(screen.getByTestId('chatApps')).toHaveTextContent('not offered');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, relativeTime, signedFixed2 } from '@/lib/format';
+import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatUnitList, relativeTime, signedFixed2 } from '@/lib/format';
 
 describe('createFormatter', () => {
   it('formats numbers in the given locale', () => {
@@ -164,6 +164,13 @@ describe('formatBytes', () => {
   it('formats the number in the given locale', () => {
     expect(formatBytes(1536, 'de-DE')).toBe('1,5 KB');
     expect(formatBytes(2000 * 1024 ** 4, 'de-DE')).toBe('2.000 TB');
+  });
+});
+
+describe('formatUnitList', () => {
+  it('lists names with no conjunction, separated in both locales', () => {
+    expect(formatUnitList(['Kimi Code', 'GLM', 'OpenCode Go'], 'en-US')).toBe('Kimi Code, GLM, OpenCode Go');
+    expect(formatUnitList(['Kimi Code', 'GLM', 'OpenCode Go'], 'zh-CN')).toBe('Kimi Code、GLM、OpenCode Go');
   });
 });
 

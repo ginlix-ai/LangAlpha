@@ -5,12 +5,11 @@ import { ArrowUpRight, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { isDesktopShell } from '@/lib/desktop';
 import { cn, safeLocalStorage } from '@/lib/utils';
+import { STAMP_WAIT_MS } from '../consoleHandOff';
 import { useOnboarding, type GettingStartedTaskState } from '../OnboardingProvider';
 import type { GettingStartedTaskDef } from '../registry';
 import './GettingStarted.css';
 
-/** The longest a hand-off to the account portal waits for its task's stamp. */
-const STAMP_WAIT_MS = 1500;
 
 /**
  * Whether the list is folded open; a per-browser convenience, open by default.

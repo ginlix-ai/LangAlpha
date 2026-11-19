@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { createTestQueryClient } from '@/test/utils';
+import { setupSkipped } from '@/hooks/useSetupGate';
 import type { ClaudeCodeSetup } from '@/api/model';
 
 const h = vi.hoisted(() => ({
@@ -127,11 +128,11 @@ describe('ClaudeCodeStep', () => {
   });
 
   it('leaves setup for the session when the sheet goes to the computers panel in the app', async () => {
-    sessionStorage.removeItem('ginlix_setup_skipped');
+    sessionStorage.clear();
     h.setup = { on: true, state: 'not_connected', computers: [] };
     renderAt('/setup/claude-code');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Claude Code sheet' }));
-    expect(sessionStorage.getItem('ginlix_setup_skipped')).toBe('1');
-    sessionStorage.removeItem('ginlix_setup_skipped');
+    expect(setupSkipped()).toBe(true);
+    sessionStorage.clear();
   });
 });

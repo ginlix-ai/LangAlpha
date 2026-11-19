@@ -16,7 +16,10 @@ import type { ProviderGroup } from './providerOptions';
  * stored sign-in, one waiting to be signed in again included) and none is
  * connected. A status that could not be read lists it: the sign-in routes
  * refuse a user the gate leaves out, with words of their own. Once the
- * deployment set it an end day, it is marked legacy.
+ * deployment set it an end day, it is marked legacy. A list that leaves the
+ * Claude sign-in to Settings (`claudeSignIn` false) does not list it at all,
+ * and one a rule keeps the user's own sign-ins off (`signIns` false) lists
+ * none of them.
  */
 export function SubscriptionChoices({
   planGroups,
@@ -24,20 +27,25 @@ export function SubscriptionChoices({
   onPickSignIn,
   onPickPlan,
   claudeCode,
+  claudeSignIn = true,
+  signIns = true,
 }: {
   planGroups: readonly ProviderGroup[];
   configured: ReadonlySet<string>;
   onPickSignIn: (provider: SubscriptionProvider) => void;
   onPickPlan: (group: ProviderGroup) => void;
   claudeCode?: ClaudeCodeChoice;
+  claudeSignIn?: boolean;
+  signIns?: boolean;
 }) {
   const { t } = useTranslation();
   const { data: claude, isError: claudeUnread } = useOAuthStatus('claude-oauth');
   const signInLifecycle = claude?.lifecycle ?? 'active';
   const offered = (provider: SubscriptionProvider) => provider !== 'claude-oauth'
-    || configured.has(provider) || claudeUnread || (!!claude && claude.can_sign_in !== false);
+    || (claudeSignIn && (configured.has(provider) || claudeUnread || (!!claude && claude.can_sign_in !== false)));
   return (
     <div className="flex flex-col gap-3">
+      {signIns && (
       <section className="flex flex-col gap-1">
         <h4 className="px-3 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('modelAccess.signInPlans')}
@@ -71,6 +79,7 @@ export function SubscriptionChoices({
           })}
         </ul>
       </section>
+      )}
       {planGroups.length > 0 && (
         <section className="flex flex-col gap-1">
           <h4 className="px-3 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>

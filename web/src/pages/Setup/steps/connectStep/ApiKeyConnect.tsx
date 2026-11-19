@@ -63,7 +63,7 @@ function KeyStep({ state, form, fields, option, place }: {
   place?: KeyPlace;
 }) {
   const navigate = useNavigate();
-  const connected = useProviderConnected();
+  const connected = useProviderConnected(state.answering === true);
   const { t } = useTranslation();
   const headingId = useId();
 
@@ -76,7 +76,7 @@ function KeyStep({ state, form, fields, option, place }: {
     const { fresh } = form;
     const savedAs = await form.save();
     if (!savedAs) return;
-    const next = { method, list: state.list, provider: savedAs, displayName, modelsFrom, justConnected: fresh };
+    const next = { method, list: state.list, provider: savedAs, displayName, modelsFrom, justConnected: fresh, answering: state.answering };
     // A local server has no models until some are picked from its list, so it
     // goes on to the model step whatever page sent the user here; the return
     // then happens from the last step.
@@ -84,7 +84,7 @@ function KeyStep({ state, form, fields, option, place }: {
     else connected(next);
   };
 
-  const handleBack = () => navigate('/setup/provider', { state: { list: state.list } });
+  const handleBack = () => navigate('/setup/provider', { state: { list: state.list, answering: state.answering } });
 
   return (
     <div>

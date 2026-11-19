@@ -34,6 +34,8 @@ const OnboardingPrefsSchema = z.object({
   lastSeenReleaseVersion: z.catch(z.nullable(z.string().check(z.minLength(1))), null),
   firstRunAt: epochOrNull,
   welcomeSkippedAt: epochOrNull,
+  chatAppsPromptDismissedAt: epochOrNull,
+  chatAppsPromptThreadId: z.catch(z.nullable(z.string().check(z.minLength(1))), null),
 });
 
 export function emptyOnboardingPrefs(): OnboardingPrefs {
@@ -45,6 +47,8 @@ export function emptyOnboardingPrefs(): OnboardingPrefs {
     lastSeenReleaseVersion: null,
     firstRunAt: null,
     welcomeSkippedAt: null,
+    chatAppsPromptDismissedAt: null,
+    chatAppsPromptThreadId: null,
   };
 }
 

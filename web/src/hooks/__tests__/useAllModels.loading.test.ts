@@ -4,7 +4,7 @@
  * access answer is one of them: while it is pending, a locked model reads as
  * reachable and a pick would save it as the account default.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
 
@@ -15,12 +15,14 @@ const h = vi.hoisted(() => ({
   preferences: {} as Record<string, unknown>,
   features: [] as Array<{ key: string; enabled: boolean }>,
   claudeCode: vi.fn<() => Promise<ClaudeCodeStatus>>(),
+  modelsFailed: false,
+  providersUnread: false,
 }));
 
 // The providers' own lists are read through React Query; none is read here.
 vi.mock('../useProviderModels', () => ({ useMissingModels: () => ({ missingByProvider: new Map(), isLoading: h.listsLoading }) }));
 vi.mock('../useModels', () => ({
-  useModels: () => ({
+  useModels: () => (h.modelsFailed ? { models: null, isLoading: false, isError: true } : {
     models: {
       models: {
         'prov-x': { models: ['model-x'], display_name: 'X' },
@@ -38,7 +40,7 @@ vi.mock('../usePreferences', () => ({
   usePreferences: () => ({ preferences: h.preferences, isLoading: false, isLoaded: h.prefsLoaded }),
 }));
 vi.mock('../useConfiguredProviders', () => ({
-  useConfiguredProviders: () => ({ providers: [], isLoading: false }),
+  useConfiguredProviders: () => ({ providers: [], isLoading: false, unread: h.providersUnread }),
 }));
 // Flags are read through React Query; settled here, so only the hook's own
 // reads are in flight.
@@ -89,6 +91,20 @@ describe('useAllModels — isLoading', () => {
   });
 });
 
+describe('useAllModels — unread', () => {
+  beforeEach(() => { h.platformLoading = false; h.prefsLoaded = true; });
+  afterEach(() => { h.modelsFailed = false; h.providersUnread = false; });
+
+  it('says so where the catalog or the connections were never read, which offer nothing then', () => {
+    expect(renderHookWithProviders(() => useAllModels()).result.current.unread).toBe(false);
+    h.modelsFailed = true;
+    expect(renderHookWithProviders(() => useAllModels()).result.current.unread).toBe(true);
+    h.modelsFailed = false;
+    h.providersUnread = true;
+    expect(renderHookWithProviders(() => useAllModels()).result.current.unread).toBe(true);
+  });
+});
+
 describe('useAllModels — catalogModelNames', () => {
   beforeEach(() => { h.platformLoading = false; h.prefsLoaded = true; h.preferences = {}; });
 
@@ -125,6 +141,14 @@ describe('useAllModels — Claude Code', () => {
     h.preferences = {};
     h.features = [];
     h.claudeCode.mockReset();
+  });
+
+  it('says the models are unread where Claude Code\'s status could not be read, which leaves its models out', async () => {
+    h.features = flagged;
+    h.claudeCode.mockRejectedValue(new Error('down'));
+    const { result } = renderHookWithProviders(() => useAllModels());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.unread).toBe(true);
   });
 
   it('lists none and reads no status without the flag', () => {

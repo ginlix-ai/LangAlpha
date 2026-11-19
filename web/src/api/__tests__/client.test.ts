@@ -24,6 +24,7 @@ vi.mock('../../lib/authToken', async (importActual) => ({
   clearAuthToken: vi.fn(),
 }));
 
+import { runAuthResets } from '../../lib/authResets';
 import { api, ApiError } from '../client';
 
 type Reply = { status?: number; body?: BodyInit | null; headers?: Record<string, string> };
@@ -570,6 +571,33 @@ describe('401 refresh-and-retry', () => {
     });
 
     await expect(api.get('/test')).rejects.toMatchObject({ status: 401 });
+    expect(mockRefreshAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends a write built for an account that left during the token lookup', async () => {
+    // The lookup answers with no token once the account it started for is
+    // gone; sent bare, its 401 would carry no generation to compare.
+    mockGetAccessToken.mockImplementation(async () => {
+      runAuthResets();
+      return null;
+    });
+    mockRefreshAccessToken.mockResolvedValue('next-users-token');
+    reply(json(401, {}), json(200, { ok: true }));
+
+    await expect(api.patch('/onboarding', { setup_completed: true })).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a write that went out bare as the next account', async () => {
+    mockGetAccessToken.mockResolvedValue(null);
+    mockRefreshAccessToken.mockResolvedValue('next-users-token');
+    fetchMock.mockImplementation(async () => {
+      runAuthResets();
+      return new Response('{}', { status: 401 });
+    });
+
+    await expect(api.patch('/onboarding', { setup_completed: true })).rejects.toMatchObject({ status: 401 });
     expect(mockRefreshAccessToken).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

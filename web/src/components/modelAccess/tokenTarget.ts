@@ -3,21 +3,15 @@ import type { TFunction } from 'i18next';
 import {
   removeClaudeCodeComputerToken, removeClaudeCodeToken, saveClaudeCodeComputerToken, saveClaudeCodeToken,
   startClaudeCodeComputerSignIn, startClaudeCodeSignIn, submitClaudeCodeComputerSignInCode, submitClaudeCodeSignInCode,
-  type ClaudeCodeComputer, type ClaudeCodeStatus,
+  type ClaudeCodeComputer, type ClaudeCodeComputers, type ClaudeCodeStatus,
 } from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
+import { authSessionCheck } from '@/lib/authResets';
 import { updateComputers } from '@/hooks/useClaudeCode';
-import { CLAUDE_CODE_UNRUNNABLE } from '@/lib/claudeCode';
+import { CLAUDE_CODE_UNRUNNABLE, type TokenTarget } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
 
-/** Whose setup token: the one saved in Settings, or the one kept on one of
- *  the user's own computers. */
-export type TokenTarget = { kind: 'saved' } | { kind: 'computer'; computerId: string; name: string };
-
-export const SAVED_TOKEN: TokenTarget = { kind: 'saved' };
-
-export const computerTokenTarget = (c: Pick<ClaudeCodeComputer, 'computer_id' | 'name'>): TokenTarget =>
-  ({ kind: 'computer', computerId: c.computer_id, name: c.name });
+export { SAVED_TOKEN, computerTokenTarget, type TokenTarget } from '@/lib/claudeCode';
 
 /** What a token sheet does: add a token, or replace the one there. */
 export type SheetAction = 'add' | 'replace';
@@ -63,16 +57,25 @@ export function tokenSheetTitle(t: TFunction, target: TokenTarget, action: Sheet
 export function useTokenRoutes(target: TokenTarget) {
   const queryClient = useQueryClient();
   const reread = (queryKey: readonly unknown[]) => queryClient.invalidateQueries({ queryKey });
+  // An answer that lands after a sign-out or an account switch was the last
+  // account's, so it is not kept.
+  const thisAccount = async <T>(call: () => Promise<T>, keep: (answer: T) => Promise<void> | void) => {
+    const sameAccount = authSessionCheck();
+    const answer = await call();
+    if (sameAccount()) await keep(answer);
+  };
   if (target.kind === 'saved') {
-    const store = (status: ClaudeCodeStatus) => {
+    // A status read already on its way left before the save, so it is dropped.
+    const store = async (status: ClaudeCodeStatus) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.features.claudeCodeStatus() });
       queryClient.setQueryData(queryKeys.features.claudeCodeStatus(), status);
       void reread(queryKeys.features.claudeCodeComputers());
       void reread(queryKeys.features.claudeCodeSetup());
     };
     return {
-      save: async (token: string) => store(await saveClaudeCodeToken(token)),
+      save: (token: string) => thisAccount(() => saveClaudeCodeToken(token), store),
       start: () => startClaudeCodeSignIn(),
-      submit: async (code: string) => store(await submitClaudeCodeSignInCode(code)),
+      submit: (code: string) => thisAccount(() => submitClaudeCodeSignInCode(code), store),
       remove: async () => {
         try {
           await removeClaudeCodeToken();
@@ -94,15 +97,28 @@ export function useTokenRoutes(target: TokenTarget) {
       throw err;
     }
   };
-  const store = (entry: ClaudeCodeComputer) => {
+  const store = async (entry: ClaudeCodeComputer) => {
+    // A list read already on its way left before the save, so it is dropped;
+    // a computer the list was read without is added, as of that read, so
+    // whatever the token unlocks reads it at once. The save's answer is the
+    // computer's row, so the list is not read again for it, unless there was
+    // no list to add it to.
+    const key = queryKeys.features.claudeCodeComputers();
+    await queryClient.cancelQueries({ queryKey: key });
+    queryClient.setQueryData<ClaudeCodeComputers>(key, (list) => (
+      list && !list.computers.some((c) => c.computer_id === entry.computer_id)
+        ? { ...list, computers: [...list.computers, entry] }
+        : list
+    ), { updatedAt: queryClient.getQueryState(key)?.dataUpdatedAt });
+    if (!queryClient.getQueryData(key)) void reread(key);
     updateComputers(queryClient, (c) => c.computer_id === entry.computer_id, () => entry);
     void reread(queryKeys.features.claudeCodeStatus());
     void reread(queryKeys.features.claudeCodeSetup());
   };
   return {
-    save: async (token: string) => store(await rereadIfBlocked(saveClaudeCodeComputerToken(computerId, token))),
+    save: (token: string) => thisAccount(() => rereadIfBlocked(saveClaudeCodeComputerToken(computerId, token)), store),
     start: () => rereadIfBlocked(startClaudeCodeComputerSignIn(computerId)),
-    submit: async (code: string) => store(await rereadIfBlocked(submitClaudeCodeComputerSignInCode(computerId, code))),
+    submit: (code: string) => thisAccount(() => rereadIfBlocked(submitClaudeCodeComputerSignInCode(computerId, code)), store),
     remove: async () => {
       await removeClaudeCodeComputerToken(computerId);
       await reread(queryKeys.features.claudeCode());

@@ -66,6 +66,31 @@ export function servedElsewhere(name: string, provider: string, ctx: ConnectionC
   return holders.some((s) => s !== provider && ctx.connected.has(s));
 }
 
+/**
+ * The listed models a connection serves, in list order: its own group, then
+ * any model whose own provider is the connection, which the list files under
+ * the brand for a native variant (`moonshot-coding`'s under `moonshot`), and
+ * the user's entries saved under it.
+ */
+export function listedFor(
+  provider: string,
+  listed: Readonly<Record<string, { models?: string[] }>>,
+  metadata: Readonly<Record<string, { provider?: string } | undefined>>,
+  customModels: readonly CustomModelEntry[],
+  connectionOf: ConnectionOf,
+): string[] {
+  // A name the user's entries took runs where they put it, whoever's
+  // manifest model it shares the name with.
+  const serves = (m: string) => {
+    const custom = customModels.filter((cm) => nameOf(cm) === m);
+    if (custom.length) return custom.some((cm) => connectionOf(cm.provider) === provider);
+    const own = metadata[m]?.provider;
+    return !!own && connectionOf(own) === provider;
+  };
+  const elsewhere = Object.values(listed).flatMap((g) => g.models ?? []).filter(serves);
+  return [...new Set([...(listed[provider]?.models ?? []), ...elsewhere])];
+}
+
 /** Every model name `provider` serves that leaves the user's lists with it. */
 export function modelsLeavingWith(provider: string, ctx: ConnectionContext): Set<string> {
   const names = [

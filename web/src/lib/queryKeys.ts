@@ -21,6 +21,7 @@ export const queryKeys = {
     // Its own entry, not part of preferences: the server keeps it apart so the
     // agent, which can write preferences, cannot raise it.
     tradingPermission: () => [...queryKeys.user.all, 'trading-permission'],
+    onboarding: () => [...queryKeys.user.all, 'onboarding'],
   },
   models: {
     all: ['models'],

@@ -14,9 +14,13 @@ import { useAuth } from './contexts/AuthContext';
 import { useIsMobile } from './hooks/useIsMobile';
 import { useSyncAppearance } from './hooks/useAppearance';
 import { useLocale } from './hooks/useLocale';
-import { useSetupGate } from './hooks/useSetupGate';
+import { useOnboardingRoute } from './hooks/useOnboardingRoute';
+import { setupSkipped } from './hooks/useSetupGate';
+import { shellTarget } from './pages/Setup/answers/gate';
+import { canAddThisMac, isDesktopShell } from './lib/desktop';
+import { ExternalRedirect } from './components/ExternalRedirect';
 import { isPlatformMode, APP_ENTRY_PATH } from './config/hostMode';
-import { PRIVACY_URL } from './config/supportLinks';
+import { ONBOARDING_USE_URL, PRIVACY_URL } from './config/supportLinks';
 import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from './lib/oauthPopup';
 import { inAppPath } from './lib/inAppPath';
 import { clearSetupReturn } from './lib/setupReturn';
@@ -214,11 +218,6 @@ function RootRedirect() {
 }
 
 /** Leaves the app for an address outside it, without a history entry to come back to. */
-function ExternalRedirect({ to }: { to: string }) {
-  window.location.replace(to);
-  return null;
-}
-
 /** Legacy shared-host entry path — sends stale /app links to the root entry. */
 function LegacyAppPathRedirect() {
   const { search } = useLocation();
@@ -241,7 +240,7 @@ function AuthenticatedShell() {
   const location = useLocation();
   const onWelcome = location.pathname === WELCOME_PATH;
   const hideTabBar = isMobile && location.pathname.startsWith('/chat/t/');
-  const { isLoading, needsSetup } = useSetupGate();
+  const onboarding = useOnboardingRoute();
 
   // A new build is taken on a switch between sections, never inside one: chat
   // keeps every thread it has opened mounted, with its unsent message, while
@@ -354,12 +353,19 @@ function AuthenticatedShell() {
 
   // While the user profile is loading, show the loading state to avoid
   // flashing protected content before the gate check completes.
-  if (isLoading) {
+  if (onboarding.kind === 'loading') {
     return <PageLoading />;
   }
 
-  if (needsSetup) {
-    return <Navigate to="/setup/method" replace />;
+  // The hosted onboarding, the setup step to resume, the two questions
+  // or the provider setup come before any page of the app, /welcome and the
+  // first chat included.
+  const target = shellTarget(onboarding, { desktop: isDesktopShell(), skipped: setupSkipped(), canPair: canAddThisMac() });
+  if (target?.kind === 'platform' && ONBOARDING_USE_URL) {
+    return <ExternalRedirect to={ONBOARDING_USE_URL} />;
+  }
+  if (target?.kind === 'path') {
+    return <Navigate to={target.to} replace />;
   }
 
   // The desktop app's first run on a Mac asks where the agents work before

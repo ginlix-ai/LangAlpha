@@ -40,13 +40,17 @@ export default function ModelPickStep() {
   const { configuredSet } = useConfiguredProviders();
   const isConfigured = provider ? configuredSet.has(provider) : false;
   const picker = useModelPicker({ provider, modelsFrom, justConnected: state.justConnected === true });
+  // Sent from the answers' model step, which makes a pick the default.
+  const answering = state.answering === true;
 
   const handleBack = useCallback(() => {
-    navigate('/setup/provider', { state: { list: state.list } });
-  }, [navigate, state.list]);
+    navigate('/setup/provider', { state: { list: state.list, answering: state.answering } });
+  }, [navigate, state.list, state.answering]);
 
   const handleNext = async () => {
-    if (await picker.save()) navigate('/setup/defaults');
+    if (!(await picker.save())) return;
+    if (answering) navigate('/setup/model', { state: { connected: provider } });
+    else navigate('/setup/defaults');
   };
 
   return (
@@ -87,7 +91,7 @@ export default function ModelPickStep() {
               {t('setup.addAnotherDescription')}
             </span>
           </div>
-          <Button variant="outline" size="sm" className="shrink-0" onClick={() => navigate('/setup/method')}>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => navigate(answering ? '/setup/model' : '/setup/method')}>
             {t('setup.addAnother')}
           </Button>
         </div>
