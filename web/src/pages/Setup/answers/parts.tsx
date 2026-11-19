@@ -125,9 +125,9 @@ export function AnswerOption<V extends string>({ name, value, checked, onSelect,
 }
 
 /** A row's button, in Model access's row-button look. */
-export function RowButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+export function RowButton({ children, onClick, disabled }: { children: ReactNode; onClick: () => void; disabled?: boolean }) {
   return (
-    <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={onClick}>
+    <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={onClick} disabled={disabled}>
       {children}
     </Button>
   );

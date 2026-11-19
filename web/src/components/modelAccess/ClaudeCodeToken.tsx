@@ -73,8 +73,8 @@ const FALLBACK_LIFETIME_MS = 10 * 60_000;
 /**
  * Adds or replaces the setup token Claude Code signs in with: one line on
  * what the token is, with the rest in the docs, then each way to get one in:
- * signing in to Claude, which makes the token here, or, folded until asked
- * for, pasting one made with the CLI. Each way saves on its own and calls
+ * signing in to Claude, which makes the token here, or pasting one made
+ * with the CLI, folded every time the sheet opens until the user asks for it. Each way saves on its own and calls
  * `onSaved`. For one of the user's own computers the token goes onto that
  * computer, and the copy says so.
  *
@@ -83,13 +83,13 @@ const FALLBACK_LIFETIME_MS = 10 * 60_000;
  * token is kept, and every way in, the sign-in's code included, waits on it
  * (`useTokenConsent`).
  */
-export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel, pasteOpen = false, askConsent = false }: {
+export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel, onSavingChange, askConsent = false }: {
   target?: TokenTarget;
   onSaved: () => void;
   /** Puts the sheet away: the paste form's Cancel, absent where there is nothing to go back to. */
   onCancel?: () => void;
-  /** The paste form open from the start, on a page whose one job is this token. */
-  pasteOpen?: boolean;
+  /** Told while a save is in flight, either way in, for a way out drawn outside the sheet. */
+  onSavingChange?: (saving: boolean) => void;
   /** The user's agreement asked for before a token is stored. */
   askConsent?: boolean;
 }) {
@@ -97,8 +97,15 @@ export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel, 
   const { routes, form, waiting } = useTokenConsent(useTokenRoutes(target), askConsent);
   const { keys, values } = tokenCopy(target);
   const pasteId = useId();
-  const [pasting, setPasting] = useState(pasteOpen);
+  const [pasting, setPasting] = useState(false);
   const [pasteSaving, setPasteSaving] = useState(false);
+  const [signInSaving, setSignInSaving] = useState(false);
+  const saving = pasteSaving || signInSaving;
+  useEffect(() => {
+    if (!saving || !onSavingChange) return;
+    onSavingChange(true);
+    return () => onSavingChange(false);
+  }, [saving, onSavingChange]);
   return (
     <div className="flex flex-col gap-5">
       {form ? <ConsentForm {...form} /> : (
@@ -118,7 +125,14 @@ export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel, 
           </span>
         </p>
       )}
-      <SignInSection routes={routes} intro={t(keys.signInIntro, values)} onSaved={onSaved} waiting={waiting} />
+      <SignInSection
+        routes={routes}
+        intro={t(keys.signInIntro, values)}
+        onSaved={onSaved}
+        submitting={signInSaving}
+        setSubmitting={setSignInSaving}
+        waiting={waiting}
+      />
       <section className="flex flex-col">
         <button
           type="button"
@@ -218,10 +232,13 @@ const EXPIRED: Refusal = { code: 'no_pending_flow', message: '', retryable: fals
  * checks before saving. A refusal the same code cannot get past starts the sign-in over,
  * since the code is spent; any other leaves the code to fix or send again.
  */
-function SignInSection({ routes, intro, onSaved, waiting = false }: {
+function SignInSection({ routes, intro, onSaved, submitting, setSubmitting, waiting = false }: {
   routes: TokenRoutes;
   intro: string;
   onSaved: () => void;
+  /** Whether the code is being saved, held by the sheet. */
+  submitting: boolean;
+  setSubmitting: (submitting: boolean) => void;
   /** Held until the user agrees to the token being stored. */
   waiting?: boolean;
 }) {
@@ -231,7 +248,6 @@ function SignInSection({ routes, intro, onSaved, waiting = false }: {
   const field = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<SignIn>({ kind: 'start', failure: null });
   const [code, setCode] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const run = useRef(0);
   useEffect(() => () => { run.current += 1; }, []);

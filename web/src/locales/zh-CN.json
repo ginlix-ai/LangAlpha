@@ -2838,7 +2838,7 @@
       "claudeCodeNeedsBiggerComputerPlan": "需要中型及以上规格的云端计算机：可更改规格或升级 LangAlpha 套餐，或使用你自己的电脑",
       "claudeCodeNeedsMedium": "需要中型及以上的云端计算机。选择即可更改规格。",
       "claudeCodeNeedsMediumPlan": "需要中型及以上的云端计算机，当前套餐不含。选择即可升级套餐。",
-      "claudeCodeNeedsMediumResizing": "所在计算机正在改为中型。"
+      "claudeCodeNeedsMediumResizing": "所在计算机正在改为{{size}}。"
     },
     "voice": {
       "start": "开启语音输入",
@@ -7434,6 +7434,54 @@
         "rowResize": "Claude Code 只在中型及以上的计算机上运行。改为中型会让它重启几分钟。",
         "rowPlan": "Claude Code 只在中型及以上的计算机上运行，而当前套餐不含中型。",
         "rowResizing": "正在改为中型，完成后 Claude Code 即可在此运行。"
+      },
+      "steps": {
+        "done": "已完成",
+        "setUp": "设置 Claude Code",
+        "lead": {
+          "plan": "用你的 Claude 套餐，在 {{home}} 的云端计算机上运行 Claude Code。按顺序完成这三步。",
+          "medium": "下一步：把 {{home}} 的计算机改为{{size}}。",
+          "mediumPlan": "你已升级到 {{plan}}。下一步：把 {{home}} 的计算机改为{{size}}。",
+          "token": "就差一步了：登录 Claude。",
+          "tokenWhile": "就差一步了：计算机更改期间，先登录 Claude。"
+        },
+        "plan": {
+          "title": "含{{size}}及以上计算机的套餐",
+          "why": "Claude Code 需要含{{size}}及以上计算机的套餐。计算机越大，并行运行多个会话和子 Agent 的空间越多。",
+          "choose": "选择套餐",
+          "doneTitle": "{{plan}} 套餐",
+          "doneTitleUnnamed": "当前套餐",
+          "doneDetail": "最高可用{{size}}计算机。"
+        },
+        "medium": {
+          "title": "把 {{home}} 的计算机改为{{size}}",
+          "locked": "需要几分钟，文件会保留。",
+          "pushFirst": "请先推送。",
+          "apply": "备份并改为{{size}}",
+          "running": "正在改为{{size}}",
+          "runningNote": "需要几分钟，关闭这里也会继续进行。期间可以先登录 Claude。",
+          "doneTitle": "{{size}}计算机",
+          "doneDetail": "{{home}} 的计算机已是{{size}}。"
+        },
+        "token": {
+          "title": "登录 Claude",
+          "detail": "添加你的 setup token。",
+          "locked": "添加你的 setup token。计算机更改期间也可以添加。",
+          "doneTitle": "已登录 Claude",
+          "turnOnFailed": "无法开启 Claude Code，请重试。"
+        },
+        "own": {
+          "lead": "有 Mac 或服务器？",
+          "link": "改为在你自己的电脑上运行 Claude Code"
+        },
+        "picker": {
+          "plan": "需要含{{size}}及以上计算机的套餐。",
+          "medium": "需要一台{{size}}计算机。",
+          "resizing": "所在计算机正在改为{{size}}。",
+          "token": "需要先登录 Claude。"
+        },
+        "defaultHeld": "Claude Code 还没设置好，在此之前 {{home}} 的对话会使用 {{fallback}}。",
+        "composerHeld": "你的默认模型 {{model}} 需要先设置 Claude Code，所以这个对话使用 {{fallback}}。"
       }
     },
     "claude": {
