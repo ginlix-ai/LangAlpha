@@ -317,3 +317,32 @@ def test_a_submission_that_does_not_parse_is_dropped_from_the_cache_and_read_onc
     with pytest.raises(TruncatedSubmission) as e:
         parse_submission(filing, parse)
     assert dropped == ["A-1", "A-1"] and e.value.accession == "A-1"
+
+
+@pytest.mark.parametrize(("form", "amendments"), [("10-K", False), ("10-K", True), ("10-Q", False), ("20-F", False)])
+def test_rows_from_any_source_select_as_list_filings_does(monkeypatch, form, amendments):
+    from edgar_engine import filings as filings_mod
+    from edgar_engine.filings import list_filings, refs_for_form
+
+    rows = [*ROWS, row("0001234567-21-000001", "10-K", "2021-03-01", ""),
+            row("0001234567-20-000002", "20-F", "2020-10-15", "2020-06-30")]
+
+    def get_filings(form, trigger_full_load):
+        kept = [r for r in rows if r["form"] in form]
+        return SimpleNamespace(data=SimpleNamespace(num_rows=len(kept), to_pylist=lambda: kept))
+
+    company = SimpleNamespace(cik=CIK, fiscal_year_end="1231", get_filings=get_filings)
+    monkeypatch.setattr(filings_mod, "_company", lambda c: c)
+    assert refs_for_form(rows, CIK, form, amendments=amendments, fiscal_labels=LABELS, fiscal_year_end="1231") == \
+        list_filings(company, form, amendments=amendments, fiscal_labels=LABELS)
+
+
+def test_fiscal_labels_are_the_majority_label_of_each_filings_facts():
+    from edgar_engine.filings import labels_from_companyfacts
+
+    def fact(fy, fp):
+        return {"accn": "a-1", "form": "10-K", "fy": fy, "fp": fp}
+
+    body = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [fact(2024, "FY"), fact(2024, "FY"), fact(2023, "FY")]}}}}}
+    assert dict(labels_from_companyfacts(body)) == {("a-1", "10-K"): (2024, "FY")}
+    assert dict(labels_from_companyfacts(None)) == {}

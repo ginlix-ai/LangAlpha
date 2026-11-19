@@ -16,8 +16,10 @@ for amendments filed years later and for several amendments to one original. An 
 period matches no original gets amends=None here; edgar_engine.amendments reads the amendment's own
 cover page and explanatory note, which place it and correct a period of report typed wrong.
 
-refs_from_rows, link_amendments, period_rule and pick_ref are the steps list_filings and
-select_filing are built from, exposed as test seams, not as API.
+refs_from_rows, link_amendments and period_rule are the steps list_filings and select_filing are
+built from, exposed as test seams, not as API. table_forms, refs_for_form, labels_from_companyfacts
+and pick_ref let a caller that already holds a filer's filings table and companyfacts select the
+same way list_filings and select_filing do.
 
 Only APIs that edgartools 5.62 and 6.0 share are used. A company with no filings of the form
 yields an empty list on both; other errors propagate.
@@ -36,7 +38,8 @@ from .sections.vocab import base_form, filed_forms, is_amendment
 
 FiscalSource = Literal["xbrl", "period_rule"]
 
-__all__ = ["FilingRef", "base_form", "companyfacts_labels", "get_filing", "list_filings", "select_filing"]
+__all__ = ["FilingRef", "base_form", "companyfacts_labels", "get_filing", "labels_from_companyfacts", "list_filings", "pick_ref",
+           "refs_for_form", "select_filing", "table_forms"]
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,11 @@ def companyfacts_labels(cik: int) -> Mapping[tuple[str, str], tuple[int, str]]:
         facts = download_company_facts_from_sec(cik)
     except CompanyFactsNotFoundError:
         return MappingProxyType({})
+    return labels_from_companyfacts(facts)
+
+
+def labels_from_companyfacts(facts: Mapping[str, Any] | None) -> Mapping[tuple[str, str], tuple[int, str]]:
+    """companyfacts_labels over a companyfacts body the caller already holds (SEC's JSON, parsed)."""
     votes: dict[tuple[str, str], Counter] = defaultdict(Counter)
     for concepts in (facts or {}).get("facts", {}).values():
         for concept in concepts.values():
@@ -265,22 +273,40 @@ def list_filings(
     last year, or the last 1,000 filings), unless that Company has already loaded the rest. A filer with tens of
     thousands of filings (a bank issuing notes) spreads the rest over dozens of further requests."""
     company = _company(company)
-    forms = filed_forms(form)
-    annual = filed_forms("10-K") if base_form(form) == "10-Q" else ()
-    filings = company.get_filings(form=[*forms, *(f"{f}/A" for f in forms), *annual] if amendments else [*forms, *annual],
-                                  trigger_full_load=full_history)
+    filings = company.get_filings(form=table_forms(form, amendments), trigger_full_load=full_history)
     if filings is None or filings.data.num_rows == 0:
         return []
-    fiscal_year_end = getattr(company, "fiscal_year_end", None)
-    return refs_from_rows(
-        filings.data.to_pylist(),
-        int(company.cik),
-        forms,
-        amendments=amendments,
-        filed_on_or_before=filed_on_or_before,
+    return refs_for_form(
+        filings.data.to_pylist(), int(company.cik), form, amendments=amendments, filed_on_or_before=filed_on_or_before,
         fiscal_labels=companyfacts_labels(int(company.cik)) if fiscal_labels is None else fiscal_labels,
-        fiscal_year_end=fiscal_year_end,
-    )
+        fiscal_year_end=getattr(company, "fiscal_year_end", None))
+
+
+def refs_for_form(
+    rows: Iterable[dict[str, Any]],
+    cik: int,
+    form: str,
+    *,
+    amendments: bool = False,
+    filed_on_or_before: str | None = None,
+    fiscal_labels: Mapping[tuple[str, str], tuple[int, str]] | None = None,
+    fiscal_year_end: str | None = None,
+) -> list[FilingRef]:
+    """list_filings over a filings table the caller already holds (rows in edgartools' filings-table shape: form,
+    accession_number, filing_date, reportDate, acceptanceDateTime), so a source other than edgar.Company selects
+    the same way. Only the rows of the forms list_filings would ask edgar.Company for are read."""
+    table = set(table_forms(form, amendments))
+    return refs_from_rows([r for r in rows if r["form"] in table], cik, filed_forms(form), amendments=amendments,
+                          filed_on_or_before=filed_on_or_before, fiscal_labels=fiscal_labels,
+                          fiscal_year_end=fiscal_year_end)
+
+
+def table_forms(form: str, amendments: bool) -> list[str]:
+    """The forms list_filings reads for form: its filed variants, their amendments when asked, and for a 10-Q the
+    annual reports its quarters are counted from."""
+    forms = filed_forms(form)
+    annual = filed_forms("10-K") if base_form(form) == "10-Q" else ()
+    return [*forms, *(f"{f}/A" for f in forms), *annual] if amendments else [*forms, *annual]
 
 
 def select_filing(

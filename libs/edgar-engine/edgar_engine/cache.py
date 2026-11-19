@@ -13,8 +13,9 @@ from typing import Protocol
 
 from edgar_engine.sections.model import FilingSections
 from edgar_engine.sections.version import SECTIONS_VERSION
+from edgar_engine.statements import STATEMENTS_VERSION, Financials, edgartools_version
 
-__all__ = ["DocumentsCache", "LocalDirStore", "S3Store", "SectionsCache", "Store", "SubmissionCache"]
+__all__ = ["DocumentsCache", "LocalDirStore", "S3Store", "SectionsCache", "StatementsCache", "Store", "SubmissionCache"]
 
 _MISSING_CODES = {"NoSuchKey", "404", "NotFound"}
 
@@ -186,3 +187,30 @@ class SubmissionCache:
         raw = raw.encode() if isinstance(raw, str) else raw
         self.put(accession, raw)
         return raw
+
+
+class StatementsCache:
+    """Financials by accession, under the statements version and the edgartools version that rendered them."""
+
+    def __init__(self, store: Store | None = None):
+        self.store = store if store is not None else LocalDirStore()
+
+    @staticmethod
+    def _key(accession: str) -> str:
+        return f"statements/v{STATEMENTS_VERSION}/edgartools-{edgartools_version()}/{accession}.json.gz"
+
+    def get(self, accession: str) -> Financials | None:
+        data = self.store.get(self._key(accession))
+        if data is None:
+            return None
+        try:
+            payload = json.loads(gzip.decompress(data))
+            return Financials.from_dict(payload)
+        except (OSError, EOFError, ValueError, TypeError, zlib.error):
+            return None
+
+    def put(self, accession: str, financials: Financials) -> None:
+        """Keeps only a complete read: a hit is never read again, so a failed or partial one would stand for good."""
+        if not financials.complete:
+            raise ValueError(f"statements of {accession} are not complete: only a complete read is kept")
+        self.store.put(self._key(accession), gzip.compress(json.dumps(asdict(financials)).encode(), mtime=0))
