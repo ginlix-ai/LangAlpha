@@ -24,6 +24,15 @@ export async function configureSSE(scenario) {
   });
 }
 
+/** Opens the gate `name`: the stream holding an event at it (`holdUntil`) sends it. */
+export async function releaseSSE(name) {
+  await fetch(`${MOCK_SERVER}/__release`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
 /** Get captured requests from mock server (for assertion) */
 export async function getCapturedRequests() {
   const res = await fetch(`${MOCK_SERVER}/__requests`);
