@@ -3,7 +3,6 @@ fence and generation, and the sweep writes each computer from one worker."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import subprocess
 import sys
@@ -640,13 +639,24 @@ class TestMintPatience:
 
     @pytest.mark.asyncio
     async def test_patience_is_bounded(self):
-        loop = asyncio.get_running_loop()
-        began = loop.time()
+        # Time passes only when the mint sleeps, so the bound is on the
+        # schedule it chose, not on how promptly a busy runner woke it.
+        clock = SimpleNamespace(now=0.0)
 
-        with self._tries(always=DOWN) as (once, _):
+        async def sleep(delay: float) -> None:
+            clock.now += delay
+
+        fake_asyncio = SimpleNamespace(
+            get_running_loop=lambda: SimpleNamespace(time=lambda: clock.now),
+            sleep=sleep,
+        )
+        with (
+            self._tries(always=DOWN) as (once, _),
+            patch.object(data_tokens, "asyncio", fake_asyncio),
+        ):
             assert await data_tokens._mint(USER_ID, COMPUTER_ID, patient=True) is None
 
-        assert loop.time() - began < 0.3
+        assert clock.now < 0.3
         assert once.await_count > 2
         assert all(c.args[2] <= data_tokens._TIMEOUT_S for c in once.await_args_list)
 

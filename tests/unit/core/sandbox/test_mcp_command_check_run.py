@@ -38,16 +38,21 @@ pytestmark = pytest.mark.skipif(
 # shape of an npx tree that outlives its stdin.
 _FAKE_SERVER = textwrap.dedent(
     """
-    import json, os, subprocess, sys
+    import json, os, subprocess, sys, time
     pidfile = os.environ.get("STRAY_PIDFILE")
     if pidfile:
         subprocess.Popen([sys.executable, "-c",
             "import os, signal, time, sys; "
             "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(120)",
+            "open(sys.argv[1] + '.tmp', 'w').write(str(os.getpid())); "
+            "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); time.sleep(120)",
             pidfile])
+        # Answer only once the stray ignores SIGTERM and has said who it is:
+        # the check stops the session as soon as the listing is in, and a
+        # stray stopped before then dies of SIGTERM and leaves no pidfile.
+        while not os.path.exists(pidfile):
+            time.sleep(0.01)
     if os.environ.get("HANG"):
-        import time
         time.sleep(120)
     for line in sys.stdin:
         msg = json.loads(line)
