@@ -27,8 +27,9 @@ def codex_client_version() -> str:
 
     One value, ``client_version`` on ``codex-oauth`` in providers.json, for the
     request path and the model list: the backend gates which models an account
-    sees on it (0.99.0 listed one model where 0.164.0 listed nine), so the two
-    must never disagree.
+    sees on it (each model names a minimum: 0.164.0 hid GPT-6.2, which needs
+    0.166.0), so the two must never disagree and the value must keep up with
+    the newest model shipped.
     """
     from src.llms.llm import LLM
 

@@ -1015,7 +1015,7 @@
         "codex-oauth": {
           "sdk": "codex",
           "base_url": "https://chatgpt.com/backend-api/codex",
-          "client_version": "0.164.0",
+          "client_version": "0.167.0",
           "env_key": null,
           "access_type": "oauth",
           "use_response_api": true,
