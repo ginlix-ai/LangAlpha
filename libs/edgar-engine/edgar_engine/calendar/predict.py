@@ -343,13 +343,18 @@ def history_of(filings: Iterable[Filing], as_of: date, category: str | None = No
     A quarterly transition report (10-QT) ends on a year end of the new calendar when it ends in the month the
     stated fiscal year end closes; otherwise it covers a quarter inside a longer transition period, and the fiscal
     year end is changing until the next annual report. A 10-QT with no period of report could be either, so it too
-    leaves the fiscal year end changing until the next annual report."""
-    on_file = tuple(sorted((f for f in filings if f.filing_date <= as_of), key=lambda f: f.filing_date))
+    leaves the fiscal year end changing until the next annual report.
+
+    A report is filed after the period it covers, so a period of report on or after the filing date, which EDGAR
+    records for some filings, names no period: the filing reads as undated."""
+    on_file = tuple(sorted((replace(f, report_date=None) if f.report_date and f.report_date >= f.filing_date else f
+                            for f in filings if f.filing_date <= as_of), key=lambda f: f.filing_date))
     o = _originals(on_file)
     stated = parse_mmdd(fiscal_year_end)
     stated_month = nominal_month(on(2000, *stated))[1] if stated else None
     year_end_quarters = [f for f in o.transition_quarters if nominal_month(f.report_date)[1] == stated_month]
     quarterly = o.quarterly + [f for f in o.transition_quarters if f not in year_end_quarters]
+    undated_quarters = [f for f in o.undated if not periodic_form(f.form).annual]
     dated_ends = tuple(sorted({f.report_date for f in o.annual}))
     known = FiscalCalendar.infer(dated_ends, fiscal_year_end=stated) if dated_ends or stated else None
 
@@ -361,7 +366,7 @@ def history_of(filings: Iterable[Filing], as_of: date, category: str | None = No
     annual = annual_of(periodic_form(newest.form)) if newest else None
     asset_backed = any(f.form.upper() == ASSET_BACKED and f.filing_date > as_of - timedelta(days=365 * HISTORY_YEARS)
                        for f in on_file)
-    files_quarters = any(f.filing_date > as_of - timedelta(days=365 * HISTORY_YEARS) for f in quarterly)
+    files_quarters = any(f.filing_date > as_of - timedelta(days=365 * HISTORY_YEARS) for f in quarterly + undated_quarters)
     owes_quarters = bool(annual and annual.companion and (files_quarters or not asset_backed))
     ends = tuple(sorted({f.report_date for f in o.annual + year_end_quarters}))
     calendar = (FiscalCalendar.infer(ends, quarterly=owes_quarters, fiscal_year_end=stated)
@@ -381,8 +386,7 @@ def history_of(filings: Iterable[Filing], as_of: date, category: str | None = No
         if last_annual is None:
             return True
         return f.report_date > last_annual.report_date if f.report_date else f.filing_date > last_annual.filing_date
-    mid_transition = any(_is_transition(f) and after_last_annual(f)
-                         for f in quarterly + [f for f in o.undated if not periodic_form(f.form).annual])
+    mid_transition = any(_is_transition(f) and after_last_annual(f) for f in quarterly + undated_quarters)
     stated_end = on(ends[-1].year, *stated) if stated and ends else None
     fixed_date = (calendar is not None and calendar.rule == "same_day"
                   or len(ends) > 1 and (ends[-2].month, ends[-2].day) == (ends[-1].month, ends[-1].day))

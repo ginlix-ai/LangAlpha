@@ -107,7 +107,8 @@ date. A 52/53-week quarter ends 13 weeks after the period before it. A projected
 whose period ends within 10 days of it covers it, so a 14-week quarter does not leave a phantom one owed. A 10-K
 filer owes 10-Qs unless it is an asset-backed issuer (a 10-D and no 10-Q in two years: a sponsor co-files its
 securitization's 10-Ds and keeps filing 10-Qs); never having filed one is no exemption (Rules 13a-13 and 15d-13
-exempt classes of issuer).
+exempt classes of issuer). A report whose period of report falls on or after its filing date, which EDGAR records for
+some filings, is read as undated: it fills the period owed when it was filed.
 
 **Expected date.** The filer's own lag a year earlier for the same fiscal period, held to the due date when that
 lag was on time. With no history, the due date less the median slack of filers of its category. An earnings release

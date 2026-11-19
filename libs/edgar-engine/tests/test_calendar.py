@@ -228,6 +228,12 @@ def test_asset_backed_issuer_owes_no_quarters():
     assert report_currency(fl, as_of=d(2025, 8, 1)).next.fiscal_period == "FY"
 
 
+def test_an_undated_quarterly_report_shows_a_filer_of_10ds_still_files_quarters():
+    fl = [Filing("10-K", d(2025, 3, 25), d(2024, 12, 31)), Filing("10-D", d(2025, 6, 15), d(2025, 5, 31)),
+          Filing("10-Q", d(2025, 5, 10), d(2025, 5, 10))]
+    assert report_currency(fl, as_of=d(2025, 8, 1)).next.fiscal_period == "Q2"
+
+
 def test_annual_report_without_a_period_of_report_covers_the_last_year_end():
     fl = [Filing("10-K", d(2024, 3, 1), d(2023, 12, 31))]
     fl += [Filing("10-Q", end + timedelta(days=40), end) for end in (d(2024, 3, 31), d(2024, 6, 30), d(2024, 9, 30))]
@@ -309,6 +315,14 @@ def test_a_projected_weekly_quarter_can_be_the_14_week_one():
     fl = [f for f in _week_53_in_q1() if f.filing_date <= d(2023, 2, 3)]
     rc = report_currency(fl, as_of=d(2023, 2, 3), category="Large Accelerated Filer")
     assert rc.next.period_end == d(2022, 12, 24) and rc.next.latest_deadline == d(2023, 2, 9) and rc.verdict != "overdue"
+
+
+@pytest.mark.parametrize("dated", [d(2024, 8, 10), d(2024, 9, 30)])
+def test_a_period_of_report_on_or_after_the_filing_date_reads_as_undated(dated):
+    fl = [Filing("10-K", d(2024, 3, 1), d(2023, 12, 31)), Filing("10-Q", d(2024, 5, 10), d(2024, 3, 31)),
+          Filing("10-Q", d(2024, 8, 10), dated)]
+    rc = report_currency(fl, as_of=d(2024, 9, 1))
+    assert (rc.verdict, rc.next.fiscal_period, rc.latest.report_date) == ("current", "Q3", None)
 
 
 def test_a_quarterly_report_without_a_period_of_report_fills_the_quarter_owed():
