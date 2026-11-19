@@ -18,12 +18,14 @@
  * offers none, rather than a step read as done or a rule read as allowing.
  */
 import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router';
 import type { Computer, ComputerSpecChange, ResourceTier } from '@/types/api';
 import { isPlatformMode } from '@/config/hostMode';
 import { useAccount, useRule } from '@/hooks/useAccount';
 import { RULE } from '@/lib/accountRules';
 import { PLAN_URL } from '@/config/supportLinks';
-import { CLAUDE_CODE_FEATURE, CLAUDE_CODE_MIN_TIER } from '@/lib/claudeCode';
+import { CLAUDE_CODE_CHOICE_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_MIN_TIER, CLEARED_BY_STEPS } from '@/lib/claudeCode';
 import { providerManagesSpec } from '@/pages/ChatAgent/components/providerUi';
 import { activeSpecChange, effectiveTier, smallerThan } from '@/pages/ChatAgent/components/specChangeUi';
 import {
@@ -35,6 +37,8 @@ import { useClaudeCodeSetup, useClaudeCodeStatus } from './useClaudeCode';
 import { useClaudeCodeCustody } from './useClaudeCodeCustody';
 import { useFeatures } from './useFeatures';
 import { useUser } from './useUser';
+import { useWorkspace } from './useWorkspace';
+import type { WorkspaceClaudeCode } from './useWorkspaceClaudeCode';
 
 /** The step to take now; `resizing` while the change to Medium runs. */
 export type NextStep = 'plan' | 'medium' | 'resizing' | 'token';
@@ -133,4 +137,27 @@ export function stepsMissing(t: TFunction, { next, medium }: ClaudeCodeSteps): s
   const step = next === 'medium' && medium.change ? 'resizing' : next;
   const size = tierLabel(t, step === 'resizing' && medium.change ? medium.change.target_tier : CLAUDE_CODE_MIN_TIER);
   return t(`modelAccess.claudeCode.steps.picker.${step}`, { size });
+}
+
+/** The hold a model picker puts on Claude Code's models while the steps are
+ *  pending and would clear the turn's refusal: the step to take, opening the
+ *  steps. They are Home's, so only a Chief of Staff turn or a turn in a
+ *  workspace (`workspaceId`) on Home's computer takes it; a workspace on
+ *  another computer keeps its own hold. */
+export function useStepsHold(
+  claudeCode: WorkspaceClaudeCode, chiefOfStaff: boolean, workspaceId: string | null | undefined, enabled: boolean,
+): { unavailable: string; fix: () => void; fixLabel: string } | null {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const steppable = enabled && CLEARED_BY_STEPS.has(claudeCode.state);
+  const steps = useClaudeCodeSteps({ enabled: steppable });
+  const workspace = useWorkspace(steppable && !chiefOfStaff ? workspaceId : null);
+  const turnComputer = claudeCode.smallComputerId ?? workspace.data?.computer_id;
+  const onHome = chiefOfStaff || (!!steps.home && turnComputer === steps.home.computer_id);
+  if (!steppable || !onHome || steps.status !== 'pending') return null;
+  return {
+    unavailable: stepsMissing(t, steps),
+    fix: () => navigate(CLAUDE_CODE_CHOICE_URL),
+    fixLabel: t('modelAccess.claudeCode.steps.setUp'),
+  };
 }

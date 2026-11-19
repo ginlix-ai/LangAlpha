@@ -220,6 +220,14 @@ export const claudeCodeTokenLink = (workspaceId?: string | null): PageLinkSpec =
  *  list of computers does not have yet, and no token fixes it. */
 export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_blocked', 'needs_perl', 'computer_unsupported']);
 
+/** The holds on a Claude Code model that the cloud steps clear for a user
+ *  with no computer of their own (`useClaudeCodeSteps`): no token or one
+ *  refused, Claude Code not chosen for cloud computers, or a computer too
+ *  small for it. */
+export const CLEARED_BY_STEPS: ReadonlySet<string> = new Set([
+  'no_token', 'rejected', 'hosted_off', 'no_own_computer', 'needs_bigger_computer',
+]);
+
 /** The refusals the app words itself, in the user's language; any other
  *  keeps the server's English words. */
 const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
