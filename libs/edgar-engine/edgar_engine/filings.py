@@ -24,13 +24,13 @@ yields an empty list on both; other errors propagate.
 """
 from __future__ import annotations
 
-import calendar
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Any, Iterable, Literal, Mapping
 
+from .calendar.dates import on as _on
 from .sections.model import FilingStatus
 from .sections.vocab import base_form, filed_forms, is_amendment
 
@@ -79,10 +79,6 @@ def link_amendments(refs: Iterable[FilingRef]) -> list[FilingRef]:
                 r = replace(r, amends=max(prior, key=filing_order).accession)
         linked.append(r)
     return linked
-
-
-def _on(year: int, month: int, day: int) -> date:
-    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
 
 
 def _fiscal_year(year_end: date) -> int:
