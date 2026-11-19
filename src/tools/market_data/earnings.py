@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from src.data_client.report_periods import report_period_ends
+
 from .currency import CurrencyArg, fmt_money, fmt_price
-from .fiscal_periods import infer_fiscal_period, period_name, report_period_ends
+from .fiscal_periods import infer_fiscal_period, period_name
 from .utils import format_percentage
 
 _DAYS_PER_QUARTER = 91

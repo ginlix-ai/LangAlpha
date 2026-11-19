@@ -15,7 +15,9 @@ from src.tools.market_data import company, earnings
 from src.tools.market_data.company import CompanyInputs, _company_text, _extended_session, _quote_lines
 from src.tools.market_data.display import _symbol_currency, resolve_listing
 from src.tools.market_data.earnings import join_earnings
-from src.tools.market_data.fiscal_periods import fiscal_period_lookup, report_period_ends
+from src.data_client.fmp.analyst import price_targets
+from src.data_client.report_periods import report_period_ends
+from src.tools.market_data.fiscal_periods import fiscal_period_lookup
 from src.tools.market_data.sec_filings import _rows
 from src.tools.market_data.segments import SegmentBreakdown
 
@@ -404,3 +406,17 @@ def test_a_us_class_share_keeps_its_dollars_in_earnings():
     inp = _inputs("BRK.B")
     inp.earnings = [report]
     assert "**EPS (consensus basis):** $4.12 actual vs $3.64 estimate" in _company_text(inp)
+
+
+def test_recent_price_targets_list_each_firm_and_its_target():
+    inputs = _inputs("AAPL")
+    inputs.price_targets = price_targets([
+        {"publishedDate": "2026-11-04T07:35:00.000Z", "analystCompany": "Firm A", "priceTarget": 380,
+         "adjPriceTarget": 380, "priceWhenPosted": 331.9},
+        {"publishedDate": "2026-10-30T12:00:00.000Z", "analystCompany": "Firm B", "priceTarget": 821,
+         "adjPriceTarget": 410.5, "priceWhenPosted": 390.2},
+    ], 0, "America/New_York")
+    text = "\n".join(company._analyst_lines(inputs))
+    assert "| 2026-11-04 | Firm A | $380.00 |" in text
+    assert "| 2026-10-30 | Firm B | $410.50 |" in text
+    assert "N/A" not in text

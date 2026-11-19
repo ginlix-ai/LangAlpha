@@ -377,6 +377,252 @@
         }
       },
       {
+        "name": "get_analyst_ratings",
+        "description": "Fetch analyst views: consensus price target, monthly rating counts, and\neach firm's rating changes and price targets. Firm lists are mostly US\nlistings.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"TSM\".\n    limit: Rows per list, 1 to 100.\n\nReturns:\n    dict: {symbol, currency?, count, data, source, data_type}. data is\n    {target_consensus, rating_counts, rating_actions, price_targets}, lists\n    newest first; count sums them. target_consensus: at most one row\n    {high, low, median, mean}. rating_counts, monthly: date, strongBuy,\n    buy, hold, sell, strongSell. rating_actions: date, gradingCompany,\n    previousGrade, newGrade, action. price_targets: date, analystCompany,\n    priceTarget, priceWhenPosted, newsTitle, newsURL.\n    Prices in currency, dates \"YYYY-MM-DD\". On error: {error: <code>,\n    detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "limit": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_analyst_ratingsArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of the price targets; omitted when the listing's venue is unknown.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetAnalystRatingsOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_analyst_estimates",
+        "description": "Fetch consensus analyst estimates by fiscal period for revenue, EBITDA,\nEBIT, net income, SG&A and EPS. Past periods keep their final consensus.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\" (a half-yearly reporter's are half-years).\n    limit: Periods back from the furthest one estimated, often years out\n        (default 10).\n\nReturns:\n    dict: {symbol, currency?, count, data, source, data_type, period}. data:\n    list, latest period end first, of date (period end, \"YYYY-MM-DD\"),\n    revenueAvg, revenueLow, revenueHigh, the same for ebitda, ebit,\n    netIncome, sgaExpense and eps, numAnalystsRevenue, numAnalystsEps.\n    Figures are in currency (the filings') and EPS on the statements'\n    per-share basis; null means no estimate. On error: {error: <code>,\n    detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "default": "annual",
+              "enum": [
+                "annual",
+                "quarter"
+              ],
+              "title": "Period",
+              "type": "string"
+            },
+            "limit": {
+              "default": 10,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_analyst_estimatesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of every estimate: the issuer's reporting currency; omitted when no statement names it.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "period": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetAnalystEstimatesOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_earnings_surprises",
+        "description": "Fetch each report's EPS and revenue against the consensus estimate\nbefore it, and the next scheduled report.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\".\n    limit: Reports, the next scheduled one included (default 12).\n\nReturns:\n    dict: {symbol, currency?, count, data, source, data_type}. data: list,\n    newest first, of date (announcement day), fiscalDateEnding (end of\n    the quarter or half-year reported; null if still to come or\n    unmatched), epsActual, epsEstimated, revenueActual, revenueEstimated;\n    actuals are null for a report to come. EPS is the consensus basis,\n    which often leaves out one-time items, unlike statement epsDiluted.\n    currency is present only for a US listing that files in US dollars.\n    Dates are \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "limit": {
+              "default": 12,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_earnings_surprisesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of the EPS and revenue figures; present only for a US listing that files in US dollars.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetEarningsSurprisesOut",
+          "type": "object"
+        }
+      },
+      {
         "name": "get_insider_trades",
         "description": "Fetch insider transactions from SEC Form 4 filings, with quarterly totals.\nHK and A-share listings return empty lists.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    limit: Number of recent transactions (default 50).\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is {trades, stats},\n    each a list; count is the total across both. trades fields, newest\n    first: filingDate, transactionDate, reportingName, transactionType,\n    securitiesTransacted, price. Only \"P-Purchase\" and \"S-Sale\" are\n    open-market trades; others are awards, exercises or tax withholding.\n    stats, one row per calendar quarter: year, quarter, totalPurchases,\n    totalSales (counts of P and S trades), totalAcquired, totalDisposed\n    (shares, all transaction types). Field names are FMP-native camelCase;\n    dates are \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {

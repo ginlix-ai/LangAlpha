@@ -48,6 +48,7 @@ from .sec_filings import PeriodicFiling, fetch_periodic_filings
 from .segments import SegmentBreakdown, fetch_segments, segment_lines
 from .utils import finite_or_none, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
+from src.data_client.fmp.analyst import price_targets
 from src.data_client.ginlix_data.directory import display_names, profile_name
 from src.data_client.normalize import change_from, minor_unit_places
 from src.utils.market_hours import ET
@@ -167,7 +168,7 @@ class CompanyInputs:
     snapshot: Optional[Dict[str, Any]] = None
     filings: List[PeriodicFiling] = field(default_factory=list)
     recent_grades: List[Dict[str, Any]] = field(default_factory=list)
-    pt_summary: List[Dict[str, Any]] = field(default_factory=list)
+    price_targets: List[Dict[str, Any]] = field(default_factory=list)
     share_float: Optional[Dict[str, Any]] = None
     short_interest: Optional[Dict[str, Any]] = None
     short_volume: Optional[Dict[str, Any]] = None
@@ -257,7 +258,7 @@ async def _gather_company(
         calls.update({
             "filings": fetch_periodic_filings(profile.get("cik")),
             "grades": _fmp_request("get_stock_grades", symbol, limit=10),
-            "pt_summary": _fmp_request("get_price_target_summary", symbol),
+            "price_targets": _fmp_request("get_price_target_news", symbol, limit=5),
             "snapshot": _snapshot(symbol, user_id),
         })
         if intel is not None:
@@ -308,7 +309,9 @@ async def _gather_company(
     if extended:
         inputs.filings = listed("filings")
         inputs.recent_grades = listed("grades")
-        inputs.pt_summary = listed("pt_summary")
+        inputs.price_targets = price_targets(
+            listed("price_targets"), minor_unit_places(symbol), ref.tz if ref else None
+        )
         inputs.snapshot = _safe_result(got.get("snapshot"), None)
         inputs.share_float = _record_with(_safe_result(got.get("share_float")), "free_float")
         inputs.short_interest = _record_with(_safe_result(got.get("short_interest")), "short_interest")
@@ -831,12 +834,14 @@ def _analyst_lines(inp: CompanyInputs) -> List[str]:
             out.append(f"| {grade.get('date', 'N/A')} | {grade.get('gradingCompany', 'N/A')} | {action_str} |")
         out.append("")
 
-    if inp.pt_summary:
-        out += ["**Top Analyst Firms:**", "", "| Firm | Analyst | Price Target |", "|------|---------|--------------|"]
-        for firm in inp.pt_summary[:5]:
-            target = firm.get("adjPriceTarget")
-            target_str = fmt_price(target, cur) if target else "N/A"
-            out.append(f"| {firm.get('analystCompany', 'N/A')} | {firm.get('analystName', '-')} | {target_str} |")
+    if inp.price_targets:
+        out += ["**Recent Price Targets:**", "", "| Date | Firm | Price Target |", "|------|------|--------------|"]
+        for row in inp.price_targets:
+            target = row["priceTarget"]
+            out.append(
+                f"| {row['date'] or 'N/A'} | {row['analystCompany'] or 'N/A'}"
+                f" | {fmt_price(target, cur) if target else 'N/A'} |"
+            )
         out.append("")
     return out
 

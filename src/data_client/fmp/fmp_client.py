@@ -522,6 +522,16 @@ class FMPClient:
             "grades", params={"symbol": symbol, "limit": limit}
         )
 
+    async def get_grades_historical(self, symbol: str, limit: int = 100) -> List[Dict]:
+        return await self._make_request(
+            "grades-historical", params={"symbol": symbol, "limit": limit}
+        )
+
+    async def get_price_target_news(self, symbol: str, limit: int = 100) -> List[Dict]:
+        return await self._make_request(
+            "price-target-news", params={"symbol": symbol, "limit": limit}
+        )
+
     async def get_grades_summary(self, symbol: str) -> List[Dict]:
         return await self._make_request(
             "grades-consensus", params={"symbol": symbol}
