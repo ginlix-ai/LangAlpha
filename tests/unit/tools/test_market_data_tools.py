@@ -3446,8 +3446,10 @@ class TestOverviewOneArtifact:
 
     @staticmethod
     def _unstamped(artifact):
-        # The freshness stamp is measured at each call's own instant.
-        quote = {k: v for k, v in artifact["quote"].items() if k != "freshness"}
+        # Each call stamps its own instant: freshness, and as_of_local when the
+        # quote carries no print time and the retrieval clock stands in.
+        quote = {k: v for k, v in artifact["quote"].items()
+                 if k not in ("freshness", "as_of_local")}
         return {**artifact, "quote": quote}
 
     @pytest.mark.asyncio
