@@ -10,6 +10,7 @@ interface Conn {
   threadId: string;
   cursors: string | null;
   sinceAge: number;
+  openTurn: boolean;
   push: (sse: string) => void;
   close: () => void;
   signal: AbortSignal;
@@ -26,6 +27,7 @@ vi.mock('../../../utils/api', () => ({
     onLine: (line: string) => void,
     signal: AbortSignal,
     sinceAgeS?: number,
+    openTurn?: boolean,
   ) => {
     if (nextError) return Promise.reject(nextError);
     return new Promise<void>((resolve) => {
@@ -36,6 +38,7 @@ vi.mock('../../../utils/api', () => ({
         threadId,
         cursors,
         sinceAge: sinceAgeS ?? 0,
+        openTurn: !!openTurn,
         push: (sse) => sse.split('\n').forEach(onLine),
         close: resolve,
         signal,
@@ -44,7 +47,7 @@ vi.mock('../../../utils/api', () => ({
   },
 }));
 
-import { getThreadMux, peekThreadMux, type ThreadMuxSink } from '../threadStreamMux';
+import { ThreadMuxSlot, ThreadStreamMux, type ThreadMuxSink } from '../threadStreamMux';
 import type { TaskRunFacts } from '../../subagents/taskRuns';
 
 const chanOpen = (rid: string, lane: string, mode = 'replay', started?: number) =>
@@ -108,7 +111,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('projects task frames to the v1 SSE event shape and closes positively', async () => {
     const tid = freshThread();
     const { sink, events, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     expect(c.cursors).toBeNull();
@@ -138,7 +141,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
     // that read reaches the sink only through this edge.
     const tid = freshThread();
     const { sink, opens } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('rM', 'main'));
@@ -152,7 +155,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('reconnects with the run cursor and dedups a replay-from-0', async () => {
     const tid = freshThread();
     const { sink, events } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c1 = await connected(1);
     c1.push(chanOpen('r1', 'task:t1'));
@@ -175,7 +178,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('marks frames as replay until the channel reports caught up', async () => {
     const tid = freshThread();
     const { sink, events } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c1 = await connected(1);
     c1.push(chanOpen('r1', 'task:t1'));
@@ -189,7 +192,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('drain-closing a predecessor run is not task-terminal while the successor is open', async () => {
     const tid = freshThread();
     const { sink, events, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('rA', 'task:t1', 'drain', 1000));
@@ -217,7 +220,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
     const tid = freshThread();
     const { sink, closures } = makeSink();
     const mainClosures: Array<string | null> = [];
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach({ ...sink, onMainRunClosed: (outcome) => mainClosures.push(outcome) });
     const c = await connected(1);
     c.push(chanOpen('rm', 'main'));
@@ -232,7 +235,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('drops main-lane frames (the foreground POST owns that transcript)', async () => {
     const tid = freshThread();
     const { sink, events } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('rm', 'main'));
@@ -245,7 +248,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('resync_required reconnects without the cursor but keeps the dedup high-water', async () => {
     const tid = freshThread();
     const { sink, events } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c1 = await connected(1);
     c1.push(chanOpen('r1', 'task:t1'));
@@ -267,7 +270,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it("task outcome is the latest live run's, even when a predecessor drain closes last", async () => {
     const tid = freshThread();
     const { sink, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('rA', 'task:t1', 'drain', 1000));
@@ -284,7 +287,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it("start order decides the outcome when every channel is a drain (reconnect after both settled)", async () => {
     const tid = freshThread();
     const { sink, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     // Post-outage shape: both runs settled while disconnected, so both
@@ -314,7 +317,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
       onTaskRunOpened: () => {},
       onTaskRunClosed: (taskId, outcome) => closures.push({ taskId, outcome }),
     };
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c1 = await connected(1);
     c1.push(chanOpen('r1', 'task:t1'));
@@ -363,7 +366,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
         resyncs.count += 1;
       },
     };
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink); // no snapshot → a tear here is floorless
     const c1 = await connected(1);
     c1.push(chanOpen('r1', 'task:t1'));
@@ -393,19 +396,19 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('4xx disposes the mux, but 401 keeps retrying and heals', async () => {
     const t403 = freshThread();
     nextError = { status: 403 };
-    const m403 = getThreadMux(t403);
+    const m403 = new ThreadStreamMux(t403);
     m403.attach(makeSink().sink);
-    for (let i = 0; i < 40 && peekThreadMux(t403); i++) {
+    for (let i = 0; i < 40 && m403.serves(t403); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    expect(peekThreadMux(t403)).toBeNull(); // permanent rejection → disposed
+    expect(m403.serves(t403)).toBe(false); // permanent rejection → disposed
 
     const t401 = freshThread();
     nextError = { status: 401 };
-    const m401 = getThreadMux(t401);
+    const m401 = new ThreadStreamMux(t401);
     m401.attach(makeSink().sink);
     await new Promise((r) => setTimeout(r, 300));
-    expect(peekThreadMux(t401)).toBe(m401); // transient auth → still alive
+    expect(m401.serves(t401)).toBe(true); // transient auth → still alive
     nextError = null; // token refreshed
     await connected(1); // …and the loop reconnects on its own
     m401.detach();
@@ -414,7 +417,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it("a later-started live run's outcome wins even when the predecessor's backlog closes last", async () => {
     const tid = freshThread();
     const { sink, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     // Both channels are LIVE (e.g. a seeded-open predecessor with a large
@@ -433,7 +436,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
   it('thread-scoped resync_required asks the sink to reload; chan-scoped does not', async () => {
     const tid = freshThread();
     const { sink, resyncs } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     // Chan-scoped bare notice (precedes a chan_close) is not a reload ask.
@@ -448,7 +451,7 @@ describe('ThreadStreamMux (v2 contract client)', () => {
 
   it('carries the knowledge-horizon age to the server on connect', async () => {
     const tid = freshThread();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     // The caller's status/history snapshot was 30s before the socket —
     // the server must widen its settled-run window by that lag.
     mux.attach(makeSink().sink, Date.now() - 30_000);
@@ -458,17 +461,17 @@ describe('ThreadStreamMux (v2 contract client)', () => {
     mux.detach();
   });
 
-  it('detach never signals completion and disposes the registry entry', async () => {
+  it('detach never signals completion and disposes the mux', async () => {
     const tid = freshThread();
     const { sink, closures } = makeSink();
-    const mux = getThreadMux(tid);
+    const mux = new ThreadStreamMux(tid);
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('r1', 'task:t1'));
     mux.detach();
     expect(closures).toEqual([]);
     expect(c.signal.aborted).toBe(true);
-    expect(peekThreadMux(tid)).toBeNull();
+    expect(mux.serves(tid)).toBe(false);
   });
 });
 
@@ -499,7 +502,7 @@ describe('ThreadStreamMux: run facts and frame times', () => {
 
   it('reports a run\'s ledger bounds and the launch that started it, under the run', async () => {
     const { sink, opened, closed, runs, events } = factSink();
-    const mux = getThreadMux(freshThread());
+    const mux = new ThreadStreamMux(freshThread());
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('r1', 'task:t1', 'replay', 1_000));
@@ -525,7 +528,7 @@ describe('ThreadStreamMux: run facts and frame times', () => {
   it('takes the finish from the row when the close comes without a run_end', async () => {
     // The writer died between its terminal CAS and the run_end append.
     const { sink, closed, runs } = factSink();
-    const mux = getThreadMux(freshThread());
+    const mux = new ThreadStreamMux(freshThread());
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('r1', 'task:t1', 'replay', 1_000));
@@ -539,7 +542,7 @@ describe('ThreadStreamMux: run facts and frame times', () => {
     // The task's close speaks for its latest run; the predecessor's facts go
     // under its own run id, so they cannot land on the successor.
     const { sink, closed, runs } = factSink();
-    const mux = getThreadMux(freshThread());
+    const mux = new ThreadStreamMux(freshThread());
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('rA', 'task:t1', 'drain', 1_000));
@@ -566,7 +569,7 @@ describe('ThreadStreamMux: run facts and frame times', () => {
   it('reports the model a run opened with before any of its content', async () => {
     const glm = { id: 'glm-5.3-cn', provider: 'z-ai-cn' };
     const { sink, runs, events } = factSink();
-    const mux = getThreadMux(freshThread());
+    const mux = new ThreadStreamMux(freshThread());
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('r1', 'task:t1', 'replay', 1_000));
@@ -580,7 +583,7 @@ describe('ThreadStreamMux: run facts and frame times', () => {
 
   it('reports no model for a run on its launcher\'s', async () => {
     const { sink, runs } = factSink();
-    const mux = getThreadMux(freshThread());
+    const mux = new ThreadStreamMux(freshThread());
     mux.attach(sink);
     const c = await connected(1);
     c.push(chanOpen('r1', 'task:t1', 'replay', 1_000));
@@ -588,5 +591,70 @@ describe('ThreadStreamMux: run facts and frame times', () => {
     c.push(chanClose('r1', 'terminal', { outcome: 'completed', finished: 4_000 }));
     expect(runs.some(([, , facts]) => 'model' in facts)).toBe(false);
     mux.detach();
+  });
+});
+
+describe('ThreadMuxSlot', () => {
+  it('a released slot starts a mux of its own, which asks for the open turn again', async () => {
+    // A view whose load skipped mid-stream holds the mux that already served
+    // the turn's settled runs. The load that rebuilds its cards as running
+    // releases it, and only a drain of those runs closes the cards again.
+    const tid = freshThread();
+    const slot = new ThreadMuxSlot();
+    const first = makeSink();
+    slot.attach(tid, first.sink);
+    const a = await connected(1);
+    expect(a.openTurn).toBe(true);
+    a.push('event: attached\ndata: {}\n\n');
+    a.push(chanOpen('r1', 'task:t1', 'drain'));
+    a.push(chanClose('r1', 'terminal', { outcome: 'completed' }));
+    expect(first.closures).toEqual([{ taskId: 't1', outcome: 'completed' }]);
+    slot.attach(tid, first.sink);
+    expect(conns.length).toBe(1);
+
+    slot.release();
+    expect(a.signal.aborted).toBe(true);
+    const second = makeSink();
+    slot.attach(tid, second.sink);
+    const b = await connected(2);
+    expect(b.openTurn).toBe(true);
+    b.push(chanOpen('r1', 'task:t1', 'drain'));
+    b.push(chanClose('r1', 'terminal', { outcome: 'completed' }));
+    expect(second.closures).toEqual([{ taskId: 't1', outcome: 'completed' }]);
+    slot.release();
+  });
+
+  it('an unmounted slot opens no socket until it mounts again', async () => {
+    // An unmounted view's turn reader runs on and attaches the tasks it
+    // launches; nothing reads what a socket opened for it would deliver.
+    const tid = freshThread();
+    const slot = new ThreadMuxSlot();
+    slot.attach(tid, makeSink().sink);
+    const a = await connected(1);
+    slot.unmount();
+    expect(a.signal.aborted).toBe(true);
+    slot.attach(tid, makeSink().sink);
+    expect(conns.length).toBe(1);
+    expect(slot.openTaskIds(tid)).toEqual(new Set());
+
+    slot.mount();
+    slot.attach(tid, makeSink().sink);
+    await connected(2);
+    slot.release();
+  });
+
+  it('a slot attached for another thread ends the mux it held', async () => {
+    const slot = new ThreadMuxSlot();
+    const t1 = freshThread();
+    slot.attach(t1, makeSink().sink);
+    const a = await connected(1);
+    a.push(chanOpen('r1', 'task:t1'));
+    expect(slot.openTaskIds(t1)).toEqual(new Set(['t1']));
+    const t2 = freshThread();
+    expect(slot.openTaskIds(t2)).toEqual(new Set());
+    slot.attach(t2, makeSink().sink);
+    expect(a.signal.aborted).toBe(true);
+    expect((await connected(2)).threadId).toBe(t2);
+    slot.release();
   });
 });
