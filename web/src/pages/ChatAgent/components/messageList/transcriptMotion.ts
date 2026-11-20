@@ -51,6 +51,15 @@ export class CollapseClock {
  *  collapse to wait for. */
 export const CollapseClockContext = createContext<CollapseClock | null>(null);
 
+/**
+ * Seconds a block of the transcript takes to fold shut. A close is an ease,
+ * not the open's spring, and a tall process takes a longer beat than a short
+ * one: the exit beat front-loads its travel, and three screens of process
+ * crossing in its first 150ms read as a cut, with the answer arriving from
+ * nowhere. Bounded so nothing drags.
+ */
+export const tallClose = (height: number) => Math.min(0.7, 0.3 + height / 6000);
+
 /** When the Sources pill and the deck arrive, in seconds from now: in the
  *  ending's order, and after the last collapse running. Reads the clock, so
  *  only an effect may ask. */

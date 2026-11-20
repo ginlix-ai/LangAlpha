@@ -1,12 +1,6 @@
 import React, { useContext } from 'react';
 import { Disclosure } from '@/components/ui/Disclosure';
-import { CollapseClockContext } from './transcriptMotion';
-
-// A close is an ease, not the open's spring, and a tall process takes a longer
-// beat than a short one: the exit beat front-loads its travel, and three
-// screens of process crossing in its first 150ms read as a cut, with the
-// answer arriving from nowhere. Bounded so nothing drags.
-const tallClose = (height: number) => Math.min(0.7, 0.3 + height / 6000);
+import { CollapseClockContext, tallClose } from './transcriptMotion';
 
 /**
  * A block of the transcript that folds shut and back open: the `Disclosure`

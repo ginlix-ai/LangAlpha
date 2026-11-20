@@ -62,6 +62,7 @@ vi.mock('@/lib/framer', async () => {
     animate: () => ({ stop: () => {} }),
     useMotionValue: (v: number) => ({ get: () => v, set: () => {}, jump: () => {}, getVelocity: () => 0, on: () => () => {} }),
     useIsPresent: () => true,
+    usePresence: () => [true, null],
     PresenceContext: React.createContext(null),
     useReducedMotion: () => false,
   };
