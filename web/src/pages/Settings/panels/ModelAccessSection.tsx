@@ -41,6 +41,8 @@ import { KeyRow } from './modelAccess/AccessRows';
 import { KeySheet } from './modelAccess/KeySheet';
 import { ManageSheet, SubscriptionFlow } from './modelAccess/ManageSheet';
 import { ClaudeCodeSheet } from './modelAccess/ClaudeCodeSheet';
+import { ClaudeCodeSteps } from './modelAccess/ClaudeCodeSteps';
+import { stepsMissing, useClaudeCodeSteps } from '@/hooks/useClaudeCodeSteps';
 import { OwnAccessNote } from '@/components/organization/OwnAccessNote';
 import { useAccount } from '@/hooks/useAccount';
 import { allows, RULE } from '@/lib/accountRules';
@@ -79,8 +81,11 @@ type Sheet =
   | { kind: 'local-key'; entry: ProviderCatalogEntry }
   | { kind: 'claude-code-token'; target: TokenTarget; action: SheetAction }
   /** Claude Code itself: where it stands, what sets it apart, and each
-   *  computer's token, the saved one, and the choice for cloud computers. */
-  | { kind: 'claude-code' }
+   *  computer's token, the saved one, and the choice for cloud computers.
+   *  For a user with no computer of their own it leads with the steps to
+   *  run it on a cloud computer (`ClaudeCodeSteps`) until they are done or
+   *  the user asks for their own computer instead (`own`). */
+  | { kind: 'claude-code'; own?: boolean }
   /** `from` the add-key flow keeps that flow's width for the key it just saved.
    *  `justConnected`: the flow before it made the connection, so its models
    *  start picked. */
@@ -89,10 +94,10 @@ type Sheet =
 /** The add-key flow is one size from the list to the saved key's models; see
  *  KeyStepFrame. Claude Code's view is a table of each token's plan use
  *  beside its status and button, so it is wider still. */
-function sheetWidth(sheet: Sheet): 'standard' | 'wide' | 'table' {
+function sheetWidth(sheet: Sheet, steps: boolean): 'standard' | 'wide' | 'table' {
   switch (sheet.kind) {
     case 'claude-code':
-      return 'table';
+      return steps ? 'wide' : 'table';
     case 'pick-key':
     case 'key':
       return 'wide';
@@ -163,6 +168,11 @@ export function ModelAccessSection() {
     ? { kind: 'claude-code-token', target: linkedRow.target, action: linkedAction }
     : searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE && (setup || setupUnread) ? { kind: 'claude-code' } : null;
   const sheet: Sheet | null = opened ?? linkedSheet;
+  const steps = useClaudeCodeSteps();
+  // Claude Code's sheet leads with the steps while they apply; until the
+  // reads that decide it answer, it waits rather than show the other view.
+  const claudeCodeView = sheet?.kind !== 'claude-code' ? null
+    : sheet.own || steps.status === 'none' ? 'sheet' : steps.status === 'pending' ? 'steps' : 'loading';
   // A link to Claude Code's sheet may name a computer: its row's setting of
   // how many agents it runs at once (a turn that waited for one there).
   const linkedComputerId = searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE
@@ -245,10 +255,12 @@ export function ModelAccessSection() {
 
   /** What Claude Code's row says: the account, or the limit it is held at,
    *  of the token whose plan it shows; else the computers a token works on,
-   *  or what it runs on there, else what the view leads with, or that it is
+   *  or what it runs on there, else the first cloud step missing (`stepsMissing`),
+   *  else what the view leads with, or that it is
    *  off with a token left behind. */
   const claudeCodeDetail = () => {
     if (summary) return summary.limit ? limitDetail(t, summary.limit, clock) : summary.email ?? summary.name;
+    if (steps.status === 'pending') return stepsMissing(t, steps);
     if (!setup && setupUnread) return null;
     if (!setup?.on) return t(tokenRows.some(({ key }) => key === 'saved') ? 'modelAccess.claudeCode.optOut.saved' : 'modelAccess.claudeCode.optOut.computer');
     if (setup.state === 'checking') return null;
@@ -408,7 +420,7 @@ export function ModelAccessSection() {
           labelId={sheetTitleId}
           title={sheetTitle}
           onClose={closeSheet}
-          width={sheetWidth(sheet)}
+          width={sheetWidth(sheet, claudeCodeView === 'steps')}
           covered={!!removing || (!!removingToken && sheet.kind === 'claude-code') || choiceCovered}
         >
           {sheet.kind === 'pick-subscription' && (
@@ -494,7 +506,11 @@ export function ModelAccessSection() {
             />
           )}
           {sheet.kind === 'manage' && !managed && <StatusLabel status="working" />}
-          {sheet.kind === 'claude-code' && (setup || setupUnread || tokenRows.length > 0 ? (
+          {claudeCodeView === 'steps' && (
+            <ClaudeCodeSteps steps={steps} onOwnComputer={() => setSheet({ kind: 'claude-code', own: true })} />
+          )}
+          {claudeCodeView === 'loading' && <StatusLabel status="working" />}
+          {claudeCodeView === 'sheet' && (setup || setupUnread || tokenRows.length > 0 ? (
             <ClaudeCodeSheet
               setup={setup}
               tokenRows={tokenRows}

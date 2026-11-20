@@ -7,6 +7,8 @@ import { subscriptionKey, type SubscriptionProvider } from '@/api/oauth';
 import { getModelDisplayName } from '@/components/ui/chat-input.helpers';
 import { DefaultModelScopeChoice } from '@/components/model/DefaultModelScopeChoice';
 import { useAllModels } from '@/hooks/useAllModels';
+import { CLAUDE_CODE_CHOICE_URL } from '@/lib/claudeCode';
+import { useClaudeCodeSteps } from '@/hooks/useClaudeCodeSteps';
 import { useDefaultModelChange } from '@/hooks/useDefaultModelChange';
 import { ThreadOfferRow } from './ThreadOfferRow';
 import { StatusLine } from './StatusLine';
@@ -103,6 +105,29 @@ export function LapsedSignInNotice({ model, provider }: { model: string; provide
       })}
       action={t('modelAccess.reconnect')}
       onAction={() => navigate('/settings?tab=model')}
+      onDismiss={() => setDismissed(true)}
+    />
+  );
+}
+
+/* The account's Default is a Claude Code model this Chief of Staff turn
+   cannot run yet, so the composer starts on another model. Said where the
+   user sees the composer, with the way to set Claude Code up. Dismissed, it
+   stays down while this view shows the same Default (the host keys it). */
+export function HeldDefaultNotice({ model, fallback }: { model: string; fallback: string }): React.ReactElement | null {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const label = useComposerModelLabel();
+  const [dismissed, setDismissed] = useState(false);
+  // Only a Default the cloud steps would let run is one to set up here; held
+  // for another reason (an own computer offline), the composer's model says it.
+  const steps = useClaudeCodeSteps();
+  if (dismissed || steps.status !== 'pending') return null;
+  return (
+    <ThreadOfferRow
+      text={t('modelAccess.claudeCode.steps.composerHeld', { model: label(model), fallback: label(fallback) })}
+      action={t('modelAccess.claudeCode.steps.setUp')}
+      onAction={() => navigate(CLAUDE_CODE_CHOICE_URL)}
       onDismiss={() => setDismissed(true)}
     />
   );

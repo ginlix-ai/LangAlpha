@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutationState } from '@tanstack/react-query';
 import { Search, Pin } from 'lucide-react';
-import { Link, useLocation } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
+import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 import { usePreferences } from '@/hooks/usePreferences';
 import { PREFERENCE_MUTATION_KEY, useUpdatePreferences } from '@/hooks/useUpdatePreferences';
@@ -30,7 +31,10 @@ import { SETTINGS, settingAt } from '../sections';
 import { BACKGROUND_AUTO, backgroundDefaultChoice, isModelWrite, modelPrefs, readDefaultModelScope, splitPreferenceWrite } from '@/lib/modelPreferences';
 import { useModelSlotCopy } from '@/components/model/useModelSlotCopy';
 import { paidByDeployment, paidByUser } from '@/lib/modelPayer';
-import { isClaudeCodeModel } from '@/lib/claudeCode';
+import { CLAUDE_CODE_CHOICE_URL, isClaudeCodeModel } from '@/lib/claudeCode';
+import { useDefaultModel } from '@/hooks/useSlotDefaultModels';
+import { useTurnDefaultModel } from '@/hooks/useTurnModels';
+import { useClaudeCodeSteps } from '@/hooks/useClaudeCodeSteps';
 import type { ModelSlot, DefaultModelScope, PreferencePatch } from '@/lib/modelPreferences';
 
 type ModelsMode = 'simple' | 'advanced';
@@ -45,6 +49,33 @@ function readStoredMode(): ModelsMode {
   } catch {
     return 'simple';
   }
+}
+
+/** The Default is a Claude Code model a Chief of Staff turn cannot run yet,
+ *  so its chats start on another one: said under the pick, with the way to
+ *  set Claude Code up, rather than left for the composer to show. */
+function ClaudeCodeDefaultHeld({ className }: { className?: string }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { metadata } = useAllModels();
+  const chosen = useDefaultModel();
+  const startsOn = useTurnDefaultModel(true);
+  const held = !!chosen && !!startsOn && startsOn !== chosen && isClaudeCodeModel(metadata[chosen]);
+  const steps = useClaudeCodeSteps({ enabled: held });
+  if (!held || steps.status !== 'pending') return null;
+  return (
+    <p role="note" className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 text-xs', className)} style={{ color: 'var(--color-text-secondary)' }}>
+      <span>{t('modelAccess.claudeCode.steps.defaultHeld', { home: t('agents.chiefOfStaff'), fallback: modelLabel(startsOn, metadata) })}</span>
+      <button
+        type="button"
+        className="tap-target font-medium underline underline-offset-2 hover:opacity-80"
+        style={{ color: 'var(--color-text-primary)' }}
+        onClick={() => navigate(CLAUDE_CODE_CHOICE_URL)}
+      >
+        {t('modelAccess.claudeCode.steps.setUp')}
+      </button>
+    </p>
+  );
 }
 
 /** Models: connections, the default and Background models, quick-access
@@ -218,6 +249,7 @@ export function ModelsPanel() {
             payers={payers}
             auto={autoModels}
           />
+          <ClaudeCodeDefaultHeld className="mt-3" />
           {defaultQuestion && <DefaultModelScopeChoice className="mt-4" {...defaultQuestion} />}
           <PayerOrder className="mt-4" />
         </SettingsCardBody>

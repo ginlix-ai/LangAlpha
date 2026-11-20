@@ -37,7 +37,7 @@ type Metadata = Record<string, ModelMetadataEntry>;
  *  picking, through `fix`. One a check may free offers Check now, through
  *  `check`, and stays enabled so the control is reached as a row's second
  *  one is, though a press on the row itself does nothing. */
-export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void; check?: CheckTarget };
+export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void; fixLabel?: string; check?: CheckTarget };
 
 interface ListProps {
   selectedModel: string | null;
@@ -466,6 +466,7 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
   const name = getModelDisplayName(model, metadata);
   const reason = 'unavailable' in status ? status.unavailable : undefined;
   const check = 'unavailable' in status ? status.check : undefined;
+  const fixLabel = 'unavailable' in status && status.fix ? status.fixLabel : undefined;
   const actionable = 'unavailable' in status && (!!status.fix || !!check);
   const tag = 'tag' in status ? status.tag : undefined;
   return (
@@ -474,7 +475,7 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
       id={model}
       // A row a reason holds back says it as part of its name, which is all a
       // screen reader reads of a row.
-      textValue={reason ? `${name}, ${reason}` : name}
+      textValue={[name, reason, fixLabel].filter(Boolean).join(', ')}
       isDisabled={reason !== undefined && !actionable}
       data-slot="menu-item"
       className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', actionable && 'text-(--color-text-tertiary)')}
@@ -510,7 +511,11 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
             star's column, which Check now takes on this line where it is offered. */}
         {reason && (
           <span className={cn('flex items-start gap-2 text-xs text-(--color-text-tertiary)', !check && 'pe-7', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
-            <span className="min-w-0 flex-1 text-pretty">{reason}</span>
+            <span className="min-w-0 flex-1 text-pretty">
+              {reason}
+              {/* Picking the row runs the fix; the label says where it goes. */}
+              {fixLabel && <span aria-hidden="true" className="font-medium text-(--color-accent-primary)"> {fixLabel} →</span>}
+            </span>
             {check && <CheckNowFor target={check} icon />}
           </span>
         )}

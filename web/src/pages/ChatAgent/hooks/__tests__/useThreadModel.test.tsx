@@ -15,6 +15,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { userSessionStorage } from '@/lib/userStorage';
 import type { Thread } from '@/types/api';
 import { useThreadFieldSave } from '../useThreadFieldSave';
+import { CLAUDE_CODE } from '@/lib/claudeCode';
 import { useThreadModel } from '../useThreadModel';
 
 const mocks = vi.hoisted(() => ({
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   chiefOfStaffDefault: null as string | null,
   /** The thread the Default was last asked for, where the row follows it. */
   catalogModelNames: new Set<string>(),
+  metadata: undefined as Record<string, { sdk?: string }> | undefined,
   /** The server's row, which a read returns unless a test says otherwise. */
   server: null as unknown,
 }));
@@ -50,7 +52,7 @@ vi.mock('@/hooks/useTurnModels', () => ({
 // No sign-in has lapsed here; that hint has its own test.
 vi.mock('@/hooks/useLapsedSignIn', () => ({ useLapsedSignIn: () => () => null }));
 vi.mock('@/hooks/useAllModels', () => ({
-  useAllModels: () => ({ catalogModelNames: mocks.catalogModelNames }),
+  useAllModels: () => ({ catalogModelNames: mocks.catalogModelNames, metadata: mocks.metadata }),
 }));
 
 vi.mock('@/components/ui/use-toast', () => ({
@@ -103,6 +105,7 @@ describe('useThreadModel', () => {
     mocks.defaultModel = 'model-default';
     mocks.chiefOfStaffDefault = null;
     mocks.catalogModelNames = new Set();
+    mocks.metadata = undefined;
     sessionStorage.clear();
   });
 
@@ -114,6 +117,18 @@ describe('useThreadModel', () => {
 
     // The account default may be a Claude Code model the Chief of Staff's
     // turn would not run, which the server reads as unset there.
+    it('says the Claude Code Default is held only on a Chief of Staff thread that follows the Default, not one that holds the model it starts on', () => {
+      mocks.defaultModel = 'model-code';
+      mocks.chiefOfStaffDefault = 'model-deployment';
+      mocks.catalogModelNames = new Set(['model-code', 'model-deployment']);
+      mocks.metadata = { 'model-code': { sdk: CLAUDE_CODE } };
+      expect(setup({ chiefOfStaff: true }, row(null)).result.current.heldDefault).toEqual({ model: 'model-code', fallback: 'model-deployment' });
+      expect(setup({ chiefOfStaff: true }, row('model-deployment')).result.current.heldDefault).toBeNull();
+      const retiredPin = setup({ chiefOfStaff: true }, row('model-retired')).result.current;
+      expect(retiredPin.retired).toEqual({ model: 'model-retired', fallback: 'model-deployment' });
+      expect(retiredPin.heldDefault).toBeNull();
+    });
+
     it("opens a Chief of Staff thread with no model of its own on the Default its turn starts on", () => {
       mocks.chiefOfStaffDefault = 'model-deployment';
       expect(setup({ chiefOfStaff: true }, row(null)).result.current.model).toBe('model-deployment');

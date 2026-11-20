@@ -2810,7 +2810,7 @@
       "claudeCodeNeedsBiggerComputerPlan": "Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own",
       "claudeCodeNeedsMedium": "Needs a Medium or larger cloud computer. Select to change its spec.",
       "claudeCodeNeedsMediumPlan": "Needs a Medium or larger cloud computer, which isn't on your plan. Select to upgrade.",
-      "claudeCodeNeedsMediumResizing": "Its computer is changing to Medium."
+      "claudeCodeNeedsMediumResizing": "Its computer is changing to {{size}}."
     },
     "voice": {
       "start": "Start voice input",
@@ -7522,6 +7522,54 @@
         "rowResize": "Claude Code runs on Medium or larger. Changing it restarts it for a few minutes.",
         "rowPlan": "Claude Code runs on Medium or larger, and Medium isn't on your plan.",
         "rowResizing": "Changing to Medium. Claude Code runs here once it's done."
+      },
+      "steps": {
+        "done": "Done",
+        "setUp": "Set up Claude Code",
+        "lead": {
+          "plan": "Runs Claude Code on your Claude plan, on {{home}}'s cloud computer. Three steps, in this order.",
+          "medium": "Next, change {{home}}'s computer to {{size}}.",
+          "mediumPlan": "You're on {{plan}} now. Next, change {{home}}'s computer to {{size}}.",
+          "token": "Almost there. Sign in to Claude.",
+          "tokenWhile": "Almost there. Sign in to Claude while the computer changes."
+        },
+        "plan": {
+          "title": "Plan with a {{size}} or larger computer",
+          "why": "Claude Code needs a plan with a {{size}} or larger computer. A bigger computer gives it more room for parallel sessions and subagents.",
+          "choose": "Choose a plan",
+          "doneTitle": "{{plan}} plan",
+          "doneTitleUnnamed": "Your plan",
+          "doneDetail": "Includes computers up to {{size}}."
+        },
+        "medium": {
+          "title": "Change {{home}}'s computer to {{size}}",
+          "locked": "Takes a few minutes. Files are kept.",
+          "pushFirst": "Push them first.",
+          "apply": "Back up and change to {{size}}",
+          "running": "Changing to {{size}}",
+          "runningNote": "This takes a few minutes and keeps going if you close this. You can sign in to Claude meanwhile.",
+          "doneTitle": "{{size}} computer",
+          "doneDetail": "{{home}}'s computer is {{size}}."
+        },
+        "token": {
+          "title": "Sign in to Claude",
+          "detail": "Add your setup token.",
+          "locked": "Add your setup token. You can do this while the computer changes.",
+          "doneTitle": "Signed in to Claude",
+          "turnOnFailed": "Couldn't turn on Claude Code. Try again."
+        },
+        "own": {
+          "lead": "Have a Mac or a server?",
+          "link": "Run Claude Code on your own computer instead"
+        },
+        "picker": {
+          "plan": "Needs a plan with a {{size}} or larger computer.",
+          "medium": "Needs a {{size}} computer.",
+          "resizing": "Its computer is changing to {{size}}.",
+          "token": "Needs you to sign in to Claude."
+        },
+        "defaultHeld": "Claude Code isn't set up yet, so {{home}} chats start on {{fallback}} until it is.",
+        "composerHeld": "Your default, {{model}}, needs Claude Code set up, so this chat runs on {{fallback}}."
       }
     },
     "claude": {

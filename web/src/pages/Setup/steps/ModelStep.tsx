@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { KeyRound } from 'lucide-react';
@@ -13,13 +13,11 @@ import { useAccount, useRule } from '@/hooks/useAccount';
 import { allows, RULE } from '@/lib/accountRules';
 import { OwnAccessNote } from '@/components/organization/OwnAccessNote';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
-import type { ClaudeCodeSetup } from '@/api/model';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
-import { useFeatures, useSetFeatureOverride } from '@/hooks/useFeatures';
 import { subscriptionKey } from '@/api/oauth';
-import { CLAUDE_CODE, CLAUDE_CODE_FEATURE } from '@/lib/claudeCode';
-import { authSessionCheck } from '@/lib/authResets';
+import { CLAUDE_CODE } from '@/lib/claudeCode';
+import { useTurnOnClaudeCode } from '@/hooks/useTurnOnClaudeCode';
 import { cn } from '@/lib/utils';
 import { SetupFooter } from '../SetupFooter';
 import { useAnswerFlow, useChangeAnswers } from '../answers/flow';
@@ -122,35 +120,6 @@ function useClaudeCodeStep(flow: Flow): ClaudeCodeStepState {
 
 const BLOCKED = 'modelAccess.claudeCode.hosted.blocked';
 
-/**
- * Answering Claude Code is choosing it: it is turned on, once, where the
- * user may, so the token saved here runs. A turn-on that failed is offered
- * again (`failed`, `retry`), as is a read of the flags that failed, without
- * which it is not known whether Claude Code is on. Once per account: a new
- * account turns it on for itself.
- */
-function useTurnOnClaudeCode(answered: boolean, setup: ClaudeCodeSetup | null) {
-  const features = useFeatures();
-  const flag = features.data?.find((f) => f.key === CLAUDE_CODE_FEATURE)?.gate;
-  const toggle = useSetFeatureOverride();
-  const turnedOn = useRef<(() => boolean) | null>(null);
-  const off = answered && setup?.on === false;
-  const mayTurnOn = off && (flag === 'opt_in' || flag === 'opt_out');
-  useEffect(() => {
-    if (!mayTurnOn || turnedOn.current?.()) return;
-    turnedOn.current = authSessionCheck();
-    toggle.mutate({ key: CLAUDE_CODE_FEATURE, enabled: true });
-  }, [mayTurnOn, toggle]);
-
-  const flagsUnread = answered && features.isError && !features.data;
-  return {
-    pending: (mayTurnOn && !toggle.isSuccess && !toggle.isError) || toggle.isPending || (off && features.isLoading),
-    // Still off once this account's turn-on ended, refused or not.
-    failed: flagsUnread || (mayTurnOn && (toggle.isError || toggle.isSuccess)),
-    retry: () => (flagsUnread ? void features.refetch() : toggle.mutate({ key: CLAUDE_CODE_FEATURE, enabled: true })),
-  };
-}
-
 /** The answers lead where no token can be added: the step says why and leads
  *  back to the questions. */
 function AnswersDeadEnd({ flow, testId, title, helper }: { flow: Flow; testId: string; title: string; helper: string }) {
@@ -183,6 +152,7 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
   const target = flow.tokenTarget;
   const defaults = useSaveConnectedDefault();
   const [replacing, setReplacing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // Tasks on an own computer need one connected first.
   if (!target) return <Navigate to="/setup/computer" replace />;
@@ -229,11 +199,15 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
           // pasted or a sign-in begun for one never lands on another.
           key={target.kind === 'computer' ? target.computerId : 'saved'}
           target={target}
-          pasteOpen
           askConsent={askConsent}
           onSaved={() => setReplacing(false)}
-          onCancel={replacing ? () => setReplacing(false) : undefined}
+          onSavingChange={setSaving}
         />
+      )}
+      {replacing && (
+        <div className="mt-3">
+          <RowButton onClick={() => setReplacing(false)} disabled={saving}>{t('common.cancel')}</RowButton>
+        </div>
       )}
       <SetupNote>{t('setup.answers.model.planOutNote')}</SetupNote>
       {flow.finishFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}

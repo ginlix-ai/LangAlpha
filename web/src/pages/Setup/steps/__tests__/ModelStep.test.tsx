@@ -53,6 +53,8 @@ vi.mock('@/api/model', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/model')>()),
   startClaudeCodeSignIn: vi.fn(async () => ({ authorize_url: 'https://claude.ai/oauth', expires_at: new Date(Date.now() + 600_000).toISOString() })),
   saveClaudeCodeComputerToken: vi.fn(async (computerId: string) => ({ computer_id: computerId, state: 'signed_in', source: 'machine' })),
+  startClaudeCodeComputerSignIn: vi.fn(async () => ({ authorize_url: 'https://claude.ai/oauth', expires_at: new Date(Date.now() + 600_000).toISOString() })),
+  submitClaudeCodeComputerSignInCode: vi.fn(),
 }));
 vi.mock('@/hooks/useConfiguredProviders', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/hooks/useConfiguredProviders')>()),
@@ -108,7 +110,7 @@ vi.mock('../../answers/flow', () => ({
   useChangeAnswers: () => h.change,
 }));
 
-import { saveClaudeCodeComputerToken, startClaudeCodeSignIn } from '@/api/model';
+import { saveClaudeCodeComputerToken, startClaudeCodeSignIn, submitClaudeCodeComputerSignInCode } from '@/api/model';
 import { runAuthResets } from '@/lib/authResets';
 import { CLAUDE_CODE_DISCLOSURE, CLAUDE_CODE_FEATURE } from '@/lib/claudeCode';
 import ModelStep from '../ModelStep';
@@ -201,6 +203,7 @@ describe('ModelStep, Claude Code on a computer of the user\'s own', () => {
   it('saves the computer\'s token without touching the one stored for the cloud', async () => {
     h.facts = { claudeCodeToken: false };
     renderStep();
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     await userEvent.type(screen.getByLabelText('Setup token'), 'sk-ant-oat01-test');
     await userEvent.click(screen.getByRole('button', { name: 'Save token' }));
     expect(saveClaudeCodeComputerToken).toHaveBeenCalledWith('c1', 'sk-ant-oat01-test');
@@ -222,10 +225,65 @@ describe('ModelStep, Claude Code on a computer of the user\'s own', () => {
       </QueryClientProvider>
     );
     const view = render(tree());
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     await userEvent.type(screen.getByLabelText('Setup token'), 'sk-ant-oat01-test');
     h.tokenTarget = { kind: 'computer', computerId: 'c2', name: 'studio' };
     view.rerender(tree());
+    expect(screen.getByRole('button', { name: 'Already have a setup token? Paste it' })).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     expect(screen.getByLabelText('Setup token')).toHaveValue('');
+  });
+
+  it('holds Replace token\'s Cancel while a pasted token is saved', async () => {
+    let land = () => {};
+    vi.mocked(saveClaudeCodeComputerToken).mockImplementationOnce((computerId: string) => new Promise((resolve) => {
+      land = () => resolve({ computer_id: computerId, state: 'signed_in', source: 'machine' } as never);
+    }));
+    renderStep();
+    await userEvent.click(screen.getByRole('button', { name: 'Replace token' }));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
+    await userEvent.type(screen.getByLabelText('Setup token'), 'sk-ant-oat01-test');
+    await userEvent.click(screen.getByRole('button', { name: 'Save token' }));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await act(async () => land());
+    await waitFor(() => expect(screen.getByTestId('setup-token-saved')).toBeInTheDocument());
+  });
+
+  it('holds Replace token\'s Cancel while a code from signing in is saved, and lets it go if that fails', async () => {
+    let refuse = () => {};
+    vi.mocked(submitClaudeCodeComputerSignInCode).mockImplementationOnce(() => new Promise((_, reject) => {
+      refuse = () => reject(new Error('down'));
+    }));
+    renderStep();
+    await userEvent.click(screen.getByRole('button', { name: 'Replace token' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }));
+    await userEvent.type(await screen.findByLabelText('Code from Claude'), 'code-123{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled());
+    await act(async () => refuse());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled());
+  });
+
+  it('takes back a Replace token without unfolding the paste form', async () => {
+    renderStep();
+    await userEvent.click(screen.getByRole('button', { name: 'Replace token' }));
+    expect(screen.queryByTestId('setup-token-saved')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByTestId('setup-token-saved')).toBeInTheDocument();
+  });
+
+  it('opens with the pasted token folded, and folded again each time the step opens', async () => {
+    h.facts = { claudeCodeToken: false };
+    const view = renderStep();
+    const toggle = () => screen.getByRole('button', { name: 'Already have a setup token? Paste it' });
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('Setup token')).toBeNull();
+    await userEvent.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    view.unmount();
+    renderStep();
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('Setup token')).toBeNull();
   });
 
   it('shows no token form while Claude Code is turning on, nor while the flags that say whether to are read', () => {
@@ -234,11 +292,11 @@ describe('ModelStep, Claude Code on a computer of the user\'s own', () => {
     h.features = [{ key: CLAUDE_CODE_FEATURE, gate: 'opt_in' }];
     const view = renderStep();
     expect(h.turnOn).toHaveBeenCalledWith({ key: CLAUDE_CODE_FEATURE, enabled: true });
-    expect(screen.queryByLabelText('Setup token')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Already have a setup token? Paste it' })).toBeNull();
     view.unmount();
     h.featuresLoading = true;
     renderStep();
-    expect(screen.queryByLabelText('Setup token')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Already have a setup token? Paste it' })).toBeNull();
   });
 
   it('neither turns Claude Code on nor asks for its token where a rule keeps the user\'s own subscriptions off', () => {
@@ -365,6 +423,7 @@ describe('ModelStep, Claude Code on the cloud computer', () => {
     renderStep();
     await userEvent.click(agree());
     await userEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     await userEvent.type(screen.getByLabelText('Setup token'), 'sk-ant-oat01-test');
     await userEvent.click(screen.getByRole('button', { name: 'Save token' }));
     expect(h.choose).toHaveBeenCalledTimes(1);
@@ -446,6 +505,7 @@ describe('ModelStep, Claude Code on the cloud computer', () => {
     expect(agree).not.toBeChecked();
     const signIn = screen.getByRole('button', { name: 'Sign in with Claude' });
     expect(signIn).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     await userEvent.type(screen.getByLabelText('Setup token'), 'sk-ant-oat01-test');
     expect(screen.getByRole('button', { name: 'Save token' })).toBeDisabled();
     await userEvent.click(signIn);
