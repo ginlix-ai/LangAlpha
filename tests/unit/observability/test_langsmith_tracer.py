@@ -591,6 +591,60 @@ def test_a_graph_interrupt_is_a_pause_not_an_outcome():
     assert update["error"] is None
 
 
+@pytest.mark.asyncio
+async def test_a_cancelled_tool_is_settled_apart_from_a_failure():
+    """langchain-core reports a cancelled tool through on_tool_error since 1.7.5;
+    a stopped turn must not read as a tool failure."""
+    import asyncio
+
+    started = asyncio.Event()
+
+    async def waiting() -> str:
+        """probe"""
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    client = _RecordingClient()
+    probe = StructuredTool.from_function(coroutine=waiting, name="probe", description="probe")
+    config = {"callbacks": [NonRetainingTracer(project_name="proj", client=client)]}
+    task = asyncio.create_task(probe.ainvoke({}, config))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    (update,) = [u for u in client.updated if u["run_type"] == "tool"]
+    metadata = update["extra"]["metadata"]
+    assert metadata["tool_outcome"] == "cancelled"
+    assert metadata["error_class"] == "CancelledError"
+    assert update["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_tool_whose_awaited_work_was_cancelled_elsewhere_failed():
+    import asyncio
+
+    async def awaiting_cancelled_work() -> str:
+        """probe"""
+        work = asyncio.ensure_future(asyncio.Event().wait())
+        await asyncio.sleep(0)
+        work.cancel()
+        return await work
+
+    client = _RecordingClient()
+    probe = StructuredTool.from_function(
+        coroutine=awaiting_cancelled_work, name="probe", description="probe"
+    )
+    config = {"callbacks": [NonRetainingTracer(project_name="proj", client=client)]}
+    with pytest.raises(asyncio.CancelledError):
+        await probe.ainvoke({}, config)
+
+    (update,) = [u for u in client.updated if u["run_type"] == "tool"]
+    assert update["extra"]["metadata"]["tool_outcome"] == "error"
+    assert update["error"]
+
+
 def test_arguments_the_schema_rejects_are_the_agents_mistake():
     def needs_text(text: str) -> str:
         """probe"""

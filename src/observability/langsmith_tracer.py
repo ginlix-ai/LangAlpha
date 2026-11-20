@@ -23,6 +23,7 @@ messages its state held; the model call's own run still holds the full prompt.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -306,8 +307,11 @@ def _settle_tool_run(run: Run, error: BaseException | None) -> None:
     and no error, so that rate and the alarms built on it leave it out.
     A graph interrupt raised inside a tool (AskUserQuestion, a confirmation)
     is a pause the tool resumes from, not a failure, so it gets no outcome
-    and loses the error the base tracer gave it. Arguments the tool's schema
-    rejected are the agent's mistake, settled as a refusal is.
+    and loses the error the base tracer gave it. A tool call that was
+    cancelled (a stopped turn, or a sibling call's failure) did not fail
+    either, so it is settled as ``cancelled`` with no error, apart from
+    success as a declined target is. Arguments the tool's schema rejected
+    are the agent's mistake, settled as a refusal is.
     Never raises: the run is closed after this, and a failed stamp must not
     stop that.
     """
@@ -316,6 +320,10 @@ def _settle_tool_run(run: Run, error: BaseException | None) -> None:
         stamped: dict[str, Any] = {}
         if isinstance(error, GraphBubbleUp):
             run.error = None
+            return
+        if isinstance(error, asyncio.CancelledError) and _call_cancelled():
+            run.error = None
+            merge_run_metadata(run, {TOOL_OUTCOME: "cancelled", ERROR_CLASS: "CancelledError"})
             return
         if error is not None and _rejects_arguments(error):
             run.error = None
@@ -334,6 +342,19 @@ def _settle_tool_run(run: Run, error: BaseException | None) -> None:
         merge_run_metadata(run, stamped)
     except Exception as e:
         logger.debug("LangSmith tool outcome stamp failed: %s", e)
+
+
+def _call_cancelled() -> bool:
+    """Whether the tool call itself is being cancelled, as opposed to a
+    CancelledError the tool's own code raised, which is its failure.
+    langchain_core runs the tool body in a child task and this tracer inline
+    (``run_inline``) in the calling task, so only a cancellation of the call
+    reaches this task's count."""
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return False
+    return task is not None and task.cancelling() > 0
 
 
 def _rejects_arguments(error: BaseException) -> bool:
