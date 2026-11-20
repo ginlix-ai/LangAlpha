@@ -34,6 +34,9 @@ interface TrayFoldInputs {
    *  transcript: the tray stays in its dock there, where a row of chips would
    *  take the page's room. A peek still pours it out until the composer moves. */
   docked?: boolean;
+  /** A row above the composer holds the tray's place (a notice, another's turn):
+   *  the tray waits in its dock until the row goes, and a peek pours it out. */
+  covered?: boolean;
 }
 
 export interface TrayFold {
@@ -42,24 +45,26 @@ export interface TrayFold {
   trayRef: RefObject<HTMLDivElement | null>;
   /** The dock in the composer's toolbar that the chips fold into. */
   dockRef: RefObject<HTMLButtonElement | null>;
-  /** Pours the folded tray out where the reader is, until they scroll on. */
+  /** Pours the folded tray out where the reader is, until they scroll back up. */
   peek: () => void;
 }
 
-/** What a fold takes out of the transcript's bottom padding: the tray and the gap under it. */
+/** What a fold takes out of the transcript's bottom padding: the tray and the
+ *  gap under it, to the next row drawn (a hidden one has no place to measure). */
 function foldDrop(tray: HTMLElement | null): number {
   if (!tray) return 0;
-  const next = tray.nextElementSibling;
+  let next = tray.nextElementSibling;
+  while (next instanceof HTMLElement && next.hidden) next = next.nextElementSibling;
   return next instanceof HTMLElement ? next.offsetTop - tray.offsetTop : tray.offsetHeight;
 }
 
-export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked = false }: TrayFoldInputs): TrayFold {
+export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked = false, covered = false }: TrayFoldInputs): TrayFold {
   // Framer reads the setting once, at mount: a change applies from the next
   // thread opened.
   const reducedMotion = useReducedMotion();
   const up = scrolledUp || jumping;
   const [peeking, setPeeking] = useState(false);
-  if (peeking && !up && !docked) setPeeking(false);
+  if (peeking && !up && !docked && !covered) setPeeking(false);
   // The composer moving is a new place: a peek was for the old one. It
   // arrives already folded or open rather than running its chips across.
   const [wasDocked, setWasDocked] = useState(docked);
@@ -76,7 +81,7 @@ export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked
   if (clearOfTray && !up) setClearOfTray(false);
   const [phase, setPhase] = useState<TrayFoldPhase>(up ? 'folded' : 'open');
   const inLayout = phase === 'open' || phase === 'unfolding';
-  const folded = !(peeking && !moved) && (docked || (up && (clearOfTray || !inLayout)));
+  const folded = !(peeking && !moved) && (docked || covered || (up && (clearOfTray || !inLayout)));
   // Instant under reduced motion, and while the tray is empty: a liquid run
   // started with no chips has no shapes to draw for its whole length.
   const animate = !reducedMotion && !!contents && !moved;
@@ -108,15 +113,21 @@ export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked
     return () => scroller.removeEventListener('scroll', measure);
   }, [up, getScroller]);
 
-  // The jump's glide is not the reader scrolling on: a tray poured out stays
-  // out through it and is there at the end.
+  // A peek lasts until the reader scrolls back up. Scrolling on down, a live
+  // turn's follow and the jump's glide only carry them toward the tray, and a
+  // transcript that shrank under them clamps them up without their hand.
   useEffect(() => {
     if (!peeking || jumping) return;
     const scroller = getScroller();
     if (!scroller) return;
-    const from = scroller.scrollTop;
+    let furthest = scroller.scrollTop;
+    let height = scroller.scrollHeight;
     const onScroll = () => {
-      if (Math.abs(scroller.scrollTop - from) > PEEK_SCROLL_PX) setPeeking(false);
+      const top = scroller.scrollTop;
+      if (scroller.scrollHeight < height) furthest = Math.min(furthest, top);
+      height = scroller.scrollHeight;
+      furthest = Math.max(furthest, top);
+      if (furthest - top > PEEK_SCROLL_PX) setPeeking(false);
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => scroller.removeEventListener('scroll', onScroll);
