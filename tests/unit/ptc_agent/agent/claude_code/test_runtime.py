@@ -950,6 +950,116 @@ def test_a_compaction_the_cli_makes_on_an_old_pin_leaves_the_session_due_a_move_
     assert "repin_due" not in moved and moved["pinned"]["system_prompt"] == "now"
 
 
+def _snapshot(uuid: str, parent: str | None, prompt: str) -> dict:
+    return {"type": "attachment", "uuid": uuid, "parentUuid": parent,
+            "attachment": {"type": "prompt_snapshot", "systemPrompt": [prompt], "tools": []}}
+
+
+def test_a_move_hands_the_cli_the_session_without_the_records_that_kept_its_old_prompt_past_the_compaction():
+    """The CLI replays the newest of them, and reads the session back along
+    ``parentUuid``, so what followed one hangs off its parent instead."""
+    from ptc_agent.agent.claude_code.session import unpinned
+
+    entries = [
+        _snapshot("s0", None, "then"),
+        {"uuid": "b", "parentUuid": None, "type": "system", "subtype": "compact_boundary"},
+        {"uuid": "sum", "parentUuid": "b", "type": "user", "isCompactSummary": True},
+        _snapshot("s1", "sum", "then"),
+        _snapshot("s2", "s1", "then"),
+        {"uuid": "u", "parentUuid": "s2", "type": "user"},
+        {"uuid": "a", "parentUuid": "u", "type": "assistant"},
+    ]
+    kept = unpinned(entries)
+    assert [e["uuid"] for e in kept] == ["s0", "b", "sum", "u", "a"]
+    assert {e["uuid"]: e["parentUuid"] for e in kept}["u"] == "sum"
+    assert entries[5]["parentUuid"] == "s2"
+    assert unpinned(entries[:1]) == entries[:1]
+
+
+def test_a_move_drops_the_records_from_the_compaction_boundary_on_and_survives_a_parent_cycle():
+    """The CLI replays from the boundary, which can come ahead of the summary
+    record; and a malformed chain must not hang the launch."""
+    from ptc_agent.agent.claude_code.session import unpinned
+
+    entries = [
+        {"uuid": "b", "parentUuid": None, "type": "system", "subtype": "compact_boundary"},
+        _snapshot("s1", "b", "then"),
+        {"uuid": "sum", "parentUuid": "s1", "type": "user", "isCompactSummary": True},
+    ]
+    assert [(e["uuid"], e["parentUuid"]) for e in unpinned(entries)] == [("b", None), ("sum", "b")]
+    looped = [entries[0], _snapshot("x", "y", "then"), _snapshot("y", "x", "then"), {"uuid": "u", "parentUuid": "x"}]
+    assert [e["uuid"] for e in unpinned(looped)] == ["b", "u"]
+
+
+def test_a_moved_pin_waits_for_the_write_carrying_the_clis_record_of_its_prompt_and_tools():
+    """The resumed calls' results the CLI writes ahead of that record can be
+    committed first; a run that failed between would leave the session
+    naming a pin its records do not, with no due left to move it again."""
+    from ptc_agent.agent.claude_code.session import session_records_reducer
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    session = {"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}],
+               "pinned": {"system_prompt": "then", "tools": []}, "repin_due": True}
+    assert turn.opening({"messages": [HumanMessage("hi")], "claude_session": session})[0]["system_prompt"] == "now"
+    opened = {"type": "attachment", "uuid": "p", "attachment": {"type": "prompt_snapshot", "systemPrompt": ["now"]}}
+    for entries in ([{"uuid": "r"}], [opened]):
+        session = session_records_reducer(session, [turn.commit([{"session_id": "s", "entries": entries}])["claude_session"]])
+        assert session["pinned"]["system_prompt"] == "then" and session["repin_due"]
+    session = session_records_reducer(session, [turn.commit([{"session_id": "s", "entries": [_snapshot("t", "p", "now")]}])["claude_session"]])
+    assert session["pinned"]["system_prompt"] == "now" and "repin_due" not in session
+
+
+def test_a_session_due_to_move_that_launches_on_its_own_pin_again_is_no_longer_due():
+    """The build went back to the pin the session holds: nothing to move, and
+    a due left standing would mark it for a move it never needs."""
+    from ptc_agent.agent.claude_code.session import session_records_reducer
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    pin = turn.current_pin()
+    session = {"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}],
+               "pinned": pin, "repin_due": True}
+    assert turn.opening({"messages": [HumanMessage("hi")], "claude_session": session})[0] == pin
+    written = turn.commit([{"session_id": "s", "entries": [{"uuid": "u"}]}])["claude_session"]
+    assert "repin_due" not in session_records_reducer(session, [written])
+
+
+def test_a_relaunch_that_carries_on_from_tool_results_leaves_a_session_due_to_move_due():
+    """It runs on the old pin, so the move is still owed to the next launch
+    that sends a prompt; writing that pin must not say otherwise."""
+    from ptc_agent.agent.claude_code.session import session_records_reducer
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    session = {"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}],
+               "pinned": {"system_prompt": "then", "tools": []}, "repin_due": True}
+    messages = [HumanMessage("hi"),
+                AIMessage("", tool_calls=[{"id": "c1", "name": "Bash", "args": {}}],
+                          response_metadata={"claude_message_id": "msg_1"}),
+                ToolMessage("ok", tool_call_id="c1")]
+    pin, prompt = turn.opening({"messages": messages, "claude_session": session})
+    assert prompt is None and pin["system_prompt"] == "then"
+    written = turn.commit([{"session_id": "s", "entries": [{"uuid": "u"}]}])["claude_session"]
+    assert session_records_reducer(session, [written])["repin_due"]
+
+
+def test_a_launch_that_sends_a_prompt_moves_a_session_the_cli_compacted_on_an_old_pin():
+    """Only one with a prompt: a launch that carries on from tool results
+    would change the prefix under the call it answers. And not with
+    compaction off, which moves no session."""
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    session = {"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}],
+               "pinned": {"system_prompt": "then", "tools": []}, "repin_due": True}
+    pin, _ = turn.opening({"messages": [HumanMessage("hi")], "claude_session": session})
+    assert pin["system_prompt"] == "now"
+    assert turn._launch_pin({"claude_session": session}, moves=False)[0]["system_prompt"] == "then"
+    off = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                     identity="u", thread_key="t", compaction=CompactionRules(0, enabled=False))
+    assert off.opening({"messages": [HumanMessage("hi")], "claude_session": session})[0]["system_prompt"] == "then"
+
+
 def _repinning_turn(compact):
     from ptc_agent.agent.claude_code.compaction import CompactionRules
 
