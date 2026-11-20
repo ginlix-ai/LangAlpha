@@ -7,7 +7,7 @@ import { WakeupRow } from './messageList/WakeupRow';
 import { QuietChecksRow } from './messageList/QuietChecksRow';
 import { MessageBubble } from './messageList/MessageBubble';
 import { TurnFold } from './messageList/TurnFold';
-import { projectMessageContent, visibleProjection } from './messageList/contentProjection';
+import { holdsAnswerText, projectMessageContent, visibleProjection } from './messageList/contentProjection';
 import { useMessageActions } from './messageList/MessageActionsContext';
 import { isReportRow, opensTurn } from './messageList/messagePredicates';
 import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
@@ -259,7 +259,8 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     const startedAt = turnStartTimes(visible);
     const sentHere = new Map<number, boolean>();
     const rowPos = new Map<number, number>();
-    const assistantBubbles = new Map<number, MessageRecord[]>();
+    // Each turn's assistant bubbles, by their place in the visible list.
+    const assistantBubbles = new Map<number, number[]>();
 
     // The turn's end is stamped on its tail bubble, and that bubble is not
     // always painted: a steering continuation that settled empty is dropped
@@ -293,8 +294,8 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       if (role !== 'assistant') continue;
       if (!rowPos.has(turnIndex)) rowPos.set(turnIndex, i);
       const bubbles = assistantBubbles.get(turnIndex);
-      if (bubbles) bubbles.push(message);
-      else assistantBubbles.set(turnIndex, [message]);
+      if (bubbles) bubbles.push(i);
+      else assistantBubbles.set(turnIndex, [i]);
     }
 
     for (let i = 0; i < visible.length; i++) {
@@ -303,7 +304,8 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       if (!turnTails[i]) continue;
       const { message, turnIndex } = visible[i];
       if (turnIndex === null) continue;
-      const contents = (assistantBubbles.get(turnIndex) ?? []).map(project);
+      const bubbles = assistantBubbles.get(turnIndex) ?? [];
+      const contents = bubbles.map((b) => project(visible[b].message));
       const isLive = running.has(turnIndex);
       // A pinned call outlives the stream that launched it, so the stream-close
       // stamp was taken before the turn's work was done and a fold reading it
@@ -331,7 +333,10 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       const hasFiles = !!onOpenFile && (!readOnly || allowFiles) && (filesByTurn.get(turnIndex)?.length ?? 0) > 0;
       const quietEnd = isLive ? null : quietEnds.get(turnIndex) ?? null;
       folds.set(turnIndex, {
-        noAnswer: !(contents.at(-1)?.lastTextKey || contents.some((content) => content.hasRetained) || hasFiles || quietEnd),
+        // Read only for a settled turn, and cheapest first: whether a text holds
+        // an answer can mean scoring it.
+        noAnswer: !isLive && !(hasFiles || quietEnd || contents.some((content) => content.hasRetained)
+          || bubbles.some((b) => holdsAnswerText(project(visible[b].message), replyEnds[b]))),
         quietEnd,
         rowPos: pos,
         startedAt: start,
@@ -342,7 +347,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       });
     }
     return { turnFolds: folds, turnEnds: ends };
-  }, [visible, turned, turnTails, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
+  }, [visible, turned, turnTails, replyEnds, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
 
   const items = React.useMemo(() => planQuietChecks(visible, quietEnds), [visible, quietEnds]);
 

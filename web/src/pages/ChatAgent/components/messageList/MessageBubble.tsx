@@ -43,7 +43,7 @@ import { InPlaceSwap } from '@/components/ui/crossfade';
 import { CollapseClockContext, isFreshSend, playEntrance, turnEndDelays } from './transcriptMotion';
 import { useMessageTyping, useProseReport } from './proseTyping';
 import type { TurnFile } from '../../utils/turnFiles';
-import { projectMessageContent, type ContentProjection } from './contentProjection';
+import { holdsAnswerText, projectMessageContent, type ContentProjection } from './contentProjection';
 import { isImeComposing } from '@/lib/ime';
 import { onScreenKeyboardUp } from '@/lib/visualViewport';
 import { EMPTY_OBJ } from './types';
@@ -288,17 +288,17 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     return countDedupedSources(message.provenanceRecords as Record<string, ProvenanceRecord> | undefined);
   }, [message.provenanceRecords, isAssistant, isSubagentView]);
 
-  // A mid-turn bubble of a folded turn is process by definition: its prose is
-  // commentary the answer superseded, and its activity is behind the fold row.
-  // One a steer ended is not mid-turn in that sense: it holds the reply the
-  // steer answered.
-  // Once that is taken away it can have nothing left to draw, and an assistant
+  // A folded turn keeps out only its answer: a mid-turn bubble's activity is
+  // behind the fold row, and so is its prose unless some of it reads as an
+  // answer (`holdsAnswerText`). Once that is taken away a bubble can have
+  // nothing left to draw, and an assistant
   // bubble with nothing in it is an avatar beside a blank column — the same
   // thing `isOrphanAssistantMessage` keeps off screen. The bubble stays in
   // state either way: turn indices are counted positionally over it.
   const foldedAway = fold === 'collapsed'
     && isAssistant
-    && !endsReply
+    && !isTurnTail
+    && !holdsAnswerText(projection, endsReply)
     && !(message.error as boolean)
     && !message.stopped
     && sourceCount === 0
