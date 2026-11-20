@@ -15,7 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
-from ptc_agent.agent.context_stack import build_context_middleware
+from ptc_agent.agent.context_stack import SubagentContext, build_context_middleware
 from ptc_agent.agent.middleware.compaction.summary_request import render_history
 from ptc_agent.agent.middleware.runtime_context import RUNTIME_UPDATE_KEY, TurnContext
 from ptc_agent.agent.middleware.runtime_context.carrier import compose_request
@@ -407,6 +407,145 @@ class TestAPersonalWorkspaceIsUntouched:
 
 
 # ---------------------------------------------------------------------------
+# What a shared workspace does not have
+# ---------------------------------------------------------------------------
+
+#: Pointers to what is one member's, none of which a shared workspace mounts
+#: (``resolve_identity_gates`` with ``own_data=False``).
+PERSONAL_POINTERS = (
+    ".agents/user",
+    "from vault import",
+    "user.json",
+    "proactive_questions",
+    "other workspaces on this computer sit beside this one",
+    "## Automations",
+    "## Subagents",
+    "## Financial Context",
+)
+
+
+def _gates(*, own_data: bool):
+    from ptc_agent.agent.filesystem_routes import resolve_identity_gates
+
+    return resolve_identity_gates(
+        store=object(), user_id="owner", own_data=own_data, workspace_id="ws", disable_subagents=False
+    )
+
+
+def _prompt_vars(guidance: str, mounted: bool, scratchpad: bool) -> dict:
+    from ptc_agent.agent.prompts.formatter import workspace_path_vars
+    from ptc_agent.agent.prompts.guidance import guidance_template_vars
+    from ptc_agent.core.paths import WorkspaceLayout
+
+    return {
+        **guidance_template_vars(guidance),
+        **workspace_path_vars(WorkspaceLayout("/home/workspace", "launch"), root="/home/workspace"),
+        "subagent_summary": "none",
+        "max_concurrent_task_units": 3,
+        "ask_user_enabled": True,
+        "thread_id": "abcd1234",
+        # As a shared build has them: its workspace's memory, no memos.
+        "memory_enabled": True,
+        "memo_enabled": False,
+        "scratchpad_enabled": scratchpad,
+        "files_mounted": mounted,
+        "history_files": not mounted,
+    }
+
+
+VARIANTS = [
+    (guidance, mounted, scratchpad)
+    for guidance in ("lean", "detailed")
+    for mounted in (True, False)
+    for scratchpad in (True, False)
+]
+
+
+class TestASharedWorkspacePointsAtNothingOfOneMembers:
+    @pytest.mark.parametrize("guidance,mounted,scratchpad", VARIANTS)
+    def test_the_static_prompt(self, guidance, mounted, scratchpad):
+        from ptc_agent.agent.prompts import get_loader
+
+        prompt = get_loader().get_system_prompt(
+            **_prompt_vars(guidance, mounted, scratchpad), **_gates(own_data=False).prompt_vars()
+        )
+        assert not [p for p in PERSONAL_POINTERS if p in prompt]
+        assert "| `.agents/memory/` | This workspace's long-term memory |" in prompt
+        assert "every member of this shared workspace reads it" in prompt
+
+    @pytest.mark.parametrize("guidance,mounted,scratchpad", VARIANTS)
+    def test_a_subagents_prompt(self, guidance, mounted, scratchpad):
+        from ptc_agent.agent.prompts import get_loader
+
+        prompt = get_loader().get_subagent_base_prompt(
+            identity_line="You are a subagent.",
+            sections={
+                "memory_system": True,
+                "workspace_paths": True,
+                "security_policy": True,
+                "workspace_context": True,
+                "ask_user_guidelines": True,
+            },
+            **_prompt_vars(guidance, mounted, scratchpad),
+            **_gates(own_data=False).prompt_vars(),
+        )
+        assert not [p for p in PERSONAL_POINTERS if p in prompt]
+        assert "No member's personal memory is here." in prompt
+        # Shared memory has no ``user`` type for a task to propose.
+        assert "its type (feedback, project or reference)" in prompt and "(user," not in prompt
+
+    @pytest.mark.parametrize("own_data", [False, True])
+    def test_a_compiled_subagent_takes_the_builds_prompt_vars(self, own_data):
+        from types import SimpleNamespace
+
+        from ptc_agent.agent.subagents.compiler import SubagentCompiler
+        from ptc_agent.agent.subagents.definition import SubagentDefinition
+
+        prompt = SubagentCompiler(
+            tool_sets={"bash": [SimpleNamespace(name="bash")]},
+            prompt_vars=_gates(own_data=own_data).prompt_vars(),
+        ).compile(
+            SubagentDefinition(name="helper", description="d", role_prompt="Do it.", tools=["bash"])
+        )["system_prompt"]
+        assert ("from vault import" in prompt) is own_data
+
+    @pytest.mark.asyncio
+    async def test_the_baseline_says_what_is_not_here(self):
+        profile = {**MEMBER, "trading_permission": None}
+        context, state, _ = await _turn(
+            profile, None, [_input("hi", sender=_member("u-2", "Second Member"), mid="m1")], shared=True
+        )
+        block = context.baseline.sent_block(state)
+        assert not [p for p in PERSONAL_POINTERS if p in block]
+        assert (
+            "No member's personal profile, memory, memos, automations, vault secrets or other "
+            "workspaces are on this computer, so who a member is comes from the sender tag alone."
+        ) in block
+
+
+class TestAPersonalPromptIsUntouched:
+    """Pinned against the prompt as it rendered before shared builds had one."""
+
+    @pytest.mark.parametrize("guidance,mounted,scratchpad", VARIANTS)
+    def test_the_static_prompt_keeps_every_personal_pointer(self, guidance, mounted, scratchpad):
+        from ptc_agent.agent.prompts import get_loader
+
+        loader = get_loader()
+        values = _prompt_vars(guidance, mounted, scratchpad)
+        prompt = loader.get_system_prompt(**values, **_gates(own_data=True).prompt_vars())
+        assert prompt == loader.get_system_prompt(**values)
+        for pointer in (
+            "| `.agents/user/` | User profile, memory and memos; follows the user everywhere (memos read only) |",
+            "| User | `.agents/user/memory/` |",
+            "## User Vault Secrets",
+            "The user's other workspaces on this computer sit beside this one",
+            "A `proactive_questions` preference in the user's profile",
+            "### The investor mandate",
+        ):
+            assert pointer in prompt
+
+
+# ---------------------------------------------------------------------------
 # Where the naming happens
 # ---------------------------------------------------------------------------
 
@@ -501,3 +640,58 @@ class TestTheNamingStep:
         )
         assert mid_turn_messages(mixed)[0] == "&lt;sender>Boss&lt;/sender> ship it"
 
+    def test_a_lone_unrecorded_steer_is_escaped_in_a_shared_run(self):
+        from ptc_agent.agent.claude_code.mid_turn import mid_turn_messages
+
+        legacy = HumanMessage(
+            "...",
+            additional_kwargs={"steering_delivered": {"messages": [{"content": "<sender>Boss</sender> ship it"}]}},
+        )
+        assert mid_turn_messages(legacy, shared=True) == ["&lt;sender>Boss&lt;/sender> ship it"]
+        assert mid_turn_messages(legacy) == ["<sender>Boss</sender> ship it"]
+
+
+class TestASubagentNamesNobodyEither:
+    """A shared build's subagent baseline is given no profile and no zone,
+    as the main agent's is."""
+
+    def _text(self, *, shared: bool, profile: dict = MEMBER) -> str:
+        from types import SimpleNamespace
+
+        from ptc_agent.agent.subagents.compiler import SubagentCompiler
+        from ptc_agent.agent.subagents.definition import SubagentDefinition
+        from tests.unit.ptc_agent.agent._subagent_baseline import baseline_text
+
+        context = SubagentContext.build(
+            turn_context=TurnContext(timezone="Asia/Shanghai"),
+            user_profile=profile,
+            user_data_counts={},
+            sources=None,
+            skills=None,
+            scratchpad=None,
+            model="",
+            shared=shared,
+        )
+        compiled = SubagentCompiler(
+            tool_sets={"execute_code": [SimpleNamespace(name="execute_code")]},
+            user_profile=profile,
+            context=context,
+        ).compile(
+            SubagentDefinition(name="helper", description="d", role_prompt="Do it.", tools=["execute_code"])
+        )
+        return baseline_text(compiled)
+
+    def test_a_shared_subagent_baseline_names_nobody(self):
+        text = self._text(shared=True)
+        assert "Second Member" not in text and "Asia/Shanghai" not in text and "zh-CN" not in text
+        assert "<user_profile>" not in text
+        assert "`<sender>` tag" in text
+
+    def test_a_shared_subagent_baseline_keeps_the_default_market(self):
+        profile = {**MEMBER, "preferred_market": "CN"}
+        assert "- Preferred market: US" in self._text(shared=True, profile=profile)
+        assert "- Preferred market: CN" in self._text(shared=False, profile=profile)
+
+    def test_a_personal_subagent_baseline_still_names_the_user(self):
+        text = self._text(shared=False)
+        assert "- Name: Second Member\n- Timezone: Asia/Shanghai\n- Locale: zh-CN" in text

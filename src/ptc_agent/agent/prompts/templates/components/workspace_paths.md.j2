@@ -31,7 +31,9 @@ Everything below is relative to it, and so is every path you {{ "pass a tool" if
 {% if scratchpad_enabled | default(false) %}
 | `{{ workspace_paths.scratchpad }}/` | One folder per thread, this thread's named in `<scratchpad>`: its temporary files and checkpoint notes |
 {% endif %}
+{% if user_data_enabled | default(true) %}
 | `{{ workspace_paths.user }}/` | User profile, memory and memos; follows the user everywhere (memos read only) |
+{% endif %}
 
 Always organize data and charts into their subdirectories, never scatter loose files. The working directory itself holds only `{{ workspace_paths.agent_md }}`, `{{ workspace_paths.data }}/` and the task directories; a task file never sits loose here.
 
