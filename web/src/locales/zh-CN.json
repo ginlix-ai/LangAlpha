@@ -2979,6 +2979,8 @@
         "no_own_computer": "Claude Code 会在你自己的电脑上运行，但目前没有一台有独立 setup token 的电脑在线。请开启其中一台，或在设置的“模型接入”中为一台电脑添加 token。",
         "cli_computer_offline": "为你运行 Claude Code 的 {{name}} 目前离线。请开启它，或选择其他模型。",
         "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。",
+        "clis_full": "这台电脑上运行的 Claude Code Agent 已达同时运行的上限（{{n}} 个），请等其中一个结束后再试。",
+        "commands_full": "这台电脑正忙于运行其他命令，请等其中一个结束后再试。",
         "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。",
         "needs_bigger_computer": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格，或把此工作区移到你自己的电脑上。",
         "needs_bigger_computer_home": "Claude Code 可在中型及以上规格的云端计算机上运行，而 Home 所在的计算机规格较小。你可以更改这台计算机的规格。",
