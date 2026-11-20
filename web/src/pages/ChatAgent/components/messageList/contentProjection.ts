@@ -338,11 +338,11 @@ export function streamingTextBlockIndex(blocks: RenderBlock[]): number {
   return activity < text ? text : -1;
 }
 
-export function blockIsProcess(projection: ContentProjection, block: RenderBlock, isTurnTail: boolean): boolean {
+export function blockIsProcess(projection: ContentProjection, block: RenderBlock, endsReply: boolean): boolean {
   const role = projection.roles.get(block.key);
-  return role !== 'retain' && !(role === 'text' && isTurnTail && block.key === projection.lastTextKey);
+  return role !== 'retain' && !(role === 'text' && endsReply && block.key === projection.lastTextKey);
 }
 
-export function blockVisible(projection: ContentProjection, block: RenderBlock, fold: FoldState, isTurnTail: boolean): boolean {
-  return fold !== 'collapsed' || !blockIsProcess(projection, block, isTurnTail);
+export function blockVisible(projection: ContentProjection, block: RenderBlock, fold: FoldState, endsReply: boolean): boolean {
+  return fold !== 'collapsed' || !blockIsProcess(projection, block, endsReply);
 }

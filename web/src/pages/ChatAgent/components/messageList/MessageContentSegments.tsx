@@ -69,8 +69,11 @@ interface MessageContentSegmentsProps {
   isStreaming?: boolean;
   /** How much of the turn this bubble draws; `unfolded` is the full transcript. */
   fold?: FoldState;
-  /** The last visible bubble of its backend turn: the only one with an answer. */
+  /** The last visible bubble of its backend turn. */
   isTurnTail?: boolean;
+  /** The bubble closes a reply (`computeReplyEnds`), so a fold keeps its last
+   *  text: the turn's tail, or the last bubble before a steer. */
+  endsReply?: boolean;
   isSubagentView?: boolean;
   readOnly?: boolean;
   /** A shared workspace's turn another member sent: its questions and
@@ -164,7 +167,7 @@ function TextBlock({ block, isStreaming, isSubagentView, isReplyStart, onOpenFil
   return isReplyStart && rendersNow ? <div data-reply-start="">{textEl}</div> : textEl;
 }
 
-export const MessageContentSegments = memo(function MessageContentSegments({ segments, contentProjection, reasoningProcesses, toolCallProcesses, todoListProcesses: _todoListProcesses, subagentTasks, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, fold = 'unfolded', isTurnTail = false, isSubagentView = false, readOnly = false, othersPause = false, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, creditPauses = EMPTY_OBJ, toolApprovals = EMPTY_OBJ, htmlWidgetProcesses = EMPTY_OBJ, dispatcherContext, messageId }: MessageContentSegmentsProps): React.ReactElement {
+export const MessageContentSegments = memo(function MessageContentSegments({ segments, contentProjection, reasoningProcesses, toolCallProcesses, todoListProcesses: _todoListProcesses, subagentTasks, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, fold = 'unfolded', isTurnTail = false, endsReply = isTurnTail, isSubagentView = false, readOnly = false, othersPause = false, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, creditPauses = EMPTY_OBJ, toolApprovals = EMPTY_OBJ, htmlWidgetProcesses = EMPTY_OBJ, dispatcherContext, messageId }: MessageContentSegmentsProps): React.ReactElement {
   const { turnDisplay } = useTranscriptDisplay();
   const motionSafe = useMotionSafe();
   const {
@@ -289,8 +292,8 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     return null;
   };
 
-  const blockIsVisible = renderBlocks.map((block) => blockVisible(projection, block, fold, isTurnTail));
-  const blockFolds = renderBlocks.map((block) => fold !== 'unfolded' && blockIsProcess(projection, block, isTurnTail));
+  const blockIsVisible = renderBlocks.map((block) => blockVisible(projection, block, fold, endsReply));
+  const blockFolds = renderBlocks.map((block) => fold !== 'unfolded' && blockIsProcess(projection, block, endsReply));
 
   // A lookup's card draws one box with the lookup card of its type above it:
   // a series of quotes or charts reads as one, but a search under a chart

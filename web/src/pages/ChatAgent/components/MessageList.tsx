@@ -14,7 +14,7 @@ import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
 import { planReportChartCards } from './chartLayerGrouping';
 import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandoff/reportLinks';
 import {
-  computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
+  computeReplyEnds, computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
 } from './messageList/turnProjection';
 import { planQuietChecks, quietEndsByTurn } from './messageList/quietChecks';
 import type { QuietEnd } from '../session/wakeupEvents';
@@ -190,6 +190,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     [projected, isSubagentView, rootDir, reportCharts],
   );
   const turnTails = React.useMemo(() => computeTurnTails(visible), [visible]);
+  const replyEnds = React.useMemo(() => computeReplyEnds(visible, turnTails), [visible, turnTails]);
   // The bubbles of the server's turns. A send it never stored is painted
   // like any other but has no turn to time, fold, rate or list files under.
   const turned = React.useMemo(() => projected.filter(hasTurn), [projected]);
@@ -440,6 +441,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           contentProjection: project(message),
           turnIndex,
           isTurnTail: turnTails[i],
+          endsReply: replyEnds[i],
           canRegenerate: turnIndex === null || !hiddenTurns.has(turnIndex),
           isLatestReply: message.id === latestReplyId,
           // The fold already decided whether this turn is working, and that

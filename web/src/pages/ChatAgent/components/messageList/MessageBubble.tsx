@@ -125,6 +125,9 @@ interface MessageBubbleProps {
    *  turn (steering splits one turn across several bubbles). Regenerate renders
    *  only on the tail. Computed positionally in MessageList. */
   isTurnTail: boolean;
+  /** The bubble closes a reply: the turn's tail, or the last bubble before a
+   *  steer (`computeReplyEnds`). A folded turn keeps its closing text. */
+  endsReply?: boolean;
   /** False for a turn that opened hidden, whose words a regenerate's replay
    *  would drop (see `hiddenOpenerTurns`). */
   canRegenerate?: boolean;
@@ -161,7 +164,7 @@ interface MessageBubbleProps {
  * MessageActionsContext (one identity-stable object per host), so a streamed
  * chunk never re-renders settled bubbles through a handler identity.
  */
-export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
+export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
   const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
@@ -287,13 +290,15 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
 
   // A mid-turn bubble of a folded turn is process by definition: its prose is
   // commentary the answer superseded, and its activity is behind the fold row.
+  // One a steer ended is not mid-turn in that sense: it holds the reply the
+  // steer answered.
   // Once that is taken away it can have nothing left to draw, and an assistant
   // bubble with nothing in it is an avatar beside a blank column — the same
   // thing `isOrphanAssistantMessage` keeps off screen. The bubble stays in
   // state either way: turn indices are counted positionally over it.
   const foldedAway = fold === 'collapsed'
     && isAssistant
-    && !isTurnTail
+    && !endsReply
     && !(message.error as boolean)
     && !message.stopped
     && sourceCount === 0
@@ -551,6 +556,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         isStreaming={message.isStreaming as boolean}
         fold={fold}
         isTurnTail={isTurnTail}
+        endsReply={endsReply}
         isSubagentView={isSubagentView}
         ptcAgentProposals={(message.ptcAgentProposals as Record<string, PTCAgentProposalState>) || EMPTY_OBJ}
         secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
