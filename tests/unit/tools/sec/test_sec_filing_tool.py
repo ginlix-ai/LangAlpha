@@ -141,19 +141,6 @@ def test_key_metrics_carry_the_reporting_currency_and_never_guess_one(currency, 
     assert f"| Revenue | {cell} |" in lines
 
 
-def test_the_reporting_currency_is_the_one_most_monetary_facts_use():
-    from src.tools.sec.financials import _currency
-
-    def fin(*refs):
-        units = {"usd": {"type": "simple", "measure": "iso4217:USD"}, "cny": {"type": "simple", "measure": "iso4217:CNY"},
-                 "shares": {"type": "simple", "measure": "xbrli:shares"}}
-        facts = {i: SimpleNamespace(unit_ref=r) for i, r in enumerate(refs)}
-        return SimpleNamespace(xb=SimpleNamespace(units=units, _facts=facts))
-
-    assert _currency(fin("usd", "usd", "cny", "shares", "shares", "shares")) == "USD"
-    assert _currency(fin("usd", "cny")) is None and _currency(fin("shares")) is None
-
-
 @pytest.mark.asyncio
 async def test_a_failed_write_returns_the_index_without_file_paths(acme):
     content, artifact = await tool.get_sec_filing_async("ACME", "10-K", backend=Backend(fail="write_failed: gone"))
@@ -412,40 +399,6 @@ async def test_statements_that_failed_to_read_are_named_and_the_rest_still_writt
     assert backend.files[f"{FOLDER}/statements.md"] == "| Revenue | 0 |"
 
 
-def test_statements_that_all_failed_read_as_failed_and_are_never_cached(monkeypatch, tmp_path):
-    from edgar_engine.cache import LocalDirStore
-
-    from src.tools.sec import financials
-
-    monkeypatch.setattr(edgar, "store", lambda: LocalDirStore(tmp_path))
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({}, {}, None, ["income statement", "key metrics"]))
-    assert asyncio.run(edgar.financials(REF)) == edgar.Financials(failed=True)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({"revenue": 1.0}, {}, "USD", ["key metrics"]))
-    assert asyncio.run(edgar.financials(REF)).unread == ("key metrics",) and not list(tmp_path.rglob("*.gz"))
-
-
-def test_the_engine_keeps_statements_in_the_tools_bytes_one_version_past_its_key(monkeypatch, tmp_path):
-    from dataclasses import asdict
-
-    from edgar_engine.cache import LocalDirStore, StatementsCache
-    from edgar_engine.statements import Financials
-
-    from src.tools.sec import financials
-
-    monkeypatch.setattr(edgar, "store", lambda: LocalDirStore(tmp_path / "tool"))
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials",
-                        lambda f: ({"revenue": 1.0}, {"income statement": "| Revenue | 1 |"}, "USD", []))
-    fin = asyncio.run(edgar.financials(REF))
-    StatementsCache(LocalDirStore(tmp_path / "engine")).put(REF.accession, Financials(**asdict(fin)))
-    tool_kept, engine_kept = ({p.relative_to(tmp_path / side): p.read_bytes() for p in (tmp_path / side).rglob("*.gz")}
-                              for side in ("tool", "engine"))
-    assert len(tool_kept) == len(engine_kept) == 1
-    (tool_key, tool_bytes), (engine_key, engine_bytes) = *tool_kept.items(), *engine_kept.items()
-    assert engine_bytes == tool_bytes and str(tool_key).replace("statements/v3/", "statements/v4/") == str(engine_key)
-
-
 @pytest.mark.asyncio
 async def test_the_amended_index_names_full_md_as_the_filing_as_first_filed(acme):
     acme.amendments = [filing(section("7", "Item 7. MD&A\nRestated.", source=AMEND), accession=AMEND, form="10-K/A",
@@ -503,41 +456,12 @@ def test_amendments_of_a_filing_older_than_the_recent_page_are_read_from_the_who
     assert asyncio.run(edgar.amendments(co, {}, REF)) == ([], []) and asked == [full_history]
 
 
-def test_a_statement_the_filing_lacks_is_not_listed_and_one_that_failed_is_named(monkeypatch):
-    from edgar.financials import Financials as Extracted
-
-    from src.tools.sec import financials
-
-    def broken():
-        raise ValueError("bad")
-
-    fake = SimpleNamespace(income_statement=lambda: SimpleNamespace(render=lambda: "income"),
-                           balance_sheet=lambda: SimpleNamespace(render=lambda: None), cash_flow_statement=broken,
-                           get_financial_metrics=lambda: {"revenue": 1.0})
-    monkeypatch.setattr(Extracted, "extract", staticmethod(lambda filing: fake))
-    monkeypatch.setattr(financials, "_currency", lambda fin: "USD")
-    metrics, parts, _, unread = financials.read_financials(None)
-    assert parts == {"income statement": "income"} and unread == ["cash flow statement"]
-
-
-def test_a_cache_that_cannot_be_read_or_decompressed_reads_as_a_miss(monkeypatch, tmp_path):
-    import gzip
-
-    from edgar_engine.cache import LocalDirStore
-
-    from src.tools.sec import financials
-
+def test_a_cache_that_cannot_be_read_reads_as_a_miss():
     class Down:
         def get(self, key):
             raise ConnectionError("storage down")
 
     assert edgar._MeteredStore(Down()).get("sections/x") is None
-    store = LocalDirStore(tmp_path)
-    store.put(f"{edgar.STATEMENTS_KEY}/{ACC}.json.gz", gzip.compress(b"x")[:12] + b"\x00" * 20)
-    monkeypatch.setattr(edgar, "store", lambda: store)
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({"revenue": 1.0}, {"income statement": "i"}, "USD", []))
-    assert asyncio.run(edgar.financials(REF)).held == ("income statement",)
 
 
 def test_the_8k_reminder_compares_acceptance_times_as_timestamps():

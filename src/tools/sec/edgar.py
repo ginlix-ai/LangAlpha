@@ -10,25 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import gzip
-import json
 import logging
 import os
 import threading
-import zlib
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import partial, wraps
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
-from edgar_engine import FilingSections, SubmissionDocument
+from edgar_engine import FilingSections, SubmissionDocument, statements
 from edgar_engine.amendments import amended_sections, read
-from edgar_engine.cache import DocumentsCache, LocalDirStore, SectionsCache, Store
+from edgar_engine.cache import DocumentsCache, LocalDirStore, SectionsCache, StatementsCache, Store
 from edgar_engine.documents import read_with_documents
-from edgar_engine.filings import FilingRef, base_form, get_filing, list_filings, select_filing
+from edgar_engine.filings import FilingRef, base_form, list_filings, select_filing
+from edgar_engine.statements import Financials
 from edgar_engine.submission import TruncatedSubmission
 
 from .metering import note_cache
@@ -44,7 +41,6 @@ if not os.getenv("EDGAR_IDENTITY"):
 #: EDGAR's recent page holds at least the last year or this many filings, so a page this long that starts within
 #: the 8-K window may not reach back to its start.
 RECENT_PAGE_MIN = 1000
-STATEMENTS_KEY = f"statements/v3/edgartools-{version('edgartools')}"
 EIGHT_K_DAYS = 90
 EIGHT_K_FORMS = ("8-K", "8-K/A")
 
@@ -230,42 +226,10 @@ def amendments(co: Company, labels: Labels, original: FilingRef) -> tuple[list[F
     return found, [r for r in unreadable if r.amends == original.accession]
 
 
-@dataclass(frozen=True)
-class Financials:
-    """Key metrics in the reporting currency (an ISO code, None when the filing does not state one) and the three
-    statements the filing has as markdown, under the names in held. unread: the parts that could not be read this
-    time, and failed: none could; neither is ever cached."""
-    metrics: dict = field(default_factory=dict)
-    statements: str | None = None
-    currency: str | None = None
-    failed: bool = False
-    unread: tuple[str, ...] = ()
-    held: tuple[str, ...] = ()
-
-
 @_shared(lambda ref: f"statements:{ref.accession}")
 def financials(ref: FilingRef) -> Financials:
     """The filing's statements and key metrics, cached by accession and edgartools version once every part read."""
-    key = f"{STATEMENTS_KEY}/{ref.accession}.json.gz"
-    raw = store().get(key)
-    if raw is not None:
-        try:
-            return Financials(**json.loads(gzip.decompress(raw)))
-        except (OSError, EOFError, ValueError, TypeError, zlib.error):
-            pass
-
-    from .financials import read_financials
-    try:
-        metrics, parts, currency, unread = read_financials(get_filing(ref))
-    except Exception:
-        logger.warning("sec_filing: statements of %s unavailable", ref.accession, exc_info=True)
-        return Financials(failed=True)
-    if unread and not (metrics or parts):
-        return Financials(failed=True)
-    fin = Financials(metrics, "\n\n".join(parts.values()) or None, currency, unread=tuple(unread), held=tuple(parts))
-    if not unread:
-        store().put(key, gzip.compress(json.dumps(asdict(fin)).encode(), mtime=0))
-    return fin
+    return statements.read(ref, StatementsCache(store()))
 
 
 @dataclass(frozen=True)
