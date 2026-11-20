@@ -1,0 +1,10 @@
+{# The main agent's subagent roster, rendered into the cached per-thread
+   baseline: byte-deterministic for equal inputs, so no timestamps, no dict
+   iteration, and no guidance fence. The static prompt says how to delegate
+   and points here, so every main agent passes a roster: one with no
+   subagents says so. #}
+{% if content %}
+<subagents>
+{{ content }}
+</subagents>
+{% endif %}

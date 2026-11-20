@@ -565,7 +565,7 @@ def build_tool_summary_from_registry(mcp_registry: Any, *, mode: str = "full") -
 
 
 def format_subagent_summary(subagents: list[dict]) -> str:
-    """Format subagent configurations into a summary for the system prompt.
+    """Format subagent configurations into the roster the baseline's <subagents> holds.
 
     Similar to format_tool_summary for MCP tools. Displays each subagent
     with its name, description, and available tools.
@@ -577,7 +577,7 @@ def format_subagent_summary(subagents: list[dict]) -> str:
             - tools: List of tool objects or tool names
 
     Returns:
-        Formatted string for the system prompt
+        The roster, one entry per subagent
     """
     if not subagents:
         return "No sub-agents configured."

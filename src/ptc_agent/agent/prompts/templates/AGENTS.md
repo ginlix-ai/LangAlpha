@@ -227,11 +227,11 @@ directory:
   fragment that adds one nests it.
 - **Baseline fragments** (`baseline_files`, `baseline_agentmd`,
   `baseline_memory`, `baseline_identity`, and the harness blocks
-  `baseline_model`, `baseline_mcp_servers`, `baseline_skills` and the Chief
-  of Staff's `baseline_activity`) land *inside* the cached per-thread
-  prefix, so they must be byte-identical for equal inputs: no timestamps, no
-  dict iteration, and no guidance fence. A guidance flip must not move them,
-  because the model can change mid-thread.
+  `baseline_model`, `baseline_mcp_servers`, `baseline_skills`,
+  `baseline_subagents` and the Chief of Staff's `baseline_activity`) land
+  *inside* the cached per-thread prefix, so they must be byte-identical for
+  equal inputs: no timestamps, no dict iteration, and no guidance fence. A
+  guidance flip must not move them, because the model can change mid-thread.
 - **Row fragments** (`turn`, `surface_rules`, `update_row`) are rendered once,
   at the turn boundary, and persisted as messages in history. `turn` is the
   stamp the turn opened with, `surface_rules` is the paragraph it carries about

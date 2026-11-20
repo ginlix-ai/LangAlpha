@@ -16,6 +16,7 @@ _CHANGED = "_changed"
 MODEL_BLOCK = "model"
 MCP_SERVERS_BLOCK = "mcp_servers"
 SKILLS_BLOCK = "skills"
+SUBAGENTS_BLOCK = "subagents"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,13 @@ HARNESS_BLOCKS: dict[str, HarnessBlock] = {
         template="envelope/baseline_skills.md.j2",
         label="<skills>",
         subject="skills manifest",
+    ),
+    # Beside the other capability lists. Per-thread because a user edits
+    # their own subagents, or a request names the ones it runs, between turns.
+    SUBAGENTS_BLOCK: HarnessBlock(
+        template="envelope/baseline_subagents.md.j2",
+        label="<subagents>",
+        subject="subagent roster",
     ),
     # Here rather than in the static prompt because its path names the
     # thread; it is absolute, so a rename of the workspace's folder moves it

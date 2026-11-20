@@ -272,7 +272,6 @@ def render(args: argparse.Namespace) -> str:
     loader = init_loader(session_start_time=now)
 
     tool_summary = args.tool_summary if args.tool_summary else STUB_TOOL_SUMMARY
-    subagent_summary = format_subagent_summary(stub_subagents(args.role))
     user_profile = None if args.no_user_profile else STUB_USER_PROFILE
     guidance_vars = guidance_template_vars(resolve_guidance(args))
 
@@ -321,9 +320,8 @@ def render(args: argparse.Namespace) -> str:
     )
 
     # PTC system prompt
-    return loader.get_system_prompt(
+    prompt = loader.get_system_prompt(
         tool_summary=tool_summary,
-        subagent_summary=subagent_summary,
         user_profile=user_profile,
         todo_enabled=args.todo,
         role=args.role,
@@ -341,6 +339,13 @@ def render(args: argparse.Namespace) -> str:
         **layout_vars,
         **guidance_vars,
     )
+    # The subagent roster rides the per-thread baseline, after the prompt's
+    # cache breakpoint, so a user's edit to a subagent never moves the prefix.
+    roster = loader.render(
+        "envelope/baseline_subagents.md.j2",
+        content=format_subagent_summary(stub_subagents(args.role)),
+    )
+    return f"{prompt.rstrip()}\n\n<!-- runtime-context baseline (excerpt) -->\n{roster.strip()}\n"
 
 
 def estimate_tokens(text: str) -> int:

@@ -206,7 +206,6 @@ class PTCAgent:
 
     def _build_system_prompt(
         self,
-        subagent_summary: str,
         guidance: str,
         thread_id: str | None = None,
         memory_enabled: bool = True,
@@ -246,7 +245,6 @@ class PTCAgent:
                 root=self.config.filesystem.working_directory,
                 legacy_layout=legacy_layout,
             ),
-            subagent_summary=subagent_summary,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
             ask_user_enabled=True,
             include_examples=True,
@@ -778,8 +776,8 @@ class PTCAgent:
         direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
         main_only_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
 
-        # Recursion gate: no subagents compiled, none advertised in the
-        # prompt ("No sub-agents configured."), no Task tool below.
+        # Recursion gate: no subagents compiled, a <subagents> block that says
+        # "No sub-agents configured.", no Task tool below.
         subagents: list[dict[str, Any]] = []
         if not disable_subagents:
             compiler = subagent_compiler(
@@ -890,7 +888,11 @@ class PTCAgent:
         # then rebuild the block on every turn.
         if tool_summary is None:
             tool_summary = self._get_tool_summary(mcp_registry)
-        subagent_summary = format_subagent_summary(subagents)
+        # The roster the baseline freezes into <subagents>, resolved here for
+        # the same reason. Not the static prompt: a user's edit to their own
+        # subagent, or a request naming the ones it runs, would move the
+        # cached prefix there.
+        subagent_roster = format_subagent_summary(subagents)
 
         eviction_dir = (
             WorkspaceLayout.large_results_subdir(short_thread_id)
@@ -900,7 +902,6 @@ class PTCAgent:
 
         render_prompt = partial(
             self._build_system_prompt,
-            subagent_summary,
             turn.guidance,
             thread_id=short_thread_id,
             memory_enabled=gates.memory,
@@ -1099,6 +1100,9 @@ class PTCAgent:
                     if scratchpad is not None
                     else {}
                 ),
+                # Always, so the prompt's pointer at <subagents> finds it:
+                # an agent with none says so there.
+                "subagents": lambda _state: subagent_roster,
             },
             user_data_counts=user_data_counts,
             role=role,
@@ -1255,9 +1259,9 @@ class PTCAgent:
         #     SystemPromptCacheMiddleware (prompt_cache_breakpoint for OpenAI,
         #     cache_control for Claude over OpenRouter) each place their
         #     provider's breakpoint on the last system message block they
-        #     see, which is the static prompt's own: the skills manifest and the
-        #     MCP roster ride in the baseline now. Each no-ops for other
-        #     providers.
+        #     see, which is the static prompt's own: the skills manifest, the
+        #     MCP roster and the subagent roster ride in the baseline now.
+        #     Each no-ops for other providers.
         #   - TurnContextMiddleware runs before BaselineContextMiddleware so
         #     the turn row is written into history ahead of the change rows.
         #   - BaselineContextMiddleware is innermost on the system message: it
