@@ -29,7 +29,13 @@ export type Slot = Draws & (
   | { kind: 'lead'; key: string; step: Step; isLine: boolean }
 );
 
-export type Row = { key: string; live: boolean } & Draws & (
+export type Row = {
+  key: string;
+  live: boolean;
+  /** The steps the row draws, by row key: the status line's step has a row of
+   *  its own once the count is opened, under the key the line named it by. */
+  steps: readonly string[];
+} & Draws & (
   | { kind: 'line'; line: LineStep }
   /** One item, or a run of calls of one file verb drawn as a row. */
   | { kind: 'run'; run: ActivityItem[] }
@@ -65,12 +71,15 @@ const callsOf = (items: readonly ActivityItem[]): readonly string[] =>
   items.flatMap((item) => (item.type === 'tool_call' ? [item.id] : []));
 
 const runRow = (keys: RowKeys, run: ActivityItem[]): Row => ({
-  kind: 'run', key: keys.forItem(run[0]), run, calls: callsOf(run),
+  kind: 'run', key: keys.forItem(run[0]), run, calls: callsOf(run), steps: run.map(keys.forItem),
   live: run.some((entry) => entry._liveState !== 'completed'),
 });
 
 /** A call still being written has no card to hand over to. */
-const callRow = (keys: RowKeys, call: PreparingCall): Row => ({ kind: 'call', key: keys.forCall(call), call, calls: NO_CALLS, live: true });
+const callRow = (keys: RowKeys, call: PreparingCall): Row => {
+  const key = keys.forCall(call);
+  return { kind: 'call', key, call, calls: NO_CALLS, steps: [key], live: true };
+};
 
 /** A settled block of nothing but thoughts shows them rather than a count of
  *  them. */
@@ -132,7 +141,7 @@ export function layoutStatusLine({ timeline, calls, keys, expanded, liveReasonin
   // The line stands for the block's work in flight, so it gives its place to
   // whichever of the block's calls lands and takes it away.
   if (onLine && !(lead && firstOnLine)) {
-    rows.push({ kind: 'line', key: 'status-line', line: onLine, calls: callsOf(timeline), live: onLine.running });
+    rows.push({ kind: 'line', key: 'status-line', line: onLine, calls: callsOf(timeline), steps: [onLine.key], live: onLine.running });
   }
   for (const run of groupFileToolRuns(timeline)) {
     if (lead && run[0] === firstItem) continue;

@@ -20,6 +20,7 @@ import { LiveRow } from './messageList/LiveRow';
 import { SettlingLabel } from './messageList/SettlingLabel';
 import { SwapCell } from '@/components/ui/crossfade';
 import { RunningGlyphContext } from './messageList/runningGlyph';
+import { CountToggleContext, useCountToggle } from './messageList/countToggle';
 import { useActivityRowKeys } from './messageList/useActivityRowKeys';
 import { isFreshArrival } from './messageList/transcriptMotion';
 import type { ChartTabSpec } from './filePanel/types';
@@ -90,6 +91,10 @@ const ActivityBlock = memo(function ActivityBlock({
   const summary = slot?.kind === 'summary'
     ? summarizeCompletedItems(slot.counted, t, { expanded, countFailures: status }) ?? ''
     : '';
+  // The step on the line, which the line draws while the count is closed and
+  // a row of its own draws once it is opened.
+  const lineStep = status && line && (inFlight || holdsLine) ? line.key : null;
+  const { toggle, noteToggle } = useCountToggle(lineStep);
 
   const stepRow = (step: Step): React.ReactNode => {
     if (step.kind === 'call') return <PreparingTimelineRow tc={step.call} />;
@@ -113,8 +118,7 @@ const ActivityBlock = memo(function ActivityBlock({
 
   // One list owns both live and settled rows. Opening the accordion changes
   // visibility, never the live rows' parent, keys, or reasoning policy.
-  const rowNode = (row: Row): React.ReactNode => {
-    if (row.kind === 'line') return lineNode(row.line.key, row.line.step);
+  const stepNode = (row: Exclude<Row, { kind: 'line' }>): React.ReactNode => {
     if (row.kind === 'call') return inline ? <PreparingToolCallRow tc={row.call} /> : <PreparingTimelineRow tc={row.call} />;
     const [item] = row.run;
     if (inline && row.live && item.type === 'tool_call') return <ToolCallLiveRow tc={item} liveState={item._liveState} />;
@@ -127,6 +131,13 @@ const ActivityBlock = memo(function ActivityBlock({
         onOpenFile={onOpenFile} onToolCallClick={onToolCallClick} isStreaming={row.run.some(isRunning)} />;
     }
     return <ToolCallRow item={item} running={isRunning(item)} onClick={() => onToolCallClick?.(item)} />;
+  };
+  const rowNode = (row: Row): React.ReactNode => {
+    if (row.kind === 'line') return lineNode(row.line.key, row.line.step);
+    // The step on the line is marked the way the line marks it in a row of
+    // its own too, so opening the count changes nothing about it. Every row
+    // sits under the provider, or the mark coming and going would remount it.
+    return <RunningGlyphContext value={lineStep !== null && row.steps.includes(lineStep)}>{stepNode(row)}</RunningGlyphContext>;
   };
 
   // Consecutive pill cards share one wrapping row; any other card stands alone.
@@ -145,7 +156,7 @@ const ActivityBlock = memo(function ActivityBlock({
   }
 
   if (timeline.length === 0 && charts.length === 0 && calls.length === 0) return null;
-  return <div data-activity-block="">
+  return <CountToggleContext value={toggle}><div data-activity-block="">
     {chartGroups.map((group) => group.pill && group.cards.length > 1
       ? <div key={group.key} data-pill-row className={`mb-1.5 ${PILL_ROW_CLASS}`}>{group.cards.map((c) => c.node)}</div>
       : group.cards.map((c) => <div key={c.key} className="mb-1.5">{c.node}</div>))}
@@ -166,7 +177,11 @@ const ActivityBlock = memo(function ActivityBlock({
               {lineNode(slot.key, slot.step)}
             </div>
             : <button id={summaryId} type="button" aria-expanded={expanded} aria-controls={panelId}
-              onClick={(e) => { announceAnchoredToggle(e.currentTarget); setExpanded(!expanded); }}
+              onClick={(e) => {
+                announceAnchoredToggle(e.currentTarget);
+                noteToggle(e.currentTarget);
+                setExpanded(!expanded);
+              }}
               className="inline-flex max-w-full items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer transition-colors hover:text-foreground"
               style={SUMMARY_TEXT}>
               <SettlingLabel text={summary} />
@@ -183,14 +198,14 @@ const ActivityBlock = memo(function ActivityBlock({
           {/* Segment spacing owns the outside gap, and standalone rows already
               have padding. */}
           {/* A row gives its place to the card its call lands as. */}
-          {rows.map((row) => <LiveRow key={row.key} gap="0px" calls={row.calls}>
+          {rows.map((row) => <LiveRow key={row.key} gap="0px" calls={row.calls} steps={row.steps}>
             <div role="listitem" data-activity-state={row.live ? 'live' : 'settled'}
               data-status-line={row.kind === 'line' ? '' : undefined}>{rowNode(row)}</div>
           </LiveRow>)}
         </AnimatePresence>
       </div>
     </div>
-  </div>;
+  </div></CountToggleContext>;
 });
 
 export default ActivityBlock;

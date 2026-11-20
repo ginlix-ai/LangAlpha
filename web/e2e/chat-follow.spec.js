@@ -7,7 +7,7 @@
  * reader only meets by chance: between a glide's write and its scroll event,
  * which arrives a frame later.
  */
-import { configureSSE, resetMockServer, mockAPI, test, expect } from './fixtures.js';
+import { configureSSE, releaseSSE, resetMockServer, mockAPI, test, expect } from './fixtures.js';
 import { sseEvents } from './helpers/mockResponses.js';
 import { TH, WS, chatViewOverrides, openThread, send } from './helpers/chatScenario.js';
 import { sampleFrames, stopSampling } from './helpers/frameProbe.js';
@@ -17,6 +17,8 @@ import { buildEvents } from './perf/streamFixture.js';
 const PIN_GAP = 16;
 // AT_BOTTOM_PX in utils/scrollHelpers.ts: as close to the end as counts as at it.
 const AT_END = 4;
+// NEAR_BOTTOM_PX in utils/scrollHelpers.ts: a glide trailing the end is within it.
+const NEAR_END = 120;
 const QUESTION = 'And what changed in the second quarter?';
 
 /** Two settled turns, so the thread opens with history above the composer. */
@@ -284,6 +286,159 @@ function subagentTurn() {
 
 /** The open subagent transcript's scroller, found by its text. */
 const SUBAGENT_SCROLLER = `[...document.querySelectorAll('.overflow-auto')].find((el) => el.clientHeight > 0 && el.textContent.includes('Finding 1:'))`;
+
+test.describe('a count opened at the end of a live turn', () => {
+  // Opening a row holds it where the reader clicked and lets what it opened
+  // grow downward, so the end can leave the view with no scroll of theirs.
+  // The reply then ran on under the composer with nothing to bring them back.
+  test('offers the jump once the end is out of view, takes it away when the count shuts, and follows the reply from it', async ({ page }) => {
+    await resetMockServer();
+    await openThread(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const para = 'Margins held through the quarter while revenue grew on the new segment and guidance stayed where it was. ';
+    const events = [];
+    for (let i = 0; i < 14; i++) events.push(sseEvents.messageChunk(`${para.repeat(3)}\n\n`));
+    for (let i = 0; i < 6; i++) {
+      events.push(sseEvents.toolCalls([{ name: 'Grep', args: { pattern: `term${i}`, path: 'data' }, id: `g${i}` }]));
+      events.push({ ...sseEvents.finishToolCalls(), delayAfter: 120 });
+      events.push({ ...sseEvents.toolCallResult(`g${i}`, 'data/a.csv:1'), delayAfter: 80 });
+    }
+    events.push(sseEvents.toolCalls([{ name: 'WebFetch', args: { url: 'https://one.example.com' }, id: 'w1' }]));
+    events.push(sseEvents.finishToolCalls());
+    // In flight until the count is open.
+    events.push({ ...sseEvents.toolCallResult('w1', 'Fetched'), holdUntil: 'opened' });
+    for (let i = 0; i < 6; i++) events.push({ ...sseEvents.messageChunk(`${para.repeat(3)}\n\n`), delayAfter: 300 });
+    // More of the reply once the reader has come back to it.
+    for (let i = 0; i < 4; i++) events.push({ ...sseEvents.messageChunk(`${para.repeat(3)}\n\n`), delayAfter: 300, ...(i === 0 ? { holdUntil: 'rejoined' } : {}) });
+    events.push({ ...sseEvents.finishStop(), holdUntil: 'followed' }, sseEvents.creditUsage());
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events, delay: 20 });
+    await send(page, 'Check margins');
+    const zone = page.locator('[data-testid="activity-live-zone"]');
+    await expect(zone).toContainText('one.example.com', { timeout: 20000 });
+    await expect.poll(() => zone.locator(':scope > *').count(), { timeout: 10000 }).toBe(1);
+    const below = () => page.evaluate(() => {
+      const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
+      return vp.scrollHeight - vp.scrollTop - vp.clientHeight;
+    });
+    const pill = page.locator('.jump-to-latest-pill');
+    await expect.poll(below).toBeLessThanOrEqual(AT_END);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+
+    const count = page.locator('[id^="activity-summary-"]').last();
+    await count.click();
+    // The six steps opened under the count, past the end of the view. Nothing
+    // grows again, and the hold on the count still ends with the pill up.
+    await expect.poll(below).toBeGreaterThan(150);
+    await expect(pill).toHaveAttribute('data-state', 'open');
+    // Shut again, the reader is back at the end.
+    await count.click();
+    await expect.poll(below).toBeLessThanOrEqual(AT_END);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+
+    // Open once more, and the reply runs on below the steps.
+    await count.click();
+    await expect.poll(below).toBeGreaterThan(150);
+    await releaseSSE('opened');
+    await expect.poll(below, { timeout: 15000 }).toBeGreaterThan(400);
+    await expect(pill).toHaveAttribute('data-state', 'open');
+
+    // The pill takes them to the end, and they ride it from there.
+    await pill.click();
+    await expect.poll(below).toBeLessThanOrEqual(AT_END);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+    const height = () => page.evaluate(() => document.querySelector('main [data-transcript-content]').closest('.overflow-auto').scrollHeight);
+    const before = await height();
+    await releaseSSE('rejoined');
+    await expect.poll(async () => (await height()) - before, { timeout: 15000 }).toBeGreaterThan(300);
+    await expect.poll(below).toBeLessThanOrEqual(NEAR_END);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+    await releaseSSE('followed');
+  });
+
+  // The hold on a toggled row ends on its own clock and decides the pill by
+  // where the view is then. A jump taken inside that second was still gliding
+  // when the clock ran out, so it was read as a reader away from the end: the
+  // pill came back over a view at the end, and the reply was not followed.
+  test('leaves a jump taken while the toggled row is still held to land', async ({ page }) => {
+    await resetMockServer();
+    await openThread(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const para = 'Margins held through the quarter while revenue grew on the new segment and guidance stayed where it was. ';
+    const events = [];
+    for (let i = 0; i < 14; i++) events.push(sseEvents.messageChunk(`${para.repeat(3)}\n\n`));
+    for (let i = 0; i < 6; i++) {
+      events.push(sseEvents.toolCalls([{ name: 'Grep', args: { pattern: `term${i}`, path: 'data' }, id: `g${i}` }]));
+      events.push({ ...sseEvents.finishToolCalls(), delayAfter: 120 });
+      events.push({ ...sseEvents.toolCallResult(`g${i}`, 'data/a.csv:1'), delayAfter: 80 });
+    }
+    events.push(sseEvents.toolCalls([{ name: 'WebFetch', args: { url: 'https://one.example.com' }, id: 'w1' }]));
+    events.push(sseEvents.finishToolCalls());
+    events.push({ ...sseEvents.toolCallResult('w1', 'Fetched'), holdUntil: 'opened' });
+    for (let i = 0; i < 6; i++) events.push(sseEvents.messageChunk(`Later ${i}. ${para.repeat(3)}\n\n`));
+    events.push({ ...sseEvents.finishStop(), holdUntil: 'landed' }, sseEvents.creditUsage());
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events, delay: 20 });
+    await send(page, 'Check margins');
+    const zone = page.locator('[data-testid="activity-live-zone"]');
+    await expect(zone).toContainText('one.example.com', { timeout: 20000 });
+    const below = () => page.evaluate(() => {
+      const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
+      return vp.scrollHeight - vp.scrollTop - vp.clientHeight;
+    });
+    const pill = page.locator('.jump-to-latest-pill');
+    const count = page.locator('[id^="activity-summary-"]').last();
+    await expect.poll(below).toBeLessThanOrEqual(AT_END);
+
+    // Away from the end, with the steps open and the reply all in below them.
+    await count.click();
+    await expect(pill).toHaveAttribute('data-state', 'open');
+    await releaseSSE('opened');
+    await expect(page.locator('main [data-transcript-content]')).toContainText('Later 5.', { timeout: 15000 });
+    await expect.poll(below).toBeGreaterThan(400);
+
+    // The count shut holds its row for a second, and the jump is taken in it:
+    // the glide is still under way when that second is up.
+    await count.click();
+    await page.waitForTimeout(800);
+    await pill.click();
+    await expect.poll(below).toBeLessThanOrEqual(AT_END);
+    await page.waitForTimeout(600);
+    expect(await below()).toBeLessThanOrEqual(AT_END);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+    await releaseSSE('landed');
+  });
+});
+
+test.describe('a width change short of the end', () => {
+  // A rewrap holds the row at the top of the view as a toggle holds its row,
+  // but the reader has chosen nothing: the pill is not theirs to be handed.
+  test('leaves the pill down for a reader the window resized', async ({ page }) => {
+    await resetMockServer();
+    await mockAPI(page, chatViewOverrides());
+    await configureSSE({ method: 'GET', path: `/api/v1/threads/${TH}/messages/replay`, events: historyReplay(), delay: 10 });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`/chat/t/${TH}`);
+    await page.waitForSelector('[data-message-role="assistant"]', { timeout: 10000 });
+    await page.evaluate(() => document.fonts.ready.then(() => true));
+    await expect.poll(async () => (await view(page)).fromBottom).toBeLessThanOrEqual(AT_END);
+    const pill = page.locator('.jump-to-latest-pill');
+
+    // Up and most of the way back: short of the end, and inside the band a
+    // reader coming down is following from.
+    await viewport(page).hover();
+    await page.mouse.wheel(0, -300);
+    await expect(pill).toHaveAttribute('data-state', 'open');
+    await page.mouse.wheel(0, 240);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+    const short = (await view(page)).fromBottom;
+    expect(short).toBeGreaterThan(AT_END);
+    expect(short).toBeLessThan(NEAR_END);
+
+    await page.setViewportSize({ width: 1100, height: 720 });
+    // Past the second the rewrap holds its row for.
+    await page.waitForTimeout(1500);
+    await expect(pill).toHaveAttribute('data-state', 'closed');
+  });
+});
 
 test.describe('subagent follow', () => {
   test('glides after the end of a subagent reply streaming in its own view', async ({ page }) => {

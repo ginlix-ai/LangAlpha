@@ -210,6 +210,14 @@ critical, so nothing overshoots. Tailwind's bare `transition` and
   over content already showing drew every glyph top first, cut off at the
   bottom. A row opening from rest is launched at its spring's own rate, so the
   space is nearly open in 160ms and the content comes in that much sooner.
+- **A count the reader opens is one fold.** The rows a toggle of the count
+  brings or sends away move together as one panel, the way `Disclosure` does:
+  open on `SPRING_FOLD` with the content standing where it will rest and the
+  edge passing down over it, shut on `EASE_COLLAPSE` with the content dimming
+  as it goes (`countToggle.ts`). The step on the status line is on screen
+  open or shut, so it changes rows with no fade and rides the panel's edge.
+  Rows each opening on their own left a hole as tall as the list, filled a
+  beat later.
 - **Press, not hover.** A committing button scales to 0.97 (`PRESS_SCALE`,
   `--press-scale`) over `press`, through the shared `Button` or the `press`
   class, which carries its own transition list and so never sits beside a
