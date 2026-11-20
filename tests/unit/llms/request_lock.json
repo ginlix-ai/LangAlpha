@@ -2841,12 +2841,16 @@
     ],
     "input": [
      {
+      "content": "You are a lock probe.",
+      "role": "developer",
+      "type": "message"
+     },
+     {
       "content": "Look up AAPL.",
       "role": "user",
       "type": "message"
      }
     ],
-    "instructions": "You are a lock probe.",
     "model": "gpt-6-luna",
     "reasoning": {
      "effort": "medium",
@@ -3103,12 +3107,16 @@
     ],
     "input": [
      {
+      "content": "You are a lock probe.",
+      "role": "developer",
+      "type": "message"
+     },
+     {
       "content": "Look up AAPL.",
       "role": "user",
       "type": "message"
      }
     ],
-    "instructions": "You are a lock probe.",
     "model": "gpt-6.1-terra",
     "reasoning": {
      "effort": "medium",
@@ -3365,12 +3373,16 @@
     ],
     "input": [
      {
+      "content": "You are a lock probe.",
+      "role": "developer",
+      "type": "message"
+     },
+     {
       "content": "Look up AAPL.",
       "role": "user",
       "type": "message"
      }
     ],
-    "instructions": "You are a lock probe.",
     "model": "gpt-6.2-astra",
     "reasoning": {
      "effort": "medium",
@@ -3627,12 +3639,16 @@
     ],
     "input": [
      {
+      "content": "You are a lock probe.",
+      "role": "developer",
+      "type": "message"
+     },
+     {
       "content": "Look up AAPL.",
       "role": "user",
       "type": "message"
      }
     ],
-    "instructions": "You are a lock probe.",
     "model": "gpt-6.2-sol",
     "reasoning": {
      "effort": "medium",

@@ -453,9 +453,8 @@ def build_summary_request(
 ) -> list[AnyMessage]:
     """System = instructions, Human = nudge + rendered history.
 
-    Splitting the two channels keeps the system prompt small and cacheable,
-    lets Codex OAuth populate its ``instructions`` field cleanly, and avoids
-    Python repr inflation by rendering messages via ``get_buffer_string``.
+    Splitting the two keeps the system prompt small and cacheable, and
+    rendering messages via ``get_buffer_string`` avoids Python repr inflation.
     """
     from src.llms.api_call import create_messages
 
