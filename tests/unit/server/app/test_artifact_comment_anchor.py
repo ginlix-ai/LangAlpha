@@ -220,3 +220,71 @@ def test_the_text_viewers_anchors_are_kept_as_sent(anchor):
 def test_a_text_viewers_anchor_out_of_bounds_is_refused(anchor):
     with pytest.raises(ValidationError):
         CommentAnchor.model_validate(anchor)
+
+
+_PICTURE = ".agents/comments/q3-report-p3-20261118-141205.png"
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        {"kind": "region", "boxes": [{"x": 0.42, "y": 0.17, "w": 0, "h": 0}]},
+        {
+            "kind": "region",
+            "boxes": [
+                {
+                    "page": 3,
+                    "x": 0.12,
+                    "y": 0.34,
+                    "w": 0.4,
+                    "h": 0.22,
+                    "picture": _PICTURE,
+                },
+                {"page": 5, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2},
+            ],
+        },
+        {"kind": "region", "boxes": [{"x": 0.5, "y": 0.5, "w": 0.5, "h": 0.5}]},
+    ],
+)
+def test_boxes_on_a_picture_are_kept_as_sent(anchor):
+    assert CommentAnchor.model_validate(anchor).model_dump(exclude_none=True) == anchor
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        {"kind": "region"},
+        {"kind": "region", "boxes": []},
+        {"kind": "region", "boxes": [{"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}] * 65},
+        # Past the edge it is drawn on.
+        {"kind": "region", "boxes": [{"x": 0.9, "y": 0, "w": 0.2, "h": 0.1}]},
+        # A box has both sides; a point has neither, and no picture.
+        {"kind": "region", "boxes": [{"x": 0, "y": 0, "w": 0.1, "h": 0}]},
+        {
+            "kind": "region",
+            "boxes": [{"x": 0, "y": 0, "w": 0, "h": 0, "picture": _PICTURE}],
+        },
+        # A picture is only ever one the app wrote to the comments folder.
+        {
+            "kind": "region",
+            "boxes": [{"x": 0, "y": 0, "w": 0.1, "h": 0.1, "picture": "../secret.png"}],
+        },
+        {
+            "kind": "region",
+            "boxes": [{"x": 0, "y": 0, "w": 0.1, "h": 0.1, "picture": "notes.png"}],
+        },
+        # On pages, or none on a page.
+        {
+            "kind": "region",
+            "boxes": [
+                {"page": 1, "x": 0, "y": 0, "w": 0.1, "h": 0.1},
+                {"x": 0, "y": 0, "w": 0.1, "h": 0.1},
+            ],
+        },
+        {"kind": "region", "boxes": [{"x": 0, "y": 0, "w": 0.1, "h": 0.1}], "page": 1},
+        {"kind": "text", "quote": "a", "boxes": [{"x": 0, "y": 0, "w": 0, "h": 0}]},
+    ],
+)
+def test_a_region_the_api_could_not_show_is_refused(anchor):
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate(anchor)

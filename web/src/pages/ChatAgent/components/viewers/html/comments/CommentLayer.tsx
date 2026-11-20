@@ -6,7 +6,7 @@ import {
 import { AnimatePresence, motion } from '@/lib/framer';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { TWEEN } from '@/lib/motion';
-import type { ArtifactComment } from '@/types/api';
+import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
 import { basename } from '../../../../utils/fileRefResolver';
 import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import type { FrameView } from '../BridgedFrame';
@@ -81,6 +81,17 @@ export interface CommentLayerProps {
   pickWords?: (range: Range) => PagePick | null;
   /** Whether words are in the viewer, so the toolbar offers Comment only on them. */
   holdsWords?: (range: Range) => boolean;
+  /**
+   * Readies a new comment's anchor as it is saved: a viewer whose boxes are
+   * pictured for the agent writes the pictures then, so a box let go writes
+   * none. Left out, the anchor is saved as picked.
+   */
+  beforeSave?: (anchor: ArtifactCommentAnchor) => Promise<ArtifactCommentAnchor>;
+  /**
+   * A comment's box opens over or under its spot rather than beside its pin,
+   * so what was boxed or selected stays in view. Left out, beside its pin.
+   */
+  keepSpotClear?: boolean;
 }
 
 /**
@@ -99,7 +110,7 @@ export interface CommentLayerProps {
  * in the list moves through `boxReducer`.
  */
 export default function CommentLayer({
-  tabId, workspaceId, path, bridge, view, active, ui, modeHint, pickWords, holdsWords,
+  tabId, workspaceId, path, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear,
 }: CommentLayerProps): React.ReactElement {
   const { t } = useTranslation();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -180,7 +191,15 @@ export default function CommentLayer({
     return items;
   }, [comments, draft, draftHere, draftMarked]);
 
-  const startDraft = (pick: PagePick, how: PickHow) => dispatch({ type: 'pick', pick, path: docPath, ...how });
+  // A save that writes pictures first takes a moment: a pick meanwhile would
+  // change a draft the save is about to end, so the page waits for it.
+  const saving = useRef(false);
+  // What `beforeSave` made of the draft's anchor: a retry after a failed save
+  // sends it again rather than writing a second set of pictures.
+  const prepared = useRef<{ from: ArtifactCommentAnchor; to: ArtifactCommentAnchor } | null>(null);
+  const startDraft = (pick: PagePick, how: PickHow) => {
+    if (!saving.current) dispatch({ type: 'pick', pick, path: docPath, ...how });
+  };
   const closeBox = (of: BoxOf) => dispatch({ type: 'closeBox', of, keepHover: false });
   const leaveDraft = () => dispatch({ type: 'leave' });
   const escapeDraft = () => dispatch({ type: 'escape' });
@@ -284,14 +303,24 @@ export default function CommentLayer({
   const saveDraft = async (intent: CommentIntent) => {
     const route = sending.draftRoute(intent);
     if (!draft || !route) return;
-    const comment = await sending.layer.actions.create({
-      path: draft.path,
-      anchor: draft.anchor,
-      body: box.text.trim(),
-      route,
-      fileSha: draft.path === docPath ? (status?.live_sha256 ?? null) : null,
-      title: draft.title,
-    });
+    saving.current = true;
+    let comment;
+    try {
+      const from = draft.anchor;
+      const anchor = !beforeSave ? from : prepared.current?.from === from ? prepared.current.to : await beforeSave(from);
+      prepared.current = { from, to: anchor };
+      comment = await sending.layer.actions.create({
+        path: draft.path,
+        anchor,
+        body: box.text.trim(),
+        route,
+        fileSha: draft.path === docPath ? (status?.live_sha256 ?? null) : null,
+        title: draft.title,
+      });
+    } finally {
+      saving.current = false;
+    }
+    prepared.current = null;
     // The new pin takes the draft's place until the page reports it.
     if (draftRect) reports.placeSpot(comment.comment_id, draftRect);
     dispatch({ type: 'saved', id: comment.comment_id });
@@ -331,7 +360,7 @@ export default function CommentLayer({
   // The draft over the page takes more parts by a modifier click, or the
   // box's "Add a part" on a touch screen, when it is a list of parts. The
   // page owns both and reports them.
-  const parts = boxDraft ? partLabels(boxDraft.anchor) : null;
+  const parts = boxDraft ? partLabels(t, boxDraft.anchor) : null;
   // A chip names its part by the entry it shows, so a press on a list the
   // page has since changed takes nothing out.
   const dropPart = (index: number) => {
@@ -375,6 +404,7 @@ export default function CommentLayer({
         ? places.pinAt(openComment.comment_id)
         : null;
   const popoverWidth = Math.max(220, Math.min(BOX_WIDTH, size.width - 24));
+  const clear = !keepSpotClear ? null : boxDraft ? draftRect : openComment ? (rectOf(openComment) ?? null) : null;
 
   // The words being written, in the draft's box or its card in the list: the
   // same words either way, and the field takes the focus wherever they go.
@@ -516,6 +546,7 @@ export default function CommentLayer({
               open={isCurrent}
               point={isCurrent ? currentPoint : null}
               narrow={narrow}
+              clear={isCurrent && clear ? { top: clear.y, bottom: clear.y + clear.height } : null}
               boundary={root}
               width={popoverWidth}
               label={item.label}

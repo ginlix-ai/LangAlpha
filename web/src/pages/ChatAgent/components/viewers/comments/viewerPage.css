@@ -20,3 +20,23 @@
   -webkit-user-select: none !important;
   user-select: none !important;
 }
+/* Where each box drawn on a picture is (`regionSpots`): nothing to see, as
+   the layer outlines the boxes, and nothing to press but while a click adds
+   or takes out a part, so words and drags under a box reach the page. */
+.comment-regions {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.comment-region {
+  position: absolute;
+  pointer-events: none;
+}
+[data-comment-cursor='copy'] .comment-region {
+  pointer-events: auto;
+}
+[data-comment-cursor='copy'] .comment-region[data-point='true'] {
+  margin: -7px 0 0 -7px;
+  padding: 7px;
+}

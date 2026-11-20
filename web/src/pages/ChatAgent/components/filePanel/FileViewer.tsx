@@ -19,6 +19,7 @@ import type { HtmlArtifactView } from '../viewers/html/ArtifactFrames';
 import type { ViewerCommentsTarget } from '../viewers/comments/ViewerComments';
 import { MarkdownFile } from '../viewers/comments/markdown/MarkdownFile';
 import { CodeFile } from '../viewers/comments/code/CodeFile';
+import { ImageFile } from '../viewers/comments/region/ImageFile';
 
 const PdfViewer = React.lazy(() => import('../viewers/PdfViewer'));
 const CsvViewer = React.lazy(() => import('../viewers/CsvViewer'));
@@ -226,7 +227,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
     <div className="p-4">
       {viewer === 'image' && imageUrl ? (
         <>
-          <img src={imageUrl} alt={fileName} className="max-w-full rounded cursor-pointer" onClick={() => setLightboxOpen(true)} />
+          <ImageFile src={imageUrl} alt={fileName} comments={comments} onOpen={() => setLightboxOpen(true)} />
           <ImageLightbox src={imageUrl} alt={fileName} open={lightboxOpen} onClose={() => setLightboxOpen(false)} />
         </>
       ) : viewer === 'other' ? (

@@ -16,6 +16,7 @@ function inOrder(a: Element, b: Element): number {
 
 function samePart(a: PartEntry, b: PartEntry): boolean {
   if ('range' in a || 'range' in b) return 'range' in a && 'range' in b && a.range === b.range;
+  if ('w' in a || 'w' in b) return 'w' in a && 'w' in b && a.page === b.page && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
   return a.path === b.path && a.lines === b.lines && a.quote === b.quote;
 }
 

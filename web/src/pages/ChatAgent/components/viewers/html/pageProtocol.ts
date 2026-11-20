@@ -20,6 +20,7 @@ import type {
   ArtifactCommentAreaElement,
   BlockAnchor,
   CellsAnchor,
+  RegionAnchor,
   ElementAnchor,
   PartEntry,
   TextAnchor,
@@ -215,6 +216,10 @@ export const MAX_AREA_ELEMENTS = 64;
 export const MAX_AREA_COUNT = 500;
 /** The API's limit on the cell ranges one comment names. */
 export const MAX_CELL_RANGES = 64;
+/** The API's limit on the boxes one comment holds. */
+export const MAX_REGION_BOXES = 64;
+/** The most a box may run past its edge, after rounding, as the API takes it. */
+const EDGE_SLACK = 0.001;
 /** 1-based source lines, one or a span, as the API takes them. */
 const SOURCE_LINES = /^[1-9][0-9]{0,6}(-[1-9][0-9]{0,6})?$/;
 /** A sheet's cell or range of cells, as the API takes it. */
@@ -325,6 +330,29 @@ const cellsAnchor = z.pipe(
   z.transform((a): CellsAnchor => defined(a)),
 );
 
+/**
+ * A box on an image or a PDF page, as fractions of it from its top-left; a
+ * point has no size. Its picture is the app's to write, never the page's.
+ */
+const regionBox = z.pipe(
+  z.object({ page: z.optional(z.int().check(z.gte(1), z.lte(100_000))), x: unit, y: unit, w: unit, h: unit })
+    .check(z.refine((b) => b.x + b.w <= 1 + EDGE_SLACK && b.y + b.h <= 1 + EDGE_SLACK && (b.w === 0) === (b.h === 0))),
+  z.transform((b) => defined(b)),
+);
+
+/** Boxes, or points, on an image or a PDF's pages: all on pages, or none. */
+const regionAnchor = z.pipe(
+  z.object({
+    kind: z.literal('region'),
+    boxes: z.array(regionBox).check(
+      z.minLength(1), z.maxLength(MAX_REGION_BOXES),
+      z.refine((boxes) => new Set(boxes.map((b) => b.page === undefined)).size === 1),
+    ),
+    point: lenient(point),
+  }),
+  z.transform((a): RegionAnchor => defined(a)),
+);
+
 const areaElement = z.pipe(
   z.object({
     lines: lenient(sourceLines),
@@ -356,8 +384,8 @@ const areaAnchor = z.pipe(
 
 const title = text(MAX_TITLE);
 const press = lenient(pressNumber);
-/** What one click picks: a page's element, a Markdown block, or cells. */
-const pickAnchor = z.union([elementAnchor, blockAnchor, cellsAnchor]);
+/** What one click picks: a page's element, a Markdown block, cells, or boxes. */
+const pickAnchor = z.union([elementAnchor, blockAnchor, cellsAnchor, regionAnchor]);
 
 /** A click's or an area's comment spot: the anchor, its box, the press it pairs with, and whether it extends the draft. */
 function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof pickAnchor | typeof areaAnchor) {

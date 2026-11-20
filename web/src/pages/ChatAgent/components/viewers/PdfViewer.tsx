@@ -673,7 +673,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
               )}
             </Document>
           </div>
-          {comments && <PdfComments scroller={scroller} content={pagesColumn} target={comments} />}
+          {comments && <PdfComments scroller={scroller} content={pagesColumn} pdf={shownDoc} target={comments} />}
         </div>
       </div>
     </div>

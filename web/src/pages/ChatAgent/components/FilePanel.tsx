@@ -908,7 +908,7 @@ function FilePanel({
           <div className="file-panel-viewer">
             {/* font-content only while reading a file: the tree stays on the UI font. */}
             <div className={`file-panel-content${selectedFile ? ' font-content' : ''}`} ref={contentWrapperRef}>
-              <ImageReply surfaceRef={contentWrapperRef} enabled={!!onAddContext && isActive !== false} paused={!!selectionTooltip} agentName={agentName} onAddContext={onAddContext} />
+              <ImageReply surfaceRef={contentWrapperRef} enabled={!!onAddContext && isActive !== false} paused={!!selectionTooltip || commentUi.modeTab === activeTab.id} agentName={agentName} onAddContext={onAddContext} />
               {selectionTooltip && selectedFile && (
                 <SelectionQuote
                   key={selectionTooltip.id}
