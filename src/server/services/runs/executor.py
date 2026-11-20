@@ -18,7 +18,7 @@ admission policy lives in our layer.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Iterator, Literal, Optional, Callable, Coroutine
+from typing import Dict, Any, Iterator, Literal, Optional, Callable, Coroutine, Awaitable
 from enum import Enum
 from dataclasses import dataclass, field
 from contextlib import contextmanager, suppress
@@ -145,6 +145,8 @@ class LocalRunExecutor:
         # aliasing because run_id is fresh per POST.
         self.executions: Dict[TaskKey, LocalRunExecution] = {}
         self.task_lock = asyncio.Lock()
+        # Runs started here since the worker started (``heap_settle``).
+        self.runs_started = 0
         # Per-thread admission locks remain thread-keyed: admission policy
         # (wait_or_steer / one foreground turn at a time) is a thread-level
         # invariant, independent of the per-turn key.
@@ -172,6 +174,9 @@ class LocalRunExecutor:
         # collector that would otherwise mutate the persisted response after
         # the user has stopped the turn.
         self._orphan_collectors: Dict[str, dict[asyncio.Task, str]] = {}
+        # A stopped run's shielded teardown and finalize, which outlive its
+        # task when a second cancel lands mid-teardown (``_shielded``).
+        self._shielded_tasks: set[asyncio.Task] = set()
 
         # Compaction/mutation admission gating is owned by ThreadMutationRunner
         # (v4 Phase 2.4): exclusive T(thread) + a Redis op-liveness key replace
@@ -209,6 +214,32 @@ class LocalRunExecutor:
             if best is None or info.created_at > best.created_at:
                 best = info
         return best
+
+    def running_count(self) -> int:
+        """The runs this worker is running, a cancelled one until it ends."""
+        return sum(
+            1 for info in self.executions.values()
+            if info.status is LocalRunStatus.RUNNING
+        )
+
+    def has_live_runs(self) -> bool:
+        """Whether this worker admits a turn (its setup holds the thread's
+        admission lock until the run registers), still collects a run's
+        subagents after its task ended (an orphan collector), or any run's
+        task is still going: a run's finalize and a cancelled one's unwind
+        run after its status is terminal, and a stopped run's shielded
+        teardown even after its task was cancelled again."""
+        return (
+            any(lock.locked() for lock in self._admission_locks.values())
+            or bool(self._orphan_collectors)
+            or bool(self._shielded_tasks)
+            or any(
+                not task.done()
+                for info in self.executions.values()
+                for task in (info.task, info.inner_task)
+                if task is not None
+            )
+        )
 
     async def uncancelled_runs(self) -> list[TaskKey]:
         """The runs this worker is running, or acquiring a computer for, that
@@ -651,10 +682,7 @@ class LocalRunExecutor:
                     f"{self.executions[key].status}"
                 )
 
-            running_count = sum(
-                1 for t in self.executions.values()
-                if t.status is LocalRunStatus.RUNNING
-            )
+            running_count = self.running_count()
             if running_count >= self.max_concurrent:
                 raise ValueError(
                     f"Max concurrent workflows reached ({self.max_concurrent}). "
@@ -682,6 +710,7 @@ class LocalRunExecutor:
             task_info.started_at = datetime.now()
 
             self.executions[key] = task_info
+            self.runs_started += 1
             if on_registered is not None:
                 on_registered()
 
@@ -879,14 +908,14 @@ class LocalRunExecutor:
                     #    Best-effort: a flush failure must not block
                     #    persistence (step 5).
                     with suppress(Exception):
-                        await asyncio.shield(self._flush_checkpoint(thread_id, run_id))
+                        await self._shielded(self._flush_checkpoint(thread_id, run_id))
 
                     # 2-4. Cancel orphan collectors, kill and claim the
                     #      run's subagents, then drain their events. The
                     #      result fills ``stop_teardown`` for _finalize_run
                     #      to archive and, on a user stop, bill.
                     with suppress(Exception):
-                        await asyncio.shield(
+                        await self._shielded(
                             self._teardown_subagents_on_stop(thread_id, run_id, stop)
                         )
             finally:
@@ -896,7 +925,7 @@ class LocalRunExecutor:
                 #    teardown can't skip or tear a mid-write: burst-slot release,
                 #    tracker status, and registry cleanup always run to
                 #    completion rather than leaving half-state.
-                await asyncio.shield(
+                await self._shielded(
                     self._finalize_run(thread_id, run_id, kind="cancelled")
                 )
             raise
@@ -947,6 +976,14 @@ class LocalRunExecutor:
             logger.warning(
                 f"[LocalRunExecutor] Checkpoint flush timed out for {thread_id}"
             )
+
+    def _shielded(self, coro: Coroutine[Any, Any, Any]) -> Awaitable[Any]:
+        """``asyncio.shield`` of ``coro``, kept in ``_shielded_tasks`` until it
+        ends: a cancel of the awaiting run task leaves it running."""
+        task = asyncio.ensure_future(coro)
+        self._shielded_tasks.add(task)
+        task.add_done_callback(self._shielded_tasks.discard)
+        return asyncio.shield(task)
 
     def _track_orphan_collector(
         self, thread_id: str, run_id: str, task: asyncio.Task

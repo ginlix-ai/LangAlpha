@@ -141,6 +141,15 @@ class BackgroundRegistryStore:
             if task.task_run_id and not task.completed
         ]
 
+    def has_live_tasks(self) -> bool:
+        """Whether this worker runs any task, a cancelled one until its
+        writers end."""
+        return any(
+            not task.completed or task.live_writers
+            for registry in self._registries.values()
+            for task in registry._tasks.values()
+        )
+
     async def stop_all_for_restart(self) -> tuple[list[asyncio.Task], set[str]]:
         """Stop every task this worker runs for a graceful restart: the
         writers still unwinding, and the threads whose tasks were stopped."""
