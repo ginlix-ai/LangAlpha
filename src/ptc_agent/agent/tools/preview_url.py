@@ -4,12 +4,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.tools.utils import mark_sandbox_raised
 from ptc_agent.core.sandbox.runtime import PreviewInfo
 from src.observability import TOOL_CHANNEL, TOOL_PROVIDER
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +37,7 @@ def create_preview_url_tool(
         Configured GetPreviewUrl tool function
     """
 
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def GetPreviewUrl(
         port: int,
         command: str,

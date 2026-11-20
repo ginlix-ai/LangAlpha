@@ -9,7 +9,7 @@ from typing import Annotated, Any
 
 import structlog
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.tools import BaseTool, InjectedToolCallId
 from langgraph.config import get_config
 
 from ptc_agent.agent.backends.workflows import (
@@ -53,6 +53,7 @@ from ptc_agent.core.paths import (
 )
 from ptc_agent.core.project_context import current_project
 from src.observability import mark_tool_failed
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -581,7 +582,7 @@ def create_run_workflow_tool(
             tool_call_id=tool_call_id,
         )
 
-    @tool("RunWorkflow")
+    @turn_tool("RunWorkflow")
     async def run_workflow(
         script: str | None = None,
         script_path: str | None = None,

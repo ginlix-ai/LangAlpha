@@ -25,6 +25,8 @@ from edgar_engine.forms import item_order, item_title, mdna_item
 from edgar_engine.sections.vocab import is_amendment
 from langchain_core.tools import tool
 
+from src.tools.turn_tool import turn_tool
+
 from . import edgar, render
 from .earnings_call import fetch_matching_earnings_call
 from .metering import metered_call
@@ -470,7 +472,7 @@ it on trust.
 def create_sec_filing_tool(filesystem_backend: Any) -> Any:
     """get_sec_filing bound to the agent's filesystem backend, which the filing's files are written through."""
 
-    @tool("get_sec_filing", description=DOCSTRING, response_format="content_and_artifact")
+    @turn_tool("get_sec_filing", description=DOCSTRING, response_format="content_and_artifact")
     async def get_sec_filing(symbol: Symbol, filing_type: Form = "10-K", fiscal_year: FiscalYear = None,
                              fiscal_period: FiscalPeriod = None, view: ViewArg = "as_filed",
                              include_earnings_call: IncludeCall = True) -> tuple[str, dict]:

@@ -13,9 +13,9 @@ import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx
-from langchain_core.tools import tool
 from tavily import AsyncTavilyClient
 
+from src.tools.turn_tool import turn_tool
 from src.tools.utils.validation_utils import validate_date_format, validate_image_url
 from src.tools.web.providers._shared import (
     SNIPPET_MAX,
@@ -444,7 +444,7 @@ def build_web_search_tool(
     exclude_domains = exclude_domains or []
     _get_api_wrapper = lazy(lambda: TavilySearchWrapper(country=country))
 
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def web_search(
         query: str,
         time_range: Optional[Literal["day", "week", "month", "year", "d", "w", "m", "y"]] = None,

@@ -44,6 +44,7 @@ from src.tools.thread_status.listing import (
     ItemStatus,
     ItemType,
 )
+from src.tools.turn_tool import input_schema
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.registry import (
@@ -113,6 +114,7 @@ def build_thread_status_tool(
     return StructuredTool.from_function(
         coroutine=thread_status,
         name=TOOL_NAME,
+        args_schema=input_schema(TOOL_NAME, thread_status),
         description=inspect.cleandoc(THREAD_STATUS_DOC),
         response_format="content_and_artifact",
     )

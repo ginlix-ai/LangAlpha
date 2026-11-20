@@ -11,8 +11,9 @@ from typing import Any
 from uuid import uuid4
 
 import structlog
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 
+from src.tools.turn_tool import turn_tool
 from src.utils.storage import is_storage_enabled, upload_bytes
 
 from ..backends.sandbox import SandboxBackend
@@ -312,7 +313,7 @@ async def _attach_widget_data(
 def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
     """Factory function to create ShowWidget tool."""
 
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def ShowWidget(
         html: str,
         title: str | None = None,

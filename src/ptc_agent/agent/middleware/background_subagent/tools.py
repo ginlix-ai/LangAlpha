@@ -20,6 +20,7 @@ from ptc_agent.agent.middleware.background_subagent.outcomes import (
 )
 from ptc_agent.agent.middleware.background_subagent.task import bare_task_id
 from src.server.contracts.status import REPORT_BACK_STATUSES
+from src.tools.turn_tool import input_schema
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.middleware import (
@@ -412,6 +413,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
         name="TaskOutput",
         description=TASK_OUTPUT_DESCRIPTION,
         coroutine=task_output,
+        args_schema=input_schema("TaskOutput", task_output),
         response_format="content_and_artifact",
     )
 

@@ -53,6 +53,7 @@ from ptc_agent.config.agent import Admitted, RunOn, SubagentModel, TaskModel
 from src.llms.claude_code import ClaudeCodeTarget
 from src.llms.llm import narrow_prompt_cache_key
 from src.observability.langsmith_tracer import with_run_tracer
+from src.tools.turn_tool import input_schema
 from src.utils.concurrency import iterate_until
 from src.utils.stream_coalescing import HEARTBEAT_EVENT_TYPE
 
@@ -974,6 +975,7 @@ def _create_task_tool(
     return StructuredTool.from_function(
         name="Task",
         func=task,
+        args_schema=input_schema("Task", task),
         coroutine=atask,
         description=task_description,
     )

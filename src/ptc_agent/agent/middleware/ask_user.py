@@ -9,10 +9,11 @@ from typing import Annotated
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 from langgraph.types import Command, interrupt
 
 from src.server.models.chat import rejection_feedback
+from src.tools.turn_tool import turn_tool
 
 TOOL_NAME = "AskUserQuestion"
 
@@ -34,7 +35,7 @@ class AskUserMiddleware(AgentMiddleware):
         self._ask_user_tool = self._create_ask_user_tool()
 
     def _create_ask_user_tool(self) -> BaseTool:
-        @tool(TOOL_NAME)
+        @turn_tool(TOOL_NAME)
         def ask_user_question(
             question: str,
             options: list[str],
