@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount
+from ptc_agent.core.claude_code_clis import CLIS_MAX, CliCount
 from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
 from src.server.services.claude_code import cli_slots
 
@@ -113,7 +113,7 @@ async def test_a_worker_holds_its_own_clis_to_the_computers_count_with_or_withou
         with pytest.raises(SlotWaitTimeout) as refused:
             async with cli_slots.computer_cli_slot(CID, 0.2):
                 pass
-        assert (refused.value.which, refused.value.n) == ("cli", 2)
+        assert (refused.value.which, refused.value.n, refused.value.computer_id) == ("cli", 2, CID)
     async with cli_slots.computer_cli_slot(CID, 0.2):
         pass
 
@@ -171,12 +171,14 @@ async def test_one_wait_covers_reading_the_count_and_both_holds(redis, count):
 
 
 @pytest.mark.asyncio
-async def test_a_count_that_cannot_be_read_within_the_wait_is_a_wait_that_ran_out(redis, count):
+async def test_a_count_that_cannot_be_read_within_the_wait_fails_the_start_naming_no_count(redis, count):
+    """No count was seen, so the computer is not known to be full: the start
+    fails as this service's failure, not as a full computer's refusal."""
     count["read_s"] = 5
     started = time.monotonic()
-    with pytest.raises(SlotWaitTimeout) as refused:
+    with pytest.raises(TimeoutError) as failed:
         await asyncio.wait_for(cli_slots.computer_cli_slot(CID, 0.3).__aenter__(), 2)
-    assert (refused.value.which, refused.value.n) == ("cli", CLIS_DEFAULT)
+    assert not isinstance(failed.value, SlotWaitTimeout)
     assert time.monotonic() - started < 0.6
 
 
