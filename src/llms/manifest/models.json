@@ -357,7 +357,8 @@
       "efforts": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "default": "medium",
       "write": "parameters.thinking_level"
@@ -385,7 +386,8 @@
       "efforts": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "default": "medium",
       "write": "parameters.thinking_level"
