@@ -589,6 +589,35 @@ async def test_deltas_the_cli_already_sent_reach_the_turn_joined_into_the_same_m
 
 
 @pytest.mark.asyncio
+async def test_a_delta_after_a_quiet_window_goes_on_without_waiting():
+    """The join waits only out the window since the last delta went on, so a
+    slow stream is never held."""
+    from ptc_agent.agent.claude_code.relay import JOIN_WINDOW_S, DeltaJoin
+
+    class _Asked:
+        def __init__(self):
+            self.within = []
+
+        async def next_event(self, *, within=None):
+            self.within.append(within)
+            return None
+
+        def hold(self, item):
+            raise AssertionError("nothing to hold")
+
+    source = _Asked()
+    join = DeltaJoin(source)
+    await join.grow(_delta(0, "text_delta", "a"))
+    assert source.within == []
+    await join.grow(_delta(0, "text_delta", "b"))
+    assert 0 < source.within[-1] <= JOIN_WINDOW_S
+    await asyncio.sleep(JOIN_WINDOW_S)
+    await join.grow(_delta(0, "text_delta", "c"))
+    # Past the window it takes only what is already queued.
+    assert source.within[-1] <= 0
+
+
+@pytest.mark.asyncio
 async def test_joined_deltas_stay_under_the_size_the_client_types_out():
     from src.utils.stream_coalescing import COALESCE_MAX_CHARS
 

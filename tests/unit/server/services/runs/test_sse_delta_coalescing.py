@@ -210,6 +210,21 @@ async def test_the_window_is_checked_on_events_that_emit_nothing(clock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_delta_after_a_quiet_spell_goes_out_before_the_next_event(clock) -> None:
+    received: list[str] = []
+    graph = _Graph(
+        [(0.5, _msg("first")), (0.55, _msg(" word")), (0.9, _msg(" later"))],
+        clock=clock,
+        received=received,
+    )
+    frames = await _run(_producer(), graph, received)
+    # "first" is delivered before the graph is asked for the next piece;
+    # " word" waits out the window, and " later" comes after a quiet one.
+    assert graph.seen_before == [1, 2, 2]
+    assert [data.get("content") for _, _, data in frames[1:]] == ["first", " word", " later"]
+
+
+@pytest.mark.asyncio
 async def test_a_close_loses_only_the_held_delta_live() -> None:
     producer = _producer()
     stream = producer.stream_workflow(

@@ -187,7 +187,7 @@ def test_the_window_releases_a_hold_on_the_next_poll_or_offer() -> None:
     clock.now = 0.05
     assert coalescer.offer(_text("b")) == []
     assert coalescer.poll() == []
-    # The window runs from the first held piece, not the latest.
+    # The window runs from the last delta sent, not the latest piece.
     clock.now = 0.1
     out = coalescer.poll()
     assert [f.data["content"] for f in out] == ["ab"]
@@ -200,6 +200,26 @@ def test_the_window_releases_a_hold_on_the_next_poll_or_offer() -> None:
     assert [f.data["content"] for f in out] == ["c"]
     assert coalescer.holding
     assert [f.data["content"] for f in coalescer.drain()] == ["d"]
+
+
+def test_a_piece_after_a_quiet_window_goes_out_at_once() -> None:
+    clock = _Clock()
+    coalescer = DeltaCoalescer(clock=clock)
+    clock.now = 0.1
+    assert [f.data["content"] for f in coalescer.offer(_text("a"))] == ["a"]
+    assert not coalescer.holding
+    # Within the window of "a", pieces wait for it to pass.
+    clock.now = 0.13
+    assert coalescer.offer(_text("b")) == []
+    clock.now = 0.17
+    assert coalescer.offer(_text("c")) == []
+    clock.now = 0.2
+    assert [f.data["content"] for f in coalescer.poll()] == ["bc"]
+    # A slow stream is never held.
+    clock.now = 0.35
+    assert [f.data["content"] for f in coalescer.offer(_text("d"))] == ["d"]
+    clock.now = 0.5
+    assert [f.data["content"] for f in coalescer.offer(_text("e"))] == ["e"]
 
 
 def test_held_frames_are_copies_so_growing_one_leaves_the_caller_alone() -> None:
