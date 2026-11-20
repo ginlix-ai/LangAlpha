@@ -105,7 +105,6 @@ bundle_owners = None
 workspace_manager = None  # Workspace manager instance
 checkpointer = None  # PTC Agent LangGraph checkpointer for state persistence
 store = None  # LangGraph Store for cross-turn metadata persistence
-graph = None  # Most recently used LangGraph (for persistence snapshots)
 llm_service = None  # Generic one-shot LLM call wrapper (BYOK/OAuth-aware)
 
 # PID 1 process names that correctly reap orphaned subprocesses.

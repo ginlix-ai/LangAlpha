@@ -1,5 +1,6 @@
 """Jinja2 template loader for prompt templates."""
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ class PromptLoader:
             trim_blocks=True,
             lstrip_blocks=True,
             keep_trailing_newline=True,
+            auto_reload=os.getenv("LANGALPHA_RELOAD") == "1",
         )
         self._config = self._load_config()
 

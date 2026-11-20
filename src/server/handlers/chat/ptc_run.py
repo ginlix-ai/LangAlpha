@@ -860,9 +860,6 @@ async def astream_ptc_workflow(
         if session.sandbox:
             sandbox_id = getattr(session.sandbox, "sandbox_id", None)
 
-        # PTC-only: set global for snapshot access
-        setup.graph = ptc_graph
-
         messages = normalize_request_messages(request)
 
         # =====================================================================

@@ -75,6 +75,10 @@ if __name__ == "__main__":
     # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
     # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
     os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+    # Prompt templates are re-read on change only where the code reloads too:
+    # checking each one's mtime on every render costs a stat per template
+    # per turn on the event loop.
+    os.environ["LANGALPHA_RELOAD"] = "1" if reload else "0"
     # edgartools rate-limits SEC requests per process at 9/s, under SEC's 10/s
     # per client, so N workers share that budget rather than multiply it. Its
     # rate is a whole number per second, so past 9 workers the floor of 1/s
