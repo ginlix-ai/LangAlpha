@@ -20,9 +20,11 @@ read in ``_patched``.
 The same mechanism carries a rescue for the chatgpt.com Codex backend, which
 lives here because the hook takes one installer: for a response with parallel
 tool calls that backend sends each call's arguments only in
-``response.function_call_arguments.done``, which upstream ignores, so every
-call would reach its tool with ``{}``. It is scoped to ``ChatCodexOpenAI``'s
-own streams, where the scope's value is that stream's record of the calls still
+``response.function_call_arguments.done``. langchain-openai 1.8 emits those at
+the ``.done`` itself, but on the latest call's block, so when every call is
+added before the first ``.done`` the arguments land on the last call and the
+others reach their tools with ``{}``. It is scoped to ``ChatCodexOpenAI``'s own
+streams, where the scope's value is that stream's record of the calls still
 owed their arguments.
 """
 

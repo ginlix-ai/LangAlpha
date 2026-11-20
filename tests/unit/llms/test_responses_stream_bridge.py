@@ -501,8 +501,10 @@ class TestArgumentsSentOnlyInDone:
         assert _tool_calls(_drain(llm)) == self.EXPECTED[:1]
 
     def test_other_clients_are_left_to_upstream(self):
+        # langchain-openai 1.8 emits what a ``.done`` carries beyond the deltas
+        # itself, so calls finished one after another keep their arguments.
         llm, _ = _client(ChatOpenAI, self._events(streamed=False))
-        assert _tool_calls(_drain(llm)) == [(name, {}) for name, _ in self.EXPECTED]
+        assert _tool_calls(_drain(llm)) == self.EXPECTED
 
     def test_streams_reusing_item_ids_keep_separate_records(self):
         # Both streams number their calls fc_0 and fc_1. A record shared across
