@@ -78,7 +78,7 @@ from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers._ssh_shell import check_env
 from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.agent.claude_code.shell_link import ShellLink, ShellProcess
-from ptc_agent.core.claude_code_clis import agents
+from ptc_agent.core.claude_code_clis import CLIS_MAX
 from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Machine, SlotWaitTimeout
 from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH, MUSL_UNSUPPORTED
 from src.llms.claude_code import ClaudeTurnFailed, is_token_text
@@ -98,7 +98,6 @@ CLI_SLOT_WAIT_S = 600
 #: computer's count of its CLIs (``hosted.cli_cap``), so a wait means a
 #: count that raced or another worker's link, and the run fails past it.
 SUBAGENT_CLI_SLOT_WAIT_S = 30
-COMMAND_SLOTS_FULL = "This computer is busy running other commands. Try again when one finishes."
 #: A turn's config dir left this long is one a lost connection orphaned.
 _STALE_MINUTES = 2 * 24 * 60
 _SCRIPT_S = 30
@@ -107,9 +106,15 @@ _ANNOUNCE = re.compile(rb"langalpha-token (file|relay|none)")
 _NOISE_MAX = 64 * 1024
 
 
-def cli_slots_full(n: int) -> str:
-    """Why a CLI did not start: ``n`` already run where it waited."""
-    return f"Claude Code is already running {agents(n)} on this computer. Try again when {'it' if n == 1 else 'one'} finishes."
+def slots_full(e: SlotWaitTimeout) -> ClaudeTurnFailed:
+    """A CLI that found no slot in its wait, refused as a turn its computer
+    is too busy for: the user's to wait out or raise the count for, not this
+    service's failure. A wait for one of the computer's own CLIs names it,
+    for the setting that runs more at once."""
+    if e.which == "command":
+        return ClaudeTurnFailed("commands_full", str(e))
+    where = {} if e.computer_id is None else {"computer_id": e.computer_id, "settable": e.settable, "max": CLIS_MAX}
+    return ClaudeTurnFailed("clis_full", str(e), n=e.n, **where)
 
 
 def kill_if_cli(pid: int, cli: str, sig: str) -> str:
@@ -343,7 +348,7 @@ class SSHLauncher:
             try:
                 await slot.enter_async_context(self.cli_slot(self.slot_wait_s))
             except SlotWaitTimeout as e:
-                raise CLIConnectionError(cli_slots_full(e.n)) from None
+                raise slots_full(e) from None
             self._slot = slot
         try:
             yield
@@ -459,7 +464,7 @@ class SSHTransport(Transport):
         except BaseException as e:
             await self.close()
             if isinstance(e, SlotWaitTimeout):
-                raise CLIConnectionError(cli_slots_full(e.n) if e.which == "cli" else COMMAND_SLOTS_FULL) from None
+                raise slots_full(e) from None
             raise
         self._cli_link = hold.link
         relayed = False

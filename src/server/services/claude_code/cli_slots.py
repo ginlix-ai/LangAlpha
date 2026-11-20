@@ -17,7 +17,7 @@ import weakref
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount, CliQueue
+from ptc_agent.core.claude_code_clis import CLIS_MAX, CliCount, CliQueue
 from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
 from src.llms.claude_code import CliWait
 from src.server.utils.slot_guard import SlotAdmission, acquire_slot_member, release_slot_member, renew_slot_member
@@ -106,6 +106,7 @@ async def computer_cli_slot(computer_id: str, wait_s: float, queue: CliQueue | N
 
     Raises:
         SlotWaitTimeout: None freed in time, naming the count last read.
+        TimeoutError: The count was never read in time (``_count``).
     """
     deadline = asyncio.get_running_loop().time() + wait_s
     told = _WaitNotice(computer_id, queue)
@@ -130,17 +131,28 @@ async def computer_cli_slot(computer_id: str, wait_s: float, queue: CliQueue | N
         told.ended(admitted=False)
 
 
-async def _count(computer_id: str, deadline: float, last: int) -> CliCount:
+def _timed_out(computer_id: str, count: CliCount) -> SlotWaitTimeout:
+    """A wait's end without a slot, at the count last read: the computer and
+    whether its owner sets that count, for the refusal's offer to raise it."""
+    return SlotWaitTimeout("cli", count.cap, computer_id=computer_id, settable=count.settable)
+
+
+async def _count(computer_id: str, deadline: float, last: CliCount | None) -> CliCount:
     """The computer's count as it stands now, read by ``deadline``.
 
     Raises:
         SlotWaitTimeout: The read ran past it, naming ``last``, the count last read.
+        TimeoutError: The first read (``last`` None) ran past it: no count was
+            ever seen, so the computer is not known to be full, and the start
+            fails as this service's own failure rather than as a full computer.
     """
     try:
         async with asyncio.timeout_at(deadline):
             return await computer_clis(computer_id)
     except TimeoutError:
-        raise SlotWaitTimeout("cli", last) from None
+        if last is None:
+            raise TimeoutError(f"the CLI count of computer_id={computer_id} gave no answer within the CLI's wait") from None
+        raise _timed_out(computer_id, last) from None
 
 
 @contextlib.asynccontextmanager
@@ -150,16 +162,16 @@ async def _in_worker(computer_id: str, deadline: float, told: _WaitNotice) -> As
     the count it was let in on."""
     loop = asyncio.get_running_loop()
     held = _held.setdefault(loop, {}).setdefault(computer_id, _Held())
-    count = await _count(computer_id, deadline, CLIS_DEFAULT)
+    count = await _count(computer_id, deadline, None)
     while held.n >= count.cap:
         told.full(held.n, count)
         if loop.time() >= deadline:
-            raise SlotWaitTimeout("cli", count.cap)
+            raise _timed_out(computer_id, count)
         held.freed.clear()
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout_at(min(loop.time() + POLL_S, deadline)):
                 await held.freed.wait()
-        count = await _count(computer_id, deadline, count.cap)
+        count = await _count(computer_id, deadline, count)
     held.n += 1
     try:
         yield count
@@ -185,6 +197,9 @@ async def _take(client: Any, computer_id: str, key: str, count: CliCount, deadli
             async with asyncio.timeout_at(deadline):
                 admitted = await _admit(client, key, count.cap)
         except Exception as e:  # noqa: BLE001 - coordination only; each worker still holds its own CLIs
+            if full and isinstance(e, TimeoutError):
+                # The wait ran out mid-try, the slots full when last read.
+                raise _timed_out(computer_id, count) from None
             if not full:
                 if isinstance(e, TimeoutError):
                     logger.warning("[claude_code] CLI slots gave no answer within the CLI's wait, holding only this worker's")
@@ -192,7 +207,7 @@ async def _take(client: Any, computer_id: str, key: str, count: CliCount, deadli
                     logger.warning(f"[claude_code] CLI slots unavailable, holding only this worker's: {e}")
                 return None
             if not warned:
-                logger.warning(f"[claude_code] CLI slots unavailable after finding them full, waiting on: {e or type(e).__name__}")
+                logger.warning(f"[claude_code] CLI slots unavailable after finding them full, waiting on: {str(e) or type(e).__name__}")
                 warned = True
         else:
             if admitted.allowed:
@@ -201,9 +216,9 @@ async def _take(client: Any, computer_id: str, key: str, count: CliCount, deadli
             told.full(admitted.current, count)
         left = deadline - loop.time()
         if left <= 0:
-            raise SlotWaitTimeout("cli", count.cap)
+            raise _timed_out(computer_id, count)
         await asyncio.sleep(min(POLL_S, left))
-        count = await _count(computer_id, deadline, count.cap)
+        count = await _count(computer_id, deadline, count)
 
 
 async def _admit(client: Any, key: str, clis: int) -> SlotAdmission:

@@ -3,11 +3,12 @@ import type { RowStatus } from '@/components/modelAccess/parts';
 import { isPlatformMode } from '@/config/hostMode';
 import { DOCS_URL, PLAN_URL } from '@/config/supportLinks';
 import { readPlanRefusal } from '@/lib/claudeCodePlan';
+import { canRunMore } from '@/lib/claudeCodeQueue';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { RESIZE_PARAM } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import type { ResourceTier } from '@/types/api';
-import type { ErrorLinkSpec, PageLinkSpec } from '@/utils/rateLimitError';
+import type { PageLinkSpec } from '@/utils/rateLimitError';
 
 /** The provider and sdk of the models a turn runs on Claude Code. */
 export const CLAUDE_CODE = 'claude-code';
@@ -195,7 +196,7 @@ export const CLAUDE_CODE_COMPUTER_PARAM = 'computer';
 
 /** To Claude Code's sheet at the computer a turn waited for a CLI on, where
  *  the user sets how many agents it runs at once. */
-export const claudeCodeClisLink = (computerId: string): ErrorLinkSpec => ({
+export const claudeCodeClisLink = (computerId: string): PageLinkSpec => ({
   url: `${CLAUDE_CODE_CHOICE_URL}&${CLAUDE_CODE_COMPUTER_PARAM}=${encodeURIComponent(computerId)}`,
   label: 'Run more at once',
   labelKey: 'chat.cliQueue.runMore',
@@ -237,6 +238,8 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   cli_computer_offline: 'chat.claudeCode.off.cli_computer_offline',
   choice_changed: 'chat.claudeCode.off.choice_changed',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
+  clis_full: 'chat.claudeCode.off.clis_full',
+  commands_full: 'chat.claudeCode.off.commands_full',
   needs_bigger_computer: 'chat.claudeCode.off.needs_bigger_computer',
 };
 
@@ -324,7 +327,10 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['choice_changed
  * (`cli_computer_offline`), fixed there. A computer too small for Claude
  * Code reads as `biggerComputer` says for the workspace or Home (`home`). Too many
  * turns at once names the user's cap, `limit`, and keeps the server's words
- * without one. A Claude
+ * without one. A computer that stayed running as many Claude Code agents as
+ * it runs at once (`clis_full`) names that count, `n`, and links to the
+ * setting that runs more where its owner can raise it (`settable`, below
+ * `max`). A Claude
  * plan's limit (`plan_stopped`, `plan_limited`) is news the plan the view
  * read does not have yet, and carries its window and reset (`planRefusal`)
  * for the card to word in the reader's zone, or keeps the server's words
@@ -337,7 +343,7 @@ export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: s
   messageValues?: Record<string, string | number>;
   planRefusal?: PlanRefusal;
 } {
-  const { reason, limit, name } = frame;
+  const { reason, limit, name, n } = frame;
   if (typeof reason !== 'string') return { reread: false, link: null, messageKey: null };
   if (reason === 'plan_stopped' || reason === 'plan_limited') {
     return { reread: true, link: null, messageKey: null, planRefusal: readPlanRefusal(frame) ?? undefined };
@@ -346,6 +352,18 @@ export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: s
     return typeof limit === 'number'
       ? { reread: false, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { n: limit } }
       : { reread: false, link: null, messageKey: null };
+  }
+  if (reason === 'clis_full') {
+    if (typeof n !== 'number') return { reread: false, link: null, messageKey: null };
+    const { computer_id: computerId, settable, max } = frame;
+    const runMore = typeof computerId === 'string' && settable === true && typeof max === 'number'
+      && canRunMore({ settable: true, cap: n, max });
+    return {
+      reread: false,
+      link: runMore ? claudeCodeClisLink(computerId) : null,
+      messageKey: CLAUDE_CODE_OFF_KEYS[reason],
+      messageValues: { n },
+    };
   }
   if (reason === 'needs_bigger_computer') {
     const { link, messageKey } = biggerComputer(frame.home === true);

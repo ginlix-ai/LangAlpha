@@ -2951,6 +2951,8 @@
         "no_own_computer": "Claude Code runs on your own computers, and none of yours with its own setup token is online now. Turn one on, or add a token for one in Settings under Model access.",
         "cli_computer_offline": "{{name}}, where Claude Code runs for you, is offline. Turn it on, or pick another model.",
         "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes.",
+        "clis_full": "Claude Code is already running as many agents on this computer as it runs at once ({{n}}). Try again when one finishes.",
+        "commands_full": "This computer is busy running other commands. Try again when one finishes.",
         "choice_changed": "How Claude Code runs on cloud computers changed as this turn started. Send your message again.",
         "needs_bigger_computer": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec, or move this workspace to a computer of your own.",
         "needs_bigger_computer_home": "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec.",

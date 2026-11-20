@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
+from claude_agent_sdk import ClaudeAgentOptions
 
 from ptc_agent.agent.claude_code import ssh_launcher
 from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
@@ -304,6 +304,10 @@ async def test_release_removes_the_turns_config_dir_and_keeps_the_threads(tmp_pa
     assert not Path(prepared.config_dir).exists() and Path(prepared.cwd).is_dir()
 
 
+def _clis_full(n: int) -> str:
+    return ClaudeTurnFailed.TEMPLATES["clis_full"].format(n=n)
+
+
 async def _started(launcher: SSHLauncher) -> Any:
     prepared = await launcher._lay_out(await launcher.ready(), None)
     transport = launcher.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
@@ -318,7 +322,7 @@ async def test_clis_at_their_cap_still_leave_commands_a_slot_and_keep_the_link_u
     cli.chmod(0o755)
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
     running = [await _started(launcher()) for _ in range(CLI_SLOTS)]
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(CLI_SLOTS))}$"):
+    with pytest.raises(ClaudeTurnFailed, match=f"^{re.escape(_clis_full(CLI_SLOTS))}$"):
         await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)
     assert done.stdout == b"free\n"
@@ -351,7 +355,7 @@ async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signall
     running = [await _started(launcher(slot_wait_s=5)) for _ in range(2 * CLI_SLOTS)]
     assert (link.cli_slots._value, second.cli_slots._value) == (0, 0)
     assert dials == ["cli"] and link.slots._value == 2
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(2 * CLI_SLOTS))}$"):
+    with pytest.raises(ClaudeTurnFailed, match=f"^{re.escape(_clis_full(2 * CLI_SLOTS))}$"):
         await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)
     assert done.stdout == b"free\n"
@@ -410,7 +414,7 @@ async def test_a_run_holds_one_of_the_computers_clis_from_its_layout_to_its_rele
     transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
     await transport.connect()
     assert link.cli_slots._value == CLI_SLOTS - 1
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(3))}$"):
+    with pytest.raises(ClaudeTurnFailed, match=f"^{re.escape(_clis_full(3))}$"):
         await launcher(cli_slot=slot).scratch()
     await transport.close()
     assert held == [7] and link.cli_slots._value == CLI_SLOTS
@@ -424,12 +428,6 @@ async def test_a_run_holds_one_of_the_computers_clis_from_its_layout_to_its_rele
     with pytest.raises(RuntimeError, match="no CLI"):
         await launcher(cli_slot=slot).scratch()
     assert held == []
-
-
-@pytest.mark.parametrize(("n", "said"), [(1, "1 agent on this computer. Try again when it finishes."),
-                                         (6, "6 agents on this computer. Try again when one finishes.")])
-def test_a_full_computer_names_its_agents_as_one_or_many(n, said):
-    assert ssh_launcher.cli_slots_full(n) == f"Claude Code is already running {said}"
 
 
 @pytest.mark.asyncio
@@ -463,7 +461,7 @@ async def test_a_turn_waits_out_commands_holding_every_command_slot_past_its_sta
     for _ in range(_COMMAND_SLOTS - 1):
         await link.slots.acquire()
 
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.COMMAND_SLOTS_FULL)}$"):
+    with pytest.raises(ClaudeTurnFailed, match=f"^{re.escape(ClaudeTurnFailed.TEMPLATES["commands_full"])}$"):
         await _started(launcher(slot_wait_s=0.2))
     assert link.cli_slots._value == CLI_SLOTS - 1
 

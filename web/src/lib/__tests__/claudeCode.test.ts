@@ -5,7 +5,7 @@
  * online, and the offline one is named.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CLAUDE_CODE_CHOICE_URL, claudeCodeRefusal, claudeCodeTokenUrl } from '../claudeCode';
+import { CLAUDE_CODE_CHOICE_URL, claudeCodeClisLink, claudeCodeRefusal, claudeCodeTokenUrl } from '../claudeCode';
 
 const build = vi.hoisted(() => ({ planUrl: null as string | null }));
 
@@ -91,6 +91,19 @@ describe('claudeCodeRefusal', () => {
       reread: false, link: null, messageKey: 'chat.claudeCode.off.too_many_turns', messageValues: { n: 3 },
     });
     expect(claudeCodeRefusal({ reason: 'too_many_turns' }, 'ws-1')).toEqual({ reread: false, link: null, messageKey: null });
+  });
+
+  it('names how many agents a full computer runs, offering more where its owner can raise it', () => {
+    const full = { reason: 'clis_full', n: 4, computer_id: 'c-1', max: 16 };
+    expect(claudeCodeRefusal({ ...full, settable: true }, 'ws-1')).toEqual({
+      reread: false, link: claudeCodeClisLink('c-1'), messageKey: 'chat.claudeCode.off.clis_full', messageValues: { n: 4 },
+    });
+    for (const frame of [{ ...full, settable: false }, { ...full, settable: true, n: 16 }, { reason: 'clis_full', n: 4 }]) {
+      expect(claudeCodeRefusal(frame, 'ws-1')).toEqual({
+        reread: false, link: null, messageKey: 'chat.claudeCode.off.clis_full', messageValues: { n: frame.n },
+      });
+    }
+    expect(claudeCodeRefusal({ reason: 'clis_full' }, 'ws-1')).toEqual({ reread: false, link: null, messageKey: null });
   });
 
   it("reads the plan again at a Claude plan's limit, carrying its window and reset for the card to word", () => {

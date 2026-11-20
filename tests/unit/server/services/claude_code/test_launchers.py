@@ -371,19 +371,20 @@ async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_i
 @pytest.mark.parametrize("slot_wait_s", [None, 30], ids=["turn", "subagent"])
 async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_computer_runs(monkeypatch, slot_wait_s):
     """Turns as well as subagents, so the computer's size bounds its turns too;
-    one none frees for in time is refused before anything runs in the sandbox."""
-    from claude_agent_sdk import CLIConnectionError
-
-    from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, cli_slots_full
+    one none frees for in time is refused before anything runs in the sandbox,
+    as a refusal the user is told in words, never as this service's failure."""
+    from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S
+    from ptc_agent.core.claude_code_clis import CLIS_MAX
     from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
     from src.server.services.claude_code import launchers
+    from src.server.services.runs.stream_errors import failure_kind_metadata
 
     asked = []
 
     @contextlib.asynccontextmanager
     async def full(computer_id, wait_s, queue=None):
         asked.append((computer_id, wait_s))
-        raise SlotWaitTimeout("cli", 1)
+        raise SlotWaitTimeout("cli", 1, computer_id=computer_id)
         yield
 
     monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox")
@@ -396,8 +397,14 @@ async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_c
         sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(hosted="api_key"),
         slot_wait_s=slot_wait_s,
     )
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(cli_slots_full(1))}$"):
+    with pytest.raises(ClaudeTurnFailed, match=f"^{re.escape(CLAUDE_CODE_OFF['clis_full'].format(n=1))}$") as refused:
         await launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s")
+    assert claude_code_refusal(refused.value, "claude-haiku-5-5-code") == {
+        "message": CLAUDE_CODE_OFF["clis_full"].format(n=1), "type": "claude_code_off", "model": "claude-haiku-5-5-code",
+        "reason": "clis_full", "n": 1, "computer_id": CID, "settable": False, "max": CLIS_MAX,
+    }
+    # Not this service's failure, so the run reports nothing to Sentry.
+    assert failure_kind_metadata(refused.value) == {}
     assert asked == [(CID, CLI_SLOT_WAIT_S if slot_wait_s is None else 30)]
     sandbox.wait_ready.assert_not_awaited()
     sandbox.runtime.exec.assert_not_awaited()

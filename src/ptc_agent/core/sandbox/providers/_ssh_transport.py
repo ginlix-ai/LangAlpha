@@ -272,12 +272,18 @@ async def _exit_sftp(sftp: Any) -> None:
 
 class SlotWaitTimeout(TimeoutError):
     """No slot of the kind ``which`` freed in the time a wait was given; for
-    a CLI, ``n`` is how many were running where it waited."""
+    a CLI, ``n`` is how many were running where it waited. A wait for one of
+    a computer's own CLIs (``cli_slots``) also names that computer and
+    whether its owner sets that count, so the refusal can offer to raise it."""
 
-    def __init__(self, which: Literal["cli", "command"], n: int = 0) -> None:
+    def __init__(
+        self, which: Literal["cli", "command"], n: int = 0, *, computer_id: str | None = None, settable: bool = False,
+    ) -> None:
         super().__init__(f"no {which} slot freed in time")
         self.which = which
         self.n = n
+        self.computer_id = computer_id
+        self.settable = settable
 
 
 class _Slots(asyncio.Semaphore):

@@ -49,19 +49,30 @@ class ClaudeTurnFailed(RuntimeError):
     """
 
     #: The failures the machine's Claude Code ends a turn with, in words a
-    #: user reads; the detail takes the ``{}``.
+    #: user reads; the detail takes the ``{}``, the fields their names.
     TEMPLATES: ClassVar[dict[str, str]] = {
         "model_unavailable": "Your organization's Claude Code policy does not allow {}. Pick another model.",
         "startup_failed": "Claude Code could not start: {}",
+        # The computer stayed too busy to start the CLI through its wait (``SLOTS_FULL``).
+        "clis_full": (
+            "Claude Code is already running as many agents on this computer as it runs at once ({n}). Try again "
+            "when one finishes."
+        ),
+        "commands_full": "This computer is busy running other commands. Try again when one finishes.",
     }
 
     def __init__(self, kind: str, detail: str, **fields: Any) -> None:
         template = self.TEMPLATES.get(kind)
-        super().__init__(template.format(detail) if template else f"{kind}: {detail}")
+        super().__init__(template.format(detail, **fields) if template else f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
         #: What the user's words for ``kind`` name (``CLAUDE_CODE_OFF``'s fields).
         self.fields = fields
+
+
+#: The kinds of a CLI that found no slot on its computer in its wait: no
+#: request was made, and a later try may find one.
+SLOTS_FULL = frozenset({"clis_full", "commands_full"})
 
 
 #: The Claude plan's limits, as the CLI names them, each with the model
