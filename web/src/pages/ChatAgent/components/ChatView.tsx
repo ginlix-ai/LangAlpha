@@ -98,6 +98,7 @@ import { usePublishFile } from './chatView/usePublishFile';
 import { DockTurnStatus } from './chatView/DockTurnStatus';
 import { QueuedCommentDeck } from './artifactComments/QueuedCommentDeck';
 import { useTrayFold } from './chatView/useTrayFold';
+import { useNoticeSlot } from './chatView/useNoticeSlot';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { motion, AnimatePresence, type PanInfo } from '@/lib/framer';
 import { DURATION, EASE_COLLAPSE, SPRING_FOLD, TWEEN } from '@/lib/motion';
@@ -1073,12 +1074,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const row = trayContents?.tasks?.rows.find((task) => task.id === agentId);
     handleOpenSubagentTask({ subagentId: agentId, description: row?.description, status: row?.status });
   });
+  // A notice above the composer takes the tray's place, and the tray waits
+  // in its dock until it goes, as it does while the reader is up.
+  const [attachNotices, noticeShown] = useNoticeSlot();
   const { phase: trayPhase, trayRef, dockRef: trayDockRef, peek: peekTray } = useTrayFold({
     scrolledUp: jumpPill.visible,
     jumping: scroll.jumping,
     contents: trayContents,
     getScroller: getMainScrollRoot,
     docked: composerDock.docked,
+    covered: noticeShown || !!othersTurn,
   });
 
   // Keep the ref in sync so SSE events (via handleOpenPreviewFromStream) use the latest closure
@@ -1837,33 +1842,36 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         threadId={panelThreadId ?? null}
                       />
                     )}
-                    {/* A notice is not about the running turn, so it need not wait for it to end. */}
-                    {messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice')) && (
-                      <ErrorBanner
-                        error={messageError}
-                        reportThreadId={currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined}
+                    {/* The notices, in one row so the tray can tell one holds its place. */}
+                    <div ref={attachNotices} hidden={!noticeShown} className="sibling-space-y-3">
+                      {/* A notice is not about the running turn, so it need not wait for it to end. */}
+                      {messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice')) && (
+                        <ErrorBanner
+                          error={messageError}
+                          reportThreadId={currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined}
+                        />
+                      )}
+                      {isHome && <HomePlacementNotice />}
+                      {workspaceRecord?.computer_id && capabilities.restoreOffer && (
+                        <ChatRestoreOffer
+                          workspaceId={workspaceId}
+                          computerId={workspaceRecord.computer_id}
+                          listed={!filesLoading}
+                        />
+                      )}
+                      {workspaceRecord?.computer_id && (
+                        <ChatDiskWarning computerId={workspaceRecord.computer_id} />
+                      )}
+                      <FallbackSuggestionPill
+                        fallbackSuggestion={fallbackSuggestion}
+                        isLoading={isLoading}
+                        composerModel={threadModel.model}
+                        onSwitchModel={handleSwitchModel}
+                        onDismiss={clearFallbackSuggestion}
                       />
-                    )}
-                    {isHome && <HomePlacementNotice />}
-                    {workspaceRecord?.computer_id && capabilities.restoreOffer && (
-                      <ChatRestoreOffer
-                        workspaceId={workspaceId}
-                        computerId={workspaceRecord.computer_id}
-                        listed={!filesLoading}
-                      />
-                    )}
-                    {workspaceRecord?.computer_id && (
-                      <ChatDiskWarning computerId={workspaceRecord.computer_id} />
-                    )}
-                    <FallbackSuggestionPill
-                      fallbackSuggestion={fallbackSuggestion}
-                      isLoading={isLoading}
-                      composerModel={threadModel.model}
-                      onSwitchModel={handleSwitchModel}
-                      onDismiss={clearFallbackSuggestion}
-                    />
-                    <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
-                    <ClaudeCodePlanRow workspaceId={workspaceId} chiefOfStaff={isHome} model={threadModel.model} />
+                      <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
+                      <ClaudeCodePlanRow workspaceId={workspaceId} chiefOfStaff={isHome} model={threadModel.model} />
+                    </div>
                     <SelectionChips chips={panelChart.chips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}
