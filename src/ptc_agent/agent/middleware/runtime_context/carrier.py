@@ -6,7 +6,10 @@ harness wrote rather than the user, and it takes one shape per model:
 - ``system`` / ``developer``: a message on a role the user cannot forge.
   Consecutive rows are coalesced into one message with a text block each,
   because two adjacent operator entries have not been proven on the Anthropic
-  wire form.
+  wire form. A developer-role model that binds its reasoning to the prefix
+  (GPT-6.2 on) takes each row as a message of its own instead: a stamp left
+  out of a later call then leaves whole messages behind, where taking it out
+  of a coalesced one would edit the prefix of every reasoning item after it.
 - ``reminder``: a ``<system-reminder>`` block appended inside the message it
   belongs to, which is the shape Claude Code uses: one message, the user's own
   text first, the harness blocks after it. The wrapper is added here, and
@@ -74,11 +77,13 @@ class PinSite:
 
 @dataclass(frozen=True, slots=True)
 class Carrier:
-    """How this model takes harness text: the shape, and whether a per-call
-    row goes out as a turn-scoped system message (see :func:`_carry`)."""
+    """How this model takes harness text: the shape, whether a per-call row
+    goes out as a turn-scoped system message, and whether consecutive operator
+    rows share one message (see :func:`_carry`)."""
 
     shape: CarrierShape
     turn_scoped: bool = False
+    coalesce: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +118,19 @@ def resolve_carrier(model: Any) -> Carrier:
         return Carrier("reminder")
     if channel not in _OPERATOR_SHAPES:
         return Carrier("reminder")
+    if channel == "developer":
+        return Carrier(channel, coalesce=not _binds_reasoning(model))
     return Carrier(channel, turn_scoped=channel == "system" and carries_turn_scoped(model))
+
+
+def _binds_reasoning(model: Any) -> bool:
+    try:
+        from ptc_agent.agent.middleware.thinking_binding import binds_reasoning
+
+        return binds_reasoning(model)
+    except Exception:  # noqa: BLE001 - a carrier fault must never break a turn
+        logger.warning("[Envelope] binding check failed, coalescing rows", exc_info=True)
+        return False
 
 
 @contextmanager
@@ -188,7 +205,9 @@ def _carry(
     model reads once a later user message exists while it stays in the request
     byte for byte, so no thinking after it loses its prefix. Elsewhere, the
     stamps a user message has already followed are left out, which is what
-    the API's clearing would have the model read.
+    the API's clearing would have the model read; where rows are not
+    coalesced, that leaves whole messages out, which keeps the reasoning after
+    them.
     """
     shape, turn_scoped = carrier.shape, carrier.turn_scoped
     base = list(messages or [])
@@ -216,7 +235,9 @@ def _carry(
         if (
             shape in _OPERATOR_SHAPES
             and _row_kind(message) not in USER_ROLE_KINDS
-            and _append_operator_text(carried, text, shape, RUNTIME_UPDATE_SOURCE)
+            and _append_operator_text(
+                carried, text, shape, RUNTIME_UPDATE_SOURCE, coalesce=carrier.coalesce
+            )
         ):
             continue
         block = frame_reminder(text)
@@ -371,15 +392,21 @@ def _last_text_block(content: Any, limit: int | None = None) -> int | None:
 
 
 def _append_operator_text(
-    messages: list[Any], text: str, shape: CarrierShape, source: str
+    messages: list[Any], text: str, shape: CarrierShape, source: str, *, coalesce: bool = True
 ) -> bool:
-    """Append *text* on the operator channel, coalescing with a trailing carrier.
+    """Append *text* on the operator channel, coalescing with a trailing
+    carrier unless *coalesce* is off.
 
     Returns False when the carrier message could not be built, leaving
     *messages* untouched so the caller can fall back to the reminder shape.
     Mutates the list it is given, which is always a copy the caller owns.
     """
-    if messages and _is_operator_carrier(messages[-1]) and not _is_turn_scoped(messages[-1]):
+    if (
+        coalesce
+        and messages
+        and _is_operator_carrier(messages[-1])
+        and not _is_turn_scoped(messages[-1])
+    ):
         messages[-1] = _with_text_block(messages[-1], text)
         return True
     try:

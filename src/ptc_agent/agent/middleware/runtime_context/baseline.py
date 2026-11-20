@@ -14,9 +14,10 @@ changed underneath reaches the model as a durable row written into history
 An epoch survives until compaction, because compaction is the one event that can
 remove the block from the model's retained history: "the file did not change" is
 not enough after a summarization dropped the injection it is measured against.
-Where Claude's thinking is in view the block outlives that too, since it is the
-prefix every thinking block after it was produced on: nothing rebuilds it, and
-after a summary one row restates every section that moved instead.
+Where reasoning bound to the prefix is in view (see ``thinking_binding``) the
+block outlives that too, since that reasoning was produced on it: nothing
+rebuilds it, and after a summary one row restates every section that moved
+instead.
 
 The split of work is the point. This module does the IO and the rendering; the
 record itself, and the decision between rebuilding it and filing rows against

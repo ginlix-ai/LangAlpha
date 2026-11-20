@@ -27,12 +27,24 @@ is read back from the request itself: the array's undeferred entries, the net
 changes a compaction block records, then every change message the request
 still carries, so a change no longer sent is made again rather than assumed.
 
+OpenAI's Responses API binds GPT-6.2's reasoning items to ``tools`` the same
+way, on the API and the Codex backend, and takes an added tool as an
+``additional_tools`` item at its place in the input. So on a model that binds
+its reasoning there, the array is kept the same way, and a tool turned on or
+redefined arrives in such an item. It has no item that takes a tool away, and
+narrowing ``tool_choice`` to ``allowed_tools`` drops the reasoning as surely as
+a new array does (measured on gpt-6.2-sol), so a tool turned off keeps its
+entry and a call to it is refused, as a call to a tool never offered is. A
+change message names the wire it was written for, and a request sends only
+its own target's.
+
 Every other target gets the tools the stack chose, as it always has, and none
 of the change messages, which no other wire form can carry.
 """
 
 from __future__ import annotations
 
+import abc
 import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
@@ -48,10 +60,12 @@ from langchain.agents.middleware.types import (
 )
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.prebuilt.tool_node import INVALID_TOOL_NAME_ERROR_TEMPLATE
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from ptc_agent.agent.middleware.reasoning_compat import model_lineage
 from ptc_agent.agent.middleware.thinking_binding import holds_bound_thinking
 from ptc_agent.agent.transcript.classify import is_summary_message
 from src.llms.operator_channel import (
@@ -61,6 +75,7 @@ from src.llms.operator_channel import (
     tool_change_betas,
 )
 from src.llms.provider_compaction import is_compaction_request, replayed_tool_changes
+from src.llms.reasoning_lineage import reasoning_binds_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +84,18 @@ TOOL_SURFACE_KEY = "tool_surface"
 #: ``lc_source`` of a change message.
 TOOL_CHANGE_SOURCE = "tool_change"
 
+#: The ``additional_kwargs`` key naming the wire a change message was written
+#: for. Anthropic's carry none: theirs were written before OpenAI's existed.
+TOOL_WIRE_KEY = "tool_wire"
+
+
 class ToolSurfaceState(AgentState):
-    """``tool_surface`` holds ``tools``, the array as declared; ``epoch``, the
-    summary it was rendered under; and ``offered``, the names the model had on
-    the last call, None once a call went out on another target."""
+    """``tool_surface`` holds each wire's kept array as ``tools``, the array
+    as declared, and ``epoch``, the summary it was rendered under: Anthropic's
+    at the top level, where it was kept before OpenAI's had one, OpenAI's
+    under ``openai``. One slot each, so a thread that moves between them finds
+    each array as it left it. ``offered`` is the names the model had on the
+    last call, None once a call went out on a target that keeps no array."""
 
     tool_surface: NotRequired[Annotated[dict[str, Any], PrivateStateAttr]]
 
@@ -89,7 +112,180 @@ class _Prepared:
     request: ModelRequest
     change: SystemMessage | None
     update: dict[str, Any] | None
-    surface: bool
+    #: Whether the call's change messages go through the operator bridge.
+    bridged: bool
+
+
+class _Wire(abc.ABC):
+    """A wire form that takes mid-conversation tool changes: how it declares
+    the tools, where its kept array is stored, and how it states a change."""
+
+    #: ``TOOL_WIRE_KEY`` on its change messages, None on Anthropic's.
+    tag: str | None = None
+    bridged = False
+
+    def owns(self, message: Any) -> bool:
+        return (message.additional_kwargs or {}).get(TOOL_WIRE_KEY) == self.tag
+
+    @abc.abstractmethod
+    def slot(self, surface: dict[str, Any]) -> dict[str, Any]:
+        """Where *surface* keeps this wire's ``tools`` and ``epoch``."""
+
+    @abc.abstractmethod
+    def stored(
+        self, surface: dict[str, Any], tools: list[dict[str, Any]], epoch: str | None, offered: list[str]
+    ) -> dict[str, Any]:
+        ...
+
+    @abc.abstractmethod
+    def definitions(self, tools: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """This build's tools in the wire's array form, and the cache marker
+        the stack put on them, if any."""
+
+    @abc.abstractmethod
+    def render(self, stored: list[dict[str, Any]], wanted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A fresh array, made where no reasoning can depend on the stored one."""
+
+    @abc.abstractmethod
+    def diff(
+        self,
+        declared: list[dict[str, Any]],
+        wanted: list[dict[str, Any]],
+        messages: list[Any],
+        model: Any,
+    ) -> tuple[SystemMessage | None, list[str]]:
+        """The change message that gives the model *wanted* at the end of
+        *messages*, None when nothing changes, and the names it is offered
+        after it."""
+
+    @abc.abstractmethod
+    def dress(
+        self,
+        request: ModelRequest,
+        declared: list[dict[str, Any]],
+        marker: dict[str, Any] | None,
+        messages: list[Any],
+    ) -> ModelRequest:
+        ...
+
+
+class _AnthropicWire(_Wire):
+    bridged = True
+
+    def slot(self, surface: dict[str, Any]) -> dict[str, Any]:
+        return surface
+
+    def stored(self, surface, tools, epoch, offered):
+        return {**surface, "tools": tools, "epoch": epoch, "offered": offered}
+
+    def definitions(self, tools):
+        wanted: list[dict[str, Any]] = []
+        marker: dict[str, Any] | None = None
+        for tool in tools:
+            definition = dict(convert_to_anthropic_tool(tool))
+            marker = definition.pop("cache_control", None) or marker
+            wanted.append(definition)
+        return wanted, marker
+
+    def render(self, stored, wanted):
+        """This build's tools, then every stored entry it lacks, deferred.
+
+        The stored entries stay because a compaction block may still turn one
+        on or off by name, and a name the array lacks is refused.
+        """
+        names = {definition["name"] for definition in wanted}
+        return [
+            *wanted,
+            *({**entry, "defer_loading": True} for entry in stored if entry["name"] not in names),
+        ]
+
+    def diff(self, declared, wanted, messages, model):
+        offered, current = _known(declared, messages, model)
+        names = {definition["name"] for definition in wanted}
+        added = [definition["name"] for definition in wanted if definition["name"] not in offered]
+        changed = [
+            definition["name"]
+            for definition in wanted
+            if definition["name"] in offered and _redefined(current.get(definition["name"]), definition, messages)
+        ]
+        removed = [name for name in offered if name not in names]
+        if not (added or changed or removed) or not _may_change(messages):
+            return None, offered
+        change = _change_message(added, changed, removed, declared, wanted)
+        return change, [name for name in offered if name not in removed] + added
+
+    def dress(self, request, declared, marker, messages):
+        # A change on the wire needs its beta, a compaction block's included.
+        settings = request.model_settings
+        if any(is_tool_change_message(m) or replayed_tool_changes(m, request.model) for m in messages):
+            settings = {**settings, "betas": tool_change_betas(settings.get("betas"))}
+        return request.override(
+            tools=_with_marker(declared, marker), messages=messages, model_settings=settings
+        )
+
+
+class _OpenAIWire(_Wire):
+    """The array is kept in the chat form langchain-openai converts from;
+    the tools a change gives are compared in the Responses form its item
+    carries them in."""
+
+    tag = "openai"
+
+    def slot(self, surface: dict[str, Any]) -> dict[str, Any]:
+        return surface.get(self.tag) or {}
+
+    def stored(self, surface, tools, epoch, offered):
+        return {**surface, self.tag: {"tools": tools, "epoch": epoch}, "offered": offered}
+
+    def definitions(self, tools):
+        return [convert_to_openai_tool(tool) for tool in tools], None
+
+    def render(self, stored, wanted):
+        return wanted
+
+    def diff(self, declared, wanted, messages, model):
+        """An ``additional_tools`` item for every tool in *wanted* the model
+        lacks or holds under another definition. A tool *wanted* lacks is not
+        stated, since no item takes one away: it is left out of what the
+        model is offered, so a call to it is refused (``_refusal``)."""
+        current = {tool.get("name"): tool for tool in map(_as_responses_tool, declared)}
+        for message in messages:
+            if is_tool_change_message(message):
+                for block in message.content:
+                    for tool in block.get("tools") or ():
+                        current[tool.get("name")] = tool
+        given = [_as_responses_tool(definition) for definition in wanted]
+        added = [tool for tool in given if tool.get("name") not in current]
+        changed = [
+            tool
+            for tool in given
+            if tool.get("name") in current and _redefined(current[tool.get("name")], tool, messages)
+        ]
+        if not (added or changed) or not _may_change(messages):
+            return None, [tool.get("name") for tool in given if tool.get("name") in current]
+        change = SystemMessage(
+            content=[{"type": "additional_tools", "role": "developer", "tools": [*added, *changed]}],
+            additional_kwargs={"lc_source": TOOL_CHANGE_SOURCE, TOOL_WIRE_KEY: self.tag},
+        )
+        return change, [tool.get("name") for tool in given]
+
+    def dress(self, request, declared, marker, messages):
+        return request.override(tools=declared, messages=messages)
+
+
+_ANTHROPIC = _AnthropicWire()
+_OPENAI = _OpenAIWire()
+
+
+def _wire_for(model: Any) -> _Wire | None:
+    """The wire whose array a call to *model* keeps, None for the stack's tools."""
+    if carries_tool_changes(model):
+        return _ANTHROPIC
+    # The lineage's own flag, not ``binds_reasoning``: that one also counts
+    # Claude behind an OpenAI-compatible proxy, which need not take the item.
+    if getattr(model, "output_version", None) == "responses/v1" and reasoning_binds_prefix(model_lineage(model)):
+        return _OPENAI
+    return None
 
 
 class ToolSurfaceMiddleware(AgentMiddleware):
@@ -111,7 +307,7 @@ class ToolSurfaceMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> Any:
         prepared = _prepare(request)
-        with operator_request("system") if prepared.surface else nullcontext():
+        with operator_request("system") if prepared.bridged else nullcontext():
             return _finish(handler(prepared.request), prepared)
 
     async def awrap_model_call(
@@ -122,7 +318,7 @@ class ToolSurfaceMiddleware(AgentMiddleware):
         prepared = _prepare(request)
         # Every change message goes through the bridge, which joins it with a
         # neighbouring row and keeps it off a place the wire refuses.
-        with operator_request("system") if prepared.surface else nullcontext():
+        with operator_request("system") if prepared.bridged else nullcontext():
             return _finish(await handler(prepared.request), prepared)
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
@@ -138,55 +334,76 @@ class ToolSurfaceMiddleware(AgentMiddleware):
 
 def _prepare(request: ModelRequest) -> _Prepared:
     surface = (request.state or {}).get(TOOL_SURFACE_KEY) or {}
-    model = request.model
-    if not carries_tool_changes(model):
+    wire = _wire_for(request.model)
+    if wire is None:
         return _plain(request, surface)
 
-    wanted: list[dict[str, Any]] = []
-    marker: dict[str, Any] | None = None
-    for tool in request.tools or []:
-        definition = dict(convert_to_anthropic_tool(tool))
-        marker = definition.pop("cache_control", None) or marker
-        wanted.append(definition)
-    stored = surface.get("tools") or []
+    messages = [m for m in request.messages or [] if not is_tool_change_message(m) or wire.owns(m)]
+    wanted, marker = wire.definitions(request.tools or [])
+    slot = wire.slot(surface)
+    stored = slot.get("tools") or []
     if not stored and not wanted:
-        return _Prepared(request, None, None, surface=False)
+        return _Prepared(_with_messages(request, messages), None, None, bridged=False)
 
-    messages = list(request.messages or [])
     epoch = _epoch(messages)
-    if not stored or (surface.get("epoch") != epoch and not holds_bound_thinking(messages)):
-        declared = _render(stored, wanted)
+    if not stored or (slot.get("epoch") != epoch and not holds_bound_thinking(messages)):
+        declared = wire.render(stored, wanted)
     else:
         declared = stored
-        epoch = surface.get("epoch")
+        epoch = slot.get("epoch")
 
-    compacting = is_compaction_request(request.model_settings)
-    change, offered = _diff(declared, wanted, messages, model, compacting=compacting)
+    # A compaction request summarizes what was sent, so it carries the array
+    # and nothing new, and records nothing.
+    if is_compaction_request(request.model_settings):
+        return _Prepared(wire.dress(request, declared, marker, messages), None, None, bridged=wire.bridged)
+
+    change, offered = wire.diff(declared, wanted, messages, request.model)
     if change is not None:
         messages.append(change)
-
-    # A change on the wire needs its beta, a compaction block's included.
-    settings = request.model_settings
-    if any(is_tool_change_message(m) or replayed_tool_changes(m, model) for m in messages):
-        settings = {**settings, "betas": tool_change_betas(settings.get("betas"))}
-    stored_now = {"tools": declared, "epoch": epoch, "offered": offered}
+    stored_now = wire.stored(surface, declared, epoch, offered)
     return _Prepared(
-        request.override(
-            tools=_with_marker(declared, marker), messages=messages, model_settings=settings
-        ),
+        wire.dress(request, declared, marker, messages),
         change,
-        stored_now if stored_now != surface and not compacting else None,
-        surface=True,
+        stored_now if stored_now != surface else None,
+        bridged=wire.bridged,
     )
+
+
+def _may_change(messages: list[Any]) -> bool:
+    """Whether a change may go out on this call: a system entry may follow a
+    user turn or tool results only, so a call that ends on an assistant turn
+    leaves the change to the next call."""
+    return bool(messages) and isinstance(messages[-1], (HumanMessage, ToolMessage))
+
+
+def _redefined(given: dict[str, Any] | None, wanted: dict[str, Any], messages: list[Any]) -> bool:
+    """Whether the model holds a tool under a definition other than *wanted*
+    and may be given the new one now. A redefinition waits for a turn start:
+    right after tool results a model may pass over the message it rides."""
+    return given != wanted and _at_turn_start(messages)
+
+
+def _as_responses_tool(definition: dict[str, Any]) -> dict[str, Any]:
+    """A chat-format function tool as the Responses API declares it, the way
+    langchain-openai converts the ``tools`` array; any other tool as it is."""
+    function = definition.get("function")
+    if definition.get("type") != "function" or not isinstance(function, dict):
+        return definition
+    extra = {k: v for k, v in definition.items() if k not in ("type", "function")}
+    return {"type": "function", **function, **extra}
+
+
+def _with_messages(request: ModelRequest, messages: list[Any]) -> ModelRequest:
+    if len(messages) == len(request.messages or []):
+        return request
+    return request.override(messages=messages)
 
 
 def _plain(request: ModelRequest, surface: dict[str, Any]) -> _Prepared:
     """The request as the stack built it, without the change messages."""
     messages = [m for m in request.messages or [] if not is_tool_change_message(m)]
-    if len(messages) != len(request.messages or []):
-        request = request.override(messages=messages)
     update = {**surface, "offered": None} if surface.get("offered") is not None else None
-    return _Prepared(request, None, update, surface=False)
+    return _Prepared(_with_messages(request, messages), None, update, bridged=False)
 
 
 def _finish(response: ModelResponse, prepared: _Prepared) -> Any:
@@ -206,45 +423,6 @@ def _epoch(messages: list[Any]) -> str | None:
     return None
 
 
-def _diff(
-    declared: list[dict[str, Any]],
-    wanted: list[dict[str, Any]],
-    messages: list[Any],
-    model: Any,
-    *,
-    compacting: bool,
-) -> tuple[SystemMessage | None, list[str]]:
-    """The change message that brings what the model has at the end of
-    *messages* to *wanted*, None when nothing changes or it has to wait, and
-    the names the model is offered after it."""
-    offered, current = _known(declared, messages, model)
-    names = {definition["name"] for definition in wanted}
-    added = [definition["name"] for definition in wanted if definition["name"] not in offered]
-    # A redefinition waits for a turn start: right after tool results a
-    # model may pass over the system message it rides.
-    changed = [
-        definition["name"]
-        for definition in wanted
-        if definition["name"] in offered
-        and current.get(definition["name"]) != definition
-        and _at_turn_start(messages)
-    ]
-    removed = [name for name in offered if name not in names]
-
-    # A compaction request summarizes what was sent, so it carries the array
-    # and nothing new. A system entry may follow a user turn only, so a call
-    # that ends on an assistant turn leaves the change to the next call.
-    if (
-        not (added or changed or removed)
-        or compacting
-        or not messages
-        or not isinstance(messages[-1], (HumanMessage, ToolMessage))
-    ):
-        return None, offered
-    change = _change_message(added, changed, removed, declared, wanted)
-    return change, [name for name in offered if name not in removed] + added
-
-
 def _at_turn_start(messages: list[Any]) -> bool:
     """Whether the newest message past the runtime rows is the user's: a row
     (a market-watch stamp, a notes check-in) is written before calls mid-turn
@@ -253,19 +431,6 @@ def _at_turn_start(messages: list[Any]) -> bool:
 
     newest = next((m for m in reversed(messages) if not is_runtime_update_message(m)), None)
     return isinstance(newest, HumanMessage)
-
-
-def _render(stored: list[dict[str, Any]], wanted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A fresh array: this build's tools, then every stored entry it lacks, deferred.
-
-    The stored entries stay because a compaction block may still turn one on
-    or off by name, and a name the array lacks is refused.
-    """
-    names = {definition["name"] for definition in wanted}
-    return [
-        *wanted,
-        *({**entry, "defer_loading": True} for entry in stored if entry["name"] not in names),
-    ]
 
 
 def _known(

@@ -57,7 +57,12 @@ from src.llms.error_classification import (
     refuses_input,
 )
 from src.llms.provider_errors import is_terminal_refusal
-from src.llms.input_transformations import INPUT_TRANSFORMATIONS, REPEATED, thinking_drops
+from src.llms.input_transformations import (
+    BY_DESIGN_DROPS,
+    INPUT_TRANSFORMATIONS,
+    REPEATED,
+    thinking_drops,
+)
 from src.llms.model_identity import CATALOG_MODEL_KEY, api_model_id, catalog_model
 from src.llms.provider_compaction import is_compaction_request
 from src.llms.reasoning_payload import (
@@ -85,10 +90,23 @@ _ERROR_SUMMARY_MAX_CHARS = 300
 FALLBACK_KEY = "model_fallback"
 
 _as_sent: ContextVar[bool] = ContextVar("model_resilience_as_sent", default=False)
+_fallback: ContextVar[bool] = ContextVar("model_resilience_fallback", default=False)
 
-#: Drop reasons that follow the thread rather than an edit of ours: a model
-#: switch, or a thread moved between accounts.
-_BY_DESIGN_DROPS = frozenset({"model_binding_mismatch", "organization_binding_mismatch"})
+
+def answering_as_fallback() -> bool:
+    """Whether the model call in progress is a fallback answering for the
+    primary, whose state the thread goes back to: what the primary's
+    reasoning is bound to stays as it was (``SystemPinMiddleware``)."""
+    return _fallback.get()
+
+
+@contextmanager
+def _answering(index: int) -> Iterator[None]:
+    token = _fallback.set(index > 0)
+    try:
+        yield
+    finally:
+        _fallback.reset(token)
 
 _STRIP_ERROR_MAX_CHARS = 1000
 
@@ -148,7 +166,7 @@ def _report_drops(response: ModelResponse, model: str, sent: list[AnyMessage]) -
         counts = thinking_drops(message, earlier)
         if not counts:
             continue
-        log = logger.info if set(counts) <= _BY_DESIGN_DROPS | {REPEATED} else logger.warning
+        log = logger.info if set(counts) <= BY_DESIGN_DROPS | {REPEATED} else logger.warning
         thread_id, agent = run_ids()
         log(
             "[ModelResilience] earlier thinking dropped by the provider",
@@ -688,7 +706,8 @@ class ModelResilienceMiddleware(AgentMiddleware):
             while True:
                 attempts += 1
                 try:
-                    response = handler(req)
+                    with _answering(index):
+                        response = handler(req)
                     _refuse_unfinished(response)
                     return self._answered(response, name, index, request, stripped)
                 except Exception as exc:
@@ -746,7 +765,8 @@ class ModelResilienceMiddleware(AgentMiddleware):
             while True:
                 attempts += 1
                 try:
-                    response = await handler(req)
+                    with _answering(index):
+                        response = await handler(req)
                     _refuse_unfinished(response)
                     return self._answered(response, name, index, request, stripped)
                 except Exception as exc:

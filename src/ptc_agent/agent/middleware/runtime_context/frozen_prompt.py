@@ -6,13 +6,16 @@ two turns (whether the file mount serves) is frozen into the epoch instead,
 and the prompt is sent rendered with the frozen value whenever the build saw
 another, so the prefix changes only when the epoch is rebuilt.
 
-A deploy changes the build itself, and Claude's thinking is bound to the
-system prompt in front of it: a block stays valid only while that prompt is
-sent byte for byte as it was. So the whole system message, as the stack
-composed it, is kept in checkpointed state and sent again for as long as any
-of that thinking is in view. A build whose message differs marks the kept one
-stale, and the next summary at a turn start keeps no turns, so the call after
-it takes the new message (see ``rebuild_pending``).
+A deploy changes the build itself, and a model that binds its reasoning to
+the prefix (Claude, GPT-6.2 on; see ``thinking_binding``) keeps a payload only
+while the system prompt in front of it is sent byte for byte as it was. So the
+whole system message, as the stack composed it, is kept in checkpointed state
+and sent again for as long as any of that reasoning is in view. On Claude a
+build whose message differs marks the kept one stale, and the next summary at
+a turn start keeps no turns, so the call after it takes the new message (see
+``rebuild_pending``). OpenAI drops the reasoning on its own rather than refuse
+it, so a deploy reaches an OpenAI thread at its next call, at the price of
+the reasoning in view once, and only a per-turn input waits for a summary.
 
 The pin also records a digest of the prompt's sources, so a thread is known
 to be due for that summary before the call that would mark it stale, and a
@@ -39,7 +42,7 @@ from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
-from src.llms.model_identity import api_model_id
+from src.llms.model_identity import api_model_id, is_claude
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.runtime_context.epoch import BaselineEpoch
 from ptc_agent.agent.middleware.runtime_context.state import (
@@ -47,7 +50,8 @@ from ptc_agent.agent.middleware.runtime_context.state import (
     as_dict,
     state_get,
 )
-from ptc_agent.agent.middleware.thinking_binding import holds_bound_thinking
+from ptc_agent.agent.middleware.model_resilience import answering_as_fallback
+from ptc_agent.agent.middleware.thinking_binding import binds_reasoning, holds_bound_thinking
 from ptc_agent.agent.prompts import release
 
 logger = logging.getLogger(__name__)
@@ -133,22 +137,27 @@ def static_digest(content: Any) -> str | None:
 
 
 def _kept(state: Any, model: Any) -> dict[str, Any] | None:
-    """The pin kept for ``model``, or None. Only Claude's thinking is bound
-    to the system message, and a call to another model takes the build's
-    message at once."""
-    from ptc_agent.agent.middleware.compaction.measure import is_claude
-
+    """The pin kept for ``model``, or None. Only a model that binds its
+    reasoning to the prefix keeps one, and a call to another model takes the
+    build's message at once."""
     pin = as_dict(state_get(state, STATE_SYSTEM_PIN))
-    if pin.get("content") is None or not is_claude(model):
+    if pin.get("content") is None or not binds_reasoning(model):
         return None
     return pin if pin.get("model") == (api_model_id(model) or "") else None
+
+
+def _holding(state: Any, model: Any) -> dict[str, Any] | None:
+    """The pin that still decides what a call to ``model`` sends, or None:
+    kept for it, and not one a deploy replaces at once (``_takes_deploy``)."""
+    pin = _kept(state, model)
+    return None if pin is None or _takes_deploy(model, state) else pin
 
 
 def pinned_static(state: Any, model: Any, view: Sequence[AnyMessage]) -> str | None:
     """The static prompt a call to ``model`` sending ``view`` goes out with
     in place of the build's: the kept message's, while thinking bound to it is
     in view (see ``_pin``). None where the build's goes out."""
-    pin = _kept(state, model)
+    pin = _holding(state, model)
     if pin is None or not holds_bound_thinking(view):
         return None
     return _static_text(pin["content"])
@@ -161,9 +170,10 @@ def due(request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
     the call sends. Read before the call that would mark it stale, so a deploy
     that landed while the thread was idle counts from its next first call. A
     thread with no bound thinking takes the build's message on its own call
-    (see ``_pin``)."""
-    pin = _kept(getattr(request, "state", None), request.model)
-    if pin is None:
+    (see ``_pin``), and so does an OpenAI thread a deploy reached."""
+    state = getattr(request, "state", None)
+    pin = _holding(state, request.model)
+    if pin is None or _superseded(state):
         return False
     if pin.get("stale"):
         return True
@@ -199,18 +209,20 @@ class SystemPinState(AgentState):
 
 
 class SystemPinMiddleware(AgentMiddleware):
-    """Send the system message Claude's thinking in view was produced under.
+    """Send the system message the bound reasoning in view was produced under.
 
     Innermost on the system message, so what it keeps is everything the stack
     put there: the static prompt, what middleware appended to it, and the
     baseline block. The stack's message replaces the kept one only where no
-    thinking is lost by it: nothing the request sends holds Claude's thinking
+    thinking is lost by it: nothing the request sends holds bound reasoning
     (the call after a summary that kept none, a model that does not think), or
     the model changed, which drops the thinking the new model cannot read in
     any case. So a deploy reaches a thread at such a point, and every new
     thread at once. Read off the request, so a summary's own request, which
     sends the thinking it summarizes, gets the kept message, and the call
-    after it, in the same model call, already the new one.
+    after it, in the same model call, already the new one. A model that drops
+    rather than refuses unbound reasoning takes a deploy at its next call
+    instead (``_takes_deploy``).
     """
 
     state_schema = SystemPinState
@@ -286,15 +298,17 @@ def _pin(
     again), or what let the build's message replace it: ``first``,
     ``model_changed``, ``no_bound_thinking``.
 
-    Kept only for Claude, whose thinking is the only kind bound to the system
-    message. A call to another model leaves the stored pin as it is: it may be
-    a fallback answering for Claude, whose thinking is still bound to the pin.
+    Kept only for a model that binds its reasoning to the prefix. A call to
+    another model leaves the stored pin as it is: it may be a fallback
+    answering for one, whose reasoning is still bound to the pin. So does a
+    fallback to a binding model (``answering_as_fallback``), however many
+    calls it answers; a model the thread was switched to takes the pin. On
+    OpenAI a deploy is taken at once (``deployed``, see ``_takes_deploy``).
     """
-    from ptc_agent.agent.middleware.compaction.measure import is_claude
-
-    built =request.system_message
-    if built is None or not is_claude(request.model):
+    built = request.system_message
+    if built is None or not binds_reasoning(request.model):
         return None, None, None
+    replaced: dict[str, Any] = {}
     stored = _kept(getattr(request, "state", None), request.model)
     if stored is not None:
         content = stored["content"]
@@ -305,16 +319,50 @@ def _pin(
             if current == stored:
                 return None, None, None
             return None, current, "cleared" if stored.get("stale") else None
-        if holds_bound_thinking(request.messages):
-            if stored.get("stale"):
+        if _takes_deploy(request.model, getattr(request, "state", None)):
+            change = "deployed"
+            replaced = {"replaced": [*stored.get("replaced", ()), stored.get("source_digest")][-_REPLACED_KEPT:]}
+        elif holds_bound_thinking(request.messages):
+            if stored.get("stale") or _superseded(getattr(request, "state", None)):
                 return SystemMessage(content=content), None, None
             return SystemMessage(content=content), {**stored, "stale": True}, "stale"
-        change = "no_bound_thinking"
+        else:
+            change = "no_bound_thinking"
     else:
         previous = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
-        change = "first" if previous.get("content") is None else "model_changed"
+        if previous.get("content") is None:
+            change = "first"
+        elif answering_as_fallback():
+            return None, None, None
+        else:
+            change = "model_changed"
     model = api_model_id(request.model) or ""
-    return None, {"model": model, "content": built.content, **_build_sources()}, change
+    return None, {"model": model, "content": built.content, **_build_sources(), **replaced}, change
+
+
+#: How many builds a pin remembers having replaced (``_takes_deploy``).
+_REPLACED_KEPT = 8
+
+
+def _takes_deploy(model: Any, state: Any) -> bool:
+    """Whether a call to ``model`` takes a deploy's system message at once
+    rather than at a summary: on a binding model other than Claude, whose API
+    drops the reasoning the change unbinds where Anthropic's may refuse it,
+    once the prompt's sources changed. A per-turn input that may flip back
+    still waits, as on Claude.
+
+    A build the pin already replaced is not a deploy: while a cutover drains,
+    the old stack still runs turns, and taking its prompt back would cost the
+    thread a drop each way. It keeps the newer message, as Claude does."""
+    return not is_claude(model) and sources_changed(state) and not _superseded(state)
+
+
+def _superseded(state: Any) -> bool:
+    """Whether this build is one a deploy replaced on the thread's pin: an
+    old stack still running while a cutover drains, which sends the kept
+    message as it is and asks for no summary to replace it."""
+    replaced = as_dict(state_get(state, STATE_SYSTEM_PIN)).get("replaced") or ()
+    return release.source_digest() in replaced
 
 
 def _unmarked(content: Any) -> list[Any]:

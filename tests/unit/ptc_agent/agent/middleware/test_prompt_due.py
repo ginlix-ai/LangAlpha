@@ -7,11 +7,13 @@ sources, so only a change of those (a deploy) may force a rebuild.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ptc_agent.agent.middleware import model_resilience
 from ptc_agent.agent.middleware._utils import append_to_system_message
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
     STATE_SYSTEM_PIN,
@@ -70,6 +72,76 @@ def test_due_reads_the_build_against_the_pin_before_the_call_marks_it_stale():
     assert _due(_request(SystemMessage("Prompt B."), pinned, messages=bound))
     assert _due(_request(SystemMessage("Prompt A."), {**pinned, "stale": True}))
     assert not _due(_request(SystemMessage("Prompt B."), None, messages=bound))
+
+
+def test_a_fallback_leaves_the_pin_to_the_thinking_it_holds():
+    """A GPT fallback in a Claude thread, the pin stale with a deploy: Claude's
+    thinking is still bound to the kept message, so however many calls the
+    fallback answers it leaves the pin, and the call back on Claude sends it
+    again."""
+    pinned = _pinned("Prompt A.", stale=True)
+    bound = [HumanMessage("Hi."), reply(1, text="Hi.")]
+    answered = [*bound, _gpt_answer(2), HumanMessage("Go on.")]
+    gpt = SimpleNamespace(model_name="gpt-6.2-sol", metadata={"provider_route": "openai"})
+
+    with _as_fallback():
+        assert _pin(_request(SystemMessage("Prompt B."), pinned, model=gpt, messages=bound)) == (None, None, None)
+        assert _pin(_request(SystemMessage("Prompt B."), pinned, model=gpt, messages=answered)) == (None, None, None)
+    kept, _, _ = _pin(_request(SystemMessage("Prompt B."), pinned, messages=answered))
+    assert kept is not None and kept.content == pinned["content"]
+
+
+def test_a_model_the_thread_was_switched_to_takes_the_pin():
+    """Not a fallback: the thread goes on with GPT, so its reasoning gets the pin."""
+    pinned = _pinned("Prompt A.", stale=True)
+    bound = [HumanMessage("Hi."), reply(1, text="Hi.")]
+    gpt = SimpleNamespace(model_name="gpt-6.2-sol", metadata={"provider_route": "openai"})
+
+    _, update, change = _pin(_request(SystemMessage("Prompt B."), pinned, model=gpt, messages=bound))
+    assert change == "model_changed" and update["model"] == "gpt-6.2-sol"
+
+
+def test_an_openai_pin_is_not_taken_back_by_the_build_a_deploy_replaced(monkeypatch):
+    """While a cutover drains, the old stack still runs turns. The new build
+    takes the pin at once; the old one then sends that pin as it is and asks
+    for no summary, so the thread pays one drop, not one each way."""
+    gpt = SimpleNamespace(model_name="gpt-6.2-sol", metadata={"provider_route": "openai"})
+    build = {"digest": "build-a"}
+    monkeypatch.setattr(release, "source_digest", lambda: build["digest"])
+    pinned = {"model": "gpt-6.2-sol", "content": _built("Prompt A.").content, "source_digest": "build-a"}
+    bound = [HumanMessage("Hi."), _gpt_answer(1)]
+
+    build["digest"] = "build-b"
+    _, deployed, change = _pin(_request(_built("Prompt B."), pinned, model=gpt, messages=bound))
+    assert change == "deployed" and deployed["replaced"] == ["build-a"]
+
+    build["digest"] = "build-a"
+    on_old = _request(_built("Prompt A."), deployed, model=gpt, messages=[*bound, _gpt_answer(2)])
+    kept, update, _ = _pin(on_old)
+    assert kept is not None and kept.content == deployed["content"] and update is None
+    assert not _due(on_old)
+
+    build["digest"] = "build-b"
+    assert _pin(_request(_built("Prompt B."), deployed, model=gpt, messages=bound)) == (None, None, None)
+
+
+@contextlib.contextmanager
+def _as_fallback():
+    token = model_resilience._fallback.set(True)
+    try:
+        yield
+    finally:
+        model_resilience._fallback.reset(token)
+
+
+def _gpt_answer(n: int):
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(
+        content=[{"type": "reasoning", "id": f"rs_{n}", "summary": []}, {"type": "text", "text": "ok"}],
+        id=f"resp_{n}",
+        response_metadata={"model_name": "gpt-6.2-sol", "reasoning_origin": "openai"},
+    )
 
 
 def test_a_thread_holding_no_bound_thinking_is_not_due_since_its_call_takes_the_build():

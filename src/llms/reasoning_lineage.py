@@ -101,6 +101,21 @@ def lineage_for_model_id(model_id: str | None) -> str:
     return _model_id_index(_config()).get(model_id) or UNKNOWN_LINEAGE
 
 
+def reasoning_binds_prefix(lineage: str | None, config: ModelConfig | None = None) -> bool:
+    """Whether the lineage's API checks each earlier reasoning payload against
+    everything sent ahead of it, and drops or refuses it once that changed.
+
+    Declared on the provider the lineage is named after as
+    ``"reasoning_binds_prefix": true``: Anthropic's thinking, and OpenAI's
+    reasoning items from GPT-6.2 on, on the API and the Codex backend alike
+    (the same model generation, so both lineages bind). A lineage standing
+    alone off its manifest endpoint binds nothing we know of.
+    """
+    if not lineage or lineage == UNKNOWN_LINEAGE or ROUTE_ENDPOINT_SEP in lineage:
+        return False
+    return (config or _config()).get_provider_info(lineage).get("reasoning_binds_prefix") is True
+
+
 def tool_turns_need_reasoning(
     route: str | None, config: ModelConfig | None = None
 ) -> bool:

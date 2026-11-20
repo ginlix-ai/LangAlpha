@@ -46,10 +46,11 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, AnyMessage
 
 from src.llms.cache_markers import CacheScope, route_ttl_seconds, ttl_seconds, written_ttl_seconds
+from src.llms.model_identity import is_claude
 
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.compaction.between_turns import IdleSkipped
-from ptc_agent.agent.middleware.compaction.measure import is_claude, measured_tokens
+from ptc_agent.agent.middleware.compaction.measure import measured_tokens
 from ptc_agent.agent.middleware.compaction.notes import summary_id
 from ptc_agent.agent.middleware.compaction.types import RebuildArm
 from ptc_agent.agent.middleware.compaction.utils import settled_end, step_cut, turn_start_cut
@@ -347,10 +348,11 @@ def forced_under_threshold(
     the last answer; ``cold``: the prompt cache has expired.
 
     A thread whose last answer came from a fallback of another provider
-    waits unless urgent: the pin only follows Claude, so a summary that a
-    fallback answers after would leave the thread due, and force again
-    next turn. An urgent one cannot loop: the summary leaves no bound
-    thinking in view, and a thread without any is not due.
+    waits unless urgent: a fallback that does not bind its reasoning to the
+    prefix leaves the pin where it was, so a summary that it answers after
+    would leave the thread due, and force again next turn. An urgent one
+    cannot loop: the summary leaves no bound thinking in view, and a thread
+    without any is not due.
     """
     pinned = as_dict(state_get(state, STATE_SYSTEM_PIN)).get("prompt_version") or 0
     if release.prompt_version() < pinned:
@@ -439,9 +441,11 @@ def next_summary(state: Any, *, settled_at: datetime | None) -> NextSummary | No
     which the state alone cannot tell, so its cold summary reads as the
     rebuild a due thread would be forced into, if any (``rebuild``), whatever
     the user's ``cold_tokens``: a send cannot skip that one. Only a call to a
-    Claude model keeps a pin, or summarizes a cold thread early. The context
-    is the last call's measurement, or after an offload that zeroed it, what
-    the offload left (``offloaded_reading``).
+    Claude model waits for a summary to take a deploy, or summarizes a cold
+    thread early; another model that binds its reasoning takes a deploy at
+    its next call (see ``frozen_prompt``). The context is the last call's
+    measurement, or after an offload that zeroed it, what the offload left
+    (``offloaded_reading``).
     """
     reading = as_dict(state_get(state, LAST_ANSWER_KEY))
     tokens = measured_tokens(as_dict(state))

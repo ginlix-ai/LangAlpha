@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 
-from src.llms.model_identity import api_model_id
+from src.llms.model_identity import api_model_id, is_claude
 from ptc_agent.agent.middleware.compaction.types import TokenCounter
 from ptc_agent.agent.middleware.compaction.utils import (
     attachment_tokens,
@@ -47,12 +47,6 @@ class Estimate:
         spent = spent_stamps(list(messages))
         read = [m for m in messages if id(m) not in spent] if spent else messages
         return self.counter(read) + attachment_tokens(read, self.cost)
-
-
-def is_claude(model: Any) -> bool:
-    """Whether ``model`` counts with Claude's tokenizer, on whichever route
-    serves it: the tokenizer goes with the model, not the host."""
-    return "claude" in (api_model_id(model) or "").lower()
 
 
 def counter_for(model: Any, default: TokenCounter) -> TokenCounter:

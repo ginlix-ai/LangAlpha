@@ -498,10 +498,10 @@ class Observations:
     # Whether this turn's agent has ``schedule_wakeup``. None for a build
     # whose block says nothing about it.
     wakeups_enabled: bool | None = None
-    # Whether Claude's thinking is in what the next call sends. Such a block
-    # stays valid only while the system prompt in front of it is sent as it
-    # was, so while one is in view the block is never rebuilt: what a rebuild
-    # would have said goes into rows instead.
+    # Whether reasoning bound to its prefix (``thinking_binding``) is in what
+    # the next call sends. It stays valid only while the system prompt in
+    # front of it is sent as it was, so while any is in view the block is
+    # never rebuilt: what a rebuild would have said goes into rows instead.
     thinking_bound: bool = False
     # What the newest summary leaves for the turns after it to read, carried
     # by the row filed once that summary is seen. None when it leaves nothing.
@@ -576,9 +576,9 @@ def _plan(epoch: BaselineEpoch, obs: Observations) -> tuple[Plan, str | None]:
     """How this turn advances the epoch, and the rebuild reason behind it.
 
     ``observe`` files a row for each source that moved, and ``rebuild``
-    freezes a new block. A block Claude's thinking is bound to stands even
-    when a rebuild is due, since rebuilding it would invalidate every thinking
-    block after it, so what the rebuild would have said goes into rows
+    freezes a new block. A block that bound reasoning was produced on stands
+    even when a rebuild is due, since rebuilding it would invalidate all the
+    reasoning after it, so what the rebuild would have said goes into rows
     instead: ``restate`` after a summary, and otherwise ``state_sources``,
     which observes as well.
     """

@@ -840,6 +840,7 @@
       "display_name": "OpenAI",
       "category": "closed_source",
       "reasoning_compat_group": "openai",
+      "reasoning_binds_prefix": true,
       "variants": {
         "codex-oauth": {
           "sdk": "codex",
@@ -863,6 +864,7 @@
       "display_name": "Anthropic",
       "category": "closed_source",
       "reasoning_compat_group": "anthropic",
+      "reasoning_binds_prefix": true,
       "variants": {
         "claude-oauth": {
           "base_url": "https://api.anthropic.com",

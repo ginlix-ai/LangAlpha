@@ -23,6 +23,12 @@ the file was written. Preserved thinking binds every earlier byte, so a
 dependency upgrade that re-renders stored history (a middleware that reorders
 earlier messages, a serializer that drops a key) fails here before it ships.
 Set ``LANGALPHA_RECORD_RENDER=1`` to record anew after a deliberate change.
+
+GPT-6.2 binds its reasoning items to the prefix as Claude does its thinking,
+on OpenAI's own wire forms, so an OpenAI target that binds keeps its system
+prompt and tools array too: the same thread is held there to the API's rule,
+that nothing ahead of a replayed reasoning item changed since the request
+that produced it.
 """
 
 from __future__ import annotations
@@ -74,6 +80,7 @@ from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
 from ptc_agent.agent.middleware.runtime_context.tail import RowCarrierMiddleware
 from ptc_agent.agent.middleware.runtime_context.turn import TurnContextMiddleware
 from ptc_agent.agent.middleware.skills import SkillsMiddleware
+from ptc_agent.agent.middleware.thinking_binding import binds_reasoning
 from ptc_agent.agent.middleware.skills.registry import SkillDefinition
 from ptc_agent.agent.middleware.tool.argument_parsing import ToolArgumentParsingMiddleware
 from ptc_agent.agent.middleware.tool.empty_call_retry import EmptyToolCallRetryMiddleware
@@ -117,6 +124,12 @@ def _native_claude(model: Any) -> bool:
     return isinstance(model, ChatAnthropic) and is_official_anthropic_endpoint(model.anthropic_api_url)
 
 
+def _openai_bound(model: Any) -> bool:
+    """An OpenAI Responses target whose reasoning binds to the prefix, which
+    keeps its prompt and tools array on OpenAI's wire forms."""
+    return getattr(model, "output_version", None) == "responses/v1" and binds_reasoning(model)
+
+
 def _targets() -> list[str]:
     """Every catalog row langalpha sends requests for, other than native
     Claude. A Claude Code row sends none: Claude Code builds its own."""
@@ -146,6 +159,8 @@ class _Call:
     body: Any
     kind: str
     summary: bool = False
+    #: The id of the reasoning item the answer to this call carried.
+    produced: str | None = None
 
 
 _SUMMARY_MARK = "You're nearing your context limit."
@@ -187,7 +202,9 @@ class _Network:
         if not self.script:
             self.unexpected.append(f"unscripted call to {request.url}")
             return _respond(kind, request, body, _Reply(99, text="(end)"), mod)
-        return _respond(kind, request, body, self.script.pop(0), mod)
+        reply = self.script.pop(0)
+        call.produced = f"rs_{reply.n:02d}"
+        return _respond(kind, request, body, reply, mod)
 
     def install(self, monkeypatch) -> _Network:
         import socket
@@ -604,6 +621,15 @@ async def test_no_claude_only_field_reaches_another_model(monkeypatch, target):
     assert state.get("_summarization_event"), "the third turn did not summarize"
     leaks = [f"call {i + 1}: {leak}" for i, call in enumerate(network.calls) for leak in _leaks(call)]
     assert leaks == []
+    if _openai_bound(model):
+        # Held to the binding rule instead (``test_openai_reasoning_keeps_its_prefix``);
+        # what it keeps is on OpenAI's wire alone.
+        for message in state["messages"]:
+            assert INPUT_TRANSFORMATIONS not in (getattr(message, "response_metadata", None) or {})
+            if (message.additional_kwargs or {}).get("lc_source") == "tool_change":
+                assert message.additional_kwargs.get("tool_wire") == "openai"
+            assert "clear_at" not in (message.additional_kwargs or {})
+        return
 
     # The system prompt and the tools follow the build on every call: turn 1
     # sends build A, every call after the deploy build B, whatever was sent before.
@@ -729,3 +755,128 @@ async def test_the_subscription_route_caches_every_marker_for_an_hour(monkeypatc
 
     assert markers, "the thread sent no cache marker"
     assert all(marker == {"type": "ephemeral", "ttl": "1h"} for marker in markers), markers
+
+
+# -- an OpenAI target that binds its reasoning ----------------------------------
+
+
+def _openai_bound_targets() -> list[str]:
+    return [target for target in _targets() if _openai_bound(_build(target))]
+
+
+def _unmarked(value: Any) -> Any:
+    """``value`` without cache breakpoints, and a lone text block read as its
+    text: the API leaves both out of the prefix check (measured on
+    gpt-6.2-sol, the moving tail breakpoint turning a string into one block)."""
+    if isinstance(value, dict):
+        return {k: _unmarked(v) for k, v in value.items() if k != "prompt_cache_breakpoint"}
+    if isinstance(value, list):
+        if len(value) == 1 and isinstance(value[0], dict) and value[0].get("type") == "input_text":
+            return value[0]["text"]
+        return [_unmarked(v) for v in value]
+    return value
+
+
+def _kept_in_order(sent: list[Any], earlier: list[Any]) -> bool:
+    """Whether ``sent`` is ``earlier`` with whole items left out and nothing
+    else changed: the one edit that keeps the reasoning after it."""
+    rest = iter(earlier)
+    return all(any(item == candidate for candidate in rest) for item in sent)
+
+
+def _prefix_breaks(calls: list[_Call]) -> list[str]:
+    """Each replayed reasoning item whose prefix differs from the request that
+    produced it, as the API checks it: the tools array, and every input item
+    ahead of it, of which whole ones may be left out. One behind an OpenAI
+    compaction item is kept by the API whatever came before."""
+    makers = {call.produced: call for call in calls if call.kind == "responses" and call.produced}
+    breaks = []
+    for i, call in enumerate(calls):
+        items = (call.body or {}).get("input") or []
+        for k, item in enumerate(items):
+            maker = makers.get(item.get("id")) if item.get("type") == "reasoning" else None
+            if maker is None or any(x.get("type") == "compaction" for x in items[:k]):
+                continue
+            if _unmarked(call.body.get("tools")) != _unmarked(maker.body.get("tools")):
+                breaks.append(f"call {i + 1}: tools changed ahead of {item['id']}")
+            elif not _kept_in_order(_unmarked(items[:k]), _unmarked(maker.body["input"])):
+                breaks.append(f"call {i + 1}: input changed ahead of {item['id']}")
+    return breaks
+
+
+def _offered(call: _Call) -> set[str]:
+    """The tools a call gives the model: its array and every ``additional_tools`` item."""
+    items = (call.body or {}).get("input") or []
+    added = [t for item in items if item.get("type") == "additional_tools" for t in item["tools"]]
+    return {t.get("name") for t in [*(call.body.get("tools") or []), *added]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", _openai_bound_targets())
+async def test_openai_reasoning_keeps_its_prefix(monkeypatch, target):
+    """No reasoning item an OpenAI thread replays loses its prefix: not to a
+    market-watch stamp written before every call, a skill's tool turned on
+    mid-turn, a reworded prompt and tool between turns, or a summary."""
+    network, state = await _run_thread(monkeypatch, target)
+    answered = [call for call in network.calls if not call.summary]
+
+    assert any(call.summary for call in network.calls), "the thread did not summarize"
+    assert any("<market-watch>" in json.dumps(call.body) for call in answered), "no call carried a stamp"
+    produced = {call.produced for call in network.calls if call.produced}
+    sent = [item for call in network.calls for item in call.body["input"] if item.get("type") == "reasoning"]
+    assert all(item.get("id") in produced for item in sent), "a replayed item names no request that produced it"
+    replayed = [item for call in answered for item in call.body["input"] if item.get("type") == "reasoning"]
+    assert len(replayed) > len(answered), "too few reasoning items were replayed to tell"
+    assert _prefix_breaks(network.calls) == []
+
+    # The skill's tool reaches the model once the skill is read, by an item.
+    assert "draw_chart" not in _offered(answered[0])
+    assert all("draw_chart" in _offered(call) for call in answered[1:])
+    assert all("draw_chart" not in _tool_names(call) for call in answered[1:3])
+    # The reworded tool reaches it the same way at the next turn start.
+    assert any(DESCRIPTION_B in json.dumps(item) for item in answered[4].body["input"] if item.get("type") == "additional_tools")
+    assert state.get("tool_surface", {}).get("openai", {}).get("tools")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["gpt-6.2-sol", "gpt-6.2-sol-oauth"])
+async def test_a_deploy_reaches_an_openai_thread_at_once(monkeypatch, target):
+    """A reworded prompt whose sources changed, a deploy, goes out at the
+    next call: OpenAI drops the reasoning it unbinds rather than refuse it, so
+    the thread pays that once instead of waiting for a summary."""
+    from ptc_agent.agent.prompts import release
+
+    builds = iter(["build-a", "build-b", "build-b"])
+    digest = {"now": "build-a"}
+    monkeypatch.setattr(release, "source_digest", lambda: digest["now"])
+    network = _Network(SCRIPT).install(monkeypatch)
+    monkeypatch.setattr(compaction_module, "get_stream_writer", lambda: (lambda _payload: None))
+    config = {"configurable": {"thread_id": f"t-deploy-{target}", "user_id": "u-1"}}
+    saver = InMemorySaver()
+    turn_starts = []
+    with _market():
+        for system, data_tool, content in TURNS:
+            digest["now"] = next(builds)
+            turn_starts.append(len(network.calls))
+            agent = _agent(target, _build(target), system, data_tool, saver)
+            await agent.ainvoke({"messages": [HumanMessage(content=content)]}, config, durability="sync")
+
+    for i, call in enumerate(network.calls):
+        raw = json.dumps(call.body)
+        after_deploy = i >= turn_starts[1]
+        assert (PROMPT_B if after_deploy else PROMPT_A) in raw, f"call {i + 1} sent another build's system prompt"
+        assert (PROMPT_A if after_deploy else PROMPT_B) not in raw, f"call {i + 1} sent another build's system prompt"
+    # The deploy unbinds the reasoning written before it, which the API drops
+    # each time it is sent again, and nothing written after it.
+    before = {call.produced for call in network.calls[: turn_starts[1]] if call.produced}
+    after = {call.produced for call in network.calls[turn_starts[1] :] if call.produced}
+    breaks = _prefix_breaks(network.calls)
+    assert breaks and all(b.rsplit(" ", 1)[-1] in before for b in breaks), breaks
+    # Reasoning written after the deploy is replayed later with no compaction
+    # item ahead of it, so ``_prefix_breaks`` checked its prefix.
+    checked = set()
+    for call in network.calls[turn_starts[1] + 1 :]:
+        items = call.body.get("input") or []
+        compacted = next((k for k, x in enumerate(items) if x.get("type") == "compaction"), len(items))
+        checked |= {item.get("id") for item in items[:compacted] if item.get("type") == "reasoning"}
+    assert after & checked, "no reasoning written after the deploy was replayed where its prefix is checked"

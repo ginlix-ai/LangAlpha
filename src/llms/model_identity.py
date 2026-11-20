@@ -73,3 +73,9 @@ def api_model_id(model: Any) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def is_claude(model: Any) -> bool:
+    """Whether ``model`` is a Claude model, on whichever route serves it: read
+    off the id the client sends, which goes with the model, not the host."""
+    return "claude" in (api_model_id(model) or "").lower()
