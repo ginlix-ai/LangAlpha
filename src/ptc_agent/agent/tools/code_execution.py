@@ -36,6 +36,7 @@ from src.observability import (
     mark_tool_failed,
     stamp_resource_tier,
 )
+from src.tools.turn_tool import input_schema
 
 logger = structlog.get_logger(__name__)
 
@@ -228,9 +229,11 @@ def create_execute_code_tool(
         mark_tool_failed(e.cause if isinstance(e, JobExecFailed) else e)
         return f"ERROR: {e!s}", {"mcp_trace": []}
 
+    run = execute_code if hand_off is not None else subagent_execute_code
     tool = StructuredTool.from_function(
-        coroutine=execute_code if hand_off is not None else subagent_execute_code,
+        coroutine=run,
         name="ExecuteCode",
+        args_schema=input_schema("ExecuteCode", run),
         description=code_description(hand_off),
         response_format="content_and_artifact",
     )

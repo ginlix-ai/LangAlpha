@@ -33,9 +33,9 @@ from pydantic import PrivateAttr
 
 from src.utils.stream_coalescing import COALESCE_MAX_CHARS, COALESCE_WINDOW_S
 
-#: How long a delta waits for the ones continuing it before it goes on. Half
-#: the SSE coalescer's window: the text is held twice, here and there, so this
-#: bounds what joining adds to how late it shows.
+#: How far apart the deltas of a block go on, at least, while they keep
+#: coming. Half the SSE coalescer's window: the text can be held twice, here
+#: and there, so this bounds what joining adds to how late it shows.
 JOIN_WINDOW_S = COALESCE_WINDOW_S / 2
 
 #: The deltas one CLI event can carry several of, by the field each grows.
@@ -81,8 +81,9 @@ class EventSource(Protocol):
 class DeltaJoin:
     """Joins the token deltas a message's events carry, so a reply costs a
     chunk per batch through the callbacks rather than per delta. The first
-    delta of a block goes on at once, so the reply starts as soon as it
-    would; each one after waits up to ``JOIN_WINDOW_S`` for the ones
+    delta of a block goes on at once, and so does any that comes
+    ``JOIN_WINDOW_S`` or more after the last one went on, so a slow stream is
+    never held; one that comes sooner waits out that window for the ones
     continuing it. What does not continue it is held for the next read and
     ends the wait, so no other event is delayed. The wait is what lets
     deltas join at all: the event loop moves every stage between the CLI
@@ -93,23 +94,28 @@ class DeltaJoin:
         self._source = source
         #: The block and kind of the delta given last, while deltas run on.
         self._open: tuple[Any, str] | None = None
+        #: When the delta given last went on, in loop time.
+        self._sent = 0.0
 
     async def grow(self, item: Any) -> Any:
         if not joinable(item):
             self._open = None
             return item
+        loop = asyncio.get_running_loop()
         block = (item.get("index"), item["delta"]["type"])
         if block != self._open:
             self._open = block
+            self._sent = loop.time()
             return item
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + JOIN_WINDOW_S
+        # Past the deadline this still takes what is already queued.
+        deadline = self._sent + JOIN_WINDOW_S
         while (more := await self._source.next_event(within=deadline - loop.time())) is not None:
             grown = joined(item, more)
             if grown is None:
                 self._source.hold(more)
-                return item
+                break
             item = grown
+        self._sent = loop.time()
         return item
 
 

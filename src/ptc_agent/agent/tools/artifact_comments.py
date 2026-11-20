@@ -4,7 +4,9 @@ from typing import Any
 
 import structlog
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
+
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +27,7 @@ def _shown(body: str) -> tuple[str, bool]:
 
 
 def create_reply_to_comment_tool() -> BaseTool:
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def reply_to_comment(
         comment_id: str,
         text: str,

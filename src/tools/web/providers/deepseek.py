@@ -14,8 +14,8 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
-from langchain_core.tools import tool
 
+from src.tools.turn_tool import turn_tool
 from src.tools.web.providers._shared import (
     SNIPPET_MAX,
     empty_content_error,
@@ -198,7 +198,7 @@ def build_web_search_tool(
     """
     _get_api_wrapper = lazy(DeepSeekAPI)
 
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def web_search(
         query: str,
         question: Optional[str] = None,

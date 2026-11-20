@@ -1,13 +1,14 @@
 """Glob tool for file pattern matching."""
 
 import structlog
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.backends import FilesystemBackend
 from ptc_agent.agent.tools.utils import mark_sandbox_raised, stamp_sandbox_served
 from ptc_agent.core.paths import logged_path
 from ptc_agent.core.sandbox.glob_runtime import TooManyPatterns, expand_braces
 from src.observability.private_errors import failure
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -31,7 +32,7 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
         Configured Glob tool function
     """
 
-    @tool("Glob")
+    @turn_tool("Glob")
     async def glob(pattern: str, path: str | None = None) -> str:
         """Find files matching a glob pattern.
 

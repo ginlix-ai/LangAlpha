@@ -10,8 +10,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx
-from langchain_core.tools import tool
 
+from src.tools.turn_tool import turn_tool
 from src.tools.web.providers._shared import (
     lazy,
     normalize_time_range,
@@ -333,7 +333,7 @@ def build_web_search_tool(
     """
     _get_api_wrapper = lazy(SerperAPI)
 
-    @tool(response_format="content_and_artifact")
+    @turn_tool(response_format="content_and_artifact")
     async def web_search(
         query: str,
         search_type: Optional[Literal["general", "news"]] = "general",

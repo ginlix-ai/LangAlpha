@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import structlog
-from langchain_core.tools import tool
 
 from ptc_agent.agent.backends import (
     FilesystemBackend,
@@ -35,6 +34,7 @@ from ptc_agent.agent.backends.db_json_route import UserDataValidationError
 from ptc_agent.agent.transcript.reading import READ_CHARS as TRANSCRIPT_READ_CHARS
 from ptc_agent.agent.transcript.reading import cut_window, is_segment
 from src.observability.private_errors import failure
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -191,7 +191,7 @@ def create_filesystem_tools(
             )
         return admission
 
-    @tool("Read")
+    @turn_tool("Read")
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
         """Read a file. Also supports images (PNG, JPG, GIF, WebP), PDFs and URLs.
 
@@ -376,7 +376,7 @@ def create_filesystem_tools(
             logger.error("Failed to read file", file_path=logged_path(file_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
-    @tool("Write")
+    @turn_tool("Write")
     async def write_file(file_path: str, content: str) -> str:
         """Write content to a file. Overwrites existing.
 
@@ -460,7 +460,7 @@ def create_filesystem_tools(
             logger.error("Failed to write file", file_path=logged_path(file_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
-    @tool("Edit")
+    @turn_tool("Edit")
     async def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         """Replace exact string in a file. Must Read file first.
 

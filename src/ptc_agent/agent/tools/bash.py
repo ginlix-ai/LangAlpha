@@ -38,6 +38,7 @@ from src.observability import (
     mark_tool_failed,
     stamp_resource_tier,
 )
+from src.tools.turn_tool import input_schema
 
 logger = structlog.get_logger(__name__)
 
@@ -410,7 +411,7 @@ def create_execute_bash_tool(
         coroutine=Bash if hand_off is not None else SubagentBash,
         name="Bash",
         description=bash_description(hand_off),
-        args_schema=None if hand_off is not None else _SubagentBashArgs,
+        args_schema=input_schema("Bash", Bash) if hand_off is not None else _SubagentBashArgs,
         response_format="content_and_artifact",
     )
     # Every run, not only a failed one, so an error rate reads per provider.

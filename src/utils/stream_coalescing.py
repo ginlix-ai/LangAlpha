@@ -16,8 +16,9 @@ import time
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
-# A held delta goes out once this much time has passed since its first piece,
-# so a slow stream still reads as live.
+# Deltas go out at most once per this window: a piece after a quiet spell goes
+# at once, and one arriving sooner is held until the window since the last one
+# passes, so a slow stream is never held and a fast one is joined.
 COALESCE_WINDOW_S = 0.1
 
 # The client shows an update of about 600 characters at once instead of
@@ -122,8 +123,10 @@ class DeltaCoalescer:
 
     Frames come out in the order they went in, and only consecutive pieces of
     one stream are joined, so every boundary a non-delta frame marks is kept.
-    There is no timer: the caller polls whenever an event arrives, so a held
-    piece waits for the next one at most.
+    A piece goes out at once when no delta has gone out within the window;
+    otherwise it is held until the window since the last one has passed, and
+    the pieces continuing it join it. There is no timer: the caller polls
+    whenever an event arrives, so a held piece waits for the next one at most.
 
     Tool-call pieces join by ``index``, and a piece with no id and no name
     continues the one that named the call. That is the shape a model streams,
@@ -148,7 +151,10 @@ class DeltaCoalescer:
         self._first: StreamFrame | None = None
         self._pieces: list[str] = []
         self._held_len = 0
-        self._held_since = 0.0
+        # When a delta last went out, which a held one is due a window after.
+        # A new coalescer counts as having just sent, so the burst a stream
+        # often opens with is joined.
+        self._sent_at = clock()
 
     @property
     def holding(self) -> bool:
@@ -159,7 +165,7 @@ class DeltaCoalescer:
         """Whether a held delta's window has passed, so ``poll`` releases it."""
         return (
             self._first is not None
-            and self._clock() - self._held_since >= self._window_s
+            and self._clock() - self._sent_at >= self._window_s
         )
 
     def offer(self, frame: StreamFrame) -> list[StreamFrame]:
@@ -170,20 +176,18 @@ class DeltaCoalescer:
             out.extend(self.drain())
             out.append(frame)
             return out
-        if (
+        if not (
             self._first is not None
             and self._held_len + len(piece) <= self._max_chars
             and self._continues(frame)
         ):
-            self._pieces.append(piece)
-            self._held_len += len(piece)
-        else:
             out.extend(self.drain())
             self._first = frame
-            self._pieces = [piece]
-            self._held_len = len(piece)
-            self._held_since = self._clock()
-        if self._held_len >= self._max_chars:
+        self._pieces.append(piece)
+        self._held_len += len(piece)
+        # Due already when no delta went out within the window, so a piece
+        # after a quiet spell goes at once.
+        if self.due or self._held_len >= self._max_chars:
             out.extend(self.drain())
         return out
 
@@ -197,6 +201,7 @@ class DeltaCoalescer:
         if first is None:
             return []
         self.discard()
+        self._sent_at = self._clock()
         if len(pieces) == 1:
             return [first]
         return [_joined(first, "".join(pieces))]

@@ -105,7 +105,6 @@ bundle_owners = None
 workspace_manager = None  # Workspace manager instance
 checkpointer = None  # PTC Agent LangGraph checkpointer for state persistence
 store = None  # LangGraph Store for cross-turn metadata persistence
-graph = None  # Most recently used LangGraph (for persistence snapshots)
 llm_service = None  # Generic one-shot LLM call wrapper (BYOK/OAuth-aware)
 
 # PID 1 process names that correctly reap orphaned subprocesses.
@@ -865,6 +864,10 @@ async def lifespan(app: FastAPI):
     gc.collect()
     gc.freeze()
     logger.info(f"Froze {gc.get_freeze_count()} startup objects out of the GC")
+    # And what the first turns load for good, once the worker is idle.
+    from src.server.services import heap_settle
+
+    settle = asyncio.create_task(heap_settle.run(), name="heap-settle")
 
     yield  # Server is running
 
@@ -889,6 +892,8 @@ async def lifespan(app: FastAPI):
     if mcp_reconnect is not None:
         mcp_reconnect.cancel()
         await asyncio.gather(mcp_reconnect, return_exceptions=True)
+    settle.cancel()
+    await asyncio.gather(settle, return_exceptions=True)
     from src.server.services.brand_icons import stop_refreshes
 
     await stop_refreshes()

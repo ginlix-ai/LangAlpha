@@ -6,13 +6,14 @@ import re._parser as sre_parser
 from typing import Literal
 
 import structlog
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.backends import FilesystemBackend
 from ptc_agent.agent.tools.utils import mark_sandbox_raised, stamp_sandbox_served
 from ptc_agent.core.paths import logged_path
 from ptc_agent.core.sandbox.grep_render import GrepLine
 from src.observability.private_errors import failure
+from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -58,7 +59,7 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
         Configured Grep tool function
     """
 
-    @tool("Grep")
+    @turn_tool("Grep")
     async def grep(
         pattern: str,
         path: str | None = None,

@@ -32,6 +32,7 @@ from ptc_agent.agent.tools.computer_reach import (
 )
 from src.config import env
 from src.server.services.shared_workspaces.access import shared_org_of
+from src.tools.turn_tool import input_schema
 
 try:
     from langchain.tools import InjectedToolCallId
@@ -701,6 +702,7 @@ def _send_from_home(computers: ComputerReach | None) -> BaseTool:
     return StructuredTool.from_function(
         coroutine=send_message,
         name="send_message",
+        args_schema=input_schema("send_message", send_message),
         description=SEND_MESSAGE_DESCRIPTION,
         response_format="content_and_artifact",
     )
