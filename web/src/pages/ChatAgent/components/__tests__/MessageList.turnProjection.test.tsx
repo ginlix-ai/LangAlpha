@@ -15,7 +15,7 @@ import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
 import MessageList from '../MessageList';
 import { MessageActionsProvider, type MessageActions } from '../messageList/MessageActionsContext';
-import { computeTurnTails, newestTurn, projectTurns } from '../messageList/turnProjection';
+import { computeReplyEnds, computeTurnTails, newestTurn, projectTurns } from '../messageList/turnProjection';
 import { visibleProjection } from '../messageList/contentProjection';
 import type { MessageRecord } from '../messageList/types';
 
@@ -160,6 +160,18 @@ describe('turnProjection — raw turn semantics', () => {
     const visible = visibleProjection(projectTurns(messages as MessageRecord[]));
     // [u0, a0, a0-cont, u1, a1] → a0 is mid-turn, a0-cont and a1 are tails.
     expect(computeTurnTails(visible)).toEqual([false, false, true, false, true]);
+  });
+
+  it('closes a reply at a steer the user sent, not at a report-back row', () => {
+    const ends = (between: Msg) => {
+      const visible = visibleProjection(projectTurns([
+        userMsg('u0'), assistant('a0'), between, assistant('a0-cont', { isSteering: true }),
+      ] as MessageRecord[]));
+      return computeReplyEnds(visible, computeTurnTails(visible));
+    };
+    expect(ends(userMsg('s0', { steeringDelivered: true }))).toEqual([false, true, false, true]);
+    expect(ends(userMsg('r0', { steeringDelivered: true, provenance: { kind: 'task_report' } })))
+      .toEqual([false, false, false, true]);
   });
 });
 

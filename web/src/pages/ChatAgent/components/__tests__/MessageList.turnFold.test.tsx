@@ -306,3 +306,134 @@ describe('turn fold — the bubble reads the turn\'s liveness, not its own', () 
     expect(actionsHidden(landed.container)).toBe(false);
   });
 });
+
+describe('turn fold — a steer splitting the turn', () => {
+  it('keeps the reply the steer answered, and folds the working on both sides', () => {
+    // The agent takes a steer in only at its next model call, so the bubble
+    // before it closes with what the reader was answered with when they spoke
+    // again. Folded as the turn's working, that answer left the collapsed turn
+    // while the steer that replied to it stayed.
+    const done = { isInProgress: false, isComplete: true, isFailed: false };
+    const { container, getByText, queryByText } = renderList([
+      { id: 'u0', role: 'user', content: 'ask', contentType: 'text', timestamp: new Date('2026-11-20T15:40:00.000Z'), isStreaming: false, turnIndex: 0 },
+      {
+        id: 'a0', role: 'assistant', content: '', contentType: 'text', turnIndex: 0,
+        timestamp: new Date('2026-11-20T15:40:02.000Z'), isStreaming: false,
+        contentSegments: [
+          { type: 'text', content: 'checking the tape', order: 0 },
+          { type: 'tool_call', order: 1, toolCallId: 'tc-0' },
+          { type: 'text', content: 'first answer', order: 2 },
+        ],
+        reasoningProcesses: {},
+        toolCallProcesses: { 'tc-0': { toolName: 'WebSearch', toolCall: { args: {} }, ...done } },
+      },
+      {
+        id: 'u1', role: 'user', content: 'steer', contentType: 'text', turnIndex: 0, steeringDelivered: true,
+        timestamp: new Date('2026-11-20T15:41:00.000Z'), isStreaming: false,
+      },
+      {
+        id: 'a1', role: 'assistant', content: '', contentType: 'text', isSteering: true, turnIndex: 0,
+        timestamp: new Date('2026-11-20T15:41:02.000Z'), isStreaming: false,
+        completedAt: Date.parse('2026-11-20T15:41:30.000Z'),
+        contentSegments: [
+          { type: 'text', content: 'pulling the chain', order: 0 },
+          { type: 'tool_call', order: 1, toolCallId: 'tc-1' },
+          { type: 'text', content: 'second answer', order: 2 },
+        ],
+        reasoningProcesses: {},
+        toolCallProcesses: { 'tc-1': { toolName: 'WebSearch', toolCall: { args: {} }, ...done } },
+      },
+    ]);
+
+    expect(foldState(container)).toBe('collapsed');
+    expect(getByText('first answer')).toBeInTheDocument();
+    expect(getByText('second answer')).toBeInTheDocument();
+    expect(queryByText('checking the tape')).toBeNull();
+    expect(queryByText('pulling the chain')).toBeNull();
+  });
+});
+
+describe('turn fold — which of a turn\'s texts read as its answer', () => {
+  const done = { isInProgress: false, isComplete: true, isFailed: false };
+  const call = (toolName: string) => ({ toolName, toolCall: { args: {} }, ...done });
+  const ANSWER = [
+    '## Summary', '', '| Ticker | Move |', '|---|---|', '| AAA | +3% |', '| BBB | -2% |', '',
+    '## Takeaway', '', 'Both moved on the same print.',
+  ].join('\n');
+  const turn = (segments: Record<string, unknown>[], extra: Record<string, unknown> = {}) => [
+    { id: 'u0', role: 'user', content: 'ask', contentType: 'text', timestamp: new Date('2026-11-20T15:40:00.000Z'), isStreaming: false },
+    {
+      id: 'a0', role: 'assistant', content: '', contentType: 'text',
+      timestamp: new Date('2026-11-20T15:40:02.000Z'), isStreaming: false,
+      completedAt: Date.parse('2026-11-20T15:41:00.000Z'),
+      contentSegments: segments, reasoningProcesses: {},
+      toolCallProcesses: { 'tc-0': call('WebSearch'), 'tc-1': call('TodoWrite'), 'tc-2': call('ExecuteCode') },
+      ...extra,
+    },
+  ];
+
+  it('keeps an answer the agent wrote before one more call, beside its closing line', () => {
+    const { container, getByText, queryByText } = renderList(turn([
+      { type: 'text', content: 'Checking the tape.', order: 0 },
+      { type: 'tool_call', order: 1, toolCallId: 'tc-0' },
+      { type: 'text', content: ANSWER, order: 2 },
+      { type: 'tool_call', order: 3, toolCallId: 'tc-1' },
+      { type: 'text', content: 'Saved it to the notes.', order: 4 },
+    ]));
+
+    expect(getByText(/Both moved on the same print/)).toBeInTheDocument();
+    expect(getByText('Saved it to the notes.')).toBeInTheDocument();
+    expect(queryByText('Checking the tape.')).toBeNull();
+    // The turn-end landing reads the answer from its top, not the line under it.
+    expect(container.querySelector('[data-reply-start]')).toHaveTextContent('Both moved on the same print');
+  });
+
+  it('reads a turn that stopped mid-work as one with no answer, not as answered by its last line', () => {
+    // With no answer, the turn lays out its work rather than standing a line
+    // of narration alone under the fold row as if it were the reply.
+    const { container } = renderList(turn([
+      { type: 'text', content: 'Checking the tape.', order: 0 },
+      { type: 'tool_call', order: 1, toolCallId: 'tc-0' },
+      { type: 'text', content: 'Now let me compute the ratios:', order: 2 },
+      { type: 'tool_call', order: 3, toolCallId: 'tc-2' },
+    ]));
+
+    expect(foldState(container)).toBe('process');
+  });
+
+  it('keeps a short closing answer the agent ticked its todo list after', () => {
+    const { container, getByText } = renderList(turn([
+      { type: 'text', content: 'Checking the tape.', order: 0 },
+      { type: 'tool_call', order: 1, toolCallId: 'tc-0' },
+      { type: 'text', content: 'The first is cheaper on earnings.', order: 2 },
+      { type: 'tool_call', order: 3, toolCallId: 'tc-1' },
+      // The list the call draws, as the stream and the replay both write it.
+      { type: 'todo_list', order: 4, todoListId: 'tl-1' },
+    ], { todoListProcesses: { 'tl-1': { todos: [{ content: 'Compare', status: 'completed' }], total: 1, completed: 1, in_progress: 0, pending: 0, order: 4 } } }));
+
+    expect(foldState(container)).toBe('collapsed');
+    expect(getByText('The first is cheaper on earnings.')).toBeInTheDocument();
+  });
+
+  it('keeps the text leading into an approval the user is asked for', () => {
+    const { getByText } = renderList(turn([
+      { type: 'text', content: 'Checking the tape.', order: 0 },
+      { type: 'tool_call', order: 1, toolCallId: 'tc-0' },
+      { type: 'text', content: 'Placing a limit order for ten shares.', order: 2 },
+      { type: 'tool_approval', order: 3, proposalId: 'p-1' },
+      { type: 'text', content: 'Waiting on your approval.', order: 4 },
+    ]));
+
+    expect(getByText('Placing a limit order for ten shares.')).toBeInTheDocument();
+  });
+
+  it('keeps the text leading into a question the user is asked', () => {
+    const { getByText } = renderList(turn([
+      { type: 'text', content: 'Your profile is empty, so I prepared three starting points.', order: 0 },
+      { type: 'user_question', order: 1, questionId: 'q-1' },
+      { type: 'text', content: 'Pick one and I will start.', order: 2 },
+    ], { userQuestions: { 'q-1': { question: 'Which one?', options: [], interruptId: 'q-1', status: 'answered' } } }));
+
+    expect(getByText('Your profile is empty, so I prepared three starting points.')).toBeInTheDocument();
+  });
+});
