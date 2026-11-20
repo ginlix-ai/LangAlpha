@@ -220,3 +220,30 @@ async def test_a_write_that_fails_as_the_cli_exits_fails_in_the_clis_words(monke
         await transport.write("{}\n")
     if exits:
         assert raised.value.exit_code == 1 and "enterprise MCP config" in raised.value.stderr
+
+
+@pytest.mark.asyncio
+async def test_a_cli_cut_off_mid_character_fails_with_its_exit_code_and_stderr(tmp_path):
+    """anyio raises on a character cut off at the end of a text stream, which
+    would fail the read before the exit code and stderr are read."""
+    cli = tmp_path / "claude"
+    cli.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "sys.stderr.write('disk full\\n'); sys.stderr.flush()\n"
+        "sys.stdout.buffer.write(b'{\"type\":\"system\",\"x\":\"\\xe4\\xb8\\xad\"}\\n{\"type\":\"assistant\",\"text\":\"ab\\xc3')\n"
+        "sys.stdout.flush(); sys.exit(3)\n"
+    )
+    cli.chmod(0o755)
+    from claude_agent_sdk import ProcessError
+
+    from ptc_agent.agent.claude_code.launcher import ScopedEnvTransport
+
+    transport = ScopedEnvTransport(options=ClaudeAgentOptions(cli_path=str(cli)), base_env={}, credential=None)
+    await transport.connect()
+    try:
+        with pytest.raises(ProcessError) as raised:
+            async for _ in transport.read_messages():
+                pass
+    finally:
+        await transport.close()
+    assert raised.value.exit_code == 3 and "disk full" in raised.value.stderr

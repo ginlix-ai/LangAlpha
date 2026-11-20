@@ -310,7 +310,7 @@ class ScopedEnvTransport(SubprocessCLITransport):
         return await exit_error(code, self._stderr, self._stderr_task.wait() if self._stderr_task is not None else None)
 
     async def connect(self) -> None:
-        """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in four places only.
+        """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in five places only.
 
         The environment is ``cli_env`` on ``base_env``, not ``os.environ``. The version
         probe is skipped: it would run the CLI with the worker's whole
@@ -318,7 +318,10 @@ class ScopedEnvTransport(SubprocessCLITransport):
         starts in its own session, so a terminal's Ctrl-C or a job-control
         signal to the worker's process group never stops a CLI mid-turn; the
         run's close ends it. The credential reaches it through an inherited
-        socket, never its argv or environment.
+        socket, never its argv or environment. Its output is decoded with
+        ``errors="replace"``: anyio raises on a character cut off at EOF, so a
+        CLI that dies mid-write would fail the read before the exit code and
+        stderr are read.
         """
         if self._process:
             return
@@ -371,10 +374,10 @@ class ScopedEnvTransport(SubprocessCLITransport):
             _ACTIVE_CHILDREN.add(self._process)
 
             if self._process.stdout:
-                self._stdout_stream = TextReceiveStream(self._process.stdout)
+                self._stdout_stream = TextReceiveStream(self._process.stdout, errors="replace")
 
             if stderr_dest is PIPE and self._process.stderr:
-                self._stderr_stream = TextReceiveStream(self._process.stderr)
+                self._stderr_stream = TextReceiveStream(self._process.stderr, errors="replace")
                 self._stderr_task = spawn_detached(self._handle_stderr())
 
             if self._process.stdin:
