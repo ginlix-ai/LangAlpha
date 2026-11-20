@@ -152,82 +152,6 @@
         },
         "context_window": 1050000,
         "max_output": 128000
-      },
-      {
-        "id": "gpt-6-astra",
-        "name": "GPT-6 Astra",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by gpt-6.2-astra. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 10.0,
-              "cached_input": 1.0,
-              "cache_5m": 12.5
-            },
-            {
-              "max_tokens": null,
-              "rate": 20.0,
-              "cached_input": 2.0,
-              "cache_5m": 25.0
-            }
-          ],
-          "cache_5m": 12.5,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 50.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 75.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
-      },
-      {
-        "id": "gpt-6.1-sol",
-        "name": "GPT-6.1 Sol",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by gpt-6.2-sol. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 2.0,
-              "cached_input": 0.1,
-              "cache_5m": 2.5
-            },
-            {
-              "max_tokens": null,
-              "rate": 4.0,
-              "cached_input": 0.2,
-              "cache_5m": 5.0
-            }
-          ],
-          "cache_5m": 2.5,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 10.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 15.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
       }
     ],
     "anthropic": [
@@ -338,10 +262,22 @@
         }
       },
       {
-        "id": "gemini-4-argon",
-        "name": "Gemini 4 Argon",
+        "id": "gemini-4-neon",
+        "name": "Gemini 4 Neon",
         "is_reasoning": true,
-        "description": "Google's flagship reasoning model, for complex software engineering, deep mathematical and scientific problem solving, and autonomous multi-step agents",
+        "description": "Google's Gemini 4 model between Hydrogen and Carbon, near-Carbon reasoning with faster end-to-end task completion for coding, research and agentic work",
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.15,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "is_reasoning": true,
+        "description": "Google's most capable reasoning model, above Gemini 4 Neon, for the hardest multi-step agentic, coding and scientific work",
         "pricing": {
           "input": 2.0,
           "cached_input": 0.1,
@@ -357,10 +293,10 @@
         }
       },
       {
-        "id": "gemini-4-carbon",
-        "name": "Gemini 4 Carbon",
+        "id": "gemini-4-argon",
+        "name": "Gemini 4 Argon",
         "is_reasoning": true,
-        "description": "Google's most capable reasoning model, above Gemini 4 Argon, for the hardest multi-step agentic, coding and scientific work",
+        "description": "Retired 2026-11-20, superseded by gemini-4-neon. Kept until the next retirement so a custom model on this id still bills.",
         "pricing": {
           "input": 2.0,
           "cached_input": 0.1,
@@ -481,76 +417,6 @@
         },
         "context_window": 256000,
         "max_output": 256000
-      },
-      {
-        "id": "grok-4.5",
-        "name": "Grok 4.5",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by grok-4.7. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 2.0,
-              "cached_input": 0.3
-            },
-            {
-              "max_tokens": null,
-              "rate": 4.0,
-              "cached_input": 0.6
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 6.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 12.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 500000,
-        "max_output": 500000
-      },
-      {
-        "id": "grok-4.3",
-        "name": "Grok 4.3",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by grok-4.7. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 1.25,
-              "cached_input": 0.2
-            },
-            {
-              "max_tokens": null,
-              "rate": 2.5,
-              "cached_input": 0.4
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 2.5
-            },
-            {
-              "max_tokens": null,
-              "rate": 5.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1000000,
-        "max_output": 1000000
       }
     ],
     "lm-studio": [],
@@ -636,18 +502,6 @@
           "output": 2.2,
           "unit": "per_1m_tokens"
         }
-      },
-      {
-        "id": "glm-5.2",
-        "name": "GLM-5.2",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by glm-5.3. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 1.4,
-          "cached_input": 0.26,
-          "output": 4.4,
-          "unit": "per_1m_tokens"
-        }
       }
     ],
     "z-ai-cn": [
@@ -706,18 +560,6 @@
               "cached_input": 0.11
             }
           ],
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "glm-5.2",
-        "name": "GLM-5.2",
-        "is_reasoning": true,
-        "description": "Retired 2026-11-17, superseded by glm-5.3. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 1.14,
-          "cached_input": 0.29,
-          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -968,19 +810,6 @@
           "unit": "per_1m_tokens"
         },
         "description": "Kimi K3.1 Pro Highspeed on a Kimi Code plan"
-      },
-      {
-        "id": "k3",
-        "name": "Kimi K3",
-        "is_reasoning": true,
-        "context_window": 262144,
-        "pricing": {
-          "input": 3.0,
-          "cached_input": 0.3,
-          "output": 15.0,
-          "unit": "per_1m_tokens"
-        },
-        "description": "Retired 2026-11-17, superseded by k3.1-pro. Kept until the next retirement so a custom model on this id still bills."
       }
     ],
     "cerebras": [

@@ -52,6 +52,7 @@ _UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
     "cohere",
     "openrouter",
     "httpx",
+    "httpx2",
     # Our own wrappers around a provider stream. They quote the provider and
     # are raised fresh rather than chained, so nothing below would match them.
     "src.llms.extension",

@@ -448,9 +448,9 @@ def _race_sync(hc, host, port, ips, timeout, local_address, socket_options) -> s
 
 def _held_transport_class(hx: Any, hc: Any) -> type:
     """The held transport for one httpx line and the httpcore under it (the
-    OpenAI SDK is on httpx2 and httpcore2, the others on httpx and httpcore).
-    One object serves a sync and an async client, as each SDK hands the same
-    one to both."""
+    OpenAI and google-genai SDKs are on httpx2 and httpcore2, the others on
+    httpx and httpcore). One object serves a sync and an async client, as
+    each SDK hands the same one to both."""
     # httpcore exports no way to wrap a socket it did not open, and the sync
     # race opens its own; this is the stream its own sync backend returns.
     SyncStream = importlib.import_module(f"{hc.__name__}._backends.sync").SyncStream
@@ -598,7 +598,14 @@ def sdk_transport(family: str):
         return _HeldHttpx2(_OpenAIEndpointRefused, shared=True)
     if family == "anthropic":
         return _HeldHttpx(_AnthropicEndpointRefused, shared=True)
-    if family in ("gemini", "openrouter"):
+    if family == "gemini":
+        # google-genai builds its client on the httpx line of the transport it
+        # is handed, unless GOOGLE_GENAI_HTTP_CLIENT names one first, and a
+        # client of one line cannot drive the other's transport.
+        if os.environ.get("GOOGLE_GENAI_HTTP_CLIENT", "").strip().lower() == "httpx":
+            return _HeldHttpx(EndpointRefused, shared=True)
+        return _HeldHttpx2(EndpointRefused, shared=True)
+    if family == "openrouter":
         return _HeldHttpx(EndpointRefused, shared=True)
     raise ValueError(f"No held transport for SDK family {family!r}")
 

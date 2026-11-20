@@ -228,7 +228,7 @@ def network(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "hx, family", [(httpx, "anthropic"), (httpx, "gemini"), (httpx2, "openai")]
+    "hx, family", [(httpx, "anthropic"), (httpx2, "gemini"), (httpx2, "openai")]
 )
 async def test_a_connection_is_opened_on_the_validated_address_under_its_name(dns, network, hx, family):
     dns.table["gateway.test"] = [PUBLIC]
@@ -633,6 +633,18 @@ def test_an_anthropic_client_that_no_longer_caches_its_sdk_client_is_refused():
 
 
 @pytest.mark.parametrize(
+    "configured, held",
+    [(None, "_HeldHttpx2"), ("httpx2", "_HeldHttpx2"), ("auto", "_HeldHttpx2"), (" HTTPX ", "_HeldHttpx")],
+)
+def test_gemini_is_held_on_the_httpx_line_its_sdk_is_configured_for(monkeypatch, configured, held):
+    if configured is None:
+        monkeypatch.delenv("GOOGLE_GENAI_HTTP_CLIENT", raising=False)
+    else:
+        monkeypatch.setenv("GOOGLE_GENAI_HTTP_CLIENT", configured)
+    assert type(egress.sdk_transport.__wrapped__("gemini")) is getattr(egress, held)
+
+
+@pytest.mark.parametrize(
     "params",
     [
         {"client_args": {"proxy": "http://127.0.0.1:3128"}},
@@ -646,7 +658,7 @@ def test_a_gemini_client_is_held_on_both_its_clients(params):
         egress_transport=egress.sdk_transport,
     )
     assert set(llm.client_args) == {"transport", "follow_redirects"}
-    assert isinstance(llm.client_args["transport"], egress._HeldHttpx)
+    assert isinstance(llm.client_args["transport"], egress._HeldHttpx2)
     assert llm.client_args["follow_redirects"] is False
 
 

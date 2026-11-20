@@ -23,7 +23,7 @@ class TestGetInputModalities:
         assert "pdf" in result
 
     def test_gemini_supports_video(self, model_config):
-        result = model_config.get_input_modalities("gemini-4-argon")
+        result = model_config.get_input_modalities("gemini-4-neon")
         assert "video" in result
         assert "image" in result
         assert "pdf" in result

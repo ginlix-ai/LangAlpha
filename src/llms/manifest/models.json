@@ -335,14 +335,14 @@
       "write": "parameters.thinking_level"
     }
   },
-  "gemini-4-argon": {
+  "gemini-4-neon": {
     "prompt_guidance": "lean",
-    "model_id": "gemini-4-argon",
+    "model_id": "gemini-4-neon",
     "provider": "gemini",
-    "display_name": "Gemini 4 Argon",
+    "display_name": "Gemini 4 Neon",
     "visible": true,
-    "speed": 3,
-    "intelligence": 4,
+    "speed": 4,
+    "intelligence": 5,
     "context": 1000000,
     "input_modalities": [
       "text",
@@ -357,7 +357,8 @@
       "efforts": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "default": "medium",
       "write": "parameters.thinking_level"
@@ -385,7 +386,8 @@
       "efforts": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "default": "medium",
       "write": "parameters.thinking_level"
