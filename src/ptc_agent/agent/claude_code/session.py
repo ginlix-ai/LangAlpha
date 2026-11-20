@@ -51,6 +51,9 @@ def claude_code_rules(values: Mapping[str, Any]) -> dict[str, Any] | None:
     return rules
 #: The record the CLI writes for a call a PreToolUse hook deferred.
 _DEFERRED = "hook_deferred_tool"
+#: The record of the prompt and tools a launch ran on, which the CLI writes
+#: at each launch and replays, the newest of them, on every later one.
+_PROMPT_SNAPSHOT = "prompt_snapshot"
 #: What a record the CLI writes carries besides its own content, as a result
 #: it records takes it from the call's deferral, whose place in the chain
 #: (``uuid``) it takes too, so the records written after it still lead to it.
@@ -78,10 +81,12 @@ class ToolDefinition(TypedDict):
 class SessionPin(TypedDict):
     """The system prompt and tool definitions a session runs on, byte for byte.
 
-    Claude's thinking is bound to the prefix in front of it, so every turn of
-    a session is launched from these rather than from what the current build
-    would send: a deploy that changes the prompt or a tool reaches a session
-    only where its prefix is rewritten anyway. The build's prompt sources and
+    Claude's thinking is bound to the prefix in front of it: under another
+    prompt or tool list the API reads past every earlier block, and the cache
+    holds none of the session. So every turn of a session is launched from
+    these rather than from what the current build would send: a deploy that
+    changes the prompt or a tool reaches a session only where its prefix is
+    rewritten anyway, at a compaction. The build's prompt sources and
     ``prompt_version`` are kept beside them, to tell a deploy's change from
     a change of per-turn inputs (``compaction.py``).
     """
@@ -142,9 +147,10 @@ def session_records_reducer(
     names none, which leaves no session for the next run to resume. A write's pin
     and baseline apply ahead of its records, and a compaction among them
     voids the baseline. The pin holds: the CLI records the prompt and tools
-    of the launch that compacted on its next request and replays that record
-    from then on, whatever a later launch passes, so the session goes on
-    running on the pin it was launched with. A write that names a pin says
+    of each launch (``_PROMPT_SNAPSHOT``) and replays the newest record on
+    every later launch, whatever that launch passes, so the session goes on
+    running on the pin it was launched with until a launch is handed none
+    of the records that keep it (``unpinned``). A write that names a pin says
     whether the session is due to move from it, so a new pin clears it.
     """
     state = state or {}
@@ -178,6 +184,55 @@ def session_records_reducer(
     if due:
         out["repin_due"] = True
     return out
+
+
+def _snapshot(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    attachment = entry.get("attachment") if entry.get("type") == "attachment" else None
+    return attachment if isinstance(attachment, Mapping) and attachment.get("type") == _PROMPT_SNAPSHOT else None
+
+
+def same_pin(a: SessionPin, b: SessionPin) -> bool:
+    """Whether two pins send the same prefix, whichever build recorded them."""
+    return a["system_prompt"] == b["system_prompt"] and a["tools"] == b["tools"]
+
+
+def _last_boundary(entries: Sequence[Mapping[str, Any]]) -> int | None:
+    """The index of the session's last compaction boundary, which the CLI
+    replays from."""
+    return next((i for i in range(len(entries) - 1, -1, -1) if entries[i].get("subtype") == "compact_boundary"), None)
+
+
+def records_pin(entry: Mapping[str, Any]) -> bool:
+    """Whether a record is the CLI's record of the prompt and tools a launch
+    runs on, the one a moved pin waits for: the snapshot it writes as a
+    launch opens names the prompt alone, and a later one the tools too."""
+    snapshot = _snapshot(entry)
+    return snapshot is not None and "tools" in snapshot
+
+
+def unpinned(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """``entries`` without the CLI's records of the prompt and tools it ran on
+    since the session's last compaction, for a launch that moves the session
+    to another pin. The CLI replays the newest such record, and before the
+    compaction it replays none, so the launch then runs on the prompt and
+    tools it is given. Thinking already in the session stays, and Claude
+    reads past what was written under another prefix. The CLI reads the
+    session back along each record's ``parentUuid``, so a record whose
+    parent is left out takes that parent's own."""
+    start = _last_boundary(entries)
+    if start is None:
+        return [dict(e) for e in entries]
+    dropped = {e.get("uuid"): e.get("parentUuid") for i, e in enumerate(entries)
+               if i > start and _snapshot(e) is not None and e.get("uuid")}
+    kept = [dict(e) for i, e in enumerate(entries) if i <= start or _snapshot(e) is None]
+    for e in kept:
+        parent, seen = e.get("parentUuid"), set()
+        while parent in dropped and parent not in seen:
+            seen.add(parent)
+            parent = dropped[parent]
+        if "parentUuid" in e:
+            e["parentUuid"] = parent
+    return kept
 
 
 def pending_deferral(records: SessionRecords | None) -> str | None:
