@@ -3,6 +3,7 @@
 import asyncio
 import secrets
 import uuid
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -209,6 +210,21 @@ async def test_a_stream_closed_early_finishes_the_graph_before_the_cli_goes():
     assert order == ["graph closed", "cli closed"]
 
 
+@contextmanager
+def _rosters():
+    """The subagent rosters built meanwhile, whose graphs build on first use."""
+    from ptc_agent.agent.middleware.background_subagent.subagent import SubAgentMiddleware
+
+    rosters, real_init = [], SubAgentMiddleware.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        rosters.append(self.subagent_graphs)
+
+    with patch.object(SubAgentMiddleware, "__init__", init):
+        yield rosters
+
+
 def _built(*, saved: str | None = None, **kwargs) -> ClaudeCodeGraph:
     """The real build of a Claude Code turn, let to sign in with ``saved``."""
     from ptc_agent.agent.agent import PTCAgent
@@ -412,9 +428,14 @@ def test_a_subagent_of_a_claude_code_turn_runs_each_run_in_a_cli_of_its_own():
         return real_build(node, **kw)
 
     with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
-         patch.object(cc_agent, "build_claude_code_graph", side_effect=build):
+         patch.object(cc_agent, "build_claude_code_graph", side_effect=build), \
+         _rosters() as rosters:
         main = _built(claude_code_launcher=lambda sandbox, admitted, *queue, **kw: launched.append(kw) or LocalLauncher())
+        # A subagent's graph is built when a run first asks for it.
+        [roster] = rosters
+        roster["general-purpose"]
     [(kw, sub, built)] = [(kw, g, b) for (kw, g), b in zip(graphs, builds, strict=True) if g is not main]
+    [main_built] = [b for (_, g), b in zip(graphs, builds, strict=True) if g is main]
     turn = sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
     assert turn.run_key == "t-1-k1" and launched == [{"slot_wait_s": 30}]
     assert isinstance(turn.steering, TaskSteering)
@@ -422,7 +443,7 @@ def test_a_subagent_of_a_claude_code_turn_runs_each_run_in_a_cli_of_its_own():
     assert [n for n, _ in built["entry"]][:2] == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent"]
     assert [n for n, _ in built["pause"]] == ["CreditGateMiddleware.before_model"]
     assert isinstance(built["on_reply"].__self__, SubagentEventCaptureMiddleware)
-    assert builds[-1]["on_reply"] is None
+    assert main_built["on_reply"] is None
 
 
 @pytest.mark.parametrize("saved", ["stored_token", None])
@@ -481,10 +502,13 @@ def test_a_claude_code_pin_on_a_turn_of_another_model_runs_each_run_in_a_cli_of_
             )
 
     with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
-         patch.object(BackgroundSubagentMiddleware, "__init__", init):
+         patch.object(BackgroundSubagentMiddleware, "__init__", init), _rosters() as rosters:
         main = build(
             claude_code_launcher=lambda sandbox, admitted, **kw: launched.append((admitted, kw)) or LocalLauncher(),
         )
+        # A subagent's graph is built when a run first asks for it.
+        [roster] = rosters
+        roster["general-purpose"]
     assert not isinstance(main, ClaudeCodeGraph)
     [sub] = graphs
     sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})

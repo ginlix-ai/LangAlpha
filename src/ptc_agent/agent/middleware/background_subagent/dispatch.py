@@ -11,6 +11,7 @@ capture, collection, and billing.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -141,7 +142,7 @@ async def run_subagent_graph(
 
 async def dispatch_background_subagent(
     mw: "BackgroundSubagentMiddleware",
-    subagent_graphs: dict[str, Any],
+    subagent_graphs: Mapping[str, Any],
     *,
     subagent_type: str,
     description: str,
@@ -168,6 +169,9 @@ async def dispatch_background_subagent(
         raise ValueError(
             f"Unknown subagent type '{subagent_type}'. Available: {available}"
         )
+    # Built on first use, so before anything is registered or admitted: a
+    # build that raises must leave no run without a writer.
+    subagent_graph = subagent_graphs[subagent_type]
 
     tool_call_id = tool_call_id or f"dispatch-{uuid.uuid4().hex[:12]}"
     task = await mw.registry.register(
@@ -209,8 +213,6 @@ async def dispatch_background_subagent(
                 else f"Error: could not start {task.display_id} — {refusal.reason}."
             ) from refusal
         task.task_run_id = admitted or None
-
-        subagent_graph = subagent_graphs[subagent_type]
 
         async def _dispatch_runner(_request: Any) -> Command:
             # Set inside the spawned task's context: the event-capture and
@@ -266,7 +268,7 @@ class SubagentDispatcher:
     def __init__(
         self,
         middleware: "BackgroundSubagentMiddleware",
-        subagent_graphs: dict[str, Any],
+        subagent_graphs: Mapping[str, Any],
         thread_id: str,
     ) -> None:
         self.middleware = middleware
