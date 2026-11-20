@@ -183,3 +183,76 @@ async def test_a_follow_up_launched_from_a_resumed_turn_reaches_the_subagent(
         current_background_tool_call_id.reset(token)
 
     assert results[-1]["messages"][-1].content == "saw 3"
+
+@pytest.mark.asyncio
+async def test_tasks_launched_from_one_graph_task_each_write_their_own_namespace(
+    monkeypatch,
+):
+    """A Claude Code batch runs all of its calls in one graph task, so two
+    Tasks in it launch off the same scratchpad, whose subgraph counter would
+    write the second one's checkpoints under ``task:<id>|1``, where history
+    never looks."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from ptc_agent.agent.middleware.background_subagent import subagent as sa
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        current_background_tool_call_id,
+    )
+
+    saver = InMemorySaver()
+
+    async def model(state: MessagesState):
+        return {"messages": [AIMessage(content="done")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", model)
+    builder.add_edge(START, "model")
+    builder.add_edge("model", END)
+    subagent = builder.compile(checkpointer=saver)
+
+    async def run(subagent, state, config, registry):
+        return await subagent.ainvoke(state, config)
+
+    monkeypatch.setattr(sa, "arun_subagent_streaming", run)
+    tasks = {
+        tc: SimpleNamespace(
+            completed=False, task_id=task_id, subagent_type="research",
+            task_run_id=None, runs_on=None,
+        )
+        for tc, task_id in (("tc-a", "aaaaaa"), ("tc-b", "bbbbbb"))
+    }
+    registry = MagicMock()
+    registry.get_by_tool_call_id.side_effect = tasks.get
+    tool = sa._create_task_tool(
+        subagent_graphs={"research": subagent}, registry=registry, checkpointer=saver
+    )
+
+    async def launch(tool_call_id: str) -> None:
+        current_background_tool_call_id.set(tool_call_id)
+        runtime = MagicMock()
+        runtime.state = {"messages": []}
+        runtime.tool_call_id = tool_call_id
+        await tool.coroutine(
+            description="d", prompt="go", subagent_type="research", runtime=runtime,
+        )
+
+    async def batch(state: MessagesState):
+        await asyncio.gather(launch("tc-a"), launch("tc-b"))
+        return {"messages": [AIMessage(content="launched")]}
+
+    parent_graph = StateGraph(MessagesState)
+    parent_graph.add_node("batch", batch)
+    parent_graph.add_edge(START, "batch")
+    parent_graph.add_edge("batch", END)
+    await parent_graph.compile(checkpointer=saver).ainvoke(
+        {"messages": [HumanMessage("hi")]}, {"configurable": {"thread_id": "t1"}}
+    )
+
+    namespaces = {
+        c.config["configurable"]["checkpoint_ns"]
+        for c in saver.list({"configurable": {"thread_id": "t1"}})
+    }
+    assert {"task:aaaaaa", "task:bbbbbb"} <= namespaces
+    assert not any("|" in ns for ns in namespaces)

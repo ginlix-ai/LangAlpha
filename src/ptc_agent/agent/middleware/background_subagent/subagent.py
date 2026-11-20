@@ -67,12 +67,19 @@ SUBAGENT_STOP_GRACE_S = 60.0
 # does: LangGraph awaits its cancelled node tasks with no bound.
 SUBAGENT_CLOSE_TIMEOUT_S = 30.0
 
-# The launching run's resume and replay flags, which LangGraph hands every task
-# of that run. A subagent takes both from its own input: inherited from a turn
-# that answered an interrupt, ``__pregel_resuming`` skips the prompt of a
+# The launching run's state, which LangGraph hands every task of that run. A
+# subagent takes its resume and replay from its own input: inherited from a
+# turn that answered an interrupt, ``__pregel_resuming`` skips the prompt of a
 # follow-up to a task that already has state, and from a retried turn,
 # ``__pregel_replay_state`` loads the task's state from before the retry point.
-PARENT_RUN_STATE_KEYS = frozenset({"__pregel_resuming", "__pregel_replay_state"})
+# Its namespace is its own too: every child run off one ``__pregel_scratchpad``
+# after the first gets ``|N`` appended to its ``task:<id>``, which history
+# never reads and whose tokens the messages stream drops. Tasks share one
+# wherever a single graph task makes several calls, as a Claude Code batch
+# does.
+PARENT_RUN_STATE_KEYS = frozenset(
+    {"__pregel_resuming", "__pregel_replay_state", "__pregel_scratchpad"}
+)
 
 
 

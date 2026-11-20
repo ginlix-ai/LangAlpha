@@ -45,24 +45,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# The launching call's per-call keys, which a dispatched child must not
-# inherit. A Task call builds its config inside its OWN tool-node task, so
-# that state is fresh for every call; direct dispatch reuses ONE captured
-# config for every child, so it drops the per-call state instead. Detaching
-# the child from the launcher's run is ``arun_subagent_streaming``'s job on
-# both paths.
+# The launching call's keys, which a dispatched child must not inherit.
+# Direct dispatch reuses ONE captured config for every child. Detaching the
+# child from the launcher's run is ``arun_subagent_streaming``'s job on both
+# paths.
 #
 # - checkpoint_ns/checkpoint_id/checkpoint_map — the child owns its own
 #   checkpoint namespace.
-# - __pregel_scratchpad — the capturing tool call's scratchpad. Its shared
-#   subgraph counter suffixes each successive child's checkpoint_ns with
-#   ``|N`` (a fresh Task call always counts from 0 → no suffix), which
-#   breaks StreamMessagesHandler's namespace filter — every messages-mode
-#   token of children after the first is silently dropped — and shifts the
-#   child's checkpoints out of the ``task:<id>`` namespace history readers
-#   expect.
-# - ``PARENT_RUN_STATE_KEYS`` — the launching run's resume and replay flags,
-#   dropped on the Task path too.
+# - ``PARENT_RUN_STATE_KEYS`` — the launching run's resume and replay flags
+#   and its scratchpad, dropped on the Task path too.
 #
 # The REMAINING ``__pregel_*`` internals (task_id, send/read, checkpointer,
 # runtime) are deliberately kept: they mark the child run as nested, which
@@ -74,7 +65,6 @@ _DROPPED_CONFIGURABLE_KEYS = PARENT_RUN_STATE_KEYS | {
     "checkpoint_ns",
     "checkpoint_id",
     "checkpoint_map",
-    "__pregel_scratchpad",
 }
 
 async def run_subagent_graph(
