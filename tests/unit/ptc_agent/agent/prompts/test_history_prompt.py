@@ -4,7 +4,7 @@ import pytest
 
 from ptc_agent.agent.prompts import get_loader
 
-_BASE = dict(current_time="2026-10-03 11:00 ET", subagent_summary="", workspace_folder="NVDA")
+_BASE = dict(current_time="2026-10-03 11:00 ET", workspace_folder="NVDA")
 _ONLY_FILE_TOOLS = "only Read, Grep and Glob reach them"
 
 

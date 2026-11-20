@@ -8,7 +8,7 @@ model then follows both.
 
 from ptc_agent.agent.prompts import get_loader
 
-_BASE = dict(current_time="2026-10-03 11:00 ET", subagent_summary="")
+_BASE = dict(current_time="2026-10-03 11:00 ET")
 
 
 def test_only_the_chief_of_staff_reads_the_role_section():

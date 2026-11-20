@@ -28,7 +28,6 @@ def test_system_prompt_never_renders_the_market_watch_section():
     for kwargs in ({}, {retired_flag: True}):
         prompt = loader.get_system_prompt(
             current_time="2026-07-01 14:30 ET",
-            subagent_summary="",
             **kwargs,
         )
         assert "<market_watch>" not in prompt
@@ -38,10 +37,7 @@ def test_tool_guide_row_follows_the_master_switch():
     """watch_market lists in the tool table by default (yaml default: enabled)
     and disappears when the render passes the master switch as off."""
     loader = get_loader()
-    base = dict(
-        current_time="2026-07-01 14:30 ET",
-        subagent_summary="",
-    )
+    base = dict(current_time="2026-07-01 14:30 ET")
 
     assert "watch_market" in loader.get_system_prompt(**base)
     assert "watch_market" not in loader.get_system_prompt(

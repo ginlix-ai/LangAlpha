@@ -162,8 +162,9 @@ def test_another_model_is_never_due_since_it_takes_the_build_at_once():
 
 
 def test_the_sources_hold_the_python_that_writes_static_prompt_text():
-    """The subagent roster and the direct tools' lines are written by Python,
-    so a deploy that edits only those would otherwise read as an input."""
+    """The built-in subagents' definitions and the direct tools' lines are
+    Python, so a deploy that edits only those would otherwise read as an
+    input."""
     agent = release._AGENT
     sources = release._sources()
 

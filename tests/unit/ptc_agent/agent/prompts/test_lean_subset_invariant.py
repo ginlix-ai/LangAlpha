@@ -58,7 +58,7 @@ def _render_pair(surface: str) -> tuple[str, str]:
         # No tool_summary: the main agent's roster lives in the baseline now,
         # so the shipped render is the one that points at <mcp-servers>.
         kwargs = dict(
-            subagent_summary="STUB", crawl_enabled=True,
+            crawl_enabled=True,
             scratchpad_enabled=bool(scratchpad),
         )
         if base == "chief-of-staff":

@@ -44,9 +44,7 @@ def test_the_skill_lists_the_tools_its_switch_removes():
 @pytest.mark.parametrize("enabled", [True, False])
 def test_main_prompts_point_at_chart_layers_only_when_bound(enabled):
     loader = get_loader()
-    ptc = loader.get_system_prompt(
-        subagent_summary="STUB", chart_annotation_enabled=enabled
-    )
+    ptc = loader.get_system_prompt(chart_annotation_enabled=enabled)
     assert ("chart layer" in ptc) is enabled
     assert "draw_chart_annotation" not in ptc
 
