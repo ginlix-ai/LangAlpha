@@ -579,6 +579,9 @@ async def _handle_send_message(
         refuse_crossing_workspaces(thread_meta, route.workspace_id, route.owner_id)
         workspace_id = route.workspace_id
         identity = await TurnIdentity.of(user_id, route.owner_id)
+        # Here as well as in the workflow: the stream answers 200 before the
+        # workflow runs, and this refusal is the request's 422.
+        identity.refuse_other_roles(request)
 
         user_input = request.message_text()
 

@@ -6,7 +6,7 @@ that use the ptc-agent library for code execution in Daytona sandboxes.
 """
 
 import copy
-from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional, Union
+from typing import Annotated, Any, Callable, Dict, List, Literal, Mapping, Optional, Union
 
 from pydantic import (
     AfterValidator,
@@ -166,7 +166,9 @@ def rejection_feedback(message: Optional[str]) -> str:
     return message.removeprefix(REJECTED_WITH_FEEDBACK).strip()
 
 
-def serialize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, dict]:
+def serialize_hitl_response_map(
+    hitl_response: Mapping[str, Any], *, escape: Optional[Callable[[str], str]] = None
+) -> Dict[str, dict]:
     """Convert validated HITLResponse models into plain dicts for LangGraph resume.
 
     LangChain's HumanInTheLoopMiddleware expects `resume` payloads to be
@@ -175,6 +177,9 @@ def serialize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, d
 
     For rejection decisions, this function also formats the message to clearly
     indicate that the user rejected the plan and includes their feedback.
+    ``escape`` is applied to each decision's message first: in a shared
+    workspace the answer reaches the model in a tool result, past the step
+    that escapes a tag a member typed, so it is escaped here.
     """
 
     serialized: Dict[str, dict] = {}
@@ -192,6 +197,14 @@ def serialize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, d
                 "Unsupported HITL response type: "
                 f"interrupt_id={interrupt_id} type={type(response)!r}"
             )
+
+        if escape is not None:
+            for decision in [
+                *(response_dict.get("decisions") or []),
+                *(response_dict.get("order_decisions") or {}).values(),
+            ]:
+                if isinstance(decision, dict) and isinstance(decision.get("message"), str):
+                    decision["message"] = escape(decision["message"])
 
         # Format rejection messages to be clear and include feedback
         if "decisions" in response_dict:

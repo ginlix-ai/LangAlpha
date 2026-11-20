@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
+from fastapi import HTTPException
+
+from ptc_agent.agent.transcript.sender import MemberSender
+from src.server.contracts.turn_kinds import posted_by_server
 from src.server.database import shared_workspaces as db
 from src.server.database.conversation.senders import stamp_thread_creator
 from src.server.database.runs.hook_jobs import SHARED_ORG_META
 from src.server.database.shared_workspaces import is_holder
 from src.server.database.user import get_user_profile_for_prompt
 from src.server.services.shared_workspaces.holder import shared_profile
+
+if TYPE_CHECKING:
+    from src.server.models.chat import ChatRequest
 
 
 def choose_recorded_as(
@@ -88,9 +96,59 @@ class TurnIdentity:
             stamp[SHARED_ORG_META] = self.org_id
         return stamp
 
+    def refuse_other_roles(self, request: ChatRequest) -> None:
+        """Refuse a shared turn's message in any role but ``user``, the one
+        that records its writer (``MemberSender.stamp``): every member reads
+        the thread, and one in another role (``human`` among them) would
+        reach the others' calls untagged, as another member, the agent or
+        the harness."""
+        if self.shared and any(m.role != "user" for m in request.messages or ()):
+            raise HTTPException(
+                status_code=422,
+                detail="Messages in a shared workspace are sent with the user role.",
+            )
+
+    async def message_sender(self, request: ChatRequest) -> Optional[MemberSender]:
+        """The member who wrote this turn's message, recorded on it and on a
+        steer it becomes, as of sending; None for a turn no member wrote.
+
+        That is every turn in anyone's own workspace, whose messages record
+        nothing, and a turn the server posts (``posted_by_server``: a
+        report-back or a wake). A member's automation run is theirs and
+        keeps their name, as anything else the sender sends does.
+        """
+        if not self.shared or not self.sender:
+            return None
+        if posted_by_server(request.query_type, request.platform):
+            return None
+        return await member_sender(self.sender)
+
     def announced(self, profile: Optional[dict[str, Any]]) -> dict[str, Any]:
         """The sender a shared run's start frame names, for a member
         attaching live to draw it as theirs."""
         if not self.shared:
             return {}
         return {"sender": {"user_id": self.sender, "name": (profile or {}).get("name")}}
+
+
+async def member_sender(user_id: str) -> MemberSender:
+    """``user_id`` as the model reads a member, by their name as of now: on a
+    message of theirs, and on a steer they send a task."""
+    profile = await get_user_profile_for_prompt(user_id)
+    return _member_sender(user_id, (profile or {}).get("name"))
+
+
+def _member_sender(user_id: str, name: Optional[str]) -> MemberSender:
+    """The member under the label the model reads them by: their name, then
+    a short id that is theirs alone, so two members are never read as one
+    whatever names they go by or take later. The id is a digest of theirs,
+    the same in every thread and on every message."""
+    short = hashlib.sha256(user_id.encode()).hexdigest()[:6]
+    # One line and bounded: the label rides every call of every member.
+    shown = " ".join((name or "").split())[:NAME_MAX] or "Member"
+    return MemberSender(user_id, f"{shown} ({short})")
+
+
+#: The longest name a sender tag spells out.
+NAME_MAX = 64
+

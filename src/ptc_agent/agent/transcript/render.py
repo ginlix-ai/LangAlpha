@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.transcript.classify import human_kind, is_run_boundary_message
+from ptc_agent.agent.transcript.sender import MemberSender
 from ptc_agent.agent.transcript.steer_text import report_text, sent_steers
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 from src.llms.model_identity import CATALOG_MODEL_KEY
@@ -103,6 +104,8 @@ def _emit_steering(message: HumanMessage, emit: Any) -> None:
         event = {"type": "user", "id": message.id, "text": steer.text, "steering": True}
         if steer.sender != "user":
             event["from"] = steer.sender
+        if steer.member is not None:
+            event["sender"] = steer.member.name
         emit(event, message)
 
 
@@ -186,7 +189,11 @@ def render_segment(
             if kind == "steering":
                 _emit_steering(message, emit)
                 continue
-            emit({"type": "user", "id": message.id, "text": visible_text(message.content)}, message)
+            event = {"type": "user", "id": message.id, "text": visible_text(message.content)}
+            # In a shared workspace, the member who wrote it.
+            if (sender := MemberSender.of(message)) is not None:
+                event["sender"] = sender.name
+            emit(event, message)
         elif isinstance(message, AIMessage):
             events: list[dict[str, Any]] = []
             text = visible_text(message.content, attachments=False)
@@ -281,6 +288,14 @@ def segment_shape(
         elif isinstance(message, HumanMessage):
             source = (message.additional_kwargs or {}).get("lc_source")
             part += f"|{_checksum(visible_text(message.content))}|{source}|{_turn_opened_at(message)}"
+            # Only when recorded, so a segment rendered before the record keeps its fingerprint.
+            if (sender := MemberSender.of(message)) is not None:
+                part += f"|s={sender.name}"
+            # And the member each delivered steer names, which the render reads too.
+            if source == "steering":
+                named = [steer.member.name for steer in sent_steers(message) if steer.member is not None]
+                if named:
+                    part += "|ss=" + json.dumps(named)
         parts.append(part)
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:32]
 

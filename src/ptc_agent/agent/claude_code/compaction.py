@@ -195,6 +195,8 @@ class CompactionRules:
             cold cache alone; a move to the build's pin still is.
         idle_tokens: The least context a session idle after the turn is
             compacted at while its cache is warm (``idle_plan``); 0 never.
+        shared: A shared workspace's thread, whose briefs name each member
+            as its calls do.
     """
 
     floor_tokens: int
@@ -207,10 +209,11 @@ class CompactionRules:
     cold_tokens: int = 0
     keep_full_context: bool = False
     idle_tokens: int = 0
+    shared: bool = False
 
     @classmethod
     def of(cls, settings: CompactionConfig, turn: TurnContext | None, *, backend: SandboxBackend | None = None,
-           workspace_id: str | None = None) -> CompactionRules:
+           workspace_id: str | None = None, shared: bool = False) -> CompactionRules:
         """The main agent's rules for a turn: its compaction config, the user's
         settings included, when the thread's previous run settled and the turn
         was sent, whether the send keeps the full context, and where its
@@ -226,11 +229,12 @@ class CompactionRules:
             cold_tokens=settings.cold_compact_tokens,
             keep_full_context=bool(turn and turn.keep_full_context),
             idle_tokens=settings.idle_tokens,
+            shared=shared,
         )
 
     @classmethod
     def of_subagent(cls, settings: CompactionConfig, *, backend: SandboxBackend | None = None,
-                    workspace_id: str | None = None) -> CompactionRules:
+                    workspace_id: str | None = None, shared: bool = False) -> CompactionRules:
         """A subagent run's rules: its CLI compacts at the thread's threshold.
         A run is bounded by its clock, so, as a langalpha subagent's, it makes
         no turn-start rebuild and no cold compaction."""
@@ -240,6 +244,7 @@ class CompactionRules:
             backend=backend,
             workspace_id=workspace_id,
             enabled=settings.enabled,
+            shared=shared,
         )
 
     @classmethod
@@ -299,7 +304,7 @@ class CompactionRules:
         return await brief.digest_brief(
             state["messages"], backend=self.backend, workspace_id=self.workspace_id,
             transcript=transcript_target(self.backend, thread_id, checkpoint_ns), window=Window.of(state),
-            plan=state.get(PLAN_STATE_KEY) or (),
+            plan=state.get(PLAN_STATE_KEY) or (), shared=self.shared,
         )
 
     async def thread_brief(
@@ -311,6 +316,7 @@ class CompactionRules:
         return await brief.thread_brief(
             state["messages"], room, backend=self.backend, workspace_id=self.workspace_id,
             transcript=transcript_target(self.backend, thread_id, checkpoint_ns), window=Window.of(state),
+            shared=self.shared,
         )
 
     def repin_plan(self, records: SessionRecords, current: SessionPin, now: float,

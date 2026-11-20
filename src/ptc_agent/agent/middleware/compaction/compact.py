@@ -216,9 +216,12 @@ class Summarizer:
     #: The user's own skill names, which the reload note may send the agent
     #: back to even under a retired built-in's name.
     user_skills: frozenset[str] = frozenset()
+    #: A shared workspace's thread, whose history names each member's
+    #: messages and escapes a tag typed in any other (``render_history``).
+    shared: bool = False
 
     @classmethod
-    def for_agent(cls, config: AgentConfig) -> Summarizer:
+    def for_agent(cls, config: AgentConfig, *, shared: bool = False) -> Summarizer:
         """The client ``resolve_compaction_client`` picks, else the named
         compaction model at the summary level."""
         model = resolve_compaction_client(config)
@@ -230,6 +233,7 @@ class Summarizer:
             config.compaction.token_threshold + _SUMMARY_HEADROOM,
             fallback=_summary_fallback(config),
             user_skills=frozenset(spec.name for spec in config.user_skills),
+            shared=shared,
         )
 
     async def compact(
@@ -291,7 +295,7 @@ class Summarizer:
         async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
             trimmed = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
             prompt = summary_prompt("transcript", kept, notes=bool(notes_dir), carried=carried)
-            return build_summary_request(prompt, trimmed, turns)
+            return build_summary_request(prompt, trimmed, turns, shared=self.shared)
 
         remaining = budget - (time.monotonic() - started)
         # The notes are listed beside the summary and within its budget, so
@@ -300,7 +304,10 @@ class Summarizer:
         listing = asyncio.create_task(anotes_pointer(backend, notes_dir, remaining))
         # The history itself goes to Claude Code, whose room is in Claude's tokens.
         server = (
-            functools.partial(thread_summary, to_summarize, turns=turns, limit=brief_room, counter=count_tokens_claude)
+            functools.partial(
+                thread_summary, to_summarize, turns=turns, limit=brief_room,
+                counter=count_tokens_claude, shared=self.shared,
+            )
             if brief_room is not None
             else functools.partial(
                 server_summary,
@@ -309,6 +316,7 @@ class Summarizer:
                 turns=turns,
                 window=window,
                 plan=plan,
+                shared=self.shared,
             )
         )
         try:
@@ -443,6 +451,7 @@ async def compact_messages(
     backend: SandboxBackend | None = None,
     workspace_id: str | None = None,
     notes_dir: str | None = None,
+    shared: bool = False,
 ) -> Compaction:
     """Manual /compact: summarize all but the tail automatic compaction
     keeps of the view, ``messages`` being the thread's checkpoint list and ``state`` its
@@ -468,7 +477,7 @@ async def compact_messages(
         transcript=transcript,
         shell=shell_reads_transcripts(backend),
     )
-    summarizer = Summarizer.for_agent(config)
+    summarizer = Summarizer.for_agent(config, shared=shared)
     main = _main_client(config)
     settings = config.compaction
     # The cutoff counts attachments, on the server's loop, as the strip the

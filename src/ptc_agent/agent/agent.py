@@ -110,6 +110,7 @@ from ptc_agent.agent.middleware.runtime_context import (
 )
 from ptc_agent.agent.middleware.runtime_context.epoch import Workspace
 from ptc_agent.agent.middleware.runtime_context.profile import ProfileSwitches
+from ptc_agent.agent.middleware.sender_naming import SenderNamingMiddleware
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
@@ -996,6 +997,7 @@ class PTCAgent:
             receives=multimodal_strip.receives,
             page_tokens=multimodal_strip.pdf_page_tokens,
             large_results_dir=eviction_dir,
+            shared=not own_data,
         )
         # The main agent is asked to update its scratchpad notes before each
         # summary, and its summaries name them; a subagent's do not. Without
@@ -1140,6 +1142,8 @@ class PTCAgent:
             },
             user_data_counts=user_data_counts,
             role=role,
+            # A build without the sender's own data is a shared workspace's.
+            shared=not own_data,
         )
         if main_compaction is not None:
             main_compaction = main_compaction.with_baseline(context.baseline.sent_sections)
@@ -1184,8 +1188,10 @@ class PTCAgent:
                     middleware=[*subagent_middleware, *own],
                     baseline=baseline.frozen_block if baseline is not None else None,
                     steering=TaskSteering(subagent_steering),
+                    shared=not own_data,
                     compaction=CompactionRules.of_subagent(self.config.compaction, backend=backend,
-                                                          workspace_id=folder_workspace_id),
+                                                          workspace_id=folder_workspace_id,
+                                                          shared=not own_data),
                 )
 
             return build
@@ -1381,6 +1387,10 @@ class PTCAgent:
                     if self.config.feature_enabled("market_watch")
                     else []
                 ),
+                # A shared workspace's member messages open with their
+                # writer's tag, outside the carrier so the request it
+                # composes is named. Only there: no other message has one.
+                SenderNamingMiddleware() if not own_data else None,
                 context.tail,
                 SystemPinMiddleware(),
                 ReasoningCompatibilityMiddleware(),
@@ -1432,12 +1442,13 @@ class PTCAgent:
                 # (``claude_code/agent_plan.py``).
                 entry=(skill_loader_middleware, context.turn, context.baseline, plan_state),
                 plan=AgentPlan(plan_close_out) if plan_on else None,
+                shared=not own_data,
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,
                 steering=steering,
                 alert_senders=alert_senders,
                 compaction=CompactionRules.of(self.config.compaction, turn_context, backend=backend,
-                                              workspace_id=folder_workspace_id),
+                                              workspace_id=folder_workspace_id, shared=not own_data),
             )
 
         return BackgroundSubagentOrchestrator(

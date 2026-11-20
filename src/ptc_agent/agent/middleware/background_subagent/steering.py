@@ -28,7 +28,8 @@ from ptc_agent.agent.middleware.background_subagent.middleware import current_ba
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
-from ptc_agent.agent.transcript.steer_text import sender_runs, steer_text
+from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
+from ptc_agent.agent.transcript.steer_text import sender_runs, sent_by, steer_text
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ class SubagentSteeringMiddleware(AgentMiddleware):
             # re-emit steering_delivered without the captured SSE stream.
             human_msg = HumanMessage(
                 content=steer_text(
-                    sender_runs((t.get("sender") or "user", t["content"]) for t in taken)
+                    sender_runs(sent_by(taken))
                 ),
                 additional_kwargs={
                     "lc_source": "steering",
@@ -160,4 +161,6 @@ def _delivered_entry(taken: dict[str, Any]) -> dict[str, Any]:
     entry = {"input_id": taken.get("input_id"), "content": taken["content"]}
     if taken.get("sender"):
         entry["sender"] = taken["sender"]
+    if (member := MemberSender.of(taken)) is not None:
+        entry[MEMBER_SENDER_KEY] = member.to_record()
     return entry

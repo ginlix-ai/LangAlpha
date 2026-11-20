@@ -50,6 +50,7 @@ import logging
 from collections.abc import Sequence
 
 from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport
+from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
 from src.server.services.market_targets import inline as market_inline
 from src.server.services.report_back import command as command_rb
 from src.server.services.report_back.notify_turn import NotOwed, ReportPipeline
@@ -212,7 +213,8 @@ class SteeredReportInbox:
         self, thread_id: str, task_id: str, task_run_id: str
     ) -> list[dict]:
         """Hold the steers waiting for ``task_run_id``, oldest first:
-        ``[{job_id, content, input_id, sender}]``."""
+        ``[{job_id, content, input_id, sender}]``, with the member who wrote
+        one in a shared workspace (``MEMBER_SENDER_KEY``)."""
         from src.server.database.runs import outbox as outbox_db
 
         try:
@@ -233,16 +235,7 @@ class SteeredReportInbox:
                 exc_info=True,
             )
             return []
-        return [
-            {
-                "job_id": str(job["hook_outbox_id"]),
-                "content": (job.get("payload") or {}).get("content") or "",
-                "input_id": (job.get("payload") or {}).get("input_id"),
-                "sender": (job.get("payload") or {}).get("sender"),
-            }
-            for job in jobs
-            if str(job["hook_outbox_id"]) in held
-        ]
+        return [_taken(job) for job in jobs if str(job["hook_outbox_id"]) in held]
 
     async def confirm_task(self, task_run_id: str, job_ids: list[str]) -> None:
         from src.server.database.runs import outbox as outbox_db
@@ -385,6 +378,7 @@ def _steer_offer(job: dict) -> SteeredReport:
         timestamp=payload.get("timestamp"),
         created_at=job.get("created_at"),
         user_id=payload.get("user_id"),
+        member=MemberSender.of(payload),
     )
 
 
@@ -678,3 +672,16 @@ async def wait_run_settled(run_id: str, *, task: bool = False) -> bool:
         if loop.time() >= deadline:
             return False
         await asyncio.sleep(_RUN_SETTLE_POLL_S)
+
+
+def _taken(job: dict) -> dict:
+    payload = job.get("payload") or {}
+    taken = {
+        "job_id": str(job["hook_outbox_id"]),
+        "content": payload.get("content") or "",
+        "input_id": payload.get("input_id"),
+        "sender": payload.get("sender"),
+    }
+    if payload.get(MEMBER_SENDER_KEY):
+        taken[MEMBER_SENDER_KEY] = payload[MEMBER_SENDER_KEY]
+    return taken

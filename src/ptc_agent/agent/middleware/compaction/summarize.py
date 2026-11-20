@@ -50,7 +50,8 @@ from ptc_agent.agent.transcript.classify import (
 from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 from ptc_agent.agent.transcript.render import message_turns, visible_text
-from ptc_agent.agent.transcript.steer_text import report_text, sender_name, sent_steers
+from ptc_agent.agent.transcript.sender import MemberSender, escape_unrecorded
+from ptc_agent.agent.transcript.steer_text import named_sender, report_text, sent_steers
 from ptc_agent.agent.tools.plan import PlanStepDict
 
 logger = logging.getLogger(__name__)
@@ -270,13 +271,15 @@ def server_summary(
     window: Window,
     plan: Sequence[PlanStepDict] = (),
     lead: str = _LEAD,
+    shared: bool = False,
 ) -> Summary:
     """A summary built without a model: each request and the reply to it,
     the newest first to stay when they do not all fit, plus an earlier
     summary and the plan in state while a step is unfinished. ``turns`` is
     set when the transcript is readable, and names the file each turn is in.
     ``window`` is what was trimmed from the head of ``raw_messages``.
-    ``lead`` says why."""
+    ``lead`` says why. In a shared thread (``shared``) each request and
+    steer names the member who wrote it, as every call does."""
     head = list(to_summarize[:1]) if to_summarize and is_summary_message(to_summarize[0]) else []
     numbers = (
         turns.turns if turns is not None else message_turns(raw_messages, base=window.runs)
@@ -309,7 +312,7 @@ def server_summary(
     ]
     blocks: list[str] = []
     for run in reversed(runs):
-        block, whole = _turn_block(run, numbers, turns)
+        block, whole = _turn_block(run, numbers, turns, shared=shared)
         if blocks and len(block) > budget:
             break
         blocks.append(block)
@@ -354,6 +357,7 @@ def thread_summary(
     turns: TranscriptTurns | None,
     limit: int | None,
     counter: Callable[[list[AnyMessage]], int],
+    shared: bool = False,
 ) -> Summary:
     """No summary, for a model that keeps a session of its own and is to
     read the history itself: the history as text, its newest messages first
@@ -361,7 +365,7 @@ def thread_summary(
     transcript the summary ends pointing at; all of it, when the history
     cannot be measured, rather than hand the reader more than ``limit``."""
     trimmed = _trim(list(to_summarize), limit, counter, fallback=0)
-    text = render_history(trimmed, turns)
+    text = render_history(trimmed, turns, shared=shared)
     if left_out := len(to_summarize) - len(trimmed):
         text = f"({left_out} earlier message{'s are' if left_out > 1 else ' is'} not shown here.)\n\n{text}"
     return Summary(text, "thread", trimmed)
@@ -430,10 +434,22 @@ def _turn_block(
     run: list[AnyMessage],
     numbers: Mapping[str, int],
     turns: TranscriptTurns | None,
+    *,
+    shared: bool = False,
 ) -> tuple[str, bool]:
     """One turn as its request, what was added while it ran, and its last
     reply, and whether none of them was cut. What was added can take back
-    what the request asked for, so it is never left out."""
+    what the request asked for, so it is never left out. A member's request
+    and steers name them by their tag; in a shared thread, a tag typed in
+    words no member is recorded as writing is escaped, the reply's and the
+    reports' too, so a shared summary is the harness's to name
+    (``build_summary_message``)."""
+
+    def said(text: str, member: MemberSender | None) -> str:
+        if member is not None:
+            return member.words(text)
+        return escape_unrecorded(text) if shared else text
+
     from ptc_agent.agent.middleware.skills.content import skill_blocks_as_names
 
     opener = next((m for m in run if is_run_boundary_message(m)), None)
@@ -442,30 +458,35 @@ def _turn_block(
         for m in reversed(run)
         if isinstance(m, AIMessage)
     )
-    reply = next((text for text in replies if text), "")
+    # The model's words and a task's report are no member's: escaped in a
+    # shared thread, so the summary holds no tag the harness did not write.
+    reply = said(next((text for text in replies if text), ""), None)
     anchor = opener or run[0]
     name = turns.file(anchor.id) if turns is not None else None
     number = numbers.get(anchor.id or "")
     lines = [f"## `{name}`" if name else f"## Turn {number}" if number else "## Turn"]
     whole = True
     if opener is not None:
-        request = skill_blocks_as_names(visible_text(opener.content)).strip()
-        lines.append(f"Request: {_cut(request, _REQUEST_CHARS)}")
+        member = MemberSender.of(opener)
+        request = said(skill_blocks_as_names(visible_text(opener.content)).strip(), member)
+        by = f" from {member.tag}" if member is not None else ""
+        lines.append(f"Request{by}: {_cut(request, _REQUEST_CHARS)}")
         whole = len(request) <= _REQUEST_CHARS
     for message in run:
         if isinstance(message, HumanMessage) and human_kind(message) == "steering":
             # A report it carried is what a task found, kept as written.
-            reports = report_text(message)
+            reports = said(report_text(message) or "", None)
             if reports:
                 lines.append(f"Then: {_cut(reports, _REQUEST_CHARS)}")
                 whole = whole and len(reports) <= _REQUEST_CHARS
             # Each sender's own words: the line that asked the model to answer
             # them was for the run that read them.
             for steer in sent_steers(message):
-                added = steer.text.strip()
+                added = said(steer.text.strip(), steer.member)
                 if not added:
                     continue
-                by = "" if steer.sender == "user" else f" (from {sender_name(steer.sender)})"
+                unnamed_user = steer.sender == "user" and steer.member is None
+                by = "" if unnamed_user else f" (from {named_sender(steer.sender, steer.member)})"
                 lines.append(f"Then{by}: {_cut(added, _REQUEST_CHARS)}")
                 whole = whole and len(added) <= _REQUEST_CHARS
     lines.append(f"Last reply: {_cut(reply, _REPLY_CHARS) or '(none)'}")

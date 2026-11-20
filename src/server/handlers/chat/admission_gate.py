@@ -25,6 +25,7 @@ from src.server.services.runs.admission import (
 )
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.transcript.sender import MemberSender
     from src.server.handlers.chat.request_prep import HandOffSteered
     from src.server.models.chat import ChatRequest, ShownSend
     from src.server.services.runs.executor import LocalRunExecutor
@@ -218,6 +219,7 @@ async def wait_or_steer(
     agent: AgentSteer | None = None,
     artifact_comments: ShownSend | None = None,
     shared: bool = False,
+    written_by: MemberSender | None = None,
     checked_computer_id: str | None = None,
     on_model: str | None = None,
 ) -> tuple[bool, str | HandOffSteered | None]:
@@ -256,7 +258,8 @@ async def wait_or_steer(
     ``artifact_comments`` rides a steer of a send carrying file comments, for
     the reader to be shown them rather than the message. ``shared`` marks a
     shared workspace's thread, whose steer is taken in only by a turn of its
-    sender's. ``on_model`` is the model a hand-off names: it steers only a run
+    sender's, and ``written_by`` that sender as the steer names them.
+    ``on_model`` is the model a hand-off names: it steers only a run
     started on that model, read off the run here rather than by the sender
     before its approval wait, and meets any other run with a 409, since a
     running turn keeps its model.
@@ -323,6 +326,7 @@ async def wait_or_steer(
             origin=agent.origin if agent else None,
             artifact_comments=artifact_comments,
             member=user_id if shared else None,
+            written_by=written_by,
             checked_computer_id=checked_computer_id,
             llm_model=on_model,
         )

@@ -37,6 +37,7 @@ from ptc_agent.agent.middleware.skills.registry import (
 from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX, is_summary_message
 from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
+from ptc_agent.agent.transcript.sender import HARNESS_NAMED_KEY
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES, block_type
 from src.llms.provider_compaction import SIDECAR_KEY, is_opaque, sidecar
 from ptc_agent.agent.middleware.compaction.types import (
@@ -1083,6 +1084,12 @@ def build_summary_message(
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
+    One the server wrote (``source="server"``) names each member with the
+    harness's own tag and escapes every other word, so it is stamped as named
+    (``HARNESS_NAMED_KEY``) and a shared call sends its tags as they are;
+    a model's summary is escaped like any message no member is recorded as
+    writing.
+
     Tags with lc_source='summarization' for chain filtering, and stamps the
     emit-time ``context_window`` summarize fields into ``additional_kwargs``
     so checkpoint-sourced replay re-emits the event without the stored SSE
@@ -1104,6 +1111,7 @@ def build_summary_message(
         id=str(uuid.uuid4()),
         additional_kwargs={
             **carried,
+            **({HARNESS_NAMED_KEY: True} if source == "server" else {}),
             "lc_source": _SUMMARY_SOURCE,
             "summarize_complete": {
                 "summary_length": len(summary),

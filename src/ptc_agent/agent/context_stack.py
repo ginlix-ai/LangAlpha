@@ -66,6 +66,7 @@ def build_context_middleware(
     files_mounted: bool | None = None,
     role: AgentRole = "analyst",
     switches: ProfileSwitches = ProfileSwitches(),
+    shared: bool = False,
 ) -> ContextMiddleware:
     """Wire the turn row, the per-thread baseline and the tail envelope.
 
@@ -73,14 +74,20 @@ def build_context_middleware(
     workspace and its sandbox to read, the store-backed tiers, and in
     ``blocks`` the harness-authored text the build states. ``role`` reaches
     the blocks whose wording differs by role; a build that names none is the
-    analyst.
+    analyst. ``shared`` is a shared workspace's build, whose baseline is given
+    no profile and no zone (``SubagentContext`` likewise): several members
+    write in its threads, so the sender's name and clock are the thread's no
+    more than anyone's, and the turn row alone stamps the sender's zone.
     """
     turn = turn_context or TurnContext()
     preferred_market = _preferred_market(user_profile, user_data_counts)
     return ContextMiddleware(
         turn=TurnContextMiddleware(
             now=now,
-            timezone=turn.timezone,
+            # A shared turn's stamp is in its sender's zone, and in UTC where
+            # it has none: never the zone a baseline froze, which an older
+            # build took from whoever started the thread.
+            timezone=turn.timezone or ("UTC" if shared else None),
             preferred_market=preferred_market,
             last_turn_at=turn.last_turn_at,
             platform=turn.platform,
@@ -99,15 +106,18 @@ def build_context_middleware(
             workspace=workspace,
             sources=sources,
             blocks=blocks,
-            user_profile=user_profile,
+            user_profile=None if shared else user_profile,
             user_data_counts=user_data_counts,
-            preferred_market=preferred_market,
-            timezone=turn.timezone,
+            # The product default in a shared baseline, never whoever froze
+            # it; each turn's row states its sender's market.
+            preferred_market=None if shared else preferred_market,
+            timezone=None if shared else turn.timezone,
             guidance=guidance,
             model_name=model_name,
             files_mounted=files_mounted,
             role=role,
             switches=switches,
+            shared=shared,
         ),
         tail=RowCarrierMiddleware(),
     )
@@ -150,6 +160,9 @@ class SubagentContext:
     scratchpad: str | None = None
     #: The parent turn's model label, for a subagent that runs the turn's model.
     model: str = ""
+    #: A shared workspace's, whose baselines get no profile and no zone
+    #: (``build_context_middleware``).
+    shared: bool = False
 
     @classmethod
     def build(
@@ -162,10 +175,12 @@ class SubagentContext:
         skills: BlockReader | None,
         scratchpad: str | None,
         model: str,
+        shared: bool = False,
     ) -> SubagentContext:
         return cls(
-            timezone=(turn_context or TurnContext()).timezone,
-            preferred_market=_preferred_market(user_profile, user_data_counts),
+            timezone=None if shared else (turn_context or TurnContext()).timezone,
+            # The product default in a shared baseline, as the main agent's.
+            preferred_market=None if shared else _preferred_market(user_profile, user_data_counts),
             sources=(
                 BaselineSources(
                     store=sources.store,
@@ -179,6 +194,7 @@ class SubagentContext:
             skills=skills,
             scratchpad=scratchpad,
             model=model,
+            shared=shared,
         )
 
     def baseline(
@@ -217,7 +233,7 @@ class SubagentContext:
         return sections, BaselineContextMiddleware(
             sources=sources,
             blocks=blocks,
-            user_profile=user_profile,
+            user_profile=None if self.shared else user_profile,
             # The counts stay with the main agent; empty rather than None, so
             # the profile reads as answered.
             user_data_counts={},
@@ -226,6 +242,7 @@ class SubagentContext:
             timezone=self.timezone,
             guidance=guidance,
             subagent=True,
+            shared=self.shared,
         )
 
 

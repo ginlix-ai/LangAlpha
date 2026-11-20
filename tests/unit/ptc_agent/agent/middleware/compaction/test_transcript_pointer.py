@@ -101,9 +101,9 @@ async def test_summary_points_at_transcript_only_when_readable(monkeypatch, outc
     mw = _middleware(monkeypatch, backend)
     requests: list = []
 
-    def recording(prompt, messages, turns=None):
+    def recording(prompt, messages, turns=None, **kwargs):
         requests.append(turns)
-        return build_summary_request(prompt, messages, turns)
+        return build_summary_request(prompt, messages, turns, **kwargs)
 
     build_summary_request = compact_module.build_summary_request
     monkeypatch.setattr(compact_module, "build_summary_request", recording)

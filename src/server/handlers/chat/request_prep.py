@@ -34,6 +34,7 @@ from src.server.contracts.turn_kinds import (
     ANNOUNCED_KEYS,
     NOTIFICATION_QUERY_TYPES,
     WAKE_QUERY_TYPE,
+    posted_by_server,
 )
 from src.server.database import conversation as qr_db
 from src.server.database.conversation.threads_write import remember_thread_llm_model
@@ -667,16 +668,8 @@ def build_turn_context(
 
 
 def is_notification_turn(request: ChatRequest) -> bool:
-    """Whether this server posted the turn itself, to report finished background
-    work, a market target's notice or a wakeup that fired.
-
-    A report-back arrives as a system query with no surface of its own, and a
-    wake as a ``market_target`` or ``wakeup`` query. Nobody sent any of them,
-    so it speaks where the thread's last turn did rather than naming a surface.
-    ``query_type`` is stripped from every request that is not the server's own
-    (``threads/messaging.py``), so a client cannot claim one.
-    """
-    return request.query_type in NOTIFICATION_QUERY_TYPES and not request.platform
+    """Whether this server posted the turn itself (``posted_by_server``)."""
+    return posted_by_server(request.query_type, request.platform)
 
 
 def is_unwatched_turn(request: ChatRequest) -> bool:

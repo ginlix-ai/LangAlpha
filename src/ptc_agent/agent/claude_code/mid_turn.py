@@ -31,7 +31,14 @@ from ptc_agent.agent.middleware.background_subagent.steering import SubagentStee
 from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker, config_own_run_id
 from ptc_agent.agent.middleware.credit_gate import account_ends, credit_stops
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
-from ptc_agent.agent.transcript.steer_text import report_text, sender_block, sender_runs, sent_steers
+from ptc_agent.agent.transcript.sender import HARNESS_NAMED_KEY, escape_unrecorded
+from ptc_agent.agent.transcript.steer_text import (
+    SteerSender,
+    report_text,
+    sender_block,
+    sender_runs,
+    sent_steers,
+)
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.plan import PlanWatch
@@ -254,10 +261,18 @@ class AfterTool:
     or for the query after.
     """
 
-    def __init__(self, results: ToolResults, send: Callable[[str], Awaitable[None]], plan: PlanWatch) -> None:
+    def __init__(
+        self,
+        results: ToolResults,
+        send: Callable[[str], Awaitable[None]],
+        plan: PlanWatch,
+        *,
+        shared: bool = False,
+    ) -> None:
         self.results = results
         self.send = send
         self.plan = plan
+        self.shared = shared
         self._batch: frozenset[str] = frozenset()
         self._returned: set[str] = set()
         self.query = ORDINARY
@@ -315,18 +330,25 @@ class AfterTool:
                 texts = [*(row.text for row in handed.rows), report_text(steer) if steer is not None else None]
                 if context := "\n\n".join(text for text in texts if text):
                     out["additionalContext"] = context
-                for text in mid_turn_messages(steer) if steer is not None else ():
+                for text in mid_turn_messages(steer, shared=self.shared) if steer is not None else ():
                     await self.send(text)
         return {"hookSpecificOutput": out} if len(out) > 1 else {}
 
 
-def mid_turn_messages(message: HumanMessage) -> list[str]:
+def mid_turn_messages(message: HumanMessage, *, shared: bool = False) -> list[str]:
     """The steers a steering message carries, as the CLI is handed them to
     deliver mid-turn in its own words: each of the user's as written, and
-    each run of another sender's in the line naming who sent it."""
+    each run of another sender's in the line naming who sent it. A steer no
+    member is recorded as writing is escaped beside a member's, as
+    ``_steering_message`` escapes it, and anywhere in a shared run, as the API
+    path's naming step escapes an unrecorded message (``name_senders``)."""
+    named = shared or bool((message.additional_kwargs or {}).get(HARNESS_NAMED_KEY))
     texts: list[str] = []
-    for sender, contents in sender_runs((s.sender, s.text) for s in sent_steers(message)):
-        if sender == "user":
+    for sender, contents in sender_runs(
+        (s.steer_sender, s.text if s.member is not None or not named else escape_unrecorded(s.text))
+        for s in sent_steers(message)
+    ):
+        if sender == SteerSender("user"):
             texts.extend(contents)
         else:
             texts.append(sender_block(sender, contents))
