@@ -357,6 +357,18 @@
         }
       },
       {
+        "id": "gemini-4-neon",
+        "name": "Gemini 4 Neon",
+        "is_reasoning": true,
+        "description": "Google's Gemini 4 model between Hydrogen and Carbon, near-Carbon reasoning with faster end-to-end task completion for coding, research and agentic work",
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.15,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "gemini-4-carbon",
         "name": "Gemini 4 Carbon",
         "is_reasoning": true,
