@@ -1071,11 +1071,14 @@ async def test_a_save_waits_for_another_saves_check_and_rename(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("form", ["file", "folder"])
 @pytest.mark.parametrize("holder", ["running", "gone"])
-async def test_a_save_takes_the_lock_only_from_a_save_that_is_gone(tmp_path, monkeypatch, holder):
+async def test_a_save_takes_the_lock_only_from_a_save_that_is_gone(tmp_path, monkeypatch, holder, form):
     """A save that waited out the lock took it from a holder still running,
     which could then land over it. It takes a lock only from a holder whose
-    process is gone, and fails rather than wait on one that runs."""
+    process is gone, and fails rather than wait on one that runs. The lock is
+    a file holding its holder's id; a script from before held a folder with
+    the id inside, which a save still honors while the two versions overlap."""
     import os
     import subprocess
     from pathlib import Path
@@ -1095,23 +1098,33 @@ async def test_a_save_takes_the_lock_only_from_a_save_that_is_gone(tmp_path, mon
     if holder == "gone":
         proc.kill()
         proc.wait()
-    os.mkdir(lock)
-    Path(lock, "pid").write_text(f"{proc.pid}\n")
+    id_file = Path(lock) if form == "file" else Path(lock, "pid")
+    if form == "folder":
+        os.mkdir(lock)
+    id_file.write_text(f"{proc.pid}\n")
+    ino = os.stat(lock).st_ino
     try:
         if holder == "running":
             with pytest.raises(HTTPException):
                 await _read_then_save(sandbox, root, notes)
             assert notes.read_text() == "# Notes"
-            assert Path(lock, "pid").read_text() == f"{proc.pid}\n"
+            assert id_file.read_text() == f"{proc.pid}\n"
         else:
             result = await _read_then_save(sandbox, root, notes)
             assert result["version"]
             assert notes.read_text() == "# Notes, edited"
             assert not os.path.exists(lock)
+            if form == "file":
+                # An older script that read this lock late claims it under
+                # holder 0 with mkdir, and must find that claim taken, or it
+                # would remove the lock a save has taken since.
+                with pytest.raises(FileExistsError):
+                    os.mkdir(f"{lock}.gone.{ino}.0")
     finally:
         proc.kill()
         proc.wait()
         subprocess.run(["rm", "-rf", lock])
+        subprocess.run(["sh", "-c", f"rm -rf '{lock}'.gone.*"])
 
 
 @pytest.mark.asyncio
@@ -1119,8 +1132,8 @@ async def test_a_save_takes_the_lock_only_from_a_save_that_is_gone(tmp_path, mon
 async def test_a_save_waits_out_a_lock_whose_holder_has_not_written_its_id(
     tmp_path, monkeypatch, age_min
 ):
-    """A lock with no id is a holder between its mkdir and its id as often as
-    one killed there, so it is taken only once past the stale age."""
+    """A lock with no id is a holder between taking it and writing its id as
+    often as one killed there, so it is taken only once past the stale age."""
     import os
     import subprocess
     import time
@@ -1157,14 +1170,33 @@ async def test_a_save_waits_out_a_lock_whose_holder_has_not_written_its_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "form, claim_id, claim_kind, claim_age_min, claimed",
+    [
+        ("folder", "pid", "folder", 0, True),
+        ("file", "0", "folder", 0, True),
+        ("file", "0", "folder", 20, False),
+        ("file", "0", "file", 20, False),
+    ],
+    ids=[
+        "claimed",
+        "claimed-by-an-older-script",
+        "older-scripts-claim-aged-out",
+        "claim-left-from-an-earlier-lock",
+    ],
+)
 async def test_a_save_leaves_a_dead_holders_lock_to_the_save_that_claimed_it(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, form, claim_id, claim_kind, claim_age_min, claimed
 ):
     """Two saves that found the same holder gone each removed its lock, the
     second removing the one the first had just taken, and both landed. Only
-    the save that claims the dead holder removes its lock."""
+    the save that claims the dead holder removes its lock. A script from
+    before reads no id from a file lock and claims it under holder 0, as a
+    folder, which holds off a save until it ages out; a claim file there is
+    left from an earlier lock on that inode."""
     import os
     import subprocess
+    import time
     from pathlib import Path
 
     from fastapi import HTTPException
@@ -1181,18 +1213,37 @@ async def test_a_save_leaves_a_dead_holders_lock_to_the_save_that_claimed_it(
     proc = subprocess.Popen(["sleep", "30"])
     proc.kill()
     proc.wait()
-    os.mkdir(lock)
-    Path(lock, "pid").write_text(f"{proc.pid}\n")
-    claim = f"{lock}.gone.{os.stat(lock).st_ino}.{proc.pid}"
-    os.mkdir(claim)
+    id_file = Path(lock) if form == "file" else Path(lock, "pid")
+    if form == "folder":
+        os.mkdir(lock)
+    id_file.write_text(f"{proc.pid}\n")
+    holder = proc.pid if claim_id == "pid" else 0
+    claim = f"{lock}.gone.{os.stat(lock).st_ino}.{holder}"
+    if claim_kind == "folder":
+        os.mkdir(claim)
+    else:
+        Path(claim).touch()
+    then = time.time() - claim_age_min * 60
+    os.utime(claim, (then, then))
     try:
-        with pytest.raises(HTTPException):
-            await _read_then_save(sandbox, root, notes)
-        assert notes.read_text() == "# Notes"
-        assert Path(lock, "pid").read_text() == f"{proc.pid}\n"
+        if claimed:
+            with pytest.raises(HTTPException):
+                await _read_then_save(sandbox, root, notes)
+            assert notes.read_text() == "# Notes"
+            assert id_file.read_text() == f"{proc.pid}\n"
+        else:
+            result = await _read_then_save(sandbox, root, notes)
+            assert result["version"]
+            assert notes.read_text() == "# Notes, edited"
+            assert not os.path.exists(lock)
+            if claim_kind == "file":
+                # Stamped anew, so the sweep leaves it to hold off an older
+                # script that read this lock late.
+                with pytest.raises(FileExistsError):
+                    os.mkdir(claim)
     finally:
-        subprocess.run(["rm", "-rf", lock, claim])
-
+        subprocess.run(["rm", "-rf", lock])
+        subprocess.run(["sh", "-c", f"rm -rf '{lock}'.gone.*"])
 
 
 @pytest.mark.asyncio

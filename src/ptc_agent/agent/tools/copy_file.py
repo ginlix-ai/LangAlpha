@@ -411,7 +411,11 @@ def _pack_script(folder: str, archive: str, held: Iterable[str]) -> str:
     ]
     walk = f'find {q("./" + posixpath.basename(folder))} \\( {" -o ".join(tests)} "$@" \\) -prune -o'
     return (
-        f"umask 077; a={q(archive)}; cd {q(posixpath.dirname(folder))} || exit 1; set --; "
+        # The archive is written at the computer root, so a copy of the root
+        # packs the folder that holds it. Made before tar reads that folder,
+        # or GNU tar sees the folder change and fails the pack.
+        f'umask 077; a={q(archive)}; : > "$a" || exit 1; '
+        f"cd {q(posixpath.dirname(folder))} || exit 1; set --; "
         f'for h in {" ".join(q(h) for h in held)}; do [ -e "$h" ] && set -- "$@" -o -samefile "$h"; done; '
         "x=-S; tar --version 2>/dev/null | grep -q bsdtar && x=--no-xattrs; "
         f"{walk} -print0 | COPYFILE_DISABLE=1 tar $x --null --no-recursion -T - -cf - "

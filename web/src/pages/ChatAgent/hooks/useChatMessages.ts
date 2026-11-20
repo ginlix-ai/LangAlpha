@@ -1657,8 +1657,8 @@ export function useChatMessages(
         setHasActiveSubagents(true);
       } else {
         // Usually a no-op, the reveal having settled it. Again here because the
-        // feedback fetch after the reveal can settle the last running subagent
-        // or clear the interrupt, and then only this pass finds the run over.
+        // last running subagent can settle or the interrupt clear while the
+        // load finishes, and then only this pass finds the run over.
         settleEndedRun(loadOk);
       }
     };

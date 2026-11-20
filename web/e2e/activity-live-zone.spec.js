@@ -5,23 +5,19 @@
  * call lands while the live zone is still collapsing. The zone must end up
  * as tall as the one row it now holds, not the three it held before.
  */
-import { configureSSE, resetMockServer, mockAPI, test, expect } from './fixtures.js';
+import { configureSSE, releaseSSE, resetMockServer, mockAPI, test, expect } from './fixtures.js';
 import { sseEvents, defaultResponses } from './helpers/mockResponses.js';
 import { TH, chatViewOverrides, openThread, replayNothing, send } from './helpers/chatScenario.js';
 import { sampleFrames, stopSampling } from './helpers/frameProbe.js';
-import { ROW_FOLD, MIN_LIVE_EXPOSURE_MS } from '../src/pages/ChatAgent/components/messageList/liveZoneTiming.ts';
+import { MIN_LIVE_EXPOSURE_MS } from '../src/pages/ChatAgent/components/messageList/liveZoneTiming.ts';
 
-// A completed row stays live for MIN_LIVE_EXPOSURE_MS after its call was
-// created, then folds on ROW_FOLD, a spring with about a fifth of the height
-// left three time constants (1 / sqrt(stiffness)) in, so a call landing then
-// lands late inside the collapse. Late, because the fold can only run behind
-// its clock (a busy first frame stamps the calls late), never ahead. The clock starts
-// at the first event, and the four events before the delay each cost a gap,
-// so the delay is measured from the first event, not from the last result.
-// The tool must not be an inline-artifact tool (those skip the exposure
-// window).
-const EVENT_GAP_MS = 30;
-const LAND_MID_COLLAPSE_MS = MIN_LIVE_EXPOSURE_MS + Math.round((3 / Math.sqrt(ROW_FOLD.stiffness)) * 1000) - 4 * EVENT_GAP_MS;
+// A completed row stays live for MIN_LIVE_EXPOSURE_MS after the page saw its
+// call, then folds. The fourth call waits at a gate the test opens once the
+// page shows the fold under way, so it lands inside the collapse by the page's
+// clock. Timed from the stream's first write, it came before the fold whenever
+// the page read the first events late, since the margin was the collapse's
+// first 190ms. The tool must not be an inline-artifact tool (those skip the
+// exposure window).
 
 test.describe('activity live zone', () => {
   test.beforeEach(async () => {
@@ -40,8 +36,8 @@ test.describe('activity live zone', () => {
         sseEvents.finishToolCalls(),
         sseEvents.toolCallResult('toolu_a1', '0'),
         sseEvents.toolCallResult('toolu_a2', '1'),
-        { ...sseEvents.toolCallResult('toolu_a3', '2'), delayAfter: LAND_MID_COLLAPSE_MS },
-        sseEvents.toolCalls([{ name: 'bash', args: { command: 'echo 3' }, id: 'toolu_b' }]),
+        sseEvents.toolCallResult('toolu_a3', '2'),
+        { ...sseEvents.toolCalls([{ name: 'bash', args: { command: 'echo 3' }, id: 'toolu_b' }]), holdUntil: 'folding' },
         // Hold the fourth call in progress so it stays a live row while measured.
         { ...sseEvents.finishToolCalls(), delayAfter: 3000 },
         sseEvents.toolCallResult('toolu_b', '3'),
@@ -49,7 +45,7 @@ test.describe('activity live zone', () => {
         sseEvents.finishStop(),
         sseEvents.creditUsage(),
       ],
-      delay: EVENT_GAP_MS,
+      delay: 30,
     });
 
     await page.goto(`/chat/t/${TH}`);
@@ -66,6 +62,15 @@ test.describe('activity live zone', () => {
       return { active: document.querySelectorAll('[data-testid="activity-live-zone"] .titem.running').length };
     }, null, { timeout: 15000 }).then((h) => h.jsonValue());
     expect(atFold.active, 'the fourth call went live before the first three folded').toBe(0);
+    await releaseSSE('folding');
+    // Read on the frame the fourth call shows: rows still leaving the zone
+    // mean it landed mid-fold, the case that regressed.
+    const landed = await page.waitForFunction(() => {
+      const zone = document.querySelector('[data-testid="activity-live-zone"]');
+      if (!zone?.querySelector('.titem.running')) return null;
+      return { rows: zone.children.length };
+    }, null, { timeout: 15000, polling: 'raf' }).then((h) => h.jsonValue());
+    expect(landed.rows, 'the fourth call landed after the fold had ended').toBeGreaterThan(1);
 
     const zone = page.getByTestId('activity-live-zone');
     await expect(zone.locator('.titem.running')).toHaveCount(1, { timeout: 15000 });

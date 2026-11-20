@@ -6,6 +6,7 @@
  */
 import {
   configureSSE,
+  releaseSSE,
   resetMockServer,
   mockAPI,
   test,
@@ -764,7 +765,9 @@ test.describe('Chat View -- SSE Streaming', () => {
       path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.workspaceStatus('starting'),
-        sseEvents.workspaceStatus('ready'),
+        // Held until the test has seen the indicator: at the stream's 100ms
+        // gap the line came and went before a busy runner's click returned.
+        { ...sseEvents.workspaceStatus('ready'), holdUntil: 'workspace-started' },
         sseEvents.messageChunk('Workspace is ready. Here is your answer.'),
         sseEvents.finishStop(),
         sseEvents.creditUsage(),
@@ -781,9 +784,11 @@ test.describe('Chat View -- SSE Streaming', () => {
 
     // Warm-up indicator should appear
     await expect(page.getByText('Starting workspace...')).toBeVisible({ timeout: 10000 });
+    await releaseSSE('workspace-started');
 
     // Eventually the response arrives and the indicator goes away
     await expect(page.getByText('Workspace is ready. Here is your answer.')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Starting workspace...')).toHaveCount(0);
   });
 
   test('reconnect resumes in-progress stream', async ({ page }) => {

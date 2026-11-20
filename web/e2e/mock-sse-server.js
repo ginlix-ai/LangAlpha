@@ -5,7 +5,7 @@ import http from 'node:http';
  * Playwright worker that starts one owns its scenarios outright (see fixtures.js).
  */
 export function startMockServer(port) {
-  const state = { scenarios: {}, requestLog: [] };
+  const state = { scenarios: {}, requestLog: [], gates: new Map() };
   const server = http.createServer((req, res) => handle(state, req, res));
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -23,7 +23,17 @@ export function startMockServer(port) {
   });
 }
 
-async function handle({ scenarios, requestLog }, req, res) {
+/** The gate `name`, made by whichever of the stream and the release reaches it first. */
+function gate(gates, name) {
+  if (!gates.has(name)) {
+    let open;
+    const opened = new Promise((resolve) => { open = resolve; });
+    gates.set(name, { opened, open });
+  }
+  return gates.get(name);
+}
+
+async function handle({ scenarios, requestLog, gates }, req, res) {
   try {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -46,9 +56,19 @@ async function handle({ scenarios, requestLog }, req, res) {
     res.end('ok');
     return;
   }
+  if (req.url === '/__release' && req.method === 'POST') {
+    const { name } = JSON.parse(await readBody(req));
+    gate(gates, name).open();
+    res.writeHead(200);
+    res.end('ok');
+    return;
+  }
   if (req.url === '/__reset' && req.method === 'POST') {
     for (const k of Object.keys(scenarios)) delete scenarios[k];
     requestLog.length = 0;
+    // A stream still held at a gate goes on, so its response can end.
+    for (const g of gates.values()) g.open();
+    gates.clear();
     res.writeHead(200);
     res.end('ok');
     return;
@@ -127,6 +147,9 @@ async function handle({ scenarios, requestLog }, req, res) {
 
   for (let i = 0; i < scenario.events.length; i++) {
     const ev = scenario.events[i];
+    // An event may wait at a gate the test opens (`releaseSSE`), to land when
+    // the page is in a state rather than after a time.
+    if (ev.holdUntil) await gate(gates, ev.holdUntil).opened;
     const lines = [];
     lines.push(`id: ${ev.id ?? i + 1}`);
     if (ev.event) lines.push(`event: ${ev.event}`);

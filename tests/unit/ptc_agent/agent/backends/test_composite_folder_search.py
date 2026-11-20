@@ -49,6 +49,7 @@ from ptc_agent.agent.backends.search_match import (
     GLOB_HISTORY_CHILDREN,
     RgWalk,
 )
+from ptc_agent.agent.backends.subagents import SubagentsBackend
 from ptc_agent.agent.backends.user_data import UserDataBackend
 from ptc_agent.agent.filesystem_routes import (
     USER_DATA_ROUTES,
@@ -67,6 +68,7 @@ from ptc_agent.core.sandbox import files as sandbox_files
 from ptc_agent.core.sandbox.files import aglob_files
 from ptc_agent.core.sandbox.glob_runtime import agent_glob_pattern
 from ptc_agent.core.sandbox.grep_render import GrepLine
+from src.server.services.subagents import file as subagents_file
 
 ROOT = "/home/workspace"
 FOLDER = f"{ROOT}/Home"
@@ -158,6 +160,21 @@ def automations(monkeypatch) -> MagicMock:
         classmethod(lambda cls, user_id: table.rendered(user_id)),
     )
     return table
+
+
+@pytest.fixture(autouse=True)
+def no_subagents(monkeypatch) -> None:
+    """No subagents and no connectors. Read for real, the subagents route
+    reaches for the server's agent config, whose lazy import loads the whole
+    app (seconds on a busy runner) inside the first search of the user tier,
+    which a timed test would count."""
+    monkeypatch.setattr(
+        SubagentsBackend, "names", classmethod(AsyncMock(return_value=[]))
+    )
+    monkeypatch.setattr(
+        SubagentsBackend, "rendered", classmethod(AsyncMock(return_value={}))
+    )
+    monkeypatch.setattr(subagents_file, "list_connectors", AsyncMock(return_value=()))
 
 
 @pytest.fixture
@@ -1397,9 +1414,11 @@ class TestMatchingTakesPolynomialTime:
         short files, that pass takes seconds."""
         lines = 40
         names = [f"m{i:04d}.md" for i in range(3000)]
-        body = "\n".join(["ZEPH"] * lines)
+        # The pass this guards against grows with rg's lines, not the route's,
+        # so the route's files hold one line and its own grep stays out of
+        # the time measured.
         for name in names:
-            store.put((USER, "memos"), name, _envelope(body))
+            store.put((USER, "memos"), name, _envelope("ZEPH"))
         sandbox.agrep_rich.return_value = [
             GrepLine(f"{MEMO_ROOT}{name}:{number}:ZEPH", f"{MEMO_ROOT}{name}")
             for name in names

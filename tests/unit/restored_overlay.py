@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -61,10 +62,15 @@ _os.statvfs = _full
 def archive(root: Path) -> Path:
     """Mark every directory now under ``root`` as restored from an archive;
     returns the file of marks that ``prefix`` reads."""
+    # Directories only: ``os.walk`` lists a symlink to a directory among
+    # ``dirs`` too, and a link is unlinked rather than rmdir'd, so its mark
+    # would outlive it and refuse whatever directory the disk numbers next
+    # with its freed inode, as ext4 does at once.
     lower = sorted(
         [st.st_dev, st.st_ino]
         for top, dirs, _files in os.walk(root)
         for st in (os.lstat(os.path.join(top, name)) for name in dirs)
+        if stat.S_ISDIR(st.st_mode)
     )
     marks = root.parent / f".{root.name}.restored"
     marks.write_text(json.dumps(lower))

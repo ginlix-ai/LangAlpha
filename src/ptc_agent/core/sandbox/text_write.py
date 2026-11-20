@@ -91,7 +91,7 @@ def _sha256_is(path: str, digest: str) -> str:
 
 
 def _guard_lock(normalized_path: str) -> str:
-    """The lock directory guarded writes of one file take on the machine.
+    """The lock file guarded writes of one file take on the machine.
 
     Outside the workspace folder, so a listing or a backup never meets it,
     and named by a digest so any path makes one name.
@@ -160,16 +160,20 @@ async def _exec_text_write_once(
             f"lk={shlex.quote(_guard_lock(normalized_path))}",
             "n=0",
             "tried=",
-            'until mkdir -- "$lk" 2>/dev/null; do',
+            # The lock is a file the save creates exclusively (noclobber), not
+            # a folder: a uutils mkdir reports success for a folder another run
+            # made at the same moment. A script from before keeps its lock as
+            # a folder of the same name, and each fails to make the other's.
+            'until (set -C && : > "$lk") 2>/dev/null; do',
             "  n=$((n + 1))",
             f'  if [ "$n" -gt {_GUARD_LOCK_TRIES} ]; then',
             # Taken only from a holder that is gone: one still running may
             # be between its check and its rename, and would land over the
             # save that took its lock. A lock with no id yet may be a holder
-            # between its mkdir and its id, so it is taken only once old, as
-            # is one whose id another process has since reused.
+            # between taking it and writing its id, so it is taken only once
+            # old, as is one whose id another process has since reused.
             "    i=$(ls -di -- \"$lk\" 2>/dev/null | awk '{print $1}')",
-            '    o=$(cat -- "$lk/pid" 2>/dev/null || true)',
+            '    o=$(cat -- "$lk" 2>/dev/null || cat -- "$lk/pid" 2>/dev/null || true)',
             f'    if [ -z "$(find "$lk" -maxdepth 0 -mmin +{_GUARD_LOCK_STALE_MIN} 2>/dev/null)" ] \\',
             '      && { [ -z "$o" ] || kill -0 "$o" 2>/dev/null; }; then',
             '      echo "another save of this file is still running" >&2',
@@ -186,8 +190,28 @@ async def _exec_text_write_once(
             # claims it (the lock's inode and holder) removes it, and all go
             # back to taking the lock. The claim stays, so a save that read
             # the same holder late cannot remove the lock taken since; one
-            # that loses twice gives up.
-            '    if [ -n "$i" ] && mkdir -- "$lk.gone.$i.${o:-0}" 2>/dev/null; then',
+            # that loses twice gives up. The claim is a file made exclusively,
+            # for the same reason as the lock. A script from before finds no
+            # id in a file lock and claims it as a folder under holder 0, so
+            # a file lock is claimed under 0 too: an older script's folder
+            # there means that script has it, and a claim file there is only
+            # left from an earlier lock that had this inode, which the save
+            # stamps anew so the sweep keeps it from an older script for as
+            # long as any claim. A save that finds an older script's claim
+            # drops its own, so once that one ages out the next round can
+            # claim the lock.
+            '    c="$lk.gone.$i.${o:-0}"',
+            '    b="$lk.gone.$i.0"',
+            "    won=",
+            '    if [ -n "$i" ] && (set -C && : > "$c") 2>/dev/null; then',
+            '      if [ -d "$lk" ] || (set -C && : > "$b") 2>/dev/null \\',
+            '        || { [ -f "$b" ] && touch -c -- "$b" 2>/dev/null && [ -f "$b" ]; }; then',
+            "        won=1",
+            "      else",
+            '        rm -f -- "$c"',
+            "      fi",
+            "    fi",
+            '    if [ -n "$won" ]; then',
             '      rm -rf -- "$lk"',
             '    elif [ -n "$tried" ]; then',
             '      echo "another save of this file is still running" >&2',
@@ -195,13 +219,18 @@ async def _exec_text_write_once(
             "    fi",
             "    tried=1",
             "    n=0",
-            '    find "$(dirname -- "$lk")" -maxdepth 1 -name "$(basename -- "$lk").gone.*"'
+            # From the folder's own path: on a Mac /tmp is a link, which find
+            # does not follow from its start.
+            '    find "$(dirname -- "$lk")/" -maxdepth 1 -name "$(basename -- "$lk").gone.*"'
             f" -mmin +{_GUARD_LOCK_STALE_MIN} -exec rm -rf {{}} + 2>/dev/null || true",
             "  fi",
             "  sleep 0.1 2>/dev/null || sleep 1",
             "done",
+            # Held before its id is written, so a write that fails (a full
+            # /tmp) lets the trap remove the lock rather than leave one with
+            # no id, which no save takes until it is old.
             'held=$lk',
-            'echo "$$" > "$lk/pid"',
+            'echo "$$" > "$lk"',
         ]
         if guard is not None
         else []
