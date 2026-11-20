@@ -79,6 +79,8 @@ CLAUDE_CODE_OFF = {
     "choice_changed": (
         "How Claude Code runs on cloud computers changed as this turn started. Send your message again."
     ),
+    "clis_full": ClaudeTurnFailed.TEMPLATES["clis_full"],
+    "commands_full": ClaudeTurnFailed.TEMPLATES["commands_full"],
     "needs_bigger_computer": (
         "Claude Code runs on Medium or larger cloud computers, and {where} is smaller. "
         "Change its spec, or move this workspace to a computer of your own."
@@ -265,6 +267,7 @@ _ADMISSION_REASON = {
     "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
     "choice_changed": "choice_changed", "needs_bigger_computer": "needs_bigger_computer",
     "cli_computer_offline": "cli_computer_offline", "other_model_history": "other_model",
+    "clis_full": "clis_full", "commands_full": "commands_full",
 }
 
 

@@ -36,7 +36,7 @@ from ptc_agent.agent.middleware.compaction.measure import measured_tokens
 from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY, forced_under_threshold
 from ptc_agent.agent.middleware.runtime_context.state import as_dict
 from ptc_agent.core.sandbox.attach_only import SandboxNotRunning
-from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed
+from src.llms.claude_code import SLOTS_FULL, ClaudeCodeTarget, ClaudeTurnFailed
 from src.server.services.computer_manager import attach_only
 from src.server.services.features import user_feature_enabled
 from src.server.services.idle_compaction import Kind, log_idle
@@ -88,8 +88,8 @@ async def fire(row: dict[str, Any]) -> None:
         log_idle("discard", thread_id, "native_failed", kind)
     except ClaudeTurnFailed as e:
         # Its CLI refused or failed as a turn's would: logged in, the plan,
-        # the computer it runs on.
-        log_idle("discard", thread_id, f"claude_code_{e.kind}", kind)
+        # the computer it runs on, or a computer too busy to start it at all.
+        log_idle("skip" if e.kind in SLOTS_FULL else "discard", thread_id, f"claude_code_{e.kind}", kind)
     except TimeoutError:
         log_idle("discard", thread_id, "timeout", kind)
     except HTTPException as e:
@@ -242,7 +242,7 @@ async def _session_summary(agent: Any, row: dict[str, Any], target: ClaudeCodeTa
     try:
         session = await _unless_returned(agent.compact_claude_code, row["thread_id"], row["armed_by_run_id"])
     except CLIConnectionError as e:
-        # No CLI slot freed in time, or the CLI never connected.
+        # The CLI never connected.
         raise _Skip("skip", "cli_unavailable") from e
     if session is None:
         raise _Skip("discard", "nothing_to_compact")
