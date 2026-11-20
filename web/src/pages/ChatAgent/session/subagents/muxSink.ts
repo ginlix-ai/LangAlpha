@@ -6,7 +6,7 @@
  */
 
 import type { AssistantMessage } from '@/types/chat';
-import { getThreadMux, type ThreadMuxSink } from '../stream/threadStreamMux';
+import type { ThreadMuxSink } from '../stream/threadStreamMux';
 import {
   isTerminalStatus,
   normalizeWireStatus,
@@ -258,7 +258,7 @@ export function createSubagentMuxController(rt: SubagentRuntime, deps: SubagentM
     snapshotAtMs?: number,
   ) => {
     rt.subagentProcessEventRef.current = processEvent;
-    getThreadMux(tid).attach(muxSink, snapshotAtMs);
+    rt.muxSlot.attach(tid, muxSink, snapshotAtMs);
   };
 
   return { isSettledTask, attachSubagentMux };

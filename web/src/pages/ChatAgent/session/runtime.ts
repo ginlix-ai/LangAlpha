@@ -37,6 +37,7 @@ import type {
 import type { CardUpdater } from './streamRefs';
 import type { PauseSlot } from './interrupts/pauseSlot';
 import type { SubagentHistoryStore } from './subagents/historyStore';
+import type { ThreadMuxSlot } from './stream/threadStreamMux';
 import type { SubagentTokenUsage } from '../utils/tokenUsage';
 import type { NextSummary } from '../utils/api/messages';
 import type { RecentlySentTracker } from '../hooks/utils/recentlySentTracker';
@@ -67,6 +68,7 @@ export interface SubagentRuntime {
   // stable containers, ref-current reads — owned by this lane
   subagentStateRefsRef: Ref<Record<string, TaskRefs>>;
   subagentHistory: SubagentHistoryStore;
+  muxSlot: ThreadMuxSlot;
   subagentProcessEventRef: Ref<((event: SSEEvent) => void) | null>;
   subagentTokenUsageRef: Ref<Record<string, SubagentTokenUsage>>;
   terminalTaskOutcomesRef: Ref<Map<string, 'completed' | 'cancelled' | 'error'>>;

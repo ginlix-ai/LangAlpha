@@ -12,10 +12,8 @@ import { createSubagentMuxController } from '../muxSink';
 import { createSubagentHistoryStore } from '../historyStore';
 import type { SubagentHistoryEntry } from '../../types';
 
-const attached = vi.hoisted(() => ({ sink: null as ThreadMuxSink | null }));
-vi.mock('../../stream/threadStreamMux', () => ({
-  getThreadMux: () => ({ attach: (sink: ThreadMuxSink) => { attached.sink = sink; } }),
-}));
+const attached = { sink: null as ThreadMuxSink | null };
+const muxSlot = { attach: (_tid: string, sink: ThreadMuxSink) => { attached.sink = sink; } };
 
 const NOW = 1_700_000_500_000;
 
@@ -37,6 +35,7 @@ function setup(historyStatus?: string) {
     // Mid-turn, so no report-back watch is armed.
     isStreamingRef: { current: true },
     threadIdRef: { current: 'thread-1' },
+    muxSlot,
   } as unknown as SubagentRuntime;
   const refreshClaudeCodePlan = vi.fn();
   createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan })
@@ -55,7 +54,7 @@ afterEach(() => {
 describe('muxSink: a main run closing', () => {
   it('reads the Claude plan again, which the run kept as it tore down', () => {
     const refreshClaudeCodePlan = vi.fn();
-    const rt = { threadIdRef: { current: 'thread-1' }, subagentProcessEventRef: { current: null } } as unknown as SubagentRuntime;
+    const rt = { threadIdRef: { current: 'thread-1' }, subagentProcessEventRef: { current: null }, muxSlot } as unknown as SubagentRuntime;
     createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan })
       .attachSubagentMux('thread-1', vi.fn());
     attached.sink!.onMainRunClosed?.('cancelled');
@@ -138,6 +137,7 @@ describe('muxSink: drain of a task the history loaded as settled', () => {
       setMessages: vi.fn(),
       isStreamingRef: { current: true },
       threadIdRef: { current: 'thread-1' },
+      muxSlot,
     } as unknown as SubagentRuntime;
     createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan: vi.fn() })
       .attachSubagentMux('thread-1', (ev) => { processed.push(ev); });

@@ -153,10 +153,7 @@ export class ThreadStreamMux {
   // resends every one of those streams whole.
   private openTurnServed = false;
 
-  constructor(
-    private threadId: string,
-    private onDispose: () => void,
-  ) {}
+  constructor(private threadId: string) {}
 
   /** Register (or replace) the thread-level sink and keep the socket up.
    * The socket stays open while attached even with zero channels — the
@@ -180,6 +177,11 @@ export class ThreadStreamMux {
   detach(): void {
     this.sink = null;
     this.dispose();
+  }
+
+  /** Whether this mux is live for `threadId` (a detach or a 4xx disposes it). */
+  serves(threadId: string): boolean {
+    return !this.disposed && this.threadId === threadId;
   }
 
   /** Short task ids with an open (non-closed) run channel. */
@@ -239,7 +241,7 @@ export class ThreadStreamMux {
         }
         // A definitive HTTP rejection (bad request/permission/gone) can't
         // heal by retrying — dispose so a later attach starts fresh instead
-        // of leaving an inert registry entry. 401 stays retryable: a
+        // of reusing an inert mux. 401 stays retryable: a
         // backgrounded tab reconnects with an expired token before Supabase
         // refreshes it, and every retry re-reads the session.
         if (
@@ -270,7 +272,6 @@ export class ThreadStreamMux {
     this.disposed = true;
     this.controller?.abort();
     for (const chan of this.runs.values()) this.endReplay(chan);
-    this.onDispose();
   }
 
   /** A mux-initiated tear discards this connection's buffered lines —
@@ -608,22 +609,47 @@ function runIdFromChanName(chan: unknown): string | null {
   return chan.slice(4) || null;
 }
 
-// ---- per-thread registry --------------------------------------------------
+// ---- the view's mux -------------------------------------------------------
 
-const muxByThread = new Map<string, ThreadStreamMux>();
+/**
+ * The mux a view of a thread delivers through. What a mux has delivered
+ * (closed channels, the open-turn drain) belongs to the projection it fed, so
+ * a projection rebuilt by a load, or another view's, needs a mux of its own.
+ */
+export class ThreadMuxSlot {
+  private mux: ThreadStreamMux | null = null;
+  private ended = false;
 
-export function getThreadMux(threadId: string): ThreadStreamMux {
-  let mux = muxByThread.get(threadId);
-  if (!mux) {
-    mux = new ThreadStreamMux(threadId, () => {
-      if (muxByThread.get(threadId) === mux) muxByThread.delete(threadId);
-    });
-    muxByThread.set(threadId, mux);
+  /** Register `sink` for `threadId`, starting a mux unless the held one serves it. */
+  attach(threadId: string, sink: ThreadMuxSink, snapshotAtMs?: number): void {
+    if (this.ended) return;
+    if (!this.mux?.serves(threadId)) {
+      this.release();
+      this.mux = new ThreadStreamMux(threadId);
+    }
+    this.mux.attach(sink, snapshotAtMs);
   }
-  return mux;
-}
 
-/** Existing mux for the thread, without creating one (for passive reads). */
-export function peekThreadMux(threadId: string): ThreadStreamMux | null {
-  return muxByThread.get(threadId) ?? null;
+  /** Short task ids with an open run channel on `threadId`'s mux. */
+  openTaskIds(threadId: string | null): Set<string> {
+    return threadId && this.mux?.serves(threadId) ? this.mux.openTaskIds() : new Set<string>();
+  }
+
+  /** Tear the held mux down without marking anything completed. */
+  release(): void {
+    this.mux?.detach();
+    this.mux = null;
+  }
+
+  /** The view mounted, or mounted again under StrictMode. */
+  mount(): void {
+    this.ended = false;
+  }
+
+  /** The view unmounted. Its turn reader runs on to the turn's end and
+   * attaches what it launches, which must open no socket nobody reads. */
+  unmount(): void {
+    this.ended = true;
+    this.release();
+  }
 }
