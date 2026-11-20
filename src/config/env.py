@@ -51,6 +51,10 @@ GINLIX_DATA_WS_URL: str = os.getenv("GINLIX_DATA_WS_URL", "") or (
     else ""
 )
 GINLIX_DATA_ENABLED: bool = bool(GINLIX_DATA_URL)
+# Whether get_sec_filing reads filings from ginlix-data before SEC EDGAR, with
+# GINLIX_DATA_URL set. false reads them from EDGAR alone and leaves market data
+# on ginlix-data.
+GINLIX_DATA_SEC_ENABLED: bool = os.getenv("GINLIX_DATA_SEC_ENABLED", "true").lower() == "true"
 
 # Where a sandbox reaches the platform's public API, ginlix-data included.
 # Sandboxes are remote, so this stays publicly reachable even when this server

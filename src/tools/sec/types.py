@@ -13,3 +13,4 @@ class FilingType(str, Enum):
 
 PERIODIC_FORMS = ("10-K", "10-Q", "20-F", "40-F")
 FOREIGN_FORMS = ("20-F", "40-F")
+EIGHT_K_FORMS = ("8-K", "8-K/A")

@@ -14,7 +14,7 @@ from edgar_engine.filings import FilingRef
 from edgar_engine.forms import item_title
 
 if TYPE_CHECKING:
-    from .edgar import EightKRef, Financials
+    from .edgar import Calendar, EightKRef, Financials
 
 SCOPE_PHRASES = {"complete": "restates the whole report", "exhibits": "adds exhibits only",
                  "cover": "changes the cover page only"}
@@ -216,11 +216,64 @@ def call_file(symbol: str, form: str, accession: str, c: CallNote, transcript: s
             f"{transcript}\n")
 
 
-def recent_reports_section(reports: Sequence[FilingRef], returned: FilingRef, *, foreign: bool) -> list[str]:
+_PERIOD_ORDER = {"Q1": 1, "Q2": 2, "Q3": 3, "FY": 4}
+
+
+def _next_period(returned: FilingRef, fiscal_period: str) -> str:
+    """The report after the returned one as " for <period>" in period_label's words; empty when the returned
+    report's fiscal period is not known."""
+    if returned.fiscal_year is None or returned.fiscal_period not in _PERIOD_ORDER or fiscal_period not in _PERIOD_ORDER:
+        return ""
+    fy = returned.fiscal_year + (_PERIOD_ORDER[fiscal_period] <= _PERIOD_ORDER[returned.fiscal_period])
+    return f" for fiscal year {fy}" if fiscal_period == "FY" else f" for {fiscal_period} of fiscal year {fy}"
+
+
+def calendar_line(calendar: Calendar | None, returned: FilingRef) -> str | None:
+    """The filing calendar's line for a returned report that is the latest periodic report on file; None keeps the
+    plain line (no calendar, another latest report, an unknown verdict, or a filing the filings table does not hold).
+    A served calendar can be older than the day it is read, so the dates that decide a line are compared with that
+    day. A window that runs past the due date is shown ending at the due date; the late lines say when a report is
+    late."""
+    nxt = calendar and calendar.served.next
+    if nxt is None or calendar.served.latest != returned.accession:
+        return None
+    report = f"{nxt.form}{_next_period(returned, nxt.fiscal_period)} (period end {nxt.period_end})"
+    start, end = nxt.window
+    if start <= nxt.deadline < end:
+        end = nxt.deadline
+    window = f"expected between {start} and {end} and due by {nxt.deadline}"
+    latest = "This is the latest periodic report on file"
+    verdict = calendar.served.verdict
+    if verdict == "current" and calendar.today >= start:
+        verdict = "expected"
+    if verdict in ("expected", "extended") and calendar.today > nxt.latest_deadline:
+        verdict = "deregistered" if calendar.served.termination else "overdue"
+    match verdict:
+        case "current":
+            return f"{latest}. The next is the {report}, {window}."
+        case "expected" if calendar.today <= nxt.deadline:
+            return f"{latest}, and the next may be filed any day: the {report}, {window}."
+        case "expected":
+            return (f"{latest}. The next, the {report}, was due by {nxt.deadline} and is not on file yet; it can still "
+                    f"be on time until {nxt.latest_deadline}.")
+        case "extended" if (notice := calendar.filed.get(nxt.notice or "")):
+            return (f"{latest}. The {report} was due by {nxt.deadline}; the company filed a notice of late filing on "
+                    f"{notice[1]}, which extends the due date to {nxt.latest_deadline}.")
+        case "overdue":
+            return (f"{latest}. The {report} is late: it was due by {nxt.deadline} and is still not on file after "
+                    f"{nxt.latest_deadline}, the latest date it could have been on time.")
+        case "deregistered" if (ended := calendar.filed.get(calendar.served.termination or "")):
+            return (f"{latest}, and no newer one is expected: the company filed Form {ended[0]} on {ended[1]} to stop "
+                    f"reporting, and the {report} due by {nxt.latest_deadline} was not filed.")
+    return None
+
+
+def recent_reports_section(reports: Sequence[FilingRef], returned: FilingRef, *, foreign: bool,
+                           calendar: Calendar | None) -> list[str]:
     newer = [r for r in reports if (r.report_date or "", r.filing_date) > (returned.report_date or "", returned.filing_date)]
     lines = ["## Recent periodic reports"]
     if not newer:
-        lines.append("This is the latest periodic report on file.")
+        lines.append(calendar_line(calendar, returned) or "This is the latest periodic report on file.")
     else:
         latest = newer[0]
         what = f"the {latest.form} for {period_label(latest)}, period ended {latest.report_date}, filed {latest.filing_date}"
