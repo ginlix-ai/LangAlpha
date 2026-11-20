@@ -44,11 +44,10 @@ class DurableUpdate:
     """One runtime-context row: something that moved, and who moved it.
 
     A durable row is written once, at a turn boundary or, like the notes
-    reminder and check-in, between tool batches, and persisted as a message;
-    a per-call contributor puts the same shape on the request and it is gone
-    with the call. ``schema_version`` travels with the row because a row
-    outlives the code that wrote it: a reader replaying an old thread has to
-    know which shape it is looking at before it can render it.
+    reminder and check-in, between tool batches, and persisted as a message
+    that stays where it was written. ``schema_version`` travels with the row
+    because a row outlives the code that wrote it: a reader replaying an old
+    thread has to know which shape it is looking at before it can render it.
     """
 
     kind: str

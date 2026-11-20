@@ -82,8 +82,8 @@ from .large_result_eviction import (
 )
 
 # Runtime context: the per-thread baseline block plus the tail envelope carried
-# on every model call. Imported ahead of market_watch, which contributes a
-# per-call row to the envelope.
+# on every model call. Imported ahead of market_watch, which contributes its
+# price rows to the envelope.
 from .runtime_context import (
     BaselineContextMiddleware,
     RowCarrierMiddleware,

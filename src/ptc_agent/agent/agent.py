@@ -1320,10 +1320,12 @@ class PTCAgent:
                 context.baseline,
                 notes_rows,
                 # Market watch (main agent only): writes the <market-watch>
-                # price stamp into history as a row before each model call
-                # while a watched venue is open, re-stamping the cached block
-                # between fetches. Its before_model runs after every other row
-                # writer, so a turn's stamp follows its anchor.
+                # price stamp into history as a row while a watched venue is
+                # open. Inside the refresh window nothing is written while the
+                # last stamp for the same watch list is in view; once a summary
+                # took it, the cached block is written again. Its before_model
+                # runs after every other row writer, so a turn's stamp follows
+                # its anchor.
                 *(
                     [MarketWatchMiddleware(guidance=turn.guidance)]
                     if self.config.feature_enabled("market_watch")

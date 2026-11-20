@@ -302,7 +302,7 @@ def _patch_langchain_anthropic_header_betas():
     langchain-anthropic 1.7.6 adds one there by itself for some tools, content
     and settings. Either way the header's betas would be gone from the call:
     on the OAuth route what authenticates it, and the manifest's, which let
-    ``thinking.block_binding`` and turn-scoped system messages through. So
+    ``thinking.block_binding`` through. So
     they lead the list, ahead of the client's ``betas`` field, which a
     call-time list replaces too.
     """

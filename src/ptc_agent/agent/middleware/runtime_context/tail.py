@@ -2,15 +2,14 @@
 
 Every durable row in the request is history written in a provider-neutral form,
 so this middleware asks the carrier to compose the request in the shape the
-model in hand reads, and takes back the site breakpoint 4 may go on: the newest
-content the next call still carries.
+model in hand reads, and takes back the site breakpoint 4 may go on: the last
+text block of the request.
 
-Nothing is added for a single call. Text that rode one request and was gone on
-the next would sit in front of the thinking produced after it, and a model that
-binds thinking to its prefix would lose that reasoning on every later call, so
-every harness-authored line is a row written once into history (``turn.py``,
-``durable.py``, ``market_watch.py``). A row true for one call only goes out
-turn-scoped where the model takes that (``carrier.py``).
+Every harness-authored line is a row written once into history (``turn.py``,
+``durable.py``, ``market_watch.py``), and every row stays where it was written.
+Text that rode one request and was gone on the next would edit the prefix of
+the reasoning produced after it, which a model that binds its reasoning to the
+prefix would then lose on every later call.
 """
 
 from __future__ import annotations
@@ -58,8 +57,8 @@ class RowCarrierMiddleware(AgentMiddleware):
 
         model = getattr(request, "model", None)
         try:
-            carrier = resolve_carrier(model)
-            composed = compose_request(original, carrier)
+            shape = resolve_carrier(model)
+            composed = compose_request(original, shape)
         except Exception:  # noqa: BLE001 - context is never worth failing a turn for
             logger.warning(
                 "[Envelope] composing the request failed; sending it as it arrived",
@@ -74,7 +73,7 @@ class RowCarrierMiddleware(AgentMiddleware):
             settings = _without_top_level_marker(settings, marker[0])
         # The system shape is honored by the Anthropic client only inside this
         # window, so the opt-in is per composed call, never per client.
-        with operator_window(carrier.shape):
+        with operator_window(shape):
             return await handler(
                 request.override(messages=composed.messages, model_settings=settings)
             )

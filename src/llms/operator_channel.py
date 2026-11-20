@@ -1,4 +1,4 @@
-"""Per-provider operator channel for harness-authored per-call context.
+"""Per-provider operator channel for harness-authored context.
 
 The runtime-context envelope is written by the harness, not by the user, so it
 wants a message role the user cannot forge. Where a provider exposes one it takes
@@ -108,7 +108,6 @@ from typing import Any, Literal
 from langchain_core.messages import SystemMessage
 from langchain_openai.chat_models.base import BaseChatOpenAI
 
-from src.llms.anthropic_betas import client_betas
 from src.llms.endpoints import OFFICIAL_ANTHROPIC_HOST, url_host
 from src.llms.reasoning_lineage import ROUTE_ENDPOINT_SEP
 
@@ -385,18 +384,6 @@ TOOL_CHANGE_BLOCK_TYPES = ("tool_addition", "tool_removal")
 INLINE_TOOLS_BETA = "inline-tools-2026-09-15"
 
 
-def _official_system_channel(model: Any) -> bool:
-    try:
-        from langchain_anthropic import ChatAnthropic
-    except ImportError:  # pragma: no cover - langchain_anthropic is a hard dep
-        return False
-    return (
-        isinstance(model, ChatAnthropic)
-        and resolve_operator_channel(model) == "system"
-        and _resolved_host(getattr(model, "anthropic_api_url", None)) == OFFICIAL_ANTHROPIC_HOST
-    )
-
-
 def carries_tool_changes(model: Any) -> bool:
     """Whether *model* takes ``tool_addition`` / ``tool_removal`` on the system channel.
 
@@ -405,8 +392,15 @@ def carries_tool_changes(model: Any) -> bool:
     is no evidence it reads the blocks inside one, and an entry it misreads
     turns tools on or off without the model knowing.
     """
-    return _official_system_channel(model) and bool(
-        (getattr(model, "profile", None) or {}).get("mid_conversation_tools")
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:  # pragma: no cover - langchain_anthropic is a hard dep
+        return False
+    return (
+        isinstance(model, ChatAnthropic)
+        and resolve_operator_channel(model) == "system"
+        and _resolved_host(getattr(model, "anthropic_api_url", None)) == OFFICIAL_ANTHROPIC_HOST
+        and bool((getattr(model, "profile", None) or {}).get("mid_conversation_tools"))
     )
 
 
@@ -418,23 +412,6 @@ def tool_change_betas(requested: list[str] | None = None) -> list[str]:
     """
     betas = list(requested or [])
     return betas if INLINE_TOOLS_BETA in betas else [*betas, INLINE_TOOLS_BETA]
-
-
-#: The beta a turn-scoped system message (``clear_at``) needs. Declared in the
-#: manifest's ``additional_betas`` of the models that serve it, so it rides the
-#: client's own header on every request.
-TURN_SCOPED_BETA = "mid-conversation-system-clear-at-2026-08-21"
-
-
-def carries_turn_scoped(model: Any) -> bool:
-    """Whether *model* takes turn-scoped system messages on the system channel.
-
-    The same models as the channel itself, on the hosts that serve it, and
-    only where the client's own header already sends the beta: the request
-    never adds one, since a call's betas replace the header rather than
-    adding to it.
-    """
-    return _official_system_channel(model) and TURN_SCOPED_BETA in client_betas(model)
 
 
 # --------------------------------------------------------------------------
@@ -468,11 +445,7 @@ def operator_system_entry(message: SystemMessage) -> dict[str, Any] | None:
                 blocks.append(dict(block))
     if not blocks:
         return None
-    entry: dict[str, Any] = {"role": "system", "content": blocks}
-    clear_at = (message.additional_kwargs or {}).get("clear_at")
-    if clear_at:
-        entry["clear_at"] = clear_at
-    return entry
+    return {"role": "system", "content": blocks}
 
 
 # --------------------------------------------------------------------------
@@ -534,12 +507,7 @@ def _splice_operator_entries(
         formatted.extend(run_formatted)
         if cut < len(msgs):
             entry = operator_system_entry(msgs[cut])
-            if (
-                entry is not None
-                and formatted
-                and formatted[-1].get("role") == "system"
-                and formatted[-1].get("clear_at") == entry.get("clear_at")
-            ):
+            if entry is not None and formatted and formatted[-1].get("role") == "system":
                 # Two writers' entries met; one entry is the shape the wire
                 # rule allows, and both are history, so the join is the same
                 # on every call.

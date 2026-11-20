@@ -1,8 +1,8 @@
 """Claude-only request fields never reach any other model.
 
 The preserved-thinking work changes how requests to Claude are built: a fixed
-tools array with tool changes as system messages, turn-scoped system messages
-(clear_at), a pinned system message, the binding and compaction betas,
+tools array with tool changes as system messages, a pinned system message,
+the binding and compaction betas,
 thinking.block_binding, Claude's own compaction block. Every one is gated on
 the official Anthropic host and a capability, and the Anthropic-compatible
 hosts (DeepSeek, Moonshot, MiniMax, Z.AI and Doubao coding plans) share the
@@ -89,15 +89,15 @@ from ptc_agent.agent.prompts import resolve_prompt_guidance
 from src.llms.endpoints import is_official_anthropic_endpoint
 from src.llms.input_transformations import INPUT_TRANSFORMATIONS
 from src.llms.llm import create_llm, create_llm_from_custom
-from src.llms.operator_channel import INLINE_TOOLS_BETA, TURN_SCOPED_BETA
+from src.llms.operator_channel import INLINE_TOOLS_BETA
 from src.llms.provider_compaction import COMPACTION_BETA
 
 # -- what only Claude on the official host may be sent -----------------------
 
 CLAUDE_ONLY_BETAS = frozenset(
-    {"thinking-binding-controls-2026-08-01", TURN_SCOPED_BETA, INLINE_TOOLS_BETA, COMPACTION_BETA}
+    {"thinking-binding-controls-2026-08-01", INLINE_TOOLS_BETA, COMPACTION_BETA}
 )
-CLAUDE_ONLY_KEYS = frozenset({"clear_at", "defer_loading", "block_binding", "context_management", "tool_changes"})
+CLAUDE_ONLY_KEYS = frozenset({"defer_loading", "block_binding", "context_management", "tool_changes"})
 CLAUDE_ONLY_TYPES = frozenset({"tool_addition", "tool_removal", "tool_definition", "tool_reference"})
 CLAUDE_ONLY_STATE = frozenset({"tool_surface", "_unsent_thinking_ids"})
 
@@ -628,7 +628,6 @@ async def test_no_claude_only_field_reaches_another_model(monkeypatch, target):
             assert INPUT_TRANSFORMATIONS not in (getattr(message, "response_metadata", None) or {})
             if (message.additional_kwargs or {}).get("lc_source") == "tool_change":
                 assert message.additional_kwargs.get("tool_wire") == "openai"
-            assert "clear_at" not in (message.additional_kwargs or {})
         return
 
     # The system prompt and the tools follow the build on every call: turn 1
@@ -651,7 +650,6 @@ async def test_no_claude_only_field_reaches_another_model(monkeypatch, target):
     for message in state["messages"]:
         assert INPUT_TRANSFORMATIONS not in (getattr(message, "response_metadata", None) or {})
         assert not (isinstance(message, SystemMessage) and (message.additional_kwargs or {}).get("lc_source") == "tool_change")
-        assert "clear_at" not in (message.additional_kwargs or {})
 
 
 # -- the recorded render -------------------------------------------------------
@@ -709,29 +707,30 @@ async def test_a_thread_renders_as_recorded(monkeypatch, target):
     assert len(rendered) == len(recorded[target])
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("target", ["claude-sonnet-5-5", "claude-haiku-5-5"])
-async def test_every_stamp_claude_is_sent_stays_turn_scoped(monkeypatch, target):
-    """No path the thread takes (a skill load, a deploy, the summary that
-    brings it in, images) sends a stamp to Claude as a user turn: one there
-    would be content a later request leaves out or sends as a system message."""
-    network, _ = await _run_thread(monkeypatch, target)
+_PRICE = re.compile(r"NVDA\s+\$([\d.]+)")
 
-    stamps = [
-        (i + 1, message)
-        for i, call in enumerate(network.calls)
-        for message in call.body["messages"]
-        if any(
-            block.get("type") == "text"
-            and block["text"].removeprefix("<system-reminder>\n").lstrip().startswith(("<market-watch>", "Runtime context"))
-            and "<market-watch>" in block["text"]
-            for block in (message["content"] if isinstance(message["content"], list) else [{"type": "text", "text": message["content"]}])
-        )
-    ]
-    assert any(call.summary for call in network.calls), "the thread did not summarize"
-    assert len(stamps) > len(network.calls)
-    for call, message in stamps:
-        assert message["role"] == "system" and message.get("clear_at") == "next_user_message", call
+
+def _stamp_prices(call: _Call) -> list[str]:
+    """The prices of the market-watch stamps a request carries, in order."""
+    body = json.dumps(call.body.get("messages") or call.body.get("input") or [])
+    return _PRICE.findall(body.split("<market-watch>", 1)[-1]) if "<market-watch>" in body else []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["claude-sonnet-5-5", "gpt-6.2-sol", "gpt-6.2-sol-oauth"])
+async def test_every_stamp_stays_in_the_history(monkeypatch, target):
+    """No path the thread takes (a skill load, a deploy, images) leaves a
+    stamp out of a later request before a summary takes it: the model's own
+    answers quote the prices it read, and on a model that binds its reasoning
+    a stamp left out would unbind everything after it."""
+    network, _ = await _run_thread(monkeypatch, target)
+    calls = [call for call in network.calls if call.kind in ("anthropic", "responses")]
+    first_summary = next(i for i, call in enumerate(calls) if call.summary)
+
+    sent = [_stamp_prices(call) for call in calls[:first_summary]]
+    assert sum(1 for prices in sent if prices) > 2, "too few stamps to tell"
+    for i in range(1, len(sent)):
+        assert sent[i][: len(sent[i - 1])] == sent[i - 1], f"call {i + 1} left out a stamp call {i} sent"
 
 
 def _cache_markers(value: Any) -> list[dict]:

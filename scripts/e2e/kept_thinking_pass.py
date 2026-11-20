@@ -336,17 +336,18 @@ _STAMPS = iter(range(1, 1_000))
 
 
 def _stamp_middleware():
-    """A market-watch stamp on every call, as the watch writes one while a
-    venue is open, so the deploy phase sends turn-scoped system messages."""
+    """A market-watch stamp on every call, as the watch writes one each time
+    it has a new price, so the deploy phase sends the stamps as history."""
     from langchain.agents.middleware import AgentMiddleware
 
     from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message
+    from ptc_agent.agent.middleware.runtime_context.turn import MARKET_WATCH_KEPT_SINCE
 
     class Stamp(AgentMiddleware):
         async def abefore_model(self, state, runtime):
             n = next(_STAMPS)
             text = f"<market-watch>Watch code W{n}.</market-watch>"
-            update = DurableUpdate(kind="market_watch", schema_version=2, text=text)
+            update = DurableUpdate(kind="market_watch", schema_version=MARKET_WATCH_KEPT_SINCE, text=text)
             return {"messages": [build_update_message(update)]}
 
     return Stamp()
@@ -418,7 +419,7 @@ def _shape(body) -> list[str]:
     for m in body["messages"]:
         content = m.get("content")
         kinds = "str" if isinstance(content, str) else ",".join(b.get("type", "?") for b in content)
-        shape.append(f"{m['role']}{'(clear_at)' if m.get('clear_at') else ''}:{kinds}")
+        shape.append(f"{m['role']}:{kinds}")
     return shape
 
 
@@ -564,14 +565,14 @@ async def deploy_phase(model_name: str, behavior: str) -> bool:
     for n, body in enumerate(sent.bodies):
         found = dict(_stamps(body))
         stamps += len(found)
-        unscoped += [(n, i, m) for i, m in found.items() if not (m.get("role") == "system" and m.get("clear_at") == "next_user_message")]
+        unscoped += [(n, i, m) for i, m in found.items() if m.get("role") != "system"]
         for i, m in enumerate(body["messages"]):
             if i not in found and "<market-watch>" in json.dumps(m) and m.get("role") not in quoted:
                 quoted.add(m.get("role"))
                 kinds = [b.get("type") for b in m["content"]] if isinstance(m.get("content"), list) else "str"
                 print(f"[deploy/debug] body {n + 1} messages[{i}] ({m.get('role')}: {kinds}) quotes the stamp tag; not a stamp")
     for n, i, m in unscoped:
-        print(f"[deploy/debug] unscoped stamp on body {n + 1} messages[{i}]: role={m.get('role')} keys={sorted(m)} {json.dumps(m)[:300]}")
+        print(f"[deploy/debug] stamp off the system role on body {n + 1} messages[{i}]: role={m.get('role')} keys={sorted(m)} {json.dumps(m)[:300]}")
         print(f"[deploy/debug] body {n + 1} shape: {_shape(sent.bodies[n])}")
     if os.environ.get("KTP_DUMP"):
         with open(os.environ["KTP_DUMP"], "w") as f:
@@ -599,7 +600,7 @@ async def deploy_phase(model_name: str, behavior: str) -> bool:
     scoped = stamps > 0 and not unscoped
     _attribute(sent)
     breaks = kept_breaks(sent)
-    print(f"[deploy] market-watch stamps on the HTTP bodies: {stamps}, every one turn-scoped: {scoped}")
+    print(f"[deploy] market-watch stamps on the HTTP bodies: {stamps}, every one a system row: {scoped}")
     print(f"[deploy] {len(sent.payloads)} requests, render B built from request {deployed_at + 1}, compaction on request {c + 1}")
     print(f"[deploy] A's system and tools held through the compaction request: {held}")
     print(f"[deploy] new schema given in a message: {swap}; lookup calls: {json.dumps(calls)}")
