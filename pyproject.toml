@@ -20,7 +20,7 @@ dependencies = [
     # >=1.6.11: src/observability/langsmith_tracer.py builds its tracer from
     # tracers.context._get_tracer_kwargs, which replaced _get_tracer_project there.
     "langchain-core>=1.6.11",
-    "langchain-openai>=1.6.0",
+    "langchain-openai>=1.8.1",
     # Declared directly because src/llms/vendor/langchain_zai imports it; the 3.x floor is the HTTPX2 client migration.
     "openai>=3.8.0",
     "langchain-anthropic>=1.0.0",
