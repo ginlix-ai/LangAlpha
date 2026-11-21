@@ -196,7 +196,7 @@ class TestTheFirstTurnACheckpointDrops:
 
         monkeypatch.setattr(threads_read, "get_thread_branch_read", _read)
         monkeypatch.setattr(checkpoint_helpers, "checkpoint_on_branch", _on_branch)
-        monkeypatch.setattr(checkpoint_handler, "_branch_turns", _turns)
+        monkeypatch.setattr(checkpoint_handler, "branch_turns", _turns)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
