@@ -42,7 +42,8 @@
       "inPlace": "{{name}} 回到原位。",
       "dropped": "{{name}} 已放到 {{over}} 的位置。",
       "cancelled": "已取消移动 {{name}}。"
-    }
+    },
+    "infoAbout": "关于“{{name}}”"
   },
   "auth": {
     "login": "登录",
@@ -7535,7 +7536,7 @@
         "changing": "它正在改为中型。",
         "ownInstead": "也可以在你自己的电脑上运行 Claude Code：开启远程控制的 Mac，或通过 SSH 连接的电脑。",
         "row": "Claude Code 只在中型及以上的云端计算机上运行。",
-        "rowResize": "Claude Code 只在中型及以上的计算机上运行。改为中型会让它重启几分钟。",
+        "rowResize": "改为中型会让它重启几分钟。",
         "rowPlan": "Claude Code 只在中型及以上的计算机上运行，而当前套餐不含中型。",
         "rowResizing": "正在改为中型，完成后 Claude Code 即可在此运行。"
       },

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { InfoHint } from '@/components/ui/info-hint';
 import { Select } from '@/components/ui/select';
 import { useSetComputerClis } from '@/hooks/useClaudeCode';
 import { useSaveFailedToast } from '../usePreferenceWrite';
@@ -52,9 +53,14 @@ export function ComputerClis({ computerId, clis, automatic, chosen = true, max, 
   return (
     <span className="mt-1 flex flex-col gap-1">
       <span className="flex items-center gap-2">
-        <label htmlFor={id} className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('modelAccess.claudeCode.computer.clis')}
-        </label>
+        <span className="inline-flex items-center gap-1">
+          <label htmlFor={id} className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            {t('modelAccess.claudeCode.computer.clis')}
+          </label>
+          <InfoHint name={t('modelAccess.claudeCode.computer.clis')} id={`${id}-help`}>
+            {t('modelAccess.claudeCode.computer.clisHelp')}
+          </InfoHint>
+        </span>
         <Select
           ref={selectRef}
           id={id}
@@ -76,9 +82,6 @@ export function ComputerClis({ computerId, clis, automatic, chosen = true, max, 
             <option key={n} value={n}>{n}</option>
           ))}
         </Select>
-      </span>
-      <span id={`${id}-help`} className="text-xs text-pretty" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('modelAccess.claudeCode.computer.clisHelp')}
       </span>
     </span>
   );

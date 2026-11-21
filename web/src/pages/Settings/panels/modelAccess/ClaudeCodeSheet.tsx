@@ -101,7 +101,8 @@ function SetupRow({ icon, name, detail, status, action, plan, setting }: {
         {used && <UsageCells plan={plan} />}
         <div className={cn('flex basis-full items-center justify-end gap-3', steps.tail)}>
           {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
-          <div className="flex">{action}</div>
+          {/* Ends at the table's edge, under Check now, whichever action the row has. */}
+          <div className="flex justify-end">{action}</div>
         </div>
         {setting && <div className={steps.below}>{setting}</div>}
       </li>
@@ -116,8 +117,9 @@ function SetupRow({ icon, name, detail, status, action, plan, setting }: {
         {setting}
       </div>
       {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
-      {/* On a phone the button goes under the text, which keeps the width. */}
-      <div className="flex max-sm:col-[2/-1] max-sm:mt-2">{action}</div>
+      {/* On a phone the button goes under the text, which keeps the width;
+          otherwise it ends at the row's edge, whichever action the row has. */}
+      <div className="flex justify-end max-sm:col-[2/-1] max-sm:mt-2 max-sm:justify-start">{action}</div>
     </li>
   );
 }
@@ -174,7 +176,9 @@ function StartChatButton({ onLeave }: { onLeave?: () => void }) {
  *  what gets it to Medium (`useMediumAction`). */
 function mediumDetail(t: TFunction, action: MediumAction | null): string {
   if (!action) return t(M + '.row');
-  if (action.kind === 'plan') return t(M + '.rowPlan');
+  // The group's title says it is too small and the button names the size,
+  // so the line says only what neither does.
+  if (action.kind === 'plan') return t(M + '.notOnPlan');
   return t(action.kind === 'resizing' ? M + '.rowResizing' : M + '.rowResize');
 }
 
