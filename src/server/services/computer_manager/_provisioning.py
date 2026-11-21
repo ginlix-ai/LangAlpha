@@ -1193,17 +1193,18 @@ class ProvisioningMixin:
         *,
         source: str,
         mark: Callable[[str], None] = lambda _phase: None,
-    ) -> None:
+    ) -> bool:
         """A start's asset sync and folder restore, then the skill pass.
 
         In that order so the pass sees the final disk, and a start that did
-        both records the attach it spared (``_claim_attached``)."""
+        both records the attach it spared (``_claim_attached``). Says whether
+        the asset sync ran to its end."""
         synced = await self._sync_sandbox_assets(
             binding, user_id, session.sandbox, reusing_sandbox=True
         )
         mark("asset_sync")
         if not session.sandbox:
-            return
+            return False
         restored = await self._maybe_restore_files(binding, session.sandbox)
         if not restored:
             # A key from before a stop on this sandbox would have the next
@@ -1226,6 +1227,7 @@ class ProvisioningMixin:
             attach_key=attach_key,
         )
         mark("skill_reconcile")
+        return synced is not None
 
     async def _ensure_project_attached(
         self, binding: ComputerBinding, session: Any, *, user_id: str | None = None

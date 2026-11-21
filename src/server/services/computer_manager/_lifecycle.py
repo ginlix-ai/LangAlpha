@@ -825,17 +825,28 @@ class SessionLifecycleMixin:
                     )
                     mark("mcp_resolve")
 
+                # The signature is stamped by the sync that delivered its
+                # skills, and only one that ran to its end: a failed one
+                # leaves it for the next acquire to try again instead of
+                # trusting the cooldown. The link pass is not asked: a
+                # workspace it cannot finish for would sync on every acquire.
+                skills_changed = (
+                    skills_signature is not None
+                    and session.skills_signature != skills_signature
+                )
                 if needs_deferred_sync:
                     logger.debug(
                         f"Completing deferred sync for lazy-init workspace {workspace_id}"
                     )
-                    await self._sync_restore_and_reconcile(
+                    delivered = await self._sync_restore_and_reconcile(
                         binding,
                         workspace_user_id,
                         session,
                         source="lazy_phase2",
                         mark=mark,
                     )
+                    if delivered and skills_signature is not None:
+                        session.skills_signature = skills_signature
                     # Defer interval writes until ready to avoid racing archived startup.
                     # An auto-stop hiccup must not revert an otherwise healthy start.
                     # Re-read the machine rather than the binding frozen at turn
@@ -856,23 +867,17 @@ class SessionLifecycleMixin:
                         self._queue_reconnect_syncs_soon(
                             computer_id, session.sandbox, opened=workspace_id
                         )
-                elif mcp_changed or (
-                    skills_signature is not None
-                    and session.skills_signature != skills_signature
-                ):
+                elif mcp_changed or skills_changed:
                     # Warm sessions still need changed MCP wrappers or skills uploaded; manifest
                     # diffs bound that work without repeating restore or promotion.
-                    await self._sync_sandbox_assets(
+                    synced = await self._sync_sandbox_assets(
                         binding,
                         workspace_user_id,
                         session.sandbox,
                         reusing_sandbox=True,
                     )
                     mark("mcp_asset_sync")
-                    if (
-                        skills_signature is not None
-                        and session.skills_signature != skills_signature
-                    ):
+                    if skills_changed:
                         # The upload only fills the shared directory; this
                         # workspace reaches a shared skill through a link the
                         # reconciler lays. Without it, a skill added or switched
@@ -884,10 +889,8 @@ class SessionLifecycleMixin:
                             source="warm_skills_changed",
                         )
                         mark("skill_reconcile")
-
-                # Stamp only after successful sync so failures retain the retry signal.
-                if skills_signature is not None:
-                    session.skills_signature = skills_signature
+                        if synced is not None:
+                            session.skills_signature = skills_signature
 
                 # Keep up-to-30s discovery off the turn and lock; completion syncs new wrappers.
                 if resolved_mcp is not None:
