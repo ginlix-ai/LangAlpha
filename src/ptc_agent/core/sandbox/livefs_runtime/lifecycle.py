@@ -25,7 +25,8 @@ START_TIMEOUT_S = 10
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _package_files() -> list[tuple[str, bytes]]:
+def package_files() -> list[tuple[str, bytes]]:
+    """The package's own files, which are what a machine is shipped."""
     files = []
     for name in sorted(os.listdir(_PACKAGE_DIR)):
         if name.endswith(".py"):
@@ -43,12 +44,12 @@ def _version(files: list[tuple[str, bytes]]) -> str:
 
 def code_version() -> str:
     """What a running daemon is compared against, so a shipped change restarts it."""
-    return _version(_package_files())
+    return _version(package_files())
 
 
 def code_manifest() -> dict[str, str]:
     """Each file's digest, which ``boot`` checks the shipped copy against."""
-    return {name: hashlib.sha256(data).hexdigest() for name, data in _package_files()}
+    return {name: hashlib.sha256(data).hexdigest() for name, data in package_files()}
 
 
 @dataclass(frozen=True)
