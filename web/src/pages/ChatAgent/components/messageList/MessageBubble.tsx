@@ -1,7 +1,7 @@
 import { useSharedBubble } from './SharedThreadContext';
 import React, { useContext, useState, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Building2, Check, Copy, FileSearch, Info, Pencil, RefreshCw, RotateCcw, StopCircle, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { Building2, Check, Copy, FileSearch, GitBranch, Info, Pencil, RefreshCw, RotateCcw, SquarePen, StopCircle, ThumbsDown, ThumbsUp, type LucideIcon } from 'lucide-react';
 import { useAccount } from '@/hooks/useAccount';
 import { ThumbDownDialog } from '../ThumbDownSentDialog';
 import FigureEightLoading, { FADE_MS } from '@/components/ui/figure-eight-loading';
@@ -37,7 +37,7 @@ import { sentMessageForCopy, sentMessageWords } from './sentMessage';
 import { TurnFileCards } from './TurnFileCards';
 import { QuietEndLine } from './QuietEndLine';
 import type { QuietEnd } from '../../session/wakeupEvents';
-import type { ArtifactCommentsShown } from '@/types/api';
+import type { ArtifactCommentsShown, ThreadForkCut } from '@/types/api';
 import { CommentSendBody } from '../artifactComments/CommentSendBody';
 import { InPlaceSwap } from '@/components/ui/crossfade';
 import { CollapseClockContext, isFreshSend, playEntrance, turnEndDelays } from './transcriptMotion';
@@ -103,9 +103,32 @@ const NO_SEGMENTS: ContentSegmentRecord[] = [];
 const INDICATOR_EXIT = { duration: DURATION.exit, ease: EASE_COLLAPSE };
 
 /** The footer's icon buttons: hover changes the fill, a press presses in. */
-const ACTION_BUTTON = 'press p-1 min-h-7 min-w-7 inline-flex items-center justify-center rounded hover:bg-(--color-bg-elevated)';
+const ACTION_BUTTON = 'press p-1 min-h-7 min-w-7 inline-flex items-center justify-center rounded hover:bg-(--color-bg-elevated) disabled:opacity-50 disabled:pointer-events-none';
 const ICON = 'h-3.5 w-3.5';
 const QUIET_INK = { color: 'var(--color-text-tertiary)' };
+
+/** A copy of the chat into a new one. The button holds itself while its
+ *  request runs, as feedback; the host keeps it to one copy at a time across
+ *  the transcript, shows a refusal and opens the new chat. */
+function ForkActionButton({ cut, turnIndex, icon: Icon, label }: {
+  cut: ThreadForkCut;
+  turnIndex: number;
+  icon: LucideIcon;
+  label: string;
+}): React.ReactElement {
+  const { onForkFromTurn } = useMessageActions();
+  const [pending, setPending] = useState(false);
+  const fork = () => {
+    if (!onForkFromTurn || pending) return;
+    setPending(true);
+    void onForkFromTurn(turnIndex, cut).finally(() => setPending(false));
+  };
+  return (
+    <button onClick={fork} disabled={pending} className={ACTION_BUTTON} title={label} aria-label={label}>
+      <Icon className={ICON} style={QUIET_INK} />
+    </button>
+  );
+}
 
 /** A reply with no segments, an older message's shape, drawn as one block of
  *  prose that reports its typing as a segment's would. */
@@ -165,7 +188,7 @@ interface MessageBubbleProps {
  * chunk never re-renders settled bubbles through a handler identity.
  */
 export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
-  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
+  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
   const projection = contentProjection ?? projectMessageContent(message, isSubagentView, root);
@@ -231,18 +254,13 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     if (result === null) setFeedbackRating(prevRating);
   };
 
-  // Action buttons are mounted for all normal messages (reserves layout space) and
-  // only made visible after streaming settles. Keeping them mounted prevents a
-  // ~32px layout jump on sibling messages when streaming ends.
+  // The action row is mounted for all normal messages and holds a button's
+  // height with none drawn (reserves layout space); its buttons show once
+  // streaming settles. Keeping the row's height prevents a ~32px layout jump
+  // on sibling messages when streaming ends.
   const canShowActions = !isSubagentView && !readOnly;
   const isStreaming = message.isStreaming as boolean;
   const turnLive = isTurnLive ?? isStreaming;
-  // A background task outliving its stream leaves both `isStreaming` and
-  // `isLoading` false while the turn is still working, and rating or
-  // regenerating a reply the task can still change asks about an answer that
-  // does not exist yet. `isLoading` stays in the condition on its own account:
-  // it hides every other turn's controls while the session loads.
-  const showActions = canShowActions && !turnLive && !isLoading;
 
   // The streaming indicator stays under the turn's last bubble for as long as
   // the turn runs. `isStreaming` is per model call and drops on any
@@ -315,6 +333,46 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const isSteering = isSteeringUserMessage(message);
   // A send of file comments draws them under its note.
   const artifactComments = isUser ? message.artifactComments as ArtifactCommentsShown | undefined : undefined;
+  // A background task outliving its stream leaves both `isStreaming` and
+  // `isLoading` false while the turn is still working, and rating or
+  // regenerating a reply the task can still change asks about an answer that
+  // does not exist yet. `isLoading` stays in the condition on its own account:
+  // it hides every other turn's controls while the session loads.
+  const showActions = canShowActions && !turnLive && !isLoading;
+  // Copying the chat into a new one changes nothing here, so a turn running
+  // in this thread holds back only the reply it is still writing: a finished
+  // reply forks through itself, and any sent message forks before itself.
+  const showFork = canShowActions && (isUser || !turnLive);
+  // The footer buttons this bubble draws. The row shows, takes the focus and
+  // shows its time only when one is drawn.
+  const visible = {
+    // Steering bubbles get no edit pencil: they're injected mid-turn and have
+    // no turn checkpoint of their own, so an edit fork would target the NEXT
+    // turn and leave the original steering text in the agent's context. Nor
+    // does a send of file comments: an edit sends text, and the comments it
+    // carried are no longer queued to go again.
+    edit: showActions && isUser && !!onEditMessage && !isSteering && !artifactComments && shared.canRewrite,
+    // The same turn's message in a new chat, to change and send there. It
+    // changes nothing here, so it needs no say over this thread's turns; a
+    // steer or a send of comments has no turn of its own to stop before.
+    editInNewChat: showFork && isUser && !!onForkFromTurn && turnIndex !== null && !isPendingDelivery && !isSteering && !artifactComments,
+    // Both roles (a user bubble falls back to message.content).
+    copy: showActions,
+    thumbUp: showActions && isAssistant && !hasError && !!onThumbUp,
+    thumbDown: showActions && isAssistant && !hasError && !!onThumbDown,
+    // One regenerate per backend turn, on the turn's last bubble:
+    // regenerating re-runs the whole turn from its input checkpoint (mid-run
+    // steering can't be replayed), so the affordance sits at the end of the
+    // full response. A turn that opened hidden has none: that checkpoint
+    // lacks the words its context carried.
+    regenerate: showActions && isAssistant && (!hasError || unloaded) && !!onRegenerate && !!isTurnTail && canRegenerate && shared.canRewrite,
+    // A rule's refusal gets the same answer however often it is sent.
+    retry: showActions && isAssistant && hasError && !unloaded && !!onRetry && isLatestReply && !failure?.ruleStop && shared.canRewrite,
+    // The conversation through this reply, copied into a new chat. On the
+    // turn's last bubble, as regenerate is, since it copies the whole turn.
+    fork: showFork && isAssistant && !!isTurnTail && !!onForkFromTurn && turnIndex !== null && (!hasError || hasBody) && !unloaded,
+  };
+  const rowShown = Object.values(visible).some(Boolean);
   // A message shows when it was sent and a reply when its turn ended. A
   // steering bubble shows none: replayed, its time is not history time.
   // It sits on the row's inner side, so the buttons keep their place at the
@@ -422,10 +480,10 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   // every streaming message.
   const actionsRow = canShowActions && !isEditing ? (
   <div
-    aria-hidden={!showActions}
-    inert={!showActions || undefined}
-    className={`flex gap-1 transition-opacity ${
-      showActions
+    aria-hidden={!rowShown}
+    inert={!rowShown || undefined}
+    className={`flex flex-wrap gap-1 min-h-7 transition-opacity ${
+      rowShown
         ? (isMobile ? '' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
         : 'opacity-0 pointer-events-none'
     } ${
@@ -436,13 +494,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     }`}
   >
     {isUser && shownTime}
-    {/* User message actions. Steering bubbles get no edit pencil:
-        they're injected mid-turn and have no turn checkpoint of their
-        own, so an edit fork would target the NEXT turn and leave the
-        original steering text in the agent's context. */}
-    {/* Nor does a send of file comments: an edit sends text, and the
-        comments it carried are no longer queued to go again. */}
-    {isUser && onEditMessage && !isSteering && !artifactComments && shared.canFork && (
+    {visible.edit && (
       <button
         onClick={handleStartEdit}
         className={ACTION_BUTTON}
@@ -451,9 +503,12 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         <Pencil className={ICON} style={QUIET_INK} />
       </button>
     )}
+    {visible.editInNewChat && (
+      <ForkActionButton cut="before_turn" turnIndex={turnIndex!} icon={SquarePen} label={t('chat.actions.editInNewChat')} />
+    )}
 
-    {/* Copy — both roles (a user bubble falls back to message.content).
-        Then assistant-only: ThumbUp -> ThumbDown -> Regenerate/Retry */}
+    {/* Copy, then assistant-only: ThumbUp -> ThumbDown -> Regenerate/Retry */}
+    {visible.copy && (
     <button
       onClick={handleCopy}
       className={ACTION_BUTTON}
@@ -467,7 +522,8 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         to={<Check className={ICON} style={{ color: 'var(--color-text-primary)' }} />}
       />
     </button>
-    {isAssistant && !hasError && onThumbUp && (
+    )}
+    {visible.thumbUp && (
       <button
         onClick={handleThumbUpClick}
         className={ACTION_BUTTON}
@@ -481,7 +537,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         />
       </button>
     )}
-    {isAssistant && !hasError && onThumbDown && (
+    {visible.thumbDown && (
       <button
         onClick={() => setShowThumbDownModal(true)}
         className={ACTION_BUTTON}
@@ -495,22 +551,16 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         />
       </button>
     )}
-    {/* One regenerate per backend turn, on the turn's last bubble —
-        regenerating re-runs the whole turn from its input checkpoint
-        (mid-run steering can't be replayed), so the affordance sits
-        at the end of the full response. A turn that opened hidden has
-        none: that checkpoint lacks the words its context carried. */}
-    {isAssistant && (!hasError || unloaded) && onRegenerate && isTurnTail && canRegenerate && shared.canFork && (
+    {visible.regenerate && (
       <button
-        onClick={() => onRegenerate(messageId)}
+        onClick={() => onRegenerate?.(messageId)}
         className={ACTION_BUTTON}
         title={t('chat.actions.regenerate')}
       >
         <RefreshCw className={ICON} style={QUIET_INK} />
       </button>
     )}
-    {/* A rule's refusal gets the same answer however often it is sent. */}
-    {isAssistant && hasError && !unloaded && onRetry && isLatestReply && !failure?.ruleStop && shared.canFork && (
+    {visible.retry && (
       <button
         onClick={onRetry}
         className={ACTION_BUTTON}
@@ -518,6 +568,9 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
       >
         <RotateCcw className={ICON} style={QUIET_INK} />
       </button>
+    )}
+    {visible.fork && (
+      <ForkActionButton cut="through_turn" turnIndex={turnIndex!} icon={GitBranch} label={t('chat.actions.forkFromHere')} />
     )}
     {!isUser && shownTime}
   </div>
@@ -797,7 +850,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
             button takes neither a click nor a tab stop. Clicking it opens the
             Sources tab in the right panel. */}
         {isAssistant && ((sourceCount > 0 && !isSubagentView) || actionsRow) && (
-          <div className={`flex items-center gap-2 ${showTurnFiles ? 'mt-3' : 'mt-1'}`}>
+          <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${showTurnFiles ? 'mt-3' : 'mt-1'}`}>
             {sourceCount > 0 && !isSubagentView && (
             <div
               ref={pillRef}

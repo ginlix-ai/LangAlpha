@@ -787,8 +787,39 @@ export type ReportSource =
       chart_layers?: PublishedLayer[] | null;
     };
 
+/**
+ * Where a fork cuts its source: `through_turn` keeps the turn and its reply,
+ * `before_turn` stops short of it and hands the turn's message back as
+ * `prefill` for the user to send again.
+ */
+export type ThreadForkCut = 'through_turn' | 'before_turn';
+
+/** `metadata.fork` on a thread copied from another. */
+export interface ThreadForkOrigin {
+  kind: string;
+  /** The source thread. */
+  thread_id: string;
+  cut: ThreadForkCut;
+  turn_index: number;
+  /** The source's checkpoint the copy was cut at. */
+  checkpoint_id: string | null;
+  /** When the copy was made. */
+  at: string;
+  /** The title the fork was made with, which its first message retitles from; not the source's. */
+  title: string | null;
+  /** Finished subagent task runs carried over. */
+  tasks: number;
+  /** Whether the source's scratchpad was copied too. */
+  copy_scratchpad: boolean;
+  /** The user who made the fork. */
+  by: string;
+  /** Set once the fork's first turn carried its scratchpad and notice; absent on older rows. */
+  carried_at?: string | null;
+}
+
 export interface ThreadMetadata {
   origin?: ThreadOrigin;
+  fork?: ThreadForkOrigin;
   [key: string]: unknown;
 }
 

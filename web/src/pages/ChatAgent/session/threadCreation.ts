@@ -96,8 +96,7 @@ export async function ensureThreadId({
     // Same flip the first SSE frame performs on the legacy path — drives
     // ChatView's navigate(replace) + reconcile invalidate, just earlier.
     setThreadId(created.thread_id);
-    const nowIso = new Date().toISOString();
-    insertOptimisticThread(queryClient, {
+    showNewThread(queryClient, {
       thread_id: created.thread_id,
       workspace_id: created.workspace_id,
       thread_index: created.thread_index,
@@ -105,12 +104,20 @@ export async function ensureThreadId({
       msg_type: created.msg_type,
       title: created.title,
       first_query_content: sentMessageWords(message),
-      created_at: nowIso,
-      updated_at: nowIso,
-    } as Thread);
-    bumpThreadNavOrder(created.workspace_id, created.thread_id);
+    });
   } catch (e) {
     console.warn('[Send] thread pre-create failed; using legacy new-thread flow', e);
   }
   return { threadId: effectiveThreadId, aborted: signal.aborted || wasStoppedRef.current };
+}
+
+/**
+ * A thread just made from this view, put at the head of the cached lists and
+ * the nav tree's frozen order so its row paints before the lists are read
+ * again. A row without the server's timestamps is stamped now.
+ */
+export function showNewThread(queryClient: QueryClient, thread: Thread): void {
+  const nowIso = new Date().toISOString();
+  insertOptimisticThread(queryClient, { created_at: nowIso, updated_at: nowIso, ...thread });
+  bumpThreadNavOrder(thread.workspace_id, thread.thread_id);
 }

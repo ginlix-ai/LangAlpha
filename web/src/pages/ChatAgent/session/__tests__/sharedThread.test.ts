@@ -72,9 +72,9 @@ describe('threadTurns', () => {
     expect([...turns.ownTurns].sort()).toEqual([0, 2]);
     const v = view(turns);
     const bubble = (turnIndex: number | null) => sharedBubble(v, { role: 'assistant' }, turnIndex);
-    expect([0, 1, 2].map((i) => bubble(i).canFork)).toEqual([false, false, true]);
+    expect([0, 1, 2].map((i) => bubble(i).canRewrite)).toEqual([false, false, true]);
     expect([0, 1, 2].map((i) => bubble(i).humanReview)).toEqual([true, false, true]);
-    expect(bubble(null)).toMatchObject({ canFork: false, humanReview: false });
+    expect(bubble(null)).toMatchObject({ canRewrite: false, humanReview: false });
   });
 
   it("counts a turn as the viewer's only when its opener names them or is this view's send", () => {

@@ -5,7 +5,7 @@ import type { ChatMessage } from '@/types/chat';
 export const SharedThreadContext = createContext<SharedThreadView | undefined>(undefined);
 
 /** Any other thread names no sender and offers every rewrite and review. */
-const UNSHARED: SharedBubble = { sender: undefined, canFork: true, humanReview: true, answersPause: true };
+const UNSHARED: SharedBubble = { sender: undefined, canRewrite: true, humanReview: true, answersPause: true };
 
 export function useSharedBubble(message: ChatMessage, turnIndex: number | null): SharedBubble {
   const view = useContext(SharedThreadContext);

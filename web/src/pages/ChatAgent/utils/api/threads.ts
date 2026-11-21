@@ -3,7 +3,7 @@
  */
 import { api, type RequestConfig } from '@/api/client';
 import { authSessionCheck } from '@/lib/authResets';
-import type { Thread, ThreadsResponse } from '@/types/api';
+import type { Thread, ThreadForkCut, ThreadsResponse } from '@/types/api';
 import type { WakeupCancelResponse, WakeupsResponse } from '@/types/wakeups';
 import type { CommandStopResponse, CommandsResponse } from '@/types/commands';
 
@@ -92,6 +92,32 @@ export async function setThreadVisibility(threadId: string, sharedWithWorkspace:
 export async function getThread(threadId: string): Promise<Thread> {
   if (!threadId) throw new Error('Thread ID is required');
   const { data } = await api.get<Thread>(`/api/v1/threads/${threadId}`);
+  return data;
+}
+
+export interface ThreadForkResult {
+  /** The new thread, as `GET /threads/{id}` reads it. */
+  thread: Thread;
+  turns_copied: number;
+  /** The cut turn's message on a `before_turn` fork, else null. */
+  prefill: string | null;
+}
+
+/**
+ * Copy a thread's conversation up to a turn into a new thread. The new thread
+ * starts no run; the user's next send to it is an ordinary send. A refusal
+ * (409 while the cut turn is unfinished or the chat moved, 404, 400) carries
+ * `detail.message` written for the user.
+ */
+export async function forkThread(
+  threadId: string,
+  opts: { cut: ThreadForkCut; turnIndex: number; title?: string; platform?: string },
+): Promise<ThreadForkResult> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const body: Record<string, unknown> = { cut: opts.cut, turn_index: opts.turnIndex };
+  if (opts.title) body.title = opts.title;
+  if (opts.platform) body.platform = opts.platform;
+  const { data } = await api.post<ThreadForkResult>(`/api/v1/threads/${threadId}/fork`, body);
   return data;
 }
 
