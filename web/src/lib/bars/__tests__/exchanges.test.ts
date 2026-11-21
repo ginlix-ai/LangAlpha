@@ -96,6 +96,9 @@ describe('exchange suffix table', () => {
     expect(timezoneForSymbol('^N225')).toBe('Asia/Tokyo');
     expect(currencyForSymbol('^FTSE')).toBe('GBP');
     expect(timezoneForSymbol('^GDAXI')).toBe('Europe/Berlin');
+    expect(timezoneForSymbol('^TWII')).toBe('Asia/Taipei');
+    expect(currencyForSymbol('^NSEI')).toBe('INR');
+    expect(timezoneForSymbol('^AXJO')).toBe('Australia/Sydney');
     expect(isUSEquity('^HSI')).toBe(false);
     // Unknown families stay on the US default.
     expect(timezoneForSymbol('^XYZ')).toBe(US_MARKET_TZ);

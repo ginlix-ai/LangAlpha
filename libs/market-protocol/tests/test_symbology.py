@@ -12,6 +12,7 @@ from market_protocol import (
     display_spelling,
     exchange_code,
     from_instrument_key,
+    has_home_venue,
     index_families,
     is_family_index,
     market_home,
@@ -769,12 +770,35 @@ class TestIndexHomeVenue:
             ("^N225", "XTKS", "Asia/Tokyo", "JPY"),
             ("^FTSE", "XLON", "Europe/London", "GBP"),
             ("^GDAXI", "XETR", "Europe/Berlin", "EUR"),
+            ("^TWII", "XTAI", "Asia/Taipei", "TWD"),
+            ("^KS11", "XKRX", "Asia/Seoul", "KRW"),
+            ("^NSEI", "XBOM", "Asia/Kolkata", "INR"),
+            ("^BSESN", "XBOM", "Asia/Kolkata", "INR"),
+            ("^AXJO", "XASX", "Australia/Sydney", "AUD"),
         ],
     )
     def test_home_venue(self, spelling, calendar_id, tz, currency):
         ref = to_canonical(spelling)
         assert ref.asset_class is AssetClass.INDEX and ref.mic == "INDEX"
         assert (ref.calendar_id, ref.tz, ref.currency) == (calendar_id, tz, currency)
+
+    def test_a_bare_us_ticker_is_not_taken_for_a_foreign_index(self):
+        """STI is a Nasdaq listing as well as Singapore's index, so the index
+        has no family: a bare spelling keeps meaning the stock."""
+        assert to_canonical("STI").asset_class is AssetClass.EQUITY
+
+    @pytest.mark.parametrize(
+        ("spelling", "hint", "known"),
+        [
+            ("^TWII", AssetClass.INDEX, True),
+            ("^GSPC", AssetClass.INDEX, True),
+            ("000001.SH", AssetClass.INDEX, True),
+            ("AAPL", None, True),
+            ("^BVSP", AssetClass.INDEX, False),
+        ],
+    )
+    def test_has_home_venue(self, spelling, hint, known):
+        assert has_home_venue(to_canonical(spelling, asset_class=hint)) is known
 
     def test_unknown_family_defaults_to_us(self):
         ref = to_canonical("XYZIDX", asset_class=AssetClass.INDEX)
@@ -819,14 +843,17 @@ class TestVenueHelpers:
         assert CARET_INDEX_REGIONS == {
             "^HSI": "hk", "^HSCE": "hk", "^N225": "jp", "^FTSE": "uk",
             "^GDAXI": "eu", "^FCHI": "eu", "^STOXX50E": "eu",
+            "^TWII": "tw", "^KS11": "kr", "^NSEI": "in", "^BSESN": "in",
+            "^AXJO": "au",
         }
 
     def test_index_families_cover_every_family(self):
         refs = index_families()
-        assert len(refs) == 13
+        assert len(refs) == 18
         assert {ref.index_family for ref in refs} == {
             "SPX", "DJI", "COMP", "NDX", "RUT", "VIX", "HSI", "HSCE",
             "N225", "FTSE", "GDAXI", "FCHI", "STOXX50E",
+            "TWII", "KS11", "NSEI", "BSESN", "AXJO",
         }
         assert all(is_family_index(ref) and ref == to_canonical(ref.instrument_key) for ref in refs)
 

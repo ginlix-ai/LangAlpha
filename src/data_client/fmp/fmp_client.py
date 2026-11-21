@@ -816,6 +816,13 @@ class FMPClient:
         )
         return walk.eod_answer(rows, from_date)
 
+    async def get_eod_closes(self, symbol: str, from_date: str, to_date: str) -> List[Dict]:
+        """Daily closes only (``date``, ``price``), the light form of the EOD series."""
+        return await self._make_request(
+            "historical-price-eod/light",
+            params={"symbol": symbol, "from": from_date, "to": to_date},
+        )
+
     async def get_intraday_chart(
         self,
         symbol: str,
