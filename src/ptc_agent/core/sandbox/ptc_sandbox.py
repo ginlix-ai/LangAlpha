@@ -888,7 +888,7 @@ class PTCSandbox:
         repo_root = config_dir or Path.cwd()
         local_src_dir = (repo_root / "src").resolve()
 
-        files = _internal_package_uploads(local_src_dir, livefs=self.mounts_livefs)
+        files = _internal_package_uploads(local_src_dir, type(self.provider))
         if not files:
             logger.warning(
                 "Skipping internal package upload - local src/__init__.py not found",
@@ -1331,8 +1331,10 @@ class PTCSandbox:
 
     # -- sessions --
 
-    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
-        return await _sessions.get_preview_url(self, port, expires_in)
+    async def get_preview_url(
+        self, port: int, expires_in: int = 3600, *, wake: bool = True
+    ) -> PreviewInfo:
+        return await _sessions.get_preview_url(self, port, expires_in, wake=wake)
 
     async def get_preview_link(self, port: int, *, wake: bool = True) -> PreviewInfo:
         return await _sessions.get_preview_link(self, port, wake=wake)

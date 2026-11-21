@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ArrowLeft, BookMarked, BookOpen, CandlestickChart, ChevronLeft, ChevronRight, FolderOpen, FolderTree, LayoutDashboard, Maximize2, Minimize2, PanelRight, Plus, ScrollText, Settings, X, XCircle, type LucideIcon } from 'lucide-react';
+import { Activity, ArrowLeft, BookMarked, BookOpen, CandlestickChart, ChevronLeft, ChevronRight, FolderOpen, FolderTree, Globe, LayoutDashboard, Maximize2, Minimize2, PanelRight, Plus, ScrollText, Settings, X, XCircle, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -137,6 +137,8 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
       return { name: t('filePanel.tabs.memo'), Glyph: ScrollText, detail: null };
     case 'status':
       return { name: t('filePanel.tabs.status'), Glyph: Activity, detail: null };
+    case 'browser':
+      return { name: t('filePanel.browserTab'), Glyph: Globe, detail: null };
     case 'preview':
       return { name: tab.title || `:${tab.port}`, Glyph: LayoutDashboard, detail: [`:${tab.port}`, tab.previewPath].filter(Boolean).join(' ') };
     case 'chart':

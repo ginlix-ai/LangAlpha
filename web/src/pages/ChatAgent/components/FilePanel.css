@@ -390,6 +390,61 @@
     /* What sits in it can fold to the panel's width (CommentTools.css). */
     container: file-crumbs / inline-size;
   }
+  /* The browser's address: the page it is on while someone watches, and a field to
+     go elsewhere once they hold it. It takes the room the crumbs would. */
+  .browser-address-box {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* The address as drawn, over the field's own text while nobody types in it. */
+  .browser-address-box .browser-address[data-drawn] {
+    color: transparent;
+  }
+  .browser-address-drawn {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 calc(0.5rem + 1px);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    pointer-events: none;
+    color: var(--color-text-tertiary);
+  }
+  .browser-address-host {
+    flex-shrink: 0;
+    color: var(--color-text-primary);
+  }
+  .browser-address-quiet {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .browser-address {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 24px;
+    padding: 0 0.5rem;
+    border: 1px solid transparent;
+    border-radius: var(--cs-radius-control, 4px);
+    background: none;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    outline: none;
+  }
+  .browser-address:not(:read-only) {
+    border-color: var(--color-border-input);
+    background-color: var(--color-bg-input);
+    color: var(--color-text-primary);
+  }
+  .browser-address:not(:read-only):focus {
+    border-color: var(--color-border-strong);
+  }
   .file-panel-crumb-trail {
     display: flex;
     align-items: center;

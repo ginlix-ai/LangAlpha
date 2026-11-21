@@ -288,6 +288,23 @@ class TestDockerRuntimeLifecycle:
         )
 
     @pytest.mark.asyncio
+    async def test_start_reads_the_host_ports_docker_picked_and_forgets_dead_forwarders(self, container):
+        runtime = DockerRuntime(
+            container,
+            runtime_id="docker-x",
+            working_dir="/home/workspace",
+            proxy_ports=[13000],
+            host_port_map={13000: 50000},
+        )
+        runtime._port_map[9224] = 13000
+        container.show = AsyncMock(
+            return_value={"NetworkSettings": {"Ports": {"13000/tcp": [{"HostPort": "61878"}]}}}
+        )
+        await runtime.start()
+        assert runtime._host_port_for(13000) == 61878
+        assert runtime._port_map == {}
+
+    @pytest.mark.asyncio
     async def test_start_delegates(self, runtime, container):
         await runtime.start()
         container.start.assert_called_once()

@@ -53,6 +53,7 @@ __all__ = [
     "is_current",
     "mint",
     "preview_origin",
+    "proxied",
     "publish",
     "resolve",
     "resolve_host",
@@ -376,6 +377,19 @@ async def revoke(sandbox_id: str | None) -> None:
             await pipe.execute()
     except Exception as e:
         logger.warning("Could not revoke previews of sandbox %s: %s", sandbox_id, e)
+
+
+def proxied(link: PreviewInfo) -> PreviewInfo:
+    """*link*, the server's own way to a port, as a preview a browser reaches
+    only through the proxy: for a port whose revocation must reach a socket
+    already open, which a URL the browser dials itself never hears of."""
+    return PreviewInfo(
+        url=link.url,
+        token=None,
+        auth_headers=link.auth_headers,
+        browser_ready=False,
+        process_local=is_loopback_url(link.url),
+    )
 
 
 async def publish(

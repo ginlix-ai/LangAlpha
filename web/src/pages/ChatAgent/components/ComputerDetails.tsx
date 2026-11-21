@@ -20,8 +20,10 @@ import { useIsPresent } from '@/lib/framer';
 import { DURATION } from '@/lib/motion';
 import type { Computer } from '@/types/api';
 
+import { useBrowserHere } from '../hooks/useBrowserHere';
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
+import { BrowserQualitySetting } from './BrowserQualitySetting';
 import { homeEligibility, isComputerPreparing, isComputerStatusTransitional } from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
@@ -66,6 +68,7 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   const disk = computer.disk ?? null;
   const specChange = activeSpecChange(computer);
   const managesSpec = providerManagesSpec(computer.kind);
+  const browserHere = useBrowserHere(computer);
   // A hosted primary is kept, so it offers no Remove at all. Every other
   // computer offers it, held while the server would refuse, with the reason
   // under it; on a primary the user brings the confirmation asks where Home
@@ -181,6 +184,8 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
             {disk && <DiskBar disk={disk} className="mt-1.5" />}
             <StorageBreakdown computer={computer} />
           </section>
+
+          {browserHere && <BrowserQualitySetting computer={computer} />}
 
           {hasSettings && (
             <section className="computer-details-group">

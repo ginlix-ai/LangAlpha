@@ -5,6 +5,8 @@ import { isTaskTool } from '../toolDisplayConfig';
 const UNSIZED_DETAIL_WIDTH = 550;
 /** What the file panel opens at before a drag has said otherwise. */
 export const DEFAULT_PANEL_WIDTH = 850;
+/** A running app, a live chart or the browser opens wide, so its toolbar has room. */
+export const PREVIEW_MAX_RATIO = 0.92;
 
 /** How wide a tool result wants the panel: a filing or a file read needs the room, a data card does not. */
 export function detailPanelWidth(toolCallProcess: ToolCallProcessRecord | null): number {

@@ -402,6 +402,13 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         skill_md_path="skills/web-scraping/SKILL.md",
         command="web-scraping",
     ),
+    "browser": SkillDefinition(
+        name="browser",
+        description="A real Chrome on this computer, driven from Bash with the `agent-browser` command, for pages that only show what you need after clicking, typing or running JavaScript. The person can watch it live and use it with you",
+        skill_md_path="skills/browser/SKILL.md",
+        command="browser",
+        feature="browser",
+    ),
     "html-report": SkillDefinition(
         name="html-report",
         description="Self-contained styled HTML reports written to the task directory: PDF-exportable research documents with inline data, charts, and theme-aware CSS",

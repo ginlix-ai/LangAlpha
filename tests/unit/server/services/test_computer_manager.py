@@ -4470,6 +4470,43 @@ class TestStartAnswersToEntitlement(_Base):
     @patch(f"{_MACHINES}.update_computer_activity")
     @patch(f"{_MACHINES}.try_bind_computer_provider_ref")
     @patch(f"{_MACHINES}.SessionManager")
+    async def test_a_quality_saved_during_the_start_reaches_the_machine(
+        self, mock_sm, mock_bind, mock_activity, mock_certify
+    ):
+        # A save while the row is starting finds no running machine to hand it
+        # to, so the start hands what the row it publishes says.
+        from src.server.services import browser_quality
+
+        manager = self._manager(tier="standard")
+        mock_sm.get_session.return_value = self._session()
+        mock_bind.return_value = {
+            "computer_id": "comp-1",
+            "config": {"browser_quality": "sharp", "browser_quality_rev": "saved-during-start"},
+        }
+        mock_certify.return_value = 3
+        computer = _make_computer(
+            status="starting", provider_ref=None, config={"browser_quality": "light"}
+        )
+        handed = []
+
+        async def keep(_sandbox, *, kind, quality, revision):
+            handed.append((quality, revision))
+
+        with (
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=computer)),
+            patch.object(browser_quality, "keep", keep),
+        ):
+            await manager._build_machine_session(
+                computer, user_id="user-1", on_state_observed=None
+            )
+
+        assert handed[-1] == ("sharp", "saved-during-start")
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.platform_secret_rollout.certify_platform_secrets")
+    @patch(f"{_MACHINES}.update_computer_activity")
+    @patch(f"{_MACHINES}.try_bind_computer_provider_ref")
+    @patch(f"{_MACHINES}.SessionManager")
     async def test_a_bare_start_hands_its_session_an_outage_clock(
         self, mock_sm, mock_bind, mock_activity, mock_certify
     ):

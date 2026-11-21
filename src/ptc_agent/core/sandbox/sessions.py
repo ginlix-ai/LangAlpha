@@ -27,12 +27,16 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-async def get_preview_url(sandbox: "PTCSandbox", port: int, expires_in: int = 3600) -> PreviewInfo:
+async def get_preview_url(
+    sandbox: "PTCSandbox", port: int, expires_in: int = 3600, *, wake: bool = True
+) -> PreviewInfo:
     """Get a signed preview URL for a service running on the given port.
 
         Args:
             port: Port number (3000-9999) the service is listening on.
             expires_in: URL expiry in seconds (default: 3600 = 1 hour).
+            wake: ``False`` for a caller that must not start a computer that
+                stopped: one attempt and no reconnect, as ``get_preview_link``.
 
         Returns:
             PreviewInfo with url and token.
@@ -44,6 +48,8 @@ async def get_preview_url(sandbox: "PTCSandbox", port: int, expires_in: int = 36
         port,
         expires_in,
         retry_policy=RetryPolicy.SAFE,
+        allow_reconnect=wake,
+        retries=5 if wake else 1,
     )
 
 

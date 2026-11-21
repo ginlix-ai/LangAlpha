@@ -22,8 +22,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../../..
 import {
   ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger,
 } from '../../../components/ui/context-menu';
-import { toast } from '@/components/ui/use-toast';
-import { copyText } from '@/lib/clipboard';
+import { copyWithToast } from '@/lib/clipboard';
 import { isDesktopShell } from '@/lib/desktop';
 import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
@@ -484,10 +483,7 @@ function ThreadTreeRowImpl({
   };
 
   const copyLink = () => {
-    copyText(threadHref(tid)).then(
-      () => toast({ title: t('nav.linkCopied') }),
-      () => toast({ variant: 'destructive', title: t('nav.copyLinkFailed') }),
-    );
+    copyWithToast(threadHref(tid), t('nav.linkCopied'), t('nav.copyLinkFailed'));
   };
 
   return (

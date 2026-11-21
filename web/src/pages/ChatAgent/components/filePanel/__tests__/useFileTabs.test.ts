@@ -15,6 +15,29 @@ const stored = (key: string) => JSON.parse(userLocalStorage.getItem(key)!);
 
 beforeEach(() => localStorage.clear());
 
+describe('useFileTabs browser tab', () => {
+  it('is one tab, kept across a reload', () => {
+    const first = renderHook(() => useFileTabs('ws'));
+    act(() => first.result.current.openBrowser());
+    act(() => first.result.current.openFile('a.md', { pin: true }));
+    act(() => first.result.current.openBrowser());
+    expect(first.result.current.tabs.filter((t) => t.kind === 'browser')).toHaveLength(1);
+    expect(first.result.current.activeTab.kind).toBe('browser');
+    first.unmount();
+
+    const second = renderHook(() => useFileTabs('ws'));
+    expect(second.result.current.tabs.some((t) => t.kind === 'browser')).toBe(true);
+  });
+
+  it('can arrive without taking the reader off what they are reading', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openFile('a.md', { pin: true }));
+    act(() => result.current.openBrowser({ focus: false }));
+    expect(result.current.tabs.some((t) => t.kind === 'browser')).toBe(true);
+    expect(activePath(result.current)).toBe('a.md');
+  });
+});
+
 describe('useFileTabs preview semantics', () => {
   it('opens on a single empty tab', () => {
     const { result } = renderHook(() => useFileTabs('ws'));

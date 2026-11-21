@@ -22,7 +22,18 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
     getPreviewUrl: vi.fn(async () => ({ url: 'https://8050-sandbox.example.com/' })),
   };
 });
-vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws' } }) }));
+// The reader has turned the browser on.
+vi.mock('@/pages/ChatAgent/hooks/useBrowserHere', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/pages/ChatAgent/hooks/useBrowserHere')>()),
+  useBrowserHere: (computer: { kind: string } | null | undefined, shared = false) => (computer ? computer.kind !== 'ssh' : shared),
+  useBrowserGone: (computer: { kind: string } | null | undefined) => computer?.kind === 'ssh',
+}));
+vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws', computer_id: 'c1' } }) }));
+let computerKind = 'docker';
+vi.mock('@/pages/ChatAgent/hooks/useComputers', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useComputer: (id: string | null) => ({ data: id ? { computer_id: id, kind: computerKind, name: 'box', status: 'running' } : null }),
+}));
 vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'dark' }) }));
 vi.mock('@/pages/ChatAgent/components/FilePanelMemo', () => ({
   memoMimeForName: () => null,
@@ -38,11 +49,19 @@ vi.mock('@/pages/MarketView/components/MarketChartSurface', () => ({
 }));
 
 import FilePanel from '@/pages/ChatAgent/components/FilePanel';
+import { BrowserViewSession } from '@/pages/ChatAgent/components/filePanel/browserStream';
 
 const DASHBOARD = { kind: 'preview', port: 8050, title: 'Dashboard', command: 'python app.py', seq: 1 } as const;
 
-const panel = (target: ComponentProps<typeof FilePanel>['target'] = null) => (
-  <FilePanel workspaceId="ws" threadId="thread-1" onClose={() => {}} files={['notes.md', 'todo.md']} target={target} />
+const panel = (target: ComponentProps<typeof FilePanel>['target'] = null, browserView = new BrowserViewSession()) => (
+  <FilePanel
+    workspaceId="ws"
+    threadId="thread-1"
+    onClose={() => {}}
+    files={['notes.md', 'todo.md']}
+    target={target}
+    browserView={browserView}
+  />
 );
 
 const tabNames = () => within(screen.getByRole('tablist')).getAllByRole('tab').map((tab) => tab.textContent);
@@ -52,7 +71,10 @@ async function openFromTheTree(path: string): Promise<void> {
   await screen.findByText(path, { selector: '.file-panel-tab-name' });
 }
 
-beforeEach(() => { localStorage.clear(); });
+beforeEach(() => {
+  localStorage.clear();
+  computerKind = 'docker';
+});
 afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); });
 
 describe('FilePanel empty tab', () => {
@@ -82,12 +104,40 @@ describe('FilePanel new tab menu', () => {
 
     fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart']);
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart', 'Browser']);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Chart' }));
 
     await screen.findByTestId('chart-surface');
     expect(tabNames()).toHaveLength(2);
     expect(document.querySelector('.file-panel-tree')).toBeNull();
+  });
+
+  it('offers no Browser tab beside a machine brought over SSH, which runs no browser of ours', async () => {
+    computerKind = 'ssh';
+    renderWithProviders(panel());
+    expect(screen.queryByRole('button', { name: 'Browser' })).toBeNull();
+    await openFromTheTree('notes.md');
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart']);
+  });
+
+  it('pins the Browser beside the listing on a computer with one', () => {
+    renderWithProviders(panel());
+    expect(screen.getByRole('button', { name: 'Browser' })).toBeTruthy();
+  });
+
+  it('closes a Browser tab kept from before once its computer turns out to run none', async () => {
+    const view = new BrowserViewSession();
+    const { rerender } = renderWithProviders(panel(null, view));
+    await openFromTheTree('notes.md');
+    fireEvent.click(screen.getByRole('button', { name: 'Browser' }));
+    await waitFor(() => expect(tabNames()).toContain('Browser'));
+
+    computerKind = 'ssh';
+    rerender(panel(null, view));
+    await waitFor(() => expect(tabNames()).toEqual(['notes.md']));
   });
 
   it('opens the files as a plain click does, on the whole body', async () => {

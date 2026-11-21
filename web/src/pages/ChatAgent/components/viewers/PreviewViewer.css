@@ -3,6 +3,7 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  --status-card-top: var(--preview-toolbar-height, 53px);
 }
 
 /* Inside the file panel the crumb row above owns the title and the actions, so

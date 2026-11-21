@@ -16,6 +16,10 @@ FROM ubuntu:24.04
 # Daytona snapshot uses those).
 ARG NODE_VERSION=24.22.0
 ARG PLAYWRIGHT_VERSION=1.64.0
+# Keep in sync with SANDBOX_AGENT_BROWSER_VERSION and its digests in _defaults.py.
+ARG AGENT_BROWSER_VERSION=0.41.1
+ARG AGENT_BROWSER_SHA256_AMD64=2a89295b62ddd497986a9a80b52e1dbe4c1f6bd68ffde67eaae82eec2206af61
+ARG AGENT_BROWSER_SHA256_ARM64=f0b3bdaa40abf2a5111ec08e6d242110aaf56045ef5108cbc633bacc8e53ca17
 
 # vCPU the container will actually be allowed to use. The BLAS/OpenMP caps below
 # are set from it; the Daytona snapshot takes the same number from its tier.
@@ -147,6 +151,22 @@ RUN scrapling install \
 
 # ---------- Matplotlib CJK font config ----------
 RUN python3 -c "import matplotlib as mpl; import os; mpl_dir = mpl.get_configdir(); os.makedirs(mpl_dir, exist_ok=True); open(os.path.join(mpl_dir, 'matplotlibrc'), 'w').write('font.sans-serif: Noto Sans CJK SC, DejaVu Sans\n'); import matplotlib.font_manager; matplotlib.font_manager._load_fontmanager(try_read_cache=False)"
+
+# ---------- The agent's browser ----------
+# The release's one binary for this platform, a stable name for the Chrome
+# Playwright baked in above, and that Chrome's policy. Playwright's "chromium" is
+# Chrome for Testing, which ignores /etc/chromium. Mirrors _browser_commands in
+# providers/_image_recipe.py and SANDBOX_CHROME_POLICY in _defaults.py.
+RUN AB_ARCH=$(dpkg --print-architecture) \
+    && if [ "$AB_ARCH" = "arm64" ]; then AB_PLAT=arm64; AB_SHA=${AGENT_BROWSER_SHA256_ARM64}; else AB_PLAT=x64; AB_SHA=${AGENT_BROWSER_SHA256_AMD64}; fi \
+    && curl -fsSL "https://github.com/vercel-labs/agent-browser/releases/download/v${AGENT_BROWSER_VERSION}/agent-browser-linux-${AB_PLAT}" -o /tmp/agent-browser \
+    && echo "$AB_SHA  /tmp/agent-browser" | sha256sum -c - \
+    && install -D -m 0755 /tmp/agent-browser /usr/local/lib/agent-browser/agent-browser \
+    && rm /tmp/agent-browser \
+    && ln -sf "$(ls -d /usr/local/ms-playwright/chromium-*/chrome-linux*/chrome)" /usr/local/bin/chrome-for-testing \
+    && [ -x /usr/local/bin/chrome-for-testing ] \
+    && mkdir -p /etc/opt/chrome_for_testing/policies/managed \
+    && echo '{"AutofillAddressEnabled": false, "AutofillCreditCardEnabled": false, "BrowserSignin": 0, "LocalNetworkAccessRestrictionsTemporaryOptOut": false, "PasswordManagerEnabled": false, "SyncDisabled": true, "URLBlocklist": ["169.254.169.254", "169.254.170.2", "[fd00:ec2::254]", "100.100.100.200", "metadata.google.internal", "metadata.goog", "host.docker.internal", "gateway.docker.internal", "localhost:9223", "localhost:9224", "localhost:9225", "localhost:2280", "localhost:22220", "localhost:22222", "localhost:49983", "localhost:2375", "localhost:2376", "127.0.0.1:9223", "127.0.0.1:9224", "127.0.0.1:9225", "127.0.0.1:2280", "127.0.0.1:22220", "127.0.0.1:22222", "127.0.0.1:49983", "127.0.0.1:2375", "127.0.0.1:2376", "[::1]:9223", "[::1]:9224", "[::1]:9225", "[::1]:2280", "[::1]:22220", "[::1]:22222", "[::1]:49983", "[::1]:2375", "[::1]:2376"], "WebRtcIPHandling": "disable_non_proxied_udp"}' > /etc/opt/chrome_for_testing/policies/managed/langalpha.json
 
 # ---------- User & working directory ----------
 # Default user and working directory.

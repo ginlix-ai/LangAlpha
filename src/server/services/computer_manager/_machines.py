@@ -60,7 +60,7 @@ from src.server.database.workspace import (
 )
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
-from src.server.services import activity
+from src.server.services import activity, browser_quality
 from src.server.services.activity import Action
 from src.server.services.account import refuse_machine_use
 from src.server.services.computer_usage.events import note_start_path
@@ -831,6 +831,9 @@ class MachineLifecycleMixin:
                     origin_workspace_id=computer.get("origin_workspace_id"),
                 ),
             )
+            # A bare start syncs no project, so the quality is handed here
+            # rather than left to the next project sync.
+            await self._keep_browser_quality(binding, session.sandbox)
 
             restored_projects: list[ComputerBinding] = []
             if not reconnected:
@@ -907,6 +910,17 @@ class MachineLifecycleMixin:
                 )
 
             self._put_session(computer_id, session)
+            # A quality saved while the machine was starting found it not yet
+            # running and was left for the start, which handed its own older
+            # row above; the row it published is the current one.
+            await self._keep_browser_quality(
+                replace(
+                    binding,
+                    browser_quality=browser_quality.chosen(published),
+                    browser_quality_rev=browser_quality.revision(published),
+                ),
+                session.sandbox,
+            )
             # Each restore above cleared its completeness flag for a sandbox
             # no row named yet, so the clear matched nothing. Repeat it now
             # the bind has landed, as the single-project path does, or a

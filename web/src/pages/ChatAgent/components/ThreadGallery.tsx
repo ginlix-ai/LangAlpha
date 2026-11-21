@@ -51,6 +51,7 @@ import { PresenceFold } from '@/components/ui/Disclosure';
 import { motion, AnimatePresence } from '@/lib/framer';
 import { DURATION, EASE_OUT, TWEEN } from '@/lib/motion';
 import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
+import { useBrowserViews } from './filePanel/useBrowserView';
 
 /** Placeholder rows while the list is read: the first screen's worth. */
 const THREAD_SKELETON_ROWS = 5;
@@ -262,6 +263,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // documents the panel renders.
   const folders = useComputerFolders(workspaceId);
   const panelFolders = useComputerFolders(shownWorkspaceId);
+  const { viewFor: browserViewFor } = useBrowserViews();
   const {
     panelTarget,
     askPanel,
@@ -945,6 +947,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 singleFileMode={panelAccess.singleFileMode}
                 onReturnHome={panelAccess.onReturnHome}
                 returnLabel={panelAccess.returnLabel}
+                browserView={browserViewFor(shownWorkspaceId ?? workspaceId)}
               />
               </WorkspaceProvider>
             </div>

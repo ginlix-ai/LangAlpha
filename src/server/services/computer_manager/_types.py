@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set, Tuple
 
 from ptc_agent.core.mcp_composite import builtin_registry_of
 from ptc_agent.core.mcp_registry import get_global_registry
+from ptc_agent.core.sandbox.browser_runtime.protocol import StreamQualityName
 from ptc_agent.core.sandbox.providers import provider_class
 from ptc_agent.core.sandbox.runtime import SandboxProvider
 from ptc_agent.core.session import Session
@@ -91,7 +92,8 @@ class ComputerBinding:
     machine row has to supply it. files_epoch names the last arrival of the
     project's files on this machine, a move or a settled restore offer, None if
     none has come. files_backup is the machine's switch for routine backups,
-    off only where its owner chose."""
+    off only where its owner chose. browser_quality is its live view's quality
+    as its owner chose, None to follow its size."""
 
     workspace_id: str
     computer_id: str
@@ -106,6 +108,9 @@ class ComputerBinding:
     files_backup: bool = True
     #: The machine's owner, whose policy decides whether work runs on it.
     user_id: Optional[str] = None
+    browser_quality: Optional[StreamQualityName] = None
+    #: Which save of the quality that is, so a machine is handed each save.
+    browser_quality_rev: Optional[str] = None
 
     @property
     def provider_identity(self) -> Tuple[str, str]:

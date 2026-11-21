@@ -7,6 +7,7 @@ import type { BridgeOptions } from '@/lib/appBridge/AppBridge';
 import { useAppFrame } from '@/lib/appBridge/useAppFrame';
 import { shareLinkHref } from '../../utils/api/shareLinks';
 import { HostedFrame } from './HostedFrame';
+import { StatusCard } from './StatusCard';
 import './PreviewViewer.css';
 import type { PreviewData } from '../../hooks/utils/types';
 import type { PreviewFailure } from '../../utils/api/sandbox';
@@ -116,29 +117,15 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
       {failure ? (
         /* Nothing answered on the port. Checked first: a failed resolve
            leaves no URL, so the loading test below would answer for it. */
-        <div className="preview-viewer-resize-overlay" style={{ cursor: 'default' }}>
-          <div className="preview-viewer-resize-card" style={{ flexDirection: 'column', alignItems: 'center', gap: 16, padding: '28px 36px' }}>
-            <AlertCircle size={28} style={{ color: 'var(--color-text-tertiary)' }} />
-            <div className="preview-viewer-resize-info" style={{ alignItems: 'center' }}>
-              <span className="preview-viewer-resize-title">{t(FAILURE_COPY[failure].title)}</span>
-              <span className="preview-viewer-resize-url">{displayTitle} :{port}</span>
-              <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-tertiary)', marginTop: 4 }}>
-                {t(FAILURE_COPY[failure].hint, { port })}
-              </span>
-            </div>
-          </div>
-        </div>
+        <StatusCard
+          icon={AlertCircle}
+          title={t(FAILURE_COPY[failure].title)}
+          detail={`${displayTitle} :${port}`}
+          body={t(FAILURE_COPY[failure].hint, { port })}
+        />
       ) : externalLoading || !url ? (
         /* Server is starting, or its URL is still being minted. */
-        <div className="preview-viewer-resize-overlay" style={{ cursor: 'default' }}>
-          <div className="preview-viewer-resize-card" style={{ flexDirection: 'column', alignItems: 'center', gap: 16, padding: '28px 36px' }}>
-            <Loader size={20} label={t('filePanel.startingServer')} style={{ color: 'var(--color-accent-primary)' }} />
-            <div className="preview-viewer-resize-info" style={{ alignItems: 'center' }}>
-              <span className="preview-viewer-resize-title">{t('filePanel.startingServer')}</span>
-              <span className="preview-viewer-resize-url">{displayTitle} :{port}</span>
-            </div>
-          </div>
-        </div>
+        <StatusCard icon="working" title={t('filePanel.startingServer')} detail={`${displayTitle} :${port}`} />
       ) : (
         /* Normal iframe view */
         <>

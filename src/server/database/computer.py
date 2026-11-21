@@ -12,6 +12,7 @@ losers, retain the single-table path.
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence
 
 from psycopg.errors import UniqueViolation
@@ -545,19 +546,27 @@ async def set_computer_setting(
 ) -> bool:
     """Set one of the user's computer's settings in its ``config``, or with
     ``value`` None remove it. False where the computer is gone or not theirs."""
-    change = ("COALESCE(config, '{}'::jsonb) - %s::text", [key]) if value is None else (
-        "jsonb_set(COALESCE(config, '{}'::jsonb), %s, %s::jsonb)", [[key], Json(value)])
+    return await set_computer_settings(computer_id, user_id, {key: value}, conn=conn)
+
+
+async def set_computer_settings(
+    computer_id: str, user_id: str, settings: Mapping[str, Any], *, conn=None
+) -> bool:
+    """:func:`set_computer_setting` for several at once, in one write, so a
+    reader never sees some of them changed and not the rest."""
+    removed = [key for key, value in settings.items() if value is None]
+    kept = {key: value for key, value in settings.items() if value is not None}
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
             UPDATE computers
-            SET config = {change[0]},
+            SET config = (COALESCE(config, '{{}}'::jsonb) - %s::text[]) || %s::jsonb,
                 updated_at = NOW()
             WHERE computer_id = %s
               AND user_id = %s
               AND {FENCE_NOT_DELETED}
             """,
-            (*change[1], computer_id, user_id),
+            (removed, Json(kept), computer_id, user_id),
         )
         return cur.rowcount > 0
 

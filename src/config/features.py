@@ -126,6 +126,27 @@ FEATURES: dict[str, FeatureSpec] = {
             "behavior and pricing may change."
         ),
     ),
+    # The image and the wrapper are on every cloud computer either way: off, the
+    # agent is not offered the skill and no one is shown the browser, which keeps
+    # it unused rather than out of reach.
+    "browser": FeatureSpec(
+        key="browser",
+        label="Browser (experimental)",
+        description=(
+            "Gives the agent a Chrome on your cloud computers for pages that "
+            "only show what it needs after clicking or typing. Watch it live "
+            "in the file panel's Browser tab, and take control to use the page "
+            "yourself."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "The browser shares the computer's memory and CPU with your other "
+            "work, and closes after 20 minutes unused. It is logged out, and "
+            "slower than reading a page directly. Computers you connect "
+            "yourself don't have it."
+        ),
+    ),
     "todo_write": FeatureSpec(
         key="todo_write",
         label="Task checklist (legacy)",

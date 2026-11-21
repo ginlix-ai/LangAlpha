@@ -155,7 +155,14 @@ export type PanelTarget =
   /** An entry in the memo store; `''` opens the Memo tab on its list. */
   | { kind: 'memo'; seq: number; key: string }
   /** The live market watch, opened in the singleton Status tab. */
-  | { kind: 'status'; seq: number };
+  | { kind: 'status'; seq: number }
+  /**
+   * The computer's Browser tab: in front for a link the person opened there or
+   * on a panel that opened for the agent, beside the tab in front on a panel
+   * already in use. What it shows is the workspace's view, which the chat
+   * drives directly rather than through an ask.
+   */
+  | { kind: 'browser'; seq: number; front: boolean };
 
 /**
  * The kinds the panel consumes on arrival and clears once handled. A memory
@@ -163,7 +170,7 @@ export type PanelTarget =
  * once the store's list resolves, and clears the target itself then. Either
  * way the clear names the ask's `seq`, so an ask landed in between is kept.
  */
-export const ONE_SHOT_KINDS = ['file', 'preview', 'chart', 'tool', 'sources', 'status'] as const satisfies readonly PanelTarget['kind'][];
+export const ONE_SHOT_KINDS = ['file', 'preview', 'chart', 'tool', 'sources', 'status', 'browser'] as const satisfies readonly PanelTarget['kind'][];
 export type OneShotKind = (typeof ONE_SHOT_KINDS)[number];
 
 export function isOneShotKind(kind: PanelTarget['kind'] | null | undefined): kind is OneShotKind {

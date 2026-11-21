@@ -10,13 +10,17 @@ import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 
 from ptc_agent.core.paths import SandboxLayout
 
+from .browser_runtime import protocol as browser_protocol
 from .livefs_runtime import protocol as livefs_protocol
+
+if TYPE_CHECKING:
+    from .runtime import SandboxProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -94,6 +98,9 @@ _LIVEFS_SOURCE_DIR = Path(__file__).with_name("livefs_runtime")
 #: submitted source.
 TURN_CWD_SANDBOX_NAME = "sitecustomize.py"
 _TURN_CWD_SOURCE = Path(__file__).with_name("turn_cwd_sitecustomize.py")
+#: The browser's runtime, shipped the same way, and its wrapper, which goes on
+#: every command's PATH as ``agent-browser`` and runs it.
+_BROWSER_SOURCE_DIR = Path(__file__).with_name("browser_runtime")
 #: Where the `la` CLI's shim ships, relative to ``_internal/src/``; its
 #: bundle (built by `cli/`, absent until it is) sits beside the directory.
 _CLI_BIN = PurePosixPath(SandboxLayout.CLI_BIN_DIR).relative_to(
@@ -254,7 +261,7 @@ def _hash_dict(d: dict[str, str]) -> str:
 
 
 def _internal_package_uploads(
-    src_dir: Path, *, livefs: bool = True
+    src_dir: Path, provider: "type[SandboxProvider] | None" = None
 ) -> list[tuple[Path, Path, int | None]]:
     """``(local_path, path relative to src/, mode)`` for every internal-package
     file; ``mode`` is what the file is set to once uploaded, None for the
@@ -262,9 +269,14 @@ def _internal_package_uploads(
 
     Walks ``_SANDBOX_INTERNAL_PACKAGES`` with ``rglob("*")`` — every regular
     file except ``__pycache__`` ships, so data seeds can never silently drop
-    out of the sync. Empty when ``src/__init__.py`` is missing. ``livefs``
-    False leaves out the file mount's daemon, for a computer that never mounts.
+    out of the sync. Empty when ``src/__init__.py`` is missing. A *provider*
+    whose computers never mount leaves out the file mount's daemon, and one
+    whose image this does not build the browser, whose wrapper would shadow
+    whatever is there. Read off the class, so the upload and the manifest that
+    gates it cannot be handed different sets.
     """
+    livefs = provider is None or provider.mounts_livefs
+    browser = provider is None or provider.browser_use
     src_init = src_dir / "__init__.py"
     if not src_init.exists():
         return []
@@ -281,6 +293,13 @@ def _internal_package_uploads(
         ))
     for livefs_file in sorted(_LIVEFS_SOURCE_DIR.glob("*.py")) if livefs else ():
         files.append((livefs_file, Path(LIVEFS_SANDBOX_PACKAGE) / livefs_file.name, None))
+    # The engine's config file ships beside the modules: the wrapper points the
+    # engine at it, and an engine handed a config path that is not there fails.
+    browser_files = [*_BROWSER_SOURCE_DIR.glob("*.py"), *_BROWSER_SOURCE_DIR.glob("*.json")]
+    for browser_file in sorted(browser_files) if browser else ():
+        files.append((browser_file, Path(browser_protocol.PACKAGE_NAME) / browser_file.name, None))
+    if browser:
+        files.append((_BROWSER_SOURCE_DIR / "agent-browser", Path(_CLI_BIN, "agent-browser"), 0o755))
     cli_bundle = src_dir.parent / "cli" / "dist" / "la.mjs"
     if cli_bundle.is_file():
         files.append((cli_bundle, Path(_CLI_BIN.parent, "la.mjs"), None))
@@ -312,11 +331,11 @@ def _internal_package_uploads(
 
 
 def _internal_package_files(
-    src_dir: Path, *, livefs: bool = True
+    src_dir: Path, provider: "type[SandboxProvider] | None" = None
 ) -> list[tuple[Path, Path]]:
     """``(local_path, path relative to src/)`` for every file
     ``_internal_package_uploads`` ships."""
-    return [(local, rel) for local, rel, _ in _internal_package_uploads(src_dir, livefs=livefs)]
+    return [(local, rel) for local, rel, _ in _internal_package_uploads(src_dir, provider)]
 
 
 def _resolve_local_path(local_path: str, config_dir: Path | None) -> str | None:

@@ -263,6 +263,21 @@ class TestPublish:
         assert await preview_upstreams.probe_target(url) is None
 
     @pytest.mark.asyncio
+    async def test_a_link_proxied_is_reached_only_through_the_proxy(self, cache):
+        # A published Docker port: open to its host, so a revocation would
+        # never reach a socket a browser already holds on it.
+        link = PreviewInfo(url="http://host.docker.internal:49153", token="")
+
+        url = await caps.publish(
+            caps.proxied(link), sandbox_id="sbx-1", port=9224, workspace_id="ws-1",
+            expires_in=600,
+        )
+
+        capability = await caps.resolve(_token(url))
+        assert capability is not None
+        assert capability.upstream == Upstream(link.url)
+
+    @pytest.mark.asyncio
     async def test_any_other_url_is_probed_as_it_is(self, cache):
         url = "https://3000-sbx.example.org/?tkn=x"
 

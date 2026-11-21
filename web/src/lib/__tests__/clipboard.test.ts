@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { copyText } from '../clipboard';
+import { toast } from '@/components/ui/use-toast';
+
+import { copyText, copyWithToast } from '../clipboard';
+
+vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 
 describe('copyText', () => {
   let copiedSelection: string | null;
@@ -81,5 +85,25 @@ describe('copyText', () => {
     await expect(copyText('AAPL')).rejects.toThrow();
     withClipboard(() => Promise.reject(new DOMException('Document is not focused.', 'NotAllowedError')));
     await expect(copyText('AAPL')).rejects.toThrow('Document is not focused.');
+  });
+});
+
+describe('copyWithToast', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'clipboard');
+    Reflect.deleteProperty(document, 'execCommand');
+    vi.mocked(toast).mockClear();
+  });
+
+  it('says so when the copy fails, never silently', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new DOMException('no', 'NotAllowedError')) },
+    });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: () => false });
+
+    copyWithToast('https://example.com', 'Copied', 'Could not copy');
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledWith({ variant: 'destructive', title: 'Could not copy' }));
   });
 });
