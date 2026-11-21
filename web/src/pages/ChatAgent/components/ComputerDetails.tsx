@@ -54,12 +54,15 @@ interface ComputerDetailsProps {
   /** The rail's height on screen when it was left, for the details to take; none opened straight onto them. */
   height?: number | null;
   onBack: () => void;
+  /** The page back returns to, when that is not the rail (Settings, which
+   *  lists the machines itself). No rail behind, the place in it is not shown. */
+  backLabel?: string;
   thisMac: ThisMac | null;
   showProvider: boolean;
   actions: MachineActions;
 }
 
-function ComputerDetails({ computer, index, total, height, onBack, thisMac, showProvider, actions }: ComputerDetailsProps) {
+function ComputerDetails({ computer, index, total, height, onBack, backLabel, thisMac, showProvider, actions }: ComputerDetailsProps) {
   const { t } = useTranslation();
   const prepareHintId = useId();
   const removeHintId = useId();
@@ -95,11 +98,13 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
       <div className="computer-details-head">
         <button ref={backRef} type="button" className="computer-details-back" onClick={onBack}>
           <ChevronLeft className="h-3.5 w-3.5" />
-          {t('computer.computers', 'Computers')}
+          {backLabel ?? t('computer.computers', 'Computers')}
         </button>
-        <span className="computer-rail-count">
-          {t('computer.card.position', '{{n}} / {{total}}', { n: railOrdinal(index), total: railOrdinal(total) })}
-        </span>
+        {!backLabel && (
+          <span className="computer-rail-count">
+            {t('computer.card.position', '{{n}} / {{total}}', { n: railOrdinal(index), total: railOrdinal(total) })}
+          </span>
+        )}
       </div>
 
       <div className="computer-details-grid">

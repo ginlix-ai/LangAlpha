@@ -18,11 +18,24 @@ import { createValueStore } from '@/lib/valueStore';
  * the middle; one machine's details; or the New computer form, which is then
  * the destination (its cancel closes the panel too), with This Mac picked on
  * it when `pick` says so.
+ *
+ * `returnTo` names what the panel was opened from when that is where the
+ * reader goes back to: Settings' Computers section, which lists the machines
+ * itself, or Claude Code's view, which lists those it runs on. The panel then
+ * holds one machine or the form, and leaving either closes it onto that
+ * place rather than going to the rail.
  */
 export type ComputersPanelView =
-  | { view: 'list'; computerId?: string | null }
-  | { view: 'details'; computerId: string }
-  | { view: 'create'; pick?: 'thisMac' };
+  // The list is the rail itself, so it has nothing to return to.
+  | { view: 'list'; computerId?: string | null; returnTo?: never }
+  | { view: 'details'; computerId: string; returnTo?: ComputersReturn }
+  | { view: 'create'; pick?: 'thisMac'; returnTo?: ComputersReturn };
+
+/** Where the panel closes back to, in place of its rail. */
+export type ComputersReturn = 'settings' | 'claudeCode';
+
+/** Settings' Computers section, which lists the machines and mounts the panel. */
+export const COMPUTERS_SETTINGS_URL = '/settings?tab=computers';
 
 export interface ComputersPanelState {
   /** The Computers dialog, null when closed. */
@@ -122,6 +135,20 @@ export function useComputersHost(planInPlace: boolean) {
       hosts.splice(hosts.indexOf(host), 1);
     };
   }, [planInPlace]);
+}
+
+/**
+ * Closes the dialogs as the page that hosts them goes, since a back gesture
+ * skips their own close: left open, they would come back on the next page with
+ * a host, and hold the stale-build reload until then. A panel opened for
+ * Settings is left by every other page, as its opener navigates there from
+ * that page (Getting started) and Settings shows it.
+ */
+export function useCloseComputersOnLeave(page: 'settings' | 'other' = 'other') {
+  useEffect(() => () => {
+    if (page === 'settings' || store.get().panel?.returnTo !== 'settings') closeComputersPanel();
+    closeComputerSpec();
+  }, [page]);
 }
 
 /** Whether a page that shows the computer dialogs is mounted. */

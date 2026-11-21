@@ -7,6 +7,7 @@ import { usePlanOut } from '@/hooks/useClaudeCodePlan';
 import { useLocale } from '@/hooks/useLocale';
 import { savedTokenInSentence, type PlanOut } from '@/lib/claudeCodePlan';
 import { formatList } from '@/lib/format';
+import { InfoHint } from '@/components/ui/info-hint';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { ModeCard } from './ModeCard';
 
@@ -35,6 +36,7 @@ export function ClaudeCodePlanOutChoice({ tokenRows }: { tokenRows: TokenRow[] }
   const locale = useLocale();
   const headingId = useId();
   const groupName = useId();
+  const detailsId = useId();
   const status = useClaudeCodeStatus();
   const { computers } = useClaudeCodeComputers();
   const { planOut, set } = usePlanOut();
@@ -52,18 +54,28 @@ export function ClaudeCodePlanOutChoice({ tokenRows }: { tokenRows: TokenRow[] }
 
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
-      <h3 id={headingId} className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('claudeCodePlan.runsOut.title')}
-      </h3>
-      <div role="radiogroup" aria-labelledby={headingId} className="flex flex-col gap-2">
-        {CHOICES.map(({ value, label, detail }) => (
+      <div className="flex items-center gap-1">
+        <h3 id={headingId} className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('claudeCodePlan.runsOut.title')}
+        </h3>
+        <InfoHint name={t('claudeCodePlan.runsOut.title')} id={detailsId}>
+          {CHOICES.map(({ value, label, detail }) => (
+            <span key={value} className="block not-first:mt-1.5">
+              <span className="font-medium">{t(label)}</span>: {t(detail)}{' '}
+            </span>
+          ))}
+        </InfoHint>
+      </div>
+      {/* Two short names side by side, each explained once in the info mark
+          rather than under itself; a screen reader hears that on the group. */}
+      <div role="radiogroup" aria-labelledby={headingId} aria-describedby={detailsId} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {CHOICES.map(({ value, label }) => (
           <ModeCard
             key={value}
             name={groupName}
             mode={value}
             checked={planOut === value}
             label={t(label)}
-            detail={t(detail)}
             onSelect={choose}
             onReselect={value === 'credits' ? choose : undefined}
           />

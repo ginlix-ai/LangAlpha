@@ -10,6 +10,7 @@ import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { skipSetup } from '@/hooks/useSetupGate';
 import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, claudeCodeConnected } from '@/lib/claudeCode';
 import ComputersDialogHost from '@/pages/ChatAgent/components/ComputersDialogHost';
+import { useCloseComputersOnLeave } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { ClaudeCodeSheet } from '@/pages/Settings/panels/modelAccess/ClaudeCodeSheet';
 import { SetupFooter } from '../SetupFooter';
 import { useProviderConnected } from './connectStep/shared';
@@ -28,6 +29,7 @@ export default function ClaudeCodeStep() {
   const connected = useProviderConnected(false);
   const headingId = useId();
   const { setup, isLoading } = useClaudeCodeSetup();
+  useCloseComputersOnLeave();
   const tokenRows = useClaudeCodeTokenRows();
   const [removing, setRemoving] = useState<TokenTarget | null>(null);
   const name = CLAUDE_CODE_CONNECTION.display_name;

@@ -38,8 +38,9 @@ import { WorkspaceMoveOutcomes } from './WorkspaceMoveOutcomes';
 
 /**
  * `currentWorkspaceId` is the workspace the page shows, which a computer's
- * removal can delete. `overSheet`: the page opens Change spec over a sheet
- * of its own, which steps back for it, as the Computers panel does.
+ * removal can delete. `overSheet`: the page opens Change spec, and the
+ * Computers panel from Claude Code's view, over a sheet of its own, which
+ * steps back for them.
  * `planInPlace`: the page holds nothing a new tab would save, so the plan
  * page opens in this tab and the way back is one tab.
  *
@@ -187,6 +188,9 @@ function ComputersDialogHost({ currentWorkspaceId = null, overSheet = false, pla
         // Computers panel's place until it closes.
         covered={!!specTarget}
         currentWorkspaceId={currentWorkspaceId}
+        // Claude Code's view is a sheet where the page has one (Settings),
+        // and steps back for the panel as it does for Change spec.
+        stacked={overSheet && panel?.returnTo === 'claudeCode'}
       />
       <ChangeSpecDialog
         target={specTarget}

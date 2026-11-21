@@ -42,7 +42,8 @@
       "inPlace": "{{name}} 回到原位。",
       "dropped": "{{name}} 已放到 {{over}} 的位置。",
       "cancelled": "已取消移动 {{name}}。"
-    }
+    },
+    "infoAbout": "关于“{{name}}”"
   },
   "auth": {
     "login": "登录",
@@ -534,6 +535,7 @@
       "artifacts": "Artifact",
       "desktop": "桌面应用",
       "agent": "行为",
+      "computers": "计算机",
       "model": "模型",
       "integrations": "集成",
       "trading": "交易",
@@ -549,6 +551,7 @@
       "artifacts": "评论 Agent 生成的文件时的默认设置。",
       "desktop": "这台电脑上的通知、菜单栏，以及应用如何启动。",
       "agent": "Agent 如何作答、哪些操作无需询问，以及如何搜索网页。",
+      "computers": "工作区所在的计算机，以及每台计算机的设置。",
       "model": "你可用的模型，以及 Agent 实际使用的模型。",
       "integrations": "在聊天应用中与你的 Agent 对话，并管理用你的账户登录的应用。",
       "trading": "Agent 在你的券商账户中下单的权限范围。",
@@ -720,6 +723,10 @@
       "keepRunning": "关闭窗口后在托盘中继续运行",
       "keepRunningDesc": "关闭窗口后，通知和托盘图标仍会继续工作。",
       "unavailable": "桌面应用没有响应，请重启后再试。"
+    },
+    "computers": {
+      "list": "你的计算机",
+      "loadFailed": "无法加载你的计算机。"
     }
   },
   "dashboard": {
@@ -7529,7 +7536,7 @@
         "changing": "它正在改为中型。",
         "ownInstead": "也可以在你自己的电脑上运行 Claude Code：开启远程控制的 Mac，或通过 SSH 连接的电脑。",
         "row": "Claude Code 只在中型及以上的云端计算机上运行。",
-        "rowResize": "Claude Code 只在中型及以上的计算机上运行。改为中型会让它重启几分钟。",
+        "rowResize": "改为中型会让它重启几分钟。",
         "rowPlan": "Claude Code 只在中型及以上的计算机上运行，而当前套餐不含中型。",
         "rowResizing": "正在改为中型，完成后 Claude Code 即可在此运行。"
       },

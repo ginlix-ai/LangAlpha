@@ -101,7 +101,8 @@ function SetupRow({ icon, name, detail, status, action, plan, setting }: {
         {used && <UsageCells plan={plan} />}
         <div className={cn('flex basis-full items-center justify-end gap-3', steps.tail)}>
           {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
-          <div className="flex">{action}</div>
+          {/* Ends at the table's edge, under Check now, whichever action the row has. */}
+          <div className="flex justify-end">{action}</div>
         </div>
         {setting && <div className={steps.below}>{setting}</div>}
       </li>
@@ -116,8 +117,9 @@ function SetupRow({ icon, name, detail, status, action, plan, setting }: {
         {setting}
       </div>
       {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
-      {/* On a phone the button goes under the text, which keeps the width. */}
-      <div className="flex max-sm:col-[2/-1] max-sm:mt-2">{action}</div>
+      {/* On a phone the button goes under the text, which keeps the width;
+          otherwise it ends at the row's edge, whichever action the row has. */}
+      <div className="flex justify-end max-sm:col-[2/-1] max-sm:mt-2 max-sm:justify-start">{action}</div>
     </li>
   );
 }
@@ -174,7 +176,9 @@ function StartChatButton({ onLeave }: { onLeave?: () => void }) {
  *  what gets it to Medium (`useMediumAction`). */
 function mediumDetail(t: TFunction, action: MediumAction | null): string {
   if (!action) return t(M + '.row');
-  if (action.kind === 'plan') return t(M + '.rowPlan');
+  // The group's title says it is too small and the button names the size,
+  // so the line says only what neither does.
+  if (action.kind === 'plan') return t(M + '.notOnPlan');
   return t(action.kind === 'resizing' ? M + '.rowResizing' : M + '.rowResize');
 }
 
@@ -260,12 +264,11 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   locateComputerId?: string | null;
   /** Called once that setting has taken focus, to drop the link to it. */
   onLocated?: () => void;
-  /** Called before a computer action leaves for the computers panel in the
-   *  app: setup passes its exit, so the user is not sent back to it. */
+  /** Called before Start a chat leaves for the chat: setup passes its exit,
+   *  so the user is not sent back to it. */
   onLeave?: () => void;
 }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const offTitleId = useId();
   const toggle = useSetFeatureOverride();
   const { custody, isLoading: custodyLoading } = useClaudeCodeCustody();
@@ -283,9 +286,10 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   const [token, setToken] = useState<{ target: TokenTarget; action: SheetAction } | null>(null);
   const [asking, setAsking] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
-  // Change spec opens over the view from the page's own host.
-  const resizing = useComputersPanel().specComputerId !== null;
-  const covered = token !== null || asking || turningOff || resizing;
+  // Change spec and the Computers panel open over the view from the page's
+  // own host, and close back onto it.
+  const { panel, specComputerId } = useComputersPanel();
+  const covered = token !== null || asking || turningOff || specComputerId !== null || panel !== null;
   useEffect(() => {
     onCover(covered);
     return () => onCover(false);
@@ -303,16 +307,14 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
     if (!on && !(await turn(true))) return;
     setToken({ target, action });
   };
-  const toChat = () => {
-    onLeave?.();
-    navigate('/chat');
-  };
-  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
-    toChat();
-    openComputersPanel(panel);
-  };
   const viewComputer = (computerId: string) => (
-    <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'details', computerId })}>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={ROW_BUTTON}
+      onClick={() => openComputersPanel({ view: 'details', computerId, returnTo: 'claudeCode' })}
+    >
       {t(S + '.viewComputer')}
     </Button>
   );
@@ -535,7 +537,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
                 name={t(S + '.mac.name')}
                 detail={t(remoteControl ? S + '.mac.noteDesktop' : S + '.mac.noteBrowser')}
                 action={remoteControl ? (
-                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'create', pick: 'thisMac' })}>
+                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => openComputersPanel({ view: 'create', pick: 'thisMac', returnTo: 'claudeCode' })}>
                     {t(S + '.mac.turnOn')}
                   </Button>
                 ) : (
@@ -556,7 +558,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
                 name={t(S + '.ssh.name')}
                 detail={t(S + '.ssh.note')}
                 action={(
-                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'create' })}>
+                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => openComputersPanel({ view: 'create', returnTo: 'claudeCode' })}>
                     {t(S + '.ssh.add')}
                   </Button>
                 )}

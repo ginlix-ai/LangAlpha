@@ -191,15 +191,32 @@ export function TokenActions({ actions, onOpen, onRemove, menuItems }: {
     else onRemove();
   };
   const [first, ...more] = actions;
+  const hasMenu = more.length > 0 || !!menuItems;
+  // With a menu, the action and its More actions are one bordered control,
+  // the menu a square end of it: a bare icon beside a bordered button reads
+  // as loose, and the pair ends where a row's single button would.
   return (
-    <div className="flex items-center gap-1">
-      <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => run(first)}>
+    <div className="flex items-center">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className={cn(ROW_BUTTON, hasMenu && 'rounded-r-none')}
+        onClick={() => run(first)}
+      >
         {t(TOKEN_ACTIONS[first].label)}
       </Button>
-      {(more.length > 0 || menuItems) && (
+      {hasMenu && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="ghost" size="icon" className="tap-target h-9 w-9" aria-label={t('modelAccess.claudeCode.moreActions')}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              // Its touch box starts at its own edge, off the action it joins.
+              className={cn(ROW_BUTTON, '-ml-px w-9 rounded-l-none px-0 focus-visible:z-10 [--tap-target-x:4px]')}
+              aria-label={t('modelAccess.claudeCode.moreActions')}
+            >
               <MoreHorizontal aria-hidden="true" className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>

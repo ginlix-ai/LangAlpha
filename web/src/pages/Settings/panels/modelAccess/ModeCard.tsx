@@ -3,13 +3,14 @@ import { RadioChoice } from '@/components/ui/choice';
 import { cn } from '@/lib/utils';
 
 /** One way to run it, drawn as Settings draws a trading level. Named by its
- *  label alone, so its detail is read as a description. */
+ *  label alone, so its detail, where it has one, is read as a description;
+ *  a choice explained once for the group leaves it out. */
 export function ModeCard<V extends string>({ name, mode, checked, label, detail, onSelect, onReselect }: {
   name: string;
   mode: V;
   checked: boolean;
   label: string;
-  detail: string;
+  detail?: string;
   onSelect: (mode: V) => void;
   onReselect?: (mode: V) => void;
 }) {
@@ -23,7 +24,7 @@ export function ModeCard<V extends string>({ name, mode, checked, label, detail,
       onSelect={onSelect}
       onReselect={onReselect}
       aria-labelledby={labelId}
-      aria-describedby={detailId}
+      aria-describedby={detail ? detailId : undefined}
       markClassName="mt-0.5"
       className={cn(
         'items-start gap-3 rounded-[var(--cs-radius-choice,0.5rem)] px-3 py-2.5 transition-colors',
@@ -37,7 +38,9 @@ export function ModeCard<V extends string>({ name, mode, checked, label, detail,
     >
       <span className="min-w-0 flex-1">
         <span id={labelId} className="block text-[0.8125rem] font-medium" style={{ color: 'var(--color-text-primary)' }}>{label}</span>
-        <span id={detailId} className="mt-0.5 block text-xs leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>
+        {detail && (
+          <span id={detailId} className="mt-0.5 block text-xs leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>
+        )}
       </span>
     </RadioChoice>
   );

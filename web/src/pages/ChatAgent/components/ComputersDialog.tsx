@@ -25,6 +25,7 @@ import { SwapCell } from '@/components/ui/crossfade';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { Loader } from '@/components/ui/loader';
 import { useHomeWorkspaceId } from '@/hooks/useHomeWorkspace';
+import { CLAUDE_CODE_CONNECTION } from '@/lib/claudeCode';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 import { DURATION } from '@/lib/motion';
 import type { Computer, ComputerCreate, ComputerReinstall } from '@/types/api';
@@ -33,7 +34,7 @@ import type { HomePlacement } from '../utils/api';
 import { useComputerProviders, useComputers } from '../hooks/useComputers';
 import { useHomePlacement } from '../hooks/useHomePlacement';
 import { useReleaseRefusedRemoteControl, useThisMac, useThisMacAvailability } from '../hooks/useRemoteControl';
-import { openComputerSpec, type ComputersPanelView } from '../hooks/computerPanelStore';
+import { openComputerSpec, type ComputersPanelView, type ComputersReturn } from '../hooks/computerPanelStore';
 import {
   deletedBeforeRefusal,
   primaryName,
@@ -60,6 +61,7 @@ import { computerTokenTarget, type SheetAction } from '@/components/modelAccess/
 import { PlanUpgradeHint } from './planUpgradeHint';
 import {
   isProviderLocked,
+  newComputerNote,
   providerHoldsOurKey,
   providerIsOwnMachine,
   providerKeepsFilesOnRemove,
@@ -93,6 +95,8 @@ interface ComputersDialogProps {
   covered?: boolean;
   /** The workspace the page behind is showing, left for the gallery if a removal deletes it. */
   currentWorkspaceId?: string | null;
+  /** Opened over a sheet that steps back for it, which already dims the page. */
+  stacked?: boolean;
 }
 
 /**
@@ -123,12 +127,17 @@ function ComputersPanel({
   onClose,
   covered = false,
   currentWorkspaceId = null,
+  stacked = false,
 }: Omit<ComputersDialogProps, 'panel' | 'opening'> & { opened: ComputersPanelView }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const titleId = useId();
   const capNoteId = useId();
   const [createForm, setCreateForm] = useState<CreateForm>(opened.view === 'create' ? 'awaitingRoom' : 'closed');
+  // Opened from a place that lists the machines (Settings, Claude Code's
+  // view), which stands in for the rail: the rail never shows, and leaving the
+  // details or the form closes the panel onto that place.
+  const returnTo = opened.returnTo ?? null;
   // The machine whose details have taken the rail's place.
   const [detailId, setDetailId] = useState<string | null>(opened.view === 'details' ? opened.computerId : null);
   // The details take the rail's height, so the dialog keeps its size both ways.
@@ -157,12 +166,27 @@ function ComputersPanel({
   // The source the Add dialog opens on when a reconnect sends the user there.
   const [createPick, setCreatePick] = useState<string | null>(null);
 
-  const { data, isLoading } = useComputers();
+  const { data, isLoading, refetch: refetchComputers } = useComputers();
   const computers = data?.computers ?? [];
   // Read off the live list, so a row that leaves it (removed elsewhere, or by
   // this dialog) closes its confirmation rather than leaving a stale copy.
   const find = (id: string | null) => (id ? computers.find((c) => c.computer_id === id) ?? null : null);
   const detail = find(detailId);
+  // The machine whose details a list page opened is not on the list. The page
+  // can be ahead of it (Claude Code's view polls its own rows), so the list is
+  // read once more; still missing (removed here or elsewhere), there is no
+  // rail to fall back to, so the panel goes.
+  const detailMissing = !!returnTo && detailId !== null && !detail && !isLoading;
+  useEffect(() => {
+    if (!detailMissing) return;
+    let current = true;
+    void refetchComputers().then((result) => {
+      if (current && !result.data?.computers.some((c) => c.computer_id === detailId)) onClose();
+    });
+    return () => {
+      current = false;
+    };
+  }, [detailMissing, detailId, refetchComputers, onClose]);
   const removeTarget = find(removeTargetId);
   const primaryTarget = find(primaryTargetId);
   const backupOffTarget = find(backupOffTargetId);
@@ -329,6 +353,11 @@ function ComputersPanel({
   const submitCreate = (body: ComputerCreate) => {
     create.mutate(body, {
       onSuccess: (row) => {
+        // The place it returns to shows the new machine, preparing, as its own row.
+        if (returnTo) {
+          onClose();
+          return;
+        }
         setCreateForm('closed');
         setArrivingId(row.computer_id);
       },
@@ -411,6 +440,7 @@ function ComputersPanel({
         onClose={onClose}
         width="wide"
         density="form"
+        stacked={stacked}
         covered={
           covered ||
           createForm !== 'closed' ||
@@ -435,12 +465,13 @@ function ComputersPanel({
                 index={computers.indexOf(detail) + 1}
                 total={computers.length}
                 height={viewHeight}
-                onBack={() => setDetailId(null)}
+                onBack={returnTo ? onClose : () => setDetailId(null)}
+                backLabel={returnTo ? returnLabel(t, returnTo) : undefined}
                 thisMac={thisMac.of(detail)}
                 showProvider={showProvider}
                 actions={actionsFor(detail)}
               />
-            ) : (
+            ) : returnTo ? null : (
               <div ref={railViewRef}>
                 <ComputerRail
                   computers={computers}
@@ -457,7 +488,7 @@ function ComputersPanel({
                     />
                   )}
                   onCreate={openCreate}
-                  ownMachines={!!providerData?.providers.some((p) => p.kind === 'ssh')}
+                  newNote={newComputerNote(t, providerData?.providers)}
                   held={createHeld}
                   heldNoteId={capNoteId}
                 />
@@ -602,6 +633,11 @@ function ComputersPanel({
       </AnimatePresence>
     </>
   );
+}
+
+/** The way back's name, for the place the panel closes onto. */
+function returnLabel(t: Translate, place: ComputersReturn): string {
+  return place === 'settings' ? t('sidebar.settings', 'Settings') : CLAUDE_CODE_CONNECTION.display_name;
 }
 
 /** A refused remove request: a 409 the route names, in this app's words, else the server's sentence. */

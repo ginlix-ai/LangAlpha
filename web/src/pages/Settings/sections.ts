@@ -12,6 +12,7 @@ import {
   Palette,
   PieChart,
   Plug,
+  Server,
   SlidersHorizontal,
 } from 'lucide-react';
 import { isPlatformMode } from '@/config/hostMode';
@@ -45,6 +46,8 @@ export const SECTIONS = {
   artifacts: { labelKey: 'settings.section.artifacts', descKey: 'settings.definition.artifacts', icon: Globe },
   desktop: { labelKey: 'settings.section.desktop', descKey: 'settings.definition.desktop', icon: AppWindow, desktopOnly: true },
   agent: { labelKey: 'settings.section.agent', descKey: 'settings.definition.agent', icon: Bot },
+  // The glyph the workspace gallery's computer menu names them by.
+  computers: { labelKey: 'settings.section.computers', descKey: 'settings.definition.computers', icon: Server },
   model: { labelKey: 'settings.section.model', descKey: 'settings.definition.model', icon: Cpu },
   integrations: { labelKey: 'settings.section.integrations', descKey: 'settings.definition.integrations', icon: Plug, platformOnly: true },
   trading: { labelKey: 'settings.section.trading', descKey: 'settings.definition.trading', icon: CandlestickChart },
@@ -63,7 +66,7 @@ export function sectionShown(section: Section): boolean {
 export const GROUPS: readonly { labelKey: string; sections: readonly Section[] }[] = [
   { labelKey: 'settings.group.account', sections: ['account', 'preferences', 'plan'] },
   { labelKey: 'settings.group.app', sections: ['general', 'appearance', 'chat', 'artifacts', 'desktop'] },
-  { labelKey: 'settings.group.agent', sections: ['agent', 'model', 'integrations', 'trading'] },
+  { labelKey: 'settings.group.agent', sections: ['agent', 'computers', 'model', 'integrations', 'trading'] },
   { labelKey: 'settings.group.labs', sections: ['experiments'] },
 ];
 
@@ -137,6 +140,24 @@ export const SETTINGS = {
   approveHandoffs: { section: 'agent', anchor: 'approve-handoffs', labelKey: 'settings.autoApproveHandoffs', descKey: 'settings.autoApproveHandoffsDesc' },
   approveWorkspaces: { section: 'agent', anchor: 'approve-workspaces', labelKey: 'settings.autoApproveWorkspaceCreation', descKey: 'settings.autoApproveWorkspaceCreationDesc' },
   searchProvider: { section: 'agent', anchor: 'search-provider', labelKey: 'settings.searchProvider', descKey: 'settings.searchProviderDesc', alsoKeys: ['settings.searchDepth'] },
+  // A machine's own settings are in the Computers panel each row opens, so
+  // the list is what a search for one of them lands on.
+  computers: {
+    section: 'computers',
+    anchor: 'computers',
+    labelKey: 'settings.computers.list',
+    descKey: 'computer.computersDesc',
+    alsoKeys: [
+      'computer.card.spec',
+      'computer.card.storage',
+      'computer.alwaysOn',
+      'computer.filesBackup.label',
+      'computer.browserQuality.label',
+      'computer.makePrimary.button',
+      'computer.rename',
+    ],
+  },
+  newComputer: { section: 'computers', anchor: 'new-computer', labelKey: 'computer.newComputer' },
   modelAccess: { section: 'model', anchor: 'model-access', labelKey: 'modelAccess.title', descKey: 'modelAccess.description' },
   defaultModels: { section: 'model', anchor: 'default-models', labelKey: 'settings.defaultModels', descKey: 'settings.defaultModelsDesc' },
   defaultModelScope: { section: 'model', anchor: 'default-model-scope', labelKey: 'settings.defaultModelChange.scopeLabel', descKey: 'settings.defaultModelChange.scopeDesc' },

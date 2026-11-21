@@ -109,6 +109,9 @@
 
 .computer-card-spec {
   display: grid;
+  /* Never wider than its column: a long value (an SSH machine's system name)
+     truncates in its row rather than widening the list past the column. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   margin-top: 12px;
 }
