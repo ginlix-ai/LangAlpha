@@ -25,8 +25,8 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
 // The reader has turned the browser on.
 vi.mock('@/pages/ChatAgent/hooks/useBrowserHere', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/pages/ChatAgent/hooks/useBrowserHere')>()),
-  useBrowserHere: (computer: { kind: string } | null | undefined, shared = false) => (computer ? computer.kind !== 'ssh' : shared),
-  useBrowserGone: (computer: { kind: string } | null | undefined) => computer?.kind === 'ssh',
+  useBrowserHere: (computer: object | null | undefined, shared = false) => computer != null || shared,
+  useBrowserGone: () => false,
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws' } }) }));
 vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'dark' }) }));

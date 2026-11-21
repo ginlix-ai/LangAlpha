@@ -4481,7 +4481,7 @@ class TestStartAnswersToEntitlement(_Base):
         mock_sm.get_session.return_value = self._session()
         mock_bind.return_value = {
             "computer_id": "comp-1",
-            "config": {"browser_quality": "sharp", "browser_quality_rev": "saved-during-start"},
+            "config": {"browser_quality": "sharp", "browser_rev": "0000000000000000002a"},
         }
         mock_certify.return_value = 3
         computer = _make_computer(
@@ -4489,8 +4489,8 @@ class TestStartAnswersToEntitlement(_Base):
         )
         handed = []
 
-        async def keep(_sandbox, *, kind, choices):
-            handed.append((choices.quality, choices.quality_revision))
+        async def keep(_sandbox, choices):
+            handed.append((choices.quality, choices.revision))
 
         with (
             patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=computer)),
@@ -4500,7 +4500,7 @@ class TestStartAnswersToEntitlement(_Base):
                 computer, user_id="user-1", on_state_observed=None
             )
 
-        assert handed[-1] == ("sharp", "saved-during-start")
+        assert handed[-1] == ("sharp", "0000000000000000002a")
 
     @pytest.mark.asyncio
     @patch("src.server.services.platform_secret_rollout.certify_platform_secrets")

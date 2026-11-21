@@ -182,6 +182,7 @@ class _Sandbox:
     """One worker's object for the shared sandbox."""
 
     mounts_livefs = True
+    installs_browser = False
 
     def __init__(self, box: _Box, *, lost: bool = False) -> None:
         self.sandbox_id = SANDBOX

@@ -799,7 +799,9 @@ async def test_an_asset_sync_keeps_its_folder_until_the_overlay_is_written(seed_
         syncs.append((kwargs["project"].dir_name, [m.workspace_id for m in plan.moves]))
         return SimpleNamespace(layout_version=FOLDER_LAYOUT_VERSION)
 
-    sandbox = SimpleNamespace(sync_sandbox_assets=sync, vault_secrets={}, mounts_livefs=True)
+    sandbox = SimpleNamespace(
+        sync_sandbox_assets=sync, vault_secrets={}, mounts_livefs=True, installs_browser=False
+    )
     with (
         patch(_SKILL_PARAMS, AsyncMock(return_value={})),
         patch.object(manager, "_vault_snapshot", AsyncMock(return_value=(None, {}, ""))),
@@ -882,6 +884,7 @@ async def test_concurrent_cold_attach_fits_the_pool(
             sandbox_id=f"sb-{workspace_id}",
             vault_secrets={},
             mounts_livefs=True,
+            installs_browser=False,
             _ensure_workspace_dirs=ensure_dirs,
             # A restore marker is there, so the check only reconciles the flag.
             adownload_file_bytes=AsyncMock(return_value=b"restored"),
@@ -954,6 +957,7 @@ async def test_concurrent_cold_restores_fit_the_pool(
             sandbox_id=None,
             vault_secrets={},
             mounts_livefs=True,
+            installs_browser=False,
             recreatable=True,
             _ensure_workspace_dirs=AsyncMock(),
             # No restore marker: the sandbox was recreated empty.

@@ -25,14 +25,14 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
 // The reader has turned the browser on.
 vi.mock('@/pages/ChatAgent/hooks/useBrowserHere', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/pages/ChatAgent/hooks/useBrowserHere')>()),
-  useBrowserHere: (computer: { kind: string } | null | undefined, shared = false) => (computer ? computer.kind !== 'ssh' : shared),
-  useBrowserGone: (computer: { kind: string } | null | undefined) => computer?.kind === 'ssh',
+  useBrowserHere: (computer: object | null | undefined, shared = false) => !browserOff && (computer != null || shared),
+  useBrowserGone: () => browserOff,
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws', computer_id: 'c1' } }) }));
-let computerKind = 'docker';
+let browserOff = false;
 vi.mock('@/pages/ChatAgent/hooks/useComputers', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useComputer: (id: string | null) => ({ data: id ? { computer_id: id, kind: computerKind, name: 'box', status: 'running' } : null }),
+  useComputer: (id: string | null) => ({ data: id ? { computer_id: id, kind: 'docker', name: 'box', status: 'running' } : null }),
 }));
 vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'dark' }) }));
 vi.mock('@/pages/ChatAgent/components/FilePanelMemo', () => ({
@@ -73,7 +73,7 @@ async function openFromTheTree(path: string): Promise<void> {
 
 beforeEach(() => {
   localStorage.clear();
-  computerKind = 'docker';
+  browserOff = false;
 });
 afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); });
 
@@ -134,8 +134,8 @@ describe('FilePanel new tab menu', () => {
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart']);
   });
 
-  it('offers no Browser tab beside a machine brought over SSH, which runs no browser of ours', async () => {
-    computerKind = 'ssh';
+  it('offers no Browser tab where the reader turned the browser off', async () => {
+    browserOff = true;
     renderWithProviders(panel());
     expect(screen.queryByRole('button', { name: 'Browser' })).toBeNull();
     await openFromTheTree('notes.md');
@@ -150,14 +150,14 @@ describe('FilePanel new tab menu', () => {
     expect(screen.getByRole('button', { name: 'Browser' })).toBeTruthy();
   });
 
-  it('closes a Browser tab kept from before once its computer turns out to run none', async () => {
+  it('closes a Browser tab kept from before once the reader turns the browser off', async () => {
     const view = new BrowserViewSession();
     const { rerender } = renderWithProviders(panel(null, view));
     await openFromTheTree('notes.md');
     fireEvent.click(screen.getByRole('button', { name: 'Browser' }));
     await waitFor(() => expect(tabNames()).toContain('Browser'));
 
-    computerKind = 'ssh';
+    browserOff = true;
     rerender(panel(null, view));
     await waitFor(() => expect(tabNames()).toEqual(['notes.md']));
   });

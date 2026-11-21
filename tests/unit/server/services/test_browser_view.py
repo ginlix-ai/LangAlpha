@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import shlex
 from types import SimpleNamespace
@@ -14,7 +16,6 @@ from src.server.services import browser_view as module
 from ptc_agent.core.sandbox.browser_runtime import protocol
 from src.server.services.browser_view import (
     VIEW_LIFETIME_S,
-    browser_available,
     browser_control,
     browser_navigate,
     browser_view,
@@ -34,6 +35,7 @@ def _sandbox(
     )
     return SimpleNamespace(
         sandbox_id="sb-1",
+        installs_browser=False,
         layout=SimpleNamespace(internal_src="/r/_internal/src"),
         runtime=runtime,
         get_preview_url=AsyncMock(
@@ -49,13 +51,86 @@ def _status(**fields) -> str:
     return json.dumps({"installed": True, "running": False, "token": None, **fields})
 
 
-@pytest.mark.parametrize(("kind", "available"), [("ssh", False), ("docker", True)])
+def _own_machine(*answers: object):
+    """A sandbox of a kind whose machines set the browser up themselves."""
+    sandbox = _sandbox()
+    sandbox.installs_browser = True
+    sandbox.runtime = SimpleNamespace(
+        exec=AsyncMock(
+            side_effect=[
+                SimpleNamespace(stdout=a if isinstance(a, str) else json.dumps(a)) for a in answers
+            ]
+        ),
+        refresh_state=AsyncMock(return_value=RuntimeState.RUNNING),
+    )
+    return sandbox
+
+
+def _asked(sandbox) -> list[str]:
+    return [shlex.split(call.args[0])[3:] for call in sandbox.runtime.exec.await_args_list]
+
+
 @pytest.mark.asyncio
-async def test_only_a_kind_built_with_the_browser_has_one(kind: str, available: bool):
-    with patch.object(
-        module, "get_computer_for_workspace", AsyncMock(return_value={"kind": kind})
-    ):
-        assert await browser_available("ws-1") is available
+async def test_a_cloud_computer_without_the_engine_was_built_before_the_browser():
+    sandbox = _sandbox(_status(installed=False))
+    assert (await browser_view(sandbox, "ws-1")).state == "outdated"
+    assert sandbox.runtime.exec.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_machine_of_the_person_s_own_with_no_browser_says_so():
+    sandbox = _own_machine(
+        _status(installed=False), {"done": False, "reason": "no_chrome", "chrome": None}
+    )
+    assert (await browser_view(sandbox, "ws-1")).state == "no_chrome"
+    assert _asked(sandbox) == [["status"], ["install"]]
+
+
+@pytest.mark.asyncio
+async def test_only_the_person_asking_downloads_chrome_for_testing():
+    sandbox = _own_machine(_status(installed=False), {"done": True})
+    assert (await browser_view(sandbox, "ws-1", get_chrome=True)).state == "installing"
+    assert _asked(sandbox) == [["status"], ["install", "chrome"]]
+
+
+@pytest.mark.asyncio
+async def test_asking_for_chrome_behind_a_setup_under_way_queues_the_download():
+    """The setup may be one an acquire began, which downloads nothing; the
+    machine runs one install at a time, and the queued one finds Chrome there
+    after a download."""
+    sandbox = _own_machine(_status(installed=False, installing=True), {"done": True})
+    assert (await browser_view(sandbox, "ws-1", get_chrome=True)).state == "installing"
+    assert _asked(sandbox) == [["status"], ["install", "chrome"]]
+
+
+@pytest.mark.asyncio
+async def test_a_machine_setting_up_is_left_to_it():
+    sandbox = _own_machine(_status(installed=False, installing=True))
+    assert (await browser_view(sandbox, "ws-1")).state == "installing"
+    assert _asked(sandbox) == [["status"]]
+
+
+@pytest.mark.asyncio
+async def test_a_machine_set_up_while_the_person_waits_is_watched_on_its_own_port():
+    sandbox = _own_machine(
+        _status(installed=False),
+        {"done": True, "reason": None, "chrome": "/opt/google/chrome/chrome"},
+        _status(running=True, token=TOKEN, port=22097),
+    )
+    view = await browser_view(sandbox, "ws-1")
+    assert view.state == "running"
+    assert view.url.startswith(f"https://p.example.com{protocol.PATH_PREFIX}{TOKEN}")
+    assert sandbox.get_preview_url.await_args.args[0] == 22097
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_computer_is_watched_on_the_image_s_port_whatever_it_reports():
+    """Its agent can write the port it reports, and a preview link, which
+    members may hold, must not open another."""
+    sandbox = _sandbox(_status(running=True, token=TOKEN, port=22097))
+    view = await browser_view(sandbox, "ws-1")
+    assert view.state == "running"
+    assert sandbox.get_preview_url.await_args.args[0] == protocol.BRIDGE_PORT
 
 
 @pytest.mark.asyncio
@@ -118,6 +193,39 @@ async def test_an_open_refused_for_memory_says_so():
     # A browser that is up is shown whatever else the answer says.
     up = await browser_view(_sandbox(_status(running=True, token=TOKEN, low_memory=True)), "ws-1")
     assert up.state == "running"
+
+
+@pytest.mark.asyncio
+async def test_an_app_on_the_owners_own_machine_may_open_the_stream_past_the_server():
+    """Its bridge listens on the machine's loopback, behind the same token."""
+    sandbox = _own_machine(_status(running=True, token=TOKEN, port=22097))
+    view = await browser_view(sandbox, "ws-1")
+    assert view.local_url == f"http://127.0.0.1:22097{protocol.PATH_PREFIX}{TOKEN}"
+
+
+@pytest.mark.asyncio
+async def test_no_loopback_for_a_cloud_computer_or_a_shared_workspaces_member():
+    cloud = await browser_view(_sandbox(_status(running=True, token=TOKEN)), "ws-1")
+    assert cloud.state == "running" and cloud.local_url is None
+    sandbox = _own_machine(_status(running=True, token=TOKEN, port=22097))
+    with (
+        patch.object(module, "preview_base", return_value=None),
+        patch.object(module, "publish", AsyncMock(return_value="https://p.example.com/")),
+    ):
+        member = await browser_view(sandbox, "ws-1", viewer_id="member-1")
+    assert member.state == "running" and member.local_url is None
+
+
+def test_whether_a_machine_sets_its_browser_up_is_its_providers():
+    """The runtime a provider builds does not carry the flag, which left every
+    machine of the person's own reading as one built before the browser."""
+    from ptc_agent.core.sandbox.providers import provider_class
+    from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+    own = SimpleNamespace(provider=provider_class("ssh").__new__(provider_class("ssh")))
+    cloud = SimpleNamespace(provider=provider_class("docker").__new__(provider_class("docker")))
+    assert PTCSandbox.installs_browser.fget(own) is True
+    assert PTCSandbox.installs_browser.fget(cloud) is False
 
 
 @pytest.mark.asyncio
@@ -350,3 +458,102 @@ def test_a_navigation_names_its_holder_and_one_of_the_ways_to_go(body: dict):
 
     with pytest.raises(ValidationError):
         BrowserNavigateRequest.model_validate(body)
+
+
+def _running(runtime, *, opened: list | None = None):
+    """``running_sandbox`` attaching to *runtime*, recording each attach."""
+
+    @contextlib.asynccontextmanager
+    async def running_sandbox(row):
+        if opened is not None:
+            opened.append(row["computer_id"])
+        yield runtime
+
+    return running_sandbox
+
+
+def _row(**overrides):
+    return {"computer_id": "c-1", "provider_ref": "p-1", "status": "running", **overrides}
+
+
+@pytest.mark.asyncio
+async def test_a_running_computer_is_asked_through_its_runtime(monkeypatch):
+    from src.server.services import data_token_sweep
+
+    runtime = SimpleNamespace(
+        exec=AsyncMock(return_value=SimpleNamespace(stdout='{"done": true}')),
+        refresh_state=AsyncMock(return_value=RuntimeState.RUNNING),
+        fetch_working_dir=AsyncMock(return_value="/r"),
+    )
+    monkeypatch.setattr(data_token_sweep, "running_sandbox", _running(runtime))
+    assert await module.ask_running(_row(), "everyday", "list", timeout=5) == {"done": True}
+    assert shlex.split(runtime.exec.await_args.args[0])[3:] == ["everyday", "list"]
+
+
+@pytest.mark.parametrize(
+    ("row", "attached", "state"),
+    [
+        (_row(status="stopped"), None, RuntimeState.RUNNING),
+        (_row(provider_ref=None), None, RuntimeState.RUNNING),
+        (_row(), "none", RuntimeState.RUNNING),
+        (_row(), "runtime", RuntimeState.STOPPED),
+    ],
+    ids=["stopped", "never-built", "not-running-at-the-provider", "paused-since-attach"],
+)
+@pytest.mark.asyncio
+async def test_a_computer_not_running_is_not_asked_or_woken(monkeypatch, row, attached, state):
+    """E2B resumes a sandbox it attaches to, so one found paused after the
+    attach is not running, and nothing runs on it."""
+    from src.server.services import data_token_sweep
+
+    runtime = SimpleNamespace(exec=AsyncMock(), refresh_state=AsyncMock(return_value=state))
+    opened: list = []
+    yielded = runtime if attached == "runtime" else None
+    monkeypatch.setattr(data_token_sweep, "running_sandbox", _running(yielded, opened=opened))
+    assert await module.ask_running(row, "status", timeout=5) is module.NOT_RUNNING
+    assert opened == ([] if attached is None else ["c-1"])
+    runtime.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_machine_of_the_person_s_own_is_set_up_once_per_sandbox_object():
+    sandbox = _own_machine({"done": True})
+    module.install_soon(sandbox)
+    module.install_soon(sandbox)
+    await asyncio.gather(*module._INSTALLS)
+    assert _asked(sandbox) == [["install"]]
+
+    cloud = _sandbox()
+    module.install_soon(cloud)
+    assert not module._INSTALLS
+    cloud.runtime.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_install_that_fails_is_started_again_by_the_next_acquire():
+    sandbox = _own_machine()
+    sandbox.runtime.exec = AsyncMock(side_effect=[RuntimeError("gone"), SimpleNamespace(stdout="{}")])
+    module.install_soon(sandbox)
+    await asyncio.gather(*module._INSTALLS)
+    module.install_soon(sandbox)
+    await asyncio.gather(*module._INSTALLS)
+    assert sandbox.runtime.exec.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "again"),
+    [
+        ({"done": False, "reason": "engine"}, True),
+        ({"done": False, "reason": "ports"}, True),
+        ({"done": False, "reason": "no_chrome"}, False),
+        ({"done": False, "reason": "unsupported"}, False),
+    ],
+)
+async def test_a_setup_refused_on_what_can_pass_is_started_again_by_the_next_acquire(answer, again):
+    sandbox = _own_machine(answer, {"done": True})
+    module.install_soon(sandbox)
+    await asyncio.gather(*module._INSTALLS)
+    module.install_soon(sandbox)
+    await asyncio.gather(*module._INSTALLS)
+    assert sandbox.runtime.exec.await_count == (2 if again else 1)

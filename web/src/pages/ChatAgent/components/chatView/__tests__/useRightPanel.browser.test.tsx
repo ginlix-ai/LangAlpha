@@ -141,9 +141,9 @@ describe('a link opened in the agent browser', () => {
     expect(result.current.panelTarget).toMatchObject({ kind: 'browser', front: true });
   });
 
-  it('is offered only on a desktop chat whose computer has a browser', () => {
+  it('is offered on a desktop chat with a browser on, on any kind of computer', () => {
     expect(open().current.linkActions.openInBrowser).toBeTypeOf('function');
-    expect(open({ computer: ssh }).current.linkActions.openInBrowser).toBeNull();
+    expect(open({ computer: ssh }).current.linkActions.openInBrowser).toBeTypeOf('function');
     expect(open({ computer: null }).current.linkActions.openInBrowser).toBeNull();
     expect(open({ isMobile: true }).current.linkActions.openInBrowser).toBeNull();
     expect(open({ browserOn: false }).current.linkActions.openInBrowser).toBeNull();

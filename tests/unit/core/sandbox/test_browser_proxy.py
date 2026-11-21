@@ -5,11 +5,13 @@ contract, and that it decides on the address it then connects to."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import ipaddress
 
 import pytest
 
-from ptc_agent.core.sandbox.browser_runtime import protocol, proxy
+from ptc_agent.core.sandbox.browser_runtime import host, protocol, proxy
+from ptc_agent.core.sandbox.browser_runtime.host import Host
 
 OWN = ipaddress.ip_address("172.17.0.5")
 GATEWAY = ipaddress.ip_address("172.17.0.1")
@@ -61,6 +63,29 @@ PLACES = proxy.Places(own=frozenset({OWN}), hosts=frozenset({GATEWAY, DOCKER_HOS
 )
 def test_what_the_browser_may_reach(address: str, port: int, refused: bool):
     assert proxy.refused(ipaddress.ip_address(address), port, PLACES) is refused
+
+
+@pytest.mark.parametrize(
+    ("address", "port", "refused"),
+    [
+        # The person's own apps and network, as other agents' browsers leave them.
+        ("127.0.0.1", 3000, False),
+        ("127.0.0.1", 2280, False),
+        ("192.168.1.1", 80, False),
+        # The runtime's own ports, by any address that is the machine.
+        ("127.0.0.1", 27044, True),
+        ("::1", 22097, True),
+        (str(OWN), 26841, True),
+        # A person's own machine may be a cloud VM.
+        ("169.254.169.254", 80, True),
+    ],
+)
+def test_what_the_browser_may_reach_on_a_person_s_own_machine(monkeypatch, address, port, refused):
+    own = Host(own=True, stream_port=27044, bridge_port=22097, proxy_port=26841)
+    monkeypatch.setattr(host, "current", lambda: own)
+    monkeypatch.setattr(proxy, "_own_addresses", lambda: {OWN})
+    monkeypatch.setattr(proxy, "_host_addresses", lambda: {ipaddress.ip_address("192.168.1.1")})
+    assert proxy.refused(ipaddress.ip_address(address), port, proxy.read_places()) is refused
 
 
 def test_a_connect_names_where_the_tunnel_goes():
@@ -137,7 +162,8 @@ async def test_requests_through_the_proxy_reach_an_app_and_not_a_service(monkeyp
 
     upstream = await asyncio.start_server(app, "127.0.0.1", 0)
     app_port = upstream.sockets[0].getsockname()[1]
-    server = await asyncio.start_server(proxy.Proxy(PLACES).handle, "127.0.0.1", 0)
+    filtering = proxy.Proxy(PLACES)
+    server = await asyncio.start_server(filtering.handle, "127.0.0.1", 0)
     proxy_port = server.sockets[0].getsockname()[1]
 
     async def ask(request: bytes) -> bytes:
@@ -162,7 +188,7 @@ async def test_requests_through_the_proxy_reach_an_app_and_not_a_service(monkeyp
         writer.close()
 
         dialed.clear()
-        monkeypatch.setattr(proxy, "SERVICE_PORTS", (app_port,))
+        filtering.places = dataclasses.replace(PLACES, ports=frozenset({app_port}))
         for target in (f"127.0.0.2:{app_port}", f"[::ffff:7f00:1]:{app_port}", f"localhost:{app_port}"):
             assert (await ask(f"CONNECT {target} HTTP/1.1\r\n\r\n".encode())).startswith(
                 b"HTTP/1.1 403 Forbidden\r\n"

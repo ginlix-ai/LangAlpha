@@ -5,8 +5,8 @@ import type { Computer } from '@/types/api';
 
 let pending = false;
 const mutate = vi.fn();
-vi.mock('../../hooks/useComputerActions', () => ({
-  useSetBrowserSignins: () => ({ mutate, isPending: pending, variables: pending ? { computerId: 'c-1' } : undefined }),
+vi.mock('../../hooks/useSetBrowserChoices', () => ({
+  useSetBrowserChoices: () => ({ mutate, busyFor: (id: string) => pending && id === 'c-1' }),
 }));
 
 import { BrowserSigninsSetting } from '../BrowserSigninsSetting';
@@ -16,7 +16,7 @@ function show(kept?: boolean) {
     computer_id: 'c-1',
     kind: 'docker',
     status: 'running',
-    config: kept === undefined ? {} : { browser_signins: kept },
+    browser: { quality: null, signins: kept ?? true, window: false, window_available: false },
   } as unknown as Computer;
   renderWithProviders(<BrowserSigninsSetting computer={computer} />);
   return mutate;
@@ -40,7 +40,7 @@ describe('BrowserSigninsSetting', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'false');
     expect(screen.queryByRole('button', { name: 'Sign out of every site' })).toBeNull();
     fireEvent.click(toggle);
-    expect(save).toHaveBeenCalledWith({ computerId: 'c-1', keep: true });
+    expect(save).toHaveBeenCalledWith({ computerId: 'c-1', patch: { signins: true } });
   });
 
   it('signs out by saving it on again, and off by turning it off', () => {
@@ -48,8 +48,8 @@ describe('BrowserSigninsSetting', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign out of every site' }));
     fireEvent.click(screen.getByRole('switch', { name: 'Keep sign-ins' }));
     expect(save.mock.calls).toEqual([
-      [{ computerId: 'c-1', keep: true }],
-      [{ computerId: 'c-1', keep: false }],
+      [{ computerId: 'c-1', patch: { signins: true } }],
+      [{ computerId: 'c-1', patch: { signins: false } }],
     ]);
   });
 

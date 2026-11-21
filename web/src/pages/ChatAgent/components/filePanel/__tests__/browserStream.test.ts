@@ -9,6 +9,7 @@ import type {
   BrowserNavigation,
   BrowserNavigateRefusal,
   BrowserViewAnswer,
+  BrowserViewWant,
 } from '../../../utils/api/sandbox';
 
 let sockets: FakeSocket[] = [];
@@ -49,7 +50,7 @@ afterEach(() => {
 const nextTimer = () => { vi.advanceTimersToNextTimer(); };
 
 function harness(answers: BrowserViewAnswer[]) {
-  const ask = vi.fn(async (_start: boolean) => answers.shift() ?? { state: 'idle' as const });
+  const ask = vi.fn(async (_want: BrowserViewWant) => answers.shift() ?? { state: 'idle' as const });
   const control = vi.fn(async (_holder: string, action: BrowserControlAction, _releases?: BrowserRelease[]) => action !== 'release');
   /** The actions sent, which the hold's tests read in order. */
   const actions = () => control.mock.calls.map(([, action]) => action);
@@ -64,7 +65,7 @@ function harness(answers: BrowserViewAnswer[]) {
   const navigate = vi.fn(
     async (_holder: string, _navigation: BrowserNavigation): Promise<BrowserNavigateRefusal | null> => null,
   );
-  const watch = () => session.watch({ ask, control, navigate });
+  const watch = () => session.watch({ ask, control, navigate, local: false });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   return { session, watch, sockets, phases, ask, control, navigate, actions, controls, settle };
 }
@@ -250,7 +251,7 @@ describe('BrowserViewSession', () => {
     await dropUntilIdle();
     session.open();
     await settle();
-    expect(ask).toHaveBeenLastCalledWith(true);
+    expect(ask).toHaveBeenLastCalledWith('start');
     const count = sockets.length;
     nextTimer();
     expect(sockets.length).toBe(count);
@@ -282,7 +283,7 @@ describe('BrowserViewSession', () => {
     expect(sockets).toHaveLength(0);
     session.open();
     await settle();
-    expect(ask.mock.calls.map(([start]) => start)).toEqual([false, true, true]);
+    expect(ask.mock.calls.map(([want]) => want)).toEqual(['look', 'start', 'start']);
     session.poke();
     await settle();
     expect(phases.at(-1)).toBe('connecting');
@@ -292,10 +293,57 @@ describe('BrowserViewSession', () => {
     const { watch, session, ask, settle } = harness([{ state: 'idle' }]);
     watch();
     await settle();
-    expect(ask).toHaveBeenLastCalledWith(false);
+    expect(ask).toHaveBeenLastCalledWith('look');
     session.open();
     await settle();
-    expect(ask).toHaveBeenLastCalledWith(true);
+    expect(ask).toHaveBeenLastCalledWith('start');
+  });
+
+  it('asks for Chrome only when told to, and only looks while it installs', async () => {
+    const { watch, session, ask, settle } = harness([{ state: 'no_chrome' }, { state: 'installing' }, { state: 'installing' }]);
+    watch();
+    await settle();
+    session.getChrome();
+    await settle();
+    expect(ask).toHaveBeenLastCalledWith('chrome');
+    nextTimer();
+    await settle();
+    expect(ask.mock.calls.map(([want]) => want)).toEqual(['look', 'chrome', 'look']);
+  });
+
+  it('opens the browser once the Chrome the person asked for is in', async () => {
+    const { watch, session, ask, settle } = harness([
+      { state: 'no_chrome' }, { state: 'installing' }, { state: 'installing' }, { state: 'idle' }, running(),
+    ]);
+    watch();
+    await settle();
+    session.getChrome();
+    await settle();
+    nextTimer();
+    await settle();
+    nextTimer();
+    await settle();
+    expect(ask.mock.calls.map(([want]) => want)).toEqual(['look', 'chrome', 'look', 'look', 'start']);
+    expect(session.getSnapshot().phase).toBe('connecting');
+  });
+
+  it('opens the browser after a setup its open found under way, and only for who asked', async () => {
+    const asked = harness([{ state: 'idle' }, { state: 'installing' }, { state: 'idle' }, running()]);
+    asked.watch();
+    await asked.settle();
+    asked.session.open();
+    await asked.settle();
+    nextTimer();
+    await asked.settle();
+    expect(asked.ask.mock.calls.map(([want]) => want)).toEqual(['look', 'start', 'look', 'start']);
+
+    const watcher = harness([{ state: 'installing' }, { state: 'idle' }]);
+    watcher.watch();
+    await watcher.settle();
+    nextTimer();
+    await watcher.settle();
+    expect(watcher.ask.mock.calls.map(([want]) => want)).toEqual(['look', 'look']);
+    expect(watcher.session.getSnapshot().phase).toBe('idle');
   });
 
   it('wakes only a view that is not showing the browser when the agent is seen using it', async () => {
@@ -387,6 +435,70 @@ describe('BrowserViewSession', () => {
     expect(sockets[0].closed).toBe(true);
     session.retry();
     expect(ask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a view on the computer itself', () => {
+  const LOCAL = 'http://127.0.0.1:22097/b/tok';
+  const both = (): BrowserViewAnswer => ({ state: 'running', url: 'https://view.example.com/b/tok', local_url: LOCAL });
+  const watchOn = (h: ReturnType<typeof harness>, local: boolean) =>
+    h.session.watch({ ask: h.ask, control: h.control, navigate: h.navigate, local });
+
+  it('opens the stream on the loopback, past the server', async () => {
+    const h = harness([both()]);
+    watchOn(h, true);
+    await h.settle();
+    expect(h.sockets[0].url).toBe(streamSocketUrl(LOCAL));
+    h.sockets[0].onmessage?.(frame());
+    expect(h.phases.at(-1)).toBe('live');
+  });
+
+  it('goes through the server at once when the loopback never comes up, for the rest of the watch', async () => {
+    const h = harness([both(), both()]);
+    watchOn(h, true);
+    await h.settle();
+    h.sockets[0].onclose?.({ code: 1006 });
+    expect(h.sockets[1].url).toBe(streamSocketUrl('https://view.example.com/b/tok'));
+    h.sockets[1].onmessage?.(frame());
+    expect(h.phases.at(-1)).toBe('live');
+    // A revoked stream asks the server again, and that answer's loopback is not tried.
+    h.sockets[1].onclose?.({ code: 1008 });
+    await h.settle();
+    expect(h.ask).toHaveBeenCalledTimes(2);
+    expect(h.sockets).toHaveLength(3);
+    expect(h.sockets.at(-1)?.url).toBe(streamSocketUrl('https://view.example.com/b/tok'));
+  });
+
+  it('keeps the loopback once it came up, so a drop redials it', async () => {
+    const h = harness([both()]);
+    watchOn(h, true);
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    h.sockets[0].onclose?.({ code: 1006 });
+    nextTimer();
+    expect(h.sockets[1].url).toBe(streamSocketUrl(LOCAL));
+  });
+
+  it('redials the loopback after it went live, never the server, on a later drop', async () => {
+    const h = harness([both()]);
+    watchOn(h, true);
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    h.sockets[0].onclose?.({ code: 1006 });
+    nextTimer();
+    // The redial never comes up, and still does not fall back.
+    h.sockets[1].onclose?.({ code: 1006 });
+    expect(h.sockets).toHaveLength(2);
+    nextTimer();
+    expect(h.sockets[2].url).toBe(streamSocketUrl(LOCAL));
+    expect(h.sockets.some((s) => s.url === streamSocketUrl('https://view.example.com/b/tok'))).toBe(false);
+  });
+
+  it('never dials a loopback from anywhere else', async () => {
+    const h = harness([both()]);
+    watchOn(h, false);
+    await h.settle();
+    expect(h.sockets[0].url).toBe(streamSocketUrl('https://view.example.com/b/tok'));
   });
 });
 
@@ -949,7 +1061,7 @@ describe('opening a link in the browser', () => {
     const visited = session.visit(URL);
     watch();
     await settle();
-    expect(ask.mock.calls.map(([start]) => start)).toEqual([false, true]);
+    expect(ask.mock.calls.map(([want]) => want)).toEqual(['look', 'start']);
     sockets[0].onmessage?.(frame());
     await settle();
     expect(control).toHaveBeenLastCalledWith(session.holder, 'take');

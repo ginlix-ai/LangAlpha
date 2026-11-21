@@ -36,12 +36,16 @@ describe('the browser routes', () => {
     const [, look, { timeout: lookTimeout }] = mockPost.mock.lastCall!;
     expect(mockPost).toHaveBeenLastCalledWith('/api/v1/workspaces/ws1/sandbox/browser-view', {}, expect.anything());
     expect(look).toEqual({});
-    await getBrowserView('ws1', true);
+    await getBrowserView('ws1', 'start');
     const [, start, { timeout: startTimeout }] = mockPost.mock.lastCall!;
     expect(start).toEqual({ start: true });
+    await getBrowserView('ws1', 'chrome');
+    const [, chrome, { timeout: chromeTimeout }] = mockPost.mock.lastCall!;
+    expect(chrome).toEqual({ get_chrome: true });
     // Bounded, so a request the server never answers ends in the tab's Try again.
     expect(lookTimeout).toBeGreaterThan(0);
     expect(startTimeout).toBeGreaterThan(lookTimeout);
+    expect(chromeTimeout).toBe(lookTimeout);
   });
 
   it('reads a server without the view route as no browser on offer', async () => {
