@@ -729,6 +729,7 @@ async def sync_sandbox_assets(
     reusing_sandbox: bool = False,
     force_refresh: bool = False,
     rebuild_overlay: bool = False,
+    known_layout_version: int | None = None,
     project: ProjectContext | None = None,
     root_owner_dir_name: str | None = None,
     workspace_dir_names: tuple[str, ...] = (),
@@ -763,6 +764,12 @@ async def sync_sandbox_assets(
         rebuild_overlay: Build this project's tool overlay again whatever the
             ledger says of it, for one whose generated config is gone or
             damaged. The computer-wide modules still follow the manifest.
+        known_layout_version: The layout the host's own record says this
+            computer is at. No migration from below it runs, whatever the
+            manifest says or fails to say: a sync that runs beside a turn
+            must not move the folders the turn reads. A floor, not a refusal
+            to sync: a computer that lost its manifest would otherwise go
+            unsynced on every turn.
         project: Which project this sync is for, carrying its id and its
             folder on the computer. None is a machine with no project on
             it yet, which still owns the root. The folder travels here and
@@ -861,7 +868,9 @@ async def sync_sandbox_assets(
         # v1, so a failed first manifest write cannot replay old moves.
         first_layout = type(sandbox.provider).first_layout_version
         remote_layout = max(
-            (remote_manifest or {}).get("layout_version", 1), first_layout
+            (remote_manifest or {}).get("layout_version", 1),
+            first_layout,
+            known_layout_version or 0,
         )
         layout_version = await run_layout_migrations(
             sandbox.runtime,

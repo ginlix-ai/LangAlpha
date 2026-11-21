@@ -27,6 +27,7 @@ from .repeat_guard import RepeatCallGuardMiddleware
 
 # Tool middleware (argument parsing, error handling, result normalization, leak detection, code validation, empty call retry)
 from .tool import (
+    AssetGateMiddleware,
     CodeValidationMiddleware,
     ComputerArgumentGuardMiddleware,
     ComputerUnreachableStopMiddleware,
@@ -122,6 +123,7 @@ from .background_subagent.subagent import (
 )
 
 __all__ = [
+    "AssetGateMiddleware",
     # Background subagent
     "BackgroundSubagentMiddleware",
     "BackgroundSubagentOrchestrator",

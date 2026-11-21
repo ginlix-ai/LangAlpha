@@ -7,6 +7,7 @@ This module contains middleware classes that handle tool input/output processing
 """
 
 from .argument_parsing import ToolArgumentParsingMiddleware
+from .asset_gate import AssetGateMiddleware
 from .code_validation import CodeValidationMiddleware
 from .computer_guard import ComputerArgumentGuardMiddleware
 from .empty_call_retry import EmptyToolCallRetryMiddleware
@@ -23,6 +24,7 @@ from .unreachable_stop import (
 )
 
 __all__ = [
+    "AssetGateMiddleware",
     "CodeValidationMiddleware",
     "ComputerArgumentGuardMiddleware",
     "ComputerUnreachableError",

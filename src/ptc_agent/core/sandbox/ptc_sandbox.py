@@ -11,6 +11,7 @@ import structlog
 
 
 from ptc_agent.config.core import CoreConfig
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox._defaults import (
     DEFAULT_DEPENDENCIES,
     SANDBOX_IMAGE_ENV,
@@ -104,6 +105,9 @@ class PTCSandbox:
         # Set by the host while the file mount serves this sandbox; None
         # means the store-backed paths are not on its filesystem.
         self.livefs: MountHandle | None = None
+        # Held by the host while it brings a workspace's synced files up to
+        # date off a turn's path; the agent's calls on the computer wait on it.
+        self.assets = AssetGate()
         # Set by the host: files who each command's call runs for, which a
         # save through the mount and a call the ``la`` CLI makes both read.
         self.call_filer: CallFiler | None = None
@@ -1179,6 +1183,7 @@ class PTCSandbox:
         reusing_sandbox: bool = False,
         force_refresh: bool = False,
         rebuild_overlay: bool = False,
+        known_layout_version: int | None = None,
         project: "ProjectContext | None" = None,
         root_owner_dir_name: str | None = None,
         workspace_dir_names: tuple[str, ...] = (),
@@ -1192,6 +1197,7 @@ class PTCSandbox:
             reusing_sandbox=reusing_sandbox,
             force_refresh=force_refresh,
             rebuild_overlay=rebuild_overlay,
+            known_layout_version=known_layout_version,
             project=project,
             root_owner_dir_name=root_owner_dir_name,
             workspace_dir_names=workspace_dir_names,
