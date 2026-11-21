@@ -13,14 +13,17 @@ import { RadioChoice } from '@/components/ui/choice';
 import { Loader } from '@/components/ui/loader';
 import { FlowFailure, ROW_BUTTON } from '@/components/modelAccess/parts';
 import { isPlatformMode } from '@/config/hostMode';
+import { useInDesktopApp } from '@/hooks/useServerSetup';
 import { useChangeAnswers } from './flow';
 import type { SetupAnswers } from './setupSteps';
 
 /** The answers' tags, in this deployment's words: self-hosted names the
- *  server's models and computers rather than LangAlpha's. */
-function answerTags(t: (key: string) => string, answers: SetupAnswers): [string, string] {
+ *  server's models and computers rather than LangAlpha's, and in the desktop
+ *  app the server is the reader's own computer. */
+function answerTags(t: (key: string) => string, answers: SetupAnswers, inDesktopApp: boolean): [string, string] {
   const models = answers.models === 'langalpha_models' && !isPlatformMode ? 'serverModels' : answers.models;
-  const runsOn = answers.runsOn === 'cloud' && !isPlatformMode ? 'serverComputer' : answers.runsOn;
+  const selfHostedComputer = inDesktopApp ? 'thisComputer' : 'serverComputer';
+  const runsOn = answers.runsOn === 'cloud' && !isPlatformMode ? selfHostedComputer : answers.runsOn;
   return [t(`setup.answers.tag.${models}`), t(`setup.answers.tag.${runsOn}`)];
 }
 
@@ -32,10 +35,11 @@ function answerTags(t: (key: string) => string, answers: SetupAnswers): [string,
 export function AnswersStrip({ answers }: { answers: SetupAnswers }) {
   const { t } = useTranslation();
   const change = useChangeAnswers();
+  const { inDesktopApp } = useInDesktopApp();
   return (
     <div data-testid="setup-answers" className="shell-box mb-6 flex flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2.5 sm:mb-8">
       <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('setup.answers.fromYourAnswers')}</span>
-      {answerTags(t, answers).map((tag) => (
+      {answerTags(t, answers, inDesktopApp).map((tag) => (
         <span
           key={tag}
           className="rounded-full px-2 py-0.5 text-xs"
@@ -67,54 +71,78 @@ export function StepKicker({ children }: { children: ReactNode }) {
 
 /** One answer of a few, as a card: what it is, then a check at its end. The
  *  picked card is inked (its border and a filled check), the others an
- *  empty ring at the radio's size. Native radios underneath (`RadioChoice`). */
-export function PickCard<V extends string>({ name, value, checked, onSelect, children }: {
+ *  empty ring at the radio's size. Native radios underneath (`RadioChoice`).
+ *  The box holds the label and, under it, the answer's own controls
+ *  (`panel`), which a label must not wrap. */
+export function PickCard<V extends string>({ name, value, checked, onSelect, disabled, panel, children }: {
   name: string;
   value: V;
   checked: boolean;
   onSelect: (value: V) => void;
+  /** Offered but refused: it stays in the list, where the card says why. */
+  disabled?: boolean;
+  /** Under the label, inside the box: an open answer's settings, or why it is refused. */
+  panel?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <RadioChoice
-      name={name}
-      value={value}
-      checked={checked}
-      onSelect={onSelect}
-      size="md"
-      markClassName="hidden"
-      className="shell-box items-center gap-3 px-4 py-3.5"
-      style={checked ? { borderColor: 'var(--color-text-primary)' } : undefined}
-    >
-      {children}
-      <span
-        aria-hidden="true"
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
-        style={checked
-          ? { backgroundColor: 'var(--color-btn-primary-bg)', borderColor: 'var(--color-btn-primary-bg)' }
-          : { borderColor: 'var(--color-text-quaternary)' }}
+    <div className="shell-box" style={checked ? { borderColor: 'var(--color-text-primary)' } : undefined}>
+      <RadioChoice
+        name={name}
+        value={value}
+        checked={checked}
+        onSelect={onSelect}
+        disabled={disabled}
+        size="md"
+        markClassName="hidden"
+        className="group items-center gap-3 rounded-[var(--cs-radius-box,0.5rem)] px-4 py-3.5"
       >
-        {checked && <Check className="h-2.5 w-2.5" strokeWidth={3.5} style={{ color: 'var(--color-btn-primary-text)' }} />}
-      </span>
-    </RadioChoice>
+        {children}
+        <span
+          aria-hidden="true"
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
+          style={checked
+            ? { backgroundColor: 'var(--color-btn-primary-bg)', borderColor: 'var(--color-btn-primary-bg)' }
+            : { borderColor: 'var(--color-text-quaternary)' }}
+        >
+          {checked && <Check className="h-2.5 w-2.5" strokeWidth={3.5} style={{ color: 'var(--color-btn-primary-text)' }} />}
+        </span>
+      </RadioChoice>
+      {panel}
+    </div>
   );
 }
 
-/** One answer to one of the two questions: its mark, its name over a line
- *  saying what it means, and the check. */
-export function AnswerOption<V extends string>({ name, value, checked, onSelect, mark, title, detail }: {
+/** The tile an answer's mark sits on, one size for every mark so the titles line up. */
+export function AnswerTile({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="grid h-10 w-10 place-items-center overflow-hidden rounded-lg border [&>svg]:h-[18px] [&>svg]:w-[18px]"
+      style={{ borderColor: 'var(--color-border-default)', color: 'var(--color-text-secondary)' }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** One answer to a setup question: its mark, its name over a line saying
+ *  what it means, and the check. */
+export function AnswerOption<V extends string>({ name, value, checked, onSelect, disabled, panel, mark, title, detail }: {
   name: string;
   value: V;
   checked: boolean;
   onSelect: (value: V) => void;
+  disabled?: boolean;
+  panel?: ReactNode;
+  /** An `AnswerTile`, or something drawn in the same 40px. */
   mark: ReactNode;
   title: string;
-  detail: string;
+  detail: ReactNode;
 }) {
   return (
-    <PickCard name={name} value={value} checked={checked} onSelect={onSelect}>
-      <span className="flex min-w-0 flex-1 items-center gap-3">
-        <span className="flex w-6 shrink-0 justify-center" style={{ color: 'var(--color-text-secondary)' }}>{mark}</span>
+    <PickCard name={name} value={value} checked={checked} onSelect={onSelect} disabled={disabled} panel={panel}>
+      <span className="flex min-w-0 flex-1 items-center gap-3.5">
+        <span className="flex shrink-0">{mark}</span>
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{title}</span>
           <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>

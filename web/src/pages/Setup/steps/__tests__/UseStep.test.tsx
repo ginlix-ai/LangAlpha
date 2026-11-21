@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   claudeCodeLoading: false,
   computers: [] as object[],
   choice: null as null | string,
+  desktopApp: false,
   userId: 'a',
   providersFailed: false,
   refetchProviders: vi.fn(),
@@ -48,7 +49,12 @@ vi.mock('@/hooks/useOnboardingProgress', () => ({
   useOnboardingProgress: () => ({ progress: h.progress, isLoading: false, update: h.update, isUpdating: false }),
 }));
 
+vi.mock('@/hooks/useServerSetup', () => ({
+  useInDesktopApp: () => ({ inDesktopApp: h.desktopApp, isLoading: false }),
+}));
+
 import UseStep from '../UseStep';
+import { DESKTOP_DOWNLOAD_URL, HOSTED_OR_SELF_HOSTED_URL } from '@/config/supportLinks';
 
 function renderStep() {
   render(
@@ -72,6 +78,7 @@ describe('UseStep', () => {
     h.claudeCodeLoading = false;
     h.computers = [];
     h.choice = null;
+    h.desktopApp = false;
     h.userId = 'a';
     h.providersFailed = false;
     h.refetchProviders = vi.fn();
@@ -103,6 +110,21 @@ describe('UseStep', () => {
     renderStep();
     expect(screen.getByRole('radio', { name: /On a computer this server runs/ })).toBeChecked();
     expect(screen.queryByText(HOME_STAYS)).toBeNull();
+  });
+
+  it('in the desktop app, says the work stops with this computer and offers the hosted edition', () => {
+    h.desktopApp = true;
+    renderStep();
+    expect(screen.getByRole('radio', { name: /On this computer/ })).toBeChecked();
+    expect(screen.queryByText(/Keeps working when your computer is off/)).toBeNull();
+    expect(screen.getByRole('link', { name: /Get the LangAlpha.ai app/ })).toHaveAttribute('href', DESKTOP_DOWNLOAD_URL);
+    expect(screen.getByRole('link', { name: /Hosted or self-hosted/ })).toHaveAttribute('href', HOSTED_OR_SELF_HOSTED_URL);
+  });
+
+  it('on a self-hosted server, keeps the answer that it runs while your computer is off, with no pitch', () => {
+    renderStep();
+    expect(screen.getByRole('radio', { name: /On a computer this server runs/ })).toBeChecked();
+    expect(screen.queryByRole('link', { name: /Get the LangAlpha.ai app/ })).toBeNull();
   });
 
   it('says nothing where Home is on a cloud computer or none', () => {

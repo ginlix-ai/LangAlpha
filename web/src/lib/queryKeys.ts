@@ -179,6 +179,11 @@ export const queryKeys = {
     // The browsers on a machine of the person's own, read from the machine.
     signinSources: (computerId: string) => [...queryKeys.computers.all, 'signin-sources', computerId],
   },
+  // What a self-hosted server has been set up with; hosted servers have none.
+  setup: {
+    all:    ['setup'],
+    status: () => [...queryKeys.setup.all, 'status'],
+  },
   // A pairing is minted by a POST and then polled; the mint is cached so a
   // render never mints twice, and each token's status keys apart from it.
   // Not under `computers`: it is no machine yet, and refreshing the machines

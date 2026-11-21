@@ -13,6 +13,7 @@ import {
   PieChart,
   Plug,
   Server,
+  ServerCog,
   SlidersHorizontal,
 } from 'lucide-react';
 import { isPlatformMode } from '@/config/hostMode';
@@ -28,6 +29,8 @@ interface SectionMeta {
   platformOnly?: boolean;
   /** Settings the desktop shell keeps, so drawn only in a shell that can read and write them. */
   desktopOnly?: boolean;
+  /** What a hosted server's operator decides, so only a self-hosted build shows it. */
+  selfHostedOnly?: boolean;
 }
 
 /**
@@ -49,6 +52,7 @@ export const SECTIONS = {
   // The glyph the workspace gallery's computer menu names them by.
   computers: { labelKey: 'settings.section.computers', descKey: 'settings.definition.computers', icon: Server },
   model: { labelKey: 'settings.section.model', descKey: 'settings.definition.model', icon: Cpu },
+  server: { labelKey: 'settings.section.server', descKey: 'settings.definition.server', icon: ServerCog, selfHostedOnly: true },
   integrations: { labelKey: 'settings.section.integrations', descKey: 'settings.definition.integrations', icon: Plug, platformOnly: true },
   trading: { labelKey: 'settings.section.trading', descKey: 'settings.definition.trading', icon: CandlestickChart },
   experiments: { labelKey: 'settings.section.experiments', descKey: 'settings.definition.experiments', icon: FlaskConical },
@@ -60,13 +64,13 @@ export type Section = keyof typeof SECTIONS;
 export function sectionShown(section: Section): boolean {
   const meta: SectionMeta = SECTIONS[section];
   if (meta.desktopOnly && !canDesktopSettings()) return false;
-  return isPlatformMode || !meta.platformOnly;
+  return isPlatformMode ? !meta.selfHostedOnly : !meta.platformOnly;
 }
 
 export const GROUPS: readonly { labelKey: string; sections: readonly Section[] }[] = [
   { labelKey: 'settings.group.account', sections: ['account', 'preferences', 'plan'] },
   { labelKey: 'settings.group.app', sections: ['general', 'appearance', 'chat', 'artifacts', 'desktop'] },
-  { labelKey: 'settings.group.agent', sections: ['agent', 'computers', 'model', 'integrations', 'trading'] },
+  { labelKey: 'settings.group.agent', sections: ['agent', 'computers', 'model', 'server', 'integrations', 'trading'] },
   { labelKey: 'settings.group.labs', sections: ['experiments'] },
 ];
 
@@ -167,6 +171,9 @@ export const SETTINGS = {
   accountDefaults: { section: 'model', anchor: 'account-defaults', labelKey: 'settings.modelTuning.sectionDefaults', advanced: true },
   perModel: { section: 'model', anchor: 'per-model', labelKey: 'settings.modelTuning.perModel', descKey: 'settings.modelTuning.perModelDesc', advanced: true },
   routing: { section: 'model', anchor: 'routing', labelKey: 'settings.modelTuning.sectionRouting', descKey: 'settings.fallbackModels', advanced: true },
+  agentLocation: { section: 'server', anchor: 'agent-location', labelKey: 'settings.server.location', descKey: 'settings.server.locationDesc' },
+  marketDataKeys: { section: 'server', anchor: 'market-data', labelKey: 'setup.services.marketData', descKey: 'settings.server.marketDataDesc' },
+  webSearchKeys: { section: 'server', anchor: 'web-search', labelKey: 'setup.services.webSearch', descKey: 'settings.server.webSearchDesc' },
   chatApps: { section: 'integrations', anchor: 'chat-apps', labelKey: 'settings.integrations.chatApps', descKey: 'settings.integrations.chatAppsDesc' },
   connectedApps: { section: 'integrations', anchor: 'connected-apps', labelKey: 'settings.integrations.connectedApps', descKey: 'settings.integrations.connectedAppsDesc' },
   tradingPermission: { section: 'trading', anchor: TRADING_PERMISSION_ANCHOR, labelKey: 'settings.tradingPermission.title', descKey: 'settings.tradingPermission.desc' },

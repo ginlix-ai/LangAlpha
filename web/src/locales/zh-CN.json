@@ -606,7 +606,15 @@
       "agent": "Agent",
       "labs": "实验室"
     },
+    "server": {
+      "location": "Agent 运行位置",
+      "locationDesc": "更改只对新电脑生效，现有的电脑保持不变。",
+      "marketDataDesc": "Yahoo Finance 无需密钥，添加密钥可获得更多数据。",
+      "webSearchDesc": "Agent 使用这里选择的提供商搜索。",
+      "keysReach": "保存的密钥在这台服务器上立即生效，但已有的 Docker 和云端电脑仍使用创建时的密钥，运行在本机的电脑则在下次启动时更新。"
+    },
     "section": {
+      "server": "服务器",
       "account": "个人资料",
       "preferences": "投资画像",
       "plan": "套餐与用量",
@@ -623,6 +631,7 @@
       "experiments": "实验功能"
     },
     "definition": {
+      "server": "Agent 的运行位置，以及这台服务器保存的服务商密钥。",
       "account": "你的姓名、头像和登录。",
       "preferences": "你告诉 Agent 的投资方式，让它的研究更贴合你。",
       "plan": "你的套餐、积分和账单，在 LangAlpha 账户中管理。",
@@ -1717,6 +1726,8 @@
       "dockerDesc": "在本机运行",
       "sshDesc": "任何 Linux 服务器或 Mac",
       "sshLabel": "你的机器 (SSH)",
+      "localLabel": "这台电脑",
+      "localDesc": "Agent 以你的账户在本机直接运行，没有隔离",
       "capReached": "已达上限"
     },
     "largerSlot": {
@@ -4687,6 +4698,75 @@
     }
   },
   "setup": {
+    "computer": {
+      "title": "Agent 在哪里运行？",
+      "localTitle": "这台电脑",
+      "localDesc": "无需 Docker 或云账号。Agent 以你的身份在本机运行，可以读取和修改你的文件。",
+      "localWarning": "没有隔离：Agent 运行的程序拥有和你一样的权限。",
+      "installTitle": "要安装的内容",
+      "installHelp": "Agent 首次在这里启动时安装到本机。",
+      "groupSize": "下载 {{download}}，占用磁盘 {{disk}}",
+      "installTotal": "按当前选择：下载 {{download}}，占用磁盘 {{disk}}。",
+      "required": "必需",
+      "groupCore": "核心",
+      "groupCoreDesc": "Python 以及 Agent 必备的数据处理库。",
+      "groupBrowsing": "浏览",
+      "groupBrowsingDesc": "读取网页、抓取内容和视频字幕。",
+      "groupDocuments": "文档",
+      "groupDocumentsDesc": "读写 Word、PowerPoint、Excel 和 PDF 文件。",
+      "groupChromium": "Chromium",
+      "groupChromiumDesc": "Agent 专用的浏览器。不装的话，Agent 会使用本机已有的 Chrome、Chromium、Edge 或 Brave。",
+      "dockerTitle": "Docker",
+      "dockerDesc": "在本机的容器中隔离运行。",
+      "dockerFound": "Docker 正在运行。",
+      "dockerMissing": "本机的 Docker 没有响应。请安装或启动 Docker，然后重新检查。",
+      "dockerStillDown": "Docker 仍然没有响应。请安装或启动 Docker，然后重新检查。",
+      "dockerCheck": "重新检查",
+      "dockerInstall": "安装 Docker",
+      "dockerNotOffered": "此处不提供：这个系统上的容器无法连接到应用的服务器。请选择其他选项。",
+      "cloudTitle": "云端虚拟机",
+      "cloudDesc": "在 Daytona 或 E2B 上隔离运行，使用你自己的密钥。文件存放在该服务商那里。",
+      "cloudReach": "这台服务器没有公网地址时，文件挂载、连接器和 la CLI 都无法使用。",
+      "cloudVendor": "云服务商",
+      "cloudKey": "{{vendor}} API 密钥",
+      "cloudKeyMissing": "请添加 {{vendor}} API 密钥，或选择其他方式。",
+      "environment": "已在服务器上设置为 {{provider}}，如需更改请到服务器上修改。"
+    },
+    "services": {
+      "marketData": "市场数据",
+      "optional": "可选",
+      "yahooTitle": "Yahoo Finance",
+      "yahooDesc": "无需密钥即可使用：行情、基本面、分析师数据和选股。",
+      "fmpDesc": "可选。补充基本面和宏观数据，有免费额度。",
+      "webSearch": "网络搜索",
+      "searchProvider": "提供商",
+      "searchNone": "暂时跳过",
+      "searchProviderHasKey": "{{provider}}（已添加密钥）",
+      "searchKey": "{{provider}} API 密钥",
+      "searchOff": "添加密钥之前，网络搜索不可用。",
+      "fetchToggle": "网页读取",
+      "fetchDesc": "内置读取器无需密钥。Firecrawl 可以代替它读取网页，还能抓取整个站点。"
+    },
+    "key": {
+      "getKey": "获取密钥",
+      "testRefused": "密钥被拒绝。",
+      "testPlan": "该密钥的套餐已用完或不包含此功能。",
+      "testRateLimited": "请求受限，暂时无法检查密钥。",
+      "testTimeout": "10 秒内没有响应。",
+      "testUnreachable": "无法连接到服务商。",
+      "testUnusable": "这不是有效的密钥。",
+      "testNone": "这个密钥无法测试。",
+      "testStatus": "服务商返回状态码 {{status}}。",
+      "environment": "已在服务器上设置，这里只能查看。",
+      "replace": "更换",
+      "remove": "移除"
+    },
+    "errors": {
+      "noEncryptionKey": "保存前需要在服务器上设置 BYOK_ENCRYPTION_KEY。",
+      "saveFailed": "保存失败，请重试。",
+      "statusFailed": "无法读取这台服务器的设置状态。",
+      "tryAgain": "重试"
+    },
     "capabilities": "能力",
     "brandedHeader": "配置你的 LLM 提供商",
     "securityNote": "你的 API 密钥已加密且不会被共享",
@@ -4839,10 +4919,12 @@
         "serverModels": "此服务器提供的模型",
         "cloud": "云端计算机",
         "serverComputer": "此服务器运行的计算机",
+        "thisComputer": "这台电脑",
         "own_computer": "你的计算机"
       },
       "rail": {
         "use": "你的用途",
+        "server": "服务器",
         "computer": "计算机",
         "model": "模型",
         "default": "默认模型"
@@ -4855,11 +4937,17 @@
         "claudeCodeDesc": "Pro 或 Max。Claude Code 用你的套餐运行，并使用 LangAlpha 的工具。",
         "subscription": "其他订阅或 API key",
         "subscriptionDesc": "ChatGPT、Grok、编程套餐，或任意服务商的 API key。",
+        "anyKey": "+ 任意 API key",
         "serverModels": "此服务器提供的模型",
         "serverModelsDesc": "由你的管理员配置的模型。",
         "whereLabel": "你的任务在哪里运行？",
         "serverComputer": "在此服务器运行的计算机上",
         "serverComputerDesc": "你的电脑关机时也能继续工作。",
+        "thisComputer": "在这台电脑上",
+        "thisComputerDesc": "这台电脑开机且 LangAlpha 打开时运行。",
+        "hostedPitch": "需要在电脑关机时也继续工作？LangAlpha.ai 在云端运行，无需任何设置。",
+        "hostedApp": "获取 LangAlpha.ai 应用",
+        "hostedCompare": "托管还是自托管？",
         "homeStays": "Home 会留在这台 Mac 上。可在设置中迁移。",
         "own": "在你自己的计算机上",
         "ownDesc": "你的 Mac，或任意可通过 SSH 连接的 Mac 或 Linux 计算机。",
@@ -5021,6 +5109,11 @@
       "note": "无论选哪种，浏览器标签页和这个应用都会显示相同的进度。",
       "inBrowser": "我在浏览器中完成",
       "here": "在这里继续"
+    },
+    "server": {
+      "title": "设置这台服务器",
+      "helper": "Agent 代码在哪里运行，以及工具要用的服务。整台服务器只需设置一次，之后可以在设置里更改。",
+      "helperKeys": "工具要用的服务。整台服务器只需设置一次，之后可以在设置里更改。"
     }
   },
   "marketView": {

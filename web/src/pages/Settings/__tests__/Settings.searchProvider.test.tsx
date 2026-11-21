@@ -124,6 +124,10 @@ vi.mock('@/hooks/useAllModels', () => ({
     isLoading: false,
   }),
 }));
+// The search provider control reads the catalog from the models read itself.
+vi.mock('@/hooks/useModels', () => ({
+  useModels: () => ({ models: h.searchProviderCatalog ? { search_providers: h.searchProviderCatalog } : null }),
+}));
 
 // Toast.
 vi.mock('@/components/ui/use-toast', () => ({

@@ -7,10 +7,12 @@ import {
   previousSetupStep,
   readAnswers,
   setupRail,
+  stepRecord,
   type SetupFacts,
 } from '../setupSteps';
 
 const facts = (over: Partial<SetupFacts> & { answers: SetupFacts['answers'] }): SetupFacts => ({
+  server: null,
   ownComputer: false,
   homeOnCloud: false,
   claudeCodeToken: false,
@@ -29,10 +31,10 @@ describe('readAnswers', () => {
 
 describe('setupRail', () => {
   it('runs only the steps the answers need', () => {
-    expect(setupRail({ models: 'claude_code', runsOn: 'cloud' })).toEqual(['model', 'default']);
-    expect(setupRail({ models: 'langalpha_models', runsOn: 'cloud' })).toEqual(['default']);
-    expect(setupRail({ models: 'subscription_or_key', runsOn: 'own_computer' })).toEqual(['computer', 'model', 'default']);
-    expect(setupRail({ models: 'langalpha_models', runsOn: 'own_computer' })).toEqual(['computer', 'default']);
+    expect(setupRail({ models: 'claude_code', runsOn: 'cloud' }, null)).toEqual(['model', 'default']);
+    expect(setupRail({ models: 'langalpha_models', runsOn: 'cloud' }, null)).toEqual(['default']);
+    expect(setupRail({ models: 'subscription_or_key', runsOn: 'own_computer' }, null)).toEqual(['computer', 'model', 'default']);
+    expect(setupRail({ models: 'langalpha_models', runsOn: 'own_computer' }, null)).toEqual(['computer', 'default']);
   });
 });
 
@@ -78,5 +80,28 @@ describe('moving along the rail', () => {
     expect(previousSetupStep(rail, 'default')).toBe('model');
     expect(followingSetupStep(rail, 'computer')).toBe('model');
     expect(followingSetupStep(rail, 'default')).toBeNull();
+  });
+});
+
+describe("the server's own step", () => {
+  const answers = { models: 'langalpha_models', runsOn: 'cloud' } as const;
+
+  it('comes first while the server owes it, and stays on the rail once answered', () => {
+    expect(setupRail(answers, 'owed')).toEqual(['server', 'default']);
+    expect(setupRail(answers, 'done')).toEqual(['server', 'default']);
+    expect(setupRail(answers, null)).toEqual(['default']);
+  });
+
+  it('is where setup resumes until the server says it was answered', () => {
+    expect(nextSetupStep(facts({ answers, server: 'owed' }))).toBe('server');
+    expect(nextSetupStep(facts({ answers, server: 'done' }))).toBe('default');
+    expect(nextSetupStep(facts({ answers, server: 'owed', lastStep: 'default' }))).toBe('done');
+    expect(nextSetupPath('server')).toBe('/setup/server');
+  });
+
+  it("writes nothing to the account's record, which keeps only the account's steps", () => {
+    expect(stepRecord('server')).toBeNull();
+    expect(stepRecord('computer')).toEqual({ setup_step: 'computer' });
+    expect(stepRecord('default')).toEqual({ setup_step: 'default', setup_completed: true });
   });
 });

@@ -36,6 +36,7 @@ vi.mock('@/pages/ChatAgent/hooks/useRemoteControl', () => ({
 }));
 vi.mock('@/pages/ChatAgent/hooks/useComputers', () => ({ useComputerProviders: () => ({ data: { providers: [] } }) }));
 vi.mock('@/pages/ChatAgent/hooks/useComputerActions', () => ({ useComputerActions: () => ({ makePrimary: { mutate: h.makePrimary, isPending: false, error: null } }) }));
+vi.mock('@/hooks/useServerSetup', () => ({ useInDesktopApp: () => ({ inDesktopApp: false, isLoading: false }) }));
 vi.mock('@/pages/ChatAgent/hooks/useHomePlacement', () => ({ useHomePlacement: () => ({ data: undefined }) }));
 vi.mock('@/pages/ChatAgent/components/MakePrimaryDialog', () => ({
   default: ({ computer, onConfirm }: { computer: { name: string }; onConfirm: (c: object) => void }) => (

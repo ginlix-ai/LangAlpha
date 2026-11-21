@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
 import { useLocation, useSearchParams } from 'react-router';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { useUser } from '@/hooks/useUser';
@@ -26,6 +26,9 @@ import { useCloseComputersOnLeave } from '@/pages/ChatAgent/hooks/computerPanelS
 import { readSection, SECTIONS, type Section } from './sections';
 import '@/styles/pageRail.css';
 import './Settings.css';
+
+// A self-hosted server's own settings, which a hosted build never opens.
+const ServerPanel = lazy(() => import('./panels/ServerPanel'));
 
 /** A section's rows while the account is read on a cold load: a name and a
  *  line under it on the left, the control on the right, as the rows lay theirs
@@ -61,6 +64,7 @@ function SectionBody({ section }: { section: Section }) {
     case 'agent': return <AgentPanel />;
     case 'computers': return <ComputersPanel />;
     case 'model': return <ModelsPanel />;
+    case 'server': return <Suspense fallback={<SettingsSkeleton />}><ServerPanel /></Suspense>;
     case 'integrations': return <IntegrationsPanel />;
     case 'trading': return <TradingPermissionSection />;
     case 'experiments': return <ExperimentsPanel />;

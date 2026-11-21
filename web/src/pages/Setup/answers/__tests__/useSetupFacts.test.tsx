@@ -25,6 +25,8 @@ const h = vi.hoisted(() => ({
   statusUnread: false,
   progressFailed: false,
   policy: null as null | object,
+  // The server's own setup status, read on self-hosted only.
+  deployment: { completed: true, needs_setup: false } as object,
 }));
 vi.mock('@/config/hostMode', () => ({
   get isPlatformMode() { return h.platform; },
@@ -57,6 +59,11 @@ vi.mock('@/hooks/useAccount', () => ({ useAccount: () => ({ policy: h.policy }) 
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   SERVER_KEY: '(server)',
   useConfiguredProviders: () => ({ providers: h.providers, byokEnabled: h.byok, isLoading: false, unread: h.providersUnread }),
+}));
+
+// The status query is off on a hosted build, so it holds nothing there.
+vi.mock('@/hooks/useServerSetup', () => ({
+  useSetupStatus: () => ({ data: h.platform ? undefined : h.deployment, isLoading: false }),
 }));
 
 import { useSetupFacts } from '../useSetupFacts';

@@ -13,7 +13,7 @@ import { authSessionCheck } from '@/lib/authResets';
 import { isDesktopShell, openConsolePage } from '@/lib/desktop';
 import { FROM_SETUP, WELCOME_PATH } from '@/pages/Onboarding/welcome/paths';
 import { useOnboardingProgress } from '@/hooks/useOnboardingProgress';
-import { SETUP_STEP_PATHS, followingSetupStep, previousSetupStep, type SetupStep } from './setupSteps';
+import { SETUP_STEP_PATHS, followingSetupStep, previousSetupStep, stepRecord, type SetupStep } from './setupSteps';
 import { useSetupFacts } from './useSetupFacts';
 
 export function useAnswerFlow(step: SetupStep) {
@@ -46,9 +46,10 @@ export function useAnswerFlow(step: SetupStep) {
   // A refusal leaves the user on the step, which says so (`finishFailed`).
   const finish = async (): Promise<boolean> => {
     const last = step === 'default';
+    const record = stepRecord(step);
     setFailed(false);
     try {
-      await update(last ? { setup_step: 'default', setup_completed: true } : { setup_step: step });
+      if (record) await update(record);
     } catch {
       setFailed(true);
       return false;
