@@ -13,20 +13,32 @@ independently, so conversion is applied exactly once per path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
+import math
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.data_client.base import IntervalNotSupported
 from src.data_client.normalize import (
     build_series,
+    change_from,
     minor_unit_places,
     scale_price,
     scale_snapshot_prices,
     symbol_timezone,
 )
-from market_protocol import InstrumentRef, Series, vendor_spelling
+from src.utils.cache.redis_cache import get_cache_client
+from market_protocol import (
+    InstrumentRef,
+    Series,
+    has_home_venue,
+    to_canonical,
+    vendor_spelling,
+)
+from market_protocol.calendars import get_calendar
+from market_protocol.enums import AssetClass
 
 from .fmp_client import FMPClient
 
@@ -66,6 +78,113 @@ def normalize_series(rows: list[dict[str, Any]], *, ref: InstrumentRef, schema: 
         rows, ref=ref, schema=schema, publisher="fmp",
         ts_of=lambda row: _parse_row_time(row, tz),
     )
+
+
+# Feeds round one close differently (40194.9 in a quote, 40194.91 in history).
+_SAME_CLOSE = 1e-5
+# A stale previousClose has been seen naming the close two sessions back; it is
+# matched against the two daily closes before the last session's.
+_STALE_DEPTH = 2
+# Daily history read before a session: longer than any market holiday.
+_PRIOR_DAYS = 21
+# The closes before a session do not change, but FMP may publish the last one
+# late, so a read is reused only briefly.
+_PRIOR_TTL = 600
+# History reads one index batch keeps in flight.
+_HISTORY_READS = 8
+
+
+def _positive(value: Any) -> float | None:
+    """*value* as a usable price: a finite number above zero, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and value > 0 else None
+
+
+def _same(a: float, b: float) -> bool:
+    return math.isclose(a, b, rel_tol=_SAME_CLOSE)
+
+
+def settled_previous_close(
+    stated: float | None, prior: date, closes: dict[date, float],
+) -> float | None:
+    """A replacement for a quote's previous close, or None to keep *stated*.
+
+    *prior* is the session before the quote's on its venue calendar and
+    *closes* FMP's daily closes by date. FMP's field can name the close of two
+    sessions back; one equal to a close before *prior*'s is replaced by
+    *prior*'s. Any other field stands: a daily bar is not every venue's official
+    close (FMP's DAX bar is a late-evening level, its quote the Xetra close), so
+    a field matching no bar is taken as the official one. Until *prior*'s bar is
+    published there is nothing to replace it with.
+    """
+    last = closes.get(prior)
+    if last is None:
+        return None
+    if stated is None:
+        return last
+    earlier = [closes[d] for d in sorted(closes) if d < prior][-_STALE_DEPTH:]
+    if _same(stated, last) or not any(_same(stated, c) for c in earlier):
+        return None
+    return last
+
+
+async def _daily_closes(client: FMPClient, symbol: str, session: date) -> dict[date, float]:
+    """FMP's daily closes for the weeks before *session*, cached per session."""
+    cache = get_cache_client()
+    key = f"fmp:prior_closes:{symbol}:{session.isoformat()}"
+    by_day = await cache.get(key)
+    if not isinstance(by_day, dict):
+        rows = await client.get_eod_closes(
+            symbol,
+            (session - timedelta(days=_PRIOR_DAYS)).isoformat(),
+            (session - timedelta(days=1)).isoformat(),
+        )
+        by_day = {
+            str(row.get("date"))[:10]: close
+            for row in (rows if isinstance(rows, list) else [])
+            if (close := _positive(row.get("price"))) is not None
+        }
+        await cache.set(key, by_day, ttl=_PRIOR_TTL)
+    return {date.fromisoformat(day): close for day, close in by_day.items()}
+
+
+async def _check_previous_close(
+    client: FMPClient, quote: dict[str, Any], reads: asyncio.Semaphore,
+) -> dict[str, Any]:
+    """*quote* with its previous close checked against FMP's daily closes.
+
+    The quote's session is the trading date of its ``timestamp``, the last
+    print, on its venue's calendar: never the UTC date, since Sydney's Friday
+    starts on Thursday there. A quote on a venue the symbology does not know,
+    or one that cannot be dated or checked, stays as FMP served it.
+    """
+    symbol = str(quote.get("symbol") or "")
+    price, printed = _positive(quote.get("price")), _print_time_ms(quote.get("timestamp"))
+    try:
+        ref = to_canonical(symbol, asset_class=AssetClass.INDEX)
+    except ValueError:
+        return quote
+    if price is None or printed is None or not has_home_venue(ref):
+        return quote
+    try:
+        cal = get_calendar(ref.calendar_id)
+        session = cal.latest_trading_date(datetime.fromtimestamp(printed / 1000, timezone.utc))
+        prior = cal.previous_session(session)
+        async with reads:
+            closes = await _daily_closes(client, symbol, session)
+    except Exception:  # noqa: BLE001 - the served quote beats no quote
+        logger.warning("fmp.previous_close.unchecked | symbol=%s", symbol, exc_info=True)
+        return quote
+    prev = settled_previous_close(_positive(quote.get("previousClose")), prior, closes)
+    if prev is None:
+        return quote
+    change, change_pct = change_from(price, prev)
+    logger.info(
+        "fmp.previous_close.settled | symbol=%s session=%s served=%s settled=%s",
+        symbol, session, quote.get("previousClose"), prev,
+    )
+    return {**quote, "previousClose": prev, "change": change, "changePercentage": change_pct}
 
 
 class FMPDataSource:
@@ -178,8 +297,13 @@ class FMPDataSource:
                 raise refused
             return []
         async with FMPClient() as client:
-            quotes = await client.get_batch_quotes(api_symbols)
-        return [self._normalize_quote(q, asset_type) for q in (quotes or [])]
+            quotes = await client.get_batch_quotes(api_symbols) or []
+            if asset_type == "indices":
+                # FMP's previousClose for an index can be the close of two
+                # sessions back, so a two-day move reads as one day's.
+                reads = asyncio.Semaphore(_HISTORY_READS)
+                quotes = await asyncio.gather(*(_check_previous_close(client, q, reads) for q in quotes))
+        return [self._normalize_quote(q, asset_type) for q in quotes]
 
     async def get_market_status(
         self,
