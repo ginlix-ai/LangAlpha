@@ -15,6 +15,7 @@ from src.server.services.runs.cancel import TurnCancelListener
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.turn_runtime import TurnRoute
 from src.server.services.shared_workspaces.turn import TurnIdentity
+from src.server.handlers.chat.request_prep import PriorThread
 from tests.unit.server.handlers.test_ptc_run_workspace_status import (
     _make_config,
     _make_request,
@@ -73,7 +74,7 @@ async def _turn(wm, signal, *, settled=None, gave_back=None, closing=None, held=
     manager = LocalRunExecutor.get_instance()
     with (
         patch(f"{PTC}.setup") as mock_setup,
-        patch(f"{PTC}.ensure_thread", new_callable=AsyncMock),
+        patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=PriorThread())),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}.begin_run", side_effect=_begin),
         patch(f"{PTC}.wait_or_steer", new_callable=AsyncMock, return_value=(True, None)),

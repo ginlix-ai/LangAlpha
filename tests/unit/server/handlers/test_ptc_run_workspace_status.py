@@ -27,6 +27,7 @@ from src.server.services.turn_runtime import TurnRoute
 from src.server.services.report_back.handoff.carry import PriorAttempt
 
 from src.server.services.shared_workspaces.turn import TurnIdentity
+from src.server.handlers.chat.request_prep import PriorThread
 
 PTC = "src.server.handlers.chat.ptc_run"
 
@@ -138,7 +139,7 @@ async def _run_to_sentinel(
     with (
         patch(f"{PTC}.setup") as mock_setup,
         patch(f"{PTC}.carry.prior_attempt", new=AsyncMock(return_value=PriorAttempt(latest=None, retried=None))),
-        patch(f"{PTC}.ensure_thread", new_callable=AsyncMock),
+        patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=PriorThread())),
         patch(
             f"{PTC}._resolve_fork",
             return_value=("Q", None),

@@ -23,6 +23,7 @@ import pytest
 from src.server.database.shared_workspaces import HolderNotAPerson, is_holder
 from src.server.services.shared_workspaces.access import Seat
 from src.server.services.turn_runtime import TurnRoute
+from src.server.handlers.chat.request_prep import PriorThread
 from tests.unit.server.handlers.conftest import spend  # noqa: F401
 
 SENDER = "user-a"
@@ -193,7 +194,7 @@ def _turn_patches(stack: ExitStack, seen: _Seen) -> dict:
     wm.get_session_for_workspace.side_effect = _session
     stack.enter_context(patch(f"{PTC}.setup")).agent_config = MagicMock()
     stack.enter_context(patch(f"{PTC}.WorkspaceManager")).get_instance.return_value = wm
-    stack.enter_context(patch(f"{PTC}.ensure_thread", new=AsyncMock()))
+    stack.enter_context(patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=PriorThread())))
     for name in ("keep_named_model", "turn_start_checkpoint_id", "open_with_steers_ahead"):
         stack.enter_context(patch(f"{PTC}.{name}", new=AsyncMock(return_value=None)))
     for name in ("apply_fetch_override", "_fire_and_forget", "update_workspace_activity", "RunSSEProducer"):

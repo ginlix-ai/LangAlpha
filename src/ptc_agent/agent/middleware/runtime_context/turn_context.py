@@ -48,6 +48,17 @@ class HomeAway:
 
 
 @dataclass(frozen=True, slots=True)
+class ForkNotice:
+    """A forked thread's first turn: the history before it was copied from
+    another thread, whose live work stays there."""
+
+    #: Finished subagent tasks came with the copy, resumable by their ids.
+    tasks_copied: bool
+    #: The source's scratchpad files were copied into this thread's folder.
+    scratchpad_copied: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TurnContext:
     """Per-turn runtime context for the turn anchor row, and the previous
     run's settle time for compaction's cache clock. Every field is optional.
@@ -97,6 +108,9 @@ class TurnContext:
     # ``files``), or ``pending`` while it is still owed. Stated only after a
     # row that said Home was away.
     home_back: dict[str, Any] | None = None
+    # On a forked thread's first turn (``services.forks``), what the fork
+    # carried. None on every other turn.
+    forked: ForkNotice | None = None
     # The zone the profile or the request names. The stamp, the identity block
     # and a subagent's row state it, so "9am tomorrow" means the same thing to
     # the model and a tool. None when neither names one: the stamp then keeps

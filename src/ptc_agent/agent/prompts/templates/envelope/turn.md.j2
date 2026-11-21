@@ -23,7 +23,9 @@
    `home_away` is set on a Home turn that runs in Home's stand-in on a cloud
    computer; `home_back` on the first Home turn back on Home's own computer
    after a row that said it was away, for the same reason, and with `settled`
-   on the first one after a row that said the copy was still running. #}
+   on the first one after a row that said the copy was still running.
+   `forked` is set on a forked thread's first turn only: the history before
+   it was copied from another thread, whose live work stays there. #}
 {% if opened %}
 {{ opened }}{% if local_tz %} ({{ local_tz }}){% endif %}
 
@@ -66,6 +68,10 @@ What turns wrote while {{ home_back.computer_name or "Home's own computer" }} wa
 {% elif home_back %}
 
 {{ home_back.computer_name or "Home's own computer" }} is back, and this turn runs in Home there as usual.{% if home_back.folder %} What turns wrote while it was away was copied into `{{ home_back.folder }}` in Home ({{ home_back.files }} file{{ "" if home_back.files == 1 else "s" }}), beside the files already there; nothing was overwritten.{% elif home_back.pending %} When this turn started, what turns wrote while it was away was still being copied into a folder of its own in Home, beside the files already there.{% endif %}
+{% endif %}
+{% if forked %}
+
+This thread was forked from another thread just before this turn; the conversation above happened there. Work those turns left running (subagent tasks, commands, wakeups, alerts) stays with the original thread and reports there; if you need its result here, run it again.{% if forked.tasks_copied %} The subagent tasks they finished were forked too: `Task(action="resume", task_id=...)` with a task id from the conversation above continues one from where it was at the fork, separately from the original thread's.{% endif %}{% if forked.scratchpad_copied %} The scratchpad files were copied into this thread's own scratchpad folder; keep working there.{% endif %}
 {% endif %}
 {% if surface_rules %}
 

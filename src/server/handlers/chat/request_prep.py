@@ -37,6 +37,7 @@ from src.server.contracts.turn_kinds import (
 )
 from src.server.database import conversation as qr_db
 from src.server.database.conversation.threads_write import remember_thread_llm_model
+from src.server.services.forks.model import ForkLineage
 from src.server.services.llm.thread_model import NamedModel
 from src.server.services.runs.pending_input import (
     PENDING_INPUT_KEY,
@@ -413,6 +414,11 @@ class PriorThread(NamedTuple):
     # stamped nothing in the checkpoint, so compaction's cold-cache estimate
     # reads this as well.
     last_run_settled_at: Optional[datetime] = None
+    # Where a fork came from, for its first turn's carry (``forks.carry``).
+    fork: Optional[ForkLineage] = None
+    # The thread's title, which a fork's first message replaces while it is
+    # still the one the fork was made with.
+    title: Optional[str] = None
 
 
 #: Attempts a notification's surface passes over. An automation's run states
@@ -489,6 +495,8 @@ async def _read_prior_thread(
             else None
         ),
         last_run_settled_at=run_settled_at(clock),
+        fork=ForkLineage.of(row.get("metadata")),
+        title=row.get("title"),
     )
 
 
