@@ -326,6 +326,24 @@ export interface Computer {
   /** A remove waiting on Home's move off it (`home_to`), or how one ended
    *  without the computer going. */
   removal?: ComputerRemoval | null;
+  /** What its browser is set to. Absent from an older server. */
+  browser?: ComputerBrowser;
+}
+
+/** How sharply the computer's live browser view is drawn. */
+export type BrowserQuality = 'light' | 'standard' | 'sharp' | 'retina';
+
+/** What a computer's browser is set to, as its machine is handed it. */
+export interface ComputerBrowser {
+  /** Null follows the computer's size. */
+  quality: BrowserQuality | null;
+  /** Sites stay signed in between the browser's starts; never on a computer
+   *  holding shared workspaces. */
+  signins: boolean;
+  /** It also shows as a window on the Mac's screen. */
+  window: boolean;
+  /** The computer can show one: a Mac under remote control. */
+  window_available: boolean;
 }
 
 /** Why the server did not carry out what its owner asked of a computer, in its own sentence. */

@@ -1,6 +1,6 @@
 export type BrowserPhase =
   | 'checking' | 'starting' | 'connecting' | 'live' | 'reconnecting'
-  | 'idle' | 'low_memory' | 'stopped' | 'outdated' | 'unavailable' | 'failed';
+  | 'idle' | 'low_memory' | 'stopped' | 'outdated' | 'no_chrome' | 'installing' | 'unavailable' | 'failed';
 
 /** On the way to an answer: nothing to act on yet, and the view says it is working. */
 export function isTransient(phase: BrowserPhase): boolean {

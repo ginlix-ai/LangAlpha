@@ -310,7 +310,7 @@ function BrowserNotice({ view, phase }: { view: BrowserViewSession; phase: Brows
       icon={card.icon}
       title={t(card.titleKey)}
       body={card.bodyKey && t(card.bodyKey)}
-      action={action && { label: t(action.labelKey), run: action.run === 'open' ? () => view.open() : () => view.retry() }}
+      action={action && { label: t(action.labelKey), run: { open: () => view.open(), retry: () => view.retry(), chrome: () => view.getChrome() }[action.run] }}
     />
   );
 }

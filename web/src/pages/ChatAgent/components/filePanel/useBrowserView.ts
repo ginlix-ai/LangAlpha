@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { isPageUnseen, onPageUnseenChange } from '@/lib/pageVisibility';
+import type { Computer } from '@/types/api';
+import { useThisMac } from '../../hooks/useRemoteControl';
 import { getBrowserView, navigateBrowser, setBrowserControl } from '../../utils/api';
 import { BrowserViewSession, type BrowserViewState } from './browserStream';
 
@@ -37,25 +39,32 @@ export function useBrowserViews(): BrowserViews {
  * 80 percent of a core, so a hidden page, a tab in the background or a closed panel
  * closes the socket, and coming back opens another. The person's hold on the page
  * goes with it: looking away hands it back, since a hold nobody is watching only
- * keeps the agent out.
+ * keeps the agent out. The desktop app on the Mac the workspace is on watches it
+ * there, past the server (`BrowserServer.local`).
  */
 export function useBrowserView(
   view: BrowserViewSession | null,
   workspaceId: string,
+  /** The computer the workspace is on, from the workspace, which every reader has. */
   computerId: string | null,
+  /** Its row, which only its owner is sent: what tells this Mac apart. */
+  computer: Computer | null | undefined,
   tabInFront: boolean,
 ): void {
   const pageHidden = useSyncExternalStore(onPageUnseenChange, isPageUnseen);
   const watching = tabInFront && !pageHidden && !!workspaceId;
+  const thisMac = useThisMac({ enabled: computer?.kind === 'ssh', poll: false });
+  const local = !!computer && thisMac.of(computer) !== null;
 
   useEffect(() => {
     if (!watching || !view) return;
     return view.watch({
-      ask: (start) => getBrowserView(workspaceId, start),
+      ask: (want) => getBrowserView(workspaceId, want),
       control: (holder, action, releases) => setBrowserControl(workspaceId, holder, action, releases),
       navigate: (holder, navigation) => navigateBrowser(workspaceId, holder, navigation),
+      local,
     });
-  }, [view, watching, workspaceId, computerId]);
+  }, [view, watching, workspaceId, computerId, local]);
 }
 
 export function useBrowserViewState(view: BrowserViewSession): BrowserViewState {

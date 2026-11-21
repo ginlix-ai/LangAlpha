@@ -283,10 +283,16 @@ function FilePanel({
   const { data: computer } = useComputer(wsData?.computer_id ?? null);
   const sharedWorkspace = useSharedEntry(workspaceId) != null;
   const browserHere = useBrowserHere(computer, sharedWorkspace);
-  useBrowserView(browserView, workspaceId, wsData?.computer_id ?? null, isActive && activeTab.kind === 'browser' && browserHere);
+  useBrowserView(
+    browserView,
+    workspaceId,
+    wsData?.computer_id ?? null,
+    computer,
+    isActive && activeTab.kind === 'browser' && browserHere,
+  );
   // A Browser tab kept from a computer that had one, or from before the reader
   // turned the browser off, closes once it is known there is none here.
-  const browserGone = useBrowserGone(computer);
+  const browserGone = useBrowserGone();
   const browserTabId = tabs.tabs.find((t) => t.kind === 'browser')?.id ?? null;
   const closeBrowserTab = tabs.closeTab;
   useEffect(() => {

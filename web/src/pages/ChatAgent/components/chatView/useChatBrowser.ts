@@ -6,7 +6,6 @@ import type { BrowserUse } from '../../session/stream/browserUse';
 import { toastBrowserRefusal } from '../filePanel/browserRefusal';
 import type { BrowserViewSession } from '../filePanel/browserStream';
 import type { UnsequencedTarget } from '../filePanel/types';
-import { hasBrowser } from '../../utils/computerStatus';
 import { useBrowserViews } from '../filePanel/useBrowserView';
 
 /**
@@ -53,12 +52,12 @@ export function useChatBrowser({
   viewFor: (workspaceId: string) => BrowserViewSession;
   handleBrowserUse: (use: BrowserUse) => void;
   /** Null where there is no browser to open a link in: on a phone, where the
-   *  panel would cover the chat, or on a computer without one. */
+   *  panel would cover the chat, or before the chat's computer is known. */
   openInBrowser: ((url: string) => void) | null;
 } {
   const { t } = useTranslation();
   const { viewFor, each: eachView } = useBrowserViews();
-  const browserHere = browserOn && hasBrowser(computer, shared);
+  const browserHere = browserOn && (computer != null || shared);
   const showingSibling = !!filePanelWorkspaceId && filePanelWorkspaceId !== workspaceId;
 
   // The first use in a thread brings the tab up, on the panel it opens or beside
@@ -73,13 +72,13 @@ export function useChatBrowser({
     // One Chrome serves a computer, and a sibling the panel shows may share it:
     // its view looks again, which costs one status read where it does not.
     for (const view of eachView()) if (view !== own) view.poke();
-    if (!browserOn || isMobile || showingSibling || (computer && !hasBrowser(computer))) return;
+    if (!browserOn || isMobile || showingSibling) return;
     const thread = threadId ?? '';
     if (browserSeenInThread.current === thread) return;
     browserSeenInThread.current = thread;
     if (panelOpen) askPanel({ kind: 'browser', front: false });
     else land({ kind: 'browser', front: true });
-  }, [workspaceId, viewFor, eachView, browserOn, isMobile, showingSibling, computer, threadId, panelOpen, askPanel, land]);
+  }, [workspaceId, viewFor, eachView, browserOn, isMobile, showingSibling, threadId, panelOpen, askPanel, land]);
 
   // A link the reader asked to open in the computer's browser: the panel comes
   // back to this workspace's files, whose browser it is, with the tab in front,

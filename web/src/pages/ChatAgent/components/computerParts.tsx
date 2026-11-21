@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertCircle, Cloud, House, Laptop, Lock } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { ToggleSwitch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import type { Computer, ComputerStartFailure } from '@/types/api';
 
@@ -331,6 +332,53 @@ export function PowerButton({ computer, actions }: { computer: Computer; actions
     >
       {t('computer.start', 'Start')}
     </Button>
+  );
+}
+
+interface ToggleRowProps {
+  label: string;
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+  /** The line that explains the switch, read with it. */
+  describedBy?: string;
+}
+
+/** A switch as a label and value row of a `computer-card-spec` list. */
+export function ToggleRow({ label, checked, onChange, disabled, describedBy }: ToggleRowProps) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>
+        <ToggleSwitch
+          checked={checked}
+          onChange={onChange}
+          disabled={disabled}
+          ariaLabel={label}
+          ariaDescribedBy={describedBy}
+        />
+      </dd>
+    </div>
+  );
+}
+
+/** One setting of the computer's, as a section of the details: its switch,
+ *  the hint under it, and anything that goes with it after. */
+export function SettingToggle({ label, checked, onChange, disabled, hint, children }: Omit<ToggleRowProps, 'describedBy'> & {
+  hint: ReactNode;
+  children?: ReactNode;
+}) {
+  const hintId = useId();
+  return (
+    <section className="computer-details-group">
+      <dl className="computer-card-spec mt-0">
+        <ToggleRow label={label} checked={checked} onChange={onChange} disabled={disabled} describedBy={hintId} />
+      </dl>
+      <p id={hintId} className="mt-1.5 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>
+        {hint}
+      </p>
+      {children}
+    </section>
   );
 }
 

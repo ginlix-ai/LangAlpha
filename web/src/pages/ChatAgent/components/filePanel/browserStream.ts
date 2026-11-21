@@ -4,6 +4,7 @@ import type {
   BrowserNavigateRefusal,
   BrowserNavigation,
   BrowserViewAnswer,
+  BrowserViewWant,
 } from '../../utils/api/sandbox';
 import { isClosed, isTransient, type BrowserPhase } from './browserPhase';
 import type { BrowserUse } from '../../session/stream/browserUse';
@@ -80,6 +81,8 @@ const RELEASE_RETRY_MS: readonly number[] = [1000, 3000];
  *  again, and how often: long enough for `agent-browser open` to bring Chrome up. */
 const POKE_WINDOW_MS = 15000;
 const POKE_RECHECK_MS = 4000;
+/** How often a view of a machine downloading Chrome for Testing looks again. */
+const INSTALL_RECHECK_MS = 5_000;
 /** How long the caption stays once the agent's last call ends, so a quick one is
  *  readable, and the most it stays on a call whose end a dropped stream never told. */
 const CAPTION_LINGER_MS = 1500;
@@ -107,11 +110,17 @@ export interface BrowserViewState {
 /** The server's side of one watch, bound to its workspace. Each may reject; the
  *  session reads a failure where it lands. */
 export interface BrowserServer {
-  ask: (start: boolean) => Promise<BrowserViewAnswer>;
+  /** `chrome`: a machine of the user's own with no browser starts downloading
+   *  Chrome for Testing. */
+  ask: (want: BrowserViewWant) => Promise<BrowserViewAnswer>;
   /** Act on `holder`'s hold on the page; resolves to whether it holds it now. */
   control: (holder: string, action: BrowserControlAction, releases?: BrowserRelease[]) => Promise<boolean>;
   /** Take the page somewhere for `holder`; resolves to why nothing was done, or null. */
   navigate: (holder: string, navigation: BrowserNavigation) => Promise<BrowserNavigateRefusal | null>;
+  /** The view runs on the computer itself, as the desktop app on this Mac does,
+   *  so it opens the stream on the computer's loopback rather than through the
+   *  server, and through the server only if that never comes up. */
+  local: boolean;
 }
 
 /** Why a visit opened nothing: the browser could not be opened, or someone else
@@ -127,7 +136,7 @@ interface Redial {
 
 /** Why the server is asked: to look, to open the browser, or to look again just
  *  after the agent used it, which leaves on screen what is there meanwhile. */
-type Ask = 'look' | 'start' | 'recheck';
+type Ask = 'look' | 'start' | 'recheck' | 'chrome';
 
 /** How a take ended; `gone` is a take its watch, or the hold's state, moved past. */
 type Take = 'held' | 'refused' | 'failed' | 'gone';
@@ -149,10 +158,19 @@ export class BrowserViewSession {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private askSeq = 0;
   private redial: Redial | null = null;
+  /** The loopback never came up this watch, so its streams go through the server. */
+  private localRefused = false;
+  /** Where the socket being dialed goes if it closes before its stream comes
+   *  up: the server's address behind a loopback one. Null once the stream is
+   *  up, and for a redial, which closes as any other. */
+  private fallback: string | null = null;
   private controlTimer: ReturnType<typeof setTimeout> | null = null;
   private idleRenewals = 0;
   /** When the agent was last seen using the browser. */
   private pokedAt = -Infinity;
+  /** The person asked to open the browser, or to get Chrome for it, and it was
+   *  still installing: the look that finds it installed opens it. */
+  private opensWhenInstalled = false;
   /** Counts visits, so a newer one supersedes the last. */
   private visits = 0;
   /** The last navigation, which the next one waits out, so the page ends where
@@ -244,6 +262,7 @@ export class BrowserViewSession {
   watch(server: BrowserServer): () => void {
     this.server = server;
     this.asksWithoutStream = 0;
+    this.localRefused = false;
     this.update({ frame: null, phase: 'checking' });
     this.check();
     // A visit waits on the watch itself, which the state may not show.
@@ -271,9 +290,10 @@ export class BrowserViewSession {
     if (start) this.asksWithoutStream = 0;
     const seq = ++this.askSeq;
     if (start) this.update({ phase: 'starting' });
+    else if (why === 'chrome') this.update({ phase: 'installing' });
     else if (why === 'look' && this.state.phase !== 'reconnecting') this.update({ phase: 'checking' });
-    server.ask(start).then(
-      (answer) => { if (seq === this.askSeq) this.land(answer); },
+    server.ask(why === 'recheck' ? 'look' : why).then(
+      (answer) => { if (seq === this.askSeq) this.land(answer, why); },
       () => {
         if (seq !== this.askSeq) return;
         this.redial = null;
@@ -284,6 +304,12 @@ export class BrowserViewSession {
 
   open(): void {
     this.check('start');
+  }
+
+  /** Download Chrome for Testing to a machine of the user's own that has no
+   *  browser, asked for by them: it is several hundred MB on their machine. */
+  getChrome(): void {
+    this.check('chrome');
   }
 
   /** The agent was seen using the browser: only a view not already showing it has
@@ -590,6 +616,7 @@ export class BrowserViewSession {
     this.endSilence();
     const socket = this.socket;
     this.socket = null;
+    this.fallback = null;
     if (socket) {
       socket.onmessage = null;
       socket.onclose = null;
@@ -597,14 +624,30 @@ export class BrowserViewSession {
     }
   }
 
-  private land(answer: BrowserViewAnswer): void {
+  private land(answer: BrowserViewAnswer, why: Ask): void {
+    const opens = this.opensWhenInstalled;
+    if (answer.state !== 'installing') this.opensWhenInstalled = false;
+    else if (why === 'start' || why === 'chrome') this.opensWhenInstalled = true;
+    // Only a start opens the browser, and the polls while it installed only looked.
+    if (opens && why !== 'start' && answer.state === 'idle') {
+      this.check('start');
+      return;
+    }
     if (answer.state === 'running') {
       this.redial = null;
-      this.connect(answer.url);
+      const local = this.server?.local && !this.localRefused ? answer.local_url : null;
+      this.fallback = local ? answer.url : null;
+      this.connect(local ?? answer.url);
       return;
     }
     // No browser to hold, and the hold went with it.
     this.update({ phase: answer.state, frame: null, pageUrl: null, control: 'none' });
+    // A download takes minutes, and nothing else says when it ends.
+    if (answer.state === 'installing') {
+      this.redial = null;
+      this.timer = setTimeout(() => { this.timer = null; this.check('recheck'); }, INSTALL_RECHECK_MS);
+      return;
+    }
     // The agent was just seen opening it: the server is asked again, since the
     // browser it brings up may sit behind a new address, rather than the old one tried.
     if (answer.state === 'idle' && Date.now() - this.pokedAt < POKE_WINDOW_MS) {
@@ -631,7 +674,20 @@ export class BrowserViewSession {
       if (socket === this.socket) socket.close();
     }, FIRST_MESSAGE_MS);
     socket.onmessage = (event) => { if (socket === this.socket) this.receive(event.data); };
-    socket.onclose = (event) => { if (socket === this.socket) this.closed(event.code, url); };
+    socket.onclose = (event) => {
+      if (socket !== this.socket) return;
+      const fallback = this.fallback;
+      this.fallback = null;
+      // The loopback refused, or took too long to say anything: the same stream
+      // through the server, at once and for the rest of this watch.
+      if (fallback !== null) {
+        this.socket = null;
+        this.localRefused = true;
+        this.connect(fallback);
+        return;
+      }
+      this.closed(event.code, url);
+    };
   }
 
   private receive(raw: unknown): void {
@@ -653,6 +709,7 @@ export class BrowserViewSession {
     this.endSilence();
     this.asksWithoutStream = 0;
     this.redial = null;
+    this.fallback = null;
     this.update({ ...patch, phase: 'live' });
   }
 

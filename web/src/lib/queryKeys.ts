@@ -176,6 +176,8 @@ export const queryKeys = {
     // What a new machine can run on, per user: the plan decides `allowed`.
     providers: () => [...queryKeys.computers.all, 'providers'],
     sshKey: () => [...queryKeys.computers.all, 'ssh-key'],
+    // The browsers on a machine of the person's own, read from the machine.
+    signinSources: (computerId: string) => [...queryKeys.computers.all, 'signin-sources', computerId],
   },
   // A pairing is minted by a POST and then polled; the mint is cached so a
   // render never mints twice, and each token's status keys apart from it.

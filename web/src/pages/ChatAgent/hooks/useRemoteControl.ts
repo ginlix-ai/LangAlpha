@@ -77,9 +77,10 @@ export function isThisMac(computer: Pick<Computer, 'ssh'>, fingerprint: string |
 
 /**
  * The helper's status, and which row it makes this Mac: `of` answers null for
- * every other computer, and for every row outside the desktop app.
+ * every other computer, and for every row outside the desktop app. Options as
+ * for `useRemoteControl`.
  */
-export function useThisMac(options: { enabled: boolean }) {
+export function useThisMac(options: RemoteControlReader) {
   const { data: status } = useRemoteControl(options);
   const fingerprint = status?.fingerprint;
   const paused = status?.service === 'off';
