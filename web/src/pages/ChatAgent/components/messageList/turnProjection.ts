@@ -10,7 +10,7 @@
  * `contentProjection.ts`: the stream code reads turns from here and must not
  * load the render stack to do it.
  */
-import { isSteeringContinuation, isSteeringUserMessage, opensTurn, type MessageLike } from './messagePredicates';
+import { isReportRow, isSteeringContinuation, isSteeringUserMessage, opensTurn, type MessageLike } from './messagePredicates';
 import type { MessageRecord } from './types';
 
 /** The fields the projection reads, structural for the same reason as `MessageLike`. */
@@ -161,6 +161,25 @@ export function computeTurnTails(visible: readonly ProjectedMessage<TurnLike>[])
     endedTurns.add(turnIndex);
   }
   return tail;
+}
+
+/**
+ * Per-bubble "does this bubble close a reply", over the VISIBLE list: the
+ * turn's tail, or the last bubble before a steer the user sent into the turn.
+ * The agent takes a steer in only at its next model call, so what it wrote
+ * last before one is what the reader was answering, often a whole answer.
+ */
+export function computeReplyEnds(visible: readonly ProjectedMessage<TurnLike>[], turnTails: readonly boolean[]): boolean[] {
+  const ends = turnTails.slice();
+  for (let i = 0; i < visible.length; i++) {
+    if (ends[i] || visible[i].message.role !== 'assistant') continue;
+    let j = i + 1;
+    while (j < visible.length && visible[j].message.role === 'notification') j++;
+    const next = visible[j]?.message;
+    // A report-back's row is drawn as a steer but nobody wrote it.
+    ends[i] = !!next && isSteeringUserMessage(next) && !next.queueError && !isReportRow(next);
+  }
+  return ends;
 }
 
 /**

@@ -35,7 +35,9 @@ const answerChunks = () => Array.from({ length: 5 }, (_, i) => sseEvents.message
 
 // Commentary screens tall, so the process takes longer to fold than the
 // ending's own delays: what arrives after it has to wait for the fold itself.
-const PARAGRAPH = 'Before writing anything I am going to read the filings, the transcripts and the press releases, line them up quarter by quarter, and check each number against the one the company reported the year before. ';
+// It opens on a next step, which is what folds a text this long as working
+// rather than keeping it as an answer.
+const PARAGRAPH = 'Let me read the filings, the transcripts and the press releases, line them up quarter by quarter, and check each number against the one the company reported the year before. ';
 const COMMENTARY = Array.from({ length: 12 }, () => PARAGRAPH.repeat(2).trim()).join('\n\n') + '\n\n';
 
 /** What the transcript draws in one frame, read in the page by `sampleFrames`

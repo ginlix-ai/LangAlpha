@@ -157,6 +157,11 @@ export type RenderBlock =
   | NotificationRenderBlock
   | HtmlWidgetRenderBlock;
 
+/** A text block's key: its group's order, which grouping keeps from the run's first segment. */
+export function textBlockKey(order: number): string {
+  return `text-${order}`;
+}
+
 /** Sort segments by `order` and merge consecutive text segments into one group.
  *  This runs on every chunk, so a run is joined once when it closes rather than
  *  rebuilt per segment. */
@@ -463,7 +468,7 @@ export function buildRenderBlocks(
           blocks.push({ type: 'notification', key: `notification-${seg.order}`, segment: seg });
         } else if (seg.type === 'text') {
           flushActivity();
-          blocks.push({ type: 'text', key: `text-${seg.order}`, segment: seg });
+          blocks.push({ type: 'text', key: textBlockKey(seg.order), segment: seg });
         }
       }
       // Flush trailing activity items
