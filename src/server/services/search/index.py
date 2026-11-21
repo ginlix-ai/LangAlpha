@@ -114,6 +114,24 @@ async def _index_newest(thread_id: str, _: None) -> None:
 _INDEXING: CoalescingRunner[None] = CoalescingRunner(_index_newest, lambda: None)
 
 
+async def _index_all(thread_id: str, _: None) -> None:
+    try:
+        await index_turns(thread_id)
+    except Exception:
+        logger.warning(
+            "[SEARCH] indexing failed for thread %s", thread_id, exc_info=True
+        )
+
+
+_INDEXING_ALL: CoalescingRunner[None] = CoalescingRunner(_index_all, lambda: None)
+
+
+def schedule_thread_search_index(thread_id: str) -> None:
+    """Fire-and-forget: index every settled turn of a thread that was made
+    with turns already in it (a fork), which no turn end announced."""
+    _INDEXING_ALL.schedule(thread_id)
+
+
 def schedule_search_index(thread_id: str) -> None:
     """Fire-and-forget: index the thread's newest two turns. At most one
     runner per thread; a trigger landing while it runs folds into one more

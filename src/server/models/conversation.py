@@ -387,6 +387,25 @@ class ThreadCreateRequest(BaseModel):
         return self
 
 
+class ThreadForkRequest(BaseModel):
+    """Body of POST /api/v1/threads/{thread_id}/fork: where the copy is cut."""
+
+    cut: Literal["through_turn", "before_turn"] = Field(
+        "through_turn",
+        description="'through_turn' keeps the turn's reply; 'before_turn' keeps "
+        "everything before the turn and answers its message as ``prefill``.",
+    )
+    turn_index: int = Field(..., ge=0, description="The turn the cut is made at.")
+    title: Optional[str] = Field(None, max_length=255, description="The fork's title; the source's when omitted.")
+    # Same contract as ThreadCreateRequest.platform.
+    platform: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$",
+        max_length=50,
+        description="Origin/platform identifier, e.g. 'web', 'market_view:AAPL'.",
+    )
+
+
 class ThreadCreateResponse(BaseModel):
     """201 body of POST /api/v1/threads — the created row.
 
