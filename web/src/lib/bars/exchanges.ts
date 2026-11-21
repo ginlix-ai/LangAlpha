@@ -103,6 +103,11 @@ const INDEX_FAMILIES: Record<string, ExchangeInfo> = {
   GDAXI: { currency: 'EUR', foreign: true, tz: 'Europe/Berlin', hours: EU_HOURS },
   STOXX50E: { currency: 'EUR', foreign: true, tz: 'Europe/Berlin' },
   FCHI: { currency: 'EUR', foreign: true, tz: 'Europe/Paris', hours: EU_HOURS },
+  TWII: { currency: 'TWD', foreign: true, tz: 'Asia/Taipei', hours: TAIWAN_HOURS },
+  KS11: { currency: 'KRW', foreign: true, tz: 'Asia/Seoul', hours: KOREA_HOURS },
+  NSEI: { currency: 'INR', foreign: true, tz: 'Asia/Kolkata', hours: INDIA_HOURS },
+  BSESN: { currency: 'INR', foreign: true, tz: 'Asia/Kolkata', hours: INDIA_HOURS },
+  AXJO: { currency: 'AUD', foreign: true, tz: 'Australia/Sydney' },
 };
 
 /**
