@@ -14,3 +14,16 @@
   content: '> ';
   color: var(--color-term-text-tertiary);
 }
+
+/* Another member's message in a shared workspace's thread: an outlined box on
+   the card fill, quieter than the reader's own filled bubble, so the two never
+   read as one hand. In the open styles the reader's bubble is already an
+   outline, so theirs takes the fainter hairline. */
+.pf-bubble-theirs {
+  background-color: var(--color-bg-card);
+  border: 1px solid var(--color-border-default);
+}
+:root:not([data-card-style='balanced']) .pf-bubble.pf-bubble-theirs {
+  background-color: var(--color-shell-fill);
+  border-color: var(--color-shell-rule);
+}
