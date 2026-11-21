@@ -3,8 +3,8 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-
-from edgar_engine.filings import FilingRef, get_filing, period_rule, pick_ref, refs_from_rows, select_filing
+from edgar_engine.filings import (LABELS_VERSION, FilingRef, get_filing, labels_engine, labels_from_companyfacts,
+                                  period_rule, pick_ref, refs_for_form, refs_from_rows, select_filing, select_ref)
 
 CIK = 1234567
 
@@ -185,7 +185,6 @@ def test_period_rule_leap_day_year_end():
 
 def test_companyfacts_labels_are_read_only_because_callers_share_them(monkeypatch):
     from edgar.entity import entity_facts
-
     from edgar_engine.filings import companyfacts_labels
     fact = {"accn": "0001234567-24-000011", "form": "10-K", "fy": 2023, "fp": "FY"}
     monkeypatch.setattr(entity_facts, "download_company_facts_from_sec",
@@ -199,7 +198,6 @@ def test_companyfacts_labels_are_read_only_because_callers_share_them(monkeypatc
 def test_companyfacts_labels_are_read_again_on_every_call(monkeypatch):
     from edgar.entity import entity_facts
     from edgar.exceptions import CompanyFactsNotFoundError
-
     from edgar_engine.filings import companyfacts_labels
     calls = []
 
@@ -346,3 +344,28 @@ def test_fiscal_labels_are_the_majority_label_of_each_filings_facts():
     body = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [fact(2024, "FY"), fact(2024, "FY"), fact(2023, "FY")]}}}}}
     assert dict(labels_from_companyfacts(body)) == {("a-1", "10-K"): (2024, "FY")}
     assert dict(labels_from_companyfacts(None)) == {}
+
+
+def test_select_ref_reads_the_whole_history_only_when_the_recent_page_cannot_hold_the_period():
+    asked = []
+
+    def listed(full_history):
+        asked.append(full_history)
+        rows = ROWS if full_history else ROWS[:1]
+        return refs_for_form(rows, CIK, "10-K", fiscal_labels=LABELS)
+
+    assert select_ref(listed).accession == "0001234567-25-000010" and asked == [False]
+    assert select_ref(listed, fiscal_year=2025) is None and asked == [False, False]
+    assert select_ref(listed, fiscal_year=2023).accession == "0001234567-24-000050" and asked == [False, False, False, True]
+    assert select_ref(listed, fiscal_year=2023, full_history=False) is None
+
+
+def test_the_labels_version_moves_with_the_labels_function():
+    """Fails when labels_from_companyfacts changes: bump LABELS_VERSION if what it returns changes, then record its new
+    source digest here."""
+    import hashlib
+    import inspect
+
+    digest = hashlib.sha256(inspect.getsource(labels_from_companyfacts).encode()).hexdigest()[:12]
+    assert (LABELS_VERSION, digest) == (1, "d7aeb0e3613a")
+    assert labels_engine() == "labels-v1"

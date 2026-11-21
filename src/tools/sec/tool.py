@@ -20,14 +20,14 @@ from typing import Annotated, Any, Literal, NamedTuple
 from edgar_engine import SECTIONS_VERSION, FilingSections, SubmissionDocument
 from edgar_engine.amendments import merge, restates_statements
 from edgar_engine.documents import exhibit_index
-from edgar_engine.filings import FilingRef, base_form, companyfacts_labels
+from edgar_engine.filings import FilingRef, base_form
 from edgar_engine.forms import item_order, item_title, mdna_item
 from edgar_engine.sections.vocab import is_amendment
 from langchain_core.tools import tool
 
 from src.tools.turn_tool import turn_tool
 
-from . import edgar, render
+from . import edgar, indexed, render
 from .earnings_call import fetch_matching_earnings_call
 from .metering import metered_call
 from .types import FOREIGN_FORMS, FilingType
@@ -163,6 +163,7 @@ class Periodic:
     recent_8k: list[edgar.EightKRef]
     call: render.CallNote | None
     transcript: str
+    calendar: edgar.Calendar | None
 
     @property
     def shown(self) -> View:
@@ -184,8 +185,8 @@ class Periodic:
 
 async def _read_periodic(symbol: str, form: str, fiscal_year: int | None, fiscal_period: str | None, view: str,
                          include_call: bool) -> Periodic | str:
-    co = await edgar.run(edgar.company, symbol)
-    labels = await edgar.run(companyfacts_labels, co.cik)
+    filer = await edgar.filer(symbol)
+    co, labels = filer.co, filer.labels
     ref = await edgar.run(edgar.select, co, form, labels, fiscal_year, fiscal_period)
     if ref is None:
         on_file = await edgar.run(lambda: [render.period_label(r, short=True)
@@ -193,8 +194,8 @@ async def _read_periodic(symbol: str, form: str, fiscal_year: int | None, fiscal
         return render.no_filing(co.symbol, form, fiscal_year, fiscal_period, on_file)
 
     async def as_filed() -> View:
-        sections = await edgar.sections(co, ref)
-        return View("as_filed", sections, await edgar.financials(ref))
+        sections, fin = await asyncio.gather(edgar.sections(co, ref), edgar.financials(ref))
+        return View("as_filed", sections, fin)
 
     async def recent_8ks() -> list[edgar.EightKRef]:
         """The 8-K reminder, which only adds to the result: when it cannot be read, the filing still returns."""
@@ -215,7 +216,7 @@ async def _read_periodic(symbol: str, form: str, fiscal_year: int | None, fiscal
         source = restating and FilingRef(co.cik, restating.accession, restating.form, restating.filing_date)
         fin = await edgar.financials(source) if source else filed.fin
         views.append(View("as_amended", merge(filed.sections, amendments), fin, "as_amended/", source))
-    return Periodic(co, ref, views, amendments, unread, reports, recent_8k, call, transcript)
+    return Periodic(co, ref, views, amendments, unread, reports, recent_8k, call, transcript, filer.calendar)
 
 
 def _index(p: Periodic, v: View, folder: str | None, with_call: bool = True) -> str:
@@ -231,7 +232,8 @@ def _index(p: Periodic, v: View, folder: str | None, with_call: bool = True) -> 
         full_chars=len(p.views[0].sections.text),
         statements=(_statements_file(v), len(v.fin.statements), v.fin.held) if v.fin.statements else None,
         call=render.call_line(p.call, in_file=folder is not None) if with_call else None,
-        recent=render.recent_reports_section(p.reports, p.ref, foreign=base_form(p.ref.form) in FOREIGN_FORMS),
+        recent=render.recent_reports_section(p.reports, p.ref, foreign=base_form(p.ref.form) in FOREIGN_FORMS,
+                                             calendar=p.calendar),
         recent_8k=render.recent_8k_section(p.recent_8k), amended=v is not p.views[0])
 
 
@@ -371,7 +373,7 @@ async def _read_8k(symbol: str, k: edgar.EightKRef) -> EightK:
 
 
 async def _eight_ks(backend: Any | None, symbol: str) -> tuple[str, dict]:
-    co = await edgar.run(edgar.company, symbol)
+    co = await edgar.company(symbol)
     refs = await edgar.run(edgar.recent_8ks, co)
     if not refs:
         return render.no_8ks(co.symbol, edgar.EIGHT_K_DAYS), {}
@@ -423,7 +425,7 @@ async def get_sec_filing_async(symbol: str, filing_type: str = "10-K", fiscal_ye
     if period and period not in QUARTERS:
         return render.bad_period(period), {}
     case = dict(symbol=symbol.upper(), form=form, view=view, latest=fiscal_year is None and period is None)
-    with metered_call(**case) as meter:
+    with metered_call(**case) as meter, indexed.call_scope():
         try:
             if form == "8-K":
                 return await _eight_ks(backend, symbol)

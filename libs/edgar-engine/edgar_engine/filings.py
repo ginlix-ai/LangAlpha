@@ -17,9 +17,9 @@ period matches no original gets amends=None here; edgar_engine.amendments reads 
 cover page and explanatory note, which place it and correct a period of report typed wrong.
 
 refs_from_rows, link_amendments and period_rule are the steps list_filings and select_filing are
-built from, exposed as test seams, not as API. table_forms, refs_for_form, labels_from_companyfacts
-and pick_ref let a caller that already holds a filer's filings table and companyfacts select the
-same way list_filings and select_filing do.
+built from, exposed as test seams, not as API. table_forms, refs_for_form, labels_from_companyfacts,
+pick_ref and select_ref let a caller that already holds a filer's filings table and companyfacts select
+the same way list_filings and select_filing do; labels_engine names the labels it computes.
 
 Only APIs that edgartools 5.62 and 6.0 share are used. A company with no filings of the form
 yields an empty list on both; other errors propagate.
@@ -30,7 +30,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from types import MappingProxyType
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Callable, Iterable, Literal, Mapping
 
 from .calendar.dates import on as _on
 from .sections.model import FilingStatus
@@ -38,8 +38,8 @@ from .sections.vocab import base_form, filed_forms, is_amendment
 
 FiscalSource = Literal["xbrl", "period_rule"]
 
-__all__ = ["FilingRef", "base_form", "companyfacts_labels", "get_filing", "labels_from_companyfacts", "list_filings", "pick_ref",
-           "refs_for_form", "select_filing", "table_forms"]
+__all__ = ["FilingRef", "base_form", "companyfacts_labels", "get_filing", "LABELS_VERSION", "labels_engine", "labels_from_companyfacts",
+           "list_filings", "pick_ref", "refs_for_form", "select_filing", "select_ref", "table_forms"]
 
 
 @dataclass(frozen=True)
@@ -248,6 +248,17 @@ def labels_from_companyfacts(facts: Mapping[str, Any] | None) -> Mapping[tuple[s
     return MappingProxyType({key: counter.most_common(1)[0][0] for key, counter in votes.items()})
 
 
+#: Bumped whenever what labels_from_companyfacts returns for a companyfacts body changes, so labels a store computed
+#: with an older engine are never read as this one's.
+LABELS_VERSION = 1
+
+
+def labels_engine() -> str:
+    """The name of the labels labels_from_companyfacts computes. A store of labels keeps them under it, and a reader
+    whose engine names them otherwise computes its own."""
+    return f"labels-v{LABELS_VERSION}"
+
+
 def _company(company: Any):
     from edgar import Company
 
@@ -329,14 +340,32 @@ def select_filing(
     it. A match labeled by the period rule is also read again from the whole history, since older filings can move
     the years that rule infers (refs_from_rows)."""
     company = _company(company)
-    listing = dict(filed_on_or_before=filed_on_or_before, fiscal_labels=fiscal_labels)
+
+    def listed(full_history: bool) -> list[FilingRef]:
+        return list_filings(company, form, full_history=full_history, filed_on_or_before=filed_on_or_before,
+                            fiscal_labels=fiscal_labels)
+
+    return select_ref(listed, fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end,
+                      full_history=full_history)
+
+
+def select_ref(
+    list_refs: Callable[[bool], list[FilingRef]],
+    *,
+    fiscal_year: int | None = None,
+    fiscal_period: str | None = None,
+    period_end: str | None = None,
+    full_history: bool = True,
+) -> FilingRef | None:
+    """select_filing over any source of a filer's refs of one form: list_refs(False) lists those on EDGAR's recent
+    page, list_refs(True) the whole history. A source that holds the whole history may answer both alike."""
     period = dict(fiscal_year=fiscal_year, fiscal_period=fiscal_period, period_end=period_end)
-    recent = list_filings(company, form, full_history=False, **listing)
+    recent = list_refs(False)
     ref = pick_ref(recent, **period)
     settled = ref is not None and (ref.fiscal_source != "period_rule" or fiscal_year is None and fiscal_period is None)
     if settled or not full_history or _later_than_all(recent, fiscal_year, period_end):
         return ref
-    return pick_ref(list_filings(company, form, **listing), **period)
+    return pick_ref(list_refs(True), **period)
 
 
 def _later_than_all(refs: list[FilingRef], fiscal_year: int | None, period_end: str | None) -> bool:

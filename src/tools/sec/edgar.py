@@ -4,35 +4,39 @@ What this module adds around the engine: the deployment's object storage as the 
 worker and container shares parsed filings; a statements cache; one read per filing however many calls in this
 process want it at once (single flight); and a pool of its own, so reads waiting on SEC's rate limit never hold the
 event loop's default executor that the rest of the worker shares.
+
+With ginlix-data configured, the company, its filings, its fiscal labels and each parsed filing are read from
+ginlix-data first (see indexed), and each falls back to EDGAR on its own when ginlix-data does not answer for it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
-import gzip
-import json
 import logging
 import os
 import threading
-import zlib
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from functools import partial, wraps
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
+from zoneinfo import ZoneInfo
 
-from edgar_engine import FilingSections, SubmissionDocument
+from edgar_engine import FilingSections, SubmissionDocument, statements
 from edgar_engine.amendments import amended_sections, read
-from edgar_engine.cache import DocumentsCache, LocalDirStore, SectionsCache, Store
+from edgar_engine.cache import DocumentsCache, LocalDirStore, SectionsCache, StatementsCache, Store, kind_of
 from edgar_engine.documents import read_with_documents
-from edgar_engine.filings import FilingRef, base_form, get_filing, list_filings, select_filing
+from edgar_engine.filings import FilingRef, base_form, companyfacts_labels, refs_for_form, select_ref, table_forms
+from edgar_engine.statements import Financials
 from edgar_engine.submission import TruncatedSubmission
 
+from src.data_client.ginlix_data.sec_filings import FilingCalendar, sec_filings_client
+
+from . import indexed
 from .metering import note_cache
-from .types import PERIODIC_FORMS
+from .types import EIGHT_K_FORMS, PERIODIC_FORMS
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +48,8 @@ if not os.getenv("EDGAR_IDENTITY"):
 #: EDGAR's recent page holds at least the last year or this many filings, so a page this long that starts within
 #: the 8-K window may not reach back to its start.
 RECENT_PAGE_MIN = 1000
-STATEMENTS_KEY = f"statements/v3/edgartools-{version('edgartools')}"
 EIGHT_K_DAYS = 90
-EIGHT_K_FORMS = ("8-K", "8-K/A")
+SEC_TIME = ZoneInfo("America/New_York")
 
 T = TypeVar("T")
 
@@ -94,7 +97,7 @@ class _MeteredStore:
         except Exception:
             logger.warning("sec_filing: could not read %s from the cache", key, exc_info=True)
             data = None
-        note_cache(key.split("/", 1)[0], "miss" if data is None else "hit")
+        note_cache(kind_of(key), "miss" if data is None else "hit")
         return data
 
     def put(self, key: str, data: bytes) -> None:
@@ -124,6 +127,12 @@ def store() -> Store:
         return _store
 
 
+def filing_store(cik: int) -> Store:
+    """store(), and ginlix-data's parsed filings behind it when ginlix-data is configured. cik names the filer of the
+    filings read through it, which ginlix-data's parsed reads take."""
+    return indexed.CacheThenGinlixStore(store(), cik) if sec_filings_client() else store()
+
+
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sec")
 _inflight: dict[str, Future] = {}
 _inflight_lock = threading.Lock()
@@ -142,7 +151,7 @@ def _shared(key: Callable[..., str]) -> Callable[[Callable[..., T]], Callable[..
     def wrap(fn: Callable[..., T]) -> Callable[..., Awaitable[T]]:
         @wraps(fn)
         async def shared(*args: Any) -> T:
-            k = key(*args)
+            k = key(*args) + (":without-ginlix" if indexed.cut_off() else "")
             with _inflight_lock:
                 fut = _inflight.get(k)
                 owner = fut is None
@@ -162,21 +171,31 @@ def _forget(key: str, fut: Future) -> None:
 
 
 Labels = Mapping[tuple[str, str], tuple[int, str]]
+Rows = Callable[[list[str], bool], list[dict]]
 
 
 @dataclass(frozen=True)
 class Company:
+    """A filer and its filings table: filings is EDGAR's recent page, or ginlix-data's whole history of
+    indexed.INDEXED_FORMS. rows(forms, full_history) reads the table for those forms, the whole history when asked,
+    which ginlix-data's always is."""
     symbol: str
     name: str
     cik: int
-    obj: Any
+    rows: Rows = field(repr=False, compare=False)
     filings: list[dict]
+    fiscal_year_end: str | None = None
 
 
-def company(symbol: str) -> Company:
-    """The company and its recent filing table, EDGAR's first submissions page (at least a year of filings). Its
-    symbol is its primary ticker, so every spelling of one company (GOOG and GOOGL, BRK.B and BRK-B, its CIK)
-    reads as one."""
+def edgar_rows(c: Any) -> Rows:
+    """The filings table of an edgar.Company: its recent page, or its whole history when asked."""
+    def rows(forms: list[str], full_history: bool) -> list[dict]:
+        table = c.get_filings(form=forms, trigger_full_load=full_history)
+        return table.data.to_pylist() if table is not None else []
+    return rows
+
+
+def _edgar_company(symbol: str) -> Company:
     from edgar import Company as EdgarCompany
     from edgar.exceptions import CompanyNotFoundError
 
@@ -187,20 +206,76 @@ def company(symbol: str) -> Company:
     if not getattr(c, "cik", None) or getattr(c, "not_found", False):
         raise NotAFiler(symbol)
     table = c.get_filings(trigger_full_load=False)
-    rows = table.data.to_pylist() if table is not None else []
-    return Company((c.get_ticker() or symbol).upper(), c.name, int(c.cik), c, rows)
+    return Company((c.get_ticker() or symbol).upper(), c.name, int(c.cik), edgar_rows(c),
+                   table.data.to_pylist() if table is not None else [], getattr(c, "fiscal_year_end", None))
 
 
-def filings_of(co: Company, form: str, labels: Labels, **kwargs: Any) -> list[FilingRef]:
-    return list_filings(co.obj, form, fiscal_labels=labels, **kwargs)
+async def company(symbol: str) -> Company:
+    """The company and its filing table. Its symbol is its primary ticker, so every spelling of one company (GOOG
+    and GOOGL, BRK.B and BRK-B, its CIK) reads as one."""
+    if (found := await indexed.company(symbol)) is None:
+        return await run(_edgar_company, symbol)
+    row, listed = found
+    table = listed.rows
+
+    def rows(forms: list[str], full_history: bool) -> list[dict]:
+        return [r for r in table if r["form"] in forms]
+
+    return Company((row.tickers[0] if row.tickers else symbol).upper(), row.name, row.cik, rows, table,
+                   row.fiscal_year_end)
+
+
+@dataclass(frozen=True)
+class Calendar:
+    """A filer's filing calendar as read on today (in SEC's time zone), with the form and filing date of the notice
+    and the Form 15 it names, as the filer's filings table holds them."""
+    served: FilingCalendar
+    filed: Mapping[str, tuple[str, str]]
+    today: str
+
+
+@dataclass(frozen=True)
+class Filer:
+    """A company, the fiscal labels of its filings, and its filing calendar when ginlix-data holds one."""
+    co: Company
+    labels: Labels
+    calendar: Calendar | None
+
+
+async def filer(symbol: str) -> Filer:
+    """The company with its fiscal labels and filing calendar, all asked of ginlix-data at once. Labels and a
+    calendar count only when they are of the company read: labels it does not answer for are computed from company
+    facts, and a calendar it does not answer for is left out."""
+    co, held, calendar = await asyncio.gather(company(symbol), indexed.labels(symbol), indexed.calendar(symbol))
+    labels = held.labels if held is not None and held.cik == co.cik else await fiscal_labels(co)
+    if calendar is None or calendar.cik != co.cik:
+        return Filer(co, labels, None)
+    named = {calendar.termination, calendar.next and calendar.next.notice} - {None}
+    filed = {r["accession_number"]: (r["form"], str(r["filing_date"])) for r in co.filings
+             if r["accession_number"] in named}
+    return Filer(co, labels, Calendar(calendar, filed, datetime.now(SEC_TIME).date().isoformat()))
+
+
+async def fiscal_labels(co: Company) -> Labels:
+    """The fiscal year and period each of the company's filings declares in its XBRL facts, computed here from its
+    company facts (ginlix-data's, else EDGAR's)."""
+    found = await indexed.companyfacts_labels(co.cik)
+    return found if found is not None else await run(companyfacts_labels, co.cik)
+
+
+def filings_of(co: Company, form: str, labels: Labels, *, amendments: bool = False,
+               full_history: bool = True) -> list[FilingRef]:
+    return refs_for_form(co.rows(table_forms(form, amendments), full_history), co.cik, form, amendments=amendments,
+                         fiscal_labels=labels, fiscal_year_end=co.fiscal_year_end)
 
 
 def select(co: Company, form: str, labels: Labels, fiscal_year: int | None, fiscal_period: str | None) -> FilingRef | None:
-    return select_filing(co.obj, form, fiscal_year=fiscal_year, fiscal_period=fiscal_period, fiscal_labels=labels)
+    return select_ref(lambda full_history: filings_of(co, form, labels, full_history=full_history),
+                      fiscal_year=fiscal_year, fiscal_period=fiscal_period)
 
 
 def periodic_reports(co: Company, labels: Labels) -> list[FilingRef]:
-    """The company's periodic originals on its recent page across 10-K, 10-Q, 20-F and 40-F, newest period first."""
+    """The company's periodic originals on its filing table across 10-K, 10-Q, 20-F and 40-F, newest period first."""
     refs = {r.accession: r for form in PERIODIC_FORMS for r in filings_of(co, form, labels, full_history=False)
             if r.filing_status == "original" and base_form(r.form) in PERIODIC_FORMS}
     return sorted(refs.values(), key=lambda r: (r.report_date or "", r.filing_date), reverse=True)
@@ -210,7 +285,7 @@ def periodic_reports(co: Company, labels: Labels) -> list[FilingRef]:
 def sections(co: Company, ref: FilingRef) -> FilingSections:
     """The filing's sections as filed."""
     try:
-        return read(ref, SectionsCache(store()))
+        return read(ref, SectionsCache(filing_store(co.cik)))
     except TruncatedSubmission as e:
         raise UnreadableFiling(e.accession, index_url(co.cik, e.accession)) from e
 
@@ -224,48 +299,16 @@ def amendments(co: Company, labels: Labels, original: FilingRef) -> tuple[list[F
     if not any(r.filing_status == "amendment" for r in refs):
         return [], []
     unreadable: list[FilingRef] = []
-    found = amended_sections(original, refs, SectionsCache(store()), unreadable=unreadable)
+    found = amended_sections(original, refs, SectionsCache(filing_store(co.cik)), unreadable=unreadable)
     for r in unreadable:
         logger.warning("sec_filing: amendment %s of %s unreadable", r.accession, original.accession)
     return found, [r for r in unreadable if r.amends == original.accession]
 
 
-@dataclass(frozen=True)
-class Financials:
-    """Key metrics in the reporting currency (an ISO code, None when the filing does not state one) and the three
-    statements the filing has as markdown, under the names in held. unread: the parts that could not be read this
-    time, and failed: none could; neither is ever cached."""
-    metrics: dict = field(default_factory=dict)
-    statements: str | None = None
-    currency: str | None = None
-    failed: bool = False
-    unread: tuple[str, ...] = ()
-    held: tuple[str, ...] = ()
-
-
 @_shared(lambda ref: f"statements:{ref.accession}")
 def financials(ref: FilingRef) -> Financials:
     """The filing's statements and key metrics, cached by accession and edgartools version once every part read."""
-    key = f"{STATEMENTS_KEY}/{ref.accession}.json.gz"
-    raw = store().get(key)
-    if raw is not None:
-        try:
-            return Financials(**json.loads(gzip.decompress(raw)))
-        except (OSError, EOFError, ValueError, TypeError, zlib.error):
-            pass
-
-    from .financials import read_financials
-    try:
-        metrics, parts, currency, unread = read_financials(get_filing(ref))
-    except Exception:
-        logger.warning("sec_filing: statements of %s unavailable", ref.accession, exc_info=True)
-        return Financials(failed=True)
-    if unread and not (metrics or parts):
-        return Financials(failed=True)
-    fin = Financials(metrics, "\n\n".join(parts.values()) or None, currency, unread=tuple(unread), held=tuple(parts))
-    if not unread:
-        store().put(key, gzip.compress(json.dumps(asdict(fin)).encode(), mtime=0))
-    return fin
+    return statements.read(ref, StatementsCache(filing_store(ref.cik)))
 
 
 @dataclass(frozen=True)
@@ -290,8 +333,7 @@ def recent_8ks(co: Company, after: FilingRef | None = None, days: int = EIGHT_K_
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     rows = co.filings
     if len(rows) >= RECENT_PAGE_MIN and min(str(r["filing_date"]) for r in rows) >= cutoff:
-        table = co.obj.get_filings(form=list(EIGHT_K_FORMS), trigger_full_load=True)
-        rows = table.data.to_pylist() if table is not None else []
+        rows = co.rows(list(EIGHT_K_FORMS), True)
     rows = [r for r in rows if r.get("form") in EIGHT_K_FORMS and str(r["filing_date"]) >= cutoff
             and (after is None or later(r))]
     rows.sort(key=received, reverse=True)
@@ -304,4 +346,5 @@ def recent_8ks(co: Company, after: FilingRef | None = None, days: int = EIGHT_K_
 @_shared(lambda k: f"8-K:{k.ref.accession}")
 def eight_k(k: EightKRef) -> tuple[FilingSections, list[SubmissionDocument]]:
     """An 8-K's items and the documents it carries, from one download of its submission."""
-    return read_with_documents(k.ref, SectionsCache(store()), DocumentsCache(store()))
+    through = filing_store(k.ref.cik)
+    return read_with_documents(k.ref, SectionsCache(through), DocumentsCache(through))

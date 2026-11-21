@@ -9,65 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from edgar_engine import FilingSections, Section, SubmissionDocument, Target
+from edgar_engine import FilingSections, SubmissionDocument
 from edgar_engine.documents import exhibit_index
 from edgar_engine.filings import FilingRef
 
+from src.data_client.ginlix_data.sec_filings import FilingCalendar, OwedReport
 from src.tools.sec import edgar, render, tool
-
-ACC, AMEND = "0000000001-26-000001", "0000000001-26-000002"
-REF = FilingRef(1, ACC, "10-K", "2026-02-01", "2025-12-31", 2025, "FY")
-FOLDER = f"data/sec/ACME/10-K_FY2025_{ACC}"
-INCOME = ("income statement",)
-
-
-def section(item, text, status="present", start=0, target=None, source=None):
-    return Section(item=item, status=status, text=text, start=start, end=start + len(text), target=target, source=source)
-
-
-def filing(*sections, accession=ACC, form="10-K", filed="2026-02-01", scope=None):
-    """Sections as the engine reads them, each naming its filing as its source."""
-    text = "\n".join(s.text for s in sections)
-    items = {s.item: replace(s, source=s.source or accession) for s in sections}
-    return FilingSections(accession=accession, form=form, filing_date=filed, items=items, text=text,
-                          engine_version="t", scope=scope)
-
-
-ORIGINAL = filing(section("1", "Item 1. Business\nWe make anvils."),
-                  section("7", "Item 7. MD&A\nSales rose on anvil demand.", start=30),
-                  section("11", "Item 11. Executive Compensation\nSee the proxy statement.", "stub", start=70,
-                          target=Target(kind="proxy")))
-
-
-class Backend:
-    """A workspace whose uploads fail for the paths fail names (every path when fail is a string)."""
-
-    def __init__(self, fail=None):
-        self.files, self.batches, self.fail = {}, [], fail
-        self.filesystem_config = SimpleNamespace(enable_path_validation=False)
-
-    def error(self, path):
-        if isinstance(self.fail, str):
-            return self.fail
-        return "write_failed: gone" if self.fail and path in self.fail else None
-
-    async def aread_text(self, path):
-        return self.files.get(path)
-
-    async def aupload_files(self, files):
-        self.batches.append([p for p, _ in files])
-        self.files.update({p: c.decode() for p, c in files if not self.error(p)})
-        return [SimpleNamespace(path=p, error=self.error(p)) for p, _ in files]
+from tests.unit.tools.sec.fakes import ACC, AMEND, FOLDER, INCOME, ORIGINAL, REF, Backend, filing, section
 
 
 @pytest.fixture
 def acme(monkeypatch):
     """One company with one 10-K and no earnings call, read without the network."""
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), [])
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), [])
     state = SimpleNamespace(amendments=[], unread=[], call=None,
                             fin={ACC: edgar.Financials({"revenue": 2e9}, "| Revenue | 2 |", "USD", held=INCOME)})
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
-    monkeypatch.setattr(tool, "companyfacts_labels", lambda cik: {})
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
+    monkeypatch.setattr(edgar, "fiscal_labels", AsyncMock(return_value={}))
     monkeypatch.setattr(edgar, "select", lambda *a: REF)
     monkeypatch.setattr(edgar, "sections", AsyncMock(side_effect=lambda co, ref: ORIGINAL))
     monkeypatch.setattr(edgar, "financials", AsyncMock(side_effect=lambda ref: state.fin.get(ref.accession, edgar.Financials())))
@@ -139,19 +97,6 @@ async def test_statements_read_after_a_failure_are_written_by_the_next_call(acme
 def test_key_metrics_carry_the_reporting_currency_and_never_guess_one(currency, cell):
     lines = render.metrics_section(edgar.Financials({"revenue": 2e9}, "s", currency), "2026-02-01")
     assert f"| Revenue | {cell} |" in lines
-
-
-def test_the_reporting_currency_is_the_one_most_monetary_facts_use():
-    from src.tools.sec.financials import _currency
-
-    def fin(*refs):
-        units = {"usd": {"type": "simple", "measure": "iso4217:USD"}, "cny": {"type": "simple", "measure": "iso4217:CNY"},
-                 "shares": {"type": "simple", "measure": "xbrli:shares"}}
-        facts = {i: SimpleNamespace(unit_ref=r) for i, r in enumerate(refs)}
-        return SimpleNamespace(xb=SimpleNamespace(units=units, _facts=facts))
-
-    assert _currency(fin("usd", "usd", "cny", "shares", "shares", "shares")) == "USD"
-    assert _currency(fin("usd", "cny")) is None and _currency(fin("shares")) is None
 
 
 @pytest.mark.asyncio
@@ -265,13 +210,13 @@ def test_recent_reports_name_a_newer_report_and_add_an_older_returned_one_under_
                ref("c", "10-Q", "2026-03-31", "2026-05-01", 2026, "Q1"), ref("d", "10-K", "2025-12-31", "2026-02-01", 2025, "FY")]
     old = ref("z", "20-F", "2015-12-31", "2016-04-01", 2015, "FY")
 
-    lines = render.recent_reports_section(reports, old, foreign=True)
+    lines = render.recent_reports_section(reports, old, foreign=True, calendar=None)
 
     assert lines[1] == ("4 newer reports are on file; the latest is the 10-Q for Q3 of fiscal year 2026, period ended "
                         "2026-09-30, filed 2026-11-01. Fetch it for later figures.")
     assert lines[-4:-2] == ["| ... | | | | |", "| 20-F | FY2015 | 2015-12-31 | 2016-04-01 | returned |"]
     assert lines[-1] == "Interim results of a foreign issuer come in 6-K reports, which this tool does not fetch."
-    assert render.recent_reports_section(reports, reports[0], foreign=False)[1] == "This is the latest periodic report on file."
+    assert render.recent_reports_section(reports, reports[0], foreign=False, calendar=None)[1] == "This is the latest periodic report on file."
 
 
 def test_an_8k_document_is_labeled_by_its_description_else_its_exhibit_list_entry_else_its_first_line():
@@ -316,12 +261,12 @@ def test_concurrent_reads_of_one_accession_compute_it_once_and_waiters_hold_no_p
 
 @pytest.mark.asyncio
 async def test_8k_amendments_are_listed_and_the_inline_form_carries_each_filings_own_text(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), [
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), [
         {"form": "8-K/A", "accession_number": AMEND, "filing_date": "2099-01-02", "items": "5.02"},
         {"form": "8-K", "accession_number": ACC, "filing_date": "2099-01-01", "items": "5.07"},
         {"form": "S-8", "accession_number": "x", "filing_date": "2099-01-01", "items": ""}])
     texts = {AMEND: "Item 5.02 Departure of Directors\nThe CFO resigned.", ACC: "Item 5.07 Vote\nHolders voted."}
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (filing(section(k.items[0], texts[k.ref.accession]),
                                                             accession=k.ref.accession, form=k.ref.form), [])))
 
@@ -334,9 +279,9 @@ async def test_8k_amendments_are_listed_and_the_inline_form_carries_each_filings
 
 @pytest.mark.asyncio
 async def test_an_8k_that_cannot_be_read_says_so(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(),
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()),
                        [{"form": "8-K", "accession_number": ACC, "filing_date": "2099-01-01", "items": "8.01"}])
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (_ for _ in ()).throw(ValueError("truncated"))))
 
     content, artifact = await tool.get_sec_filing_async("ACME", "8-K", backend=Backend())
@@ -346,9 +291,9 @@ async def test_an_8k_that_cannot_be_read_says_so(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_8k_with_no_item_found_keeps_its_whole_text(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(),
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()),
                        [{"form": "8-K/A", "accession_number": ACC, "filing_date": "2099-01-01", "items": ""}])
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (FilingSections(
         accession=ACC, form="8-K/A", filing_date="2099-01-01", items={}, text="Explanatory note.", engine_version="t"), [])))
     backend = Backend()
@@ -368,7 +313,7 @@ def test_only_an_unknown_company_reads_as_not_a_filer(monkeypatch):
         def company(symbol):
             raise error
         monkeypatch.setattr(edgartools, "Company", company)
-        return lambda: edgar.company("ACME")
+        return lambda: asyncio.run(edgar.company("ACME"))
 
     with pytest.raises(edgar.NotAFiler):
         lookup(CompanyNotFoundError("ACME"))()
@@ -380,7 +325,7 @@ def test_only_an_unknown_company_reads_as_not_a_filer(monkeypatch):
 def test_the_8k_reminder_keeps_a_same_day_8k_accepted_after_the_report():
     rows = [{"form": "8-K", "accession_number": "a", "filing_date": "2099-01-01", "acceptanceDateTime": "2099-01-01T16:30:00"},
             {"form": "8-K", "accession_number": "b", "filing_date": "2099-01-01", "acceptanceDateTime": "2099-01-01T08:00:00"}]
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), rows)
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), rows)
     report = FilingRef(1, ACC, "10-Q", "2099-01-01", accepted="2099-01-01T12:00:00")
     assert [k.ref.accession for k in edgar.recent_8ks(co, after=report)] == ["a"]
     assert [k.ref.accession for k in edgar.recent_8ks(co, after=replace(report, accepted=None))] == ["a", "b"]
@@ -388,10 +333,10 @@ def test_the_8k_reminder_keeps_a_same_day_8k_accepted_after_the_report():
 
 @pytest.mark.asyncio
 async def test_only_a_document_labeled_as_a_release_marks_a_press_release(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(),
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()),
                        [{"form": "8-K", "accession_number": ACC, "filing_date": "2099-01-01", "items": "7.01"}])
     deck = SubmissionDocument(2, "EX-99.1", "deck.htm", "Investor Presentation", "Slides")
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (filing(section("7.01", "Item 7.01 Regulation FD"), form="8-K"), [deck])))
     _, artifact = await tool.get_sec_filing_async("ACME", "8-K")
     assert artifact["filings"][0]["has_press_release"] is False
@@ -410,40 +355,6 @@ async def test_statements_that_failed_to_read_are_named_and_the_rest_still_writt
     assert "| Revenue | $0.00B |" in content and render.statements_unread(["cash flow statement"]) in content
     assert "statements.md (income statement and balance sheet," in content
     assert backend.files[f"{FOLDER}/statements.md"] == "| Revenue | 0 |"
-
-
-def test_statements_that_all_failed_read_as_failed_and_are_never_cached(monkeypatch, tmp_path):
-    from edgar_engine.cache import LocalDirStore
-
-    from src.tools.sec import financials
-
-    monkeypatch.setattr(edgar, "store", lambda: LocalDirStore(tmp_path))
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({}, {}, None, ["income statement", "key metrics"]))
-    assert asyncio.run(edgar.financials(REF)) == edgar.Financials(failed=True)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({"revenue": 1.0}, {}, "USD", ["key metrics"]))
-    assert asyncio.run(edgar.financials(REF)).unread == ("key metrics",) and not list(tmp_path.rglob("*.gz"))
-
-
-def test_the_engine_keeps_statements_in_the_tools_bytes_one_version_past_its_key(monkeypatch, tmp_path):
-    from dataclasses import asdict
-
-    from edgar_engine.cache import LocalDirStore, StatementsCache
-    from edgar_engine.statements import Financials
-
-    from src.tools.sec import financials
-
-    monkeypatch.setattr(edgar, "store", lambda: LocalDirStore(tmp_path / "tool"))
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials",
-                        lambda f: ({"revenue": 1.0}, {"income statement": "| Revenue | 1 |"}, "USD", []))
-    fin = asyncio.run(edgar.financials(REF))
-    StatementsCache(LocalDirStore(tmp_path / "engine")).put(REF.accession, Financials(**asdict(fin)))
-    tool_kept, engine_kept = ({p.relative_to(tmp_path / side): p.read_bytes() for p in (tmp_path / side).rglob("*.gz")}
-                              for side in ("tool", "engine"))
-    assert len(tool_kept) == len(engine_kept) == 1
-    (tool_key, tool_bytes), (engine_key, engine_bytes) = *tool_kept.items(), *engine_kept.items()
-    assert engine_bytes == tool_bytes and str(tool_key).replace("statements/v3/", "statements/v4/") == str(engine_key)
 
 
 @pytest.mark.asyncio
@@ -473,9 +384,9 @@ async def test_an_upload_error_with_no_message_still_reads_as_a_failure():
 
 @pytest.mark.asyncio
 async def test_the_insight_8k_form_keeps_the_part_of_an_oversized_document_that_fits(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(),
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()),
                        [{"form": "8-K", "accession_number": ACC, "filing_date": "2099-01-01", "items": ""}])
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     big = "Item 2.02 Results\n" + "Revenue rose. " * 20_000
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (filing(section("2.02", big), accession=ACC, form="8-K"), [])))
 
@@ -488,7 +399,7 @@ async def test_the_insight_8k_form_keeps_the_part_of_an_oversized_document_that_
 
 def test_the_8k_reminder_keeps_a_same_day_8k_with_no_acceptance_time():
     rows = [{"form": "8-K", "accession_number": "a", "filing_date": "2099-01-01"}]
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), rows)
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), rows)
     report = FilingRef(1, ACC, "10-Q", "2099-01-01", accepted="2099-01-01T12:00:00")
     assert [k.ref.accession for k in edgar.recent_8ks(co, after=report)] == ["a"]
 
@@ -497,47 +408,18 @@ def test_the_8k_reminder_keeps_a_same_day_8k_with_no_acceptance_time():
 def test_amendments_of_a_filing_older_than_the_recent_page_are_read_from_the_whole_history(
         monkeypatch, on_recent_page, full_history):
     rows = [{"form": "10-K", "accession_number": ACC if on_recent_page else "newer", "filing_date": "2026-02-01"}]
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), rows)
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), rows)
     asked = []
     monkeypatch.setattr(edgar, "filings_of", lambda co, form, labels, **kw: asked.append(kw["full_history"]) or [])
     assert asyncio.run(edgar.amendments(co, {}, REF)) == ([], []) and asked == [full_history]
 
 
-def test_a_statement_the_filing_lacks_is_not_listed_and_one_that_failed_is_named(monkeypatch):
-    from edgar.financials import Financials as Extracted
-
-    from src.tools.sec import financials
-
-    def broken():
-        raise ValueError("bad")
-
-    fake = SimpleNamespace(income_statement=lambda: SimpleNamespace(render=lambda: "income"),
-                           balance_sheet=lambda: SimpleNamespace(render=lambda: None), cash_flow_statement=broken,
-                           get_financial_metrics=lambda: {"revenue": 1.0})
-    monkeypatch.setattr(Extracted, "extract", staticmethod(lambda filing: fake))
-    monkeypatch.setattr(financials, "_currency", lambda fin: "USD")
-    metrics, parts, _, unread = financials.read_financials(None)
-    assert parts == {"income statement": "income"} and unread == ["cash flow statement"]
-
-
-def test_a_cache_that_cannot_be_read_or_decompressed_reads_as_a_miss(monkeypatch, tmp_path):
-    import gzip
-
-    from edgar_engine.cache import LocalDirStore
-
-    from src.tools.sec import financials
-
+def test_a_cache_that_cannot_be_read_reads_as_a_miss():
     class Down:
         def get(self, key):
             raise ConnectionError("storage down")
 
     assert edgar._MeteredStore(Down()).get("sections/x") is None
-    store = LocalDirStore(tmp_path)
-    store.put(f"{edgar.STATEMENTS_KEY}/{ACC}.json.gz", gzip.compress(b"x")[:12] + b"\x00" * 20)
-    monkeypatch.setattr(edgar, "store", lambda: store)
-    monkeypatch.setattr(edgar, "get_filing", lambda ref: None)
-    monkeypatch.setattr(financials, "read_financials", lambda f: ({"revenue": 1.0}, {"income statement": "i"}, "USD", []))
-    assert asyncio.run(edgar.financials(REF)).held == ("income statement",)
 
 
 def test_the_8k_reminder_compares_acceptance_times_as_timestamps():
@@ -545,7 +427,7 @@ def test_the_8k_reminder_compares_acceptance_times_as_timestamps():
 
     rows = [{"form": "8-K", "accession_number": "a", "filing_date": "2099-01-01",
              "acceptanceDateTime": datetime(2099, 1, 1, 18, 0)}]
-    co = edgar.Company("ACME", "Acme Corp", 1, object(), rows)
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()), rows)
     report = FilingRef(1, ACC, "10-Q", "2099-01-01", accepted="2099-01-01T17:00:00")
     assert [k.ref.accession for k in edgar.recent_8ks(co, after=report)] == ["a"]
 
@@ -560,7 +442,7 @@ def test_8ks_older_than_a_short_recent_page_are_read_from_the_whole_history():
     obj = SimpleNamespace(get_filings=lambda **kw: asked.append(kw) or SimpleNamespace(
         data=SimpleNamespace(to_pylist=lambda: full)))
     page = [{"form": "424B2", "accession_number": f"p{i}", "filing_date": today} for i in range(edgar.RECENT_PAGE_MIN)]
-    co = edgar.Company("ACME", "Acme Corp", 1, obj, page)
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(obj), page)
     assert [k.ref.accession for k in edgar.recent_8ks(co)] == ["old", "new"]
     assert asked and asked[0]["trigger_full_load"] is True
 
@@ -595,11 +477,11 @@ async def test_a_reminder_that_cannot_be_read_still_returns_the_filing(acme, mon
 
 @pytest.mark.asyncio
 async def test_an_8k_amendment_is_kept_whole_so_its_explanatory_note_is_not_lost(monkeypatch):
-    co = edgar.Company("ACME", "Acme Corp", 1, object(),
+    co = edgar.Company("ACME", "Acme Corp", 1, edgar.edgar_rows(object()),
                        [{"form": "8-K/A", "accession_number": ACC, "filing_date": "2099-01-01", "items": "9.01"}])
     note, item = "Explanatory Note: this amendment adds the audited statements.\n", "Item 9.01 Financial Statements\nSee 99.1."
     sections = replace(filing(section("9.01", item, start=len(note)), accession=ACC, form="8-K/A"), text=note + item)
-    monkeypatch.setattr(edgar, "company", lambda symbol: co)
+    monkeypatch.setattr(edgar, "company", AsyncMock(return_value=co))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (sections, [])))
     backend = Backend()
 
@@ -609,3 +491,88 @@ async def test_an_8k_amendment_is_kept_whole_so_its_explanatory_note_is_not_lost
     folder = f"data/sec/ACME/8-K_2099-01-01_{ACC}"
     assert backend.files[f"{folder}/full.md"] == note + item and f"{folder}/item_9.01.md" not in backend.files
     assert "- full.md (" in content and "Explanatory Note" in inline
+
+
+FILED = {"n": ("NT 10-Q", "2026-05-12"), "t": ("15-12G", "2026-04-20")}
+
+
+def _calendar(verdict, latest=ACC, termination=None, today="2026-04-01", **next_fields):
+    owed = {"form": "10-Q", "fiscal_period": "Q1", "period_end": "2026-03-31", "window": ("2026-04-28", "2026-05-02"),
+            "deadline": "2026-05-11", "latest_deadline": "2026-05-11", "notice": None, **next_fields}
+    return edgar.Calendar(FilingCalendar(1, verdict, latest, termination, OwedReport(**owed)), FILED, today)
+
+
+ANNUAL = FilingRef(1, ACC, "10-K", "2026-02-01", report_date="2025-12-31", fiscal_year=2025, fiscal_period="FY")
+
+
+@pytest.mark.parametrize(("calendar", "line"), [
+    (_calendar("current"), "This is the latest periodic report on file. The next is the 10-Q for Q1 of fiscal year 2026 "
+     "(period end 2026-03-31), expected between 2026-04-28 and 2026-05-02 and due by 2026-05-11."),
+    (_calendar("expected"), "This is the latest periodic report on file, and the next may be filed any day: the 10-Q for "
+     "Q1 of fiscal year 2026 (period end 2026-03-31), expected between 2026-04-28 and 2026-05-02 and due by 2026-05-11."),
+    (_calendar("extended", notice="n", latest_deadline="2026-05-18"), "This is the latest periodic report on file. "
+     "The 10-Q for Q1 of fiscal year 2026 (period end 2026-03-31) was due by 2026-05-11; the company filed a notice "
+     "of late filing on 2026-05-12, which extends the due date to 2026-05-18."),
+    (_calendar("overdue", latest_deadline="2026-05-18"), "This is the latest periodic report on file. The 10-Q for Q1 "
+     "of fiscal year 2026 (period end 2026-03-31) is late: it was due by 2026-05-11 and is still not on file after "
+     "2026-05-18, the latest date it could have been on time."),
+    (_calendar("deregistered", termination="t"), "This is the latest periodic report on file, and no newer "
+     "one is expected: the company filed Form 15-12G on 2026-04-20 to stop reporting, and the 10-Q for Q1 of fiscal "
+     "year 2026 (period end 2026-03-31) due by 2026-05-11 was not filed."),
+    (_calendar("unknown"), "This is the latest periodic report on file."),
+    (_calendar("current", latest="other"), "This is the latest periodic report on file."),
+    (_calendar("extended", notice="missing"), "This is the latest periodic report on file."),
+    (replace(_calendar("current"), served=replace(_calendar("current").served, next=None)),
+     "This is the latest periodic report on file."),
+    (None, "This is the latest periodic report on file."),
+])
+def test_the_calendar_says_what_the_latest_report_on_file_is_followed_by(calendar, line):
+    assert render.recent_reports_section([ANNUAL], ANNUAL, foreign=False, calendar=calendar)[1] == line
+
+
+@pytest.mark.parametrize(("day", "line"), [
+    ("2026-05-11", "This is the latest periodic report on file, and the next may be filed any day: the 10-Q for Q1 of "
+     "fiscal year 2026 (period end 2026-03-31), expected between 2026-04-28 and 2026-05-02 and due by 2026-05-11."),
+    ("2026-05-12", "This is the latest periodic report on file. The next, the 10-Q for Q1 of fiscal year 2026 (period "
+     "end 2026-03-31), was due by 2026-05-11 and is not on file yet; it can still be on time until 2026-05-15."),
+    ("2026-05-16", "This is the latest periodic report on file. The 10-Q for Q1 of fiscal year 2026 (period end "
+     "2026-03-31) is late: it was due by 2026-05-11 and is still not on file after 2026-05-15, the latest date it "
+     "could have been on time."),
+])
+@pytest.mark.parametrize("served", ["expected", "current"])
+def test_an_expected_report_is_worded_by_the_day_it_is_read_not_the_day_the_calendar_was(day, line, served):
+    calendar = _calendar(served, latest_deadline="2026-05-15", today=day)
+    assert render.recent_reports_section([ANNUAL], ANNUAL, foreign=False, calendar=calendar)[1] == line
+
+
+@pytest.mark.parametrize(("window", "shown"), [
+    (("2026-05-04", "2026-05-14"), "expected between 2026-05-04 and 2026-05-11 and due by 2026-05-11"),
+    (("2026-05-12", "2026-05-14"), "expected between 2026-05-12 and 2026-05-14 and due by 2026-05-11"),
+])
+def test_a_window_that_runs_past_the_due_date_is_shown_ending_at_it(window, shown):
+    calendar = _calendar("current", window=window)
+    assert shown in render.recent_reports_section([ANNUAL], ANNUAL, foreign=False, calendar=calendar)[1]
+
+
+def test_an_extension_that_has_run_out_by_the_day_it_is_read_is_worded_as_late():
+    calendar = _calendar("extended", notice="n", latest_deadline="2026-05-18", today="2026-05-19")
+    assert render.recent_reports_section([ANNUAL], ANNUAL, foreign=False, calendar=calendar)[1] == (
+        "This is the latest periodic report on file. The 10-Q for Q1 of fiscal year 2026 (period end 2026-03-31) is "
+        "late: it was due by 2026-05-11 and is still not on file after 2026-05-18, the latest date it could have been "
+        "on time.")
+
+
+def test_a_report_that_lapsed_by_the_day_it_is_read_after_a_form_15_is_worded_as_deregistered():
+    calendar = _calendar("expected", termination="t", today="2026-05-12")
+    assert render.recent_reports_section([ANNUAL], ANNUAL, foreign=False, calendar=calendar)[1] == (
+        "This is the latest periodic report on file, and no newer one is expected: the company filed Form 15-12G on "
+        "2026-04-20 to stop reporting, and the 10-Q for Q1 of fiscal year 2026 (period end 2026-03-31) due by "
+        "2026-05-11 was not filed.")
+
+
+def test_the_calendar_names_the_next_fiscal_year_after_an_annual_report_and_no_period_when_unlabeled():
+    q3 = replace(ANNUAL, form="10-Q", fiscal_period="Q3")
+    assert render._next_period(ANNUAL, "Q1") == " for Q1 of fiscal year 2026"
+    assert render._next_period(q3, "FY") == " for fiscal year 2025"
+    assert render._next_period(replace(ANNUAL, form="20-F"), "FY") == " for fiscal year 2026"
+    assert render._next_period(replace(ANNUAL, fiscal_year=None), "Q1") == ""

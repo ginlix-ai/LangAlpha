@@ -3,8 +3,8 @@ import io
 import json
 
 import pytest
-
-from edgar_engine.cache import LocalDirStore, S3Store, SectionsCache, SubmissionCache
+from edgar_engine.cache import (PARSED_KINDS, DocumentsCache, LocalDirStore, S3Store, SectionsCache, StatementsCache,
+                                SubmissionCache, kind_of)
 from edgar_engine.sections import sections_for_filing
 from edgar_engine.sections.model import FilingSections, Section, Span, Target
 from edgar_engine.sections.version import SECTIONS_VERSION
@@ -269,3 +269,9 @@ def test_a_truncated_submission_is_not_kept(tmp_path):
     with pytest.raises(ValueError):
         sections_for_filing(_Filing(SUBMISSION.replace("</DOCUMENT>", "")), submissions=submissions)
     assert submissions.get(_Filing.accession_no) is None
+
+
+def test_a_key_names_its_cache_and_the_parsed_caches_are_the_three_of_a_parsed_filing():
+    keys = [cache._key("a") for cache in (SectionsCache, DocumentsCache, StatementsCache, SubmissionCache)]
+    assert [kind_of(k) for k in keys] == ["sections", "documents", "statements", "submissions"]
+    assert PARSED_KINDS == ("sections", "documents", "statements")

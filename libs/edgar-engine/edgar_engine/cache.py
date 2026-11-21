@@ -15,7 +15,8 @@ from edgar_engine.sections.model import FilingSections
 from edgar_engine.sections.version import SECTIONS_VERSION
 from edgar_engine.statements import STATEMENTS_VERSION, Financials, edgartools_version
 
-__all__ = ["DocumentsCache", "LocalDirStore", "S3Store", "SectionsCache", "StatementsCache", "Store", "SubmissionCache"]
+__all__ = ["PARSED_KINDS", "DocumentsCache", "LocalDirStore", "S3Store", "SectionsCache", "StatementsCache", "Store",
+           "SubmissionCache", "kind_of"]
 
 _MISSING_CODES = {"NoSuchKey", "404", "NotFound"}
 
@@ -95,12 +96,14 @@ class S3Store:
 
 
 class SectionsCache:
+    kind = "sections"
+
     def __init__(self, store: Store | None = None):
         self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
-        return f"sections/v{SECTIONS_VERSION}/{accession}.json.gz"
+        return f"{SectionsCache.kind}/v{SECTIONS_VERSION}/{accession}.json.gz"
 
     def get(self, accession: str) -> FilingSections | None:
         data = self.store.get(self._key(accession))
@@ -130,13 +133,14 @@ class SectionsCache:
 
 class DocumentsCache:
     """A filing's attached documents (edgar_engine.documents.attached_documents), rendered."""
+    kind = "documents"
 
     def __init__(self, store: Store | None = None):
         self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
-        return f"documents/v{SECTIONS_VERSION}/{accession}.json.gz"
+        return f"{DocumentsCache.kind}/v{SECTIONS_VERSION}/{accession}.json.gz"
 
     def get(self, accession: str) -> list | None:
         from edgar_engine.documents import SubmissionDocument
@@ -156,13 +160,14 @@ class DocumentsCache:
 
 class SubmissionCache:
     """Raw full-text submissions, kept as bytes so a re-parse sees exactly what EDGAR served."""
+    kind = "submissions"
 
     def __init__(self, store: Store | None = None):
         self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
-        return f"submissions/{accession}.txt.gz"
+        return f"{SubmissionCache.kind}/{accession}.txt.gz"
 
     def get(self, accession: str) -> bytes | None:
         data = self.store.get(self._key(accession))
@@ -191,13 +196,14 @@ class SubmissionCache:
 
 class StatementsCache:
     """Financials by accession, under the statements version and the edgartools version that rendered them."""
+    kind = "statements"
 
     def __init__(self, store: Store | None = None):
         self.store = store if store is not None else LocalDirStore()
 
     @staticmethod
     def _key(accession: str) -> str:
-        return f"statements/v{STATEMENTS_VERSION}/edgartools-{edgartools_version()}/{accession}.json.gz"
+        return f"{StatementsCache.kind}/v{STATEMENTS_VERSION}/edgartools-{edgartools_version()}/{accession}.json.gz"
 
     def get(self, accession: str) -> Financials | None:
         data = self.store.get(self._key(accession))
@@ -214,3 +220,12 @@ class StatementsCache:
         if not financials.complete:
             raise ValueError(f"statements of {accession} are not complete: only a complete read is kept")
         self.store.put(self._key(accession), gzip.compress(json.dumps(asdict(financials)).encode(), mtime=0))
+
+
+#: The caches a parsed filing is kept in, by the first segment of their keys.
+PARSED_KINDS = (SectionsCache.kind, DocumentsCache.kind, StatementsCache.kind)
+
+
+def kind_of(key: str) -> str:
+    """The cache a key belongs to, as its first segment names it."""
+    return key.split("/", 1)[0]
