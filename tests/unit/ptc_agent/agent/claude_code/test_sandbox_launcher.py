@@ -32,6 +32,7 @@ from ptc_agent.agent.claude_code.launcher import Credential
 from ptc_agent.agent.claude_code.sandbox_launcher import SandboxLink, sandbox_launcher
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core.paths import CLAUDE_CODE_TOKEN_DIR, LANGALPHA_CONFIG_DIR
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from src.llms.claude_code import ClaudeTurnFailed
 
 from .fake_api import TOKEN, FakeMessagesAPI
@@ -65,7 +66,9 @@ class Store:
 
 
 def _box(runtime: LocalSandboxRuntime) -> SimpleNamespace:
-    return SimpleNamespace(wait_ready=AsyncMock(), runtime=runtime, working_dir=runtime.working_dir)
+    return SimpleNamespace(
+        wait_ready=AsyncMock(), runtime=runtime, working_dir=runtime.working_dir, assets=AssetGate()
+    )
 
 
 @pytest.fixture

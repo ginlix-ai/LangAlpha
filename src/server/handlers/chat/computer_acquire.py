@@ -101,6 +101,10 @@ async def acquire_session(
                         user_id=user_id,
                         skills_signature=skills_signature,
                         run_id=run_id,
+                        # The turn's first model call needs neither the asset
+                        # sync nor the skill links; its calls on the computer
+                        # wait for them at the gate (AssetGateMiddleware).
+                        assets_later=True,
                     )
                 )
                 try:
@@ -134,6 +138,7 @@ async def acquire_session(
                         on_state_observed=_on_state,
                         skills_signature=skills_signature,
                         run_id=run_id,
+                        assets_later=True,
                     )
                 )
 

@@ -17,6 +17,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 import pytest
 
 from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox.runtime import (
     RuntimeState,
     SandboxFailureKind,
@@ -337,6 +338,7 @@ def _make_mock_session(initialized=True, has_sandbox=True):
     session.sandbox = MagicMock() if has_sandbox else None
     if has_sandbox:
         session.sandbox.sandbox_id = "sandbox-abc"
+        session.sandbox.assets = AssetGate()
         session.sandbox.is_ready = MagicMock(return_value=True)
         session.sandbox.ensure_sandbox_ready = AsyncMock()
         session.sandbox.sync_sandbox_assets = AsyncMock()
@@ -3673,6 +3675,7 @@ class TestSandboxRecovery:
             user_id="user-1",
             on_state_observed=None,
             _attempt=2,
+            assets_later=False,
         )
 
     @pytest.mark.asyncio
@@ -8708,6 +8711,7 @@ class TestGeneratedContentGoesToTheHeldFolder:
         manager, sandbox = self._asset_sync(events)
         sandbox.runtime = None
         sandbox.sandbox_id = "sandbox-abc"
+        sandbox.assets = AssetGate()
         sandbox._ensure_workspace_dirs = AsyncMock()
         sandbox.workspace_overlay_missing = AsyncMock(side_effect=[True, False])
         session = SimpleNamespace(sandbox=sandbox)

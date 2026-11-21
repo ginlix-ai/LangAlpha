@@ -260,9 +260,9 @@ async def _run(
 ) -> MountOutcome:
     """Run one daemon command as root, carrying ``config`` in when given.
 
-    The daemon's code reaches the machine with the asset sync, which the
-    mount comes up beside. A command refused for stale code ships the
-    daemon's own files and asks once more, so the mount never depends on
+    The daemon's code reaches the machine with the asset sync, which a
+    turn's mount does not wait for. A command refused for stale code ships
+    the daemon's own files and asks once more, so the mount never depends on
     that sync having got there first."""
     outcome = await _ask(sandbox, action, args, config)
     if outcome.error == MountError.STALE_CODE and await _ship_code(sandbox):

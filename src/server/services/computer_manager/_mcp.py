@@ -731,30 +731,34 @@ class McpSecretsMixin:
         ran after the folder's restore, so the attach runs its own."""
         stats = None
         complete = False
-        if not user_id or sandbox is None:
-            complete = True
-        else:
-            try:
-                async with self._held_workspace_folder(workspace_id) as dir_name:
-                    stats = await reconcile_workspace_skills(
-                        sandbox,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                        source=source,
-                        # With no folder the service refuses the pass; an empty
-                        # one would name the computer root, whose prune reaches
-                        # every sibling.
-                        project=ProjectContext(workspace_id, dir_name) if dir_name else None,
-                    )
-                complete = stats is not None and not stats.link_failed
-            except WorkspaceFolderMoving:
-                logger.info(f"[skill_sync] {source} pass for {workspace_id} waits for its folder to land")
-            except Exception as e:
-                logger.warning(f"[skill_sync] {source} pass for {workspace_id} skipped: {e}")
-        if attach_key is not None and not (
-            complete and stats is not None and not stats.restore_incomplete
-        ):
-            self._projects_attached.pop(attach_key, None)
+        try:
+            if not user_id or sandbox is None:
+                complete = True
+            else:
+                try:
+                    async with self._held_workspace_folder(workspace_id) as dir_name:
+                        stats = await reconcile_workspace_skills(
+                            sandbox,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                            source=source,
+                            # With no folder the service refuses the pass; an empty
+                            # one would name the computer root, whose prune reaches
+                            # every sibling.
+                            project=ProjectContext(workspace_id, dir_name) if dir_name else None,
+                        )
+                    complete = stats is not None and not stats.link_failed
+                except WorkspaceFolderMoving:
+                    logger.info(f"[skill_sync] {source} pass for {workspace_id} waits for its folder to land")
+                except Exception as e:
+                    logger.warning(f"[skill_sync] {source} pass for {workspace_id} skipped: {e}")
+        finally:
+            # In a finally: a pass cancelled midway has not linked the folder
+            # either, and would otherwise leave the attachment recorded.
+            if attach_key is not None and not (
+                complete and stats is not None and not stats.restore_incomplete
+            ):
+                self._projects_attached.pop(attach_key, None)
         return complete
 
     # Strong refs prevent task GC; never consult this set as state.

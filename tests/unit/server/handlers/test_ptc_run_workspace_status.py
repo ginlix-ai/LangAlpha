@@ -107,6 +107,7 @@ def _make_workspace_manager(
         on_state_observed=None,
         skills_signature=None,
         run_id=None,
+        assets_later=False,
     ):
         # Fire the callback asynchronously, as the real reconnect does.
         if observed_state is not None and on_state_observed is not None:
@@ -422,3 +423,15 @@ async def test_a_turn_nobody_started_starts_on_the_setup_token_the_user_stored(t
     )
 
     keep.assert_awaited_once_with("t-1", named)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_ready", [True, False], ids=["warm", "cold"])
+async def test_a_turns_acquire_returns_ahead_of_its_asset_sync(has_ready):
+    wm = _make_workspace_manager(has_ready=has_ready, observed_state="running")
+
+    await _run_to_sentinel(_make_request(), wm)
+
+    calls = wm.get_session_for_workspace.await_args_list
+    assert calls
+    assert all(c.kwargs.get("assets_later") is True for c in calls)

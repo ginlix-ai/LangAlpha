@@ -133,7 +133,7 @@ def turn_launcher(
             return sandbox_launcher(
                 sandbox, identity=user_id, credential=credential, plan=plan,
                 cli_slot=partial(computer_cli_slot, computer_id, queue=queue) if computer_id is not None else None,
-                slot_wait_s=slot_wait_s,
+                slot_wait_s=slot_wait_s, workspace_id=workspace_id,
             )
         return LocalLauncher(saved=credential, plan=plan)
     if computer_id is None:
@@ -141,6 +141,7 @@ def turn_launcher(
 
     async def link() -> Link:
         await sandbox.wait_ready()
+        await sandbox.assets.wait(workspace_id)
         return await sandbox.runtime.link()
 
     return _ssh_launcher(

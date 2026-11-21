@@ -151,6 +151,8 @@ class SessionLifecycleMixin:
         on_state_observed: Callable[[str], None] | None = None,
         skills_signature: str | None = None,
         _attempt: int = 0,
+        *,
+        assets_later: bool = False,
     ) -> Session:
         """Sizing and always-on belong to create/restart, not post-start checks.
 
@@ -325,6 +327,8 @@ class SessionLifecycleMixin:
                             workspace_user_id,
                             on_state_observed,
                             _mark,
+                            skills_signature=skills_signature,
+                            assets_later=assets_later,
                         )
                     except _MachineLeftRunning:
                         # A stop won the row after it was read here; wait for
@@ -368,6 +372,7 @@ class SessionLifecycleMixin:
                 workspace_user_id=workspace_user_id,
                 on_state_observed=on_state_observed,
                 attempt=_attempt,
+                assets_later=assets_later,
             )
 
         # Wait outside the lock so a 60-300s restore cannot block other operations.
@@ -380,6 +385,7 @@ class SessionLifecycleMixin:
                 on_state_observed=on_state_observed,
                 mark=_mark,
                 attempt=_attempt,
+                assets_later=assets_later,
             )
             return attached
 
@@ -397,6 +403,7 @@ class SessionLifecycleMixin:
             ws_mcp_version=ws_mcp_version,
             ws_platform_secret_version=ws_platform_secret_version,
             skills_signature=skills_signature,
+            assets_later=assets_later,
         )
 
         if _session_phases:
@@ -446,6 +453,7 @@ class SessionLifecycleMixin:
         workspace_user_id: str | None,
         on_state_observed: Callable[[str], None] | None,
         attempt: int,
+        assets_later: bool = False,
     ) -> Session:
         """Let a stop finish, then acquire again from whatever state it left.
 
@@ -490,6 +498,7 @@ class SessionLifecycleMixin:
             user_id=user_id or workspace_user_id,
             on_state_observed=on_state_observed,
             _attempt=attempt + 1,
+            assets_later=assets_later,
         )
 
     async def _correct_stuck_stopping(self, binding: ComputerBinding) -> None:
@@ -649,6 +658,7 @@ class SessionLifecycleMixin:
         on_state_observed: Callable[[str], None] | None,
         mark: Callable[[str], None],
         attempt: int,
+        assets_later: bool = False,
     ) -> Session:
         """Wait outside the machine lock so archived restores cannot block other ops."""
         refuse_start(binding.computer_id)
@@ -661,7 +671,12 @@ class SessionLifecycleMixin:
                     binding.computer_id, "workspace.session.attach"
                 ):
                     session, _ = await self._attach_running_session(
-                        binding, ws_done, workspace_user_id, on_state_observed, mark
+                        binding,
+                        ws_done,
+                        workspace_user_id,
+                        on_state_observed,
+                        mark,
+                        assets_later=assets_later,
                     )
             except _MachineLeftRunning:
                 return await self._await_stop_and_retry(
@@ -670,6 +685,7 @@ class SessionLifecycleMixin:
                     workspace_user_id=workspace_user_id,
                     on_state_observed=on_state_observed,
                     attempt=attempt,
+                    assets_later=assets_later,
                 )
             return session
         if wait_status == "stopped" and attempt == 0:
@@ -683,6 +699,7 @@ class SessionLifecycleMixin:
                 user_id=user_id,
                 on_state_observed=on_state_observed,
                 _attempt=attempt + 1,
+                assets_later=assets_later,
             )
         raise RuntimeError(
             f"Workspace {workspace_id} ended start in unexpected "
@@ -703,12 +720,15 @@ class SessionLifecycleMixin:
         ws_mcp_version: int | None = None,
         ws_platform_secret_version: int | None = None,
         skills_signature: str | None = None,
+        assets_later: bool = False,
     ) -> Session | None:
         """Sync outside the machine lock; operations are idempotent or self-guarded.
 
         Same-worker waiters coalesce on phase2_event but trust the DB after waking.
         Promote lazy starts only when fully ready; revert failures to stopped so
-        callers never receive a half-ready session."""
+        callers never receive a half-ready session. For a turn's acquire, ready
+        is the folder restored: its asset sync follows in a catch-up
+        (``_catch_up.py``), whose failure leaves the computer running."""
         workspace_id = binding.workspace_id
         computer_id = binding.computer_id
         machine = self._machine(computer_id)
@@ -748,11 +768,16 @@ class SessionLifecycleMixin:
                     )
                     self._freeze_tool_view(computer_id, workspace_id, active)
                     if resolved_mcp is not None:
-                        await self._sync_sandbox_assets(
+                        # A turn that waited on another's start is still a
+                        # turn: its sync is handed over like the owner's.
+                        await self._sync_or_catch_up(
                             binding,
                             workspace_user_id,
-                            active.sandbox,
-                            reusing_sandbox=True,
+                            active,
+                            later=self._catches_up_later(binding, active, assets_later),
+                            what="warm",
+                            link_source=None,
+                            mark=mark,
                         )
                         view = self.tool_view(active, workspace_id)
                         self._kick_mcp_discovery(
@@ -774,6 +799,9 @@ class SessionLifecycleMixin:
                 )
 
             heartbeat_stack = AsyncExitStack()
+            # A lazy start's attach, recorded at its restore on the strength
+            # of the catch-up it is handed to after the promotion.
+            attach_key = None
             if needs_deferred_sync:
                 await heartbeat_stack.enter_async_context(
                     self._computer_start_heartbeat(computer_id)
@@ -825,28 +853,31 @@ class SessionLifecycleMixin:
                     )
                     mark("mcp_resolve")
 
-                # The signature is stamped by the sync that delivered its
-                # skills, and only one that ran to its end: a failed one
-                # leaves it for the next acquire to try again instead of
-                # trusting the cooldown. The link pass is not asked: a
-                # workspace it cannot finish for would sync on every acquire.
                 skills_changed = (
                     skills_signature is not None
                     and session.skills_signature != skills_signature
                 )
+                # A turn's acquire returns ahead of the asset sync and the
+                # skill links, which only what its agent runs on the computer
+                # reads; see _catch_up.py.
+                later = self._catches_up_later(binding, session, assets_later)
                 if needs_deferred_sync:
                     logger.debug(
                         f"Completing deferred sync for lazy-init workspace {workspace_id}"
                     )
-                    delivered = await self._sync_restore_and_reconcile(
-                        binding,
-                        workspace_user_id,
-                        session,
-                        source="lazy_phase2",
-                        mark=mark,
-                    )
-                    if delivered and skills_signature is not None:
-                        session.skills_signature = skills_signature
+                    if later:
+                        attach_key = await self._restore_and_claim(binding, session)
+                        mark("file_restore")
+                    else:
+                        delivered = await self._sync_restore_and_reconcile(
+                            binding,
+                            workspace_user_id,
+                            session,
+                            source="lazy_phase2",
+                            mark=mark,
+                        )
+                        if delivered and skills_signature is not None:
+                            session.skills_signature = skills_signature
                     # Defer interval writes until ready to avoid racing archived startup.
                     # An auto-stop hiccup must not revert an otherwise healthy start.
                     # Re-read the machine rather than the binding frozen at turn
@@ -867,30 +898,44 @@ class SessionLifecycleMixin:
                         self._queue_reconnect_syncs_soon(
                             computer_id, session.sandbox, opened=workspace_id
                         )
-                elif mcp_changed or skills_changed:
-                    # Warm sessions still need changed MCP wrappers or skills uploaded; manifest
-                    # diffs bound that work without repeating restore or promotion.
-                    synced = await self._sync_sandbox_assets(
+                    if later:
+                        # After the promotion as well: a catch-up that fails
+                        # leaves a running computer on the files it had, as a
+                        # warm one's failed sync does, never a reverted start.
+                        await self._sync_or_catch_up(
+                            binding,
+                            workspace_user_id,
+                            session,
+                            later=True,
+                            what="start",
+                            link_source="lazy_phase2",
+                            skills_signature=skills_signature,
+                            attach_key=attach_key,
+                            mark=mark,
+                        )
+                        attach_key = None
+                elif (
+                    mcp_changed
+                    or skills_changed
+                    or self._sync_owed(computer_id, workspace_id)
+                ):
+                    # Warm sessions still need changed MCP wrappers or skills
+                    # uploaded; manifest diffs bound that work without
+                    # repeating restore or promotion. The upload only fills
+                    # the shared directory, and this workspace reaches a
+                    # shared skill through a link the pass lays: without it a
+                    # skill added or switched back on is listed this turn but
+                    # cannot be read. Or a sync this worker did not see finish.
+                    await self._sync_or_catch_up(
                         binding,
                         workspace_user_id,
-                        session.sandbox,
-                        reusing_sandbox=True,
+                        session,
+                        later=later,
+                        what="warm",
+                        link_source="warm_skills_changed" if skills_changed else None,
+                        skills_signature=skills_signature,
+                        mark=mark,
                     )
-                    mark("mcp_asset_sync")
-                    if skills_changed:
-                        # The upload only fills the shared directory; this
-                        # workspace reaches a shared skill through a link the
-                        # reconciler lays. Without it, a skill added or switched
-                        # back on is listed this turn but cannot be read.
-                        await self._reconcile_skills(
-                            binding.workspace_id,
-                            workspace_user_id,
-                            session.sandbox,
-                            source="warm_skills_changed",
-                        )
-                        mark("skill_reconcile")
-                        if synced is not None:
-                            session.skills_signature = skills_signature
 
                 # Keep up-to-30s discovery off the turn and lock; completion syncs new wrappers.
                 if resolved_mcp is not None:
@@ -1000,6 +1045,9 @@ class SessionLifecycleMixin:
                     raise
                 # An already-running sandbox remains usable; retry periodic sync next request.
             finally:
+                if attach_key is not None:
+                    # The start ended between its restore and the hand-over.
+                    self._projects_attached.pop(attach_key, None)
                 await heartbeat_stack.aclose()
                 # Wake waiters without evicting a newer caller's event from the registry.
                 self._release_phase2_gate(computer_id, phase2_event)
@@ -1156,6 +1204,8 @@ class SessionLifecycleMixin:
         workspace_user_id: str | None,
         on_state_observed: Callable[[str], None] | None,
         mark: Callable[[str], None],
+        skills_signature: str | None = None,
+        assets_later: bool = False,
     ) -> tuple[Session, bool]:
         """The caller must hold the machine's _observed_lock.
 
@@ -1314,21 +1364,28 @@ class SessionLifecycleMixin:
             )
             self._freeze_tool_view(computer_id, workspace_id, session)
 
-            await self._sync_sandbox_assets(
-                binding,
-                workspace_user_id,
-                session.sandbox,
-                reusing_sandbox=sandbox_id is not None,
-            )
-            mark("cold_asset_sync")
+            # A turn's acquire hands the sync over once the session is cached
+            # (below), and leaves the skill links to the attach that follows
+            # every acquire, which hands them over too.
+            later = self._catches_up_later(binding, session, assets_later)
+            if later:
+                mark("mcp_resolve")
+            else:
+                await self._sync_sandbox_assets(
+                    binding,
+                    workspace_user_id,
+                    session.sandbox,
+                    reusing_sandbox=sandbox_id is not None,
+                )
+                mark("cold_asset_sync")
 
-            await self._reconcile_skills(
-                binding.workspace_id,
-                workspace_user_id,
-                session.sandbox,
-                source="attach_running",
-            )
-            mark("skill_reconcile")
+                await self._reconcile_skills(
+                    binding.workspace_id,
+                    workspace_user_id,
+                    session.sandbox,
+                    source="attach_running",
+                )
+                mark("skill_reconcile")
 
             # Cache before discovery or its liveness gate exits permanently. Unwind
             # this publication if migration later fails.
@@ -1362,6 +1419,23 @@ class SessionLifecycleMixin:
                 if self._cached_session(computer_id) is session:
                     self._drop_session(computer_id)
                 raise
+            if later and migrated is None:
+                # A migration built its sandbox with everything on it. The
+                # links are the attach's that follows, unless this worker
+                # recorded it before it let go of the session: that attach
+                # lays none, so the sync's own pass does.
+                recorded = self._attached(
+                    binding, (workspace_id, self._session_sandbox_id(session))
+                )
+                await self._sync_or_catch_up(
+                    binding,
+                    workspace_user_id,
+                    session,
+                    later=True,
+                    what="attach_running",
+                    link_source="attach_running" if recorded else None,
+                    skills_signature=skills_signature,
+                )
             did_init = True
             self._on_session_attached(computer_id, session, resumed=False)
 
@@ -1705,6 +1779,9 @@ class SessionLifecycleMixin:
             # Cancel discovery before teardown to prevent dead-sandbox probes and
             # orphan schemas.
             self._cancel_mcp_discovery(computer_id)
+            # And an asset sync still running beside a turn that has ended,
+            # so the backup reads a disk nothing here is writing.
+            await self._stop_catch_ups(computer_id)
 
             async with computer_stop_heartbeat(computer_id):
                 return await self._finish_claimed_stop(

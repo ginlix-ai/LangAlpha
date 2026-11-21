@@ -208,9 +208,29 @@ class ProvisioningMixin:
         reusing_sandbox: bool = False,
         *,
         rebuild_overlay: bool = False,
+        later: bool = False,
     ) -> Any:
         """``_sync_project_assets`` for code about to run on ``sandbox``: the
-        file mount comes up beside the sync when due."""
+        file mount comes up beside the sync when due.
+
+        ``later`` is a sync a catch-up runs beside a turn. It moves no
+        folders, which that turn is reading (``known_layout_version``), and
+        starts no mount beside it, since the turn's acquire saw to the mount
+        its prompt answers for; a start this sync stood in the way of is
+        asked once more after it."""
+        if later:
+            synced = await self._sync_project_assets(
+                binding,
+                user_id,
+                sandbox,
+                reusing_sandbox,
+                rebuild_overlay=rebuild_overlay,
+                known_layout_version=binding.layout_version,
+            )
+            await self._keep_livefs(
+                binding.computer_id, user_id, sandbox, binding.workspace_id
+            )
+            return synced
         return await self._livefs_beside(
             binding.computer_id,
             user_id,
@@ -234,6 +254,7 @@ class ProvisioningMixin:
         force_refresh: bool = False,
         *,
         rebuild_overlay: bool = False,
+        known_layout_version: Optional[int] = None,
     ) -> Any:
         """Upload this project's assets, returning the asset leg's result or None.
 
@@ -282,6 +303,7 @@ class ProvisioningMixin:
                         reusing_sandbox=reusing_sandbox,
                         force_refresh=force_refresh,
                         rebuild_overlay=rebuild_overlay,
+                        known_layout_version=known_layout_version,
                         project=ProjectContext(workspace_id, dir_name or ""),
                         root_owner_dir_name=await self._layout_root_owner_dir(
                             replace(binding, dir_name=dir_name)
@@ -1169,7 +1191,7 @@ class ProvisioningMixin:
         of the skill pass it runs next; recording it here spares the attach
         that follows in the same acquisition a second pass over the same
         state. Taken right after the restore returns, before any other await,
-        for the reason the attach gives. Returns the key to hand to
+        for the reason ``_restore_and_claim`` gives. Returns the key to hand to
         ``_reconcile_skills``, which withdraws it unless its pass completes;
         None when it was already recorded and so is not this caller's.
         """
@@ -1230,7 +1252,12 @@ class ProvisioningMixin:
         return synced is not None
 
     async def _ensure_project_attached(
-        self, binding: ComputerBinding, session: Any, *, user_id: str | None = None
+        self,
+        binding: ComputerBinding,
+        session: Any,
+        *,
+        user_id: str | None = None,
+        assets_later: bool = False,
     ) -> None:
         """Machine startup prepares only its starter project, not every sibling.
 
@@ -1246,37 +1273,31 @@ class ProvisioningMixin:
         # did not reach the machine waits for this. Free once it has them.
         await self._keep_browser_settings(binding, sandbox)
         workspace_id = binding.workspace_id
-        key = (workspace_id, self._session_sandbox_id(session))
-        recorded = False
-        if not self._attached(binding, key):
-            # Restore files before rebuilding the generated tool configuration.
-            await self._ensure_workspace_dirs(workspace_id, sandbox, binding.dir_name)
-            # Unrestored, the next acquisition retries before trusting this
-            # workspace. Restored, the key goes in before the next await: the
-            # bring-up just queued may drop the workspace and discard its key,
-            # which a later add would undo.
-            if await self._maybe_restore_files(binding, sandbox):
-                recorded = self._claim_attached(binding, session) is not None
         # Before the overlay can end the attach, which does not end the turn:
         # a restart the reconnect found is recorded and a serving mount handed.
         await self._load_livefs(binding.computer_id, user_id, sandbox)
-        if not await self._ensure_project_tool_overlay(
-            binding, session, user_id=user_id
-        ):
-            # Retry on the next acquire; MCP calls refuse an absent config.
-            if recorded:
-                self._projects_attached.pop(key, None)
-            return
-        if recorded and not await self._reconcile_skills(
-            workspace_id, user_id, sandbox, source="attach_project"
-        ):
-            # A folder reaches the shared skills only through links, and a
-            # machine start or a sibling's lifecycle links no folder but its
-            # own. After the overlay, whose asset refresh can deliver skills
-            # the pass has to link. A full pass, once per sandbox per process:
-            # one that did not finish leaves the attachment unrecorded, so the
-            # next acquisition retries it before trusting this project.
-            self._projects_attached.pop(key, None)
+        # Files before the generated tool configuration is rebuilt. The key
+        # is this acquire's record of the attach, which stands on the overlay
+        # and the skill pass below.
+        attach_key = (
+            None
+            if self._attached(binding, (workspace_id, self._session_sandbox_id(session)))
+            else await self._restore_and_claim(binding, session)
+        )
+        # Only what the agent runs on the computer reads the overlay and the
+        # links, so a turn's acquire hands them over and goes on to the mount,
+        # which its prompt answers for.
+        later = self._catches_up_later(binding, session, assets_later)
+        await self._run_or_catch_up(
+            binding,
+            session,
+            lambda: self._attach_overlay_and_skills(
+                binding, session, user_id=user_id, links=attach_key is not None, later=later
+            ),
+            later=later,
+            what="attach",
+            attach_key=attach_key,
+        )
         if not self._livefs_owed(binding.computer_id, workspace_id, sandbox):
             return
         if not user_id:
@@ -1290,6 +1311,7 @@ class ProvisioningMixin:
         session: Any,
         *,
         user_id: str | None = None,
+        later: bool = False,
     ) -> bool:
         """Repair this project's config from its own resolved connector set."""
         sandbox = session.sandbox
@@ -1331,6 +1353,7 @@ class ProvisioningMixin:
                 sandbox,
                 reusing_sandbox=True,
                 rebuild_overlay=True,
+                later=later,
             )
             if result is None or await sandbox.workspace_overlay_missing(
                 workspace_id=workspace_id, dir_name=dir_name

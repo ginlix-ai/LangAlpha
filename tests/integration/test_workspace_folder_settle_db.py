@@ -21,6 +21,7 @@ from ptc_agent.config.core import (
     FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig,
 )
 from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from src.server.database import pool as db_pool
 from src.server.database import workspace as workspaces
 from src.server.database.computer import create_computer
@@ -744,11 +745,11 @@ async def test_an_acquisition_keeps_its_folder_until_attachment_ends(seed_user, 
     a = str((await workspaces.create_workspace_on_computer(user_id, "Research", computer_id))["workspace_id"])
     await workspaces.update_workspace(a, name="Macro")
     manager = _manager()
-    session = SimpleNamespace(sandbox=SimpleNamespace(runtime=object()))
+    session = SimpleNamespace(sandbox=SimpleNamespace(runtime=object(), assets=AssetGate()))
     attaching, attached = asyncio.Event(), asyncio.Event()
     folders = []
 
-    async def attach(binding, _session, *, user_id=None):
+    async def attach(binding, _session, *, user_id=None, assets_later=False):
         folders.append(binding.dir_name)
         attaching.set()
         await attached.wait()
@@ -881,6 +882,7 @@ async def test_concurrent_cold_attach_fits_the_pool(
     sessions = {
         workspace_id: SimpleNamespace(sandbox=SimpleNamespace(
             runtime=None,
+            assets=AssetGate(),
             sandbox_id=f"sb-{workspace_id}",
             vault_secrets={},
             mounts_livefs=True,
@@ -954,6 +956,7 @@ async def test_concurrent_cold_restores_fit_the_pool(
     sessions = {
         workspace_id: SimpleNamespace(sandbox=SimpleNamespace(
             runtime=None,
+            assets=AssetGate(),
             sandbox_id=None,
             vault_secrets={},
             mounts_livefs=True,

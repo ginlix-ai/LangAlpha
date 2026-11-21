@@ -19,6 +19,7 @@ from unittest.mock import call as mock_call
 import pytest
 
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from src.server.database.workspace_folders import WorkspaceFolderMoving
 from src.server.services.computer_errors import (
@@ -131,6 +132,7 @@ def _make_session():
     session._initialized = True
     session.sandbox = MagicMock()
     session.sandbox.sandbox_id = "sandbox-abc"
+    session.sandbox.assets = AssetGate()
     return session
 
 
@@ -3269,6 +3271,7 @@ class TestWorkspaceFacade(_Base):
             on_state_observed=None,
             skills_signature=None,
             _attempt=0,
+            assets_later=False,
         )
         binding, got = manager._ensure_project_attached.await_args.args
         assert binding.workspace_id == "ws-a"
@@ -3312,7 +3315,7 @@ class TestWorkspaceFacade(_Base):
         async def settle(_computer_id, _runtime, **_kw):
             events.append("settle")
 
-        async def attach(binding, _session, *, user_id=None):
+        async def attach(binding, _session, *, user_id=None, assets_later=False):
             events.append(f"attach {binding.dir_name}")
 
         manager._acquire_session = AsyncMock(return_value=session)
@@ -3381,6 +3384,23 @@ class TestShutdown(_Base):
 
         assert manager._machines == {}
         assert manager._session_computer == {}
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    async def test_shutdown_stops_the_catch_ups_this_worker_runs(self, mock_session_mgr):
+        """Before the providers they call through are closed."""
+        mock_session_mgr.stop_all = AsyncMock()
+        manager = _make_manager()
+        running = asyncio.create_task(asyncio.Event().wait())
+        manager._machine("comp-1").catch_ups["ws-a"] = [running]
+        closed_after: list[bool] = []
+        manager.drop_cached_providers = AsyncMock(
+            side_effect=lambda: closed_after.append(running.cancelled())
+        )
+
+        await manager.shutdown()
+
+        assert closed_after == [True]
 
 
 # ---------------------------------------------------------------------------

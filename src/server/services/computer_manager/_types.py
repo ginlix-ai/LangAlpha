@@ -7,7 +7,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from ptc_agent.core.mcp_composite import builtin_registry_of
 from ptc_agent.core.mcp_registry import get_global_registry
@@ -110,6 +110,8 @@ class ComputerBinding:
     #: The machine's owner, whose policy decides whether work runs on it.
     user_id: Optional[str] = None
     browser: Optional[Choices] = None
+    #: The folder layout the machine's last sync reported; None until one has.
+    layout_version: Optional[int] = None
 
     @property
     def provider_identity(self) -> Tuple[str, str]:
@@ -286,6 +288,20 @@ class MachineState:
     livefs: MountTracker = field(default_factory=MountTracker)
     # The background restore and transcript sync of the sandbox in the slot.
     bring_up: Optional["BringUp"] = None
+    # The asset catch-ups still running for each workspace, in the order they
+    # were handed over, each run after the one before; see _catch_up.py.
+    # Cancelled with the session.
+    catch_ups: Dict[str, List[asyncio.Task]] = field(default_factory=dict)
+    # Workspaces whose asset sync this worker took on and has not seen
+    # finish, which the next acquire that syncs runs again: the session's
+    # stamps (tool view version, skills signature) say nothing of a sync cut
+    # short. Each under the token of the latest sync taken on for it, which
+    # only that sync's end settles: an earlier one may have started before
+    # what the later one was taken on for.
+    sync_owed: Dict[str, object] = field(default_factory=dict)
+    # A catch-up here ran into its deadline, so acquires sync on their own
+    # path, with no deadline, for the rest of the session.
+    catch_up_cut: bool = False
 
     def forget_session(self) -> None:
         """Drop everything the session owned, keeping the lock its caller may hold.
@@ -304,6 +320,24 @@ class MachineState:
         self.livefs.forget()
         if self.bring_up is not None:
             self.cancel_bring_up(self.bring_up.sandbox_id)
+        # A catch-up that found its sandbox gone clears the session itself,
+        # and must run on to open its gate.
+        if self.catch_ups:
+            current = asyncio.current_task()
+            for task in self.running_catch_ups():
+                if task is not current:
+                    task.cancel()
+            self.catch_ups.clear()
+        self.sync_owed.clear()
+        self.catch_up_cut = False
+
+    def running_catch_ups(self) -> List[asyncio.Task]:
+        return [
+            task
+            for queue in self.catch_ups.values()
+            for task in queue
+            if not task.done()
+        ]
 
     def cancel_bring_up(self, sandbox_id: Optional[str]) -> None:
         """Stop the bring-up running against ``sandbox_id``, before that sandbox goes.
