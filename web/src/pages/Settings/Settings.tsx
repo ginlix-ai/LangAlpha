@@ -14,6 +14,7 @@ import { ChatPanel } from './panels/ChatPanel';
 import { ArtifactsPanel } from './panels/ArtifactsPanel';
 import { DesktopPanel } from './panels/DesktopPanel';
 import { AgentPanel } from './panels/AgentPanel';
+import { ComputersPanel } from './panels/ComputersPanel';
 import { ModelsPanel } from './panels/ModelsPanel';
 import { TradingPermissionSection } from './panels/TradingPermissionSection';
 import { ExperimentsPanel } from './panels/ExperimentsPanel';
@@ -21,6 +22,7 @@ import { PlanPanel } from './panels/PlanPanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { SettingsRail } from './components/SettingsRail';
 import ComputersDialogHost from '@/pages/ChatAgent/components/ComputersDialogHost';
+import { useCloseComputersOnLeave } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { readSection, SECTIONS, type Section } from './sections';
 import '@/styles/pageRail.css';
 import './Settings.css';
@@ -57,6 +59,7 @@ function SectionBody({ section }: { section: Section }) {
     case 'artifacts': return <ArtifactsPanel />;
     case 'desktop': return <DesktopPanel />;
     case 'agent': return <AgentPanel />;
+    case 'computers': return <ComputersPanel />;
     case 'model': return <ModelsPanel />;
     case 'integrations': return <IntegrationsPanel />;
     case 'trading': return <TradingPermissionSection />;
@@ -70,6 +73,7 @@ function SectionBody({ section }: { section: Section }) {
  * jumped to, which is brought into view and marked for a moment.
  */
 function Settings() {
+  useCloseComputersOnLeave('settings');
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const { hash } = location;
@@ -95,11 +99,13 @@ function Settings() {
       marked = target;
       target.scrollIntoView?.({ block: 'center' });
       if (focusSetting) {
-        // The control a row names as its own, else in a group of choices the
-        // one picked now, else the first control. A body with none of its
+        // The row itself where it is the control, else the control it names
+        // as its own, else in a group of choices the one picked now, else
+        // the first control. A body with none of its
         // own, like the investing answers, hands focus to its group's action.
         const control = 'input, select, button, a[href], [tabindex]:not([tabindex="-1"])';
-        (target.querySelector<HTMLElement>('[data-search-focus]')
+        ((target.matches(control) ? target : null)
+          ?? target.querySelector<HTMLElement>('[data-search-focus]')
           ?? target.querySelector<HTMLElement>('input:checked')
           ?? target.querySelector<HTMLElement>(control)
           ?? target.closest('.settings-group')?.querySelector<HTMLElement>(control))
@@ -154,8 +160,9 @@ function Settings() {
           </div>
         </div>
       </div>
-      {/* Change spec, opened over Claude Code's view in Model access, so
-          the user stays where they started while the computer resizes. */}
+      {/* The Computers panel, opened from the Computers section's rows, and
+          Change spec, opened over Claude Code's view in Model access, so the
+          user stays where they started while the computer changes. */}
       <ComputersDialogHost overSheet planInPlace />
     </div>
   );

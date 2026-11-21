@@ -48,6 +48,13 @@ export function providerIsOwnMachine(kind: string): boolean {
   return !!providerUi(kind)?.ownMachine;
 }
 
+/** What New computer adds: a machine of the user's own only where one is on offer. */
+export function newComputerNote(t: Translate, providers: readonly ComputerProviderOption[] | undefined): string {
+  return providers?.some((p) => providerIsOwnMachine(p.kind))
+    ? t('computer.card.newOwn', 'A cloud computer, or a machine you already have, reached over SSH.')
+    : t('computer.card.newCloud', 'Another cloud computer, for work you want kept on its own machine.');
+}
+
 /**
  * Removing a machine the user brings stops using it and leaves their files
  * there, and deleting a workspace on one leaves its folder unless the user

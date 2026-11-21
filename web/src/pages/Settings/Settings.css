@@ -248,6 +248,63 @@ label.settings-row-label { cursor: pointer; }
   .settings-row-desc { order: 3; flex: 1 0 100%; margin: 0; }
 }
 
+/* A computer in the Computers section: the whole row opens its details, so
+   it is one button, laid out as a row with the machine's glyph ahead of the
+   name and a chevron at the end. Its own shape and text classes rather than
+   .settings-row's, whose narrow layout reorders them around a control. */
+.settings-machine {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  scroll-margin: 24px;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.settings-machine:hover { background: var(--color-bg-hover); }
+/* Inside the card's edge: outside it, the ring would cross the rows either side. */
+.settings-machine:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
+.settings-machine.is-static { cursor: default; }
+.settings-machine.is-static:hover { background: transparent; }
+.settings-card > .settings-machine:first-child { border-top-left-radius: inherit; border-top-right-radius: inherit; }
+.settings-card > .settings-machine:last-child { border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
+.settings-machine-icon {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+}
+.settings-machine-icon svg { width: 15px; height: 15px; }
+.settings-machine-icon.is-add { border-style: dashed; }
+.settings-machine-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.settings-machine-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.settings-machine-label {
+  font-size: var(--cs-text-row, 0.8125rem);
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+.settings-machine-desc {
+  margin-top: 2px;
+  font-size: var(--cs-text-label, 0.75rem);
+  line-height: 17px;
+  color: var(--color-text-tertiary);
+}
+.settings-machine.is-static .settings-machine-desc { margin-top: 0; }
+.settings-machine-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.settings-machine-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--color-text-quaternary); }
+
 /* The theme's style choices stand as tiles: the preview across the top, the
    name and its line under it, the check 7px inside the preview's corner
    (the card's own padding, py-3.5 and px-4, plus 7). A row's layout would
@@ -259,6 +316,7 @@ label.settings-row-label { cursor: pointer; }
 
 /* The setting the search opened on, marked until the eye has found it. */
 .settings-row[data-found],
+.settings-machine[data-found],
 .settings-card-body[data-found],
 .settings-group[data-found] {
   /* motion-exempt: the hold is a wait, not motion */

@@ -1,5 +1,5 @@
 import { DESKTOP_DOWNLOAD_URL, PLATFORM_URL } from '@/config/supportLinks';
-import { openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
+import { COMPUTERS_SETTINGS_URL, openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { WELCOME_PATH } from '../welcome/paths';
 import type { GettingStartedTaskDef } from './types';
 
@@ -69,10 +69,11 @@ export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
     id: 'remoteControl',
     titleKey: 'onboarding.gettingStarted.tasks.remoteControl.title',
     descKey: 'onboarding.gettingStarted.tasks.remoteControl.desc',
-    to: '/chat',
-    // The Computers panel mounts with the chat page and reads its store as it
-    // does, so it opens onto the form however the page is reached.
-    open: () => openComputersPanel({ view: 'create', pick: 'thisMac' }),
+    to: COMPUTERS_SETTINGS_URL,
+    // The Computers panel mounts with the Settings page and reads its store as
+    // it does, so it opens onto the form however the page is reached, and
+    // closes onto the list of computers, where this Mac then is.
+    open: () => openComputersPanel({ view: 'create', pick: 'thisMac', returnTo: 'settings' }),
     offeredOn: 'thisMac',
     doneWhen: 'thisMacAdded',
   },

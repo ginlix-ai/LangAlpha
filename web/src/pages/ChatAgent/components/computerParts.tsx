@@ -59,6 +59,31 @@ export interface MachineActions {
   removeClaudeCodeToken: () => void;
 }
 
+/** The pills for what a machine is to the account: its primary, or Home's stand-in. */
+export function RolePills({ computer }: { computer: Computer }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {computer.is_primary && (
+        <Pill icon={House} title={t('computer.primaryBadgeTitle', 'New workspaces are created on this computer')}>
+          {t('computer.primaryBadge', 'Primary')}
+        </Pill>
+      )}
+      {computer.stands_in_for_home && (
+        <Pill
+          icon={Cloud}
+          title={t(
+            'computer.standInBadgeTitle',
+            "The Chief of Staff works here while your primary computer can't be reached, so this computer stays even with no workspaces. You can still remove it.",
+          )}
+        >
+          {t('computer.standInBadge', 'Stands in for Home')}
+        </Pill>
+      )}
+    </>
+  );
+}
+
 interface MachineFrameProps {
   computer: Computer;
   index: number;
@@ -94,22 +119,7 @@ export function MachineFrame({ computer, index, thisMac, inert, onOpen }: Machin
       br={
         (computer.is_primary || computer.stands_in_for_home || thisMac) && (
           <>
-            {computer.is_primary && (
-              <Pill icon={House} title={t('computer.primaryBadgeTitle', 'New workspaces are created on this computer')}>
-                {t('computer.primaryBadge', 'Primary')}
-              </Pill>
-            )}
-            {computer.stands_in_for_home && (
-              <Pill
-                icon={Cloud}
-                title={t(
-                  'computer.standInBadgeTitle',
-                  "The Chief of Staff works here while your primary computer can't be reached, so this computer stays even with no workspaces. You can still remove it.",
-                )}
-              >
-                {t('computer.standInBadge', 'Stands in for Home')}
-              </Pill>
-            )}
+            <RolePills computer={computer} />
             {thisMac && <Pill icon={Laptop}>{t('computer.remoteControl.thisMacBadge', 'This Mac')}</Pill>}
           </>
         )

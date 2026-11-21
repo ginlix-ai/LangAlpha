@@ -34,14 +34,14 @@ interface ComputerRailProps {
   arrivingId: string | null;
   card: (computer: Computer, place: RailPlace) => ReactNode;
   onCreate: () => void;
-  /** Bringing a machine is on offer here, so the New computer card says so. */
-  ownMachines: boolean;
+  /** The New computer card's line (`newComputerNote`). */
+  newNote: string;
   /** At the plan's cap with nothing left to add; the note under the rail says why. */
   held: boolean;
   heldNoteId: string;
 }
 
-export function ComputerRail({ computers, start, arrivingId, card, onCreate, ownMachines, held, heldNoteId }: ComputerRailProps) {
+export function ComputerRail({ computers, start, arrivingId, card, onCreate, newNote, held, heldNoteId }: ComputerRailProps) {
   const { t } = useTranslation();
   const count = computers.length + 1;
   const startIndex = start.id ? computers.findIndex((c) => c.computer_id === start.id) : -1;
@@ -78,7 +78,7 @@ export function ComputerRail({ computers, start, arrivingId, card, onCreate, own
         <NewComputerCard
           place={place(computers.length)}
           onCreate={onCreate}
-          ownMachines={ownMachines}
+          note={newNote}
           held={held}
           heldNoteId={heldNoteId}
         />
@@ -115,13 +115,13 @@ export function ComputerRail({ computers, start, arrivingId, card, onCreate, own
 interface NewComputerCardProps {
   place: RailPlace;
   onCreate: () => void;
-  ownMachines: boolean;
+  note: string;
   held: boolean;
   heldNoteId: string;
 }
 
 /** The rail's last card, which adds another. */
-function NewComputerCard({ place, onCreate, ownMachines, held, heldNoteId }: NewComputerCardProps) {
+function NewComputerCard({ place, onCreate, note, held, heldNoteId }: NewComputerCardProps) {
   const { t } = useTranslation();
   const rail = railCard(place.active, place.onActivate);
   return (
@@ -137,11 +137,7 @@ function NewComputerCard({ place, onCreate, ownMachines, held, heldNoteId }: New
       </ArtFrame>
       <div className="computer-card-body" {...rail.content}>
         <div className="computer-card-name">{t('computer.newComputer', 'New computer')}</div>
-        <p className="computer-card-note">
-          {ownMachines
-            ? t('computer.card.newOwn', 'A cloud computer, or a machine you already have, reached over SSH.')
-            : t('computer.card.newCloud', 'Another cloud computer, for work you want kept on its own machine.')}
-        </p>
+        <p className="computer-card-note">{note}</p>
         <div className="computer-card-actions">
           <Button size="sm" onClick={onCreate} disabled={held} aria-describedby={held ? heldNoteId : undefined}>
             {t('computer.card.add', 'Add a computer')}

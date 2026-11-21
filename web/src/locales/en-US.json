@@ -482,6 +482,7 @@
       "artifacts": "Artifacts",
       "desktop": "Desktop app",
       "agent": "Behavior",
+      "computers": "Computers",
       "model": "Models",
       "integrations": "Integrations",
       "trading": "Trading",
@@ -497,6 +498,7 @@
       "artifacts": "Defaults for your comments on the files the agent makes.",
       "desktop": "Notifications, the menu bar and how the app starts on this computer.",
       "agent": "How the agent answers, what it may do without asking, and how it searches the web.",
+      "computers": "The machines your workspaces run on, and how each one is set up.",
       "model": "The models you can reach and the ones the agent runs on.",
       "integrations": "Talk to your agent from your chat apps, and manage the apps signed in with your account.",
       "trading": "How far the agent may go with orders at your brokerages.",
@@ -670,6 +672,10 @@
       "keepRunning": "Keep running in the tray when closed",
       "keepRunningDesc": "Closing the window leaves notifications and the tray icon running.",
       "unavailable": "The desktop app did not answer. Restart it and try again."
+    },
+    "computers": {
+      "list": "Your computers",
+      "loadFailed": "Couldn't load your computers."
     }
   },
   "dashboard": {
