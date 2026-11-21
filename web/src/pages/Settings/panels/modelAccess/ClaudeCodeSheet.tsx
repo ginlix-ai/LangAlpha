@@ -264,12 +264,11 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   locateComputerId?: string | null;
   /** Called once that setting has taken focus, to drop the link to it. */
   onLocated?: () => void;
-  /** Called before a computer action leaves for the computers panel in the
-   *  app: setup passes its exit, so the user is not sent back to it. */
+  /** Called before Start a chat leaves for the chat: setup passes its exit,
+   *  so the user is not sent back to it. */
   onLeave?: () => void;
 }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const offTitleId = useId();
   const toggle = useSetFeatureOverride();
   const { custody, isLoading: custodyLoading } = useClaudeCodeCustody();
@@ -287,9 +286,10 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
   const [token, setToken] = useState<{ target: TokenTarget; action: SheetAction } | null>(null);
   const [asking, setAsking] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
-  // Change spec opens over the view from the page's own host.
-  const resizing = useComputersPanel().specComputerId !== null;
-  const covered = token !== null || asking || turningOff || resizing;
+  // Change spec and the Computers panel open over the view from the page's
+  // own host, and close back onto it.
+  const { panel, specComputerId } = useComputersPanel();
+  const covered = token !== null || asking || turningOff || specComputerId !== null || panel !== null;
   useEffect(() => {
     onCover(covered);
     return () => onCover(false);
@@ -307,16 +307,14 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
     if (!on && !(await turn(true))) return;
     setToken({ target, action });
   };
-  const toChat = () => {
-    onLeave?.();
-    navigate('/chat');
-  };
-  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
-    toChat();
-    openComputersPanel(panel);
-  };
   const viewComputer = (computerId: string) => (
-    <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'details', computerId })}>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={ROW_BUTTON}
+      onClick={() => openComputersPanel({ view: 'details', computerId, returnTo: 'claudeCode' })}
+    >
       {t(S + '.viewComputer')}
     </Button>
   );
@@ -539,7 +537,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
                 name={t(S + '.mac.name')}
                 detail={t(remoteControl ? S + '.mac.noteDesktop' : S + '.mac.noteBrowser')}
                 action={remoteControl ? (
-                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'create', pick: 'thisMac' })}>
+                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => openComputersPanel({ view: 'create', pick: 'thisMac', returnTo: 'claudeCode' })}>
                     {t(S + '.mac.turnOn')}
                   </Button>
                 ) : (
@@ -560,7 +558,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLe
                 name={t(S + '.ssh.name')}
                 detail={t(S + '.ssh.note')}
                 action={(
-                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => onComputers({ view: 'create' })}>
+                  <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => openComputersPanel({ view: 'create', returnTo: 'claudeCode' })}>
                     {t(S + '.ssh.add')}
                   </Button>
                 )}
