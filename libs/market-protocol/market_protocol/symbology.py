@@ -221,6 +221,11 @@ _INDEX_FAMILIES: dict[str, _IndexFamily] = {
         _IndexFamily("GDAXI", "GDAXI", home_mic="XETR"),
         _IndexFamily("FCHI", "FCHI", home_mic="XPAR"),
         _IndexFamily("STOXX50E", "STOXX50E", home_mic="XETR"),
+        _IndexFamily("TWII", "TWII", home_mic="XTAI"),
+        _IndexFamily("KS11", "KS11", home_mic="XKRX"),
+        _IndexFamily("NSEI", "NSEI", home_mic="XNSE"),
+        _IndexFamily("BSESN", "BSESN", home_mic="XBOM"),
+        _IndexFamily("AXJO", "AXJO", home_mic="XASX"),
     )
 }
 
@@ -774,6 +779,18 @@ def is_family_index(ref: InstrumentRef) -> bool:
     Vendors spell the two differently (``^GSPC`` vs ``000001.SH``).
     """
     return ref.asset_class is AssetClass.INDEX and ref.mic == "INDEX"
+
+
+def has_home_venue(ref: InstrumentRef) -> bool:
+    """Whether *ref*'s calendar and zone are its own venue's.
+
+    An index family missing from the table, and a listing on a venue the table
+    does not know, take New York's as a default, which dates a foreign print to
+    the wrong session.
+    """
+    if is_family_index(ref):
+        return ref.index_family in _INDEX_FAMILIES
+    return ref.mic != UNKNOWN_MIC
 
 
 def _legacy(ref: InstrumentRef, *, vendor: bool) -> str:

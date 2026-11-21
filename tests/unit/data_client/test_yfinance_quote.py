@@ -114,11 +114,11 @@ def test_an_empty_daily_series_still_quotes_from_the_chart_close():
 
 
 def test_a_venue_without_a_calendar_reads_its_own_dates():
-    """^KS11 has no calendar here; the New York one would put its 15:30 KST
+    """^JKSE has no calendar here; the New York one would put its 15:30 WIB
     close on the previous New York session."""
     snap = _snapshot(
-        "^KS11", "Asia/Seoul", {"2026-10-30": 5700.0, "2026-11-02": 5859.08, "2026-11-03": 5648.79, "2026-11-04": 5683.8},
-        {"regularMarketPrice": 5683.8, "chartPreviousClose": 5859.08, "regularMarketTime": _at("2026-11-04 15:30", "Asia/Seoul")},
+        "^JKSE", "Asia/Jakarta", {"2026-10-30": 5700.0, "2026-11-02": 5859.08, "2026-11-03": 5648.79, "2026-11-04": 5683.8},
+        {"regularMarketPrice": 5683.8, "chartPreviousClose": 5859.08, "regularMarketTime": _at("2026-11-04 15:30", "Asia/Jakarta")},
     )
     assert (snap["previous_close"], snap["open"]) == (5648.79, 5683.8)
 
