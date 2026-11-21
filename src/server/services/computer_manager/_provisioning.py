@@ -52,7 +52,7 @@ from src.server.services.persistence.file import (
     RestoreIdentityLost,
 )
 from src.server.services.persistence.sync_result import BackupIncomplete
-from src.server.services import browser_settings
+from src.server.services import browser_settings, browser_view
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.workspace_layout import (
@@ -335,8 +335,29 @@ class ProvisioningMixin:
     async def _keep_browser_settings(binding: ComputerBinding, sandbox: Any) -> None:
         """Hand the machine its owner's browser settings once its runtime has
         synced, since the runtime is what takes them. Only the first acquire on
-        a sandbox writes, or one whose row says they changed."""
-        await browser_settings.keep(sandbox, kind=binding.kind, choices=binding.browser)
+        a sandbox writes, or one whose row says they changed. A machine that
+        sets the browser up itself starts doing so here."""
+        browser_view.install_soon(sandbox)
+        await browser_settings.keep(sandbox, binding.browser)
+
+    async def _keep_published_browser_settings(
+        self, binding: ComputerBinding, sandbox: Any
+    ) -> None:
+        """Hand a sandbox just bound the settings its row holds now. One saved
+        while it was building found no machine running it and was left for the
+        acquire, whose binding was read before the save."""
+        try:
+            computer = await get_computer(binding.computer_id)
+        except Exception as e:
+            # Not a reason to unwind a bound sandbox; the next acquire hands them.
+            logger.warning(
+                f"Could not read the browser settings of computer {binding.computer_id}: {e}"
+            )
+            return
+        if computer is not None:
+            await self._keep_browser_settings(
+                replace(binding, browser=browser_settings.read(computer)), sandbox
+            )
 
     async def refresh_project_assets(self, workspace_id: str, sandbox: Any) -> Any:
         """Force one project's assets back in sync on a machine already running.
@@ -599,6 +620,7 @@ class ProvisioningMixin:
 
             # Only the bound sandbox can be published without appearing stale.
             self._put_session(computer_id, session, workspace_id=workspace_id)
+            await self._keep_published_browser_settings(binding, session.sandbox)
 
             # post_init could not clear completeness before this sandbox was bound.
             # Now a marker permits clearing it; absent a marker, retry the restore.
@@ -1210,6 +1232,9 @@ class ProvisioningMixin:
         sandbox = getattr(session, "sandbox", None)
         if sandbox is None:
             return
+        # Every acquire, warm ones included: most run no sync, and a save that
+        # did not reach the machine waits for this. Free once it has them.
+        await self._keep_browser_settings(binding, sandbox)
         workspace_id = binding.workspace_id
         key = (workspace_id, self._session_sandbox_id(session))
         recorded = False

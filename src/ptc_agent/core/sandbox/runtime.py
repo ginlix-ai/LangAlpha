@@ -664,9 +664,10 @@ class SandboxProvider(ABC):
     # Whether the file mount may run on the machine. It needs root and
     # /dev/fuse, which a machine the server does not own need not grant.
     mounts_livefs: ClassVar[bool] = True
-    # Whether this kind's machines are built from the sandbox image, which
-    # carries the agent's browser. A machine someone brings has only what it has.
-    browser_use: ClassVar[bool] = True
+    # Whether this kind's machines set the agent's browser up themselves
+    # (``browser_runtime/install.py``) rather than having it from the sandbox
+    # image: a machine someone brings has only what it has.
+    installs_browser: ClassVar[bool] = False
     # The layout version a sandbox whose manifest has no stamp was made at, so
     # a failed first manifest write cannot replay older layout moves.
     first_layout_version: ClassVar[int] = 1

@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set, Tuple
 
 from ptc_agent.core.mcp_composite import builtin_registry_of
 from ptc_agent.core.mcp_registry import get_global_registry
+from ptc_agent.core.sandbox.browser_runtime.protocol import Choices
 from ptc_agent.core.sandbox.providers import provider_class
 from ptc_agent.core.sandbox.runtime import SandboxProvider
 from ptc_agent.core.session import Session
-from src.server.services.browser_settings import Choices
 from src.server.services.livefs.tracker import MountTracker
 
 if TYPE_CHECKING:
@@ -93,7 +93,8 @@ class ComputerBinding:
     project's files on this machine, a move or a settled restore offer, None if
     none has come. files_backup is the machine's switch for routine backups,
     off only where its owner chose. browser is what its owner chose for its
-    browser: the live view's quality and whether sign-ins are kept."""
+    browser, None where the binding was made without the row, which hands
+    nothing."""
 
     workspace_id: str
     computer_id: str
@@ -108,7 +109,7 @@ class ComputerBinding:
     files_backup: bool = True
     #: The machine's owner, whose policy decides whether work runs on it.
     user_id: Optional[str] = None
-    browser: Choices = Choices()
+    browser: Optional[Choices] = None
 
     @property
     def provider_identity(self) -> Tuple[str, str]:

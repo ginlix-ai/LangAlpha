@@ -1,87 +1,86 @@
 """What a computer's owner chose for its browser, handed to its machine.
 
-Two choices: how sharply the live view is drawn, which follows the computer's
-size without one, and whether sign-ins are kept between the browser's starts,
-never on a computer that holds shared workspaces, where a member's agent would
-browse as whoever signed in. The machine's browser runtime keeps its own copy of
-each, read each time its browser starts. So they are handed to the machine at
-an acquire that finds this sandbox without them, as a rebuilt machine, or one
-stopped when a choice changed, would be, and at once when one changes on a
-running computer.
+Three choices: how sharply the live view is drawn, which follows the computer's
+size without one; whether sign-ins are kept between the browser's starts, never
+on a computer holding shared workspaces, where a member's agent would browse as
+whoever signed in; and, on a Mac under remote control, whether the browser also
+shows as a window on its screen.
+
+The machine's browser runtime keeps its own copy, read each time its browser
+starts. So the choices are handed over at an acquire that finds this sandbox
+without them (a rebuilt machine, or one stopped when a choice changed), and at
+once when one changes on a running computer. Every save carries a revision the
+database orders under the row's lock, and the machine drops a bundle older
+than the one it holds, so the two hand-offs can land in any order, on any
+worker, and the machine still ends on the last save.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 
-from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.browser_runtime.protocol import (
+    NO_REVISION,
+    REVISION_PATTERN,
     STREAM_QUALITIES,
-    StreamQualityName,
+    Choices,
 )
-from ptc_agent.core.sandbox.providers import provider_class
+from src.server.database import computer as computer_db
+from src.server.database.computer import (
+    BROWSER_QUALITY_KEY as QUALITY_KEY,
+    BROWSER_REVISION_KEY as REVISION_KEY,
+    BROWSER_SIGNINS_KEY as SIGNINS_KEY,
+    BROWSER_SIGNINS_REVISION_KEY as SIGNINS_REVISION_KEY,
+    BROWSER_WINDOW_KEY as WINDOW_KEY,
+)
 from src.server.database.shared_workspaces import is_holder
-from src.server.services.browser_view import ask_runtime
+from src.server.models.computer import BrowserChoicesUpdate, ComputerBrowser
+from src.server.services.browser_view import NOT_RUNNING, ask_running, ask_runtime
+from src.server.services.ssh_computers import is_mac_under_remote_control
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Choices", "apply_now", "keeps_signins", "keep", "read", "saved_quality", "saved_signins"]
+__all__ = ["apply_now", "keep", "keeps_signins", "read", "save", "shown"]
 
-#: Where each choice sits in the computer's ``config``. An absent quality
-#: follows the computer's size; absent sign-ins are kept.
-QUALITY_KEY = "browser_quality"
-SIGNINS_KEY = "browser_signins"
-#: A token each save of the quality writes beside it. Unlike the choice itself
-#: it never repeats, so a change that came back to where it started still reads
-#: as one: a write straight to the machine meanwhile may have left it elsewhere.
-QUALITY_REVISION_KEY = "browser_quality_rev"
-#: The same for sign-ins, sorting after every earlier save: each save erases
-#: what the kept profile held, so the machine ignores one that reaches it after
-#: a later one rather than erase a sign-in made since (``browser_runtime/signin.py``).
-SIGNINS_REVISION_KEY = "browser_signins_rev"
-#: A computer whose sign-ins were never saved, before any save.
-NO_REVISION = "0" * 20
+#: Where each field of an update sits in the computer's ``config``.
+_KEYS = {"quality": QUALITY_KEY, "window": WINDOW_KEY, "signins": SIGNINS_KEY}
 _WRITE_TIMEOUT_S = 15
 # Which choices this sandbox object last handed its machine, so an acquire that
 # finds them unchanged costs nothing. Per sandbox object, so a worker that
 # attaches anew, or a machine rebuilt under a new object, writes them again.
 _HANDED = "_browser_choices_handed"
-#: Writes one change makes before leaving the machine to the change after it.
-_RECONCILE_TRIES = 3
 
 
-@dataclass(frozen=True)
-class Choices:
-    quality: StreamQualityName | None = None
-    quality_revision: str | None = None
-    signins: bool = True
-    signins_revision: str = NO_REVISION
-
-    def commands(self) -> tuple[tuple[str, ...], ...]:
-        """What the machine runs to take these choices."""
-        return (
-            ("quality", self.quality or "default"),
-            ("signin", "on" if self.signins else "off", self.signins_revision),
-        )
+def _revision(value: object) -> str | None:
+    return value if isinstance(value, str) and REVISION_PATTERN.fullmatch(value) else None
 
 
 def read(computer: Mapping[str, Any]) -> Choices:
     config = computer.get("config") or {}
     quality = config.get(QUALITY_KEY)
-    quality_revision = config.get(QUALITY_REVISION_KEY)
-    signins_revision = config.get(SIGNINS_REVISION_KEY)
+    signins_revision = _revision(config.get(SIGNINS_REVISION_KEY)) or NO_REVISION
     return Choices(
         quality=quality if quality in STREAM_QUALITIES else None,
-        quality_revision=quality_revision if isinstance(quality_revision, str) else None,
+        window=config.get(WINDOW_KEY) is True and is_mac_under_remote_control(computer),
         signins=keeps_signins(computer),
-        signins_revision=(
-            signins_revision if isinstance(signins_revision, str) else NO_REVISION
-        ),
+        signins_revision=signins_revision,
+        # A row saved before every save had a revision is at least as new as
+        # its sign-ins' last save.
+        revision=_revision(config.get(REVISION_KEY)) or signins_revision,
+        computer=str(computer["computer_id"]),
+    )
+
+
+def shown(computer: Mapping[str, Any]) -> ComputerBrowser:
+    """The choices as the computer's response carries them."""
+    choices = read(computer)
+    return ComputerBrowser(
+        quality=choices.quality,
+        signins=choices.signins,
+        window=choices.window,
+        window_available=is_mac_under_remote_control(computer),
     )
 
 
@@ -92,97 +91,73 @@ def keeps_signins(computer: Mapping[str, Any]) -> bool:
     )
 
 
-def saved_quality(quality: StreamQualityName | None) -> dict[str, str | None]:
-    """The ``config`` settings that save *quality* as the choice, None to
-    follow the computer's size, written together."""
-    return {QUALITY_KEY: quality, QUALITY_REVISION_KEY: uuid.uuid4().hex}
+async def save(
+    computer_id: str, user_id: str, update: BrowserChoicesUpdate
+) -> dict[str, Any] | None:
+    """Save the choices *update* sets in one write and answer the row as saved,
+    or None where the computer is gone or not the user's. A null quality
+    follows the computer's size. Every save of the sign-ins starts the kept
+    profile empty, so saving them as they were is how a person signs the
+    browser out of every site."""
+    choices = {_KEYS[name]: getattr(update, name) for name in update.model_fields_set}
+    return await computer_db.save_browser_choices(computer_id, user_id, choices)
 
 
-def saved_signins(keep: bool) -> dict[str, object]:
-    """The ``config`` settings that save whether sign-ins are kept, written
-    together. Every save starts the kept profile empty, so saving it as it was
-    is how a person signs the browser out of every site."""
-    return {SIGNINS_KEY: keep, SIGNINS_REVISION_KEY: f"{time.time_ns():020x}"}
+def _taken(answer: object) -> bool:
+    return isinstance(answer, dict) and answer.get("done") is True
 
 
-async def _hand(runtime: Any, internal_src: str, choices: Choices) -> None:
-    for command in choices.commands():
-        answer = await ask_runtime(runtime, internal_src, *command, timeout=_WRITE_TIMEOUT_S)
-        if not (isinstance(answer, dict) and answer.get("done") is True):
-            raise RuntimeError(f"the machine did not take {command[0]}: {answer!r}")
+async def keep(sandbox: Any, choices: Choices | None) -> None:
+    """Hand *choices*, the computer's as its acquire read them, to the machine
+    *sandbox* runs, unless this sandbox already handed it those. It never
+    fails one: a machine left without them keeps what it had, and the next
+    acquire tries again.
 
-
-async def keep(sandbox: Any, *, kind: str, choices: Choices) -> None:
-    """Hand *choices* to the machine *sandbox* runs, on its acquire, unless this
-    sandbox already handed it those saves. It never fails one: a machine left
-    without them keeps what it had, and the next acquire tries again.
-
-    A save's own write to the machine (``apply_now``) can land on any worker or
-    fail, and this sandbox object never hears of it, so it is judged by the
-    saves: any later one is handed again, even one back to what it handed.
+    An acquire reads them long before it writes, and a save's own write
+    (``apply_now``) can land meanwhile on any worker; the machine drops this
+    older bundle then, so nothing here reads the row again.
     """
-    if sandbox is None or not provider_class(kind).browser_use:
-        return
-    if getattr(sandbox, _HANDED, None) == choices:
+    if sandbox is None or choices is None or getattr(sandbox, _HANDED, None) == choices:
         return
     try:
-        await _hand(sandbox.runtime, sandbox.layout.internal_src, choices)
+        answer = await ask_runtime(
+            sandbox.runtime,
+            sandbox.layout.internal_src,
+            "choices",
+            choices.to_wire(),
+            timeout=_WRITE_TIMEOUT_S,
+        )
     except Exception:
         logger.warning(
-            f"[browser] could not hand the browser settings to sandbox {getattr(sandbox, 'sandbox_id', None)}",
+            f"[browser] could not reach sandbox {getattr(sandbox, 'sandbox_id', None)} to hand it the browser settings",
             exc_info=True,
+        )
+        return
+    if not _taken(answer):
+        logger.warning(
+            f"[browser] sandbox {getattr(sandbox, 'sandbox_id', None)} did not take the browser settings: {answer!r}"
         )
         return
     setattr(sandbox, _HANDED, choices)
 
 
-async def apply_now(computer: dict[str, Any]) -> None:
-    """Put changed choices on *computer*'s machine if it is running, so the
-    next browser it opens has them without waiting for an acquire. A machine
-    not running is left alone and gets them at its next acquire.
-
-    Two changes close together can reach the machine in either order, and the
-    server runs on several workers, so after each write the stored choices are
-    read again and put there if they moved: whichever change finishes last
-    leaves the machine on the stored ones.
+async def apply_now(computer: Mapping[str, Any]) -> bool:
+    """Put *computer*'s saved choices on its machine if it is running, so the
+    next browser it opens has them without waiting for an acquire, and say
+    whether it has them. A machine not running is left alone and gets them at
+    its next acquire, before any browser of its opens, so it counts as having them.
     """
-    from src.server.database.computer import get_computer
-
-    for _ in range(_RECONCILE_TRIES):
-        applied = read(computer)
-        if not await _apply(computer, applied):
-            return
-        latest = await get_computer(computer["computer_id"])
-        if latest is None or read(latest) == applied:
-            return
-        computer = latest
-
-
-async def _apply(computer: dict[str, Any], choices: Choices) -> bool:
-    """Whether the choices reached the machine."""
-    from ptc_agent.core.sandbox.runtime import RuntimeState
-    from src.server.services.data_token_sweep import running_sandbox
-
-    if (
-        not provider_class(computer["kind"]).browser_use
-        or not computer.get("provider_ref")
-        or computer.get("status") != "running"
-    ):
-        return False
     try:
-        async with running_sandbox(computer) as runtime:
-            if runtime is None:
-                return False
-            # E2B resumes a sandbox it attaches to, so one paused meanwhile is
-            # not woken for this.
-            if await runtime.refresh_state() != RuntimeState.RUNNING:
-                return False
-            internal_src = SandboxLayout(await runtime.fetch_working_dir()).internal_src
-            await _hand(runtime, internal_src, choices)
-            return True
+        answer = await ask_running(computer, "choices", read(computer).to_wire(), timeout=_WRITE_TIMEOUT_S)
     except Exception:
         logger.warning(
             f"[browser] could not apply the browser settings to computer {computer.get('computer_id')}",
             exc_info=True,
         )
         return False
+    if answer is NOT_RUNNING or _taken(answer):
+        return True
+    logger.warning(
+        f"[browser] computer {computer.get('computer_id')} did not take the browser settings: {answer!r}"
+    )
+    return False

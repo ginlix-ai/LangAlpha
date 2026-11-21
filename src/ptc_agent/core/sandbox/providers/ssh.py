@@ -841,7 +841,7 @@ class SSHProvider(SandboxProvider):
     converges_env = True
     # The file mount needs root and /dev/fuse, which the owner need not grant.
     mounts_livefs = False
-    browser_use = False
+    installs_browser = True
     platform_secret_namespace_env = None
     # Every computer here was laid out at v4 or later, and the older steps
     # move and delete folders by name in a root that holds the owner's files.

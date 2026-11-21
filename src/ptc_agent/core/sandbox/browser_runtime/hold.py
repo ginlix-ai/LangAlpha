@@ -16,7 +16,6 @@ marked seen, and the agent would act on a page the person changed.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import re
 import time
@@ -30,6 +29,7 @@ from .protocol import (
     HELD_MESSAGE,
     HOLD_ACTIONS,
     HOLDER_PATTERN,
+    locked,
     state_file,
     write_state,
 )
@@ -86,10 +86,7 @@ def _count(value: object) -> int:
 
 def _change(apply: Callable[[Hold], T]) -> T:
     """Read the hold, *apply* a change to it and write it back, all under the lock."""
-    lock = state_file(_LOCK)
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked(_LOCK):
         hold = _read()
         before = json.dumps(hold.__dict__, sort_keys=True)
         result = apply(hold)
@@ -102,10 +99,7 @@ def _change(apply: Callable[[Hold], T]) -> T:
 @contextmanager
 def navigating() -> Iterator[None]:
     """Held while the person's navigation runs, which can outlast their hold."""
-    lock = state_file(_NAVIGATING)
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked(_NAVIGATING):
         yield
 
 

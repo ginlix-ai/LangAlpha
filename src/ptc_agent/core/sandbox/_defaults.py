@@ -21,10 +21,10 @@ SANDBOX_PLAYWRIGHT_VERSION = "1.64.0"
 # browser is the Chrome for Testing the Playwright pin above already bakes in.
 # The digests are the release's own, keyed as ``dpkg --print-architecture``
 # names the machine; mirrored in Dockerfile.sandbox.
-SANDBOX_AGENT_BROWSER_VERSION = "0.41.1"
+SANDBOX_AGENT_BROWSER_VERSION = _browser.ENGINE_VERSION
 SANDBOX_AGENT_BROWSER_SHA256 = {
-    "amd64": "2a89295b62ddd497986a9a80b52e1dbe4c1f6bd68ffde67eaae82eec2206af61",
-    "arm64": "f0b3bdaa40abf2a5111ec08e6d242110aaf56045ef5108cbc633bacc8e53ca17",
+    "amd64": _browser.ENGINE_SHA256["linux-x64"],
+    "arm64": _browser.ENGINE_SHA256["linux-arm64"],
 }
 SANDBOX_AGENT_BROWSER_BIN = _browser.ENGINE_BIN
 SANDBOX_CHROME_BIN = _browser.CHROME_BIN
@@ -162,6 +162,9 @@ DEFAULT_DEPENDENCIES = [
     # Browser automation
     f"playwright=={SANDBOX_PLAYWRIGHT_VERSION}",
     # Utilities
+    # Unlocks the person's everyday browser's cookies to bring its sign-ins
+    # into the agent's browser (browser_runtime/everyday.py).
+    "cryptography",
     "tqdm",
     "tabulate",
 ]

@@ -762,6 +762,16 @@ def is_own_computer(computer: Optional[Mapping[str, Any]]) -> bool:
     return bool(computer) and computer.get("kind") == SSH_KIND
 
 
+def is_mac_under_remote_control(computer: Optional[Mapping[str, Any]]) -> bool:
+    """Whether *computer* is a Mac reached through LangAlpha's helper, which
+    runs in the person's desktop session, so what it opens can show on their
+    screen. A login over the Mac's own SSH runs outside that session."""
+    if computer is None or not is_own_computer(computer):
+        return False
+    machine = computer.get("provider_config") or {}
+    return machine.get("helper") is True and machine.get("os") == "Darwin"
+
+
 def tunnel_of(computer: Dict[str, Any]) -> str:
     """The id of the tunnel an ssh computer's machine connects out through, or ""."""
     if computer.get("kind") != SSH_KIND:

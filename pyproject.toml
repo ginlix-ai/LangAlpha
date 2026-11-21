@@ -197,7 +197,7 @@ required-version = ">=0.6.15"
 extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]
 # The packages support 3.11; a [tool.ruff] table of its own would make it the
 # config root and drop the rules below.
-per-file-target-version = { "libs/market-protocol/**" = "py311", "libs/chartkit/**" = "py311", "libs/edgar-engine/**" = "py311" }
+per-file-target-version = { "libs/market-protocol/**" = "py311", "libs/chartkit/**" = "py311", "libs/edgar-engine/**" = "py311", "src/ptc_agent/core/sandbox/browser_runtime/**" = "py39" }
 
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)

@@ -218,6 +218,12 @@ class PTCSandbox:
         return type(self.provider).files_as_command_user
 
     @property
+    def installs_browser(self) -> bool:
+        """Whether this computer's machine sets the agent's browser up itself,
+        as one its owner brought does, rather than having it from the image."""
+        return type(self.provider).installs_browser
+
+    @property
     def recreatable(self) -> bool:
         """Whether the server rebuilds this computer, and so lays its files
         unasked; on one its owner brought, a missing folder is theirs to restore."""
