@@ -178,6 +178,23 @@ def thread_dir(thread_key: str) -> str:
     return cwd
 
 
+def session_thread_key(entries: Sequence[dict[str, Any]], thread_key: str) -> str:
+    """The thread key whose working directory a resumed session was written in.
+
+    The CLI names its working directory in the session's environment block,
+    so a session must resume where it began. A session copied into another
+    thread (a fork) began under the source's key, which its first record's
+    ``cwd`` still names; on every launcher that directory ends in the key.
+    The first, because a later record names wherever the CLI moved to.
+    """
+    for entry in entries:
+        cwd = entry.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            key = cwd.rstrip("/").rsplit("/", 1)[-1]
+            return key if _THREAD_KEY.fullmatch(key) else thread_key
+    return thread_key
+
+
 def session_file_path(config_dir: str, cwd: str, session_id: str) -> Path:
     """Where the CLI looks for a session's transcript: its own project layout."""
     return Path(config_dir) / "projects" / project_key_for_directory(cwd) / f"{session_id}.jsonl"
