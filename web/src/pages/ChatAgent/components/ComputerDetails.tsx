@@ -24,6 +24,7 @@ import { useBrowserHere } from '../hooks/useBrowserHere';
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
 import { BrowserQualitySetting } from './BrowserQualitySetting';
+import { BrowserSigninsSetting } from './BrowserSigninsSetting';
 import { homeEligibility, isComputerPreparing, isComputerStatusTransitional } from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
@@ -191,6 +192,7 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
           </section>
 
           {browserHere && <BrowserQualitySetting computer={computer} />}
+          {browserHere && <BrowserSigninsSetting computer={computer} />}
 
           {hasSettings && (
             <section className="computer-details-group">

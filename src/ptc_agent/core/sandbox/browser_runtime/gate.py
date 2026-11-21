@@ -8,7 +8,7 @@ from __future__ import annotations
 import fcntl
 from typing import IO
 
-from . import care, daemon, hold, launch, proxy, quality, relay
+from . import care, daemon, hold, launch, proxy, quality, relay, signin
 from .launch import Launch
 from .protocol import MEMORY_MESSAGE, STREAM_PORT, USER_AGENT_MESSAGE, state_file
 _admission: IO[str] | None = None
@@ -25,8 +25,8 @@ def check(use: str, user_agent: str = "") -> Launch:
     or runs script that can, ``close`` ends the browser, ``closes`` acts on it and
     then ends it, and ``reopen`` ends it and opens another. An open browser keeps
     the launch it started with; for one this command starts, a user agent asked
-    for now or earlier holds until a ``close``, and the quality is the one chosen
-    now.
+    for now or earlier holds until a ``close``, and the quality and whether
+    sign-ins are kept are the ones chosen now.
     """
     _admit()
     care.end_browserless(admitting=True)
@@ -67,11 +67,17 @@ def check(use: str, user_agent: str = "") -> Launch:
         raise Refused(MEMORY_MESSAGE)
     # A close runs on the launch it found too, so one that never finishes leaves
     # the open browser what it runs with, and the next command no restart.
+    fresh = starts or not record
     settled = Launch(
         user_agent if use == "reopen" else user_agent or held_agent,
-        quality.chosen() if starts or not record else record.quality,
+        quality.chosen() if fresh else record.quality,
         closing=use in ("close", "closes"),
+        kept=signin.kept() if fresh else record.kept,
     )
+    if settled.kept and not up:
+        # A Chrome killed on the kept profile left its lock there, which names
+        # this computer's earlier self after a restart and keeps the next one off.
+        care.unlock_profile(signin.profile())
     if settled != record:
         launch.write(settled)
     return settled

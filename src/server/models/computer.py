@@ -732,6 +732,18 @@ class ComputerBrowserQualityRequest(BaseModel):
     )
 
 
+class ComputerBrowserSigninsRequest(BaseModel):
+    """Request model for whether a computer's browser keeps sign-ins."""
+
+    keep: bool = Field(
+        description=(
+            "Whether sites stay signed in between the browser's starts. Every "
+            "save signs the browser out of every site, closing it if it is open "
+            "on what it kept, so saving it as it is signs out"
+        )
+    )
+
+
 class ComputerRenameRequest(BaseModel):
     """Request model for renaming a computer."""
 

@@ -238,12 +238,14 @@ USER_AGENT_MESSAGE = (
 class Status:
     """What ``status`` and ``start`` print: whether the image has the engine,
     whether a browser is up behind a bridge, and the token its stream opens on.
-    ``low_memory`` is a start that opened nothing because memory is short."""
+    ``low_memory`` is a start that opened nothing because memory is short;
+    ``kept``, a running browser on the kept profile, which keeps its sign-ins."""
 
     installed: bool
     running: bool = False
     token: str | None = None
     low_memory: bool = False
+    kept: bool = False
 
     def to_wire(self) -> dict[str, object]:
         return asdict(self)
@@ -263,4 +265,5 @@ class Status:
             running,
             token,
             low_memory=not running and answer.get("low_memory") is True,
+            kept=running and answer.get("kept") is True,
         )

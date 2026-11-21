@@ -3064,7 +3064,7 @@ async def test_the_live_view_quality_is_kept_on_the_computer_and_reaches_its_mac
     with (
         patch("src.server.app.computers.get_computer", AsyncMock(side_effect=[before, after])),
         patch("src.server.app.computers.set_computer_settings", write),
-        patch("src.server.services.browser_quality.apply_now", apply_now),
+        patch("src.server.services.browser_settings.apply_now", apply_now),
         patch(
             "src.server.app.computers.count_live_workspaces_by_computer",
             AsyncMock(return_value={COMPUTER_ID: 1}),
@@ -3099,6 +3099,58 @@ async def test_the_live_view_quality_is_refused_where_it_means_nothing(
         patch("src.server.app.computers.set_computer_settings", write),
     ):
         resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json=body)
+
+    assert resp.status_code == status
+    write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep", [True, False], ids=["keep", "stop"])
+async def test_kept_sign_ins_are_saved_on_the_computer_and_reach_its_machine(
+    client, sample_computer_dict, keep
+):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="docker")
+    after = {**before, "config": {"browser_signins": keep, "browser_signins_rev": "1" * 20}}
+    write = AsyncMock(return_value=True)
+    apply_now = AsyncMock()
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(side_effect=[before, after])),
+        patch("src.server.app.computers.set_computer_settings", write),
+        patch("src.server.services.browser_settings.apply_now", apply_now),
+        patch(
+            "src.server.app.computers.count_live_workspaces_by_computer",
+            AsyncMock(return_value={COMPUTER_ID: 1}),
+        ),
+    ):
+        resp = await client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/browser-signins", json={"keep": keep}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["config"] == after["config"]
+    # Every save is a new revision, which is what signs the browser out.
+    write.assert_awaited_once_with(
+        COMPUTER_ID, "test-user-123", {"browser_signins": keep, "browser_signins_rev": ANY}
+    )
+    apply_now.assert_awaited_once_with(after)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "body", "status"),
+    [("ssh", {"keep": True}, 409), ("docker", {"keep": "yes please"}, 422)],
+    ids=["no-browser", "not-a-choice"],
+)
+async def test_kept_sign_ins_are_refused_where_they_mean_nothing(
+    client, sample_computer_dict, kind, body, status
+):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind)
+    write = AsyncMock(return_value=True)
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
+        patch("src.server.app.computers.set_computer_settings", write),
+    ):
+        resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/browser-signins", json=body)
 
     assert resp.status_code == status
     write.assert_not_awaited()

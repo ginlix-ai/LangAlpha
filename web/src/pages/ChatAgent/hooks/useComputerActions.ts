@@ -35,6 +35,7 @@ import {
   renameComputer,
   setComputerAlwaysOn,
   setComputerBrowserQuality,
+  setComputerBrowserSignins,
   setComputerFilesBackup,
   setComputerSpec,
   startComputer,
@@ -268,6 +269,37 @@ function snapshotComputerLists(queryClient: QueryClient) {
 
 function restoreComputerLists(queryClient: QueryClient, snapshot: ReturnType<typeof snapshotComputerLists> | undefined) {
   for (const [key, data] of snapshot ?? []) queryClient.setQueryData(key, data);
+}
+
+/** Keep sign-ins or not, or with `keep` as it is, sign out of every site. */
+export function useSetBrowserSignins() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ computerId, keep }: { computerId: string; keep: boolean }) =>
+      setComputerBrowserSignins(computerId, keep),
+    onMutate: ({ computerId, keep }) => {
+      const snapshot = snapshotComputerLists(queryClient);
+      const row = snapshot
+        .flatMap(([, data]) => data?.computers ?? [])
+        .find((c) => c.computer_id === computerId);
+      patchComputerRow(queryClient, computerId, { config: { ...(row?.config ?? {}), browser_signins: keep } });
+      return { snapshot, signOut: row?.config?.browser_signins !== false && keep };
+    },
+    onSuccess: (row, _vars, ctx) => {
+      patchComputerRow(queryClient, row.computer_id, { config: row.config ?? {} });
+      if (ctx?.signOut) toast({ title: t('computer.browserSignins.signedOut', 'Signed out of every site') });
+    },
+    onError: (err, _vars, ctx) => {
+      restoreComputerLists(queryClient, ctx?.snapshot);
+      toast({
+        variant: 'destructive',
+        title: t('computer.browserSignins.failed', "Couldn't change kept sign-ins"),
+        description: apiErrorReason(err) ?? undefined,
+      });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.computers.lists() }),
+  });
 }
 
 /** The computer's live view quality, which the Browser tab and the computer's details both set.

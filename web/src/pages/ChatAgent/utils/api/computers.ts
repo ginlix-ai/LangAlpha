@@ -301,6 +301,21 @@ export async function setComputerBrowserQuality(computerId: string, quality: Bro
 }
 
 /**
+ * Choose whether the computer's browser keeps sign-ins between its starts.
+ * Every save signs the browser out of every site, so saving `keep` as it is
+ * signs out.
+ */
+export async function setComputerBrowserSignins(computerId: string, keep: boolean): Promise<Computer> {
+  if (!computerId) throw new Error('Computer ID is required');
+  const { data } = await api.post<Computer>(
+    `/api/v1/computers/${computerId}/browser-signins`,
+    { keep },
+    { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
+  );
+  return data;
+}
+
+/**
  * Turn the file backup of a machine the user brings on or off. Off keeps each
  * workspace's last backup but stops updating it. The server refuses a hosted
  * machine, which always backs up, with a 409 whose `detail` is its sentence.

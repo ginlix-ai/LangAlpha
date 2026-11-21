@@ -5,9 +5,10 @@ afford and on the port the view watches, with every request through the proxy
 that keeps it off the machine's own services, and keeps the bridge in front of
 that stream up. The arguments are read once, as the engine reads them, and every
 check judges that one reading, so an option placed before the command, or a
-value that looks like one, is no way around it. This browser is logged out, so
-what would save or bring in a login is refused, and so is what would start a
-browser the view cannot see. A launch option given on one command and not the
+value that looks like one, is no way around it. The agent never brings a login
+into this browser: one is kept only on the computer's own profile (``signin``),
+from a person signing in in the live view, so what would save or bring in a
+login is refused, and so is what would start a browser the view cannot see. A launch option given on one command and not the
 next restarts the browser and loses its pages, so those are refused too, except
 a user agent, which sites may need and which is held from the first command that
 sets it until the browser closes. While the person holds the page, only what
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from . import launch
+from . import launch, signin
 from .launch import Launch
 from .protocol import (
     CHROME_BIN,
@@ -130,6 +131,7 @@ _UNSET = (
 # 577 tall that cut off most forms. A window size given here replaces the engine's.
 VIEWPORT = (1280, 800)
 _UNDRAWN_TOOLBAR_PX = 143
+_DISK_CACHE_BYTES = 64 * 1024 * 1024
 # Every request goes through the proxy, loopback too, which Chrome would
 # otherwise send direct (``proxy.py``). The same on every command, or the
 # engine would restart the browser.
@@ -386,21 +388,30 @@ def _unsettled() -> Launch:
     return launch.current() or Launch("", "standard")
 
 
-def _launch_env(quality: StreamQuality) -> dict[str, str]:
-    """What the engine starts the browser with for *quality*, and so must get on
-    every command while that browser is open."""
-    args = ["--proxy-bypass-list=<-loopback>", f"--window-size={VIEWPORT[0]},{VIEWPORT[1] + _UNDRAWN_TOOLBAR_PX}"]
+def _launch_env(quality: StreamQuality, kept: bool) -> dict[str, str]:
+    """What the engine starts the browser with for *quality* and on the kept
+    profile or not, and so must get on every command while that browser is open."""
+    args = [
+        "--proxy-bypass-list=<-loopback>",
+        f"--window-size={VIEWPORT[0]},{VIEWPORT[1] + _UNDRAWN_TOOLBAR_PX}",
+        # The cache sits in the profile, which on the kept one stays on the
+        # computer's disk beside the person's work.
+        f"--disk-cache-size={_DISK_CACHE_BYTES}",
+    ]
     if quality.scale != 1:
         # Rendered at this scale, the screencast's frames are too. Emulating it
         # for the page instead leaves the frames at one pixel a page pixel.
         args.append(f"--force-device-scale-factor={quality.scale}")
-    return {
+    env = {
         # One argument a line: the window size holds a comma.
         "AGENT_BROWSER_ARGS": "\n".join(args),
         "AGENT_BROWSER_STREAM_QUALITY": str(quality.jpeg),
         "AGENT_BROWSER_STREAM_MAX_WIDTH": str(quality.width),
         "AGENT_BROWSER_STREAM_MAX_HEIGHT": str(quality.height),
     }
+    if kept:
+        env["AGENT_BROWSER_PROFILE"] = signin.profile()
+    return env
 
 
 def engine_env(base: Mapping[str, str], launched: Launch) -> dict[str, str]:
@@ -412,7 +423,7 @@ def engine_env(base: Mapping[str, str], launched: Launch) -> dict[str, str]:
         env.pop(name, None)
     env.update(_ENGINE_ENV)
     env["AGENT_BROWSER_SOCKET_DIR"] = _daemon_dir()
-    env.update(_launch_env(launched.stream))
+    env.update(_launch_env(launched.stream, launched.kept))
     user_agent = launched.user_agent.rstrip("\n")
     if user_agent:
         env["AGENT_BROWSER_USER_AGENT"] = user_agent

@@ -27,7 +27,7 @@ from src.server.database.workspace import (
     get_workspace_identity as db_get_workspace_identity,
 )
 
-from src.server.services import browser_quality
+from src.server.services import browser_settings
 from src.server.services.computer_errors import MachineLockTimeout
 from src.server.services.computer_manager._providers import HostOutageClock
 from src.server.services.computer_manager._types import (
@@ -67,8 +67,7 @@ class SessionCacheMixin:
             ),
             files_backup=computer.get("files_backup", True) is not False,
             user_id=str(computer["user_id"]) if computer.get("user_id") else None,
-            browser_quality=browser_quality.chosen(computer),
-            browser_quality_rev=browser_quality.revision(computer),
+            browser=browser_settings.read(computer),
         )
 
     async def resolve_binding(

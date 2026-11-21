@@ -37,6 +37,7 @@ from ptc_agent.core.sandbox.browser_runtime import (
     proxy,
     quality,
     relay,
+    signin,
     wrapper,
 )
 from ptc_agent.core.sandbox.browser_runtime.launch import Launch
@@ -1649,6 +1650,7 @@ def test_every_request_goes_through_the_proxy_loopback_included(engine, monkeypa
         # The page 1280 by 800 under headless Chrome's undrawn toolbar, which the
         # engine's own 1280 by 720 window left a strip 577 tall.
         "--window-size=1280,943",
+        "--disk-cache-size=67108864",
     ]
     assert (env["AGENT_BROWSER_STREAM_MAX_WIDTH"], env["AGENT_BROWSER_STREAM_MAX_HEIGHT"]) == ("1280", "800")
     assert env["AGENT_BROWSER_STREAM_QUALITY"] == "70"
@@ -1772,7 +1774,7 @@ def test_no_hold_is_taken_or_kept_on_a_browser_that_has_closed(state, capsys, mo
 def test_the_usage_names_every_command(state, capsys):
     assert machine.main(["nothing"]) == 2
     usage = capsys.readouterr().err
-    for word in ("status", "start", "control", "navigate", "reload", "quality", "default", "serve", "proxy"):
+    for word in ("status", "start", "control", "navigate", "reload", "quality", "default", "signin", "serve", "proxy"):
         assert word in usage
 
 
@@ -1786,3 +1788,106 @@ def test_where_the_browser_must_not_go_is_one_list(state):
         except ValueError:
             continue
         assert proxy.refused(address, 80, proxy.Places())
+
+
+#: Two saves of kept sign-ins, in the order the server made them.
+_EARLIER, _LATER = "0000000000000000000a", "0000000000000000000b"
+
+
+def test_a_browser_starts_on_the_kept_profile_and_keeps_its_profile_until_it_closes(state, monkeypatch):
+    """Changing the profile under an open browser would restart it and lose its pages."""
+    signin.record(signin.Choice(True, _EARLIER))
+    assert gate.check("act").kept is True
+    monkeypatch.setattr(daemon, "listening", _listening(True))
+    signin.record(signin.Choice(False, _LATER))
+    assert gate.check("look").kept is True
+    monkeypatch.setattr(daemon, "listening", _listening(False))
+    assert gate.check("act").kept is False
+
+
+@pytest.mark.parametrize("kept", [True, False])
+def test_only_a_kept_launch_runs_the_engine_on_the_kept_profile(state, engine, monkeypatch, kept):
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", "/home/someone/.config/google-chrome")
+    monkeypatch.setattr(gate, "check", lambda use, user_agent: Launch("", "standard", kept=kept))
+    assert _run("open", "https://example.com") is None
+    assert engine["env"].get("AGENT_BROWSER_PROFILE") == (signin.profile() if kept else None)
+
+
+def test_a_chrome_on_the_kept_profile_is_the_engine_s_and_its_profile_outlives_a_reap(state, monkeypatch):
+    """Up while its daemon runs; reaped once that died, the sign-ins staying for the next."""
+    profile = Path(signin.profile())
+    profile.mkdir()
+    processes = state / "processes"
+    monkeypatch.setattr(care, "_PROC", processes)
+    monkeypatch.setattr(care, "_BROWSER_GONE_S", 0)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    assert care.browser_up() is True
+    shutil.rmtree(processes / "2")
+    killed = []
+    monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
+    _TEND(False)
+    assert killed == [20]
+    assert profile.exists()
+
+
+def test_the_lock_a_killed_chrome_left_on_the_kept_profile_is_cleared_only_with_none_on_it(state, monkeypatch):
+    """Chrome takes over its own stale lock only when it names this host, and a
+    computer restored or moved comes back under another name."""
+    profile = Path(signin.profile())
+    profile.mkdir()
+    (profile / "SingletonLock").symlink_to("otherhost-99")
+    processes = state / "processes"
+    monkeypatch.setattr(care, "_PROC", processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 20, 1, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    care.unlock_profile(str(profile))
+    assert (profile / "SingletonLock").is_symlink()
+    shutil.rmtree(processes / "20")
+    signin.record(signin.Choice(True, _EARLIER))
+    gate.check("act")
+    assert not (profile / "SingletonLock").is_symlink()
+
+
+def test_each_newer_save_erases_the_kept_profile_and_an_older_one_is_ignored(state, capsys, monkeypatch):
+    """A save that reaches the machine after a later one never erases a sign-in made since."""
+    ended = []
+    monkeypatch.setattr(care, "end_on_profile", ended.append)
+    profile = Path(signin.profile())
+    profile.mkdir()
+    assert machine.main(["signin", "on", _LATER]) == 0
+    assert json.loads(capsys.readouterr().out) == {"done": True}
+    assert (signin.current(), profile.exists(), ended) == (signin.Choice(True, _LATER), False, [str(profile)])
+
+    profile.mkdir()
+    assert machine.main(["signin", "off", _EARLIER]) == 0
+    assert json.loads(capsys.readouterr().out) == {"done": True}
+    assert (signin.current(), profile.exists()) == (signin.Choice(True, _LATER), True)
+
+
+def test_signing_out_forgets_the_closed_kept_browser_s_hold_and_launch(state, monkeypatch):
+    monkeypatch.setattr(care, "end_on_profile", lambda profile: None)
+    monkeypatch.setattr(care, "browser_up", lambda: False)
+    hold.control("view-1", "take")
+    launch.write(Launch("", "sharp", kept=True))
+    machine.keep_signins(True, _LATER)
+    assert (hold.held(), launch.current()) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "argv", [["signin", "on"], ["signin", "maybe", _LATER], ["signin", "on", "not-a-revision"]]
+)
+def test_a_save_the_machine_cannot_read_is_refused(state, capsys, argv):
+    assert machine.main(argv) == 2
+    assert signin.current() is None
+
+
+def test_the_status_says_whether_the_open_browser_keeps_its_sign_ins(state, monkeypatch):
+    monkeypatch.setattr(machine, "_browser_up", lambda deadline: True)
+    protocol.write_state(protocol.TOKEN_FILE, "t" * 43)
+    launch.write(Launch("", "standard", kept=True))
+    assert machine.status().kept is True
+    assert protocol.Status.read(machine.status().to_wire()).kept is True
+    launch.write(Launch("", "standard"))
+    assert machine.status().kept is False

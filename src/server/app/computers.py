@@ -68,6 +68,7 @@ from src.server.models.computer import (
     ComputerActionResponse,
     ComputerAlwaysOnRequest,
     ComputerBrowserQualityRequest,
+    ComputerBrowserSigninsRequest,
     ComputerCreate,
     ComputerFilesBackupRequest,
     ComputerListResponse,
@@ -1268,23 +1269,54 @@ async def set_computer_browser_quality(
     A browser keeps the quality it started with, since changing it restarts the
     browser and loses its pages, so the choice reaches the next one it opens.
     """
-    from src.server.services import browser_quality
+    from src.server.services import browser_settings
 
     async with _computer_action_errors("set the live view quality for", computer_id):
         computer = await _owned_computer(computer_id, x_user_id)
         if not provider_class(computer["kind"]).browser_use:
             raise HTTPException(status_code=409, detail="This computer has no browser.")
         if not await set_computer_settings(
-            computer_id, x_user_id, browser_quality.saved(request.quality)
+            computer_id, x_user_id, browser_settings.saved_quality(request.quality)
         ):
             raise HTTPException(status_code=404, detail="Computer not found")
         updated = await get_computer(computer_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="Computer not found")
-        await browser_quality.apply_now(updated)
+        await browser_settings.apply_now(updated)
         logger.info(
             f"Set computer {computer_id} live view quality to "
             f"{request.quality or 'its size'} for user {x_user_id}"
+        )
+        return await _counted_response(updated)
+
+
+@router.post("/{computer_id}/browser-signins", response_model=ComputerResponse)
+async def set_computer_browser_signins(
+    computer_id: str,
+    request: ComputerBrowserSigninsRequest,
+    x_user_id: CurrentUserId,
+):
+    """Choose whether the computer's browser keeps sign-ins between its starts.
+
+    Every save signs the browser out of every site, the same save again
+    included, which is how a person signs it out.
+    """
+    from src.server.services import browser_settings
+
+    async with _computer_action_errors("set kept sign-ins for", computer_id):
+        computer = await _owned_computer(computer_id, x_user_id)
+        if not provider_class(computer["kind"]).browser_use:
+            raise HTTPException(status_code=409, detail="This computer has no browser.")
+        if not await set_computer_settings(
+            computer_id, x_user_id, browser_settings.saved_signins(request.keep)
+        ):
+            raise HTTPException(status_code=404, detail="Computer not found")
+        updated = await get_computer(computer_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Computer not found")
+        await browser_settings.apply_now(updated)
+        logger.info(
+            f"Set computer {computer_id} kept sign-ins to {request.keep} for user {x_user_id}"
         )
         return await _counted_response(updated)
 

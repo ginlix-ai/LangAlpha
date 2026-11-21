@@ -1,7 +1,7 @@
 """What the open browser was launched with, which every command must repeat.
 
-The engine takes a user agent and the stream's settings, and Chrome its scale,
-only when the browser starts, and restarts it, losing its pages, when a command
+The engine takes a user agent, the stream's settings and the profile, and Chrome
+its scale, only when the browser starts, and restarts it, losing its pages, when a command
 asks for anything else. So both are settled together when a browser starts and
 kept in one record until it closes, and every command, the agent's or one run
 for the person, runs with that record.
@@ -19,7 +19,8 @@ _FILE = "launch"
 
 @dataclass(frozen=True)
 class Launch:
-    """The user agent, empty for the engine's own, and the live view's quality.
+    """The user agent, empty for the engine's own, the live view's quality, and
+    whether the browser runs on the kept profile (``signin``).
 
     ``closing`` marks the launch of a browser a command means to close, after
     working on it or not: the command runs on the launch as it is, since a
@@ -31,6 +32,7 @@ class Launch:
     user_agent: str
     quality: StreamQualityName
     closing: bool = False
+    kept: bool = False
 
     @property
     def stream(self) -> StreamQuality:
@@ -48,13 +50,15 @@ def current() -> Launch | None:
     user_agent, quality = stored.get("user_agent"), stored.get("quality")
     if not isinstance(user_agent, str) or quality not in STREAM_QUALITIES:
         return None
-    return Launch(user_agent, quality, stored.get("closing") is True)
+    return Launch(user_agent, quality, stored.get("closing") is True, stored.get("kept") is True)
 
 
 def write(launch: Launch) -> None:
     stored: dict[str, object] = {"user_agent": launch.user_agent, "quality": launch.quality}
     if launch.closing:
         stored["closing"] = True
+    if launch.kept:
+        stored["kept"] = True
     write_state(_FILE, json.dumps(stored))
 
 

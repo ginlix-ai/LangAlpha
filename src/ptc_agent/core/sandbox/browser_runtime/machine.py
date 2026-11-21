@@ -1,9 +1,9 @@
 """What the server asks of the machine's browser: ``status`` and ``start`` print
 a ``Status``, ``control`` takes, renews or hands back a viewer's hold,
 ``navigate`` takes the page somewhere for the viewer holding it, ``quality``
-keeps the computer's choice of live view quality, ``serve`` runs the bridge and
-``proxy`` the filter the browser's requests go through. Each that answers does
-so with one line of JSON."""
+keeps the computer's choice of live view quality, ``signin`` whether sign-ins
+are kept, ``serve`` runs the bridge and ``proxy`` the filter the browser's
+requests go through. Each that answers does so with one line of JSON."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import care, daemon, hold, launch, proxy, quality, relay, wrapper
+from . import care, daemon, hold, launch, proxy, quality, relay, signin, wrapper
 from .protocol import (
     ENGINE_BIN,
     HOLD_ACTIONS,
@@ -58,7 +58,10 @@ def status(wait_s: float = 0.0) -> Status:
             token = state_file(TOKEN_FILE).read_text().strip() or None
         except OSError:
             token = None
-    return Status(os.access(ENGINE_BIN, os.X_OK), token is not None, token)
+    launched = launch.current() if token else None
+    return Status(
+        os.access(ENGINE_BIN, os.X_OK), token is not None, token, kept=bool(launched and launched.kept)
+    )
 
 
 def start(wait_s: float) -> Status:
@@ -193,6 +196,28 @@ def _let_go(holder: str, releases: list[list[str]]) -> bool:
     return True
 
 
+def keep_signins(keep: bool, revision: str) -> bool:
+    """Take the save of the choice at *revision*: whether to keep sign-ins from
+    the browser's next start, with what the profile held so far erased.
+
+    Erasing ends a browser open on the kept profile at once, whoever is using
+    it: the person asked for their sign-ins gone, and a browser left open would
+    write them back as it closed. No command is admitted meanwhile, so none
+    opens another on the profile halfway through.
+    """
+    with care.admitting():
+        if not signin.newer(revision):
+            return True
+        launched = launch.current()
+        care.end_on_profile(signin.profile())
+        if launched and launched.kept and not care.browser_up():
+            hold.forget()
+            launch.forget()
+        signin.erase()
+        signin.record(signin.Choice(keep, revision))
+    return True
+
+
 def _refused(reason: NavigateRefusal) -> dict[str, object]:
     return {"done": False, "reason": reason}
 
@@ -232,6 +257,9 @@ def main(argv: list[str]) -> int:
     if command == "quality" and len(args) == 1:
         print(json.dumps({"done": quality.choose(args[0])}))
         return 0
+    if command == "signin" and len(args) == 2 and args[0] in ("on", "off") and signin.REVISION.fullmatch(args[1]):
+        print(json.dumps({"done": keep_signins(args[0] == "on", args[1])}))
+        return 0
     if command == "serve":
         return relay.serve()
     if command == "proxy":
@@ -251,7 +279,7 @@ def _usage() -> int:
         f"usage: python3 -I {Path(__file__).resolve().parent.name} agent-browser [argument ...]"
         " | status [wait seconds] | start [wait seconds] | control <holder> take|renew|release [releases]"
         " | navigate <holder> open <address>|back|forward|reload"
-        " | quality light|standard|sharp|retina|default | serve | proxy",
+        " | quality light|standard|sharp|retina|default | signin on|off <revision> | serve | proxy",
         file=sys.stderr,
     )
     return 2

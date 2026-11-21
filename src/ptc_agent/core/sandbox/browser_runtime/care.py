@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import daemon, hold, launch
+from . import daemon, hold, launch, signin
 from .protocol import CHROME_BIN, ENGINE_BIN, ENGINE_PROFILE_PREFIX, STREAM_PORT, state_file
 
 #: Share of the computer's memory in use past which no more browser is opened: a tab
@@ -46,6 +46,16 @@ def tend(up: bool, *, admitting: bool = False) -> None:
         with _between_commands() as clear:
             if clear:
                 _reap_left_behind()
+
+
+@contextmanager
+def admitting() -> Iterator[None]:
+    """Hold the gate's lock, so no command is admitted until the block ends."""
+    path = state_file(ADMISSION_LOCK)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 @contextmanager
@@ -181,25 +191,65 @@ def _processes() -> list[_Process]:
     return found
 
 
-def _engine_browsers(processes: list[_Process]) -> list[_Process]:
+def _engine_browsers(processes: list[_Process], profile: str | None = None) -> list[_Process]:
     """Each Chrome the engine started: by the engine's name for it, on the
-    engine's throwaway profile. Both count, so a Chrome the agent's own code
-    runs, even from the same path, is left alone."""
+    engine's throwaway profile or the kept one (``signin``). Both count, so a
+    Chrome the agent's own code runs, even from the same path, is left alone.
+    With *profile*, only those on it."""
     uid = os.getuid()
+    kept = signin.profile()
     return [
         p
         for p in processes
-        if p.argv[:1] == [CHROME_BIN] and p.uid == uid and _engine_profile(p) is not None
+        if p.argv[:1] == [CHROME_BIN]
+        and p.uid == uid
+        and (on := _profile(p)) is not None
+        and (_throwaway(on) or on == kept)
+        and (profile is None or on == profile)
     ]
 
 
-def _engine_profile(browser: _Process) -> str | None:
-    """The engine's throwaway profile *browser* runs on, if it is one."""
+def _profile(browser: _Process) -> str | None:
     for arg in browser.argv:
         if arg.startswith("--user-data-dir="):
-            path = arg.split("=", 1)[1]
-            return path if os.path.basename(path.rstrip("/")).startswith(ENGINE_PROFILE_PREFIX) else None
+            return arg.split("=", 1)[1].rstrip("/")
     return None
+
+
+def _throwaway(profile: str) -> bool:
+    """Whether *profile* is one the engine made for a single browser."""
+    return os.path.basename(profile).startswith(ENGINE_PROFILE_PREFIX)
+
+
+def unlock_profile(profile: str) -> None:
+    """Clear the lock a Chrome killed on *profile* left, with none running on it.
+
+    Chrome takes over its own stale lock only when the lock names this host,
+    and a computer restored or moved comes back under another name.
+    """
+    if _engine_browsers(_processes(), profile):
+        return
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.unlink(os.path.join(profile, name))
+        except OSError:
+            continue
+
+
+def end_on_profile(profile: str) -> None:
+    """Kill every Chrome of the engine's on *profile*, and the daemon that ran
+    it, waiting until they are gone. For a profile about to be erased, which a
+    Chrome closing in its own time would write back."""
+    browsers = _engine_browsers(_processes(), profile)
+    for p in browsers:
+        try:
+            os.kill(p.pid, signal.SIGKILL)
+        except OSError:
+            continue
+    deadline = time.monotonic() + _BROWSER_GONE_S
+    while time.monotonic() < deadline and _any_left(browsers):
+        time.sleep(0.05)
+    end_browserless(admitting=True)
 
 
 def browser_up() -> bool:
@@ -297,8 +347,9 @@ def _reap_left_behind() -> None:
     hold.forget()
     launch.forget()
     for p in reaped:
-        profile = _engine_profile(p)
-        if profile:
+        # The kept profile stays, sign-ins and all, for the next browser.
+        profile = _profile(p)
+        if profile and _throwaway(profile):
             shutil.rmtree(profile, ignore_errors=True)
 
 

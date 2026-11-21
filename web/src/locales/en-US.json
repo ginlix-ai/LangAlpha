@@ -1718,6 +1718,14 @@
       "hint": "Sharper is clearer and uses more bandwidth. It applies the next time the browser opens.",
       "failed": "Couldn't change the live view quality"
     },
+    "browserSignins": {
+      "label": "Keep sign-ins",
+      "offHint": "The browser forgets every site when it closes. Turn this on to sign in once in the Browser tab and keep it for every thread on this computer. It applies the next time the browser opens.",
+      "onHint": "Sites you sign in to in the Browser tab stay signed in, for every thread on this computer. Turning this off signs out of all of them.",
+      "signOut": "Sign out of every site",
+      "signedOut": "Signed out of every site",
+      "failed": "Couldn't change kept sign-ins"
+    },
     "filesBackup": {
       "label": "Back up files",
       "offTitle": "Stop backing up files?",
