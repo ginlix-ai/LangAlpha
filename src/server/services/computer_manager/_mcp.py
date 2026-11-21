@@ -39,7 +39,11 @@ from src.server.services.computer_manager._types import (
     MachineTarget,
     WorkspaceToolView,
 )
-from src.server.services.user_skills.reconcile import reconcile_workspace_skills
+from src.server.services.user_skills.reconcile import (
+    SkillSaved,
+    reconcile_workspace_skills,
+    save_workspace_skill,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -814,6 +818,30 @@ class McpSecretsMixin:
         await self._reconcile_skills(
             workspace_id, owner_id, session.sandbox, source=source
         )
+
+    async def save_skill(
+        self, workspace_id: str, user_id: str, sandbox: Any, name: str
+    ) -> SkillSaved:
+        """Save one skill folder on request, under the folder hold every pass
+        writes through, so a rename cannot move the folder beneath it."""
+        try:
+            async with self._held_workspace_folder(workspace_id) as dir_name:
+                if not dir_name:
+                    return SkillSaved(
+                        False, reason="this workspace has no folder on the computer yet"
+                    )
+                return await save_workspace_skill(
+                    sandbox,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    name=name,
+                    project=ProjectContext(workspace_id, dir_name),
+                )
+        except WorkspaceFolderMoving:
+            return SkillSaved(
+                False,
+                reason="this workspace's folder is being moved; run it again in a moment",
+            )
 
     async def proactively_apply_mcp_config(
         self, workspace_id: str, user_id: str | None = None

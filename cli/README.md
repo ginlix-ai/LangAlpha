@@ -123,6 +123,7 @@ langalpha drive restore <path> --rev N [--space SPACE]
 langalpha drive trash [--space SPACE]
 langalpha drive trash restore <trash_id> [--space SPACE]
 langalpha drive usage [--space SPACE]
+langalpha skills save <name> [-w WS]
 langalpha models list
 ```
 
@@ -184,7 +185,9 @@ whose turns run there. Home counts as being on the computer that holds it
 (your primary), so from any other computer a new thread with no workspace
 asks. Reading, cancelling a run, archiving, renaming, and starting or
 stopping another computer never ask, and neither does anything else on the
-computer asking. A workspace is created without asking when you let the
+computer asking. Saving a skill folder (`skills save`) never asks on any
+computer: it registers what the workspace's folder already holds, and the
+answer says at once when the folder is refused and why. A workspace is created without asking when you let the
 Chief of Staff create workspaces without asking. The same command sent again
 waits on the same request, and a different message asks anew. The command
 waits: it prints

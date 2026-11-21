@@ -623,3 +623,24 @@ async def test_an_authenticated_computer_token_carries_its_computer_and_scopes(
         "scopes": list(cli_tokens.SCOPES),
         "computer_id": COMPUTER,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_computer_call_carries_the_workspace_it_filed(
+    computer_token, filed_call
+):
+    from types import SimpleNamespace
+
+    from src.server.dependencies.principal import _CLI_CALL, _computer_principal
+
+    def request(headers):
+        return SimpleNamespace(headers=headers, scope={})
+
+    filed_call["thread_id"] = THREAD
+    with_call = request({CALL_HEADER: CALL_ID})
+    await _computer_principal(with_call, COMPUTER_TOKEN)
+    without_call = request({})
+    await _computer_principal(without_call, COMPUTER_TOKEN)
+
+    assert with_call.scope["state"][_CLI_CALL].workspace_id == WORKSPACE
+    assert without_call.scope["state"][_CLI_CALL].workspace_id is None

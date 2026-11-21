@@ -166,6 +166,13 @@ def _registered_skill_names() -> frozenset[str]:
     return frozenset(names | COMPOSER_COMMANDS)
 
 
+def reserved_for_a_command_only(name: str) -> bool:
+    """True for a reserved name no skill folder stands behind: a skill's slash
+    command or one of the composer's, so there is nothing to copy or link."""
+    commands = {s.command for s in SKILL_REGISTRY.values() if s.command} | COMPOSER_COMMANDS
+    return name in commands and name not in SKILL_REGISTRY
+
+
 def _reserved_skill_names(user_skills_dir: str | None) -> frozenset[str]:
     """Names a user skill may not take, all four sources.
 

@@ -84,6 +84,9 @@ class CliCall:
     principal: Principal
     call_id: str | None
     thread_id: str | None
+    #: The workspace the command ran in, filed the same way: which folder a
+    #: command means by default, checked against the user like any other id.
+    workspace_id: str | None = None
 
     def running_thread(self) -> str | None:
         """The thread the command runs in; None for a command that names no
@@ -148,8 +151,12 @@ async def _computer_principal(request: Request, token: str) -> Principal:
         else None
     )
     thread_id = context.thread_id if context is not None else None
+    workspace_id = context.workspace_id if context is not None else None
     request.scope.setdefault("state", {})[_CLI_CALL] = CliCall(
-        principal, call_id, str(thread_id) if thread_id else None
+        principal,
+        call_id,
+        str(thread_id) if thread_id else None,
+        str(workspace_id) if workspace_id else None,
     )
     return principal
 
