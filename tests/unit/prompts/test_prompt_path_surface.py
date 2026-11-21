@@ -79,7 +79,6 @@ def _rendered_prompts() -> dict[str, str]:
         # an absolute link as the wrong form), and that has to render clean
         # while a literal root contributed by a formatter still trips the scan.
         **workspace_path_vars(None, root="/srv/sandbox"),
-        "subagent_summary": "- general-purpose: does things",
         "tool_summary": stub_summary,
         "thread_id": "a1b2c3d4",
         "current_time": "2026-01-01 00:00:00 UTC",
@@ -95,6 +94,10 @@ def _rendered_prompts() -> dict[str, str]:
         "system": loader.get_system_prompt(**common),
         "mcp_roster": loader.render(
             "envelope/baseline_mcp_servers.md.j2", content=stub_summary
+        ),
+        "subagent_roster": loader.render(
+            "envelope/baseline_subagents.md.j2",
+            content="- **general-purpose**: does things",
         ),
     }
 

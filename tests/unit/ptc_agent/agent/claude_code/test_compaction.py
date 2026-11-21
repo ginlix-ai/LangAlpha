@@ -73,12 +73,19 @@ def test_a_change_of_per_turn_inputs_or_no_change_never_moves_it():
     assert CompactionRules(150_000).repin_plan({"session_id": "s", "entries": []}, CURRENT, NOW) is None
 
 
-def test_a_session_the_cli_compacted_on_an_old_pin_moves_whatever_its_size_or_cache():
-    """That compaction was the one the move was due, and the next comes only
-    a context later."""
-    small = records(minutes_ago=1, tokens=1_000, source_digest="build-2")
-    assert CompactionRules(150_000).repin_plan({**small, "repin_due": True}, CURRENT, NOW) == (True, "compacted")
-    assert CompactionRules(150_000).repin_plan(small, CURRENT, NOW) == (False, "inputs_only")
+def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_its_launch_without_a_compaction():
+    """That compaction was the move's chance: the launch takes the build's pin
+    on the context it left, so the turn start compacts none of its own, unless
+    the threshold or a cold cache would compact it anyway."""
+    small = {**records(minutes_ago=1, tokens=1_000, source_digest="build-2"), "repin_due": True}
+    assert CompactionRules(150_000).repin_plan(small, CURRENT, NOW) == (False, "next_launch")
+    urgent = {**records(minutes_ago=61, tokens=200_000, prompt_version=1), "repin_due": True}
+    assert CompactionRules(150_000).repin_plan(urgent, CURRENT, NOW) == (False, "next_launch")
+    full = {**records(minutes_ago=1, tokens=300_000), "repin_due": True}
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(full, CURRENT, NOW) == (True, "threshold")
+    cold = {**records(minutes_ago=61, tokens=200_000), "repin_due": True}
+    assert _cold_rules().repin_plan(cold, CURRENT, NOW) == (True, "cold")
+    assert CompactionRules(150_000).repin_plan(records(minutes_ago=1, tokens=1_000, source_digest="build-2"), CURRENT, NOW) == (False, "inputs_only")
 
 
 def test_a_session_at_its_threshold_moves_on_any_change_since_the_cli_compacts_it_anyway(monkeypatch):
@@ -261,7 +268,9 @@ def test_the_composer_is_told_what_the_next_turn_start_compacts():
     assert compaction.next_summary({**rules, "cold_tokens": 0}, records(minutes_ago=1, **on_pin), settled_at=None) is None
     assert compaction.next_summary(rules, records(minutes_ago=1, tokens=500_000, **on_pin), settled_at=None) == {"reason": "threshold"}
     assert compaction.next_summary(rules, records(minutes_ago=1), settled_at=None) == {"reason": "rebuild", "at": expires}
-    assert compaction.next_summary(rules, {**records(minutes_ago=1), "repin_due": True}, settled_at=None) == {"reason": "rebuild"}
+    # A session due its move at the next launch is summarized only by the cold rule, not for the move.
+    assert compaction.next_summary(rules, {**records(minutes_ago=1), "repin_due": True}, settled_at=None) == {"reason": "cold", "at": expires}
+    assert compaction.next_summary(rules, {**records(minutes_ago=1, tokens=64_000), "repin_due": True}, settled_at=None) is None
     settled = datetime.fromtimestamp(NOW, UTC).replace(tzinfo=None)
     assert compaction.next_summary(rules, records(minutes_ago=1, **on_pin), settled_at=settled) == {"reason": "cold", "at": NOW + 3600}
 

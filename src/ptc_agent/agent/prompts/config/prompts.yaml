@@ -242,6 +242,15 @@ envelope:
       Byte-deterministic.
     kwargs: [content]
 
+  baseline_subagents:
+    template: envelope/baseline_subagents.md.j2
+    description: >-
+      The main agent's subagent roster wrapped in <subagents>, verbatim: one
+      name, description and tool list each, or "No sub-agents configured."
+      for an agent with none, since the static prompt points here.
+      Byte-deterministic.
+    kwargs: [content]
+
   baseline_activity:
     template: envelope/baseline_activity.md.j2
     description: >-

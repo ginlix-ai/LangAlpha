@@ -19,9 +19,7 @@ POINTER = ".agents/skills/langalpha-doc/references/chat.md"
 
 
 def _prompt(**kwargs) -> str:
-    return get_loader().get_system_prompt(
-        current_time="2026-10-08 09:00 ET", subagent_summary="", **kwargs
-    )
+    return get_loader().get_system_prompt(current_time="2026-10-08 09:00 ET", **kwargs)
 
 
 def _section(prompt: str) -> str:

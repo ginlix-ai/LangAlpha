@@ -36,14 +36,14 @@
 
    A harness row, `<kind>_changed` for a block in
    `runtime_context/harness_blocks.py` (the MCP roster, the skills manifest,
-   the Chief of Staff's view of the user's activity, the model), reports a block the
-   harness wrote. `render_update_row` passes that block's registry entry in
-   as `harness`, so its subject and element come from there and a new block
-   needs no branch here. The row diffs like a file row and reads like one,
-   but it names no file and no writer: the harness wrote the text, nobody
-   edited it, and there is nothing on disk to go and read. So it gets its own
-   paragraph rather than the file one, which promises a file the model could
-   open.
+   the subagent roster, the Chief of Staff's view of the user's activity, the
+   model), reports a block the harness wrote. `render_update_row` passes that
+   block's registry entry in as `harness`, so its subject and element come
+   from there and a new block needs no branch here. The row diffs like a
+   file row and reads like one, but it names no file and no writer: the
+   harness wrote the text, nobody edited it, and there is nothing on disk to
+   go and read. So it gets its own paragraph rather than the file one, which
+   promises a file the model could open.
 
    A block holding one value rather than a document (the model) sets
    `value_intro` in its entry. Its row's text is the value now rather than a

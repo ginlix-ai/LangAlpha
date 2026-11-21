@@ -9,12 +9,20 @@ reach a session only through a compaction (``compact``): at a turn start, or
 on a manual /compact, the CLI compacts under the old pin, and the next launch
 runs on the new one.
 
-Whether a turn start does that follows the main agent's turn-start rebuild
+A session the CLI compacted on an old pin, mid-turn (``repin_due``), needs
+no compaction of its own to move: the CLI went on recording the old pin
+after that one, and the next launch that sends a prompt is handed the
+records without those (``session.unpinned``), so it runs on the build's pin
+with the context the compaction left. That move ignores the thinking from
+the rest of that turn, which Claude reads past under another prefix, where
+a second summary would rewrite the turn's whole tail. It holds for the CLI
+the runtime pins, which ``test_runtime_cli`` runs.
+
+Whether a turn start compacts follows the main agent's turn-start rebuild
 (``middleware/compaction/rebuild.py``): a session whose context reaches the
 thread's threshold with the turn's prompt moves on any change, since the CLI
-compacts it in the turn anyway, and so does one the CLI compacted on an old
-pin (``repin_due``), since that compaction was the one the move was due;
-under it, a pin below the build's ``rebuild_before`` moves whatever its size
+compacts it in the turn anyway; under it, one due a move at its launch waits
+for it, a pin below the build's ``rebuild_before`` moves whatever its size
 or cache, a deploy's change moves once the context the turn sends is at
 least ``floor_tokens`` and its prompt cache has expired, so the turn's first
 request would write the whole context again anyway, and a change of per-turn
@@ -62,6 +70,7 @@ from ptc_agent.agent.claude_code.session import (
     SessionRecords,
     SessionWrite,
     compacted,
+    same_pin,
 )
 from ptc_agent.agent.claude_code.signals import emit
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
@@ -108,11 +117,6 @@ def prompt_tokens(prompt: str | list[dict[str, Any]]) -> int:
     blocks = [{"type": "text", "text": prompt}] if isinstance(prompt, str) else prompt
     text = sum(len(b["text"].encode()) for b in blocks if b.get("type") == "text")
     return text // _PROMPT_BYTES_PER_TOKEN + attachment_tokens([HumanMessage(blocks)])
-
-
-def same_pin(a: SessionPin, b: SessionPin) -> bool:
-    """Whether two pins send the same prefix, whichever build recorded them."""
-    return a["system_prompt"] == b["system_prompt"] and a["tools"] == b["tools"]
 
 
 def _usage(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -176,7 +180,8 @@ class CompactionRules:
         backend: The sandbox whose file tools a summary sends the agent to
             the thread's transcript with, in ``workspace_id``'s folder.
         enabled: False when the main agent's compaction is off, which then
-            makes no turn-start rebuild either, so no session moves.
+            makes no turn-start rebuild either, so no session moves, not
+            even one due a move at its launch.
         sent_at: When the server received the turn's send (epoch seconds),
             when the cache's expiry is judged: the composer says a deploy's
             rebuild or a cold compaction is coming only once the cache has
@@ -337,14 +342,15 @@ class CompactionRules:
     def _move(self, records: SessionRecords, tokens: int, *, expired: bool) -> tuple[bool, str]:
         """Whether a session on another pin moves at a turn start that sends
         ``tokens``, by the turn-start rebuild's reasons, and ``threshold`` for
-        one the CLI would compact anyway."""
+        one the CLI would compact anyway. One the CLI compacted on its old
+        pin moves at its launch instead (``next_launch``)."""
         kept = records.get("pinned") or {}
         if not self.enabled:
             return False, "off"
-        if records.get("repin_due"):
-            return True, "compacted"
         if self.threshold and tokens >= self.threshold:
             return True, "threshold"
+        if records.get("repin_due"):
+            return False, "next_launch"
         pinned = kept.get("prompt_version") or 0
         if release.prompt_version() < pinned:
             return False, "rollback"

@@ -11,7 +11,6 @@ def test_off_the_system_prompt_carries_no_scratchpad_guidance(guidance):
     prompt = init_loader().get_system_prompt(
         **guidance_template_vars(guidance),
         **workspace_path_vars(None, root="/home/workspace"),
-        subagent_summary="STUB",
     )
 
     assert "<thread_scratchpad>" not in prompt
@@ -24,7 +23,6 @@ def test_on_each_task_starts_a_checkpoint_note_by_its_absolute_path(guidance):
     prompt = init_loader().get_system_prompt(
         **guidance_template_vars(guidance),
         **workspace_path_vars(None, root="/home/workspace"),
-        subagent_summary="STUB",
         scratchpad_enabled=True,
     )
 

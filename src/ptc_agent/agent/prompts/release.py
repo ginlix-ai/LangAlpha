@@ -28,9 +28,9 @@ def _sources() -> list[Path]:
     """The files the static prompt is made from: the templates and
     prompts.yaml, and the Python that writes text into it with no user's
     input: the variables ``PTCAgent._build_system_prompt`` passes, the
-    formatters of the subagent roster (with the built-ins' descriptions) and
-    of the direct tools, and the built-in servers whose tools those lines
-    describe."""
+    built-in subagents' definitions (the templates and sections their own
+    prompts are made from), the formatter of the direct tools, and the
+    built-in servers whose tools those lines describe."""
     return [
         *sorted((_PROMPTS / "templates").rglob("*.j2")),
         _PROMPTS / "config" / "prompts.yaml",

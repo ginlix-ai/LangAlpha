@@ -65,7 +65,6 @@ from ptc_agent.agent.claude_code.compaction import (
     context_signal,
     prompt_tokens,
     report_usage,
-    same_pin,
 )
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
@@ -84,7 +83,10 @@ from ptc_agent.agent.claude_code.session import (
     answered_in,
     compacted,
     resume_from,
+    records_pin,
+    same_pin,
     session_channel,
+    unpinned,
 )
 from ptc_agent.agent.claude_code.tools_bridge import (
     Answered,
@@ -649,6 +651,9 @@ class ClaudeTurn:
         #: not hold yet.
         self._session: str | None = None
         self._owed: dict[str, Any] = {}
+        #: Whether the run moves the session to a pin with another prefix,
+        #: whose write then waits for the CLI's record of it (``commit``).
+        self._moving = False
         #: What a session this run starts holds, since the CLI may start one
         #: over instead of resuming.
         self._fresh: dict[str, Any] = {}
@@ -713,6 +718,10 @@ class ClaudeTurn:
             if records:
                 state = {**state, "claude_session": {**records, "entries": entries}}
             pin, prompt = self.opening(await self._briefed(state))
+            if self._moving:
+                # The CLI would replay the old pin from its records.
+                logger.info("[ClaudeCode] re-pin=yes reason=at_launch")
+                state = {**state, "claude_session": {**state["claude_session"], "entries": unpinned(entries)}}
             self._run = await _Run.start(
                 self.spec, pin, self.launcher, self.run_key, self.identity, state.get("claude_session"), prompt,
                 answered, plan=await self.watch(), compact_at=self.compaction.threshold,
@@ -970,28 +979,40 @@ class ClaudeTurn:
         return await context_parts.ahead_parts(PromptMessage(prompt) if prompt else None, pin.get("tools"), {},
                                                model=None, counter=count_tokens_claude)
 
-    def _launch_pin(self, state: ClaudeCodeState) -> tuple[SessionPin, SessionPin | None]:
+    def _launch_pin(self, state: ClaudeCodeState, *, moves: bool = True) -> tuple[SessionPin, SessionPin | None]:
         """The pin the next run launches on, and the session's own, if it has
-        a session: its own, unless it has none or it sends this build's prefix."""
+        a session: its own, unless it has none, it sends this build's prefix,
+        or the CLI compacted it on that pin mid-turn (``repin_due``), which a
+        launch that ``moves`` takes to this build's pin. Only a launch that
+        sends a prompt moves it: one that carries on from tool results would
+        change the prefix under the call it answers. With compaction off, no
+        session moves (``CompactionRules.enabled``)."""
         records = state.get("claude_session") or {}
         kept = records.get("pinned") if records.get("session_id") else None
         current = self.current_pin()
-        return (current if not kept or same_pin(kept, current) else kept), kept
+        moving = moves and records.get("repin_due") and self.compaction.enabled
+        return (current if not kept or same_pin(kept, current) or moving else kept), kept
 
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
         """What the run starts Claude on: the session's own pin, unless the
         session has none (a new session, or one from before sessions kept
-        theirs) or it sends the prefix this build's does. This build's pin is
-        then the one the session holds from the run's first records on, so a
-        pin names the last build that sent its prefix. And the turn's prompt."""
+        theirs), it sends the prefix this build's does, or the run moves it
+        (``_launch_pin``). This build's pin is then the one the session holds
+        from the run's first records on, or on a move from the CLI's record
+        of it, so a pin names the last build that sent its prefix. And the
+        turn's prompt."""
         records = state.get("claude_session") or {}
         key, block = self._baseline_due(state)
         prompt = turn_prompt(state, baseline=block)
         self._session = records.get("session_id")
-        pin, kept = self._launch_pin(state)
+        pin, kept = self._launch_pin(state, moves=prompt is not None)
+        self._moving = bool(kept) and not same_pin(kept, pin)
         sent = {"baseline": key} if prompt is not None and block else {}
         self._fresh = {"pinned": pin, **sent}
-        self._owed = sent if pin == kept else self._fresh
+        # A session due to move that launches on this build's pin as its own (the build went back
+        # to it) has the pin written again, which clears the due; on its old pin it stays due.
+        back = bool(records.get("repin_due")) and same_pin(pin, self.current_pin())
+        self._owed = self._fresh if pin != kept or back else sent
         return pin, prompt
 
     def current_pin(self) -> SessionPin:
@@ -1006,13 +1027,20 @@ class ClaudeTurn:
     def commit(self, session: list[SessionWrite]) -> dict[str, Any]:
         """A step's session records, the first of its own carrying what the
         session holds from then on that it did not before, and the marks of
-        the waits for a CLI ahead of it."""
+        the waits for a CLI ahead of it.
+
+        A move's pin waits for the write that carries the CLI's record of it
+        (``records_pin``): a step can commit records the CLI wrote ahead of
+        that one (the results of calls it resumes from), and a run that fails
+        between would otherwise leave the session naming a pin its records do
+        not. Held, the session stays due, so the next launch moves it again."""
         for write in session:
             if write["session_id"] != self._session:
-                self._session, self._owed = write["session_id"], self._fresh
+                self._session, self._owed, self._moving = write["session_id"], self._fresh, False
             if self._owed:
-                write.update(self._owed)
-                self._owed = {}
+                held = self._moving and not any(records_pin(e) for e in write["entries"])
+                write.update({k: v for k, v in self._owed.items() if not (held and k == "pinned")})
+                self._owed = {"pinned": self._owed["pinned"]} if held and "pinned" in self._owed else {}
         pin = self._fresh.get("pinned")
         waited = self.waits.drain()
         return {"claude_session": _pinned_after(session, pin, due=bool(pin) and not same_pin(pin, self.current_pin())),
@@ -1046,7 +1074,7 @@ def _pinned_after(writes: list[SessionWrite], pin: SessionPin | None, *, due: bo
     them on a write of its own behind them: a build whose reducer voids a
     pin at a compaction, as earlier ones did, then keeps it too. ``due``
     when the pin is not this build's, so the compaction the CLI made on it
-    was the one the session's move was due, and the next turn start makes it."""
+    was the one the session's move was due, and its next launch makes it."""
     if pin and any(compacted(e) for w in writes for e in w["entries"]):
         return [*writes, {"session_id": writes[-1]["session_id"], "entries": [], "pinned": pin, "repin_due": due}]
     return writes

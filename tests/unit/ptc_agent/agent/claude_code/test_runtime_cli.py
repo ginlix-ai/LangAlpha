@@ -271,10 +271,11 @@ async def test_a_session_keeps_its_prompt_and_tools_past_a_compaction_the_cli_ma
     assert values["claude_session"]["pinned"]["system_prompt"] == started.system_prompt
 
 
-async def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_the_next_turn_start():
-    """Its context is small after that compaction, so no size or cache rule
-    would move it for a whole context more, on a prompt the build no longer
-    sends."""
+async def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_its_next_launch_without_compacting_again():
+    """That compaction was the move's chance, so the next turn's launch takes
+    the build's prompt and tools on the context it left, with no summary of
+    its own: the CLI is handed the records without the ones that kept the
+    old prompt past the compaction."""
     @tool("Bash")
     async def long_output(command: str) -> str:
         """Run a shell command."""
@@ -289,14 +290,26 @@ async def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_the_next_turn_
         await run_turn(started, LocalLauncher(env=env, token=TOKEN), graph, "t-due", [HumanMessage("FACT: the code word is heron")])
         compacted = await run_turn(deployed, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-due",
                                    [HumanMessage("RUN_TOOL please")])
+        last = api.model_requests[-1]
         n = len(api.model_requests)
         moved = await run_turn(deployed, LocalLauncher(env=env, token=TOKEN), graph, "t-due", [HumanMessage("RECALL it")])
-        summary, after = api.model_requests[n:]
+        (after,) = api.model_requests[n:]
+        m = len(api.model_requests)
+        await run_turn(deployed, LocalLauncher(env=env, token=TOKEN), graph, "t-due", [HumanMessage("ECHO again")])
+        (later,) = api.model_requests[m:]
     session = compacted["claude_session"]
     assert any(e.get("subtype") == "compact_boundary" for e in session["entries"]) and session["repin_due"]
-    assert session["pinned"]["system_prompt"] == started.system_prompt in json.dumps(summary["system"])
-    assert deployed.system_prompt in json.dumps(after["system"])
-    assert moved["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt and "repin_due" not in moved["claude_session"]
+    assert session["pinned"]["system_prompt"] == started.system_prompt in json.dumps(last["system"])
+    assert deployed.system_prompt in json.dumps(after["system"]) and started.system_prompt not in json.dumps(after["system"])
+    # It goes on from the context the CLI's compaction left, the turn that compacted included
+    # (the summary's pointer at the transcript is rewritten on every later launch), and the
+    # turn after it builds on the move's request.
+    assert "This session is being continued" in json.dumps(after["messages"][0])
+    assert _cacheable(after)["messages"][1: len(last["messages"])] == _cacheable(last)["messages"][1:]
+    assert _cacheable(later)["messages"][: len(after["messages"])] == _cacheable(after)["messages"]
+    assert moved["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt
+    assert "repin_due" not in moved["claude_session"]
+    assert deployed.system_prompt in json.dumps(later["system"])
 
 
 async def test_a_compaction_the_cli_makes_mid_turn_is_signalled_ahead_of_the_reply_after_it():
