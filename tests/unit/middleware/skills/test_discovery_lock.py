@@ -4,7 +4,7 @@ Verifies that:
 - Cache hits return immediately without downloads.
 - Cache misses use lock entries when available (no SKILL.md download).
 - Cache misses fall back to SKILL.md download when no lock entry exists.
-- Self-healing creates lock entries for orphaned skill directories.
+- A dir with no lock entry is read, and no lock entry is written for it.
 """
 
 from __future__ import annotations
@@ -153,9 +153,6 @@ class TestDiscoverSkillsWithLock:
                 ],  # SKILL.md
             ]
         )
-        # Self-healing upload (best effort)
-        backend.aupload_files = AsyncMock()
-
         results = await adiscover_skills(
             backend, SKILLS_PATH, known_skills={}
         )
@@ -169,50 +166,37 @@ class TestDiscoverSkillsWithLock:
         assert backend.adownload_files.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_self_healing_creates_lock_entry(self):
-        """Orphaned dir -> parses SKILL.md, writes lock entry back via aupload_files."""
+    async def test_a_dir_with_no_lock_entry_is_read_and_the_lock_left_alone(self):
+        """The lock is merged under its flock by the sync and the reconciler;
+        a whole-file write from the listing could land over what they merged."""
         skill_md_content = (
             "---\n"
             "name: orphan-skill\n"
-            "description: Needs self-healing\n"
+            "description: No entry\n"
             "---\n"
             "# Orphan\n"
         )
 
+        # A lock that already holds another skill's entry is the one a
+        # whole-file write could clobber.
+        lock = _make_lock_json({"saved-skill": _make_lock_entry("saved-skill")})
         backend = AsyncMock()
         backend.als = AsyncMock(
             return_value=LsResult(
                 entries=[
+                    {"path": f"{SKILLS_PATH}/saved-skill", "is_dir": True},
                     {"path": f"{SKILLS_PATH}/orphan-skill", "is_dir": True},
                 ]
             )
         )
         backend.adownload_files = AsyncMock(
             side_effect=[
-                [_make_download_response(error=True)],  # no lock file
-                [
-                    _make_download_response(
-                        skill_md_content.encode("utf-8")
-                    )
-                ],  # SKILL.md
+                [_make_download_response(lock.encode("utf-8"))],
+                [_make_download_response(skill_md_content.encode("utf-8"))],
             ]
         )
-        backend.aupload_files = AsyncMock()
 
-        await adiscover_skills(backend, SKILLS_PATH, known_skills={})
+        results = await adiscover_skills(backend, SKILLS_PATH, known_skills={})
 
-        # Self-healing should write back lock entries
-        backend.aupload_files.assert_called_once()
-        upload_args = backend.aupload_files.call_args[0][0]
-        # Should be a list of (path, bytes) tuples
-        assert len(upload_args) == 1
-        lock_path, lock_bytes = upload_args[0]
-        assert "skills-lock.json" in lock_path
-
-        # Verify the written lock content has our orphaned skill
-        import json
-
-        lock_data = json.loads(lock_bytes.decode("utf-8"))
-        assert "orphan-skill" in lock_data["skills"]
-        assert lock_data["skills"]["orphan-skill"]["owner"] == "user"
-        assert lock_data["version"] == 1
+        assert {skill["name"] for skill in results} == {"saved-skill", "orphan-skill"}
+        backend.aupload_files.assert_not_called()
