@@ -438,10 +438,11 @@ describe('CreateWorkspaceModal, a computer still being prepared', () => {
     expect(screen.queryByText('Add a computer first.')).not.toBeInTheDocument();
     await user.click(within(card).getByRole('button', { name: 'Add a computer' }));
     expect(onClose).toHaveBeenCalled();
-    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'create' });
-    // No page here shows the Computers dialog, so it opens on chat's now
-    // rather than unasked on whichever page shows one next.
-    expect(screen.getByTestId('path')).toHaveTextContent('/chat');
+    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'create', returnTo: 'settings' });
+    // No page here shows the Computers dialog, so it opens on Settings'
+    // Computers section now, and closes onto its list, rather than unasked
+    // on whichever page shows one next.
+    expect(screen.getByTestId('path')).toHaveTextContent('/settings');
   });
 
   it("offers the computer whose backup is off when that is why Home can't live anywhere", async () => {
@@ -468,6 +469,6 @@ describe('CreateWorkspaceModal, a computer still being prepared', () => {
     );
     await user.click(within(card).getByRole('button', { name: 'Open Office Mac' }));
     expect(onClose).toHaveBeenCalled();
-    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'details', computerId: SECOND_ID });
+    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'details', computerId: SECOND_ID, returnTo: 'settings' });
   });
 });

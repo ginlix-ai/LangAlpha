@@ -61,7 +61,7 @@ vi.mock('@/components/modelAccess/ClaudeCodeToken', () => ({
 vi.mock('@/lib/desktop', () => ({ canRemoteControl: () => h.remote }));
 vi.mock('@/pages/ChatAgent/hooks/computerPanelStore', () => ({
   openComputersPanel: (p: unknown) => h.opened.push(p),
-  useComputersPanel: () => ({ specComputerId: null }),
+  useComputersPanel: () => ({ panel: null, specComputerId: null }),
 }));
 vi.mock('@/pages/ChatAgent/hooks/useMediumAction', () => ({
   useMediumAction: (id: string) => {
@@ -140,7 +140,7 @@ describe('ClaudeCodeSheet', () => {
     expect(within(row).getByText('Offline')).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'replace' })).toBeNull();
     fireEvent.click(within(row).getByRole('button'));
-    expect(h.opened).toEqual([{ view: 'details', computerId: 'mac' }]);
+    expect(h.opened).toEqual([{ view: 'details', computerId: 'mac', returnTo: 'claudeCode' }]);
   });
 
   it('once on, sets on a computer\'s row how many agents it runs at once, from 1 to the most the server allows', async () => {
@@ -187,7 +187,7 @@ describe('ClaudeCodeSheet', () => {
     expect(screen.getByText('Connect a computer of your own first')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Get the Mac app/ })).toHaveAttribute('href', 'https://langalpha.ai/download');
     fireEvent.click(screen.getByRole('button', { name: 'Add SSH computer' }));
-    expect(h.opened).toEqual([{ view: 'create' }]);
+    expect(h.opened).toEqual([{ view: 'create', returnTo: 'claudeCode' }]);
     expect(screen.getByText(/^Runs Claude Code on your Claude plan\./)).toBeInTheDocument();
     expect(screen.queryByText(/differs from the other sign-ins/)).toBeNull();
     expect(screen.getByRole('link', { name: /Learn more/ })).toHaveAttribute('href', 'https://docs.langalpha.ai/concepts/claude-code/#requirements');
@@ -217,11 +217,11 @@ describe('ClaudeCodeSheet', () => {
     h.medium = { 'c-3': 'plan', 'c-4': 'resize' };
     show(setupOf({ state: 'not_connected', on: true, too_small: TOO_SMALL }));
     const row = screen.getByText('Backtests').closest('li') as HTMLElement;
-    expect(within(row).getByText('Claude Code runs on Medium or larger. Changing it restarts it for a few minutes.')).toBeInTheDocument();
+    expect(within(row).getByText('Changing it restarts it for a few minutes.')).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Change to Medium' }));
     expect(h.spec).toEqual(['c-4']);
     const scratch = screen.getByText('Scratch').closest('li') as HTMLElement;
-    expect(within(scratch).getByText("Claude Code runs on Medium or larger, and Medium isn't on your plan.")).toBeInTheDocument();
+    expect(within(scratch).getByText("Medium isn't on your plan.")).toBeInTheDocument();
     fireEvent.click(within(scratch).getByRole('button', { name: 'Upgrade plan' }));
     expect(h.spec).toEqual(['c-4', 'c-3']);
   });
@@ -290,7 +290,7 @@ describe('ClaudeCodeSheet', () => {
     h.remote = true;
     show(setupOf({}));
     fireEvent.click(screen.getByRole('button', { name: 'Turn on Remote control' }));
-    expect(h.opened).toEqual([{ view: 'create', pick: 'thisMac' }]);
+    expect(h.opened).toEqual([{ view: 'create', pick: 'thisMac', returnTo: 'claudeCode' }]);
   });
 
   it('names an offline computer and what to check there', () => {
@@ -299,7 +299,7 @@ describe('ClaudeCodeSheet', () => {
     const row = screen.getByText('MacBook Pro').closest('li') as HTMLElement;
     expect(within(row).getByText('Open LangAlpha on this Mac and check that Remote control is on.')).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'View computer' }));
-    expect(h.opened).toEqual([{ view: 'details', computerId: 'mac' }]);
+    expect(h.opened).toEqual([{ view: 'details', computerId: 'mac', returnTo: 'claudeCode' }]);
   });
 
   it('adding a first token turns Claude Code on, then opens that computer\'s token sheet', async () => {
@@ -457,9 +457,10 @@ describe('ClaudeCodeSheet', () => {
     const onLeave = vi.fn();
     show(setupOf({ state: 'not_connected', on: true, cloud: true }), [], onLeave);
     fireEvent.click(screen.getByRole('button', { name: 'Add SSH computer' }));
-    expect(h.opened).toEqual([{ view: 'create' }]);
-    expect(screen.getByText('at:/chat')).toBeInTheDocument();
-    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(h.opened).toEqual([{ view: 'create', returnTo: 'claudeCode' }]);
+    // The form opens over the view and closes back onto it: nothing leaves.
+    expect(screen.queryByText('at:/chat')).toBeNull();
+    expect(onLeave).not.toHaveBeenCalled();
   });
 
   it.each([
