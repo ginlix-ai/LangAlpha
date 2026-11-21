@@ -4287,6 +4287,20 @@ class TestEveryProjectsToolOverlay(_Base):
         assert reached.sync.await_args.args[0].dir_name == "joiner-6c06"
 
     @pytest.mark.asyncio
+    async def test_a_joining_projects_sync_rebuilds_only_its_overlay(self):
+        """A forced refresh would re-upload the servers and packages every
+        sibling shares and replace a daemon running their calls."""
+        manager = _make_manager()
+        session = self._joining()
+
+        with _attaching(manager, session) as reached:
+            await manager.get_session_for_workspace("ws-joiner", user_id="user-1")
+
+        kwargs = reached.sync.await_args.kwargs
+        assert kwargs["rebuild_overlay"] is True
+        assert not kwargs.get("force_refresh")
+
+    @pytest.mark.asyncio
     async def test_the_joining_projects_own_server_set_is_resolved_first(self):
         """The session's composite belongs to whichever sibling resolved last,
         and that set is what the install would write into this overlay."""

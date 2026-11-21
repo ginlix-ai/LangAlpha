@@ -728,6 +728,7 @@ async def sync_sandbox_assets(
     disabled_skills: frozenset[str] = frozenset(),
     reusing_sandbox: bool = False,
     force_refresh: bool = False,
+    rebuild_overlay: bool = False,
     project: ProjectContext | None = None,
     root_owner_dir_name: str | None = None,
     workspace_dir_names: tuple[str, ...] = (),
@@ -759,6 +760,9 @@ async def sync_sandbox_assets(
             labels the sync's metrics: what is uploaded follows the sandbox's
             manifest, which on a new sandbox records what setup put there.
         force_refresh: Force re-upload of all modules regardless of manifest.
+        rebuild_overlay: Build this project's tool overlay again whatever the
+            ledger says of it, for one whose generated config is gone or
+            damaged. The computer-wide modules still follow the manifest.
         project: Which project this sync is for, carrying its id and its
             folder on the computer. None is a machine with no project on
             it yet, which still owns the root. The folder travels here and
@@ -846,11 +850,9 @@ async def sync_sandbox_assets(
         tool_version = local_manifest["modules"]["tool_modules"]["version"]
         # The shared manifest may describe a sibling that discovered identical
         # tools first. Only this project's completed install satisfies its sync.
-        overlay_missing = bool(
-            project.dir_name
-            and sandbox.mcp_registry is not None
-            and union_ledger.get("tool_versions", {}).get(project.claim)
-            != tool_version
+        claimed = union_ledger.get("tool_versions", {}).get(project.claim)
+        overlay_due = sandbox.mcp_registry is not None and (
+            rebuild_overlay or bool(project.dir_name and claimed != tool_version)
         )
         _mark_sync("manifest")
 
@@ -884,7 +886,7 @@ async def sync_sandbox_assets(
             for mod_name, mod_data in local_manifest["modules"].items():
                 remote_mod = remote_manifest.get("modules", {}).get(mod_name)
                 if mod_name == "tool_modules" and project.dir_name:
-                    if overlay_missing:
+                    if overlay_due:
                         changed_modules.add(mod_name)
                 elif (
                     remote_mod is None
@@ -916,7 +918,7 @@ async def sync_sandbox_assets(
                         )
                 if sandbox._skills_manifest is None:
                     sandbox._skills_manifest = skills_mod
-            if not (layout_moved or overlay_missing):
+            if not (layout_moved or overlay_due):
                 return SyncResult(
                     refreshed_modules=[],
                     forced=False,
@@ -1006,7 +1008,8 @@ async def sync_sandbox_assets(
         _mark_sync("uploads")
 
         # Group 2: tool_modules AFTER mcp_servers (intent: derived from MCP definitions)
-        if "tool_modules" in changed_modules or overlay_missing:
+        install_tools = "tool_modules" in changed_modules or overlay_due
+        if install_tools:
             if on_progress:
                 on_progress("Regenerating tool modules...")
             await sandbox._install_tool_modules(
@@ -1014,11 +1017,20 @@ async def sync_sandbox_assets(
             )
             refreshed.append("tool_modules")
             _mark_sync("tool_modules")
+
+        # A daemon already listening (a reconnect starts one before this
+        # sync) keeps the client, servers and packages it imported until it
+        # stops, so it is replaced when this sync replaced any of them,
+        # whether or not it installed tools. Every install rewrites the
+        # client, so what tells of it is the version the last finished sync
+        # recorded. A replacement waits for the calls the daemon is running,
+        # a sibling workspace's included, so one on current code is left be.
+        runs_old_code = _client_codegen(remote_manifest) != _client_codegen(
+            local_manifest
+        ) or not {"mcp_servers", "internal_packages"}.isdisjoint(refreshed)
+        if install_tools or runs_old_code:
             try:
-                # Replacing: a daemon already listening (a reconnect starts
-                # one before this sync) imported the client just rewritten,
-                # and would keep the old code until it stopped.
-                await sandbox._start_internal_mcp_servers(replace=True)
+                await sandbox._start_internal_mcp_servers(replace=runs_old_code)
             except Exception as e:
                 logger.warning("Failed to refresh MCP servers", error=str(e))
             _mark_sync("mcp_start")
@@ -1188,6 +1200,12 @@ def _held_by_another(lock: Mapping[str, Any], name: str) -> bool:
     entry = lock.get(name)
     # The lock sits where sandbox code can rewrite it.
     return isinstance(entry, dict) and (is_agent_installed(entry) or is_linked(entry))
+
+
+def _client_codegen(manifest: dict[str, Any] | None) -> str | None:
+    """The generated client's version a manifest records, if it records one."""
+    tool_modules = (manifest or {}).get("modules", {}).get("tool_modules", {})
+    return tool_modules.get("source_versions", {}).get("client_codegen")
 
 
 async def _carry_held_collisions(

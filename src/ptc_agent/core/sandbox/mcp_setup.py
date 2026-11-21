@@ -455,8 +455,8 @@ async def _start_internal_mcp_servers(
     or a dead daemon meets no command that would say so.
 
     ``replace`` first retires a running daemon, for a computer whose env
-    changed under it: the daemon and its servers keep the env they started
-    with.
+    changed under it or whose sync replaced the code it runs: the daemon and
+    its servers keep the env and the code they started with.
     """
     assert sandbox.runtime is not None
     work_dir = sandbox._work_dir
