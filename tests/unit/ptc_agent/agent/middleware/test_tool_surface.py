@@ -9,11 +9,14 @@ thinking was produced under, with nothing new in it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from ptc_agent.agent.middleware.tool_surface import (
     TOOL_SURFACE_KEY,
@@ -224,3 +227,71 @@ async def test_a_redefinition_waits_for_a_turn_start():
         {"type": "tool_addition", "tool": {"type": "tool_definition", "definition": _wire(get_data_reworded)}}
     ]
     assert update is None
+
+
+@pytest.mark.asyncio
+async def test_a_thread_that_moves_between_wires_finds_each_array_as_it_left_it():
+    """A call on OpenAI's wire keeps its array beside Anthropic's, so a Claude
+    thread that fell back to GPT-6.2 comes back to the array its thinking and
+    its change messages were written against."""
+    from src.llms.llm import create_llm
+
+    gpt = create_llm("gpt-6.2-sol", api_key="sk-test")
+    anthropic_surface = {"tools": [_wire(get_data), _wire(place_order)], "epoch": None, "offered": ["get_data"]}
+    history = [HumanMessage("hi"), _KEPT, HumanMessage("next")]
+    handled: list[ModelRequest] = []
+
+    async def handler(request):
+        handled.append(request)
+        return ModelResponse(result=[AIMessage("answer")])
+
+    request = ModelRequest(
+        model=gpt,
+        messages=history,
+        system_prompt="You are a test agent.",
+        state={TOOL_SURFACE_KEY: anthropic_surface},
+        tools=[get_data],
+        model_settings={},
+    )
+    result = await ToolSurfaceMiddleware().awrap_model_call(request, handler)
+    after_gpt = result.command.update[TOOL_SURFACE_KEY]
+    assert after_gpt["openai"]["tools"] == handled[0].tools
+    assert {k: after_gpt[k] for k in ("tools", "epoch")} == {"tools": anthropic_surface["tools"], "epoch": None}
+
+    sent, update = await _call(history, [get_data], after_gpt)
+    assert sent.tools == anthropic_surface["tools"]
+    assert update is None  # nothing to write: both slots stand as they were
+
+
+@pytest.mark.asyncio
+async def test_a_tool_turned_off_on_openai_stays_declared_and_is_refused():
+    """OpenAI has no item that takes a tool away, so a tool the build dropped
+    keeps its array entry and leaves what the model is offered: a call to it
+    is refused, as a call to a name the model never had is."""
+    from src.llms.llm import create_llm
+
+    gpt = create_llm("gpt-6.2-sol", api_key="sk-test")
+    declared = [convert_to_openai_tool(get_data), convert_to_openai_tool(place_order)]
+    surface = {"openai": {"tools": declared, "epoch": None}, "offered": ["get_data", "place_order"]}
+    handled: list[ModelRequest] = []
+
+    async def handler(request):
+        handled.append(request)
+        return ModelResponse(result=[AIMessage("answer")])
+
+    request = ModelRequest(
+        model=gpt,
+        messages=[HumanMessage("hi"), AIMessage("ok"), HumanMessage("next")],
+        system_prompt="You are a test agent.",
+        state={TOOL_SURFACE_KEY: surface},
+        tools=[get_data],
+        model_settings={},
+    )
+    result = await ToolSurfaceMiddleware().awrap_model_call(request, handler)
+    update = result.command.update[TOOL_SURFACE_KEY]
+    assert handled[0].tools == declared
+    assert update["offered"] == ["get_data"]
+
+    call = SimpleNamespace(state={TOOL_SURFACE_KEY: update}, tool_call={"name": "place_order", "id": "call_1"})
+    refused = await ToolSurfaceMiddleware().awrap_tool_call(call, lambda _request: pytest.fail("ran"))
+    assert refused.status == "error" and "place_order" in refused.content

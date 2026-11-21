@@ -151,7 +151,7 @@ def _assert_stamped(original, injected):
     assert is_runtime_update_message(message)
     row = runtime_update_from_message(message)
     assert row.kind == "market_watch"
-    assert row.schema_version == 2
+    assert row.schema_version == 3
     assert "<market-watch>\n" in row.text
     assert "\n</market-watch>" in row.text
     # Self-identifies as feed output so it can't be mistaken for the user.
@@ -246,12 +246,30 @@ async def test_throttle_restamps_cached_block_without_refetch(recording_handler)
         second = _human_request()
         await _call(mw, second, recording_handler)
 
-    # Both calls got a stamp, but the provider was only hit once — the second
-    # call re-stamped the cached block (watchlist unchanged, still in window).
+    # Each request holds no stamp (as after a summary took it), so both calls
+    # got one, but the provider was only hit once: the second call re-stamped
+    # the cached block (watchlist unchanged, still in window).
     seen = recording_handler.seen
     tail_1 = _assert_stamped(first, seen[0])
     tail_2 = _assert_stamped(second, seen[1])
     assert tail_1.content == tail_2.content
+    assert ctx.provider.get_snapshots.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_in_view_is_not_written_again_inside_the_window(recording_handler):
+    mw = _mw(interval=9999)
+    tools = [ToolMessage(content="ok", tool_call_id="tc-1", name="web_search", id="tm-1")]
+
+    with _patched(["NVDA"]) as ctx:
+        await _call(mw, _human_request(), recording_handler)
+        first = recording_handler.seen[0]
+        history = [*first.messages, AIMessage(content="", id="ai-1"), *tools]
+        later = _FakeRequest(history, runtime=first.runtime, state={"messages": history})
+        await _call(mw, later, recording_handler)
+
+    # The model still reads the one stamp, so the second call adds nothing.
+    assert recording_handler.seen[1].messages == history
     assert ctx.provider.get_snapshots.await_count == 1
 
 

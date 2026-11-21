@@ -105,22 +105,19 @@ async def test_market_watch_keeps_every_earlier_thinking_prefix(monkeypatch, mod
     assert len(wire.payloads) == 5
     assert [thinking_count(p) for p in wire.payloads] == [0, 1, 2, 3, 4]
     assert all_breaks(wire) == []
-    # Every call stamps; each stamp stays as a turn-scoped system message the
-    # API clears once a later user message exists.
+    # Every call stamps (no refresh window here), and every stamp stays in the
+    # history as a system row, so each call carries all the stamps before it.
     for n, payload in enumerate(wire.payloads, start=1):
         stamps = [m for m in payload["messages"] if "<market-watch>" in json.dumps(m)]
         assert len(stamps) == n
-        assert all(m["role"] == "system" and m["clear_at"] == "next_user_message" for m in stamps)
-    beta = "mid-conversation-system-clear-at-2026-08-21"
-    assert beta in anthropic_model(model_name).default_headers["anthropic-beta"]
+        assert all(m["role"] == "system" and "clear_at" not in m for m in stamps)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
-async def test_the_stamp_reaches_the_http_body_turn_scoped(monkeypatch, stream):
-    """langchain-anthropic 1.7.6 drops ``clear_at`` from a system message it
-    formats itself; the operator channel formats the stamp instead, and the
-    key has to reach the HTTP body the SDK sends."""
+async def test_the_stamp_reaches_the_http_body_as_a_system_row(monkeypatch, stream):
+    """The operator channel formats the stamp as a system entry of its own,
+    and that is what reaches the HTTP body the SDK sends, streamed or not."""
     wire = Wire(
         [reply(1, tool=("get_data", {"query": "a"})), reply(2, text="NVDA is up.")]
     ).install(monkeypatch, stream=stream)
@@ -134,4 +131,4 @@ async def test_the_stamp_reaches_the_http_body_turn_scoped(monkeypatch, stream):
     for n, body in enumerate(wire.bodies, start=1):
         stamps = [m for m in body["messages"] if "<market-watch>" in json.dumps(m)]
         assert len(stamps) == n
-        assert all(m["role"] == "system" and m["clear_at"] == "next_user_message" for m in stamps)
+        assert all(m["role"] == "system" and "clear_at" not in m for m in stamps)

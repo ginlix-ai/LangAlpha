@@ -544,6 +544,45 @@ class TestOpenAIReasoningStatus:
         assert ["status" in item for item in self._sent(unstreamed)] == [False]
 
 
+class TestOpenAIInputTransformations:
+    """The Responses API's list of the earlier reasoning items it removed
+    reaches the answer, on the one function every read path builds it in. A
+    langchain-openai that renames that function fails here rather than
+    leaving the list behind with a warning."""
+
+    ENTRIES = [{"type": "reasoning", "action": "removed", "id": "rs_1", "reason": "prefix_mismatch"}]
+
+    @pytest.fixture(autouse=True)
+    def _patched(self):
+        from src.llms.patches import _patch_langchain_openai_input_transformations
+
+        _patch_langchain_openai_input_transformations()
+
+    @staticmethod
+    def _answer(**extra):
+        import langchain_openai.chat_models.base as base
+        from openai.types.responses import Response
+
+        response = Response.model_construct(
+            id="resp_1", created_at=0.0, model="gpt-6.2-sol", object="response", status="completed",
+            error=None, usage=None, incomplete_details=None, output=[], parallel_tool_calls=False,
+            tool_choice="auto", tools=[], metadata={}, **extra,
+        )
+        return base._construct_lc_result_from_responses_api(response).generations[0].message
+
+    def test_the_patch_is_on_the_function_every_read_path_uses(self):
+        import langchain_openai.chat_models.base as base
+
+        assert getattr(base._construct_lc_result_from_responses_api, "_keeps_input_transformations", False)
+
+    def test_the_answer_keeps_the_list(self):
+        assert self._answer(input_transformations=self.ENTRIES).response_metadata["input_transformations"] == self.ENTRIES
+
+    @pytest.mark.parametrize("extra", [{}, {"input_transformations": []}])
+    def test_an_answer_with_nothing_removed_carries_no_list(self, extra):
+        assert "input_transformations" not in self._answer(**extra).response_metadata
+
+
 class TestInputTransformations:
     """The API's list of the earlier thinking it dropped reaches a streamed
     answer. A non-streamed one keeps it through ``llm_output``, which the

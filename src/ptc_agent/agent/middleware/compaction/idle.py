@@ -17,10 +17,10 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from src.config.features import is_feature_enabled_system
 from src.llms.cache_markers import written_ttl_seconds
+from src.llms.model_identity import is_claude
 from src.llms.provider_compaction import native_kind
 
 from ptc_agent.agent.middleware.compaction.between_turns import IdleSkipped
-from ptc_agent.agent.middleware.compaction.measure import is_claude
 from ptc_agent.agent.middleware.compaction.rebuild import IDLE_TTL_SECONDS, RebuildPlan, TurnStartRebuilds, cache_ttl
 from ptc_agent.agent.middleware.compaction.types import IdleClock
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY

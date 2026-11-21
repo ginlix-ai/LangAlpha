@@ -83,8 +83,8 @@ class EmptyToolCallRetryMiddleware(AgentMiddleware):
 
     @staticmethod
     def _keep_injected(response, injected: list):
-        """Only an answer carrying Claude's thinking needs them kept; any
-        other answer goes into history alone, as it did."""
+        """Only an answer carrying reasoning bound to its prefix needs them
+        kept; any other answer goes into history alone, as it did."""
         if not injected or not is_bound_answer(response.result[0]):
             return response
         return dataclasses.replace(response, result=[*injected, *response.result])

@@ -24,7 +24,6 @@ from .baseline import (
     MemoryTierSource,
 )
 from .carrier import (
-    Carrier,
     CarrierShape,
     ComposedRequest,
     PinSite,
@@ -115,7 +114,6 @@ __all__ = [
     "BaselineEpoch",
     "BaselineSources",
     "BlockReader",
-    "Carrier",
     "CarrierShape",
     "ComposedRequest",
     "DurableUpdate",

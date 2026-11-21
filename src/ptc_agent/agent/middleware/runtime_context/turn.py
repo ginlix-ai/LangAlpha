@@ -103,6 +103,12 @@ TIME_UP_WITHDRAWN_ROW_KIND = "turn_time_up_withdrawn"
 #: ``update_row.md.j2`` hardcodes the same way.
 MARKET_WATCH_ROW_KIND = "market_watch"
 
+#: The stamp ``schema_version`` from which a stamp is history. One written
+#: before went out for a single call, so no model's reasoning or measured
+#: usage holds it: the carrier leaves it out rather than put it back in front
+#: of everything written after it.
+MARKET_WATCH_KEPT_SINCE = 3
+
 #: Row kind of the user's cancel of wakeups the agent set
 #: (``middleware/wakeups.py``), which ``update_row.md.j2`` hardcodes the same
 #: way.

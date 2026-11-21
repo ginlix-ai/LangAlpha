@@ -167,7 +167,7 @@ def _patch_langchain_anthropic_input_transformations():
     try:
         from langchain_anthropic.chat_models import ChatAnthropic
 
-        from src.llms.input_transformations import INPUT_TRANSFORMATIONS
+        from src.llms.input_transformations import INPUT_TRANSFORMATIONS, keep_input_transformations
 
         original = ChatAnthropic._make_message_chunk_from_anthropic_event
         if getattr(original, "_keeps_input_transformations", False):
@@ -179,17 +179,47 @@ def _patch_langchain_anthropic_input_transformations():
             if chunk is not None and getattr(event, "type", None) == "message_start":
                 found = getattr(event.message, INPUT_TRANSFORMATIONS, None)
                 if isinstance(found, list):
-                    # An SDK that models the entries would hand objects the
-                    # checkpoint cannot hold; the non-streamed path dumps them.
-                    chunk.response_metadata[INPUT_TRANSFORMATIONS] = [
-                        e.model_dump(mode="json") if hasattr(e, "model_dump") else e for e in found
-                    ]
+                    keep_input_transformations(chunk.response_metadata, found)
             return chunk, block_start_event
 
         _patched._keeps_input_transformations = True
         ChatAnthropic._make_message_chunk_from_anthropic_event = _patched
     except Exception as e:
         logger.warning(f"Failed to patch langchain_anthropic input_transformations: {e}")
+
+
+def _patch_langchain_openai_input_transformations():
+    """Keep the Responses API's ``input_transformations`` on an answer, verbatim.
+
+    It lists each earlier reasoning item the API removed from the request
+    before the model read it, by ``id`` and ``reason`` (``prefix_mismatch``
+    once anything ahead of the item changed, from GPT-6.2 on), and
+    langchain-openai 1.7 keeps only a fixed set of response fields. Every read
+    path, a stream's terminal event included, builds its message through
+    ``_construct_lc_result_from_responses_api``, so the list is put on the
+    message there, and only when it names something.
+    """
+    try:
+        import langchain_openai.chat_models.base as base
+
+        from src.llms.input_transformations import INPUT_TRANSFORMATIONS, keep_input_transformations
+
+        original = base._construct_lc_result_from_responses_api
+        if getattr(original, "_keeps_input_transformations", False):
+            return
+
+        @functools.wraps(original)
+        def _patched(response, *args, **kwargs):
+            result = original(response, *args, **kwargs)
+            found = getattr(response, INPUT_TRANSFORMATIONS, None)
+            if isinstance(found, list) and found and result.generations:
+                keep_input_transformations(result.generations[0].message.response_metadata, found)
+            return result
+
+        _patched._keeps_input_transformations = True
+        base._construct_lc_result_from_responses_api = _patched
+    except Exception as e:
+        logger.warning(f"Failed to patch langchain_openai input_transformations: {e}")
 
 
 def _patch_langchain_openai_compaction_trigger():
@@ -272,7 +302,7 @@ def _patch_langchain_anthropic_header_betas():
     langchain-anthropic 1.7.6 adds one there by itself for some tools, content
     and settings. Either way the header's betas would be gone from the call:
     on the OAuth route what authenticates it, and the manifest's, which let
-    ``thinking.block_binding`` and turn-scoped system messages through. So
+    ``thinking.block_binding`` through. So
     they lead the list, ahead of the client's ``betas`` field, which a
     call-time list replaces too.
     """

@@ -37,7 +37,6 @@ from ptc_agent.agent.middleware.reasoning_compat import ReasoningCompatibilityMi
 from ptc_agent.agent.middleware.runtime_context.changes import UPDATE_SCHEMA_VERSION
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, update_text
 from ptc_agent.agent.middleware.runtime_context import tail as tail_module
-from ptc_agent.agent.middleware.runtime_context.carrier import Carrier
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import STATE_SYSTEM_PIN, SystemPinMiddleware
 from ptc_agent.agent.middleware.runtime_context.tail import RowCarrierMiddleware
 from ptc_agent.agent.middleware.tool_surface import ToolSurfaceMiddleware
@@ -356,7 +355,7 @@ def _quiet(monkeypatch):
 def shape(request, monkeypatch) -> str:
     """Rows ride a user-role reminder on most routes and an operator entry on
     Anthropic's own, and the carried step must reach the model on both."""
-    monkeypatch.setattr(tail_module, "resolve_carrier", lambda model: Carrier(request.param))
+    monkeypatch.setattr(tail_module, "resolve_carrier", lambda model: request.param)
     return request.param
 
 

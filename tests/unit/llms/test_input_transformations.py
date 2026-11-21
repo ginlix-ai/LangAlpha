@@ -50,3 +50,15 @@ def test_a_block_the_answer_before_listed_counts_as_repeated():
 
     assert thinking_drops(_answer(again), _answer(first)) == {"repeated": 1, "prefix_binding_mismatch": 1}
     assert thinking_drops(_answer(again), AIMessage("ok")) == {"prefix_binding_mismatch": 2}
+
+
+def test_openai_removals_are_counted_by_reason_and_repeat_by_item_id():
+    """OpenAI's entries name the reasoning item by id, as the API sent them
+    from gpt-6.2-sol: one sent again and removed again counts as repeated."""
+    first = [
+        {"type": "reasoning", "id": "rs_1", "action": "removed", "reason": "prefix_mismatch"},
+        {"type": "reasoning", "id": "rs_2", "action": "removed", "reason": "end_user_mismatch"},
+    ]
+    assert thinking_drops(_answer(first)) == {"prefix_mismatch": 1, "end_user_mismatch": 1}
+    again = [*first, {"type": "reasoning", "id": "rs_3", "action": "removed", "reason": "turn_boundary"}]
+    assert thinking_drops(_answer(again), _answer(first)) == {"repeated": 2, "turn_boundary": 1}

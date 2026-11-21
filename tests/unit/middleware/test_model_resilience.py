@@ -175,6 +175,25 @@ class TestRetryBehavior:
         assert fallbacks[0]["status_code"] == 404
 
     @pytest.mark.asyncio
+    async def test_a_fallback_attempt_is_marked_for_the_middleware_inside(self, events):
+        """What the primary's reasoning is bound to stays put while a fallback answers."""
+        from ptc_agent.agent.middleware.model_resilience import answering_as_fallback
+
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client, fallbacks=[("fallback-a", _FakeModel("fallback-a"))])
+        seen = []
+
+        async def handler(req):
+            seen.append((req.model is client, answering_as_fallback()))
+            if req.model is client:
+                raise _status_error("Error code: 404 - model not found", status=404)
+            return ModelResponse(result=[AIMessage("ok")])
+
+        await mw.awrap_model_call(_FakeRequest(client), handler)
+        assert seen == [(True, False), (False, True)]
+        assert answering_as_fallback() is False
+
+    @pytest.mark.asyncio
     async def test_an_answer_a_fallback_wrote_names_it(self, events):
         client = _FakeModel("primary-model")
         fallback_client = _FakeModel("fallback-a")

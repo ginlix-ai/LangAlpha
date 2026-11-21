@@ -86,6 +86,11 @@ def _target_route(model: Any) -> str | None:
     return route if isinstance(route, str) and route else None
 
 
+def model_lineage(model: Any) -> str:
+    """The lineage of the route a call to ``model`` goes out on."""
+    return lineage_for_route(_target_route(model))
+
+
 def message_lineage(msg: AIMessage) -> str:
     meta = msg.response_metadata or {}
     origin = meta.get(ORIGIN_KEY)

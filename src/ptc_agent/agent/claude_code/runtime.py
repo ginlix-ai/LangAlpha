@@ -107,7 +107,7 @@ from ptc_agent.agent.middleware.compaction.brief import (
 )
 from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, stamp_compaction_summary
 from ptc_agent.agent.pending_calls import pending_calls
-from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
+from ptc_agent.agent.middleware.runtime_context.carrier import compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.middleware.stream_heartbeat import stream_heartbeat
@@ -1112,7 +1112,7 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
             "nothing_to_resume",
             f"a Claude Code run resumes from a user message or after its tool results, not after a {type(last).__name__}",
         )
-    carried = compose_request(added, Carrier("reminder")).messages if added else []
+    carried = compose_request(added, "reminder").messages if added else []
     if baseline is None and brief is None and len(carried) == 1 and isinstance(carried[0].content, str):
         return carried[0].content
     blocks: list[dict[str, Any]] = [

@@ -1,11 +1,19 @@
-"""Which of Claude's thinking is bound to what was sent before it, and the
-record of the messages that are sent without theirs.
+"""Which reasoning is bound to what was sent before it, and the record of
+the messages that are sent without theirs.
 
-A model with preserved thinking checks each of its thinking blocks against
+A model with preserved reasoning checks each of its reasoning payloads against
 everything sent ahead of it, the system prompt, the tools and every earlier
-message, and drops or refuses the block once any of that changed. Only
-Anthropic's own thinking is bound: another lineage's reasoning reaches Claude
+message, and drops or refuses the payload once any of that changed. Claude's
+thinking is bound so, and OpenAI's reasoning items from GPT-6.2 on, on the API
+and the Codex backend alike: a lineage binds when its provider declares
+``reasoning_binds_prefix``. Another lineage's reasoning reaches a model
 stripped, so it binds nothing.
+
+Anthropic refuses or drops a block whose prefix changed, so an answer whose
+thinking an edit invalidated is sent without it (``thinking_after``). OpenAI
+drops such an item on its own, and refuses a function call sent without the
+reasoning item it followed, so its reasoning is never left out here: binding
+only asks the stack to keep the prefix as it was sent.
 """
 
 from __future__ import annotations
@@ -17,8 +25,9 @@ from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.messages import AIMessage, AnyMessage
 from typing_extensions import NotRequired
 
-from ptc_agent.agent.middleware.reasoning_compat import message_lineage
-from src.llms.reasoning_lineage import ANTHROPIC_LINEAGE
+from ptc_agent.agent.middleware.reasoning_compat import message_lineage, model_lineage
+from src.llms.model_identity import is_claude
+from src.llms.reasoning_lineage import ANTHROPIC_LINEAGE, reasoning_binds_prefix
 from src.llms.reasoning_payload import is_reasoning_block, strip_all_reasoning
 
 UNSENT_THINKING_KEY = "_unsent_thinking_ids"
@@ -43,14 +52,30 @@ class UnsentThinkingState(AgentState):
     _unsent_thinking_ids: Annotated[NotRequired[set[str]], PrivateStateAttr, _union]
 
 
-def is_bound_answer(message: Any) -> bool:
-    """Whether ``message`` is Claude's answer carrying its own thinking."""
+def _carries_reasoning(message: Any) -> bool:
     return (
         isinstance(message, AIMessage)
         and isinstance(message.content, list)
         and any(is_reasoning_block(block) for block in message.content)
-        and message_lineage(message) == ANTHROPIC_LINEAGE
     )
+
+
+def is_bound_answer(message: Any) -> bool:
+    """Whether ``message`` is an answer carrying reasoning bound to its prefix."""
+    return _carries_reasoning(message) and reasoning_binds_prefix(message_lineage(message))
+
+
+def _left_out_when_invalid(message: Any) -> bool:
+    """Whether ``message`` carries thinking that is sent without it once an
+    edit ahead of it invalidated it: Claude's only (see the module docstring)."""
+    return _carries_reasoning(message) and message_lineage(message) == ANTHROPIC_LINEAGE
+
+
+def binds_reasoning(model: Any) -> bool:
+    """Whether a call to ``model`` binds the reasoning it writes to the prefix
+    it was sent, so the stack keeps that prefix as it was: Claude on any route,
+    and every model on a lineage that declares ``reasoning_binds_prefix``."""
+    return is_claude(model) or reasoning_binds_prefix(model_lineage(model))
 
 
 def holds_bound_thinking(messages: Iterable[Any]) -> bool:
@@ -68,7 +93,8 @@ def checked_thinking_end(messages: Sequence[AnyMessage]) -> int:
 
 def thinking_after(messages: Sequence[AnyMessage], edited: Collection[str]) -> set[str]:
     """The ids of the answers in ``messages`` whose thinking an edit of the
-    ``edited`` ones invalidates: every bound one after the first of them.
+    ``edited`` ones invalidates and is sent without: every one of Claude's
+    after the first of them (see the module docstring).
 
     Leaving thinking out from the end of the history is valid, so leaving it
     out from the first edited message on keeps what comes before it.
@@ -76,7 +102,7 @@ def thinking_after(messages: Sequence[AnyMessage], edited: Collection[str]) -> s
     first = next((i for i, msg in enumerate(messages) if msg.id in edited), None)
     if first is None:
         return set()
-    return {msg.id for msg in messages[first + 1 :] if msg.id and is_bound_answer(msg)}
+    return {msg.id for msg in messages[first + 1 :] if msg.id and _left_out_when_invalid(msg)}
 
 
 def unsent_thinking(state: Mapping[str, Any] | None) -> set[str]:

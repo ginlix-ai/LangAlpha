@@ -40,7 +40,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from ptc_agent.agent.middleware.provider_cache import tag_last_text_block
 from ptc_agent.agent.middleware.runtime_context.durable import (
@@ -50,7 +50,11 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     update_text,
 )
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
-from ptc_agent.agent.middleware.runtime_context.turn import LAST_STEP_ROW_KIND, MARKET_WATCH_ROW_KIND
+from ptc_agent.agent.middleware.runtime_context.turn import (
+    LAST_STEP_ROW_KIND,
+    MARKET_WATCH_KEPT_SINCE,
+    MARKET_WATCH_ROW_KIND,
+)
 from ptc_agent.agent.transcript.classify import is_summary_message
 
 logger = logging.getLogger(__name__)
@@ -73,15 +77,6 @@ class PinSite:
 
 
 @dataclass(frozen=True, slots=True)
-class Carrier:
-    """How this model takes harness text: the shape, and whether a per-call
-    row goes out as a turn-scoped system message (see :func:`_carry`)."""
-
-    shape: CarrierShape
-    turn_scoped: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class ComposedRequest:
     """The message list this call sends, and the site breakpoint 4 may take."""
 
@@ -89,31 +84,27 @@ class ComposedRequest:
     pin: PinSite | None
 
 
-def resolve_carrier(model: Any) -> Carrier:
-    """Which of the three shapes this model's harness text takes, and whether
-    it takes turn-scoped system messages.
+def resolve_carrier(model: Any) -> CarrierShape:
+    """Which of the three shapes this model's harness text takes.
 
     ``"reminder"`` answers for every model without a native operator channel,
     and also whenever resolution itself fails: a row is context, and a
     carrier fault is never worth failing a turn for.
     """
     try:
-        from src.llms.operator_channel import (
-            carries_turn_scoped,
-            resolve_operator_channel,
-        )
+        from src.llms.operator_channel import resolve_operator_channel
     except ImportError:
-        return Carrier("reminder")
+        return "reminder"
     try:
         channel = resolve_operator_channel(model)
     except Exception:  # noqa: BLE001 - a carrier fault must never break a turn
         logger.warning(
             "[Envelope] operator channel failed, using the reminder shape", exc_info=True
         )
-        return Carrier("reminder")
+        return "reminder"
     if channel not in _OPERATOR_SHAPES:
-        return Carrier("reminder")
-    return Carrier(channel, turn_scoped=channel == "system" and carries_turn_scoped(model))
+        return "reminder"
+    return channel
 
 
 @contextmanager
@@ -134,14 +125,14 @@ def operator_window(shape: CarrierShape) -> Iterator[None]:
         yield
 
 
-def compose_request(messages: list[Any], carrier: Carrier) -> ComposedRequest:
+def compose_request(messages: list[Any], shape: CarrierShape) -> ComposedRequest:
     """The request this call sends: rows reshaped, pin site named.
 
     Neither the input list nor any input message is mutated: the rows stay
     provider-neutral in state and only the request copy takes a shape.
     """
-    carried, stamp = _carry(messages, carrier)
-    return ComposedRequest(messages=carried, pin=_pin_site(carried, stamp))
+    carried = _carry(messages, shape)
+    return ComposedRequest(messages=carried, pin=_pin_site(carried))
 
 
 def apply_breakpoint(
@@ -166,12 +157,9 @@ def apply_breakpoint(
     messages[site.message] = message.model_copy(update={"content": [*tagged, *rest]})
 
 
-def _carry(
-    messages: list[Any], carrier: Carrier
-) -> tuple[list[Any], PinSite | None]:
-    """A new message list with every persisted durable row rewritten into the
-    carrier's shape, and where a per-call row the next call leaves out landed
-    in the reminder shape, which the pin has to stay off.
+def _carry(messages: list[Any], shape: CarrierShape) -> list[Any]:
+    """A new message list with every persisted durable row rewritten into
+    *shape*.
 
     Rows are written at the turn boundary, so each one follows the user message
     of its turn. That ordering is what every shape needs: the operator shapes
@@ -181,37 +169,20 @@ def _carry(
     follows a tool batch instead: an operator entry follows the results, and
     the reminder shape, with no user message in front, stands alone rather
     than entering a tool result.
-
-    A per-call row (a market-watch stamp) is true only until the next user
-    message. Where the carrier is turn-scoped, every one is sent as a
-    turn-scoped system message of its own, which the API clears from what the
-    model reads once a later user message exists while it stays in the request
-    byte for byte, so no thinking after it loses its prefix. Elsewhere, the
-    stamps a user message has already followed are left out, which is what
-    the API's clearing would have the model read.
     """
-    shape, turn_scoped = carrier.shape, carrier.turn_scoped
     base = list(messages or [])
     if not any(is_runtime_update_message(m) for m in base):
-        return base, None
+        return base
 
-    last_input = _last_input_index(base)
     carried: list[Any] = []
-    stamp: PinSite | None = None
-    for index, message in enumerate(base):
+    for message in base:
         if not is_runtime_update_message(message):
             carried.append(message)
             continue
-        per_call = _is_per_call_row(message)
-        if per_call and index < last_input:
-            if not turn_scoped or _answered_by_nothing(base, index):
-                continue
         text = update_text(message)
-        if not text.strip():
+        if not text.strip() or sent_for_one_call(message):
             # A row with nothing to say is dropped rather than sent as an empty
             # message, which some providers reject outright.
-            continue
-        if per_call and turn_scoped and _append_turn_scoped(carried, text):
             continue
         if (
             shape in _OPERATOR_SHAPES
@@ -222,13 +193,9 @@ def _carry(
         block = frame_reminder(text)
         if carried and isinstance(carried[-1], HumanMessage) and not is_summary_message(carried[-1]):
             carried[-1] = _with_text_block(carried[-1], block)
-            site = PinSite(len(carried) - 1, len(carried[-1].content) - 1)
         else:
             carried.append(message.model_copy(update={"content": block}))
-            site = PinSite(len(carried) - 1, 0)
-        if per_call and not turn_scoped and stamp is None:
-            stamp = site
-    return carried, stamp
+    return carried
 
 
 def may_hold_breakpoint(message: Any) -> bool:
@@ -246,100 +213,39 @@ def may_hold_breakpoint(message: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
-#: Row kinds true for one model call only, superseded by the next copy.
-_PER_CALL_KINDS = frozenset({MARKET_WATCH_ROW_KIND})
-
 #: Row kinds carrying text a tool returned, which go out in the user role.
 USER_ROLE_KINDS = frozenset({LAST_STEP_ROW_KIND})
 
-#: The wire value of a turn-scoped system message's ``clear_at``.
-CLEAR_AT_NEXT_USER_MESSAGE = "next_user_message"
 
-
-def spent_stamps(messages: list[Any]) -> set[int]:
-    """The per-call rows of *messages* a later user message followed, by
-    ``id()``. No model reads them: the API clears them from a turn-scoped
-    request, and every other target is not sent them (see
-    ``_carry``), so they cost nothing.
-    """
-    last_input = _last_input_index(messages)
-    return {
-        id(message)
-        for index, message in enumerate(messages[: max(last_input, 0)])
-        if is_runtime_update_message(message) and _is_per_call_row(message)
-    }
+def _row_meta(message: Any) -> dict[str, Any]:
+    meta = (message.additional_kwargs or {}).get(RUNTIME_UPDATE_KEY)
+    return meta if isinstance(meta, dict) else {}
 
 
 def _row_kind(message: Any) -> str | None:
-    meta = (message.additional_kwargs or {}).get(RUNTIME_UPDATE_KEY)
-    return meta.get("kind") if isinstance(meta, dict) else None
+    return _row_meta(message).get("kind")
 
 
-def _is_per_call_row(message: Any) -> bool:
-    return _row_kind(message) in _PER_CALL_KINDS
+def sent_for_one_call(message: Any) -> bool:
+    """A market-watch stamp written before stamps were kept (see
+    ``MARKET_WATCH_KEPT_SINCE``): no request carries it, so it costs nothing."""
+    meta = _row_meta(message)
+    return meta.get("kind") == MARKET_WATCH_ROW_KIND and (meta.get("schema_version") or 0) < MARKET_WATCH_KEPT_SINCE
 
 
-def _is_input(message: Any) -> bool:
-    """A user-role message on the wire that is not a row: user words or tool results."""
-    if isinstance(message, ToolMessage):
-        return True
-    return isinstance(message, HumanMessage) and not is_runtime_update_message(message)
+def _pin_site(messages: list[Any]) -> PinSite | None:
+    """The last text block of the request, or None when there is none.
 
-
-def _last_input_index(messages: list[Any]) -> int:
-    return max((i for i, m in enumerate(messages) if _is_input(m)), default=-1)
-
-
-def _answered_by_nothing(messages: list[Any], index: int) -> bool:
-    """Whether the row at *index* is followed by a user message with no answer between.
-
-    A turn-scoped message the API sees directly before a user message is a
-    400, not a cleared message. No answer came back to the request it ended,
-    so no thinking was produced behind it, and leaving it out loses nothing.
-    """
-    for message in messages[index + 1 :]:
-        if isinstance(message, AIMessage):
-            return False
-        if _is_input(message):
-            return True
-    return False
-
-
-def _append_turn_scoped(messages: list[Any], text: str) -> bool:
-    """Append *text* as a turn-scoped operator message of its own.
-
-    Never coalesced with a neighbour: a durable row folded into it would be
-    cleared along with it, and it folded into a row would render forever.
-    Returns False when the message could not be built.
-    """
-    try:
-        from src.llms.operator_channel import build_operator_message
-
-        message = build_operator_message(text, "system", source=RUNTIME_UPDATE_SOURCE)
-    except Exception:  # noqa: BLE001 - a carrier fault must never break a turn
-        logger.warning("[Envelope] turn-scoped message failed, using the row shape", exc_info=True)
-        return False
-    message.additional_kwargs["clear_at"] = CLEAR_AT_NEXT_USER_MESSAGE
-    messages.append(message)
-    return True
-
-
-def _pin_site(messages: list[Any], stamp: PinSite | None) -> PinSite | None:
-    """The newest content the next call still carries, or None when there is none.
-
-    Walking back from the tail the marker goes on the last text block, past
-    the operator messages the carrier built, which stay unpinned because a
-    breakpoint on that role is unproven, and past *stamp*, a per-call row in
-    the reminder shape, and anything after it, which the next call leaves out.
+    Every row is history and stays where it was written, so the tail is the
+    prefix the next call extends. Walking back from it the marker skips the
+    operator messages the carrier built, which stay unpinned because a
+    breakpoint on that role is unproven.
     """
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if not may_hold_breakpoint(message):
             continue
-        if stamp is not None and index > stamp.message:
-            continue
-        limit = stamp.block if stamp is not None and index == stamp.message else None
-        block = _last_text_block(message.content, limit)
+        block = _last_text_block(message.content)
         if block is not None:
             return PinSite(index, None if block == _WHOLE_BODY else block)
     return None
@@ -349,19 +255,17 @@ def _pin_site(messages: list[Any], stamp: PinSite | None) -> PinSite | None:
 _WHOLE_BODY = -1
 
 
-def _last_text_block(content: Any, limit: int | None = None) -> int | None:
-    """Index of the last block before *limit* that accepts a marker, or None
-    when none does.
+def _last_text_block(content: Any) -> int | None:
+    """Index of the last block that accepts a marker, or None when none does.
 
     A non-text tail (an image, a tool-use block) is walked past rather than
     tagged, because a provider may reject the marker on one.
     """
     if isinstance(content, str):
-        return _WHOLE_BODY if content and limit is None else None
+        return _WHOLE_BODY if content else None
     if not isinstance(content, list):
         return None
-    end = len(content) if limit is None else min(limit, len(content))
-    for index in range(end - 1, -1, -1):
+    for index in range(len(content) - 1, -1, -1):
         block = content[index]
         if isinstance(block, str) and block:
             return index
@@ -379,7 +283,7 @@ def _append_operator_text(
     *messages* untouched so the caller can fall back to the reminder shape.
     Mutates the list it is given, which is always a copy the caller owns.
     """
-    if messages and _is_operator_carrier(messages[-1]) and not _is_turn_scoped(messages[-1]):
+    if messages and _is_operator_carrier(messages[-1]):
         messages[-1] = _with_text_block(messages[-1], text)
         return True
     try:
@@ -405,10 +309,6 @@ def _is_operator_carrier(message: Any) -> bool:
         isinstance(message, SystemMessage)
         and (message.additional_kwargs or {}).get("lc_source") == RUNTIME_UPDATE_SOURCE
     )
-
-
-def _is_turn_scoped(message: Any) -> bool:
-    return (message.additional_kwargs or {}).get("clear_at") == CLEAR_AT_NEXT_USER_MESSAGE
 
 
 def _with_text_block(message: Any, text: str) -> Any:

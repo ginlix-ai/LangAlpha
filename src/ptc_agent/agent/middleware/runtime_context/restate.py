@@ -1,7 +1,8 @@
 """Rows that state sections of the baseline block whole.
 
-A block Claude's thinking is bound to stands even when a rebuild is due, since
-rebuilding it would invalidate every thinking block after it. What the rebuild
+A block that bound reasoning was produced on (see ``thinking_binding``) stands
+even when a rebuild is due, since rebuilding it would invalidate all the
+reasoning after it. What the rebuild
 would have said goes into a row instead, which states whole the sections a
 delta against the frozen block cannot describe. ``render`` gives each section
 of an epoch's block, keyed as ``SECTION_*`` and by source kind.

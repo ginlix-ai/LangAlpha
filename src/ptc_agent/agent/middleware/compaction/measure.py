@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 
-from src.llms.model_identity import api_model_id
+from src.llms.model_identity import api_model_id, is_claude
 from ptc_agent.agent.middleware.compaction.types import TokenCounter
 from ptc_agent.agent.middleware.compaction.utils import (
     attachment_tokens,
@@ -27,7 +27,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     find_group_safe_cutoff,
 )
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
-from ptc_agent.agent.middleware.runtime_context.carrier import spent_stamps
+from ptc_agent.agent.middleware.runtime_context.carrier import sent_for_one_call
 
 
 @dataclass(frozen=True)
@@ -36,23 +36,16 @@ class Estimate:
     ``counter``, their attachments as the model is charged for them
     (``cost``, see ``attachment_tokens``). ``model`` names it
     (``api_model_id``), so a growth measured on another is not taken for its
-    count (``context_growth``). A market-watch stamp a later user message
-    followed counts nothing (``spent_stamps``)."""
+    count (``context_growth``). A stamp no request carries counts nothing
+    (``sent_for_one_call``)."""
 
     counter: TokenCounter
     cost: Callable[[Any], int] | None = None
     model: str | None = None
 
     def __call__(self, messages: Sequence[Any]) -> int:
-        spent = spent_stamps(list(messages))
-        read = [m for m in messages if id(m) not in spent] if spent else messages
-        return self.counter(read) + attachment_tokens(read, self.cost)
-
-
-def is_claude(model: Any) -> bool:
-    """Whether ``model`` counts with Claude's tokenizer, on whichever route
-    serves it: the tokenizer goes with the model, not the host."""
-    return "claude" in (api_model_id(model) or "").lower()
+        sent = [m for m in messages if not sent_for_one_call(m)]
+        return self.counter(sent) + attachment_tokens(sent, self.cost)
 
 
 def counter_for(model: Any, default: TokenCounter) -> TokenCounter:
@@ -161,10 +154,11 @@ async def context_tokens(
     """
     measured = measured_tokens(state)
     if measured is None:
+        sent = [m for m in view if not sent_for_one_call(m)]
         tokens = await asyncio.to_thread(
-            lambda: estimate.counter([*(ahead() if ahead is not None else ()), *view])
+            lambda: estimate.counter([*(ahead() if ahead is not None else ()), *sent])
         )
-        return ContextReading(tokens + attachment_tokens(view, estimate.cost), estimate)
+        return ContextReading(tokens + attachment_tokens(sent, estimate.cost), estimate)
     answered = next(
         (i for i in range(len(view) - 1, -1, -1) if isinstance(view[i], AIMessage)),
         None,
@@ -243,10 +237,8 @@ def message_sizes(messages: Sequence[AnyMessage], estimate: Estimate) -> Iterato
     another model, until a call to this one measures it again.
     """
 
-    spent = spent_stamps(list(messages))
-
     def one(message: AnyMessage) -> int:
-        return 0 if id(message) in spent else estimate([message])
+        return estimate([message])
 
     answers = [i for i, m in enumerate(messages) if isinstance(m, AIMessage)]
     if not answers:

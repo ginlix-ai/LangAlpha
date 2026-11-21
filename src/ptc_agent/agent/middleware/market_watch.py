@@ -1,18 +1,18 @@
-"""Market watch middleware: a live-price stamp for watched tickers on each model call.
+"""Market watch middleware: live-price stamps for watched tickers, kept as history.
 
 Each stamp is a durable ``market_watch`` row, written before the model call it
-is sent with (``abefore_model``) and kept where it was written. A stamp that
-rode only the newest request and was gone on the next one would sit in front of
-the thinking the model produced after reading it, and a model that binds
-thinking to its prefix (Claude Fable 5.2 and the 5.5 models) would lose that
-reasoning on every later call. The model still reads only the newest stamp:
-the carrier sends every stamp as a turn-scoped system message where the API
-clears it once a later user message exists, and elsewhere sends only the
-stamps no user message has followed yet (``carrier.py``). An in-memory
-throttle re-stamps the cached block between refreshes so the model keeps a
-price view without a provider fetch every call, and a skip-when-already-quoted
-guard keeps the fetch off the call after a quote tool; any failure degrades to
-writing nothing so the turn is never broken.
+is sent with (``abefore_model``) and kept where it was written, like every
+other row, until a summary takes it. The model's own reasoning, answers and
+tool calls quote the prices it read, so a stamp taken out of what it later
+reads would leave it holding numbers it can no longer see the source of; and
+a model that binds its reasoning to the prefix (Claude, GPT-6.2 on) would lose
+the reasoning after any stamp taken out. So a stamp is written only when it
+says something the model cannot already read: a turn's first call, a price
+fetched after the refresh window, a changed watch list, or a summary that took
+the last one. Inside the window, with the last stamp in view, nothing is
+written, and the newest stamp stays the last price in front of the model. A
+skip-when-already-quoted guard keeps the fetch off the call after a quote
+tool; any failure degrades to writing nothing so the turn is never broken.
 
 The row's text is the whole block the tail envelope used to render for the
 call, header and closing guidance included, rendered once here. It must come
@@ -45,7 +45,8 @@ from ptc_agent.agent.middleware.runtime_context import (
     build_update_message,
     render_stamp,
 )
-from ptc_agent.agent.middleware.runtime_context.turn import MARKET_WATCH_ROW_KIND
+from ptc_agent.agent.middleware.runtime_context.durable import last_stated
+from ptc_agent.agent.middleware.runtime_context.turn import MARKET_WATCH_KEPT_SINCE, MARKET_WATCH_ROW_KIND
 from ptc_agent.agent.provenance.types import (
     ProvenanceSource,
     build_provenance_event,
@@ -65,8 +66,9 @@ _STAMP_OPEN = "<market-watch>"
 _STAMP_CLOSE = "</market-watch>"
 _STAMP_NOTE = "Automated live-price feed (not a user message)."
 # Bump when the block's shape changes: a row outlives the code that wrote it.
-# 2 is the first persisted shape, its text the whole rendered block.
-_STAMP_SCHEMA_VERSION = 2
+# 2 is the first persisted shape, its text the whole rendered block, sent for
+# one call; 3 the same block kept as history (``MARKET_WATCH_KEPT_SINCE``).
+_STAMP_SCHEMA_VERSION = MARKET_WATCH_KEPT_SINCE
 
 # Phases in which a watched price can move. A lunch break holds the morning
 # close and an index's extended hours hold the regular close, so a stamp then
@@ -158,7 +160,8 @@ def _batch_quotes_watched(
 
 
 class MarketWatchMiddleware(AgentMiddleware):
-    """Writes a ``market_watch`` stamp row per model call; no-op without a watch list.
+    """Writes a ``market_watch`` stamp row before a model call that has none
+    to read (see the module docstring); no-op without a watch list.
 
     Any failure (Redis, provider, formatting) degrades to writing nothing; it
     must never break the turn.
@@ -182,16 +185,16 @@ class MarketWatchMiddleware(AgentMiddleware):
         )
         self._guidance = guidance
         # abefore_model runs once per model call, sequentially — no lock needed.
-        self._last_injected_at: float | None = None
+        self._last_fetched_at: float | None = None
         self._last_prices: dict[str, float] = {}
         self._last_block: str | None = None
-        # Watchlist the cached block was fetched for (uppercased): a throttled
-        # round only re-stamps the block when the CURRENT list still matches
-        # it — a mid-window mutation refetches for the new list instead.
+        # Watchlist the cached block was fetched for (uppercased): inside the
+        # window the cached block is written again only for this same list,
+        # once a summary took the last stamp; a changed list refetches.
         self._last_symbols: set[str] = set()
         # Provenance for the last fetched block: (symbol, provider) per line
-        # plus the fetch time — a re-stamp attests the original access, not
-        # the re-stamp clock.
+        # plus the fetch time, so a rewritten cached block attests the original
+        # access, not the time it was written again.
         self._last_sources: list[tuple[str, str | None]] = []
         self._last_fetch_ts: str | None = None
         self._last_body_sha: str | None = None
@@ -249,19 +252,23 @@ class MarketWatchMiddleware(AgentMiddleware):
             if batch and _batch_quotes_watched(messages, batch, symbols):
                 return None
 
-            # Throttle (no provider I/O): within the window re-stamp the cached
-            # block so the model keeps a price view between refreshes — but only
-            # while the watchlist is unchanged. A mid-window mutation falls
-            # through to a fresh fetch: re-stamping would resurface removed
-            # symbols, and going silent would blind the model to a just-watched
-            # one for the rest of the window. Venue re-checked above.
+            # Throttle (no provider I/O): within the window the last stamp is
+            # still the newest price, so while the model can read it nothing is
+            # written, and once a summary took it the cached block is written
+            # again. Only while the watchlist is unchanged: a mid-window
+            # mutation falls through to a fresh fetch, since the stamp in view
+            # would resurface removed symbols or leave a just-watched one out
+            # for the rest of the window. Venue re-checked above.
             watched = {s.upper() for s in symbols}
             if (
-                self._last_injected_at is not None
-                and time.monotonic() - self._last_injected_at < self._min_interval
+                self._last_fetched_at is not None
+                and time.monotonic() - self._last_fetched_at < self._min_interval
                 and self._last_block
                 and watched == self._last_symbols
             ):
+                # The writer stores the uppercased list sorted.
+                if last_stated(state, MARKET_WATCH_ROW_KIND, "symbols") == sorted(watched):
+                    return None
                 return await self._stamp(runtime, self._last_block)
 
             block = await self._fetch_block(symbols, configurable.get("user_id"))
@@ -325,7 +332,7 @@ class MarketWatchMiddleware(AgentMiddleware):
         except Exception:
             logger.warning("[MarketWatch] snapshot fetch failed", exc_info=True)
             return None
-        self._last_injected_at = time.monotonic()
+        self._last_fetched_at = time.monotonic()
         self._last_prices = {
             s["symbol"]: current_price(s)
             for s in snaps
@@ -341,9 +348,10 @@ class MarketWatchMiddleware(AgentMiddleware):
     async def _emit_provenance(self, runtime: Any, stamp: str) -> None:
         """Attest a written stamp in the turn's provenance stream.
 
-        Fires on every stamp — fresh fetch or throttled re-stamp — so a turn's
-        provenance records each block the model was sent. Persist-side dedup
-        collapses same-content re-stamps within a turn; never raises.
+        Fires on every written stamp, a fresh fetch or the cached block written
+        again after a summary took the last one, so a turn's provenance records
+        each block the model was sent. Persist-side dedup collapses same-content
+        stamps within a turn; never raises.
         """
         if not self._last_sources:
             return
@@ -375,8 +383,8 @@ class MarketWatchMiddleware(AgentMiddleware):
 
         Deliberately unredacted: the stamp is deterministic live-price text with
         no user data, so it needs none of ProvenanceMiddleware's redaction.
-        Scheduled off the model-call critical path; re-stamps reference the
-        already-stored body through the sha.
+        Scheduled off the model-call critical path; a cached block written again
+        references the already-stored body through the sha.
         """
         if sha256 == self._last_body_sha:
             return

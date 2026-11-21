@@ -22,7 +22,6 @@ from ptc_agent.agent.middleware.runtime_context import (
     ENVELOPE_HARD_CAP_TOKENS,
     ENVELOPE_OPEN,
     RUNTIME_UPDATE_SOURCE,
-    Carrier,
     DurableUpdate,
     PinSite,
     apply_breakpoint,
@@ -45,16 +44,16 @@ def _padded(target_tokens: int, word: str) -> str:
     return text
 
 
-def _stamp(text: str) -> DurableUpdate:
+def _stamp(text: str, schema_version: int = 3) -> DurableUpdate:
     """A live-price row, the one kind both templates render verbatim."""
     return DurableUpdate(
-        kind="market_watch", schema_version=2, text=text, created_at=NOW
+        kind="market_watch", schema_version=schema_version, text=text, created_at=NOW
     )
 
 
-def _stamp_row(text: str):
+def _stamp_row(text: str, schema_version: int = 3):
     """The message a live-price row is persisted as."""
-    return build_update_message(_stamp(text))
+    return build_update_message(_stamp(text, schema_version))
 
 
 class TestTheHardCap:
@@ -81,11 +80,11 @@ class TestCarrierShapes:
 
     def _carried(self, messages: list, shape: str = "reminder") -> list:
         """The composed request with one row after *messages*: the only door onto a shape."""
-        return compose_request([*messages, _stamp_row(self.ENVELOPE)], Carrier(shape)).messages
+        return compose_request([*messages, _stamp_row(self.ENVELOPE)], shape).messages
 
     def test_shape_is_reminder_without_an_operator_channel(self):
-        assert resolve_carrier(None).shape == "reminder"
-        assert resolve_carrier(MagicMock()).shape == "reminder"
+        assert resolve_carrier(None) == "reminder"
+        assert resolve_carrier(MagicMock()) == "reminder"
 
     def test_shape_falls_back_to_reminder_when_resolution_raises(self, monkeypatch):
         """A carrier fault costs a role, never a turn."""
@@ -95,7 +94,7 @@ class TestCarrierShapes:
             raise RuntimeError("manifest is gone")
 
         monkeypatch.setattr(oc, "resolve_operator_channel", _boom)
-        assert resolve_carrier(MagicMock()).shape == "reminder"
+        assert resolve_carrier(MagicMock()) == "reminder"
 
     def test_reminder_merges_into_a_trailing_human_message(self):
         """The Claude Code shape: one message, the user's text first.
@@ -187,7 +186,7 @@ class TestCarrierShapes:
             )
             user = HumanMessage(content="hi")
 
-            shape = resolve_carrier(MagicMock()).shape
+            shape = resolve_carrier(MagicMock())
             result = self._carried([user], shape)
 
             assert len(result) == 2
@@ -228,7 +227,7 @@ class TestDurableCarrier:
         """The Claude Code shape: harness attachments ride inside the message
         that precedes them, so a turn is one user message however many rows it
         collected."""
-        result = compose_request(self._history(), Carrier("reminder")).messages
+        result = compose_request(self._history(), "reminder").messages
 
         assert len(result) == 1
         blocks = result[0].content
@@ -240,7 +239,7 @@ class TestDurableCarrier:
 
     def test_reminder_stands_alone_with_no_preceding_human_message(self):
         """After an assistant turn there is nothing to ride inside."""
-        result = compose_request([AIMessage(content="done"), self._row("body")], Carrier("reminder")).messages
+        result = compose_request([AIMessage(content="done"), self._row("body")], "reminder").messages
 
         assert len(result) == 2
         carried = result[-1]
@@ -256,7 +255,7 @@ class TestDurableCarrier:
         import src.llms.operator_channel as oc
 
         monkeypatch.setattr(oc, "resolve_operator_channel", lambda model: shape)
-        result = compose_request(self._history(), Carrier(shape)).messages
+        result = compose_request(self._history(), shape).messages
 
         assert len(result) == 2
         assert isinstance(result[0], HumanMessage)
@@ -272,7 +271,7 @@ class TestDurableCarrier:
     @pytest.mark.parametrize("shape", ["system", "developer"])
     def test_a_stamp_coalesces_into_the_trailing_row_message(self, shape):
         """The turn's rows followed by its live-price row are still one operator message."""
-        result = compose_request([*self._history(), _stamp_row(self.ENVELOPE)], Carrier(shape)).messages
+        result = compose_request([*self._history(), _stamp_row(self.ENVELOPE)], shape).messages
 
         assert len(result) == 2
         blocks = result[-1].content
@@ -282,7 +281,7 @@ class TestDurableCarrier:
     def test_a_row_that_renders_empty_is_dropped(self):
         """An empty message is a malformed request on several providers."""
         row = self._row("body").model_copy(update={"content": "   "})
-        result = compose_request([HumanMessage(content="hi"), row], Carrier("reminder")).messages
+        result = compose_request([HumanMessage(content="hi"), row], "reminder").messages
 
         assert len(result) == 1
         assert result[0].content == "hi"
@@ -293,7 +292,7 @@ class TestDurableCarrier:
         snapshot = [(m, m.content) for m in messages]
 
         for shape in ("reminder", "system", "developer"):
-            result = compose_request(messages, Carrier(shape)).messages
+            result = compose_request(messages, shape).messages
             assert result is not messages
             assert [(m, m.content) for m in messages] == snapshot
 
@@ -308,7 +307,7 @@ class TestDurableCarrier:
             self._row("write your notes", kind="notes_due"),
         ]
 
-        result = compose_request(messages, Carrier(shape)).messages
+        result = compose_request(messages, shape).messages
 
         assert len(result) == 4
         assert result[2] == tool_result
@@ -319,7 +318,7 @@ class TestDurableCarrier:
 
     def test_a_history_without_rows_is_left_alone(self):
         messages = [HumanMessage(content="hi"), AIMessage(content="ok")]
-        assert compose_request(messages, Carrier("reminder")).messages == messages
+        assert compose_request(messages, "reminder").messages == messages
 
 
 class TestHistoryBreakpoint:
@@ -334,21 +333,19 @@ class TestHistoryBreakpoint:
 
     def _composed(self, messages: list, shape: str = "reminder"):
         """The composed request with the marker applied at the site it named."""
-        composed = compose_request(messages, Carrier(shape))
+        composed = compose_request(messages, shape)
         if composed.pin is not None:
             apply_breakpoint(composed.messages, composed.pin, *self.MARK)
         return composed
 
-    def test_a_merged_stamp_trails_the_marker(self):
-        """The next call leaves the stamp out, so the pin goes on the user's
-        own block before it."""
+    def test_a_stamp_takes_the_marker_as_any_row_does(self):
+        """Every later call sends the stamp again, so it is the newest history block."""
         composed = self._composed([HumanMessage(content="hello"), _stamp_row("<stamp>")])
 
-        assert composed.pin == PinSite(0, 0)
+        assert composed.pin == PinSite(0, 1)
         blocks = composed.messages[0].content
-        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
         assert blocks[1]["text"] == frame_reminder("<stamp>")
-        assert "cache_control" not in blocks[1]
+        assert blocks[1]["cache_control"] == {"type": "ephemeral"}
 
     def test_a_merged_durable_row_takes_the_marker(self):
         """A row the next call sends again is the newest history block."""
@@ -377,24 +374,6 @@ class TestHistoryBreakpoint:
         messages = composed.messages
         assert messages[1].content[-1]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in messages[2].content[-1]
-
-    def test_a_standalone_stamp_after_a_tool_batch_trails_the_marker(self):
-        """After a tool batch the stamp is a message of its own, which the next
-        call leaves out, so the pin goes on the tool result before it."""
-        composed = self._composed(
-            [
-                HumanMessage(content="hello"),
-                AIMessage(content=""),
-                ToolMessage(content="result", tool_call_id="call_a"),
-                _stamp_row("<stamp>"),
-            ]
-        )
-
-        messages = composed.messages
-        assert len(messages) == 4
-        assert composed.pin == PinSite(2, None)
-        assert messages[3].content == frame_reminder("<stamp>")
-        assert messages[3].additional_kwargs["lc_source"] == RUNTIME_UPDATE_SOURCE
 
     def test_a_standalone_row_can_take_the_marker(self):
         """A row is history the carrier only re-shaped."""
@@ -552,9 +531,10 @@ class TestRequestLevelMarker:
 
 
 
-class TestPerCallStamps:
-    """A stamp is true until the next user message: turn-scoped where the model
-    takes that, else left out once a user message has followed it."""
+class TestStamps:
+    """A market-watch stamp is history like every other row: the model's own
+    answers quote the prices it read, so every stamp stays where it was
+    written, on every shape, and none is ever left out of a later call."""
 
     def _history(self):
         return [
@@ -565,54 +545,47 @@ class TestPerCallStamps:
             _stamp_row("second"),
         ]
 
-    def test_a_stamp_a_user_message_followed_costs_nothing(self):
-        """The API clears it from a turn-scoped request and every other target
-        is not sent it, so compaction does not count it either."""
-        from ptc_agent.agent.middleware.compaction.measure import Estimate, message_sizes
-        from ptc_agent.agent.middleware.runtime_context.carrier import spent_stamps
+    @pytest.mark.parametrize("shape", ["reminder", "system", "developer"])
+    def test_every_stamp_stays_where_it_was_written(self, shape):
+        result = compose_request(self._history(), shape).messages
+
+        text = str([m.content for m in result])
+        assert "first" in text and "second" in text
+        assert text.index("first") < text.index("second")
+
+    @pytest.mark.parametrize("shape", ["reminder", "system", "developer"])
+    def test_a_stamp_written_for_one_call_stays_out(self, shape):
+        """A thread from before stamps were kept sent each for one call, so no
+        reasoning or measured usage holds it, and its stamps stay out."""
+        history = [*self._history(), AIMessage(content="done"), HumanMessage(content="next")]
+        history[1] = _stamp_row("spent", schema_version=2)
+        result = compose_request(history, shape).messages
+
+        text = str([m.content for m in result])
+        assert "spent" not in text and "second" in text
+
+    def test_a_stamp_counts_as_the_row_it_is(self):
+        from ptc_agent.agent.middleware.compaction.measure import Estimate
 
         history = self._history()
         estimate = Estimate(lambda messages: sum(len(str(m.content)) for m in messages))
+        assert estimate(history) == sum(len(str(m.content)) for m in history)
 
-        assert spent_stamps(history) == {id(history[1])}
-        assert estimate(history) == estimate([m for m in history if m is not history[1]])
-        # Newest first: the turn's answer onward, then what came before it.
-        assert list(message_sizes(history, estimate)) == [6, 2, 0, 0, 2]
+    def test_a_stamp_written_for_one_call_counts_nothing(self):
+        """No request carries it, so it takes nothing from the room a summary keeps."""
+        from ptc_agent.agent.middleware.compaction.measure import Estimate
 
-    def test_turn_scoped_sends_every_stamp_as_its_own_cleared_message(self):
-        result = compose_request(self._history(), Carrier("system", turn_scoped=True)).messages
+        estimate = Estimate(lambda messages: sum(len(str(m.content)) for m in messages))
+        assert estimate([_stamp_row("spent", schema_version=2)]) == 0
+        assert estimate([_stamp_row("kept")]) > 0
 
-        stamps = [m for m in result if isinstance(m, SystemMessage)]
-        assert [m.content for m in stamps] == ["first", "second"]
-        assert all(m.additional_kwargs["clear_at"] == "next_user_message" for m in stamps)
+    @pytest.mark.asyncio
+    async def test_a_stamp_written_for_one_call_counts_nothing_in_a_whole_history(self):
+        """Read where no call measured anything, the whole view is counted."""
+        from ptc_agent.agent.middleware.compaction.measure import Estimate, context_tokens
 
-    def test_a_turn_scoped_stamp_never_coalesces_with_a_row(self):
-        row = build_update_message(
-            DurableUpdate(kind="memo_changed", schema_version=1, text="3 memos now")
-        )
-        result = compose_request(
-            [HumanMessage(content="go"), row, _stamp_row("stamp")],
-            Carrier("system", turn_scoped=True),
-        ).messages
-
-        assert len(result) == 3
-        assert "clear_at" not in result[1].additional_kwargs
-        assert result[2].additional_kwargs["clear_at"] == "next_user_message"
-
-    def test_a_stamp_no_answer_followed_is_left_out(self):
-        """Directly before a user message the API refuses it, and no thinking
-        was produced behind it."""
-        messages = [HumanMessage(content="go"), _stamp_row("stamp"), HumanMessage(content="again")]
-
-        result = compose_request(messages, Carrier("system", turn_scoped=True)).messages
-
-        assert [m.content for m in result] == ["go", "again"]
-
-    @pytest.mark.parametrize("shape", ["reminder", "system", "developer"])
-    def test_without_turn_scope_only_the_newest_stamp_is_sent(self, shape):
-        result = compose_request(self._history(), Carrier(shape)).messages
-
-        text = str([m.content for m in result])
-        assert "second" in text
-        assert "first" not in text
+        estimate = Estimate(lambda messages: sum(len(str(m.content)) for m in messages))
+        with_spent = [HumanMessage(content="go"), _stamp_row("spent " * 50, schema_version=2)]
+        reading = await context_tokens({}, with_spent, estimate)
+        assert reading.tokens == len("go")
 
