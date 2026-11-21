@@ -247,3 +247,22 @@ async def test_a_cli_cut_off_mid_character_fails_with_its_exit_code_and_stderr(t
     finally:
         await transport.close()
     assert raised.value.exit_code == 3 and "disk full" in raised.value.stderr
+
+
+def test_a_session_resumes_in_the_directory_its_records_name():
+    """A session copied into another thread (a fork) keeps the working
+    directory it began in, whichever launcher wrote it: the CLI's environment
+    block names it, so moving it would change the session's prompt."""
+    from ptc_agent.agent.claude_code.launcher import session_thread_key
+
+    local = [{"type": "user", "cwd": "/private/tmp/langalpha-claude/source-thread"}]
+    remote = [{"type": "user", "cwd": "/home/me/langalpha/_internal/claude-code/threads/src-task1/"}]
+    assert session_thread_key(local, "fork-thread") == "source-thread"
+    assert session_thread_key(remote, "fork-thread") == "src-task1"
+    # The first record that names one wins, wherever the CLI moved after; none,
+    # or no plain key, keeps the thread's.
+    moved = local + [{"type": "user", "cwd": "/private/tmp/langalpha-claude/source-thread/repo"}]
+    assert session_thread_key(moved, "fork-thread") == "source-thread"
+    assert session_thread_key([{"type": "summary"}] + local, "fork-thread") == "source-thread"
+    assert session_thread_key([{"type": "summary"}], "fork-thread") == "fork-thread"
+    assert session_thread_key([{"cwd": "/tmp/has space/x y"}], "fork-thread") == "fork-thread"
