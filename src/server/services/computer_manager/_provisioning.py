@@ -900,14 +900,14 @@ class ProvisioningMixin:
         # workspace has to stay up holding it until an operator gives it a
         # transfer path that fits. The message names paths because a count
         # gives the user nothing to act on.
-        if result.unsaved:
+        if result.at_risk:
             message = (
-                f"File backup for {workspace_id} left {len(result.unsaved)} "
+                f"File backup for {workspace_id} left {len(result.at_risk)} "
                 f"file(s) unsaved: {result.describe_unsaved()}"
             )
             if strict:
                 raise BackupIncomplete(
-                    f"{message}; aborting before sandbox teardown", result.unsaved
+                    f"{message}; aborting before sandbox teardown", result.at_risk
                 )
             logger.warning(message)
             return False

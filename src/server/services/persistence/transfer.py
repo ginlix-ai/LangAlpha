@@ -23,12 +23,11 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
 from ptc_agent.core.paths import (
-    ALWAYS_HIDDEN_DIR_NAMES,
     BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
@@ -50,15 +49,37 @@ from src.utils.storage import get_blob_transfer_mode
 logger = logging.getLogger(__name__)
 
 # Directory names pruned at any depth, because that is what these names mean
-# wherever they appear: a dependency tree, a build output or an interpreter
-# cache, each re-derivable by re-running the install that made it. ``.git``
-# stays on this list deliberately rather than by inheritance: a repository's
-# object store is routinely larger than the working tree it belongs to, the
-# per-workspace mirror is capped at 1 GiB with a 100 MiB ceiling per file that
-# a single packfile clears on its own, and restoring half a repository is worse
-# than restoring none. The cost is stated in the release note: a cloned repo
-# comes back as a plain working tree, and ``git clone`` puts the history back.
-EXCLUDE_DIR_NAMES: frozenset[str] = ALWAYS_HIDDEN_DIR_NAMES | {"__pycache__"}
+# wherever they appear: a dependency tree, a build output or a cache, each
+# re-derivable by re-running what made it. Narrower than what the file panel
+# hides (``ALWAYS_HIDDEN_DIR_NAMES``) on purpose: a folder hidden to keep a
+# listing tidy can still hold the only copy of someone's work, as a research
+# ``vendor/`` of reports or a project's own ``.config/`` does, and a ``.git``
+# holds a history no remote may have. A repository is backed up whole or not
+# at all (``repos.py``).
+GIT_DIR = ".git"
+#: Folders taken whole, past the name rules: see ``repos.py``.
+WHOLE_DIR_NAMES: frozenset[str] = frozenset({GIT_DIR})
+#: The most history one repository may hold and still be backed up. A
+#: restore brings a repository back before the turn starts (a turn that ran
+#: ``git`` against half of one would see a broken repository and may
+#: ``git init`` over it), so this bounds what a rebuild waits on, and keeps a
+#: clone made only to read a large project from becoming stored bytes. Past
+#: it the scan reports the size without reading the files, which are not
+#: stored; the history is the remote's to keep.
+GIT_HISTORY_MAX_BYTES = 1024 * 1024 * 1024
+EXCLUDE_DIR_NAMES: frozenset[str] = frozenset({
+    "node_modules",
+    ".venv",
+    "venv",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".npm",
+    "__pycache__",
+})
 # Ours, and reserved only where we put them. These are ordinary words, and
 # matching them at any depth silently dropped a user's own ``work/model/tools/``
 # or ``work/mcp_servers/`` from every scan and then pruned their rows.
@@ -85,7 +106,11 @@ EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-", THREAD_DIR
 # The reconciler's lock file, at its one path; a user's own
 # ``results/.skills-sync.flock`` is a file like any other.
 EXCLUDE_REL_FILES: tuple[str, ...] = (f"{SKILLS_DIR}/.skills-sync.flock",)
-EXCLUDE_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".so", ".dylib", ".o"})
+# Interpreter bytecode and object files: intermediates a build or an import
+# makes again. Shared libraries are not here: outside the dependency trees
+# above, a ``.so`` or ``.dylib`` is one someone downloaded or built on purpose,
+# and a restore rebuilds nothing.
+EXCLUDE_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".o"})
 # ``__init__.py`` is NOT here: it is the file that makes a directory a Python
 # package, and dropping it by basename cost the user their own packages on
 # every sandbox rebuild.
@@ -257,6 +282,13 @@ def scan_cap_bytes(sandbox: Any, *, blobs_on: bool) -> int | None:
     return RELAY_MAX_BYTES
 
 
+def history_cap_bytes(*, blobs_on: bool) -> int:
+    """The most history one repository may hold here. Without object storage
+    a history is rows in Postgres, written in one transaction, so it gets the
+    cap one file stored there gets."""
+    return GIT_HISTORY_MAX_BYTES if blobs_on else INLINE_MAX_BYTES
+
+
 class ByteBudget:
     """Admission for files held whole in this process, by weight and by count.
 
@@ -376,6 +408,9 @@ class ScanResult:
     errors: list[dict[str, Any]]
     hashed: int
     reused: int
+    #: Folders taken whole past ``GIT_HISTORY_MAX_BYTES``, as ``{path,
+    #: size}``: sized by stat and never read, so they have no entries.
+    whole_too_large: list[dict[str, Any]] = field(default_factory=list)
     # The sandbox clock when the walk began, and the boot it belongs to:
     # the raw material of the project's scan mark.
     started_ns: int | None = None
@@ -424,7 +459,9 @@ def transfer_timeout_s(total_bytes: int) -> int:
     return int(min(max(scaled, TRANSFER_MIN_TIMEOUT_S), TRANSFER_MAX_TIMEOUT_S))
 
 
-def exclusion_spec(max_file_bytes: int | None) -> dict[str, Any]:
+def exclusion_spec(
+    max_file_bytes: int | None, max_history_bytes: int = GIT_HISTORY_MAX_BYTES
+) -> dict[str, Any]:
     return {
         "exclude_dir_names": sorted(EXCLUDE_DIR_NAMES),
         "exclude_rel_dirs": list(EXCLUDE_REL_DIRS),
@@ -439,6 +476,8 @@ def exclusion_spec(max_file_bytes: int | None) -> dict[str, Any]:
         "exclude_root_basenames": [SYNC_MARKER_NAME],
         "exclude_root_basename_prefixes": [".wsfiles-"],
         "exclude_suffixes": sorted(EXCLUDE_SUFFIXES),
+        "whole_dir_names": sorted(WHOLE_DIR_NAMES),
+        "max_whole_dir_bytes": max_history_bytes,
         "max_file_bytes": max_file_bytes,
     }
 
@@ -464,17 +503,25 @@ class ScanRules:
     """
 
     max_file_bytes: int | None
+    max_history_bytes: int
     fingerprint: str
 
     @classmethod
-    def of(cls, max_file_bytes: int | None) -> ScanRules:
-        """The rules a scan under ``max_file_bytes`` runs under on this build."""
+    def of(
+        cls, max_file_bytes: int | None, max_history_bytes: int = GIT_HISTORY_MAX_BYTES
+    ) -> ScanRules:
+        """The rules a scan under these caps runs under on this build."""
         canonical = json.dumps(
-            {"exclusions": exclusion_spec(max_file_bytes), "runtime": _runtime_digest()},
+            {
+                "exclusions": exclusion_spec(max_file_bytes, max_history_bytes),
+                "runtime": _runtime_digest(),
+            },
             sort_keys=True,
             separators=(",", ":"),
         )
-        return cls(max_file_bytes, hashlib.sha256(canonical.encode()).hexdigest()[:16])
+        return cls(
+            max_file_bytes, max_history_bytes, hashlib.sha256(canonical.encode()).hexdigest()[:16]
+        )
 
 
 def _script_path(sandbox: Any) -> str:
@@ -613,23 +660,35 @@ async def scan_workspace(
     max_file_bytes: int | None,
     layout: WorkspaceLayout,
     hash_files: bool = True,
+    histories: bool = True,
+    max_history_bytes: int = GIT_HISTORY_MAX_BYTES,
 ) -> ScanResult:
     """Walk and hash one project folder. ``prior`` lets unchanged files skip hashing.
 
     ``hash_files=False`` lists without reading contents: a changed file then
     carries no digest, which suits only a caller that never stores the entry.
+    ``histories=False`` leaves out every ``.git``, for a listing that shows
+    only what the file panel does.
 
     The walk root is the project's folder rather than the machine: several
     projects share the root, each syncs under its own advisory lock, and a walk
     from the root would have each of them claim the others' files and prune its
     own manifest.
     """
-    spec = exclusion_spec(max_file_bytes)
+    spec = exclusion_spec(max_file_bytes, max_history_bytes)
     spec["root"] = layout.workspace
     spec["prior"] = {p: list(v) for p, v in prior.items()}
     if not hash_files:
         spec["hash"] = False
-    out = await run_transfer_op(sandbox, "scan", spec, timeout_s=SCAN_TIMEOUT_S)
+    if not histories:
+        spec["exclude_dir_names"] = sorted(EXCLUDE_DIR_NAMES | WHOLE_DIR_NAMES)
+        spec["whole_dir_names"] = []
+    # A runtime that predates ``whole_dir_names`` applies the name rules
+    # inside ``.git`` and drops a branch ``node_modules/topic``; it does not
+    # answer ``whole_too_large`` either, so asking for it replaces that one.
+    out = await run_transfer_op(
+        sandbox, "scan", spec, timeout_s=SCAN_TIMEOUT_S, reports=("whole_too_large",)
+    )
     # A runtime that predates the exact-name key reports the marker as a
     # file; a manifest row for it would restore a "populated" claim into a
     # sandbox before its files arrive, so the server drops it as well.
@@ -641,6 +700,7 @@ async def scan_workspace(
     return ScanResult(
         entries=entries,
         oversized=out.get("oversized", []),
+        whole_too_large=out.get("whole_too_large", []),
         errors=out.get("errors", []),
         hashed=int(out.get("hashed") or 0),
         reused=int(out.get("reused") or 0),

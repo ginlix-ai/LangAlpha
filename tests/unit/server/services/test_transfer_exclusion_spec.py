@@ -72,20 +72,29 @@ def test_our_own_directories_are_reserved_only_where_we_put_them():
         assert reserved in spec["exclude_rel_dirs"], reserved
 
 
-def test_git_repositories_are_excluded_deliberately_and_at_any_depth():
-    """A repository's object store is routinely larger than the tree it
-    belongs to, and half a repository restores worse than none; ``git clone``
-    is what puts the history back."""
+def test_git_repositories_are_backed_up():
+    """A ``.git`` can hold the only copy of a history (commits never pushed,
+    a repository never given a remote). It is kept whole or not at all by
+    ``repos.held_repos``, never pruned by name."""
     spec = exclusion_spec(1)
-    assert ".git" in spec["exclude_dir_names"]
+    assert ".git" not in spec["exclude_dir_names"]
 
 
 def test_only_derivable_trees_are_pruned_by_name_at_any_depth():
     """Everything matched by name alone has to be re-derivable by re-running
-    the install that made it, because it is matched wherever it appears. The
-    set is derived rather than restated so a name added to one is added to
-    both, and nothing of ours joins it by hand."""
+    what made it, because it is matched wherever it appears. The file panel
+    hides more, to keep a listing tidy, and a folder it hides can still hold
+    someone's only copy of their work."""
     spec = exclusion_spec(1)
-    assert set(spec["exclude_dir_names"]) == set(ALWAYS_HIDDEN_DIR_NAMES) | {
-        "__pycache__"
-    }
+    assert set(spec["exclude_dir_names"]) <= set(ALWAYS_HIDDEN_DIR_NAMES) | {"__pycache__"}
+    for kept in (".git", "vendor", ".config", ".local", ".ipython"):
+        assert kept in ALWAYS_HIDDEN_DIR_NAMES, kept
+        assert kept not in spec["exclude_dir_names"], kept
+
+
+def test_shared_libraries_are_backed_up():
+    """Outside the dependency trees a ``.so`` or ``.dylib`` was put there on
+    purpose, and a restore rebuilds nothing."""
+    spec = exclusion_spec(1)
+    assert ".so" not in spec["exclude_suffixes"]
+    assert ".dylib" not in spec["exclude_suffixes"]

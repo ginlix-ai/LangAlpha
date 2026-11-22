@@ -1049,7 +1049,14 @@ export interface WriteFileResponse {
   size: number;
 }
 
-export type UnsavedReason = 'too_large' | 'path_too_long' | 'unreadable' | 'changed' | 'failed';
+export type UnsavedReason =
+  | 'too_large'
+  | 'path_too_long'
+  | 'unreadable'
+  | 'changed'
+  | 'failed'
+  | 'history_too_large'
+  | 'history_held';
 
 export interface UnsavedFile {
   path: string;

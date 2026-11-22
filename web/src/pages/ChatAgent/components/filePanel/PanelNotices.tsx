@@ -131,8 +131,10 @@ function UnsavedBackupNotice({ result, onDismiss }: { result: BackupResult; onDi
         </button>
       </div>
       <ul className="file-panel-unsaved-list">
-        {named.map((file) => (
-          <li key={file.path}>
+        {named.map((file, i) => (
+          // A path can carry two lines (a repository's own and one for a
+          // file in it), and two misnamed files can show the same marks.
+          <li key={`${i}:${file.path}`}>
             <span className="file-panel-unsaved-path" title={file.path}>{file.path}</span>
             <UnsavedReasonText file={file} />
           </li>

@@ -809,6 +809,7 @@ async def _persist_inline(
     *,
     layout: Layout,
     conn: Any,
+    exact: bool = False,
 ) -> tuple[int, list[UnsavedFile]]:
     """No object store: bytes go into the manifest row itself.
 
@@ -817,6 +818,9 @@ async def _persist_inline(
     make the peak the whole changed working set, which is exactly what
     bounding in-flight bytes is supposed to prevent. Each batch's rows are
     released as soon as they are stored, so the bound is the batch.
+
+    ``exact`` refuses bytes that differ from what the scan hashed, as
+    ``changed``: a file of a repository has to be the one its scan saw.
     """
     synced = 0
     unsaved: list[UnsavedFile] = []
@@ -832,6 +836,8 @@ async def _persist_inline(
             # come from the download even if the scan saw an earlier
             # version of the file.
             content_hash = hashlib.sha256(content).hexdigest()
+            if exact and content_hash != entry.sha256:
+                return UnsavedFile(entry.path, "changed", entry.size)
             is_binary = _detect_is_binary(entry.path, content)
             content_text = None
             content_binary = None

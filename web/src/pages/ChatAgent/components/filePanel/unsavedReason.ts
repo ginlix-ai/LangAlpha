@@ -20,7 +20,8 @@ export function shownPath(path: string): string {
 }
 
 export function unsavedReasonLabel(t: Translate, file: Pick<UnsavedFile, 'reason' | 'size'>, locale: string): string {
-  return file.reason === 'too_large' && file.size
-    ? t('filePanel.unsavedReason.too_large_sized', { size: formatBytes(file.size, locale) })
-    : t(`filePanel.unsavedReason.${file.reason}`, { defaultValue: t('filePanel.unsavedReason.failed') });
+  if ((file.reason === 'too_large' || file.reason === 'history_too_large') && file.size) {
+    return t(`filePanel.unsavedReason.${file.reason}_sized`, { size: formatBytes(file.size, locale) });
+  }
+  return t(`filePanel.unsavedReason.${file.reason}`, { defaultValue: t('filePanel.unsavedReason.failed') });
 }

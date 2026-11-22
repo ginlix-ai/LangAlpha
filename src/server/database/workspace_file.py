@@ -628,6 +628,41 @@ async def delete_removed_files(
         raise
 
 
+async def delete_gone_rows(
+    workspace_id: str,
+    paths: list[str],
+    *,
+    walked_dir_name: str,
+    untouched_since: datetime,
+    conn=None,
+) -> int:
+    """Delete the named rows under ``delete_removed_files``' two fences: the
+    folder the scan walked is still the workspace's, and nobody has written
+    the row since the scan began. A row a fence keeps is not counted."""
+    if not paths:
+        return 0
+    async with get_db_connection(conn) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM workspace_files f
+                USING workspaces w
+                WHERE w.workspace_id = %(workspace_id)s
+                  AND f.workspace_id = %(workspace_id)s
+                  AND COALESCE(w.dir_name, '') = %(walked_dir_name)s
+                  AND f.file_path = ANY(%(paths)s::text[])
+                  AND f.updated_at < %(untouched_since)s::timestamptz
+                """,
+                {
+                    "workspace_id": workspace_id,
+                    "walked_dir_name": walked_dir_name or "",
+                    "paths": paths,
+                    "untouched_since": untouched_since,
+                },
+            )
+            return cur.rowcount
+
+
 async def delete_file_rows(
     workspace_id: str, paths: list[str], *, conn=None
 ) -> int:

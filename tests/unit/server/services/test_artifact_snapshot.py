@@ -859,7 +859,7 @@ def stored_copy(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "path", ["node_modules/chart/index.js", "app/vendor/lib.js", ".next/static/a.js"]
+    "path", ["node_modules/chart/index.js", "app/node_modules/lib.js", ".next/static/a.js"]
 )
 async def test_the_stored_copy_will_not_say_whether_a_library_file_exists(
     stored_copy, path
@@ -876,10 +876,21 @@ async def test_the_stored_copy_will_not_say_whether_a_library_file_exists(
 async def test_a_file_named_like_a_library_folder_is_still_the_stored_copys(
     stored_copy,
 ):
-    mirror = stored_copy({"reports/vendor": b"v"})
+    mirror = stored_copy({"reports/node_modules": b"v"})
 
-    assert await mirror.stat(["reports/vendor"]) == {"reports/vendor": ("reports/vendor", 1)}
-    assert await mirror.read("reports/vendor") == b"v"
+    assert await mirror.stat(["reports/node_modules"]) == {
+        "reports/node_modules": ("reports/node_modules", 1)
+    }
+    assert await mirror.read("reports/node_modules") == b"v"
+
+
+@pytest.mark.asyncio
+async def test_a_vendored_library_is_the_stored_copys_to_answer(stored_copy):
+    """A backup keeps ``vendor/``: it is as often a folder of someone's own
+    files as a dependency tree, so a page loading from it reads it there."""
+    mirror = stored_copy({"reports/vendor/lib.js": b"js"})
+
+    assert await mirror.read("reports/vendor/lib.js") == b"js"
 
 
 @pytest.fixture
@@ -900,7 +911,7 @@ def stopped_computer(workspace_holds, stored_copy, monkeypatch):
 async def test_an_owners_review_of_a_page_with_libraries_needs_its_computer(
     stopped_computer,
 ):
-    stopped_computer({"reports/q3.html": b'<script src="vendor/lib.js"></script>'})
+    stopped_computer({"reports/q3.html": b'<script src="node_modules/lib.js"></script>'})
 
     with pytest.raises(snapshot.SnapshotRefused) as refused:
         await snapshot.status(_artifact(), user_id="u", loaded=())
@@ -913,16 +924,16 @@ async def test_a_library_file_the_owner_left_out_does_not_need_the_computer(
     stopped_computer,
 ):
     stopped_computer(
-        {"reports/q3.html": b'<script>fetch("vendor/lib.js"); fetch("more.json")</script>', "reports/more.json": b"{}"}
+        {"reports/q3.html": b'<script>fetch("node_modules/lib.js"); fetch("more.json")</script>', "reports/more.json": b"{}"}
     )
-    record = _artifact(left_out_files=("reports/vendor/lib.js", "reports/more.json"))
+    record = _artifact(left_out_files=("reports/node_modules/lib.js", "reports/more.json"))
 
     found = await snapshot.status(record, user_id="u", loaded=())
 
     # Kept as they left it; only its size is unknown, and a file the stored
     # copy holds still says its own.
     assert {e.path: e.size for e in found.snapshot.left_out} == {
-        "reports/vendor/lib.js": None,
+        "reports/node_modules/lib.js": None,
         "reports/more.json": 2,
     }
 
@@ -938,7 +949,7 @@ async def test_a_visitors_first_cut_without_the_libraries_is_not_made(
             _artifact(),
             user_id="u",
             mode=ReadMode.WARM_OR_STORED,
-            source=snapshot._Listed(("reports/q3.html", "reports/vendor/lib.js")),
+            source=snapshot._Listed(("reports/q3.html", "reports/node_modules/lib.js")),
         )
 
 
