@@ -1,4 +1,5 @@
 import React from 'react';
+import { cn } from '@/lib/utils';
 import { Favicon } from '../Favicon';
 import { messagingAppDomain } from './messageDelivery';
 
@@ -14,8 +15,14 @@ export function appFaviconGlyph(platform: string | null | undefined): Glyph | nu
   if (!domain) return null;
   let glyph = glyphs.get(domain);
   if (!glyph) {
-    glyph = function AppFavicon() {
-      return <Favicon domain={domain} size={14} />;
+    // The slot's class (its size, and whatever it hides or fades the glyph
+    // by) lands on a box around the image, which takes none of its own.
+    glyph = function AppFavicon({ className }: { className?: string }) {
+      return (
+        <span className={cn('inline-flex', className)}>
+          <Favicon domain={domain} size={14} />
+        </span>
+      );
     };
     glyphs.set(domain, glyph);
   }

@@ -180,18 +180,18 @@ describe('FilePanel status tab', () => {
     expect(screen.queryByTestId('status-panel')).toBeNull();
 
     rerender(panel({ marketWatch: { symbols: ['NVDA', 'TSLA'] } }));
-    expect(tabNames()).toEqual(['Open a file', 'Status']);
+    expect(tabNames()).toEqual(['New tab', 'Status']);
     fireEvent.click(within(screen.getByRole('tablist')).getByRole('tab', { name: /Status/ }));
     expect(await screen.findByTestId('status-panel')).toBeInTheDocument();
 
     // The tab is the reader's to close: taken away it would go from under
     // them, and a watch resumed would bring it back unfocused as a new tab.
     rerender(panel({ marketWatch: { symbols: [] } }));
-    expect(tabNames()).toEqual(['Open a file', 'Status']);
+    expect(tabNames()).toEqual(['New tab', 'Status']);
     expect(screen.getByTestId('status-panel')).toBeInTheDocument();
 
     rerender(panel({ marketWatch: { symbols: ['NVDA'] } }));
-    expect(tabNames()).toEqual(['Open a file', 'Status']);
+    expect(tabNames()).toEqual(['New tab', 'Status']);
     expect(screen.getByTestId('status-panel')).toBeInTheDocument();
   });
 
@@ -221,10 +221,10 @@ describe('FilePanel status tab', () => {
     const { rerender } = renderWithProviders(panel({ marketWatch: { symbols: [] } }));
     rerender(panel({ marketWatch: { symbols: ['NVDA'] } }));
     fireEvent.click(screen.getByLabelText('Close Status'));
-    expect(tabNames()).toEqual(['Open a file']);
+    expect(tabNames()).toEqual(['New tab']);
 
     // A later stamp on the same watch is not a new watch.
     rerender(panel({ marketWatch: { symbols: ['NVDA'], content: 'As of now\nNVDA 100' } }));
-    expect(tabNames()).toEqual(['Open a file']);
+    expect(tabNames()).toEqual(['New tab']);
   });
 });

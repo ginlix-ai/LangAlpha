@@ -739,6 +739,8 @@ export function useFileTabs(
   }, [patchTab]);
 
   const closeTab = useCallback((id: string) => setState((prev) => closeIn(prev, id)), []);
+  /** Several at once, each closed as `closeTab` would, so the one left in front is the neighbour of the last to go. */
+  const closeTabs = useCallback((ids: readonly string[]) => setState((prev) => ids.reduce(closeIn, prev)), []);
 
   /** What a step from this tab would show, or null where it has none to take. */
   const historyTarget = useCallback((id: string, dir: HistoryDirection): TabBody | null => {
@@ -779,6 +781,7 @@ export function useFileTabs(
     openFile,
     pinTab,
     closeTab,
+    closeTabs,
     closeOut,
     newTab,
     showListing,
@@ -799,7 +802,7 @@ export function useFileTabs(
     forgetPaths,
   }), [
     state.tabs, activeTab, openPaths,
-    activate, openFile, pinTab, closeTab, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
+    activate, openFile, pinTab, closeTab, closeTabs, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
     openPreview, openChart, retargetChart, openTool, openSources, patchTab, clearLocation, historyTarget, stepHistory, forgetPaths,
   ]);
 }

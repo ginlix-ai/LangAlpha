@@ -38,9 +38,15 @@
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  position: relative;
   height: 28px;
+  /* A pill is as wide as its name, between a floor that keeps a ticker's tab
+     a fair target and a cap past which the name fades. The X keeps no room of
+     its own: it takes the glyph's place (below). */
+  --tab-pad-start: 8px;
+  min-width: 4.5rem;
   max-width: 11rem;
-  padding: 0 4px 0 8px;
+  padding: 0 8px 0 var(--tab-pad-start);
   border: 1px solid transparent;
   border-radius: var(--cs-radius-control, var(--radius));
   background: transparent;
@@ -64,7 +70,7 @@
   font-weight: var(--cs-weight-picked, inherit);
 }
 /* Soft's pill is wider at its start. */
-:root[data-card-style='soft'] .file-panel-tab { padding-left: 10px; }
+:root[data-card-style='soft'] .file-panel-tab { --tab-pad-start: 10px; }
 /* Arrow keys rove onto tabs with tabIndex -1, which the focus layer keeps
    quiet by default; this unlayered rule draws the ring anyway, inset because
    the strip scrolls and clips anything outside the pill. */
@@ -84,14 +90,14 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  /* The fade lives entirely in the padding, so a name that fits is untouched
-     and one that overflows is gone by the time the close button begins: the
-     padding minus the margin is the breathing room every pill keeps before
-     its X, and the ramp is exactly that room plus the flex gap. */
-  padding-right: 24px;
-  margin-right: -10px;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent calc(100% - 4px));
-  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent calc(100% - 4px));
+}
+/* Only a pill at its cap can be cutting its name (TabStrip marks it), so only
+   that one spends room on the fade: the ramp lives in the name's own padding
+   and is gone by the pill's end padding. */
+.file-panel-tab[data-capped] .file-panel-tab-name {
+  padding-right: 20px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 /* The hover card: the whole name, and under it the folder or the port. */
 .file-panel-tab-hint {
@@ -128,7 +134,17 @@
 .file-panel-tab-failed {
   color: var(--color-loss);
 }
+.file-panel-tab-glyph {
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+/* The X takes the glyph's place, centred on it (the 14px glyph sits at the
+   start padding, the 18px box 2px before it), so the pill keeps no room for
+   it and the name and its marks stay whole while the pointer is on the tab. */
 .file-panel-tab-close {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--tab-pad-start) - 2px);
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -144,12 +160,15 @@
   transition: opacity var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 /* The X is a hover affordance, not a badge: the active pill stays as quiet as
-   the rest until the pointer is on it. Its room is reserved either way, so
-   nothing shifts when it appears. Keyboard focus and touch keep it visible. */
-.file-panel-tab:hover .file-panel-tab-close,
-.file-panel-tab:focus-visible .file-panel-tab-close,
-.file-panel-tab-close:focus-visible {
-  opacity: 1;
+   the rest until the pointer is on it. Keyboard focus shows it too. A pointer
+   that cannot hover has it on at all times, at the pill's end, below. */
+@media (hover: hover) and (pointer: fine) {
+  .file-panel-tab:is(:hover, :focus-visible, :has(.file-panel-tab-close:focus-visible)) .file-panel-tab-close {
+    opacity: 1;
+  }
+  .file-panel-tab:is(:hover, :focus-visible, :has(.file-panel-tab-close:focus-visible)) .file-panel-tab-glyph {
+    opacity: 0;
+  }
 }
 .file-panel-tab-close:hover {
   background-color: var(--color-border-muted);
@@ -165,18 +184,21 @@
 
 /* ====== Mobile responsive ====== */
 @media (max-width: 767px) {
-  /* No hover on a touch screen, so the close is always on. */
-  .file-panel-tab-close { opacity: 1; }
   .file-panel-tab { max-width: 9rem; }
 }
-/* A finger needs a bigger target than a pointer: the X grows to a 28px hit
-   box with the glyph centred in it, and stays on, since there is no hover to
-   reveal it. The pill keeps its height and the box overhangs it. */
+/* With no hover to reveal it the X is always on, and over the glyph it would
+   leave every tab without one, so it sits at the pill's end in room the pill
+   keeps for it. A finger also needs a bigger target than a pointer, so the X
+   grows to a 28px hit box with the glyph centred where the 18px one sits; the
+   pill keeps its height and the box overhangs it. */
+@media (hover: none), (pointer: coarse) {
+  .file-panel-tab { padding-right: 24px; }
+  .file-panel-tab-close { left: auto; right: 4px; opacity: 1; }
+}
 @media (pointer: coarse) {
   .file-panel-tab-close {
     width: 28px;
     height: 28px;
-    margin: -5px -5px -5px 0;
-    opacity: 1;
+    right: -1px;
   }
 }

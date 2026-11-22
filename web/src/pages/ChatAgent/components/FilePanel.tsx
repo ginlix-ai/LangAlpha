@@ -651,33 +651,36 @@ function FilePanel({
 
   // Reads the strip as it is when the close runs, which the discard question
   // can put off while tabs come and go underneath it.
-  const closeTabNow = useStableHandler((id: string) => {
-    const tab = tabs.tabs.find((x) => x.id === id);
-    if (!tab) return;
-    forgetTab(id);
-    if (tab.kind === 'file') {
-      // The marker is what forces a re-read on reopen; the cached bytes must
-      // not outlive it, or a rewrite lands inside the body's fresh window.
-      if (hasChanged(tab.path)) cache.invalidate(tab.path);
-      forgetChanged(tab.path);
+  const closeTabsNow = useStableHandler((ids: readonly string[]) => {
+    const closing = tabs.tabs.filter((x) => ids.includes(x.id));
+    if (!closing.length) return;
+    for (const tab of closing) {
+      forgetTab(tab.id);
+      if (tab.kind === 'file') {
+        // The marker is what forces a re-read on reopen; the cached bytes must
+        // not outlive it, or a rewrite lands inside the body's fresh window.
+        if (hasChanged(tab.path)) cache.invalidate(tab.path);
+        forgetChanged(tab.path);
+      }
     }
     // The last tab takes the panel with it, and the panel reopens on the
     // empty tab rather than on the one just closed. A file still being looked
     // up has no tab yet, so the panel stays for it to land in. Anything else
     // still pending is the closed tab's own, and is dropped.
-    if (tabs.tabs.length <= 1 && !isLookingUp()) {
+    if (closing.length >= tabs.tabs.length && !isLookingUp()) {
       cancelPending();
       tabs.closeOut();
       onClose();
       return;
     }
-    tabs.closeTab(id);
+    tabs.closeTabs(closing.map((x) => x.id));
   });
 
-  const closeTab = useCallback((id: string) => {
-    if (tabHasUnsavedChanges(id)) askDiscard(() => closeTabNow(id));
-    else closeTabNow(id);
-  }, [tabHasUnsavedChanges, askDiscard, closeTabNow]);
+  // One question for the lot, the same one a single dirty tab asks.
+  const closeTabs = useCallback((ids: readonly string[]) => {
+    if (ids.some(tabHasUnsavedChanges)) askDiscard(() => closeTabsNow(ids));
+    else closeTabsNow(ids);
+  }, [tabHasUnsavedChanges, askDiscard, closeTabsNow]);
 
   // A step replaces what the tab shows, so it asks what closing the tab would.
   // Read at the moment it runs: the question can put it off while the strip
@@ -825,7 +828,7 @@ function FilePanel({
         tabs={tabs.tabs}
         activeId={tabs.activeId}
         onActivate={activateTab}
-        onClose={closeTab}
+        onClose={closeTabs}
         onPin={tabs.pinTab}
         transcript={transcript}
         onNewTab={singleFileMode || readOnly ? null : newTab}

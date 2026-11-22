@@ -382,7 +382,7 @@ function FilePanel() {
           opened ? (
             <PanelTab icon={Globe} label="report.html" active onLoan />
           ) : (
-            <PanelTab icon={FolderOpen} label={tr('filePanel.openFile')} active />
+            <PanelTab icon={FolderOpen} label={tr('filePanel.emptyTab')} active />
           )
         }
         back={opened}
