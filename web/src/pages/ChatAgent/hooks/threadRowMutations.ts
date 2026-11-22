@@ -3,7 +3,7 @@ import { toast } from '@/components/ui/use-toast';
 import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
 import { isThreadRemoved, markThreadArchived } from '@/lib/deletedThreads';
 import { queryKeys } from '@/lib/queryKeys';
-import { holdThreadTitle, patchThreadTitle } from '@/lib/threadListCache';
+import { holdThreadTitle, patchThreadTitle, refreshThreadLists } from '@/lib/threadListCache';
 import { isArchivedThreadsKey, patchThreadRows, rollbackThreadRows } from '@/lib/threadRowActions';
 import { getThread, updateThread, updateThreadTitle } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
@@ -74,9 +74,7 @@ async function patchThreadRow(
     return false;
   }
   // Past this point the server holds the change: nothing below rolls back.
-  queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.threads.recentAll() });
-  queryClient.invalidateQueries({ queryKey: queryKeys.threads.searchAll() });
+  refreshThreadLists(queryClient, workspaceId);
   return true;
 }
 

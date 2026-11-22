@@ -16,6 +16,7 @@ from src.server.services.report_back.handoff.carry import PriorAttempt
 from src.server.services.turn_runtime import TurnRoute
 
 from src.server.services.shared_workspaces.turn import TurnIdentity
+from src.server.handlers.chat.request_prep import PriorThread
 from tests.unit.server.handlers.test_ptc_run_workspace_status import (
     PTC,
     _make_config,
@@ -41,7 +42,7 @@ async def test_a_turn_reads_the_sender_for_the_person_and_the_owner_for_the_mach
     inputs = AsyncMock(side_effect=_Stop("stop at the agent inputs"))
     with (
         patch(f"{PTC}.setup") as mock_setup,
-        patch(f"{PTC}.ensure_thread", new_callable=AsyncMock),
+        patch(f"{PTC}.ensure_thread", new=AsyncMock(return_value=PriorThread())),
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}.begin_run", new_callable=AsyncMock) as begin_run,
         patch(f"{PTC}.wait_or_steer", new_callable=AsyncMock, return_value=(True, None)),

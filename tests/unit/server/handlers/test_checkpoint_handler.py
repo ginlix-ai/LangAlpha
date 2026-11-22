@@ -52,7 +52,7 @@ def _make_cp_tuple(
 def persisted_turns():
     """The thread's persisted turn_indexes; contiguous unless a test says not."""
     with patch(
-        "src.server.handlers.checkpoint_handler.queries_db.get_query_turn_indexes",
+        "src.server.services.history.branch.queries_db.get_query_turn_indexes",
         new=AsyncMock(return_value=list(range(10))),
     ) as read:
         yield read
@@ -73,7 +73,7 @@ async def _turns(checkpointer):
     from src.server.handlers.checkpoint_handler import get_thread_turns
 
     with patch(
-        "src.server.handlers.checkpoint_handler.get_checkpointer",
+        "src.server.services.history.branch.get_checkpointer",
         return_value=checkpointer,
     ):
         return await get_thread_turns("t1")
@@ -118,7 +118,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -149,7 +149,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -189,7 +189,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -232,7 +232,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -262,7 +262,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -293,7 +293,7 @@ class TestGetThreadTurns:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=mock_checkpointer,
             ),
             patch(
@@ -480,7 +480,7 @@ class TestResolveForkTurn:
 
         with (
             patch(
-                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                "src.server.services.history.branch.get_checkpointer",
                 return_value=_checkpointer(*_DEAD_TURN_THEN_RESUME),
             ),
             patch(

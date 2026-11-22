@@ -20,6 +20,7 @@ from langgraph.types import Command, interrupt
 
 from ptc_agent.agent.state import DeltaAgentState
 from src.server.handlers import checkpoint_handler
+from src.server.services.history import branch
 from src.server.utils import checkpoint_helpers
 from src.server.utils.checkpoint_helpers import (
     CheckpointBranchTipNotFound,
@@ -213,9 +214,9 @@ async def test_an_answered_turn_regenerates_with_its_answer(saver, monkeypatch):
     await graph.ainvoke(Command(resume={interrupt_id: "yes"}), _cfg(thread, run_id="run-1"))
     await _both_walks(saver, thread)  # the two walks find the same answered step
 
-    monkeypatch.setattr(checkpoint_handler, "get_checkpointer", lambda: saver)
+    monkeypatch.setattr(branch, "get_checkpointer", lambda: saver)
     monkeypatch.setattr(
-        checkpoint_handler.queries_db,
+        branch.queries_db,
         "get_query_turn_indexes",
         AsyncMock(return_value=[0, 1]),
     )
@@ -277,9 +278,9 @@ async def test_an_answered_step_that_asked_again_keeps_its_boundary(
     )
     assert (await _both_walks(saver, thread))[1:] == [gate_tip, ask_tip]
 
-    monkeypatch.setattr(checkpoint_handler, "get_checkpointer", lambda: saver)
+    monkeypatch.setattr(branch, "get_checkpointer", lambda: saver)
     monkeypatch.setattr(
-        checkpoint_handler.queries_db,
+        branch.queries_db,
         "get_query_turn_indexes",
         AsyncMock(return_value=[0, 1, 2]),
     )

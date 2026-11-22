@@ -39,6 +39,16 @@ export function insertOptimisticThread(queryClient: QueryClient, thread: Thread)
 }
 
 /**
+ * Read a workspace's thread lists, the recent threads and the palette's
+ * search answers again once the server holds a change to one of their rows.
+ */
+export function refreshThreadLists(queryClient: QueryClient, workspaceId: string): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.threads.recentAll() });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.threads.searchAll() });
+}
+
+/**
  * A thread left the viewer's view: deleted, archived, or made private by a
  * colleague who started it. Its rows leave every cached list at once, since
  * the sidebar's page-0 observers are cache-only and an invalidate would not

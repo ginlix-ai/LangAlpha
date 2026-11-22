@@ -289,21 +289,22 @@ describe('turn fold — the bubble reads the turn\'s liveness, not its own', () 
     expect(landed.container.querySelector('.turn-file-card')).not.toBeNull();
   });
 
-  /** The row is always mounted to reserve its height; `inert` is what hides it. */
-  const actionsHidden = (c: HTMLElement) => {
-    const copy = c.querySelector('button[title="chat.actions.copyMessage"]');
-    expect(copy).not.toBeNull();
-    return copy!.closest('[aria-hidden]')?.getAttribute('aria-hidden') === 'true';
+  /** A button within reach: drawn, in a row that is not hidden. */
+  const reachable = (c: HTMLElement, title: string) => {
+    const button = c.querySelector(`button[title="${title}"]`);
+    return !!button && button.closest('[aria-hidden]')?.getAttribute('aria-hidden') !== 'true';
   };
 
   it('keeps rating and regenerate out of reach until the task lands', () => {
     // Rating an answer a running task can still change asks about a reply that
     // does not exist yet, and regenerate would race the task.
     const running = renderList(withDeliverable(true), false, { onRegenerate: vi.fn(), onThumbUp: vi.fn() });
-    expect(actionsHidden(running.container)).toBe(true);
+    expect(reachable(running.container, 'chat.actions.goodResponse')).toBe(false);
+    expect(reachable(running.container, 'chat.actions.regenerate')).toBe(false);
 
     const landed = renderList(withDeliverable(false), false, { onRegenerate: vi.fn(), onThumbUp: vi.fn() });
-    expect(actionsHidden(landed.container)).toBe(false);
+    expect(reachable(landed.container, 'chat.actions.goodResponse')).toBe(true);
+    expect(reachable(landed.container, 'chat.actions.regenerate')).toBe(true);
   });
 });
 

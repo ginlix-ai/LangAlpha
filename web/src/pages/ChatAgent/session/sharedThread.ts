@@ -35,7 +35,10 @@ export interface BubbleSender {
  *  thumbs-down on it may ask for a human review. */
 export interface SharedBubble {
   sender: BubbleSender | undefined;
-  canFork: boolean;
+  /** Whether an edit, regenerate or retry may start from this turn. Each
+   *  rewrites this thread from there, which would drop a later turn another
+   *  member sent; a copy into a new chat rewrites nothing and needs no say. */
+  canRewrite: boolean;
   humanReview: boolean;
   /** Whether the viewer may answer a pause in this turn (a question, an
    *  approval): only its sender may, which the server holds to. */
@@ -100,7 +103,7 @@ export function sharedBubble(view: SharedThreadView, message: OwnedMessage, turn
   const sender = message.sender ?? view.me;
   return {
     sender: owner === 'none' ? undefined : { name: sender.name ?? view.names[sender.userId] ?? null, avatarUrl: view.avatars[sender.userId] ?? null, mine: owner === 'mine' },
-    canFork: turnIndex !== null && turnIndex > view.lastOthersTurn,
+    canRewrite: turnIndex !== null && turnIndex > view.lastOthersTurn,
     humanReview: turnIndex !== null && view.ownTurns.has(turnIndex),
     answersPause: turnIndex === null || view.ownTurns.has(turnIndex),
   };

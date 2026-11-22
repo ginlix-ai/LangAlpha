@@ -2209,6 +2209,10 @@
     "backToWorkflow": "Back to workflow",
     "backToMain": "Back to main",
     "scrollToTop": "Scroll to the top of the conversation",
+    "forkedFrom": "Forked from {{title}}",
+    "forkedFromDeleted": "Forked from a deleted chat",
+    "forkFailed": "Couldn't open a new chat from here. Try again.",
+    "forkTitle": "{{title}} (fork)",
     "reconnecting": "Reconnecting…",
     "offlineHistoryLoad": "You are offline, so this conversation could not be refreshed. It will catch up when your connection returns.",
     "jumpToLatest": {
@@ -2378,7 +2382,9 @@
       "reportIssue": "Report issue",
       "feedbackSubmitted": "Feedback submitted",
       "regenerate": "Regenerate response",
-      "retry": "Retry"
+      "retry": "Retry",
+      "forkFromHere": "Fork from here",
+      "editInNewChat": "Edit in new chat"
     },
     "turnFiles": {
       "open": "Open",

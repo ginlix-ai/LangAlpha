@@ -2250,6 +2250,10 @@
     "backToWorkflow": "返回工作流",
     "backToMain": "返回主对话",
     "scrollToTop": "滚动到对话顶部",
+    "forkedFrom": "分叉自 {{title}}",
+    "forkedFromDeleted": "分叉自已删除的对话",
+    "forkFailed": "没能从这里开启新对话，请重试。",
+    "forkTitle": "{{title}}（分叉）",
     "reconnecting": "重新连接中…",
     "offlineHistoryLoad": "网络已断开，无法刷新此对话。恢复连接后会自动同步。",
     "jumpToLatest": {
@@ -2418,7 +2422,9 @@
       "reportIssue": "反馈问题",
       "feedbackSubmitted": "已提交反馈",
       "regenerate": "重新生成回复",
-      "retry": "重试"
+      "retry": "重试",
+      "forkFromHere": "从这里分叉",
+      "editInNewChat": "在新对话中编辑"
     },
     "turnFiles": {
       "open": "打开",
