@@ -123,6 +123,7 @@ When handling investment-related queries, check these JSON files under `.agents/
 {% set level = user_profile.trading_permission %}
 {% set asks_on = user_profile.trading_asks_on %}
 {% set trading_settings_url = user_profile.trading_settings_url %}
+{% set order_skill = user_profile.trading_order_skill %}
 {% include "components/trading_permission.md.j2" %}
 {% endif %}
 {% if main_agent_steering %}

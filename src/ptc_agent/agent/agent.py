@@ -75,7 +75,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
     direct_tool_middleware,
     direct_tool_summary,
 )
-from ptc_agent.agent.middleware.order_governance import OrderLedger
+from ptc_agent.agent.middleware.order_governance import OrderLedger, places_order
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
     SubagentSwitchReader,
@@ -214,6 +214,7 @@ class PTCAgent:
         crawl_enabled: bool = False,
         scratchpad_enabled: bool = False,
         direct_tool_summary: str = "",
+        order_skill: bool = False,
         workspace: WorkspaceLayout | None = None,
         legacy_layout: bool = False,
         files_mounted: bool = False,
@@ -257,6 +258,7 @@ class PTCAgent:
             crawl_enabled=crawl_enabled,
             scratchpad_enabled=scratchpad_enabled,
             direct_tool_summary=direct_tool_summary,
+            order_skill=order_skill,
             files_mounted=files_mounted,
             history_files=history_files,
             chart_annotation_enabled=chart_annotation_enabled,
@@ -701,6 +703,20 @@ class PTCAgent:
         # any build that registers no tool for it to gate.
         if not gates.workflow_tool:
             skill_registry.pop("run-workflow", None)
+        # The order guide is read before a brokerage tool is used, and only the
+        # direct path binds one, so a build without an order tool has no use
+        # for it.
+        direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
+        if user_profile and user_profile.get("trading_permission"):
+            # The trading block names the skill once for every order tool, and
+            # moves with the user's switch, not with which tools this turn bound.
+            user_profile = {
+                **user_profile,
+                "trading_order_skill": "order-execution" in skill_registry,
+            }
+        if not any(places_order(t) for t in direct_tools):
+            skill_registry.pop("order-execution", None)
+        order_skill = "order-execution" in skill_registry
         # The chart-annotation skill no longer gates its tools, but its switch
         # still does: a user who turned it off, or the plugin that ships it,
         # gets neither the tools nor the prompt line naming them.
@@ -773,7 +789,6 @@ class PTCAgent:
 
         # Consent is re-read per call and an order is put to the user against
         # a durable attempt, which is what execution then reads.
-        direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
         main_only_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
 
         # Recursion gate: no subagents compiled, a <subagents> block that says
@@ -910,6 +925,7 @@ class PTCAgent:
             crawl_enabled=bool(crawl_tools),
             scratchpad_enabled=scratchpad is not None,
             direct_tool_summary=direct_tool_summary(direct_tools),
+            order_skill=order_skill,
             workspace=workspace_layout,
             legacy_layout=bool(project is not None and project.layout_origin == 3),
             chart_annotation_enabled=chart_annotation,
@@ -1232,7 +1248,7 @@ class PTCAgent:
         # added after the subagent snapshot: a wakeup comes back to the
         # thread, and a subagent has no thread of its own to come back to.
         if wakeups_on:
-            tools.append(build_schedule_wakeup_tool())
+            tools.append(build_schedule_wakeup_tool(watch_elsewhere=own_data))
 
         # Answering the user's comments on files, main agent only and added
         # after the subagent snapshot: comments are sent to a thread, and a
