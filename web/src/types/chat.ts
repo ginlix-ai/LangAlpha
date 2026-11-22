@@ -4,7 +4,6 @@ import type {
   Attachment,
   ToolCallData,
   ToolCallResultData,
-  TodoItem,
   OrderProposal,
   ProvenanceEnvelopeKey,
   ProvenanceEvent,
@@ -45,12 +44,6 @@ export interface TextSegment {
 export interface ToolCallSegment {
   type: 'tool_call';
   toolCallId: string;
-  order: number;
-}
-
-export interface TodoListSegment {
-  type: 'todo_list';
-  todoListId: string;
   order: number;
 }
 
@@ -211,7 +204,6 @@ export type ContentSegment =
   | ReasoningSegment
   | TextSegment
   | ToolCallSegment
-  | TodoListSegment
   | SubagentTaskSegment
   | NotificationSegment
   | UserQuestionSegment
@@ -329,14 +321,17 @@ export function countDedupedSources(
   return seen.size;
 }
 
-export interface TodoListProcess {
-  todos: TodoItem[];
-  total: number;
-  completed: number;
-  in_progress: number;
-  pending: number;
+/** A step of the agent's plan (`UpdatePlan`). */
+export interface PlanStep {
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** One plan update on its bubble. `order` is its place among the turn's
+ *  events, which a steering split cuts by. */
+export interface PlanSnapshot {
   order: number;
-  baseTodoListId: string;
+  steps: PlanStep[];
 }
 
 export interface PendingToolCallChunk {
@@ -627,7 +622,8 @@ export type AssistantMessage = {
   reasoningProcesses: Record<string, ReasoningProcess>;
   toolCallProcesses: Record<string, ToolCallProcess>;
   provenanceRecords?: Record<string, ProvenanceRecord>;
-  todoListProcesses?: Record<string, TodoListProcess>;
+  /** Each plan update the bubble carried, newest last. */
+  planSnapshots?: PlanSnapshot[];
   subagentTasks?: Record<string, SubagentTaskRecord>;
   pendingToolCallChunks?: Record<string, PendingToolCallChunk>;
   // HITL interrupt state

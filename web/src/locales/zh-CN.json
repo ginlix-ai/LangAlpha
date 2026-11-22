@@ -226,10 +226,10 @@
         "description": "在你的云端电脑上为 Agent 提供一个 Chrome，用来处理要点击或输入后才显示所需内容的网页。你可以在文件面板的“浏览器”标签页实时观看，也可以接管，亲自操作页面。",
         "tradeoffs": "浏览器和你的其他任务共用这台电脑的内存和 CPU，闲置 20 分钟后会自动关闭。它不登录任何账号，也比直接读取网页慢。你自己连接的电脑上没有浏览器。"
       },
-      "todo_write": {
-        "label": "任务清单（旧版）",
-        "description": "为 Agent 提供 TodoWrite 工具，处理较长的任务时列出步骤清单，并在对话中显示为实时更新的待办列表。",
-        "tradeoffs": "每次更新清单都要多一次工具调用，较长的一轮会因此多花一点时间和费用。这是旧版功能，后续版本可能会移除。"
+      "agent_plan": {
+        "label": "显示 Agent 的计划",
+        "description": "处理较长的任务时，Agent 会在对话中它的工作上方列出计划，并标出正在进行哪一步。",
+        "tradeoffs": "计划随 Agent 本来就要做的调用一起更新，几乎不增加时间和费用。简单的问题不会显示计划。"
       },
       "scratchpad": {
         "label": "草稿区和工作笔记",
@@ -282,6 +282,10 @@
     "streamingModeDesc": "文字生成后即时显示，或每次显示一个完整段落。",
     "streamingModeToken": "连续显示",
     "streamingModeParagraph": "按段落",
+    "composerTray": "进行中的工作",
+    "composerTrayDesc": "Agent 工作时，计划、任务和唤醒显示的位置：在输入框上方显示为标签，或在输入框内显示为一栏。",
+    "composerTrayAbove": "上方",
+    "composerTrayInside": "内部",
     "toolCallLayout": "工具调用",
     "toolCallLayoutDesc": "每个步骤显示为一行，或试用新的状态行：只用一行显示当前步骤。",
     "toolCallLayoutRows": "逐行",
@@ -2469,11 +2473,13 @@
     "backgroundTasksRunning": "后台任务仍在运行",
     "taskReportBackPending": "等待子代理结果汇报",
     "tray": {
-      "tasks_one": "{{count}} 个任务",
-      "tasks_other": "{{count}} 个任务",
-      "tasksRunning_one": "{{count}} 个任务 · {{running}} 个运行中",
-      "tasksRunning_other": "{{count}} 个任务 · {{running}} 个运行中",
-      "tasksHeading": "来自此对话",
+      "tasks_one": "{{count}} 个子 Agent",
+      "tasks_other": "{{count}} 个子 Agent",
+      "tasksRunning_one": "{{count}} 个子 Agent · {{running}} 个运行中",
+      "tasksRunning_other": "{{count}} 个子 Agent · {{running}} 个运行中",
+      "tasksHeading": "此对话的子 Agent",
+      "commands_one": "{{count}} 个命令",
+      "commands_other": "{{count}} 个命令",
       "commandsHeading": "后台运行中",
       "show": "显示此对话的工作"
     },
@@ -2632,6 +2638,7 @@
       "alwaysApproveHint": "这次及以后交给分析师的任务都不再询问，可在设置中关闭。"
     },
     "marketWatch": {
+      "live": "实时",
       "watching": "正在监控 {{symbols}}",
       "chipTitle": "正在为 Agent 监控的股票推送实时价格",
       "chipTitleUpdated": "监控股票的实时价格 — 更新于 {{time}}",
@@ -2658,12 +2665,18 @@
       "generic": "价格提醒"
     },
     "wakeups": {
+      "chipShort_one": "{{time}}",
+      "chipShort_other": "{{count}} · {{time}}",
       "chip_one": "1 个唤醒 · {{time}}",
       "chip_other": "{{count}} 个唤醒 · 下次 {{time}}",
       "chipTitle": "Agent 在此对话中设置的唤醒，点开即可取消。",
       "panelTitle": "唤醒",
       "panelEmpty": "此对话暂无唤醒。",
       "cancel": "取消",
+      "distance": "最新成交 {{price}} · 还差 {{away}}",
+      "distanceToTarget": "触发价 {{target}} · 最新成交 {{price}} · 还差 {{away}}",
+      "distanceReached": "最新成交 {{price}} · 已到触发价",
+      "away": "还差 {{away}}",
       "cancelAll": "全部取消",
       "cancelling": "正在取消…",
       "cancelLabel": "取消唤醒：{{label}}",
@@ -3019,6 +3032,30 @@
         "needs_bigger_computer_plan": "Claude Code 只在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格更小。请更改它的规格或升级 LangAlpha 套餐，或在设置的“模型接入”中改为在你自己的电脑上运行 Claude Code。",
         "needs_bigger_computer_plan_home": "Claude Code 只在中型及以上规格的云端计算机上运行，而 Home 所在的计算机规格更小。请更改它的规格或升级 LangAlpha 套餐，或在设置的“模型接入”中改为在你自己的电脑上运行 Claude Code。"
       }
+    },
+    "status": {
+      "openPanel": "打开状态",
+      "openPanelMore": "打开状态 · 另有 {{count}} 项",
+      "openInPanel": "在状态中查看",
+      "needsYou": "待你处理",
+      "awaitingAnswer": "Agent 正在等你回答",
+      "workingNow": "进行中",
+      "done": "已完成",
+      "subagent": "子 Agent",
+      "analyst": "分析师",
+      "analystIn": "{{workspace}} 的分析师",
+      "subagentOfType": "{{type}} 子 Agent"
+    },
+    "plan": {
+      "label": "计划",
+      "heading": "计划 · {{progress}}",
+      "headingRunning": "第 {{current}} 步，共 {{total}} 步",
+      "headingSettled": "已完成 {{done}}/{{total}} 步",
+      "notDone": "未完成",
+      "waiting": "等待中",
+      "stepDone": "已完成",
+      "stepRunning": "进行中",
+      "stepPending": "未开始"
     }
   },
   "context": {

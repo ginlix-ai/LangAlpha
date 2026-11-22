@@ -19,7 +19,6 @@ import { ZERO_USAGE } from '../../utils/tokenUsage';
 import { REPORT_BACK_IDLE_MAX_REARMS } from '../../hooks/useReportBackWatch';
 import { createAssistantMessage, appendMessage, updateMessage } from '../../hooks/utils/messageHelpers';
 import { turnOf } from '../../components/messageList/turnProjection';
-import { finalizeTodoListProcessesInMessages } from '../../hooks/utils/messageFinalizers';
 import { stripHistoryInterruptCards } from '../interrupts/buckets';
 import { checkForNewBuild } from '@/lib/staleBuild';
 import { isOnline, waitForOnline } from '@/lib/network';
@@ -118,7 +117,6 @@ export interface RecoveryDeps {
     wasInterruptedRef: { current: boolean },
   ) => StreamEventProcessor;
   buildStreamRefs: (o?: {
-    isNewConversation?: boolean;
     isReconnect?: boolean;
     withUnresolvedInterrupt?: boolean;
   }) => StreamProcessorRefs;
@@ -129,7 +127,6 @@ export interface RecoveryDeps {
   /** `keepQueued` leaves out steers still queued in a run that may go on. */
   markTranscriptPersisted: (opts?: { keepQueued?: boolean }) => void;
   clearModelStatus: () => void;
-  finalizePendingTodos: (() => void) | null;
   /** Re-read the machine rows after a turn. */
   refreshComputerAfterTurn: () => void;
   /** Re-read the workspace row for its folder; null with no workspace. */
@@ -708,7 +705,7 @@ export const reconnectToStream = async (
       !rt.wasStoppedRef.current &&
       (!abortController.signal.aborted || idleClosed)
     ) {
-      cleanupAfterStreamEnd(rt, deps, ownBubbles());
+      cleanupAfterStreamEnd(rt, deps);
     } else if (stillActive && !dropped && wasInterruptedRef.current) {
       // A stream that ends on a question or an approval card skips the
       // cleanup, and the server sends no wake for an interrupted summary. The
@@ -1006,7 +1003,7 @@ export const attemptReconnectAfterDisconnect = async (
 
   // Settle the bubble we gave up on, and the ones the reconnects that dropped
   // too were writing. Nothing else does: cleanupAfterStreamEnd resets the
-  // *session* (isLoading, subagents, todos) but never touches the
+  // *session* (isLoading, subagents) but never touches the
   // message, and the other stream-end paths each clear isStreaming themselves
   // on their way out. Left set, the bubble keeps its loading animation forever
   // while the composer has already flipped back to send — visibly alive, inert,
@@ -1021,7 +1018,7 @@ export const attemptReconnectAfterDisconnect = async (
   // showed, so a later wake for it can still attach.
   if (!rendered && rt.currentRunIdRef.current === latchedRunId) rt.currentRunIdRef.current = null;
 
-  cleanupAfterStreamEnd(rt, deps, owned);
+  cleanupAfterStreamEnd(rt, deps);
   if (unheard === 'failed') return;
   // The reload rebuilds the turn from the server, from its checkpoint once the
   // run is over and from the run's stream while it is not, so the bubbles on
@@ -1036,14 +1033,10 @@ export const attemptReconnectAfterDisconnect = async (
 
 /**
  * Shared cleanup logic for all stream-end paths (send, reconnect, HITL resume).
- * Resets loading/streaming state, finalizes subagents, and auto-completes todos
- * on the bubbles the stream wrote to: a reconnect writes to several.
+ * Resets the session's loading and streaming state and finalizes subagents;
+ * it never touches the messages.
  */
-export const cleanupAfterStreamEnd = (
-  rt: RecoveryRuntime,
-  deps: RecoveryDeps,
-  bubbles: string | Iterable<string>,
-) => {
+export const cleanupAfterStreamEnd = (rt: RecoveryRuntime, deps: RecoveryDeps) => {
   rt.setIsLoading(false);
   rt.clearTurnStatus();
   rt.setIsCompacting(false);
@@ -1080,11 +1073,6 @@ export const cleanupAfterStreamEnd = (
   // permanently paint still-running tail tasks as completed.
   const hasOpenStreams = deps.muxOpenTaskIds().size > 0;
   rt.setHasActiveSubagents(hasOpenStreams);
-
-  // Finalize pending todos as stale
-  if (deps.finalizePendingTodos) deps.finalizePendingTodos();
-  const ids = typeof bubbles === 'string' ? [bubbles] : [...bubbles];
-  rt.setMessages((prev) => ids.reduce((next, id) => finalizeTodoListProcessesInMessages(next, id), prev));
 
   // The server measures the machine's disk when a turn ends, onto the
   // computer row; nothing else re-reads that row while the page is open.

@@ -29,7 +29,6 @@ import {
   handleHistoryReasoningContent,
   handleHistoryTextContent,
   handleHistoryToolCalls,
-  handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
   handleHistorySteeringDelivered,
   handleHistoryTaskArtifactStatus,
@@ -50,6 +49,7 @@ import { applyHistoryToolResult, markSteeredResumeCards, settleResumedInterrupts
 import { readStreamFailure } from '../stream/streamFailure';
 import { readStop } from '../stream/stopBubble';
 import { readTurnRefusal } from '@/lib/turnRefusal';
+import { applyPlanSnapshot, readPlanSteps } from '../planUpdate';
 
 /** A bubble the replay opened for a turn that nothing has written to. */
 function isEmptyStub(m: MessageRecord): boolean {
@@ -98,13 +98,7 @@ export async function loadConversationHistory(
   // may have started after reading the one this replay names.
   const liveRunEpoch = rt.latestRunEpochRef.current;
 
-  // The todo card shows only the last state, so it is written once, with the
-  // transcript and the caller's settle step. Written per event, it showed the
-  // replay's in-progress todos over the loading transcript, then shrank when
-  // a run that was over got its leftovers marked stale.
-  let lastTodoCard: Record<string, unknown> | null = null;
   const reveal = (ok: boolean) => {
-    if (lastTodoCard) rt.updateTodoListCard?.(lastTodoCard);
     deps.beforeReveal?.(ok);
     rt.setIsLoadingHistory(false);
     rt.historyLoadingRef.current = false;
@@ -555,7 +549,7 @@ export async function loadConversationHistory(
         return;
       }
 
-      // Handle artifact events (e.g., todo_update)
+      // Handle artifact events (e.g., the plan)
       // In history replay, artifacts DO have turn_index, so we can use it directly
       //
       // NOTE: `chart_layer` artifacts are intentionally NOT replayed here
@@ -566,18 +560,8 @@ export async function loadConversationHistory(
       // tool result's `chart_layers`.
       if (eventType === 'artifact') {
         const artifactType = event.artifact_type;
-        if (artifactType === 'todo_update') {
-          const payload = event.payload || {};
-
-          // Floating todo card: last event wins, written at the reveal
-          lastTodoCard = {
-            todos: Array.isArray(payload.todos) ? payload.todos : [],
-            total: payload.total || 0,
-            completed: payload.completed || 0,
-            in_progress: payload.in_progress || 0,
-            pending: payload.pending || 0,
-          };
-
+        const steps = readPlanSteps(artifactType, event.payload);
+        if (steps) {
           // Artifacts in history replay have turn_index - use it!
           if (hasPairIndex) {
             const pairIndex = event.turn_index!;
@@ -593,15 +577,7 @@ export async function loadConversationHistory(
               return;
             }
 
-            handleHistoryTodoUpdate({
-              assistantMessageId: currentAssistantMessageId,
-              artifactType: artifactType as string,
-              artifactId: event.artifact_id as string,
-              payload,
-              pairState: pairState,
-              setMessages: setMessagesForHandlers,
-              eventId: event._eventId as number | undefined,
-            });
+            applyPlanSnapshot(setMessagesForHandlers, currentAssistantMessageId, steps, eventOrder(event, () => ++pairState.contentOrderCounter));
           } else {
             // Fallback: artifacts without turn_index (shouldn't happen in history, but handle gracefully)
             console.warn('[History] Artifact without turn_index, using active pair fallback');
@@ -619,15 +595,8 @@ export async function loadConversationHistory(
             }
 
             if (targetAssistantMessageId && targetPairState) {
-              handleHistoryTodoUpdate({
-                assistantMessageId: targetAssistantMessageId,
-                artifactType: artifactType as string,
-                artifactId: event.artifact_id as string,
-                payload,
-                pairState: targetPairState,
-                setMessages: setMessagesForHandlers,
-                eventId: event._eventId as number | undefined,
-              });
+              const pair = targetPairState;
+              applyPlanSnapshot(setMessagesForHandlers, targetAssistantMessageId, steps, eventOrder(event, () => ++pair.contentOrderCounter));
             }
           }
         }

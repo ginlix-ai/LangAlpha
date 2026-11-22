@@ -16,7 +16,6 @@ export {
   handleHistoryToolCallResult,
   handleHistorySteeringDelivered,
   handleHistoryTaskArtifactStatus,
-  handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
 } from '../../session/history/historyHandlers';
 export type { PairState } from '../../session/types';

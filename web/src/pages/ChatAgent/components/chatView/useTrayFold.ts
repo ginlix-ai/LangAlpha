@@ -4,20 +4,18 @@
  * their own because both ends are drawn during them: the chips' shapes run
  * between the tray and the dock in the composer's toolbar.
  */
-import { useCallback, useEffect, useEffectEvent, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useReducedMotion } from '@/lib/framer';
-import { trayChipCount, type TrayContents } from './useTrayContents';
+import { LIQUID_FALLBACK_MS } from './trayLiquid';
+import type { TrayContents } from './useTrayContents';
 
 export type TrayFoldPhase = 'open' | 'folding' | 'folded' | 'unfolding';
 
-/** Seconds each shape of a liquid run takes, and between one shape and the next. */
-export const SHAPE_RUN = 0.5;
-export const SHAPE_STAGGER = 0.045;
+/** The phases a liquid run draws. */
+export type LiquidPhase = Extract<TrayFoldPhase, 'folding' | 'unfolding'>;
 
-/** One liquid run of `shapes` shapes, the last one's stagger included. */
-export function liquidRunMs(shapes: number): number {
-  return (SHAPE_RUN + SHAPE_STAGGER * Math.max(0, shapes - 1)) * 1000;
-}
+/** Where each run lands. */
+const END: Readonly<Record<LiquidPhase, TrayFoldPhase>> = { folding: 'folded', unfolding: 'open' };
 
 /** How far the reader scrolls before a tray poured out of its dock folds again. */
 const PEEK_SCROLL_PX = 48;
@@ -47,6 +45,8 @@ export interface TrayFold {
   dockRef: RefObject<HTMLButtonElement | null>;
   /** Pours the folded tray out where the reader is, until they scroll back up. */
   peek: () => void;
+  /** The liquid's last shape landed: ends the run of `ran`, if it is still the one going. */
+  settle: (ran: LiquidPhase) => void;
 }
 
 /** What a fold takes out of the transcript's bottom padding: the tray and the
@@ -90,14 +90,16 @@ export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked
   // their way between two places and can only arrive at one of them.
   if (folded && phase === 'open') setPhase(animate ? 'folding' : 'folded');
   if (!folded && phase === 'folded') setPhase(animate ? 'unfolding' : 'open');
-  // Timed by the chips the run starts with, which are the shapes the tray
-  // measures for it: a chip that comes or goes mid-run is not in it.
-  const runMs = useEffectEvent(() => liquidRunMs(trayChipCount(contents)));
+  // A run ends when its liquid lands (`settle`), which only the liquid can
+  // time: it draws one shape per thing in the row it measured.
+  const settle = useCallback((ran: LiquidPhase) => {
+    setPhase((current) => (current === ran ? END[ran] : current));
+  }, []);
   useEffect(() => {
     if (phase !== 'folding' && phase !== 'unfolding') return;
-    const timer = setTimeout(() => setPhase(phase === 'folding' ? 'folded' : 'open'), runMs());
+    const timer = setTimeout(() => settle(phase), LIQUID_FALLBACK_MS);
     return () => clearTimeout(timer);
-  }, [phase]);
+  }, [phase, settle]);
 
   const trayRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -146,5 +148,5 @@ export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked
     refocusRef.current = false;
     trayRef.current?.querySelector<HTMLElement>('button')?.focus();
   }, [phase]);
-  return { phase, trayRef, dockRef, peek };
+  return { phase, trayRef, dockRef, peek, settle };
 }

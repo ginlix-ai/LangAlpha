@@ -87,7 +87,6 @@ export function createAssistantMessage(id: string, turnIndex: number | undefined
     contentSegments: [],
     reasoningProcesses: {},
     toolCallProcesses: {},
-    todoListProcesses: {},
     turnIndex,
   };
 }

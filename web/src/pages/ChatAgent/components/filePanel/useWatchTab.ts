@@ -1,7 +1,4 @@
 import { useEffect, useEffectEvent, useRef } from 'react';
-import type { WakeupList } from '@/types/wakeups';
-import type { MarketWatchState } from '../../session/marketWatchEvents';
-import { pendingWakeups } from '../wakeupLabels';
 import type { FileTabsApi } from './useFileTabs';
 
 /**
@@ -15,13 +12,7 @@ import type { FileTabsApi } from './useFileTabs';
  * a tab the reader may be looking at, and a watch resumed a moment later would
  * bring it back unfocused, as though it were new.
  */
-export function useWatchTab(
-  tabs: FileTabsApi,
-  marketWatch: MarketWatchState | null | undefined,
-  wakeups: WakeupList | null | undefined,
-): void {
-  // A pending wakeup fires server-side between turns, so it counts too.
-  const watching = (marketWatch?.symbols.length ?? 0) > 0 || pendingWakeups(wakeups?.items).length > 0;
+export function useWatchTab(tabs: FileTabsApi, watching: boolean): void {
   const wasWatching = useRef(watching);
   const openStatusUnfocused = useEffectEvent(() => tabs.openStatus({ focus: false }));
   useEffect(() => {

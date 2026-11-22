@@ -100,8 +100,8 @@ import {
   cleanupAfterStreamEnd as cleanupAfterStreamEndImpl,
   type RecoveryDeps, type ReconnectOptions, type RetryOptions,
 } from '../session/stream/lifecycle';
-import { collectRenderedInterruptIds, finalizeTodoListProcessesInMessages } from './utils/messageFinalizers';
-export { finalizeTodoListProcessesInMessages, mapToolCallIdToAgentId } from './utils/messageFinalizers';
+import { collectRenderedInterruptIds } from './utils/messageFinalizers';
+export { mapToolCallIdToAgentId } from './utils/messageFinalizers';
 
 /** A send the server started no run of. Its automatic resends carry it, so
  * the one that ends the chain can mark it never kept and give its turn back.
@@ -133,9 +133,7 @@ interface Resend {
 
 /** What a host hands the chat beyond the workspace and thread it shows. */
 export interface ChatMessagesOptions {
-  updateTodoListCard?: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null;
   updateSubagentCard?: CardUpdater | null;
-  finalizePendingTodos?: (() => void) | null;
   onFileArtifact?: ((event: SSEEvent) => void) | null;
   onPreviewUrl?: ((data: PreviewData) => void) | null;
   onBrowserUse?: ((use: BrowserUse) => void) | null;
@@ -153,9 +151,7 @@ export function useChatMessages(
   workspaceId: string,
   initialThreadId: string | null = null,
   {
-    updateTodoListCard = null,
     updateSubagentCard = null,
-    finalizePendingTodos = null,
     onFileArtifact = null,
     onPreviewUrl = null,
     onBrowserUse = null,
@@ -658,9 +654,6 @@ export function useChatMessages(
     [queryClient, threadIdRef],
   );
 
-  // Track if this is a new conversation (for todo list card management)
-  const isNewConversationRef = useRef(false);
-
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
   // v4 idempotent delivery: one request_key per logical send, reused across
@@ -713,7 +706,6 @@ export function useChatMessages(
    * carries unresolvedHistoryInterruptRef (withUnresolvedInterrupt).
    */
   const buildStreamRefs = (o: {
-    isNewConversation?: boolean;
     isReconnect?: boolean;
     withUnresolvedInterrupt?: boolean;
   } = {}): StreamProcessorRefs => {
@@ -722,8 +714,6 @@ export function useChatMessages(
       currentReasoningIdRef,
       currentToolCallIdRef,
       steeringAtOrderRef,
-      updateTodoListCard: updateTodoListCard || undefined,
-      isNewConversation: o.isNewConversation ?? false,
       subagentStateRefs: subagentStateRefsRef.current,
       updateSubagentCard: updateSubagentCard || (() => {}),
       ...(o.isReconnect ? { isReconnect: true } : {}),
@@ -761,7 +751,6 @@ export function useChatMessages(
     threadId,
     t,
     updateSubagentCard,
-    updateTodoListCard,
     onWorkspaceCreated,
     streamingThreadIdRef,
     mainStreamAbortRef,
@@ -1415,11 +1404,10 @@ export function useChatMessages(
         setIsShared(status.is_shared);
       }
 
-      // A run that is over leaves its todos as its last write said: mark the
-      // unfinished ones stale in the commit that reveals the transcript, since
-      // a step later the drawer first showed a task in progress, then shrank.
-      // The tests are the branches' below: the run settles here only when no
-      // reconnect, paused interrupt, running subagent or re-fire follows. No
+      // A run that is over settles here, in the commit that reveals the
+      // transcript, only when no reconnect, paused interrupt, running subagent
+      // or re-fire follows (the branches below). Its plan is left as its last
+      // write said; where an unfinished step stands is the view's to say. No
       // blanket completion of inline subagent cards: each is born with its real
       // status from the replayed task-artifact stamp, and one would clobber a
       // legitimately 'cancelled' card.
@@ -1484,11 +1472,6 @@ export function useChatMessages(
             return [...prev.slice(0, at), ...rows, ...prev.slice(at)];
           });
         }
-        if (onlineRetryEpochRef.current !== onlineEpochAtStart && (!ok || status.status === 'error')) return;
-        if (status.can_reconnect || historyHasUnresolvedInterruptRef.current) return;
-        if ((status.active_tasks || []).some((t) => !isSettledTask(t))) return;
-        if (finalizePendingTodos) finalizePendingTodos();
-        setMessages((prev) => finalizeTodoListProcessesInMessages(prev));
       };
       // A steer a reload kept was stamped from this view's count when it was
       // sent, which may have been behind. The replay names no run for a live
@@ -1760,8 +1743,7 @@ export function useChatMessages(
     refreshClaudeCodePlan,
   });
 
-  const cleanupAfterStreamEnd = (assistantMessageId: string) =>
-    cleanupAfterStreamEndImpl(runtime, recoveryDeps, assistantMessageId);
+  const cleanupAfterStreamEnd = () => cleanupAfterStreamEndImpl(runtime, recoveryDeps);
 
   /**
    * Synthesizes terminal events for a stopped turn and dispatches them through
@@ -2523,16 +2505,6 @@ export function useChatMessages(
     const takeKey = (tid: string) => requestKeys.take(sendFingerprint(tid, message, commentSend), { key: resend.requestKey, comments: artifactComments });
     const keyNow = !threadId || threadId === '__default__' ? null : takeKey(threadId);
 
-    // Check if this is a new conversation
-    // Only consider it a new conversation if:
-    // 1. There are no messages at all, OR
-    // 2. We're starting a new thread (threadId is '__default__')
-    // This determines if we should overwrite the existing todo list card
-    // Note: We don't consider it a new conversation just because all messages are from history
-    // - the user might continue the conversation, and we want to keep the todo list card
-    const isNewConversation = messages.length === 0 || threadId === '__default__';
-    isNewConversationRef.current = isNewConversation;
-
     // Track model used in this send
     if (model) {
       setThreadModels(prev => prev.includes(model) ? prev : [...prev, model]);
@@ -2638,7 +2610,7 @@ export function useChatMessages(
     if (hiddenOpener) holdHiddenOpenerRetry(assistantMessageId, additionalContext);
     try {
       // Prepare refs for event handlers — use persistent subagent state
-      const refs = buildStreamRefs({ isNewConversation: isNewConversationRef.current });
+      const refs = buildStreamRefs();
 
       // Create the event processor using the shared factory
       const processStreamFrame = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
@@ -2809,7 +2781,7 @@ export function useChatMessages(
               updateMessage(prev, finalId, (msg) => finalizeAssistantMessage(msg, wasInterruptedRef.current ? 'paused' : 'completed'))
             );
 
-            cleanupAfterStreamEnd(finalId);
+            cleanupAfterStreamEnd();
           }
         }
       };
@@ -3094,8 +3066,7 @@ export function useChatMessages(
         mainStreamAbortRef.current = null;
       }
       if (!wasDisconnected && !wasInterruptedRef.current && !wasStoppedRef.current) {
-        const finalId = currentMessageRef.current || assistantMessageId;
-        cleanupAfterStreamEnd(finalId);
+        cleanupAfterStreamEnd();
       }
       // NOTE: an `assistant-hitl-*` bubble that finalizes empty (content landed
       // elsewhere, or the turn re-interrupted and the re-raise was deduped) must
@@ -3533,7 +3504,7 @@ export function useChatMessages(
           // different moment than the branch it is standing in.
           updateMessage(prev, finalId, (msg) => finalizeAssistantMessage(msg, 'completed'))
         );
-        cleanupAfterStreamEnd(finalId);
+        cleanupAfterStreamEnd();
       }
     }
   });
@@ -3844,7 +3815,6 @@ export function useChatMessages(
     muxOpenTaskIds,
     markTranscriptPersisted,
     clearModelStatus,
-    finalizePendingTodos,
     refreshComputerAfterTurn: () => refreshComputersAfterTurn(queryClient),
     refreshWorkspaceFolder,
     reportBackWatch,

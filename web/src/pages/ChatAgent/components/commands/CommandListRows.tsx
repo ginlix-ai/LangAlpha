@@ -1,10 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { PopoverClose } from '@/components/ui/popover';
 import { useNow } from '@/hooks/useNow';
 import { cn } from '@/lib/utils';
 import type { CommandRun } from '@/types/commands';
 import { COMMAND_TICK_MS } from '../../hooks/useCommands';
-import { TRAY_ROW } from '../chatView/trayRow';
+import { RowClose, TRAY_ROW } from '../chatView/statusRows';
 import { RunGlyph } from '../messageList/runCard';
 import { CommandStopButton } from './CommandState';
 import { commandName, commandRunningFor } from './commandWords';
@@ -39,19 +38,19 @@ export function CommandListRows({ rows, onOpen }: { rows: readonly CommandRun[];
         return (
           <li key={row.command_id} className="flex min-w-0 items-center gap-1.5 pr-1.5">
             {toolCallId ? (
-              <PopoverClose asChild>
+              <RowClose>
                 <button type="button" className={cn(TRAY_ROW, 'min-w-0 flex-1')} onClick={() => onOpen(toolCallId)}>
                   {body}
                 </button>
-              </PopoverClose>
+              </RowClose>
             ) : (
-              <div className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2">{body}</div>
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5">{body}</div>
             )}
             <CommandStopButton command={row} />
           </li>
         );
       })}
-      <li className="px-2.5 pt-1 pb-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+      <li className="px-2 pt-1 pb-1 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {t('chat.commands.pickedUp', { count: rows.length })}
       </li>
     </>

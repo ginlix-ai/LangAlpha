@@ -15,7 +15,7 @@ import { readHomeFallback } from '../stream/turnPlacement';
 import type { ReportSource } from '@/types/api';
 import { isDeliveredNotice, isDeliveredSteer, type DeliveredSteer } from '@/types/sse';
 import type { SubagentTaskRecord, TextSegment, TurnStop } from '@/types/chat';
-import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
+import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, HtmlWidgetData } from '../../hooks/utils/types';
 import type { PairState } from '../types';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { wakeTurnOpener } from '../wakeupEvents';
@@ -910,77 +910,6 @@ export function handleHistoryTaskArtifactStatus({ toolCallId, taskId, status, se
       return msg;
     })
   );
-
-  return true;
-}
-
-/** Handles artifact events with artifact_type "todo_update" in history replay. */
-export function handleHistoryTodoUpdate({ assistantMessageId, artifactType, artifactId, payload, pairState, setMessages, eventId }: {
-  assistantMessageId: string;
-  artifactType: string;
-  artifactId: string;
-  payload: TodoPayload | null;
-  pairState: PairState;
-  setMessages: SetMessages;
-  eventId?: number | null;
-}): boolean {
-  // Only handle todo_update artifacts
-  if (artifactType !== 'todo_update' || !payload) {
-    return false;
-  }
-
-  const { total, completed, in_progress, pending } = payload;
-  const todos = Array.isArray(payload.todos) ? payload.todos : [];
-
-  // Use artifactId as the base todoListId to track updates to the same logical todo list
-  // But create a unique segmentId for each event to preserve chronological order
-  const baseTodoListId = artifactId || `history-todo-list-base-${Date.now()}`;
-  // Create a unique segment ID that includes timestamp to ensure chronological ordering
-  const segmentId = `${baseTodoListId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-  // Use backend event ID when available for consistent ordering across live/reconnect/replay
-  const currentOrder = eventId != null ? eventId : ++pairState.contentOrderCounter;
-
-  setMessages((prev: MessageRecord[]) => {
-    const updated = prev.map((msg: MessageRecord) => {
-      if (msg.id !== assistantMessageId) return msg;
-
-      const todoListProcesses = { ...((msg.todoListProcesses as Record<string, unknown>) || {}) };
-      const contentSegments = [...((msg.contentSegments as Record<string, unknown>[]) || [])];
-
-      // Check if this segment already exists (prevent duplicates from React batching)
-      const segmentExists = contentSegments.some((s: Record<string, unknown>) => s.todoListId === segmentId);
-      if (segmentExists) return msg;
-
-      // Add new segment at the current chronological position
-      contentSegments.push({
-        type: 'todo_list',
-        todoListId: segmentId, // Use unique segmentId for this specific event
-        order: currentOrder, // Use the captured order value
-      });
-
-      // Store the todo list data with the segmentId
-      // If this is an update to an existing logical todo list (same artifactId),
-      // we still create a new segment but can reference the base ID for data updates
-      todoListProcesses[segmentId] = {
-        todos,
-        total: total || 0,
-        completed: completed || 0,
-        in_progress: in_progress || 0,
-        pending: pending || 0,
-        order: currentOrder,
-        baseTodoListId: baseTodoListId, // Keep reference to base ID for potential future use
-      };
-
-      return {
-        ...msg,
-        contentSegments,
-        todoListProcesses,
-      };
-    });
-
-    return updated;
-  });
 
   return true;
 }

@@ -39,7 +39,7 @@ import { BUSY_REPLY_KEYS, isBusyCode } from '../../hooks/utils/forkRefusal';
 import {
   handleReasoningSignal, handleReasoningContent, handleTextContent,
   handleToolCalls, handleToolCallResult, handleToolCallChunks,
-  handleTodoUpdate, handleHtmlWidget, handleProvenance, handlePlanBilled, handleCliQueue,
+  handleHtmlWidget, handleProvenance, handlePlanBilled, handleCliQueue,
 } from './mainEventHandlers';
 import { eventOrder } from '../eventOrder';
 import {
@@ -63,6 +63,7 @@ import { dispatchResultFields } from '../../utils/dispatchResult';
 import { applySideChannelArtifact } from './sideChannelArtifact';
 import { pinCapturedImages } from './capturedImages';
 import { noteAccountSuspended } from '@/lib/accountSuspension';
+import { applyPlanSnapshot, readPlanSteps } from '../planUpdate';
 
 type RefreshOnResult = 'refreshMarketWatch' | 'refreshWakeups' | 'refreshCommands';
 
@@ -474,9 +475,6 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           const keptToolCallIds = new Set(
             keptSegments.filter((s): s is import('@/types/chat').ToolCallSegment => s.type === 'tool_call').map((s) => s.toolCallId)
           );
-          const keptTodoListIds = new Set(
-            keptSegments.filter((s): s is import('@/types/chat').TodoListSegment => s.type === 'todo_list').map((s) => s.todoListId)
-          );
           const keptSubagentIds = new Set(
             keptSegments.filter((s): s is import('@/types/chat').SubagentTaskSegment => s.type === 'subagent_task').map((s) => s.subagentId)
           );
@@ -506,7 +504,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
             content: keptContent,
             reasoningProcesses: keptReasoning,
             toolCallProcesses: keptToolCalls,
-            todoListProcesses: filterObj(aMsg.todoListProcesses, keptTodoListIds),
+            planSnapshots: aMsg.planSnapshots?.filter((snapshot) => snapshot.order <= (effectiveSteeringAtOrder as number)),
             subagentTasks: filterObj(aMsg.subagentTasks, keptSubagentIds),
             isStreaming: false,
           };
@@ -781,7 +779,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         } else if (eventType === 'artifact') {
           // Task-lane artifacts don't render in the main chat view, but the
           // ones about the workspace apply from either lane. Everything else
-          // (todo_update, widgets) is task-internal until the detail view
+          // (the plan, widgets) is task-internal until the detail view
           // renders them.
           applySideChannelArtifact(event, rt, refs);
         } else if (eventType === 'workflow_lifecycle') {
@@ -997,16 +995,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     } else if (eventType === 'artifact') {
       if (applySideChannelArtifact(event, rt, refs)) return;
       const artifactType = event.artifact_type as string;
-      if (artifactType === 'todo_update') {
-        handleTodoUpdate({
-          assistantMessageId,
-          artifactType,
-          artifactId: event.artifact_id as string,
-          payload: event.payload || {},
-          refs,
-          setMessages: setMessagesForHandlers,
-          eventId: event._eventId as number,
-        });
+      const steps = readPlanSteps(artifactType, event.payload);
+      if (steps) {
+        applyPlanSnapshot(setMessagesForHandlers, assistantMessageId, steps, eventOrder(event, nextCount));
       } else if (artifactType === 'html_widget') {
         handleHtmlWidget({
           assistantMessageId,

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState, Suspense } from 'react';
-import { BookMarked, CandlestickChart, FolderTree, Globe, LayoutDashboard, ScrollText, Upload } from 'lucide-react';
+import { Activity, BookMarked, CandlestickChart, FolderTree, Globe, LayoutDashboard, ScrollText, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   memoMimeForName,
@@ -75,8 +75,7 @@ import { useCommentUi } from './viewers/html/comments/useCommentUi';
 import { ActiveTabBody } from './filePanel/ActiveTabBody';
 import type { NewTabMenu, PanelLauncher } from './filePanel/panelLaunchers';
 import { useWatchTab } from './filePanel/useWatchTab';
-import type { MarketWatchState } from '../session/marketWatchEvents';
-import { useThreadWakeups } from '../hooks/useWakeups';
+import { useThreadStatus } from './chatView/threadStatus';
 import type { FilesAway } from '../hooks/useWorkspaceFiles';
 import { useComputerAway } from './filePanel/useComputerAway';
 import { RouteLeaveGuardContext, type RouteLeaveGuard } from '../contexts/RouteLeaveGuardContext';
@@ -108,8 +107,6 @@ interface FilePanelProps {
   onTargetHandled?: (seq?: number) => void;
   onTargetMemoryHandled?: (seq?: number) => void;
   onTargetMemoHandled?: (seq?: number) => void;
-  /** The live market watch, which the Status tab follows. */
-  marketWatch?: MarketWatchState | null;
   /** Leaves the panel for the full MarketView page on this symbol. */
   onOpenInMarketView?: ((spec: ChartTabSpec) => void) | null;
   /** Leaves for a subagent's own transcript, from a tool tab showing its task. */
@@ -180,7 +177,6 @@ function FilePanel({
   onTargetHandled,
   onTargetMemoryHandled,
   onTargetMemoHandled,
-  marketWatch = null,
   onOpenInMarketView = null,
   onOpenSubagentTask = null,
   transcript = null,
@@ -527,8 +523,10 @@ function FilePanel({
   const [memoSyncing, setMemoSyncing] = useState(false);
   const [memoDiffOpen, setMemoDiffOpen] = useState(false);
 
-  const wakeups = useThreadWakeups(threadId, isActive);
-  useWatchTab(tabs, marketWatch, wakeups);
+  // The chat's status, which the Status tab follows: a market watch, or a
+  // pending wakeup, which fires server-side between turns.
+  const trayContents = useThreadStatus()?.contents;
+  useWatchTab(tabs, !!(trayContents?.watch || trayContents?.wakeups));
 
   // Stable: `retryOpen` is new with every file list and every change mark, and
   // the viewer this reaches should render only for its own file.
@@ -781,11 +779,20 @@ function FilePanel({
     ...liveViews,
   ];
 
+  // The thread's Status is one tab, so picking it again brings that tab
+  // forward. A panel with no thread (the gallery's) has no Status to show.
+  const openStatus = threadId ? () => { cancelPending(); tabs.openStatus(); } : null;
+
   // A right click on the new tab button picks what the tab opens on: the
-  // files, as a plain click gives, a live view, or a running app's tab. Each
-  // one opens beside the tab in front, or on the tab it already has.
+  // files, as a plain click gives, a live view, the thread's Status, or a
+  // running app's tab. Each one opens beside the tab in front, or on the tab
+  // it already has.
   const newTabMenu: NewTabMenu = {
-    kinds: [{ key: 'files', label: t('filePanel.files'), icon: FolderTree, open: newTab }, ...liveViews],
+    kinds: [
+      { key: 'files', label: t('filePanel.files'), icon: FolderTree, open: newTab },
+      ...liveViews,
+      ...(openStatus ? [{ key: 'status', label: t('filePanel.tabs.status'), icon: Activity, open: openStatus }] : []),
+    ],
     apps: previews.previews.map((app) => ({
       key: `app:${app.port}`, label: app.title || `:${app.port}`, icon: LayoutDashboard, open: () => openPreviewTab(app.port),
     })),
@@ -981,9 +988,6 @@ function FilePanel({
                 target={target}
                 onTargetMemoryHandled={onTargetMemoryHandled}
                 onTargetMemoHandled={onTargetMemoHandled}
-                marketWatch={marketWatch}
-                threadId={threadId}
-                isActive={isActive}
                 onOpenFile={onOpenFile}
                 onOpenSubagentTask={onOpenSubagentTask}
                 transcript={transcript}

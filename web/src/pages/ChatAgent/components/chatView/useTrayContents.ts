@@ -1,10 +1,8 @@
 import { useMemo } from 'react';
-import { useTranslation } from 'react-i18next';
 import { useStableArray } from '@/hooks/useStableArray';
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, PlanStep } from '@/types/chat';
 import type { CommandRun } from '@/types/commands';
 import type { WakeupList } from '@/types/wakeups';
-import { useThreadWakeups } from '../../hooks/useWakeups';
 import type { MarketWatchState } from '../../session/marketWatchEvents';
 import type { OwedReportKind, ReportBackOwedThread } from '../../utils/api';
 import {
@@ -23,9 +21,8 @@ interface TrayInputs {
   /** The thread's background commands, which the host reads once for the
    *  tray and the tool cards alike. */
   commands: readonly CommandRun[];
-  /** The thread whose wakeups the tray counts, and whether its chat is in front. */
-  threadId: string | null;
-  isActive: boolean;
+  /** The thread's wakeups as read, ended ones included. */
+  wakeups: WakeupList | null;
   /** Live task cards, keyed `subagent-<agentId>`. */
   cards: Parameters<typeof taskRoster>[0]['cards'];
   /** The tasks the page's history loaded, by agent id. */
@@ -34,12 +31,9 @@ interface TrayInputs {
   messages: ChatMessage[];
   isLoading: boolean;
   hasActiveSubagents: boolean;
-  reportBackOwed: boolean;
   owedThreads: ReportBackOwedThread[] | null;
-  /** Whose reports are owed, when the server said. */
-  owedKinds: OwedReportKind[] | null;
-  /** Who usually reports back here, for a read that names no kinds:
-   *  Analysts to Home, subagents to a workspace thread. */
+  /** The thread is Home, where Analysts report back and are listed;
+   *  subagents report to a workspace thread. */
   isHome: boolean;
 }
 
@@ -50,8 +44,8 @@ export interface TrayTasks {
   unnamedRunning: boolean;
 }
 
-/** What the tray holds: one chip per entry that is set. */
-export interface TrayContents {
+/** What the thread is waiting on or handed off, beside its plan. */
+export interface TrayWork {
   /** The market watch, while the agent watches tickers. */
   watch: MarketWatchState | null;
   /** The wakeups still pending, while there are any. */
@@ -62,7 +56,50 @@ export interface TrayContents {
   tasks: TrayTasks | null;
   /** The Analysts this thread handed work to (Home only). */
   analysts: RosterAnalyst[] | null;
-  reportBackLabel: string | null;
+  /** An owed report no other chip is waiting on, in words. */
+  reportBack: string | null;
+}
+
+/** The work's chips before the owed report, which is named only once the
+ *  work is sorted (`threadWork`): it stands when no other chip waits on it. */
+export type WorkChips = Omit<TrayWork, 'reportBack'>;
+
+/** What the tray holds: one chip per entry that is set. */
+export interface TrayContents extends TrayWork {
+  /** The running request's steps while one is left (`threadPlans`). */
+  plan: PlanStep[] | null;
+}
+
+/** The tray's chips in row order, one per field of `TrayContents`. */
+export const CHIP_ORDER = ['plan', 'watch', 'wakeups', 'commands', 'tasks', 'analysts', 'reportBack'] as const;
+
+export type TrayChipId = (typeof CHIP_ORDER)[number];
+
+// Every field of `TrayContents` has its place in the order, and nothing else does.
+type Unordered = Exclude<keyof TrayContents, TrayChipId> | Exclude<TrayChipId, keyof TrayContents>;
+const _ordered: [Unordered] extends [never] ? true : Unordered = true;
+
+/** One chip the tray holds: its id, and its entry. */
+export interface TrayEntry<K extends TrayChipId = TrayChipId> {
+  id: K;
+  value: NonNullable<TrayContents[K]>;
+}
+
+function entryOf<K extends TrayChipId>(contents: TrayContents, id: K): TrayEntry<K> | null {
+  const value = contents[id];
+  return value == null ? null : { id, value };
+}
+
+/** The chips the tray holds, in row order. */
+export function trayEntries(contents: TrayContents): TrayEntry[] {
+  return CHIP_ORDER.flatMap((id) => entryOf(contents, id) ?? []);
+}
+
+/** The tray's contents: the work, and the plan's chip in front of it. Null
+ *  while no chip is set. */
+export function trayContentsOf(work: TrayWork, plan: PlanStep[] | null): TrayContents | null {
+  const contents: TrayContents = { ...work, plan };
+  return CHIP_ORDER.some((id) => contents[id] != null) ? contents : null;
 }
 
 const NO_CANDIDATES: ReturnType<typeof analystCandidates> = [];
@@ -80,38 +117,18 @@ export function owedReportKey(kinds: readonly OwedReportKind[] | null, isHome: b
   return null;
 }
 
-/** How many chips the tray draws, which is how many shapes its liquid runs. */
-export function trayChipCount(contents: TrayContents | null): number {
-  if (!contents) return 0;
-  const { watch, wakeups, commands, tasks, analysts, reportBackLabel } = contents;
-  return [watch, wakeups, commands, tasks, analysts, reportBackLabel].filter((entry) => entry !== null).length;
-}
-
-/** Whether anything in the tray is still working, which the folded dock spins for. */
-export function trayWorking({ commands, tasks, analysts, reportBackLabel }: TrayContents): boolean {
-  return !!(
-    commands
-    || (tasks && (tasks.unnamedRunning || tasks.rows.some((task) => task.running)))
-    || analysts?.some((analyst) => analyst.running)
-    || reportBackLabel
-  );
-}
-
 /**
  * What the thread is waiting on or handed off, which the tray shows as chips:
  * the market watch, its pending wakeups, the commands still running in the
- * background, the tasks and Analysts it delegated, and an owed report
- * neither names. Null when there is none. Read once by the host, since the
- * tray and its folded dock show the same thing.
+ * background, and the tasks and Analysts it delegated, each null while there
+ * is none. The plan is not read here, so whether the plan waits can be read
+ * from this before the plan is built. The value keeps its identity until a
+ * chip changes, so the status built on it holds across the chat's renders.
  */
-export function useTrayContents({
-  marketWatch, commands, threadId, isActive, cards, taskHistory, messages, isLoading, hasActiveSubagents, reportBackOwed, owedThreads,
-  owedKinds, isHome,
-}: TrayInputs): TrayContents | null {
-  const { t } = useTranslation();
-
+export function useTrayWork({
+  marketWatch, commands, wakeups, cards, taskHistory, messages, isLoading, hasActiveSubagents, owedThreads, isHome,
+}: TrayInputs): WorkChips {
   const watch = marketWatch && marketWatch.symbols.length ? marketWatch : null;
-  const wakeups = useThreadWakeups(threadId, isActive);
   // A wakeup fires server-side between turns, so it keeps the chip up.
   const pending = useMemo(() => {
     const items = pendingWakeups(wakeups?.items);
@@ -135,16 +152,13 @@ export function useTrayContents({
   // An open task channel that no running row accounts for still shows, beside
   // the rows the tray keeps.
   const unnamedRunning = hasActiveSubagents && !tasks.some((task) => task.running);
-  const taskChip = tasks.length > 0 || unnamedRunning ? { rows: tasks, unnamedRunning } : null;
+  const taskChip = useMemo(
+    () => (tasks.length > 0 || unnamedRunning ? { rows: tasks, unnamedRunning } : null),
+    [tasks, unnamedRunning],
+  );
   const analystChip = analysts.length > 0 ? analysts : null;
-  // A report the tray can only name: an owed report whose sender is no
-  // longer working, so no chip is already waiting on it. An Analyst waiting
-  // on the user has not finished, and its row says so.
-  const working = hasActiveSubagents || tasks.some((task) => task.running)
-    || analysts.some((analyst) => analyst.running || analyst.status === 'needs_input');
-  const labelKey = reportBackOwed && !working ? owedReportKey(owedKinds, isHome) : null;
-  const reportBackLabel = labelKey ? t(labelKey) : null;
-
-  if (!watch && !pending && !commandChip && !taskChip && !analystChip && !reportBackLabel) return null;
-  return { watch, wakeups: pending, commands: commandChip, tasks: taskChip, analysts: analystChip, reportBackLabel };
+  return useMemo(
+    () => ({ watch, wakeups: pending, commands: commandChip, tasks: taskChip, analysts: analystChip }),
+    [watch, pending, commandChip, taskChip, analystChip],
+  );
 }

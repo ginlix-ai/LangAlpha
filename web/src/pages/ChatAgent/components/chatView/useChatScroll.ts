@@ -639,7 +639,7 @@ export function useChatScroll({
     });
     // The padded wrapper's border box, not the content's: its bottom padding
     // is the floating composer's height, and a taller composer (the tray
-    // unfolding, a todo tab arriving, the input wrapping) must re-pin and
+    // unfolding, a notice arriving, the input wrapping) must re-pin and
     // follow like content, or the last line ends up under it. The status
     // lines are watched on their own so their growth can be told from the
     // reader's.

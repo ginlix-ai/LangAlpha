@@ -600,7 +600,6 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         segments={(message.contentSegments as ContentSegmentRecord[] | undefined)?.length ? message.contentSegments as ContentSegmentRecord[] : NO_SEGMENTS}
         reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
-        todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
         userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}

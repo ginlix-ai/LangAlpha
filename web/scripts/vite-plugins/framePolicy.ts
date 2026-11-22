@@ -4,9 +4,11 @@
 // same policy as any other. The marker sits in <head> ahead of every script, so
 // the policy is in force before anything could create a frame.
 //
-// The build fails without the marker: a policy that quietly went missing would
-// look exactly like one that works.
+// index.html fails the build without the marker: a policy that quietly went
+// missing would look exactly like one that works. The dev-only preview pages
+// are left as they are.
 
+import { basename } from 'node:path';
 import type { Plugin } from 'vite';
 import { appFrameSrc } from '../../src/lib/framePolicy.ts';
 
@@ -22,9 +24,11 @@ export function withFramePolicy(html: string, apiBase: string | undefined): stri
 export function framePolicy(apiBase: string | undefined): Plugin {
   return {
     name: 'la-frame-policy',
+    // The app's entry only: the preview pages (`*-preview.html`) frame
+    // nothing, carry no marker and are never built.
     transformIndexHtml: {
       order: 'pre',
-      handler: (html) => withFramePolicy(html, apiBase),
+      handler: (html, ctx) => (basename(ctx.filename) === 'index.html' ? withFramePolicy(html, apiBase) : html),
     },
   };
 }

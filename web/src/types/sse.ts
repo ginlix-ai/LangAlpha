@@ -179,21 +179,6 @@ export interface ProvenanceEvent extends BaseSSEEvent {
 /** The keys a `provenance` event carries for its transport, not its record. */
 export type ProvenanceEnvelopeKey = 'event' | '_eventId' | 'turn_index' | 'response_id' | 'thread_id';
 
-export interface TodoUpdatePayload {
-  todos: TodoItem[];
-  total: number;
-  completed: number;
-  in_progress: number;
-  pending: number;
-}
-
-export interface TodoItem {
-  id?: string;
-  content: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'stale';
-  [key: string]: unknown;
-}
-
 export interface WorkflowStatusEvent extends BaseSSEEvent {
   event: 'workflow_status';
   status: string;

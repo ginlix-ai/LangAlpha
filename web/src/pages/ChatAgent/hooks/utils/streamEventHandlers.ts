@@ -15,7 +15,6 @@ export {
   handleToolCalls,
   handleToolCallResult,
   handleProvenance,
-  handleTodoUpdate,
   handleHtmlWidget,
   handleToolCallChunks,
 } from '../../session/stream/mainEventHandlers';

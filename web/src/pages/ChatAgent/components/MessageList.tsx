@@ -7,6 +7,8 @@ import { WakeupRow } from './messageList/WakeupRow';
 import { QuietChecksRow } from './messageList/QuietChecksRow';
 import { MessageBubble } from './messageList/MessageBubble';
 import { TurnFold } from './messageList/TurnFold';
+import { AgentPlan } from './messageList/AgentPlan';
+import type { ShownPlan } from './messageList/requestPlans';
 import { holdsAnswerText, projectMessageContent, visibleProjection } from './messageList/contentProjection';
 import { useMessageActions } from './messageList/MessageActionsContext';
 import { isReportRow, opensTurn } from './messageList/messagePredicates';
@@ -136,9 +138,17 @@ interface MessageListProps {
   /** The turns this view has drawn running, kept by the view so they outlive
    *  the list (see `useTurnPresentation`). */
   ranHere?: Set<number>;
+  /** Each request's plan, drawn under the message that asked for it, by
+   *  message id (`threadPlans`): the host leaves out the one its tray shows. */
+  plans?: ReadonlyMap<string, ShownPlan>;
 }
 
-function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere }: MessageListProps): React.ReactElement | null {
+interface HeldTranscript {
+  messages: MessageRecord[];
+  plans?: ReadonlyMap<string, ShownPlan>;
+}
+
+function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere, plans: latestPlans }: MessageListProps): React.ReactElement | null {
   // A history load writes the transcript an event at a time as its response
   // arrives. Drawn as it went, a finished turn showed its work open above no
   // answer and then folded it away once the answer and its end landed. The
@@ -146,11 +156,13 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   // commit holds the whole transcript (loadConversationHistory's reveal). A
   // list that mounts mid-load (main shown again while the thread loads) drew
   // nothing before it, and what the load has written so far is the half it
-  // must not show, so it holds nothing, which draws the skeleton.
-  const [held, setHeld] = React.useState<MessageRecord[] | null>(() => (isLoadingHistory ? [] : null));
-  if (isLoadingHistory && held === null) setHeld(latest);
+  // must not show, so it holds nothing, which draws the skeleton. The plans
+  // are held with it, since they are read off the messages being rewritten.
+  const [held, setHeld] = React.useState<HeldTranscript | null>(() => (isLoadingHistory ? { messages: [] } : null));
+  if (isLoadingHistory && held === null) setHeld({ messages: latest, plans: latestPlans });
   if (!isLoadingHistory && held !== null) setHeld(null);
-  const messages = isLoadingHistory ? held ?? latest : latest;
+  const messages = isLoadingHistory ? held?.messages ?? latest : latest;
+  const plans = isLoadingHistory && held ? held.plans : latestPlans;
   const isMobile = useIsMobile();
   const { onOpenFile } = useMessageActions();
   // The deck keeps the workspace's own notes file out on every surface; its
@@ -470,6 +482,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           isMobile,
           dispatcherContext,
         };
+        const plan = plans?.get(message.id as string);
         // Every bubble gets the wrapper from its first paint: a turn's row comes
         // with its first assistant bubble, and switching a bubble from bare to
         // wrapped at the same key would remount it.
@@ -488,6 +501,11 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
               />
             )}
             <MessageBubble {...bubbleProps} />
+            {plan && (
+              <div className={isMobile ? 'mt-4' : 'mt-6'}>
+                <AgentPlan {...plan} heading />
+              </div>
+            )}
           </div>
         );
       })}
