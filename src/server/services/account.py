@@ -145,7 +145,11 @@ class Standing:
 
 
 async def read_standing(
-    user_id: str, *, unknown_on_cache_error: bool = False
+    user_id: str,
+    *,
+    unknown_on_cache_error: bool = False,
+    recheck: bool = False,
+    answered_only: bool = False,
 ) -> Standing:
     """The user's standing: the one place that decides whether langalpha acts
     on an account's organization at all.
@@ -157,7 +161,10 @@ async def read_standing(
     organization's features say. An unknown account means the auth service
     could not be asked and nothing it said since the last change notice is on
     record, or what it said could not be read. ``unknown_on_cache_error`` is
-    for a check of the suspension alone (``read_membership``).
+    for a check of the suspension alone (``read_membership``); ``recheck``
+    asks the auth service past the cached entry, for a grant about to be
+    acted on, and ``answered_only`` takes nothing but its answer
+    (``membership.read_membership``).
 
     Another user's account is read the way the caller's own is, off the
     cached membership (one MGET on a hit, asked of the auth service on a miss
@@ -169,7 +176,10 @@ async def read_standing(
     if not membership.teams_door_open():
         return Standing(NO_ORG, NO_ORG)
     answer = await membership.read_membership(
-        user_id, unknown_on_cache_error=unknown_on_cache_error
+        user_id,
+        unknown_on_cache_error=unknown_on_cache_error,
+        recheck=recheck,
+        answered_only=answered_only,
     )
     hinted = bool(answer and answer.get(membership.MEMBERSHIP_SUSPENDED_HINT))
     # A record standing in from before a change notice says what the

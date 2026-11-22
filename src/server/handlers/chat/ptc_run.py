@@ -26,6 +26,10 @@ from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
 )
+from src.server.services.shared_workspaces.member_context import (
+    for_turn as member_context_for_turn,
+    replaced_turn_typed,
+)
 from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.services.forks.carry import ForkTurnStart
 from src.server.database.workspace import update_workspace_activity
@@ -74,6 +78,7 @@ from src.server.services.chat_attachment_turns import (
     resolve_turn_attachments,
 )
 from src.server.database.conversation.queries import set_run_query_metadata
+from src.server.database.conversation.senders import UNTYPED_KEY
 from src.server.utils.multimodal_context import (
     build_attachment_metadata,
     drop_gone_metadata,
@@ -445,7 +450,10 @@ async def astream_ptc_workflow(
             # The attempts this turn may continue, read once for all it carries.
             prior = await carry.prior_attempt(request, thread_id)
             disk_free_mb, disk_known = await read_disk_notice(runs_in)
-            user_profile = await identity.profile()
+            # Read once: the prompt states only what ``stated`` keeps, and a
+            # shared turn's member context reads the rest.
+            own_profile = await identity.own_profile()
+            user_profile = identity.stated(own_profile)
             home = await HomeTurnStart.read(
                 user_id, route, retry=bool(request.retry_of_run_id)
             )
@@ -586,6 +594,13 @@ async def astream_ptc_workflow(
                 sends_for = carry.carried_delivery(request, prior)
                 if sends_for:
                     extra_configurable = {**(extra_configurable or {}), **sends_for}
+            # Before START, which writes an edited or regenerated turn's query
+            # row anew, without the origin that tells whether a person typed it.
+            replaced_typed = await replaced_turn_typed(identity, request, thread_id)
+            if replaced_typed is False:
+                # A retry of this attempt reads the row START writes, not the
+                # turn it replaced.
+                query_metadata[UNTYPED_KEY] = True
             run_handle = await begin_run(
                 request,
                 scope=scope,
@@ -776,6 +791,12 @@ async def astream_ptc_workflow(
         from src.server.services.thread_agent import AgentInputs
         from src.server.services.wakeups.cancel_notice import ThreadCancelNotices
 
+        # The member's own context, on a shared turn they typed where it may
+        # reach them.
+        member_context = await member_context_for_turn(
+            identity, request, written_by, own_profile,
+            thread_id=thread_id, replaced_typed=replaced_typed,
+        )
         # What shapes the prompt and the tools, read as a call between turns
         # reads it. Its project is resolved once and used three times: the
         # agent build mounts the workspace's memory off it, the post-turn
@@ -789,6 +810,7 @@ async def astream_ptc_workflow(
             role=route.role,
             user_profile=user_profile,
             acting_for=workspace_id,
+            member_context=member_context,
         )
         project = inputs.project
         # One relay session per directly bound server, held for the run.

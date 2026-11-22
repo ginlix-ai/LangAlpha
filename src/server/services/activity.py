@@ -124,8 +124,9 @@ class Action(StrEnum):
     #: A member's role in a shared workspace changed, or whether everyone in
     #: the organization may use it.
     SHARED_WORKSPACE_ROLE_CHANGED = "shared_workspace.role_changed"
-    #: Who may share a shared workspace's work outside it changed: its
-    #: managers only, any member, or no one.
+    #: A shared workspace's settings changed: who may share its work outside
+    #: it (its managers only, any member, or no one), or whether members' own
+    #: context reaches it where their organization grants it.
     SHARED_WORKSPACE_SHARING_CHANGED = "shared_workspace.sharing_changed"
 
     #: What the agent may do with orders changed.

@@ -141,6 +141,12 @@ from ptc_agent.agent.tools import (
 )
 from ptc_agent.agent.tools.context_file_policy import agent_md_for
 from ptc_agent.agent.tools.copy_file import create_copy_file_tool
+from ptc_agent.agent.middleware.member_context import (
+    MemberContext,
+    MemberContextMiddleware,
+    close_members,
+    member_memory,
+)
 from ptc_agent.agent.tools.computer_reach import (
     REACHABLE_TOOLS,
     ComputerReach,
@@ -317,6 +323,7 @@ class PTCAgent:
         computers: ComputerReach | None = None,
         claude_code_launcher: "Callable[..., Launcher] | None" = None,
         thread_history: HistoryFiles | None = None,
+        member_context: MemberContext | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -381,6 +388,11 @@ class PTCAgent:
                 leaves this thread out (a thread kept private in a shared
                 workspace); the agent's transcripts are saved and pointed at
                 there. Its subagents share it, as they share the computer's.
+            member_context: In a shared workspace whose member's organization
+                lets their own context reach it, the member this turn is for:
+                the main agent alone is given their answer preferences and
+                memory index on their messages (``MemberContextMiddleware``).
+                None for every other build.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
@@ -468,8 +480,43 @@ class PTCAgent:
             history_routes=history_routes,
         )
 
+        # No member's memory is on a shared workspace's computer: its folder
+        # is closed to every agent of the turn, so nothing left on the disk
+        # there passes for one (``MembersClosed``). It reads nothing from the
+        # store, so it closes the folder when the store is down too.
+        if not own_data:
+            filesystem_backend = close_members(
+                filesystem_backend, store=store, sandbox=backend, layout=workspace_layout
+            )
+
+        # A member's own context never rides a Claude Code turn, whose
+        # runtime takes no per-call context: no block to add, no read to fill
+        # back in.
+        if claude_code:
+            member_context = None
+        # A shared workspace member's own memory, read-only to the main
+        # agent's own file tools on their turn alone, every entry under an
+        # alias; every other tool, a subagent's among them, is built over
+        # ``filesystem_backend``, which does not have it.
+        member_mount = (
+            member_memory(
+                member_context,
+                store=store,
+                files=filesystem_backend,
+                sandbox=backend,
+                layout=workspace_layout,
+                operation_callback=operation_callback,
+                agent_md=agent_md_for(role),
+            )
+            if member_context is not None and store is not None
+            else None
+        )
+
         # The folders only the file tools reach, which Bash and code refuse.
-        file_tools_only = (SandboxLayout.CHANNELS_DIR,) if gates.channels else ()
+        file_tools_only = (
+            *((SandboxLayout.CHANNELS_DIR,) if gates.channels else ()),
+            *((WorkspaceLayout.MEMBERS_DIR,) if not own_data else ()),
+        )
 
         # The main agent's Bash and ExecuteCode hand a command still running at
         # their wait to the thread, which needs a thread, a user and a
@@ -875,6 +922,8 @@ class PTCAgent:
         shared_tools.extend(ask_user_middleware.tools)
 
         tools: list[Any] = [execute_code_tool, bash_tool, *shared_tools]
+        if member_mount is not None:
+            tools = member_mount.over(tools)
 
         def tools_on(target: ComputerTarget) -> dict[str, Any]:
             """The machine tools over another computer's session. Each command
@@ -1157,6 +1206,14 @@ class PTCAgent:
         if main_compaction is not None:
             main_compaction = main_compaction.with_baseline(context.baseline.sent_sections)
 
+        # A shared workspace member's own context, on their messages alone:
+        # their preferences always, their memory where it is mounted.
+        member_middleware = (
+            MemberContextMiddleware(member_context, mount=member_mount)
+            if member_context is not None
+            else None
+        )
+
         # Compiled subagent graphs live on this middleware; the RunWorkflow
         # dispatcher below shares the same instances so direct dispatches get
         # identical model resolution and middleware wiring. Its tools are a
@@ -1400,6 +1457,11 @@ class PTCAgent:
                 # writer's tag, outside the carrier so the request it
                 # composes is named. Only there: no other message has one.
                 SenderNamingMiddleware() if not own_data else None,
+                # Inside the naming, so the block it adds to a streak's first
+                # message follows that message's tag, and just outside the
+                # carrier, so what it adds is composed into the request copy
+                # and never reaches the checkpoint.
+                member_middleware,
                 context.tail,
                 SystemPinMiddleware(),
                 ReasoningCompatibilityMiddleware(),

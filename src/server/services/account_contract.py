@@ -34,13 +34,15 @@ _EMPTY: Mapping[str, Any] = MappingProxyType({})
 #: this build cannot read makes the account unknown and refuses every turn, so
 #: the auth service sends only what the declared version reads, and any change
 #: to what is read here moves the version, as does a feature an organization
-#: can be granted (one that ``requires`` ``teams``).
+#: can be granted (one that ``requires`` ``teams``, itself or through a
+#: feature it requires).
 #:
 #: 2: the ``org_library.publish`` rule and the ``org_library`` feature.
 #: 3: the ``shared_workspaces.create`` rule and the ``shared_workspaces``
 #: feature.
 #: 4: the ``teams`` block, the account's teams in its organization.
-ACCOUNT_CONTRACT = 4
+#: 5: the ``shared_workspaces_member_context`` feature.
+ACCOUNT_CONTRACT = 5
 
 
 @dataclass(frozen=True)

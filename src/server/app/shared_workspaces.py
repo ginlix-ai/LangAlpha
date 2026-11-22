@@ -180,13 +180,21 @@ async def update_sharing(
     workspace_id: str, body: SharingUpdate, principal: WorkspaceWritePrincipal
 ) -> MembersView:
     """Open the workspace to everyone in the organization, or only to the
-    listed people and its team; name a team the caller is in, or none; and
-    choose who may share its work outside it (manager). Naming a team closes
-    it to everyone, and opening it clears the team. Whoever reached it only
-    through what was taken away has their turns there stopped."""
+    listed people and its team; name a team the caller is in, or none;
+    choose who may share its work outside it; and keep members' own context
+    out of it or let it follow the organization's grant (manager). Naming a
+    team closes it to everyone, and opening it clears the team. Whoever
+    reached it only through what was taken away has their turns there
+    stopped."""
+    if body.member_context is not None:
+        # Letting members' own context in is the managers' own act: a
+        # computer's token, which an agent's commands carry, never makes it.
+        _no_computer_token(principal)
     shared = await _shared(workspace_id, principal.user_id, manage=True)
-    if body.sharing is not None:
-        await service.set_share_out(shared, body.sharing)
+    if body.changes_settings:
+        await service.update_settings(
+            shared, sharing=body.sharing, member_context=body.member_context
+        )
     if body.everyone is not None or body.changes_team:
         await service.set_audience(
             shared, everyone=body.everyone, team_id=body.team_id, names_team=body.changes_team

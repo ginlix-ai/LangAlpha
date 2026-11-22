@@ -75,6 +75,10 @@ class FilesystemRoute(Protocol):
     own folder sits inside the transcripts link: a Grep of the link searches
     the route too, as rg given the link walks into the folder.
 
+    ``reached_only_inside`` (False when absent) marks a route no search from
+    above reaches, Glob's or Grep's: only one whose path is at or inside its
+    root lists it, so its files never show beside the folder's own.
+
     ``takes_walk`` (False when absent) marks a route whose ``agrep_rich``
     takes ``searches``, the walk's verdict on a file of its own by path, and
     honors ``head_limit``, counting only entries the walk keeps: a route that
@@ -266,6 +270,10 @@ class CompositeFilesystemBackend:
             ],
         )
 
+    def with_routes(self, routes: Sequence[FilesystemRoute]) -> CompositeFilesystemBackend:
+        """This backend with ``routes`` mounted beside its own."""
+        return CompositeFilesystemBackend(sandbox=self._sandbox, routes=[*self._routes, *routes])
+
     def route_for(self, path: str) -> FilesystemRoute | None:
         """The mounted route that owns ``path``, or None where the sandbox does."""
         return self._route_for(self.normalize_path(path))
@@ -302,12 +310,16 @@ class CompositeFilesystemBackend:
         computer root, but from the turn's folder it is spelled
         ``.agents/user/...``, which is where a read of that name lands, so a
         search from the folder reaches it at that spelling. Nothing else at
-        the root is reached that way, nor anything in another folder.
+        the root is reached that way, nor anything in another folder. A route
+        marked ``reached_only_inside`` is below nothing: only a search of its
+        own folder reaches it, as Glob's does.
         """
         base = base.rstrip("/")
         base_spelling = self._spelling(base) if base else None
         reached: list[tuple[FilesystemRoute, str]] = []
         for route in self._routes:
+            if getattr(route, "reached_only_inside", False):
+                continue
             root = route.root_prefix.rstrip("/")
             if not base or root.startswith(base + "/"):
                 reached.append((route, root[len(base) :].lstrip("/")))
@@ -320,6 +332,25 @@ class CompositeFilesystemBackend:
             elif spelled.startswith(base_spelling + "/"):
                 reached.append((route, spelled[len(base_spelling) + 1 :]))
         return reached
+
+    def read_cap(self, path: str) -> int | None:
+        """The most characters one Read shows of ``path``, where its route
+        sets fewer than Read's own cap (``read_chars``)."""
+        try:
+            route = self._route_for(self.normalize_path(path))
+        except ValueError:
+            return None
+        return getattr(route, "read_chars", None) if route is not None else None
+
+    def _closed_to_search(self, path: str | None) -> bool:
+        """Whether ``path``, at its route's root, is in a route a search from
+        above never reaches (``reached_only_inside``). What the disk holds
+        there is no file of that route, so a search above it drops it rather
+        than show it as one."""
+        if path is None:
+            return False
+        route = self._route_for(path)
+        return route is not None and getattr(route, "reached_only_inside", False)
 
     def _found_at(self, path: str) -> str:
         """Where the agent finds ``path``: at its spelling in the turn's
@@ -542,15 +573,24 @@ class CompositeFilesystemBackend:
         # hits come first, newest first, each route file at its route's
         # root, and a route adds the files they lack. With a `..`, which the
         # disk alone resolves, they are all there is.
+        # A route searched only from inside still answers a search of its
+        # own folder, whatever the pattern.
         reached = [
-            r for r in self._routes if any(self._glob_lists(r, w) for w in wanted)
+            r
+            for r in self._routes
+            if (r is route or not getattr(r, "reached_only_inside", False))
+            and any(self._glob_lists(r, w) for w in wanted)
         ]
         sandbox_paths, *listings = await asyncio.gather(
             self._sandbox.aglob_paths(pattern, normalized),
             *(r.aglob_paths("*", r.root_prefix) for r in reached),
         )
         aliases = self._aliases()
-        found = [self._canonical(p, aliases) for p in sandbox_paths]
+        found = [
+            canonical
+            for canonical in (self._canonical(p, aliases) for p in sandbox_paths)
+            if not self._closed_to_search(canonical)
+        ]
         found.extend(self._glob_found(reached, listings, wanted))
         return list(dict.fromkeys(found))
 
@@ -612,16 +652,25 @@ class CompositeFilesystemBackend:
         )
         if route is not None:
             if walk is None:
-                # rg refuses the filter or the type before it searches
-                # anything, even a file it is given; its answer is the one
-                # a search outside a route gets.
-                return await self._sandbox.agrep_rich(
+                # The walk refuses the filter or the type (rg refuses it before
+                # it searches anything, or the walk cannot follow it); rg's
+                # answer is the one a search outside a route gets. In a route
+                # no search reaches, what the disk holds is none of its files,
+                # so none of it is shown, as a search from above drops it.
+                found = await self._sandbox.agrep_rich(
                     pattern,
                     path=normalized,
                     head_limit=head_limit,
                     offset=offset,
                     **sandbox_kwargs,
                 )
+                if not isinstance(found, list) or not getattr(route, "reached_only_inside", False):
+                    return found
+                return [
+                    entry
+                    for entry in self._respelled(found, output_mode)
+                    if not self._closed_to_search(_grep_entry_path(entry, output_mode))
+                ]
             base = normalized.rstrip("/")
             # The route's own folder is read as a search from above reads it,
             # at each file the walk can search; a path below it, as given.
@@ -727,7 +776,11 @@ class CompositeFilesystemBackend:
         # one, and a route adds only the files rg did not list: rg's copy of
         # a file carries what a route's cannot, such as context lines and
         # multiline matches, and stands when a route fails to answer.
-        combined = self._respelled(sandbox_result, output_mode)
+        combined = [
+            entry
+            for entry in self._respelled(sandbox_result, output_mode)
+            if not self._closed_to_search(_grep_entry_path(entry, output_mode))
+        ]
         rg_files = {_grep_entry_path(entry, output_mode) for entry in combined}
 
         def added(walk: RgWalk) -> list[Any]:

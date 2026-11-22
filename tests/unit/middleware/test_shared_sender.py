@@ -405,6 +405,25 @@ class TestAPersonalWorkspaceIsUntouched:
             assert section in block
         assert "<sender>" not in block
 
+    @pytest.mark.asyncio
+    async def test_its_answer_preferences_read_as_before(self):
+        context, state, _ = await _turn(OWNER, COUNTS, [_input("hi", mid="m1")], shared=False)
+        block = context.baseline.sent_block(state)
+        assert (
+            "## Agent Preferences\n\nBy default the user wants the effort to match the question: a "
+            "simple question gets a quick answer, and one that needs research is researched fully "
+            "before you answer.\n"
+        ) in block
+
+    @pytest.mark.asyncio
+    async def test_no_members_context_can_anchor_in_it(self):
+        from ptc_agent.agent.middleware.member_context.context import streak_anchor
+
+        _, state, _ = await _turn(OWNER, COUNTS, [_input("hi", mid="m1")], shared=False)
+        assert streak_anchor(state["messages"], "anyone") is None
+        sent = compose_request(state["messages"], "reminder").messages
+        assert "member_context" not in repr(sent)
+
 
 # ---------------------------------------------------------------------------
 # What a shared workspace does not have
@@ -543,6 +562,7 @@ class TestAPersonalPromptIsUntouched:
             "### The investor mandate",
         ):
             assert pointer in prompt
+        assert ".agents/members" not in prompt and "member_context" not in prompt
 
 
 # ---------------------------------------------------------------------------

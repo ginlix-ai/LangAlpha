@@ -138,6 +138,17 @@ def _with_note(message: str, admission: Admission | None) -> str:
     return f"{message}\n\n{note}" if note else message
 
 
+def read_clipped_marker(cap: int, first: int, next_line: int, file_path: str, max_lines: int) -> str:
+    """What a Read cut short at whole lines ends with: the lines it showed
+    (``first``..``next_line``) and the call that reads on."""
+    return (
+        f"{READ_CLIPPED_NOTE} at {cap} characters to protect the context window. "
+        f"You saw lines {first}..{next_line}. "
+        f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
+        "to continue, or pass a smaller limit to keep each chunk shorter.]"
+    )
+
+
 def create_filesystem_tools(
     backend: FilesystemBackend,
     operation_callback: OperationCallback | None = None,
@@ -284,6 +295,9 @@ def create_filesystem_tools(
             # field and stops sooner, and a single line comes whole.
             segment = is_segment(normalized_path)
             cap = MAX_READ_CHARS
+            # A route may show less of a file at once (``read_cap``).
+            if (route_cap := getattr(backend, "read_cap", None)) is not None:
+                cap = min(cap, route_cap(normalized_path) or cap)
             if segment and max_lines > 1:
                 lines = await cut_window(lines, start_offset)
                 cap = TRANSCRIPT_READ_CHARS
@@ -348,12 +362,7 @@ def create_filesystem_tools(
                             f"`sed -n '{start_offset + 1}p' '{file_path}' | head -c {slice_budget}`.]"
                         )
                 else:
-                    marker = (
-                        f"{READ_CLIPPED_NOTE} at {cap} characters to protect the context window. "
-                        f"You saw lines {start_offset + 1}..{next_line}. "
-                        f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
-                        "to continue, or pass a smaller limit to keep each chunk shorter.]"
-                    )
+                    marker = read_clipped_marker(cap, start_offset + 1, next_line, file_path, max_lines)
                 formatted = clipped + marker
             elif len(lines) == max_lines:
                 # The backend returns at most ``max_lines``, so a full window

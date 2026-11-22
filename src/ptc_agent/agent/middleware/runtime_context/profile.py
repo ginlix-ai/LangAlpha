@@ -9,6 +9,7 @@ so a field the block never shows cannot move the block.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -61,6 +62,60 @@ def line_text(value: Any) -> str | None:
     return ", ".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
 
 
+@dataclass(frozen=True, slots=True)
+class AnswerPreferences:
+    """A person's ``agent_preference`` as ``components/agent_preferences.md.j2``
+    reads it: the keys printed as they wrote them, each holding a value
+    (``lines``), and the structured keys whose value selects guidance instead
+    (``steering``)."""
+
+    lines: list[tuple[str, str]]
+    steering: dict[str, Any]
+
+    @property
+    def formats(self) -> list[str]:
+        """The ``output_format`` ranking, most preferred first."""
+        return self.steering.get("output_format") or []
+
+    @property
+    def empty(self) -> bool:
+        """Whether there is nothing to show: no line and no guidance."""
+        return not (
+            self.lines
+            or self.steering.get("research_depth")
+            or self.formats
+            or self.steering.get("proactivity")
+        )
+
+
+def answer_preferences(
+    agent_preference: Any,
+    *,
+    steering: bool = True,
+    proactivity: bool = True,
+    escape: Callable[[str], str] | None = None,
+) -> AnswerPreferences:
+    """``agent_preference`` shaped for the prompt (``prompt_preferences``).
+
+    ``steering`` False drops the guidance, for an agent whose answer goes back
+    to another agent rather than to the person. ``proactivity`` False drops
+    that one guidance, which steers toward automations, for a build that has
+    none. ``escape`` is applied to each printed key and text, for a block the
+    person's words must not close.
+    """
+    printed, guidance = prompt_preferences(as_dict(agent_preference))
+    if not steering:
+        guidance = {}
+    elif not proactivity:
+        guidance = {k: v for k, v in guidance.items() if k != "proactivity"}
+    lines = [
+        (key, text) for key, value in printed.items() if (text := line_text(value)) is not None
+    ]
+    if escape is not None:
+        lines = [(escape(str(key)), escape(text)) for key, text in lines]
+    return AnswerPreferences(lines, guidance)
+
+
 def investment_lines(investment: Any) -> list[tuple[str, str]]:
     """(label, text) for each investment-profile key that holds a value, in
     the order the block lists them: the block's lines, and the fields its
@@ -95,18 +150,19 @@ def render_user_profile(
 
     The profile is shaped here, at render time, so the template only prints:
     ``agent_preference`` splits into the keys printed as the user wrote them
-    and the structured keys whose value selects guidance, and the investment
-    profile into its labelled lines. A snapshot keeps the profile as it was
+    and the structured keys whose value selects guidance
+    (:func:`answer_preferences`), and the investment profile into its
+    labelled lines. A snapshot keeps the profile as it was
     read, so an epoch frozen before any of this renders the same way.
     """
-    printed, steering = prompt_preferences(as_dict(user_profile.get("agent_preference")))
     return render_template(
         "components/user_profile.md.j2",
         user_profile=user_profile,
-        preference_lines=[
-            (key, text) for key, value in printed.items() if (text := line_text(value)) is not None
-        ],
-        agent_steering=steering,
+        # Only the main agent gets the guidance: a subagent's result goes back
+        # to the main agent, which decides how it reaches the user.
+        preferences=answer_preferences(
+            user_profile.get("agent_preference"), steering=main_agent_steering
+        ),
         investment_lines=investment_lines(user_profile.get("investment_profile")),
         user_data_counts=user_data_counts,
         main_agent_steering=main_agent_steering,

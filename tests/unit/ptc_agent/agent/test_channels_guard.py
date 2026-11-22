@@ -14,7 +14,7 @@ import pytest
 
 from ptc_agent.agent.tools.bash import create_execute_bash_tool
 from ptc_agent.agent.tools.code_execution import create_execute_code_tool
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from tests.unit.ptc_agent.agent.job_fakes import outcome
 
 ONLY = (SandboxLayout.CHANNELS_DIR,)
@@ -92,6 +92,15 @@ class TestBash:
         assert backend.ran == ["ls .agents/user/profile"]
 
     @pytest.mark.asyncio
+    async def test_a_sibling_of_the_folder_runs(self):
+        backend = _Mounted()
+        tool = create_execute_bash_tool(backend, file_tools_only=ONLY)
+
+        await tool.ainvoke({"command": "cat .agents/user/channels-old/notes.md"})
+
+        assert backend.ran == ["cat .agents/user/channels-old/notes.md"]
+
+    @pytest.mark.asyncio
     async def test_without_the_route_the_path_is_ordinary(self):
         backend = _Mounted()
         tool = create_execute_bash_tool(backend)
@@ -126,3 +135,41 @@ class TestExecuteCode:
         await tool.ainvoke({"code": "print(open('.agents/user/channels/x').read())"})
 
         assert len(backend.ran) == 1
+
+
+class TestAMembersMemory:
+    """A shared workspace member's memory is file-tools-only too, but only
+    Read and Glob reach it and nothing writes it. Pasting what a Read of it
+    returned into code would put it where every member reads it."""
+
+    ONLY = (SandboxLayout.CHANNELS_DIR, WorkspaceLayout.MEMBERS_DIR)
+    COMMAND = "cat .agents/members/1a2b3c/memory/codeword.md"
+
+    @pytest.mark.asyncio
+    async def test_bash_names_no_tool_that_would_be_refused(self):
+        tool = create_execute_bash_tool(_Untouchable(), file_tools_only=self.ONLY)
+
+        result = await tool.ainvoke({"command": self.COMMAND})
+
+        assert result == (
+            "ERROR: .agents/members/ is reachable only through Read and Glob, and is "
+            "read-only. Read the file you need there; Bash can't see it."
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_is_told_to_keep_it_out_rather_than_pass_it_in(self):
+        tool = create_execute_code_tool(_Untouchable(), None, file_tools_only=self.ONLY)
+
+        result = await tool.ainvoke({"code": f"open('{self.COMMAND.split()[1]}').read()"})
+
+        assert result.startswith("ERROR: .agents/members/ is reachable only through Read and Glob")
+        assert "keep what it says out of your code" in result
+        assert "pass the content in" not in result and "Edit" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_chat_app_folder_keeps_its_own(self):
+        tool = create_execute_bash_tool(_Untouchable(), file_tools_only=self.ONLY)
+
+        result = await tool.ainvoke({"command": COMMANDS[0]})
+
+        assert "Use Read, Edit and Write" in result

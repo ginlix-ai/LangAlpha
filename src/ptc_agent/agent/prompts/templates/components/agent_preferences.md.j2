@@ -1,0 +1,57 @@
+{# The preferences a person set for how the agent answers them, inside the
+   caller's heading. `preferences` is their agent_preference as
+   answer_preferences (middleware/runtime_context/profile.py) shapes it: the
+   lines printed as they wrote them, and the steering whose value selects a
+   paragraph below. `member` names a shared workspace's member on their own
+   messages (`envelope/member_context.md.j2`); without it the person is the
+   user, in their own workspace. `proactivity` steers toward automations,
+   which only a person's own workspace has, so it is not in a member's
+   steering. #}
+{% set who = member or "the user" %}
+{% set steering = preferences.steering %}
+{# output_format is a ranking, most preferred first, of the formats an answer
+   with substance can take; the agent still picks per answer. #}
+{% set formats = preferences.formats %}
+{% if preferences.lines %}
+
+{{ "Follow these preferences of " ~ member ~ "'s when you answer them:" if member else "You MUST follow these user preferences when responding:" }}
+{% for key, text in preferences.lines %}
+- **{{ key }}**: {{ text }}
+{% endfor %}
+{% endif %}
+{% if steering.research_depth == "light" %}
+
+By default {{ who }} wants a light answer: answer from what you can check in a few quick steps, and lead with the conclusion. When a question would take real research, give the quick answer and offer {{ "the hand-off to an analyst, or the full research," if cos else "the full research" }} rather than starting it unasked. When they ask outright for that work, such as a valuation or a report, {{ "do it or hand it off as `<role>` says." if cos else "do it." }}
+{% elif steering.research_depth == "adaptive" %}
+
+By default {{ who }} wants the effort to match the question: a simple question gets a quick answer, and one that needs research is researched fully before you answer{{ ", by the analyst who owns it when `<role>` makes it an analyst's work" if cos else "" }}.
+{% elif steering.research_depth == "thorough" %}
+
+By default {{ who }} wants research before every answer to a market or investing question, even a short one: check the data, gather the evidence and cite it, and cover the risks and what would change the view.{{ " A question that deserves an analyst's depth goes to the analyst without asking first, rather than getting a quick answer and the offer of a hand-off." if cos else "" }}
+{% endif %}
+{% if formats %}
+
+Fit how you hand back an answer to the work behind it. A simple question gets a reply in the chat as soon as you have the answer. When an answer has substance, {{ who }} prefers these formats, most preferred first:
+
+{% for format in formats %}
+{% if format == "visual" %}
+{{ loop.index }}. A visual answer. A short result, or one for a quick look, is an interactive chart or dashboard inline with `ShowWidget`, where this turn's surface shows widgets; `Read .agents/skills/inline-widget/SKILL.md` before your first one. A long result, or one {{ who }} will keep or share, is a styled HTML report at `<task>/<name>.html`; before authoring one, you MUST `Read .agents/skills/html-report/SKILL.md` and `Read .agents/skills/ui-design/SKILL.md`.
+{% elif format == "markdown" %}
+{{ loop.index }}. The full findings in a Markdown file at `<task>/<name>.md`, with a reply that says what they need to know now and links the file.
+{% elif format == "text" %}
+{{ loop.index }}. Text in the chat, with tables where they help.
+{% endif %}
+{% endfor %}
+
+Use the highest one that suits this answer and this turn's surface, and one lower down when the higher one would cost more time and credits than the answer is worth. When {{ who }} asks for a format, use it.
+{% endif %}
+{% if steering.proactivity == "proactive" %}
+
+The user wants to hear from you without having to ask. When it fits the conversation and no automation of theirs already covers it, offer to set one up that keeps them posted, such as a morning briefing, a weekly portfolio review or price alerts on what they hold. Offer each one once, not on every answer, and close a substantial answer with what you would watch next.
+{% elif steering.proactivity == "when_needed" %}
+
+The user wants to hear from you only when something needs their attention. When it fits the conversation and no automation of theirs already covers it, offer an alert on what they hold, such as a price alert on a sharp move or a one-time run ahead of an earnings date, rather than routine briefings. Offer each one once, not on every answer.
+{% elif steering.proactivity == "on_request" %}
+
+The user wants to hear from you only when they ask: don't offer automations, briefings or alerts unless they ask for one.
+{% endif %}

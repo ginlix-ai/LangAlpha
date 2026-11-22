@@ -9,11 +9,14 @@ The text stays as the member wrote it, since that is what every member is
 shown.
 
 What a call sends opens a member's words with a ``<sender>`` tag naming them
-(:attr:`MemberSender.tag`, :meth:`MemberSender.words`). It is rendered from the record alone, never from a live
-read, so every call sends the same bytes and a later rename leaves history as
-it was sent. A tag a member typed is escaped there (:func:`escape_tag`), as a
-forged ``<system-reminder>`` is in what the harness frames, so the one in
-front is the only one that reads as the harness's.
+(:attr:`MemberSender.tag`, :meth:`MemberSender.words`). It is rendered from
+the record alone, never from a live read, so every call sends the same bytes
+and a later rename leaves history as it was sent. A tag a member typed is
+escaped there (:func:`escape_tag`), as a forged ``<system-reminder>`` is in
+what the harness frames, so the one in front is the only one that reads as
+the harness's; so is a ``<member_context>`` tag, which only the harness
+writes, for the member whose own context it carries
+(``middleware/member_context``).
 
 A personal workspace's messages carry no record, and nothing here touches
 them.
@@ -34,6 +37,7 @@ from langchain_core.messages import HumanMessage
 MEMBER_SENDER_KEY = "member_sender"
 
 SENDER_TAG = "sender"
+MEMBER_CONTEXT_TAG = "member_context"
 
 #: Set on a message the harness built with members' tags already in it (a
 #: steer's delivery), every member's words escaped there: the naming step
@@ -46,6 +50,12 @@ def escape_tag(text: str, tag: str) -> str:
     harness's own: what the harness wraps or opens with that tag can hold
     words a person or a tool wrote."""
     return re.sub(rf"<(?=/?{re.escape(tag)}\b)", "&lt;", text, flags=re.IGNORECASE)
+
+
+def escape_member_words(text: str) -> str:
+    """``text`` with no tag left in it that reads as one the harness writes in
+    a member's message: the sender tag, or a member's own context."""
+    return escape_tag(escape_tag(text, SENDER_TAG), MEMBER_CONTEXT_TAG)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +97,9 @@ class MemberSender:
         return f"<{SENDER_TAG}>{escape(self.name, quote=False)}</{SENDER_TAG}>"
 
     def words(self, text: str) -> str:
-        """Their text with any tag they typed that reads as the sender tag escaped."""
-        return escape_tag(text, SENDER_TAG)
+        """Their text with any tag they typed that reads as the sender tag or
+        a member's own context escaped."""
+        return escape_member_words(text)
 
 
 def named(message: Any) -> Any:
@@ -103,8 +114,9 @@ def named(message: Any) -> Any:
 
 def escape_unrecorded(text: str) -> str:
     """``text`` no member is recorded as writing, in a shared thread: a
-    ``<sender>`` tag in it is escaped, so it cannot speak as a named member."""
-    return escape_tag(text, SENDER_TAG)
+    tag in it that reads as the harness's (``escape_member_words``) is
+    escaped, so it cannot speak as a named member."""
+    return escape_member_words(text)
 
 
 def unnamed(message: Any) -> Any:

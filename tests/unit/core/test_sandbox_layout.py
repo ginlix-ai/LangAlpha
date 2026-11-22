@@ -150,6 +150,7 @@ EXPECTED_WORKSPACE_RELATIVE = {
     "SCRATCHPAD_DIR": ".agents/scratchpad",
     "SCRATCHPAD_NOTE_DIR": "note",
     "TRANSCRIPTS_DIR": ".agents/transcripts",
+    "MEMBERS_DIR": ".agents/members",
     "AGENT_MD_FILE": "agent.md",
     "DATA_DIR": "data",
 }

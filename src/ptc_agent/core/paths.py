@@ -406,6 +406,10 @@ class WorkspaceLayout:
     SCRATCHPAD_NOTE_DIR: ClassVar[str] = "note"
     # Rendered from each thread's checkpoint and served by the file mount.
     TRANSCRIPTS_DIR: ClassVar[str] = ".agents/transcripts"
+    # In a shared workspace, a member's own memory, one folder per member
+    # named by their short id. Served read-only to the file tools on that
+    # member's turns alone, from the store; nothing of it is ever on disk.
+    MEMBERS_DIR: ClassVar[str] = ".agents/members"
     AGENT_MD_FILE: ClassVar[str] = "agent.md"
     # Task directories sit directly in the folder; only the shared dataset
     # directory has a fixed name.

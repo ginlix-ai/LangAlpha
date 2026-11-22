@@ -21,6 +21,14 @@ logger = structlog.get_logger(__name__)
 GLOB_MATCH_LIMIT = 1000
 
 
+def glob_cut_note(shown: int, total: int) -> str:
+    """What a listing cut short ends with, after a blank line."""
+    return (
+        f"\n\n[showing first {shown} of {total} matches — narrow "
+        f"the pattern or pass a subdirectory path to see the rest]"
+    )
+
+
 def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
     """Factory function to create Glob tool.
 
@@ -85,12 +93,7 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
             shown = [backend.virtualize_path(m) for m in matches[:GLOB_MATCH_LIMIT]]
 
             lines = [f"Found {total} file(s) matching '{pattern}':", *shown]
-            if truncated:
-                lines.append(
-                    f"\n[showing first {GLOB_MATCH_LIMIT} of {total} matches — narrow "
-                    f"the pattern or pass a subdirectory path to see the rest]"
-                )
-            result = "\n".join(lines)
+            result = "\n".join(lines) + (glob_cut_note(GLOB_MATCH_LIMIT, total) if truncated else "")
 
             logger.info(
                 "Glob completed successfully",

@@ -147,7 +147,7 @@ def test_reset_preferences_keeps_only_the_overrides_on_the_grant_gate(monkeypatc
     _stub_config(monkeypatch)
     assert granted_override_keys() == [
         "claude_oauth", "teams", "org_connectors", "org_library",
-        "shared_workspaces",
+        "shared_workspaces", "shared_workspaces_member_context",
     ]
     _stub_config(
         monkeypatch,
@@ -156,6 +156,7 @@ def test_reset_preferences_keeps_only_the_overrides_on_the_grant_gate(monkeypatc
         org_connectors={"gate": "none"},
         org_library={"gate": "none"},
         shared_workspaces={"gate": "none"},
+        shared_workspaces_member_context={"gate": "none"},
     )
     assert granted_override_keys() == []
 

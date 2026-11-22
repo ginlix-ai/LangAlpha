@@ -944,6 +944,8 @@ async def test_a_writer_that_cannot_spawn_marks_the_run_failed(
         ("nested/_internal/x.js", True),
         (f"{MEMORY_USER_DIR}/x.js", True),
         (f"{MEMO_USER_DIR}/x.js", True),
+        # A shared workspace member's memory, which only Read may reach.
+        (".agents/members/1a2b3c/memory/notes.md", True),
     ],
 )
 def test_script_paths_are_refused_by_segment_not_substring(

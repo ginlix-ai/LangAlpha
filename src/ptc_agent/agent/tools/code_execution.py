@@ -70,6 +70,19 @@ _FILE_TOOLS_ONLY_ERROR = (
     "and Write."
 )
 
+#: A shared workspace member's memory, which Read and Glob alone reach and
+#: nothing writes. What a Read of it returns is kept from the other members,
+#: and code they all see is no place for it.
+_MEMBER_MEMORY_ERROR = (
+    "ERROR: {dir}/ is reachable only through Read and Glob, and is read-only. Read "
+    "the file you need there, and keep what it says out of your code: every member "
+    "of the workspace sees the code you run."
+)
+
+#: The refusal of a command naming a folder only the file tools reach, where
+#: it is not ``_FILE_TOOLS_ONLY_ERROR``.
+_FILE_TOOLS_ONLY_ERRORS = {WorkspaceLayout.MEMBERS_DIR: _MEMBER_MEMORY_ERROR}
+
 
 _CODE_DOC = """\
 Execute Python code directly.
@@ -164,6 +177,7 @@ def create_execute_code_tool(
             files_error=_FILES_ROUTE_ERROR,
             file_tools_only=file_tools_only,
             file_tools_error=_FILE_TOOLS_ONLY_ERROR,
+            file_tools_errors=_FILE_TOOLS_ONLY_ERRORS,
             blocked_event="Blocked execute_code referencing a store-backed path",
             code_length=len(code),
         )

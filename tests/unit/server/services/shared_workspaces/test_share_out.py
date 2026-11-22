@@ -142,13 +142,17 @@ async def test_a_change_is_recorded_and_told_to_the_workspace():
     from src.server.services.shared_workspaces import service
 
     record, told = MagicMock(), AsyncMock()
+    before = _access("manager", "managers").shared
+    after = _access("manager", "none").shared
+    # The second save finds the row already changed, which is what decides.
+    stored = AsyncMock(side_effect=[before.row, after.row])
     with (
-        patch("src.server.database.shared_workspaces.set_share_out", AsyncMock(return_value="managers")),
+        patch("src.server.database.shared_workspaces.update_settings", stored),
         patch("src.server.services.activity.record", record),
         patch.object(service, "publish_workspace_changed", told),
     ):
-        await service.set_share_out(_access("manager", "managers").shared, "none")
-        await service.set_share_out(_access("manager", "none").shared, "none")
+        await service.update_settings(before, sharing="none")
+        await service.update_settings(before, sharing="none")
     record.assert_called_once()
     assert record.call_args.kwargs["detail"] == {"sharing": "none", "was": "managers"}
     told.assert_awaited_once_with("org-n", "ws-1", "updated")
