@@ -74,9 +74,17 @@ def _seams(read):
     )
 
 
-async def _grant(read, identity=SHARED, **deployment):
+def _prefs(other: dict | None = None) -> AsyncMock:
+    """The sender's preferences row, holding ``other`` as their
+    ``other_preference``."""
+    return AsyncMock(return_value={"other_preference": other} if other is not None else None)
+
+
+async def _grant(read, identity=SHARED, *, prefs=None, **deployment):
     a, b, c = _seams(read)
-    with a, b, c, _deployment(**deployment):
+    with a, b, c, _deployment(**deployment), patch.object(
+        member_context, "get_user_preferences", prefs or _prefs()
+    ):
         return await member_context.grant(identity)
 
 
@@ -136,9 +144,62 @@ class TestTheGrant:
         ids=["workspace-off", "no-row", "personal", "no-sender"],
     )
     @pytest.mark.asyncio
-    async def test_refused_before_any_account_is_read(self, identity):
-        read = _reads(_standing())
-        assert await _grant(read, identity) is False
+    async def test_refused_before_any_account_or_preference_is_read(self, identity):
+        read, prefs = _reads(_standing()), _prefs()
+        assert await _grant(read, identity, prefs=prefs) is False
+        read.assert_not_awaited()
+        prefs.assert_not_awaited()
+
+
+class TestTheMembersOwnSwitch:
+    @pytest.mark.asyncio
+    async def test_refused_where_the_member_turned_it_off(self):
+        prefs = _prefs({member_context.OWN_SWITCH: False})
+        assert await _grant(_reads(_standing()), prefs=prefs) is False
+        # Read past the cache: turning it off holds from the next turn.
+        prefs.assert_awaited_once_with(ANA, cached=False)
+
+    @pytest.mark.parametrize(
+        "other",
+        [None, {}, {"auto_approve_handoffs": True}, {member_context.OWN_SWITCH: True}],
+        ids=["no-row", "no-settings", "other-settings", "on"],
+    )
+    @pytest.mark.asyncio
+    async def test_absent_means_on(self, other):
+        prefs = AsyncMock(return_value=None) if other is None else _prefs(other)
+        assert await _grant(_reads(_standing()), prefs=prefs) is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_keeps_it_out(self):
+        prefs = AsyncMock(side_effect=RuntimeError("down"))
+        assert await _grant(_reads(_standing()), prefs=prefs) is False
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_outrank_the_organization(self):
+        prefs = _prefs({member_context.OWN_SWITCH: True})
+        assert await _grant(_reads(_standing(UNGRANTED)), prefs=prefs) is False
+
+    def test_the_setting_is_a_strict_boolean(self):
+        from src.server.models.user import OtherPreference
+
+        assert OtherPreference(own_context_in_shared_workspaces=False).own_context_in_shared_workspaces is False
+        assert OtherPreference().own_context_in_shared_workspaces is None
+        with pytest.raises(ValidationError):
+            OtherPreference(own_context_in_shared_workspaces="no")
+
+    @pytest.mark.asyncio
+    async def test_a_personal_turn_reads_nothing_for_it(self):
+        from src.server.models.chat import ChatRequest
+
+        prefs, read = _prefs(), _reads(_standing())
+        personal = TurnIdentity(sender=ANA, owner=ANA, recorded_as=ANA)
+        request = ChatRequest.model_validate({"messages": [{"role": "user", "content": "hi"}]})
+        a, b, c = _seams(read)
+        with a, b, c, patch.object(member_context, "get_user_preferences", prefs):
+            assert await member_context.for_turn(personal, request, None, {}) is None
+            # Even handed a sender, a personal turn has no row to grant it.
+            assert await member_context.for_turn(personal, request, MemberSender(ANA, "Ana"), {}) is None
+        prefs.assert_not_awaited()
         read.assert_not_awaited()
 
 

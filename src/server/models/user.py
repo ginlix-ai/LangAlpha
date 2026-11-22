@@ -190,6 +190,15 @@ class OtherPreference(BaseModel):
     auto_approve_workspace_creation: Optional[StrictBool] = Field(
         None, description="Create workspaces without asking; absent means ask."
     )
+    # Strict: off keeps the member's own context out of every shared
+    # workspace, so only a real boolean turns it off.
+    own_context_in_shared_workspaces: Optional[StrictBool] = Field(
+        None,
+        description=(
+            "Use the member's answer preferences and memory on their own messages "
+            "in shared workspaces whose organization allows it; absent means on."
+        ),
+    )
     # Strict too: a value that is not one of the two would read as Stop,
     # so it is refused rather than saved as if it meant something.
     claude_code_plan_out: Optional[PlanOut] = Field(

@@ -6,6 +6,7 @@ import { useNavItems } from '@/components/nav/useNavItems';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useAllWorkspaces } from '@/hooks/useAllWorkspaces';
 import { useAppearance } from '@/hooks/useAppearance';
+import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { useSkills } from '@/hooks/useSkills';
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { isDesktopShell } from '@/lib/desktop';
@@ -33,6 +34,7 @@ export function useLocalSources(v: Verbs) {
   const { theme } = useTheme();
   const { pickTheme } = useAppearance();
   const reportSaveFailure = useSaveFailureToast();
+  const features = useFeatures().data;
   const openCreateWorkspace = useOpenCreateWorkspace();
   const { data: workspacesData } = useAllWorkspaces({ sortBy: 'activity', includeHome: true });
   // The skills of the place a picked skill's thread runs in, Home's included.
@@ -105,7 +107,7 @@ export function useLocalSources(v: Verbs) {
     actions: [runs('open', t('palette.do.open'), icon, () => navigate(path))],
   }));
 
-  const settings = searchableSettings(isDesktopShell()).map((entry): PaletteItem => {
+  const settings = searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key)).map((entry): PaletteItem => {
     const section = SECTIONS[entry.section];
     return {
       id: `setting:${entry.anchor}`,

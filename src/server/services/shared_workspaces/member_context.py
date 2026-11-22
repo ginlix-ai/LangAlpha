@@ -7,16 +7,18 @@ an exception (the ``shared_workspaces_member_context`` feature, which a
 deployment can switch off like any other): on a member's own messages the
 agent also uses that member's answer preferences and may read their personal
 memory, read only. The workspace's managers may keep it out of their
-workspace (``SharedRow.member_context``). Each turn asks again, so a change
-holds from the next one.
+workspace (``SharedRow.member_context``), and each member may keep their own
+out of every shared workspace (``OWN_SWITCH``). Each turn asks again, so a
+change holds from the next one.
 
 Nothing here is remembered between turns but the alias key, which a
 migration writes once: every answer is read from the workspace's row and the
-sender's account as of the turn.
+sender's account and preferences as of the turn.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
@@ -31,6 +33,7 @@ from src.server.database.conversation.senders import (
 )
 from src.server.database.server_keys import get_server_key
 from src.server.database.shared_workspaces import SharedRow
+from src.server.database.user import get_user_preferences
 from src.server.models.shared_workspace import MemberContextView
 from src.server.services import features
 from src.server.services.shared_workspaces.turn import TurnIdentity, member_typed, short_id
@@ -41,6 +44,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FEATURE = "shared_workspaces_member_context"
+#: The member's own switch in their ``other_preference``; absent means on.
+OWN_SWITCH = "own_context_in_shared_workspaces"
 #: The ``server_keys`` row a member's memory aliases are made with
 #: (migration 149).
 ALIAS_KEY_NAME = "member_memory_alias"
@@ -69,6 +74,19 @@ async def organization_allows(user_id: str, org_id: str, *, recheck: bool = Fals
     return member is not None and member.org.id == org_id
 
 
+async def own_switch_on(user_id: str) -> bool:
+    """The member's own switch (``OWN_SWITCH`` in their ``other_preference``):
+    on unless they turned it off. Read from the row, since a member turning it
+    off is keeping their context out of a workspace others read, and that
+    holds from the next turn; a read that fails keeps it out."""
+    try:
+        prefs = await get_user_preferences(user_id, cached=False)
+    except Exception:  # noqa: BLE001 - a failed read grants nothing
+        logger.warning("[member_context] preferences read failed for %s", user_id, exc_info=True)
+        return False
+    return ((prefs or {}).get("other_preference") or {}).get(OWN_SWITCH) is not False
+
+
 async def organization_grants(user_id: str, org_id: str) -> bool:
     """Whether ``user_id``'s organization grants it. A cached yes is asked
     again of the auth service, so a grant withdrawn reaches the next turn even
@@ -82,12 +100,16 @@ async def organization_grants(user_id: str, org_id: str) -> bool:
 async def grant(identity: TurnIdentity) -> bool:
     """Whether this shared turn's sender's own context may reach the agent:
     while the workspace's managers leave it on (``SharedRow.member_context``),
-    the sender's organization, whose workspace this is, grants it. Reads
-    nothing past the workspace's row unless the managers left it on."""
+    the sender's organization, whose workspace this is, grants it, and the
+    sender has not turned it off themselves. Reads nothing past the
+    workspace's row unless the managers left it on."""
     sender, row = identity.sender, identity.shared_row
     if not sender or row is None or not row.member_context:
         return False
-    return await organization_grants(sender, row.org_id)
+    granted, own = await asyncio.gather(
+        organization_grants(sender, row.org_id), own_switch_on(sender)
+    )
+    return granted and own
 
 
 async def for_turn(

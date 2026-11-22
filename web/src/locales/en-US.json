@@ -327,6 +327,8 @@
     "outputFormat": "Output format",
     "subagentsDefault": "Subagents",
     "subagentsDefaultDesc": "Let the agent hand work to subagents. Threads follow this unless you switch one the other way in its chat input.",
+    "ownContext": "Use my preferences and memory in shared workspaces",
+    "ownContextDesc": "On your own messages in a shared workspace, the agent follows your answer preferences and can read your memory. In a conversation shared with the workspace, its answers are visible to the workspace's members.",
     "resetPreferences": "Reset preferences",
     "resetConfirmMsg": "This will clear all your preferences: risk tolerance, investment style, agent settings, your default models and other model settings (custom models and providers, quick-access models, per-model settings), and your dashboard layout. Conversations keep the models they use. You can set everything up again anytime in Settings or via the agent. Are you sure?",
     "resetting": "Resetting...",
@@ -8825,7 +8827,7 @@
     },
     "memberContext": {
       "label": "Members' own context",
-      "body": "On each member's own messages, the agent also uses their answer preferences and can read their personal memory. It never changes their memory. Everyone here sees what the agent writes."
+      "body": "On each member's own messages, the agent also uses their answer preferences and can read their personal memory. It never changes their memory. In a conversation shared with the workspace, everyone here sees what the agent writes."
     },
     "members": {
       "open": "People",

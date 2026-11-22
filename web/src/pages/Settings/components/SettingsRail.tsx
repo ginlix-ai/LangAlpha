@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isDesktopShell } from '@/lib/desktop';
+import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { isImeComposing } from '@/lib/ime';
 import { matchesAllWords, queryWords } from '@/lib/textMatch';
 import { GROUPS, SECTIONS, searchableSettings, sectionShown, settingSearchText, type Section, type SettingEntry } from '../sections';
@@ -43,7 +44,11 @@ export function SettingsRail({ section }: { section: Section }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const entries = useMemo(() => searchableSettings(isDesktopShell()), []);
+  const features = useFeatures().data;
+  const entries = useMemo(
+    () => searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key)),
+    [features],
+  );
   const words = queryWords(query);
   const matches = words.length === 0
     ? []
