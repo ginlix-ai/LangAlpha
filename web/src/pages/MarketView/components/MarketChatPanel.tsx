@@ -936,6 +936,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         }
         threadModels={threadModels}
         tokenUsage={tokenUsage}
+        tokenUsagePending={isLoadingHistory}
         threadId={threadId}
       />
 

@@ -1987,6 +1987,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         isCompacting={!!isCompacting}
                         files={mentionFiles}
                         tokenUsage={tokenUsage}
+                        tokenUsagePending={isLoadingHistory}
                         threadId={panelThreadId}
                         onAction={handleAction}
                         model={threadModel.model}
