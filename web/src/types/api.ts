@@ -1052,6 +1052,7 @@ export interface WriteFileResponse {
 export type UnsavedReason =
   | 'too_large'
   | 'path_too_long'
+  | 'bad_name'
   | 'unreadable'
   | 'changed'
   | 'failed'

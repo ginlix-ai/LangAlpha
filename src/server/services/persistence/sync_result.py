@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 UnsavedReason = Literal[
     "too_large",
     "path_too_long",
+    "bad_name",
     "unreadable",
     "changed",
     "failed",
@@ -40,6 +41,7 @@ class _Reason:
 _REASONS: dict[UnsavedReason, _Reason] = {
     "too_large": _Reason("too large for this deployment's transfer path", "too large to back up", False),
     "path_too_long": _Reason("path too long to record", "path too long to back up", False),
+    "bad_name": _Reason("name not UTF-8", "name isn't valid text", False),
     "unreadable": _Reason("unreadable in the sandbox", "unreadable", True),
     "changed": _Reason("changed while being saved", "changed while saving", True),
     "failed": _Reason("failed to save", "didn't upload", True),

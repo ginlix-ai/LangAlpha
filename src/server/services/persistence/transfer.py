@@ -23,7 +23,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
@@ -401,6 +401,50 @@ class ScanEntry:
         )
 
 
+def _encodable(*texts: str | None) -> bool:
+    try:
+        for text in texts:
+            if text is not None:
+                text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def shown_name(path: str) -> str:
+    """``path`` as text a response or a row can carry: a name that is not
+    UTF-8 reaches the server holding lone surrogates, which neither Postgres
+    nor a JSON response encodes. Any surrogate ``surrogateescape`` did not
+    make is shown as replacement marks too."""
+    try:
+        raw = path.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        raw = path.encode("utf-8", "surrogatepass")
+    return raw.decode("utf-8", "replace")
+
+
+def _set_aside_unencodable(
+    entries: list[ScanEntry],
+) -> tuple[list[ScanEntry], list[ScanEntry], set[str]]:
+    """``entries`` split into those the server can carry and the topmost of
+    those it cannot, shown with replacement marks: everything under a
+    misnamed folder is misnamed too, and one line stands for it. Then the
+    links among them whose own name is UTF-8, decided before any mark is
+    shown, since a shown name always encodes."""
+    kept = [e for e in entries if _encodable(e.path, e.symlink_target)]
+    if len(kept) == len(entries):
+        return entries, [], set()
+    # Shortest first, and a set of tops: in path order ``bad\xff-old`` sorts
+    # between ``bad\xff`` and ``bad\xff/child``.
+    tops: dict[str, ScanEntry] = {}
+    for e in sorted((e for e in entries if not _encodable(e.path, e.symlink_target)), key=lambda e: e.path.count("/")):
+        parts = e.path.split("/")
+        if not any("/".join(parts[:i]) in tops for i in range(1, len(parts))):
+            tops[e.path] = e
+    shown = [replace(e, path=shown_name(e.path)) for e in sorted(tops.values(), key=lambda e: e.path)]
+    return kept, shown, {path for path in tops if _encodable(path)}
+
+
 @dataclass(slots=True)
 class ScanResult:
     entries: list[ScanEntry]
@@ -408,6 +452,14 @@ class ScanResult:
     errors: list[dict[str, Any]]
     hashed: int
     reused: int
+    #: Entries whose name or link target is not UTF-8 (a zip made under
+    #: another locale's encoding, unpacked without converting). No manifest
+    #: row can key one, and one in a batch insert failed the whole pass, every
+    #: pass. See ``_set_aside_unencodable``.
+    unnamed: list[ScanEntry] = field(default_factory=list)
+    #: Those of ``unnamed`` whose own path is UTF-8 (a link whose target is
+    #: not): the link is still there, so its last row stands.
+    unnamed_links: set[str] = field(default_factory=set)
     #: Folders taken whole past ``GIT_HISTORY_MAX_BYTES``, as ``{path,
     #: size}``: sized by stat and never read, so they have no entries.
     whole_too_large: list[dict[str, Any]] = field(default_factory=list)
@@ -674,6 +726,9 @@ async def scan_workspace(
     projects share the root, each syncs under its own advisory lock, and a walk
     from the root would have each of them claim the others' files and prune its
     own manifest.
+
+    Every path it returns is one the server can encode: a row, a log line
+    and a JSON response all have to carry it.
     """
     spec = exclusion_spec(max_file_bytes, max_history_bytes)
     spec["root"] = layout.workspace
@@ -692,16 +747,41 @@ async def scan_workspace(
     # A runtime that predates the exact-name key reports the marker as a
     # file; a manifest row for it would restore a "populated" claim into a
     # sandbox before its files arrive, so the server drops it as well.
-    entries = [
-        ScanEntry.from_wire(e)
-        for e in out.get("entries", [])
-        if e["path"] not in (SYNC_MARKER_NAME, DEFERRED_MARKER)
+    # A file too large to carry whose name is not UTF-8 is set aside with the
+    # rest: shown with replacement marks, ``p\xff/.git/big.pack`` could pass
+    # for a file in a real ``p\ufffd/.git`` and drop that history as too large.
+    oversized = [i for i in out.get("oversized", []) if _encodable(str(i.get("path")))]
+    misnamed_oversized = [
+        ScanEntry(str(i.get("path")), "file", int(i.get("size") or 0), 0, 0, None, None, None)
+        for i in out.get("oversized", [])
+        if not _encodable(str(i.get("path")))
     ]
+    entries, unnamed, unnamed_links = _set_aside_unencodable(
+        [
+            ScanEntry.from_wire(e)
+            for e in out.get("entries", [])
+            if e["path"] not in (SYNC_MARKER_NAME, DEFERRED_MARKER)
+        ]
+        + misnamed_oversized
+    )
+
+    def named(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{**item, "path": shown_name(str(item.get("path")))} for item in items]
+
     return ScanResult(
         entries=entries,
-        oversized=out.get("oversized", []),
-        whole_too_large=out.get("whole_too_large", []),
-        errors=out.get("errors", []),
+        unnamed=unnamed,
+        unnamed_links=unnamed_links,
+        oversized=oversized,
+        # One under a misnamed folder is that folder's line already, and
+        # shown with replacement marks it could pass for a real folder's,
+        # whose history would then be read as too large and dropped.
+        whole_too_large=[
+            {**item, "transient": named(item.get("transient") or [])}
+            for item in out.get("whole_too_large", [])
+            if _encodable(str(item.get("path")))
+        ],
+        errors=named(out.get("errors", [])),
         hashed=int(out.get("hashed") or 0),
         reused=int(out.get("reused") or 0),
         started_ns=out.get("started_ns") if isinstance(out.get("started_ns"), int) else None,

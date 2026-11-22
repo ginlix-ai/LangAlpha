@@ -281,6 +281,13 @@ def _triage_scan(
         UnsavedFile(str(item["path"]), "history_too_large", item.get("size"))
         for item in scan.whole_too_large
     )
+    result.unsaved.extend(_unsaved(e, "bad_name") for e in scan.unnamed)
+    oversized_paths |= scan.unnamed_links
+    if scan.unnamed:
+        logger.warning(
+            f"Workspace {workspace_id} has {len(scan.unnamed)} name(s) that are "
+            f"not UTF-8, not backed up: {scan.unnamed[0].path[:200]}"
+        )
     # A path the manifest cannot key would fail the batch insert and take
     # every other file in the pass down with it. It can still have a row: the
     # cutoff counts bytes and is stricter than the column, so a multibyte path
