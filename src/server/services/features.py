@@ -23,7 +23,9 @@ from src.config import settings
 from src.config.features import (
     FEATURES,
     USER_CONTROLLABLE_GATES,
+    FeatureCategory,
     FeatureGate,
+    FeatureGuide,
     effective_flags,
     has_plan_gated_features,
     org_value,
@@ -53,7 +55,10 @@ class FeatureState(BaseModel):
     key: str
     label: str
     description: str
-    tradeoffs: str | None = None
+    #: How Experiments lists it, and what it shows a user deciding (``FeatureSpec``).
+    category: FeatureCategory | None = None
+    preview: bool = False
+    guide: FeatureGuide | None = None
     enabled: bool
     gate: Literal["none", "opt_in", "opt_out", "plan", "grant"]
     min_tier: int | None = None
@@ -238,7 +243,9 @@ async def list_user_features(user_id: str) -> list[FeatureState]:
                 key=key,
                 label=spec.label,
                 description=spec.description,
-                tradeoffs=spec.tradeoffs,
+                category=spec.category,
+                preview=spec.preview,
+                guide=spec.guide,
                 enabled=resolved[key],
                 gate=flag.gate.value,
                 min_tier=flag.min_tier,

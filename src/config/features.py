@@ -19,9 +19,10 @@ the last two, when the auth service places the user in one; see
 ``effective_flags``):
 
 1. **Catalog** (this module): every feature the codebase knows about, with its
-   hard defaults and the frontend-facing label/description/tradeoffs, in
-   English; a web locale translates them under ``settings.featureCatalog.<key>``
-   (``web/src/locales``) and falls back to this copy. A feature must be
+   hard defaults and the frontend-facing copy (label, description and what
+   Experiments shows a user deciding), in English; a web locale translates
+   them under ``settings.featureCatalog.<key>`` (``web/src/locales``) and
+   falls back to this copy. A feature must be
    declared here to exist anywhere else.
 2. **Deployment posture** (``config.yaml`` ``features:`` section): per-deploy
    override of ``enabled`` / ``gate`` / ``min_tier``; unset fields inherit
@@ -54,9 +55,40 @@ class FeatureGate(StrEnum):
 USER_CONTROLLABLE_GATES = frozenset({FeatureGate.OPT_IN, FeatureGate.OPT_OUT})
 
 
+class FeatureCategory(StrEnum):
+    """The group a feature is listed under in Experiments, by what it changes
+    for the user. The web app names and orders the groups."""
+
+    CHAT = "chat"
+    TOOLS = "tools"
+    AUTONOMY = "autonomy"
+    LONG_THREADS = "long_threads"
+    DASHBOARD = "dashboard"
+
+
+@dataclass(frozen=True)
+class FeatureGuide:
+    """What Experiments shows a user deciding whether to keep a feature.
+
+    ``on_if`` and ``off_if`` finish "Turn it on if" and "Leave it off if" (or
+    "Keep it on if" and "Turn it off if" for an opt-out feature), so each
+    starts in lower case. ``cost`` is the price at a glance, shown beside the
+    default; ``good_to_know`` holds what is true either way. ``caution`` is
+    what switching it loses, which the row shows beside its switch, since the
+    switch toggles without opening the rest.
+    """
+
+    on_if: str
+    off_if: str
+    cost: str | None = None
+    good_to_know: str | None = None
+    caution: str | None = None
+
+
 @dataclass(frozen=True)
 class FeatureSpec:
-    """A code-declared feature and its hard defaults."""
+    """A code-declared feature and its hard defaults. Within a category,
+    features are listed in catalog order."""
 
     key: str
     label: str
@@ -64,7 +96,10 @@ class FeatureSpec:
     enabled: bool = False
     gate: FeatureGate = FeatureGate.NONE
     min_tier: int | None = None  # plan gate only
-    tradeoffs: str | None = None  # honest cost of opting in, shown in Settings
+    category: FeatureCategory | None = None
+    #: Still changing: behavior and pricing may move under it.
+    preview: bool = False
+    guide: FeatureGuide | None = None
     #: Where the user turns it on, when that is somewhere other than
     #: Experiments: Claude Code's opt-in is made by connecting it under Model access.
     home: Literal["model_access"] | None = None
@@ -74,6 +109,118 @@ class FeatureSpec:
 
 
 FEATURES: dict[str, FeatureSpec] = {
+    "agent_plan": FeatureSpec(
+        key="agent_plan",
+        label="Show the agent's plan",
+        description=(
+            "On longer tasks, the agent shows its plan at the top of its work "
+            "in the chat and marks which step it is on."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_OUT,
+        category=FeatureCategory.CHAT,
+        guide=FeatureGuide(
+            on_if=(
+                "you want to see where a long task is heading and catch a wrong "
+                "turn early."
+            ),
+            off_if="you would rather the chat show only the work and the answer.",
+            cost="Almost no extra time or cost",
+            good_to_know=(
+                "Plan updates travel with calls the agent is already making. Quick "
+                "answers show no plan."
+            ),
+        ),
+    ),
+    "market_watch": FeatureSpec(
+        key="market_watch",
+        label="Market watch",
+        description=(
+            "Adds a Market watch toggle to chat: keep a list of symbols for a "
+            "thread, and their live quotes stream into the conversation while "
+            "you work."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.CHAT,
+        guide=FeatureGuide(
+            on_if=(
+                "you trade intraday and want the agent working from the current "
+                "price, not one it looked up earlier."
+            ),
+            off_if=(
+                "your research runs on filings and fundamentals, where live quotes "
+                "only add noise."
+            ),
+            cost="Slower, costlier turns while a watch list is on",
+            good_to_know=(
+                "Each quote update is added to what the model reads. That can pull "
+                "the agent off its main task, and the model re-reads more of the "
+                "thread on every turn, which is where the time and cost go."
+            ),
+        ),
+    ),
+    # The image and the wrapper are on every cloud computer either way: off, the
+    # agent is not offered the skill and no one is shown the browser, which keeps
+    # it unused rather than out of reach.
+    "browser": FeatureSpec(
+        key="browser",
+        label="Browser",
+        description=(
+            "Gives the agent a Chrome on your computers for pages that only "
+            "show what it needs after clicking or typing. Watch it live in the "
+            "file panel's Browser tab, and take control to use the page "
+            "yourself."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.TOOLS,
+        preview=True,
+        guide=FeatureGuide(
+            on_if=(
+                "the sources you need sit behind search forms, filters, sign-ins "
+                "or pages that load as you scroll."
+            ),
+            off_if=(
+                "the pages you research read fine as plain text, or your computer "
+                "is busy with heavy work."
+            ),
+            cost="Uses the computer's memory and CPU",
+            good_to_know=(
+                "It is slower than reading a page directly, and closes after 20 "
+                "minutes unused. Sign-ins made in it are kept on the computer "
+                "unless you turn that off for the computer."
+            ),
+        ),
+    ),
+    "site_crawl": FeatureSpec(
+        key="site_crawl",
+        label="Site crawling",
+        description=(
+            "Gives the agent WebMap and WebCrawl tools: list a site's URLs, "
+            "then crawl whole sections into workspace files."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.TOOLS,
+        preview=True,
+        guide=FeatureGuide(
+            on_if=(
+                "you research across many pages of one site, like a documentation "
+                "site or a company's filing archive."
+            ),
+            off_if=(
+                "you mostly need a few specific pages, which the agent's regular "
+                "web fetch covers for less."
+            ),
+            cost="Billed per page",
+            good_to_know=(
+                "A crawl bills each page it delivers, up to the call's page limit, "
+                "so a broad crawl costs more than targeted fetches. Behavior and "
+                "pricing may change."
+            ),
+        ),
+    ),
     "wakeups": FeatureSpec(
         key="wakeups",
         label="Wakeups",
@@ -85,11 +232,23 @@ FEATURES: dict[str, FeatureSpec] = {
         ),
         enabled=True,
         gate=FeatureGate.OPT_OUT,
-        tradeoffs=(
-            "A wakeup that fires while the thread is idle starts a turn by "
-            "itself, which costs as much as any turn; checking every 5 minutes "
-            "can take up to 24 turns over two hours. Turning this off cancels "
-            "every pending wakeup."
+        category=FeatureCategory.AUTONOMY,
+        guide=FeatureGuide(
+            on_if=(
+                'you hand off tasks that wait on something, like "tell me if NVDA '
+                'breaks 150" or "check the fill after the open".'
+            ),
+            off_if=(
+                "you want every turn, and what it costs, to start with a message "
+                "from you."
+            ),
+            cost="Each wakeup can start a turn",
+            good_to_know=(
+                "A wakeup that fires while the thread is idle costs as much as any "
+                "turn: checking every 5 minutes can take up to 24 turns over two "
+                "hours."
+            ),
+            caution="Turning this off cancels every pending wakeup.",
         ),
     ),
     "order_wakeups": FeatureSpec(
@@ -98,86 +257,27 @@ FEATURES: dict[str, FeatureSpec] = {
         description=(
             "When the agent places an order that does not fill at once, it sets "
             "a wakeup that brings it back to the thread when the order fills, "
-            "partly fills or ends unfilled. You can cancel any of them from the "
-            "chat tray."
+            "partly fills or ends unfilled."
         ),
         enabled=True,
         gate=FeatureGate.OPT_OUT,
-        tradeoffs=(
-            "Each fill or end starts a turn if the thread is idle. Turned off, "
-            "the agent hears how an order ends only if it sets a wakeup itself "
-            "or you ask."
+        category=FeatureCategory.AUTONOMY,
+        guide=FeatureGuide(
+            on_if=(
+                "you let the agent place orders and want it to follow through, "
+                "like setting the exit once the entry fills."
+            ),
+            off_if=(
+                "you watch your orders yourself and would rather not pay for a "
+                "turn on each fill."
+            ),
+            cost="Each fill can start a turn",
+            good_to_know=(
+                "Turned off, the agent hears how an order ends only if it sets a "
+                "wakeup itself or you ask."
+            ),
         ),
         requires=("wakeups",),
-    ),
-    "market_watch": FeatureSpec(
-        key="market_watch",
-        label="Market watch",
-        description=(
-            "Adds a Market watch toggle to chat: keep a per-thread list of symbols "
-            "whose live quotes stream into the conversation while you work, "
-            "so the agent reasons from current intraday prices instead of "
-            "stale lookups."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_IN,
-        tradeoffs=(
-            "Quotes are re-injected into the model's context as they update, "
-            "which can occasionally distract the agent from its main task and "
-            "invalidate the prompt cache. Expect slightly slower, costlier "
-            "turns while a watch list is active."
-        ),
-    ),
-    "site_crawl": FeatureSpec(
-        key="site_crawl",
-        label="Site crawling (experimental)",
-        description=(
-            "Gives the agent WebMap and WebCrawl tools: list a site's URLs, "
-            "then crawl whole sections into workspace files for multi-page "
-            "research (docs sites, filing archives)."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_IN,
-        tradeoffs=(
-            "Crawling bills per delivered page up to the call's page limit, "
-            "so a broad crawl costs more than targeted fetches. Experimental: "
-            "behavior and pricing may change."
-        ),
-    ),
-    # The image and the wrapper are on every cloud computer either way: off, the
-    # agent is not offered the skill and no one is shown the browser, which keeps
-    # it unused rather than out of reach.
-    "browser": FeatureSpec(
-        key="browser",
-        label="Browser (experimental)",
-        description=(
-            "Gives the agent a Chrome on your cloud computers for pages that "
-            "only show what it needs after clicking or typing. Watch it live "
-            "in the file panel's Browser tab, and take control to use the page "
-            "yourself."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_IN,
-        tradeoffs=(
-            "The browser shares the computer's memory and CPU with your other "
-            "work, and closes after 20 minutes unused. It is logged out, and "
-            "slower than reading a page directly. Computers you connect "
-            "yourself don't have it."
-        ),
-    ),
-    "agent_plan": FeatureSpec(
-        key="agent_plan",
-        label="Show the agent's plan",
-        description=(
-            "On longer tasks, the agent shows its plan at the top of its work "
-            "in the chat and marks which step it is on."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_OUT,
-        tradeoffs=(
-            "Plan updates travel with calls the agent is already making, so "
-            "they add little time or cost. Quick answers show no plan."
-        ),
     ),
     "scratchpad": FeatureSpec(
         key="scratchpad",
@@ -185,17 +285,25 @@ FEATURES: dict[str, FeatureSpec] = {
         description=(
             "Gives the agent a scratchpad folder in each thread for its "
             "intermediate files, and has it keep running notes there: key "
-            "findings, decisions and why, and corrections you give mid-task. "
-            "The notes carry a long task through after older messages in the "
-            "thread are summarized."
+            "findings, decisions and why, and corrections you give mid-task."
         ),
         enabled=True,
         gate=FeatureGate.OPT_OUT,
-        tradeoffs=(
-            "The agent spends a few extra tool calls per task keeping its "
-            "notes. The scratchpad and its notes are deleted when you archive "
-            "the thread, so keep anything you want to last in the workspace's "
-            "own files."
+        category=FeatureCategory.LONG_THREADS,
+        guide=FeatureGuide(
+            on_if=(
+                "you give the agent long tasks: the notes carry them through after "
+                "older messages in the thread are summarized."
+            ),
+            off_if=(
+                "your threads are short and you would rather skip the calls the "
+                "notes take."
+            ),
+            cost="A few extra tool calls per task",
+            good_to_know=(
+                "Archiving a thread deletes its scratchpad and notes, so keep "
+                "anything you want to last in the workspace's own files."
+            ),
         ),
     ),
     "provider_compaction": FeatureSpec(
@@ -205,17 +313,69 @@ FEATURES: dict[str, FeatureSpec] = {
             "When a long thread is compacted, Claude and OpenAI models "
             "summarize it with their provider's own compaction rather than "
             "ours, which keeps more of what they knew: Claude keeps its "
-            "reasoning in the turns it keeps. To turn it off for one model "
-            "only, use Per-model settings on the Model tab."
+            "reasoning in the turns it keeps."
         ),
         enabled=True,
         gate=FeatureGate.OPT_OUT,
-        tradeoffs=(
-            "OpenAI's summary is encrypted, so only OpenAI models can read it "
-            "and the compaction card shows a plain record of the conversation "
-            "instead. Switch such a thread to another provider's model and it "
-            "gets that record, which leaves out the earlier tool results."
+        category=FeatureCategory.LONG_THREADS,
+        guide=FeatureGuide(
+            on_if="you keep each thread with one provider's models.",
+            off_if=(
+                "you often switch a thread between providers. OpenAI's summary is "
+                "encrypted, so another provider's model gets only a plain record "
+                "of the conversation, without the earlier tool results."
+            ),
+            good_to_know=(
+                "To turn it off for one model only, use Per-model settings on the "
+                "Model tab."
+            ),
         ),
+    ),
+    # Each user opts in. For one who has, a completed turn arms its thread's
+    # summary while the thread is idle on a warm cache
+    # (``services.idle_compaction``), on routes whose cache entries live an
+    # hour only, Claude Code's among them, whose CLI compacts the session;
+    # "Summarize long threads after a break" (``Tuning.cold_compaction``)
+    # turned off still keeps it from summarizing.
+    "idle_compaction": FeatureSpec(
+        key="idle_compaction",
+        label="Idle compaction",
+        description=(
+            "Summarizes a long Claude thread while it sits idle, before its "
+            "hour-long prompt cache expires, so the next message neither waits "
+            "for a summary nor sends the whole conversation again. Applies "
+            "where the cache lasts an hour: Claude Code mode, and the Claude "
+            "sign-in (legacy)."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.LONG_THREADS,
+        guide=FeatureGuide(
+            on_if=(
+                "you use Claude Code mode or the Claude sign-in and come back to "
+                "long threads after a break."
+            ),
+            off_if=(
+                "you often leave long threads for good: the summary runs whether "
+                "or not you come back."
+            ),
+            cost="About a turn per summary",
+            good_to_know=(
+                "Each summary reads the thread from the warm cache and writes the "
+                "summary, which costs about what a turn does."
+            ),
+        ),
+    ),
+    "a_share_pack": FeatureSpec(
+        key="a_share_pack",
+        label="A-share market pack",
+        description=(
+            "Switches the dashboard news widget to the Chinese-language CN "
+            "market feed (Chinese locales only)."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.DASHBOARD,
     ),
     # On for everyone. The models are listed only where the backend can run
     # them (``src.llms.claude_code.rows_available``: the ``claude-code`` extra
@@ -236,30 +396,6 @@ FEATURES: dict[str, FeatureSpec] = {
         gate=FeatureGate.NONE,
         home="model_access",
     ),
-    # Each user opts in. For one who has, a completed turn arms its thread's
-    # summary while the thread is idle on a warm cache
-    # (``services.idle_compaction``), on routes whose cache entries live an
-    # hour only, Claude Code's among them, whose CLI compacts the session;
-    # "Summarize long threads after a break" (``Tuning.cold_compaction``)
-    # turned off still keeps it from summarizing.
-    "idle_compaction": FeatureSpec(
-        key="idle_compaction",
-        label="Idle compaction",
-        description=(
-            "Summarizes a long Claude thread while it sits idle, before its "
-            "hour-long prompt cache expires, so the next message neither waits "
-            "for a summary nor sends the whole conversation again. Applies "
-            "where the cache lasts an hour: Claude Code mode, and the Claude "
-            "sign-in (legacy)."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_IN,
-        tradeoffs=(
-            "Each summary costs like a turn: it reads the thread from the "
-            "warm cache and writes the summary. It runs whether or not you "
-            "come back, so a thread you leave for good still pays for one."
-        ),
-    ),
     # Who may start a new Claude sign-in (the ``claude-oauth`` provider),
     # which Claude Code replaces: only the users migration 121 granted it to,
     # every one with a Claude sign-in stored, who keep reconnecting it. A
@@ -275,16 +411,6 @@ FEATURES: dict[str, FeatureSpec] = {
         ),
         enabled=True,
         gate=FeatureGate.GRANT,
-    ),
-    "a_share_pack": FeatureSpec(
-        key="a_share_pack",
-        label="A-share market pack",
-        description=(
-            "Switches the dashboard news widget to the Chinese-language CN "
-            "market feed (Chinese locales only)."
-        ),
-        enabled=True,
-        gate=FeatureGate.OPT_IN,
     ),
     # Off in every deployment until one turns it on. Even then it resolves on
     # only for an account the auth service places in an organization that
