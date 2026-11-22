@@ -28,6 +28,7 @@ from src.server.services.persistence._rows import (
 )
 from src.server.services.persistence.sync_result import SyncResult, UnsavedFile
 from src.server.services.persistence.transfer import ScanEntry, ScanResult
+from tests.unit.server.services._no_db import NoDbConn
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ def _sync_lock():
 
     @asynccontextmanager
     async def _lock(_workspace_id, *, conn=None):
-        yield None
+        yield NoDbConn()
 
     @asynccontextmanager
     async def _hold(_workspace_id, *, wait_s):

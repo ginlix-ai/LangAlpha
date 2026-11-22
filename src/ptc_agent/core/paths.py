@@ -685,11 +685,16 @@ ALWAYS_HIDDEN_DIR_NAMES: frozenset[str] = frozenset({
 })
 
 ALWAYS_HIDDEN_PATH_SEGMENTS: tuple[str, ...] = ("/__pycache__/",)
+#: What an OS leaves in any folder a person opens in a file browser (Finder's
+#: view settings, Explorer's thumbnails). Never the person's work, so it is
+#: neither listed nor backed up.
+OS_LITTER_BASENAMES: tuple[str, ...] = (".DS_Store", "Thumbs.db")
 ALWAYS_HIDDEN_BASENAMES: tuple[str, ...] = (
     "__init__.py",
     ".bash_logout",
     ".bashrc",
     ".profile",
+    *OS_LITTER_BASENAMES,
 )
 ALWAYS_HIDDEN_SUFFIXES: tuple[str, ...] = (".pyc",)
 #: Every transient file the transfer runtime or the server writes into a

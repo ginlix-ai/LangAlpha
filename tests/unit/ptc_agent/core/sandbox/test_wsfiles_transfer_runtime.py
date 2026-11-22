@@ -405,7 +405,7 @@ def test_scan_oversized_reported_not_emitted(tmp_path):
     _write(tmp_path, "ok.bin", b"z" * 100)
     out = _scan(tmp_path)
     assert [e["path"] for e in out["entries"]] == ["ok.bin"]
-    assert out["oversized"] == [{"path": "big.bin", "size": 101}]
+    assert [(o["path"], o["size"]) for o in out["oversized"]] == [("big.bin", 101)]
     assert out["hashed"] == 1
 
 

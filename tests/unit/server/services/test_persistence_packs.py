@@ -23,6 +23,7 @@ from src.server.services.persistence import backup, blobs, resolve, restore
 from src.server.services.persistence.resolve import resolve_file_bytes
 from src.server.services.persistence.transfer import PACK_CUTOFF, PACK_MAX_BYTES, ScanEntry, ScanResult
 from src.server.database.workspace_file import micros_to_datetime
+from tests.unit.server.services._no_db import NoDbConn
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +43,7 @@ def _sync_lock():
 
     @asynccontextmanager
     async def _lock(_workspace_id):
-        yield None
+        yield NoDbConn()
 
     with patch.object(backup, "workspace_sync_lock", _lock):
         yield

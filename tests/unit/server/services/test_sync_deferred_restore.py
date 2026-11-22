@@ -22,6 +22,7 @@ import pytest
 from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from src.server.services.persistence import backup, transfer
 from src.server.services.persistence.transfer import DEFERRED_MARKER
+from tests.unit.server.services._no_db import NoDbConn
 
 WS = "ws-deferred-restore"
 LAYOUT = SandboxLayout.for_root("/home/workspace").for_workspace("deferred-ab12")
@@ -98,7 +99,7 @@ async def _sync(manifest: _Manifest, entries: list[dict]):
 
     @asynccontextmanager
     async def _lock(_workspace_id):
-        yield None
+        yield NoDbConn()
 
     listing = {
         "entries": entries,

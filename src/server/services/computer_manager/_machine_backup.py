@@ -35,6 +35,7 @@ from src.server.services.persistence.transfer import (
     ScanRules,
     SweepResult,
     SweepTarget,
+    history_cap_bytes,
     scan_cap_bytes,
     sweep_projects,
 )
@@ -247,8 +248,9 @@ class MachineBackupMixin:
         # The cap a sync of any of these projects would use now: it depends on
         # the deployment and the sandbox, not the project, so one answer
         # serves every mark on the machine.
+        blobs_on = is_storage_enabled()
         rules = ScanRules.of(
-            scan_cap_bytes(session.sandbox, blobs_on=is_storage_enabled())
+            scan_cap_bytes(session.sandbox, blobs_on=blobs_on), history_cap_bytes(blobs_on=blobs_on)
         )
         root = binding.root_dir or self.config.filesystem.working_directory
 

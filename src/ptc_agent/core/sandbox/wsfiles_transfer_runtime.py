@@ -21,6 +21,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -298,6 +299,13 @@ class _Exclusions:
         self.root_basenames = set(spec.get("exclude_root_basenames") or ())
         self.root_prefixes = tuple(spec.get("exclude_root_basename_prefixes") or ())
         self.suffixes = tuple(spec.get("exclude_suffixes") or ())
+        # Folders taken whole: the name rules above are about a working
+        # tree, and inside a ``.git`` the same names are refs (a branch
+        # ``node_modules/topic``, a ``fix.o``) whose loss strands a commit.
+        self.whole = frozenset(spec.get("whole_dir_names") or ())
+        # A folder taken whole and larger than this is reported by size and
+        # never read: none of it would be stored, so hashing it is waste.
+        self.max_whole_bytes = spec.get("max_whole_dir_bytes")
         # A copy's own rules, which no backup sets, each matching any kind of
         # entry: paths by how they end, read from the walked folder's own
         # name so a folder copied on its own matches too; names by pattern;
@@ -319,6 +327,10 @@ class _Exclusions:
             return (st.st_dev, st.st_ino) in self.same_as
         return False
 
+    def in_whole(self, rel: str) -> bool:
+        """Whether ``rel`` sits below a folder taken whole."""
+        return bool(self.whole) and not self.whole.isdisjoint(rel.split("/")[:-1])
+
     def kind(self, child: Any, rel: str, at_root: bool) -> str | None:
         """``child``'s kind as a backup carries it, or None when it is left out.
 
@@ -334,12 +346,21 @@ class _Exclusions:
             return None
         if self._left_out_by_copy(child, rel):
             return None
+        if self.in_whole(rel):
+            if child.is_symlink():
+                return "symlink"
+            if child.is_dir(follow_symlinks=False):
+                return "dir"
+            return "file" if child.is_file(follow_symlinks=False) else None
         if child.is_symlink():
             # A symlink standing where an excluded directory would be is that
             # directory as far as a restore is concerned, so it answers to the
-            # path-anchored rules too.
+            # path-anchored rules too. One standing for a folder taken whole
+            # points at a history outside this one: stored, it restored as a
+            # dangling link, or one into whatever sits at that path by then.
             left_out = (
                 name in self.dir_names
+                or name in self.whole
                 or name in self.basenames
                 or rel in self.rel_files
                 or rel in self.rel_dirs
@@ -404,6 +425,61 @@ def _root(spec: dict[str, Any]) -> str:
     return os.path.abspath(root)
 
 
+# Inside a git folder: ``HEAD`` (a linked worktree's too), then refs, the
+# object store last, the rest between.
+_GIT_READ_ORDER = {"HEAD": 0, "worktrees": 0, "refs": 1, "objects": 3}
+
+
+def _git_read_order(entry: os.DirEntry) -> tuple[int, str]:
+    return _GIT_READ_ORDER.get(entry.name, 2), entry.name
+
+
+_GIT_TEMP = re.compile(r"(?:^|/)objects/(?:incoming-|(?:[0-9a-f]{2}|pack)/(?:tmp_|\.tmp-))")
+
+
+def _git_transient(rel: str) -> bool:
+    """Whether ``rel``, a path inside a ``.git``, is one of git's locks or
+    half-written files. The server's ``repos._git_is_writing`` by hand, since
+    this script ships stdlib-only; a test holds the two to one answer."""
+    parts = rel.split("/")
+    if parts[-1].endswith(".lock"):
+        return True
+    if any(p == "refs" and (i == 0 or parts[i - 1] != "modules") for i, p in enumerate(parts)):
+        return False
+    return parts[-1] == "gc.pid" or _GIT_TEMP.search(rel) is not None
+
+
+def _tree_bytes(path: str, rel: str) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """The bytes of the regular files under ``path``, by stat alone, what
+    among them may be git writing, which the total leaves out (a repack holds
+    the old packs and the new one at once), and what could not be read. A
+    history under the limit is walked again, which reports those itself."""
+    total = 0
+    transient: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    stack = [(path, rel)]
+    while stack:
+        abs_dir, rel_dir = stack.pop()
+        try:
+            with os.scandir(abs_dir) as it:
+                for child in it:
+                    child_rel = f"{rel_dir}/{child.name}"
+                    try:
+                        if child.is_dir(follow_symlinks=False):
+                            stack.append((child.path, child_rel))
+                        elif child.is_file(follow_symlinks=False):
+                            st = child.stat(follow_symlinks=False)
+                            if _git_transient(child_rel[len(rel) + 1 :]):
+                                transient.append({"path": child_rel, "mtime_ns": st.st_mtime_ns})
+                            else:
+                                total += st.st_size
+                    except OSError as exc:
+                        errors.append({"path": child_rel, "error": str(exc), "errno": exc.errno})
+        except OSError as exc:
+            errors.append({"path": rel_dir, "error": str(exc), "errno": exc.errno})
+    return total, transient, errors
+
+
 def scan(spec: dict[str, Any]) -> dict[str, Any]:
     root = _root(spec)
     excluded = _Exclusions(spec)
@@ -419,6 +495,7 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
 
     entries: list[dict[str, Any]] = []
     oversized: list[dict[str, Any]] = []
+    whole_too_large: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     counts = {"hashed": 0, "reused": 0}
 
@@ -426,7 +503,7 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
         st = os.stat(abs_path, follow_symlinks=False)
         size = st.st_size
         if max_file_bytes is not None and size > max_file_bytes:
-            oversized.append({"path": rel, "size": size})
+            oversized.append({"path": rel, "size": size, "mtime_ns": st.st_mtime_ns})
             return
         known = prior.get(rel)
         if _digest_reusable(known, size, st.st_mtime_ns):
@@ -464,6 +541,42 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    def visit(child: os.DirEntry, rel_dir: str) -> None:
+        rel = f"{rel_dir}/{child.name}" if rel_dir else child.name
+        try:
+            kind = excluded.kind(child, rel, not rel_dir)
+            if kind == "symlink":
+                symlink_entry(child.path, rel)
+            elif kind == "dir":
+                if child.name in excluded.whole and excluded.max_whole_bytes is not None:
+                    size, transient, unread = _tree_bytes(child.path, rel)
+                    if size > excluded.max_whole_bytes:
+                        # Read errors stand: like any other, they keep the
+                        # prune from taking the last complete history.
+                        whole_too_large.append({"path": rel, "size": size, "transient": transient})
+                        errors.extend(unread)
+                        return
+                walk(child.path, rel)
+                # Every directory gets a row, not only empty leaves: a
+                # directory's mode is user data too (a read-only tree
+                # has to come back read-only).
+                st = child.stat(follow_symlinks=False)
+                entries.append(
+                    {
+                        "path": rel,
+                        "kind": "dir",
+                        "size": 0,
+                        "mtime_ns": st.st_mtime_ns,
+                        "mode": stat.S_IMODE(st.st_mode),
+                        "sha256": None,
+                        "symlink_target": None,
+                    }
+                )
+            elif kind == "file":
+                file_entry(child.path, rel)
+        except OSError as exc:
+            errors.append({"path": rel, "error": str(exc), "errno": exc.errno})
+
     def walk(abs_dir: str, rel_dir: str) -> None:
         """Post-order walk: a directory's own row follows its children's."""
         try:
@@ -472,33 +585,38 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
         except OSError as exc:
             errors.append({"path": rel_dir or ".", "error": str(exc), "errno": exc.errno})
             return
+        if ".git" in rel_dir.split("/"):
+            # Git writes an object before any ref that names it, so with the
+            # refs read first every commit they point at is already on disk
+            # when the object store is read; the other order lets a commit
+            # landing mid-walk leave a ref to an object the backup never saw.
+            # Loose refs come before ``packed-refs`` too: ``pack-refs`` writes
+            # the packed file before removing the loose ones, so a ref moving
+            # between them is seen in at least one. ``HEAD`` comes before the
+            # refs: ``checkout -b`` writes the branch before ``HEAD`` names it.
+            # Anywhere under a ``.git``: a submodule's history sits in
+            # ``.git/modules/<name>/``.
+            children.sort(key=_git_read_order)
+            refs_at = next((i for i, c in enumerate(children) if c.name == "refs"), None)
+            if refs_at is not None:
+                for child in children[: refs_at + 1]:
+                    visit(child, rel_dir)
+                # Listed again once the refs are read: in a repository with
+                # no ``packed-refs`` yet, the first listing misses the one a
+                # ``pack-refs`` writes, while the walk misses the loose refs
+                # it removed.
+                # A listing that fails now is the only one that could have
+                # found that file, so it is reported like the first.
+                seen = {c.name for c in children}
+                children = children[refs_at + 1 :]
+                try:
+                    with os.scandir(abs_dir) as it:
+                        children += [c for c in it if c.name not in seen]
+                except OSError as exc:
+                    errors.append({"path": rel_dir, "error": str(exc), "errno": exc.errno})
+                children.sort(key=_git_read_order)
         for child in children:
-            rel = f"{rel_dir}/{child.name}" if rel_dir else child.name
-            try:
-                kind = excluded.kind(child, rel, not rel_dir)
-                if kind == "symlink":
-                    symlink_entry(child.path, rel)
-                elif kind == "dir":
-                    walk(child.path, rel)
-                    # Every directory gets a row, not only empty leaves: a
-                    # directory's mode is user data too (a read-only tree
-                    # has to come back read-only).
-                    st = child.stat(follow_symlinks=False)
-                    entries.append(
-                        {
-                            "path": rel,
-                            "kind": "dir",
-                            "size": 0,
-                            "mtime_ns": st.st_mtime_ns,
-                            "mode": stat.S_IMODE(st.st_mode),
-                            "sha256": None,
-                            "symlink_target": None,
-                        }
-                    )
-                elif kind == "file":
-                    file_entry(child.path, rel)
-            except OSError as exc:
-                errors.append({"path": rel, "error": str(exc), "errno": exc.errno})
+            visit(child, rel_dir)
 
     try:
         st = os.stat(root)
@@ -518,6 +636,7 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
         "root_left_out": left_out,
         "entries": entries,
         "oversized": oversized,
+        "whole_too_large": whole_too_large,
         "errors": errors,
         "hashed": counts["hashed"],
         "reused": counts["reused"],
@@ -557,9 +676,21 @@ def sweep(spec: dict[str, Any]) -> dict[str, Any]:
                     if kind is None:
                         continue
                     visited += 1
+                    # A folder's own change time moves with every entry made
+                    # or removed in it, and git makes and removes
+                    # ``index.lock`` at a git folder's root on each
+                    # ``git status``: that root's own time says nothing. Deeper
+                    # folders keep theirs, which is how a ref or an object
+                    # git deleted shows. A submodule's git folder sits under
+                    # ``modules/`` at a depth its name sets, and is known by
+                    # its ``HEAD``.
+                    git_root = kind == "dir" and (
+                        child.name in excluded.whole
+                        or (excluded.in_whole(rel) and os.path.isfile(f"{child.path}/HEAD"))
+                    )
                     # ``>=``: a coarse timestamp can equal a mark taken just
                     # before the change.
-                    if child.stat(follow_symlinks=False).st_ctime_ns >= mark_ns:
+                    if not git_root and child.stat(follow_symlinks=False).st_ctime_ns >= mark_ns:
                         return True
                     if kind == "dir" and newer(child.path, rel, mark_ns):
                         return True

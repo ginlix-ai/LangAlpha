@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_BYTES = 500 * 1024 * 1024
 MAX_FILE_BYTES = 200 * 1024 * 1024
 
+# A backup keeps a repository whole or not at all (``persistence/repos.py``);
+# a hand-back carries files under per-file and per-run caps and leaves what
+# does not fit for the next one, which would land half of a history in Home.
+_NOT_CARRIED_DIR_NAMES = EXCLUDE_DIR_NAMES | {".git"}
+
 # The listing of the stand-in's folder is refused past this.
 _LISTING_CAP = 32 * 1024 * 1024
 # A tar block, and the record GNU tar pads an archive to.
@@ -134,7 +139,7 @@ def _carriable(path: str) -> bool:
     ):
         return False
     return (
-        EXCLUDE_DIR_NAMES.isdisjoint(parts[:-1])
+        _NOT_CARRIED_DIR_NAMES.isdisjoint(parts[:-1])
         and name not in EXCLUDE_BASENAMES
         and not name.endswith(tuple(EXCLUDE_SUFFIXES))
     )

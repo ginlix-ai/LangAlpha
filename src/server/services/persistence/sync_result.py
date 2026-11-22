@@ -1,10 +1,10 @@
 """What one sync pass saved, and every file it could not.
 
 A caller acts differently per reason, which is why failures carry one rather
-than being counted: ``too_large`` and ``path_too_long`` are refused the same
-way by every later sync on this deployment, while the rest can save on the
-next pass. A caller about to destroy the sandbox treats all of them alike,
-since each is a file whose only copy is still in it.
+than being counted: some are refused the same way by every later sync on
+this deployment, while the rest can save on the next pass. A caller about to
+destroy the sandbox waits on every one whose only copy is still in it, which
+is all of them but a repository's history past its limit.
 """
 
 from __future__ import annotations
@@ -16,18 +16,44 @@ if TYPE_CHECKING:
     from src.server.services.persistence.transfer import ScanMark
 
 UnsavedReason = Literal[
-    "too_large", "path_too_long", "unreadable", "changed", "failed"
+    "too_large",
+    "path_too_long",
+    "bad_name",
+    "unreadable",
+    "changed",
+    "failed",
+    "history_too_large",
+    "history_held",
 ]
 
-#: Reasons no later sync on this deployment can get past.
-_PERMANENT: frozenset[UnsavedReason] = frozenset({"too_large", "path_too_long"})
+@dataclass(frozen=True, slots=True)
+class _Reason:
+    #: For a log line or an operator's error.
+    phrase: str
+    #: For the person who asked for a change, after the file's path.
+    user: str
+    #: The next pass tries the file again, so it holds the scan mark back.
+    retried: bool
+    #: Its only copy is still in the sandbox, so a teardown waits on it.
+    at_risk: bool = True
 
-_REASON_PHRASES: dict[UnsavedReason, str] = {
-    "too_large": "too large for this deployment's transfer path",
-    "path_too_long": "path too long to record",
-    "unreadable": "unreadable in the sandbox",
-    "changed": "changed while being saved",
-    "failed": "failed to save",
+
+_REASONS: dict[UnsavedReason, _Reason] = {
+    "too_large": _Reason("too large for this deployment's transfer path", "too large to back up", False),
+    "path_too_long": _Reason("path too long to record", "path too long to back up", False),
+    "bad_name": _Reason("name not UTF-8", "name isn't valid text", False),
+    "unreadable": _Reason("unreadable in the sandbox", "unreadable", True),
+    "changed": _Reason("changed while being saved", "changed while saving", True),
+    "failed": _Reason("failed to save", "didn't upload", True),
+    # A history past the limit was never promised; its files are backed up.
+    "history_too_large": _Reason(
+        "git history over the size limit", "Git history too large to back up", False, at_risk=False
+    ),
+    # Never alone: the file that held the repository has its own line, which
+    # says whether a later pass can save it.
+    "history_held": _Reason(
+        "git history held at its last complete backup", "Git history not backed up this time", False
+    ),
 }
 
 
@@ -65,14 +91,19 @@ class SyncResult:
     scan_mark: ScanMark | None = None
 
     @property
+    def at_risk(self) -> list[UnsavedFile]:
+        """Unsaved files whose only copy is still in the sandbox."""
+        return [f for f in self.unsaved if _REASONS[f.reason].at_risk]
+
+    @property
     def errors(self) -> int:
         """Unsaved files the next sync may still save."""
-        return sum(1 for f in self.unsaved if f.reason not in _PERMANENT)
+        return sum(1 for f in self.unsaved if _REASONS[f.reason].retried)
 
     @property
     def oversized(self) -> int:
         """Unsaved files no sync on this deployment can save."""
-        return sum(1 for f in self.unsaved if f.reason in _PERMANENT)
+        return sum(1 for f in self.unsaved if not _REASONS[f.reason].retried)
 
     def describe_unsaved(self, examples: int = 3) -> str:
         """Each reason with its count and a few paths, for a log line or an error."""
@@ -83,17 +114,8 @@ class SyncResult:
         for reason, paths in by_reason.items():
             shown = ", ".join(paths[:examples])
             more = f", +{len(paths) - examples} more" if len(paths) > examples else ""
-            parts.append(f"{len(paths)} {_REASON_PHRASES[reason]}: {shown}{more}")
+            parts.append(f"{len(paths)} {_REASONS[reason].phrase}: {shown}{more}")
         return "; ".join(parts)
-
-
-_USER_REASONS: dict[UnsavedReason, str] = {
-    "too_large": "too large to back up",
-    "path_too_long": "path too long to back up",
-    "unreadable": "unreadable",
-    "changed": "changed while saving",
-    "failed": "didn't upload",
-}
 
 
 _SHOWN_PATH_CHARS = 120
@@ -126,7 +148,7 @@ class BackupIncomplete(RuntimeError):
                 "backed up first. Try again in a moment."
             )
         shown = ", ".join(
-            f"{_shown_path(f.path)} ({_USER_REASONS[f.reason]})" for f in self.unsaved[:3]
+            f"{_shown_path(f.path)} ({_REASONS[f.reason].user})" for f in self.unsaved[:3]
         )
         more = len(self.unsaved) - 3
         tail = f", and {more} more" if more > 0 else ""

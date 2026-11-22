@@ -103,6 +103,7 @@ async def _run(rows, *, turn="w2", session="default", cached=None, sweep=None, m
         ),
         patch.object(_machine_backup, "sweep_projects", new=sweeper),
         patch.object(_machine_backup, "scan_cap_bytes", return_value=None),
+        patch.object(_machine_backup, "is_storage_enabled", return_value=True),
     ):
         await mgr.backup_changed_projects(turn, session=session)
     return mgr, sweeper
@@ -292,6 +293,7 @@ async def _run_computer(
         ),
         patch.object(_machine_backup, "sweep_projects", new=sweeper),
         patch.object(_machine_backup, "scan_cap_bytes", return_value=None),
+        patch.object(_machine_backup, "is_storage_enabled", return_value=True),
     ):
         done = await mgr.backup_computer_changes(COMPUTER)
     # The machine's start path may rebuild or replace it: a backup never takes it.

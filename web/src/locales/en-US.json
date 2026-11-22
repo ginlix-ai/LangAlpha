@@ -3392,6 +3392,10 @@
       "too_large": "Too large to back up here. Move or split it.",
       "too_large_sized": "Too large to back up here ({{size}}). Move or split it.",
       "path_too_long": "Its path is too long to back up. Shorten its folder names.",
+      "bad_name": "Its name isn't valid text, so it can't be backed up. Rename it.",
+      "history_too_large": "Its Git history is too large to back up. The files are backed up; push the history to keep it.",
+      "history_too_large_sized": "Its Git history is too large to back up ({{size}}). The files are backed up; push the history to keep it.",
+      "history_held": "A file in its Git history couldn't be backed up this time, so the history keeps its last complete backup.",
       "changed": "Changed while saving. The next backup retries.",
       "unreadable": "Couldn't be read in the sandbox. Check its permissions.",
       "failed": "Didn't upload. The next backup retries."
