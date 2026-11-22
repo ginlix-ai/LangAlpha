@@ -31,6 +31,7 @@ from ptc_agent.agent.middleware.order_governance import (
     ExecutionGrant,
     OrderGovernanceMiddleware,
     Proposed,
+    Settled,
 )
 from ptc_agent.agent.middleware.reasoning_compat import ReasoningCompatibilityMiddleware
 from ptc_agent.agent.middleware.tool.argument_parsing import ToolArgumentParsingMiddleware
@@ -148,7 +149,7 @@ class _ApprovedLedger:
         return ExecutionGrant(token=f"{attempt_id}.sig")
 
     async def complete(self, attempt_id, result):
-        return None
+        return Settled()
 
     async def decide(self, attempt_id, decision, message):
         return None

@@ -32,3 +32,9 @@ def test_cancel_rows_and_quiet_hint_are_the_approved_strings():
     assert wording.CANCEL_ROW_SETTING_OFF == approved.CANCEL_ROW_SETTING_OFF
     assert wording.WAKE_QUIET_HINT == approved.WAKE_QUIET_HINT
     assert wording.WAKE_NOTE == approved.WAKE_NOTE
+
+
+def test_placement_lines_are_the_approved_templates():
+    assert wording.PLACED_LINES == approved.PLACED_LINES
+    assert wording.PLACED_AT_AVG == approved.PLACED_AT_AVG
+    assert wording.PLACED_WATCH == approved.PLACED_WATCH

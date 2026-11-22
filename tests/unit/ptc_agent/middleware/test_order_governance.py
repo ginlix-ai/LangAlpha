@@ -24,6 +24,7 @@ from ptc_agent.agent.middleware.order_governance import (
     OrderGovernanceMiddleware,
     Proposed,
     Refusal,
+    Settled,
     execution_token,
 )
 
@@ -81,6 +82,7 @@ class _FakeLedger:
         self.consumed: list[str] = []
         self.completed: list[tuple[str, ToolMessage]] = []
         self.proposed_args: list[dict] = []
+        self.note: str | None = None
         self._n = 0
 
     async def propose(self, message_id, tool_call_id, tool_name, stamp, args) -> Proposed:
@@ -123,12 +125,12 @@ class _FakeLedger:
         self.status[attempt_id] = "submitting"
         return ExecutionGrant(token=f"{attempt_id}.9999.sig")
 
-    async def complete(self, attempt_id, result) -> dict[str, Any]:
+    async def complete(self, attempt_id, result) -> Settled:
         self.completed.append((attempt_id, result))
         self.status[attempt_id] = (
             "failed" if result.status == "error" else "submitted"
         )
-        return self._receipt(attempt_id)
+        return Settled(self._receipt(attempt_id), self.note)
 
     async def refuse(self, attempt_id, reason) -> dict[str, Any] | None:
         self.refused.append((attempt_id, reason))
@@ -328,6 +330,27 @@ async def test_an_error_result_still_settles_its_attempt(monkeypatch):
 
     assert [a for a, _ in ledger.completed] == ["att-1"]
     assert result.artifact[RECEIPT_KEY]["outcome"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    ['{"order_id": "OID-1"}', [{"type": "text", "text": '{"order_id": "OID-1"}'}]],
+)
+async def test_the_ledgers_note_follows_the_vendors_answer(content):
+    ledger = _FakeLedger(approval_required=False)
+    ledger.note = "Order ledger: order OID-1 is working and has not filled yet."
+    mw = OrderGovernanceMiddleware(ledger, [_tool()])
+    await mw.aafter_model(_state(), None)
+
+    handler = _Handler(result=ToolMessage(content=content, tool_call_id="call-1"))
+    result = await mw.awrap_tool_call(_Request(), handler)
+
+    if isinstance(content, str):
+        assert result.content == f"{content}\n\n{ledger.note}"
+    else:
+        assert result.content == [*content, {"type": "text", "text": ledger.note}]
+    assert result.artifact[RECEIPT_KEY]["outcome"]["status"] == "submitted"
 
 
 @pytest.mark.asyncio

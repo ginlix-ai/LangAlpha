@@ -10,9 +10,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+
+# Imported before the fixture patches each loaded module's connection.
+from src.server.database import order_reconciliation
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -70,11 +74,9 @@ def _slots(n: int) -> tuple[datetime, ...]:
 async def _arm(thread, **fields):
     from src.server.database.wakeups.arm import WakeupSpec, arm_wakeups
 
-    armed, left_out = await arm_wakeups(
-        thread.id, thread.user_id, [WakeupSpec(**fields)]
-    )
-    assert not left_out
-    return armed[0]
+    [row] = await arm_wakeups(thread.id, thread.user_id, [WakeupSpec(**fields)])
+    assert row is not None
+    return row
 
 
 async def _cron(thread, n: int):
@@ -109,9 +111,8 @@ async def test_the_cap_leaves_out_the_specs_past_it(thread):
         WakeupSpec(kind="at", timezone="UTC", schedule=(future + timedelta(minutes=i),))
         for i in range(4)
     ]
-    armed, left_out = await arm_wakeups(thread.id, thread.user_id, specs, cap=3)
-    assert len(armed) == 3
-    assert left_out == [3]
+    rows = await arm_wakeups(thread.id, thread.user_id, specs, cap=3)
+    assert [row is not None for row in rows] == [True, True, True, False]
 
 
 # --- fire_due_slots ---------------------------------------------------------
@@ -614,3 +615,279 @@ async def test_a_fill_already_there_when_the_wakeup_was_set_does_not_fire_it(
     )
     assert await fire_order_wakeups(None) == []
     assert (await _row(db_conn, row["wakeup_id"]))["status"] == "armed"
+
+
+async def test_an_order_already_watched_gets_its_wakeup_back(thread, db_conn):
+    from src.server.database.wakeups.arm import WakeupSpec, arm_wakeups
+
+    attempt = await _attempt(db_conn, thread, status="working", filled=0)
+    first = await _watch(thread, attempt, 0)
+
+    spec = WakeupSpec(
+        kind="order",
+        label="NVDA entry",
+        attempt_id=attempt,
+        vendor_order_id="7712045",
+        baseline_filled_qty=0,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+    # The thread is full apart from it, and the second set still succeeds:
+    # the order takes no new room.
+    [row] = await arm_wakeups(thread.id, thread.user_id, [spec], cap=1)
+
+    assert str(row["wakeup_id"]) == str(first["wakeup_id"])
+    assert row["label"] == "NVDA entry"
+    cur = await db_conn.execute(
+        "SELECT COUNT(*) AS n FROM wakeups WHERE attempt_id = %s", (attempt,)
+    )
+    assert (await cur.fetchone())["n"] == 1
+
+
+async def test_setting_an_order_wakeup_again_moves_its_lapse_out(thread, db_conn):
+    """Setting it again before the lapse is how a long-resting order is kept
+    followed, so the reused wakeup lapses no sooner than the new one would."""
+    from src.server.database.wakeups.arm import WakeupSpec, arm_wakeups
+
+    attempt = await _attempt(db_conn, thread, status="working", filled=0)
+    first = await _watch(thread, attempt, 0)
+    later = datetime.now(timezone.utc) + timedelta(days=30)
+
+    def spec(expires_at):
+        return WakeupSpec(
+            kind="order",
+            attempt_id=attempt,
+            vendor_order_id="7712045",
+            baseline_filled_qty=0,
+            expires_at=expires_at,
+        )
+
+    [row] = await arm_wakeups(thread.id, thread.user_id, [spec(later)])
+    assert str(row["wakeup_id"]) == str(first["wakeup_id"])
+    assert row["expires_at"] == later
+    # A shorter one never pulls it back in.
+    [row] = await arm_wakeups(thread.id, thread.user_id, [spec(later - timedelta(days=20))])
+    assert row["expires_at"] == later
+
+
+async def test_a_fired_order_wakeup_leaves_room_to_watch_the_rest(thread, db_conn):
+    from src.server.database.wakeups.fire import fire_order_wakeups
+
+    attempt = await _attempt(db_conn, thread, status="working", filled=0)
+    first = await _watch(thread, attempt, 0)
+    await db_conn.execute(
+        "UPDATE order_attempts SET status = 'partially_filled', filled_qty = 40"
+        " WHERE attempt_id = %s",
+        (attempt,),
+    )
+    await fire_order_wakeups(None)
+
+    again = await _watch(thread, attempt, 40)
+
+    assert str(again["wakeup_id"]) != str(first["wakeup_id"])
+
+
+async def test_placing_an_order_sets_the_wakeup_its_result_names(
+    thread, db_conn, monkeypatch
+):
+    """The whole placement path on a real row: settle, arm, and the note."""
+    import json
+
+    from langchain_core.messages import ToolMessage
+
+    from src.server.services.brokerage_orders import adapter_for
+    from src.server.services.egress.order_ledger import (
+        ORDER_WAKEUP_KEY,
+        OrderAttemptLedger,
+    )
+    from src.server.services.wakeups import placed
+    from src.tools.wakeups import orders as order_wakeups
+
+    args = {
+        "acc_id": "1234567",
+        "market": 100,
+        "symbol": "AAPL",
+        "order_side": 1,
+        "order_type": 1,
+        "qty": "1",
+        "price": "50",
+        "order_trade_time_type": 1,
+    }
+    order = adapter_for("moomoo").parse_request("sim_trade_input_order", args)
+    cur = await db_conn.execute(
+        """
+        INSERT INTO order_attempts
+            (user_id, workspace_id, thread_id, message_id, tool_call_id, server,
+             vendor, tool, action, mode, args, order_json, status, executed_at,
+             dispatched_at)
+        VALUES (%s, %s, %s, %s, %s, 'moomoo', 'moomoo', 'sim_trade_input_order',
+                'place', 'paper', %s::jsonb, %s::jsonb, 'submitting', NOW(), NOW())
+        RETURNING attempt_id::text AS id
+        """,
+        (
+            thread.user_id,
+            thread.workspace_id,
+            thread.id,
+            uuid.uuid4().hex,
+            uuid.uuid4().hex,
+            json.dumps(args),
+            json.dumps(order.to_json()),
+        ),
+    )
+    attempt_id = (await cur.fetchone())["id"]
+    monkeypatch.setattr(order_wakeups, "readback_on", lambda: True)
+    monkeypatch.setattr(placed, "user_feature_enabled_or", AsyncMock(return_value=True))
+
+    ledger = OrderAttemptLedger(user_id=thread.user_id, thread_id=thread.id)
+    settled = await ledger.complete(
+        attempt_id,
+        ToolMessage(
+            content='{"ret_code":0,"ret_msg":"success","data":{"order_id":"900101"}}',
+            tool_call_id="call-1",
+        ),
+    )
+
+    short_id = settled.receipt[ORDER_WAKEUP_KEY]["short_id"]
+    assert settled.note.startswith(
+        "Order ledger: order 900101 is working and has not filled yet. "
+        f"Order wakeup {short_id} was set for you: you hear here when this order fills"
+    )
+    cur = await db_conn.execute(
+        "SELECT kind, status, vendor_order_id, baseline_filled_qty FROM wakeups"
+        " WHERE attempt_id = %s",
+        (attempt_id,),
+    )
+    assert [dict(r) for r in await cur.fetchall()] == [
+        {
+            "kind": "order",
+            "status": "armed",
+            "vendor_order_id": "900101",
+            "baseline_filled_qty": 0,
+        }
+    ]
+
+
+async def test_an_order_watched_twice_in_a_thread_is_one_row(thread):
+    """A watch is keyed by the order, not by a call, and takes its thread's
+    workspace, since no call names one."""
+    from src.server.database.order_attempts import insert_watch
+    from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
+
+    async def watch():
+        return await insert_watch(
+            user_id=thread.user_id,
+            thread_id=thread.id,
+            server="robinhood",
+            vendor="robinhood",
+            tool="get_equity_orders",
+            account_ref="acct_test",
+            order={"vendor": "robinhood", "mode": "live"},
+            outcome=OrderOutcome(
+                status=AttemptStatus.WORKING, vendor_order_id="7712045"
+            ),
+        )
+
+    first = await watch()
+    again = await watch()
+
+    assert again["attempt_id"] == first["attempt_id"]
+    assert first["action"] == "watch"
+    assert first["status"] == "working"
+    assert first["vendor_order_id"] == "7712045"
+    assert str(first["workspace_id"]) == thread.workspace_id
+
+
+async def test_a_watch_is_read_only_while_a_wakeup_waits_on_it(thread, db_conn):
+    """A watch made no order: once nothing waits on it, the sweep leaves it."""
+    from src.server.database.order_attempts import insert_watch
+    from src.server.database.order_reconciliation import list_stale_attempts
+    from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
+
+    watch = await insert_watch(
+        user_id=thread.user_id,
+        thread_id=thread.id,
+        server="robinhood",
+        vendor="robinhood",
+        tool="get_equity_orders",
+        account_ref="acct_test",
+        order={"vendor": "robinhood", "mode": "live"},
+        outcome=OrderOutcome(status=AttemptStatus.WORKING, vendor_order_id="7712045"),
+    )
+    attempt_id = str(watch["attempt_id"])
+
+    async def taken() -> bool:
+        # Past every window the sweep holds a row off for.
+        await db_conn.execute(
+            "UPDATE order_attempts SET updated_at = NOW() - INTERVAL '1 hour', swept_at = NULL"
+            " WHERE attempt_id = %s::uuid",
+            (attempt_id,),
+        )
+        rows = await list_stale_attempts(
+            submitting_grace_seconds=120,
+            open_after_seconds=60,
+            resweep_after_seconds=60,
+            limit=500,
+        )
+        return attempt_id in {str(r["attempt_id"]) for r in rows}
+
+    assert not await taken()
+    wakeup = await _watch(thread, attempt_id, 0)
+    assert await taken()
+    await db_conn.execute(
+        "UPDATE wakeups SET status = 'cancelled', cancelled_by = 'agent', cancelled_at = NOW()"
+        " WHERE wakeup_id = %s",
+        (wakeup["wakeup_id"],),
+    )
+    assert not await taken()
+
+
+async def test_a_watch_lookup_finds_its_account_under_a_shared_order_id(thread):
+    """An id is unique within an account only: the newer row elsewhere must not
+    hide the one at the named account."""
+    from src.server.database.order_attempts import find_open_thread_order, insert_watch
+    from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
+
+    async def watch(account):
+        return await insert_watch(
+            user_id=thread.user_id,
+            thread_id=thread.id,
+            server="robinhood",
+            vendor="robinhood",
+            tool="get_equity_orders",
+            account_ref=account,
+            order={"vendor": "robinhood", "mode": "live"},
+            outcome=OrderOutcome(status=AttemptStatus.WORKING, vendor_order_id="1001"),
+        )
+
+    a = await watch("acct_a")
+    await watch("acct_b")
+
+    found = await find_open_thread_order(
+        thread.id, "1001", brokerage="robinhood", account_ref="acct_a"
+    )
+    assert found["attempt_id"] == a["attempt_id"]
+    assert await find_open_thread_order(
+        thread.id, "1001", brokerage="ibkr", account_ref="acct_a"
+    ) is None
+    # A bare id names an order this thread placed, never a watch under it.
+    assert await find_open_thread_order(thread.id, "1001") is None
+
+
+async def test_a_watch_claims_its_order_from_when_it_began(thread):
+    """A placement owns its id outright; a watch only from when it began."""
+    from src.server.database.order_attempts import insert_watch
+    from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
+
+    row = await insert_watch(
+        user_id=thread.user_id,
+        thread_id=thread.id,
+        server="robinhood",
+        vendor="robinhood",
+        tool="get_equity_orders",
+        account_ref="acct_a",
+        order={"vendor": "robinhood", "mode": "live"},
+        outcome=OrderOutcome(status=AttemptStatus.WORKING, vendor_order_id="2002"),
+    )
+    claimed = await order_reconciliation.claimed_vendor_order_ids(
+        thread.user_id, "robinhood", "acct_a"
+    )
+    assert claimed["2002"] == row["created_at"]

@@ -228,7 +228,7 @@ def test_a_series_inside_one_day_has_no_by_day_line():
 
 
 @pytest.mark.asyncio
-async def test_a_wakeup_past_the_cap_of_ten_is_refused_by_name(db):
+async def test_a_wakeup_past_the_cap_is_refused_by_name(db):
     for i in range(MAX_PENDING - 1):
         await text_of({"triggers": [{"at": "2026-10-21T08:30", "label": f"early {i}"}]})
     entries = [
@@ -236,9 +236,10 @@ async def test_a_wakeup_past_the_cap_of_ten_is_refused_by_name(db):
         {"at": "2026-10-21T10:30", "label": "second"},
     ]
     text = await text_of({"triggers": entries})
-    assert text.splitlines()[0].startswith("Set w_0009. ")
+    # Short ids count up in hex: the one that fits is the cap's last slot.
+    assert text.splitlines()[0].startswith(f"Set w_{MAX_PENDING - 1:04x}. ")
     assert (
-        "Not set:\n- second: this conversation already has 10 pending wakeups; cancel one first."
+        f"Not set:\n- second: this conversation already has {MAX_PENDING} pending wakeups; cancel one first."
         in text
     )
 
@@ -330,3 +331,49 @@ async def test_a_set_the_setting_turns_off_under_is_ended_as_the_off_sweep_would
     assert [r["status"] for r in db.rows] == ["cancelled"]
     assert db.cancel_calls == [(THREAD, [str(db.rows[0]["wakeup_id"])], "setting_off")]
     assert tool_mod.wakeups_changed.await_count == (1 if price else 0)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_the_senders_own_data_cannot_watch_their_orders(db, monkeypatch):
+    # A shared workspace's turn reaches the owner's connectors, never the
+    # sender's own brokerage, so watching an order placed elsewhere is refused
+    # before anything is read.
+    watch = AsyncMock()
+    monkeypatch.setattr(tool_mod.order_wakeups, "watch_spec", watch)
+    text, _artifact, _error = await tool_mod._execute(
+        {
+            "triggers": [
+                {"order": {"id": "ord_1", "brokerage": "robinhood", "account": "acct_1"}}
+            ]
+        },
+        {"messages": []},
+        configurable(),
+        watch_elsewhere=False,
+    )
+    assert (
+        "- order ord_1: robinhood can't be read from this workspace right now; "
+        "set a timer to check on it." in text
+    )
+    watch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_watch_the_entries_before_it_fill_the_room_for_reads_nothing(db, monkeypatch):
+    # The arm fills slots in entry order, so timers ahead of a watch that take
+    # the last slots leave it refused at the cap without a brokerage read.
+    read = AsyncMock()
+    monkeypatch.setattr(order_wakeups, "readback_on", lambda: True)
+    monkeypatch.setattr(order_wakeups, "_watch", read)
+    monkeypatch.setattr(order_wakeups.attempts_db, "find_open_thread_order", AsyncMock(return_value=None))
+    for i in range(MAX_PENDING - 1):
+        await text_of({"triggers": [{"at": "2026-10-21T08:30", "label": f"early {i}"}]})
+    text = await text_of(
+        {
+            "triggers": [
+                {"at": "2026-10-21T09:30", "label": "fits"},
+                {"order": {"id": "ord_1", "brokerage": "robinhood", "account": "acct_1"}},
+            ]
+        }
+    )
+    assert f"this conversation already has {MAX_PENDING} pending wakeups" in text
+    read.assert_not_awaited()

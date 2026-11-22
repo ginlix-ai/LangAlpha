@@ -40,6 +40,7 @@ from src.server.services.egress.execution_token import DEFAULT_TTL_SECONDS
 from src.server.services.orders.reconcile import OrderReconciler
 
 _MOD = "src.server.services.orders.reconcile"
+_READ = "src.server.services.orders.status_read"
 
 EXECUTED_AT = datetime(2026, 9, 9, 6, 46, 16, tzinfo=UTC)
 MATCH_KEY = MatchKey.of(
@@ -174,11 +175,18 @@ class FakeLedger:
         return [dict(row) for row in self.undispatched]
 
     async def claimed_vendor_order_ids(self, _user, _vendor, _account):
-        return {
-            row["vendor_order_id"]
-            for row in self.rows.values()
-            if row["vendor_order_id"]
-        }
+        # As the query does: a placement claims its id outright, a watch from
+        # when it began.
+        claimed = {}
+        for row in self.rows.values():
+            if not row["vendor_order_id"]:
+                continue
+            since = None if row["action"] in ("place", "stage") else row["created_at"]
+            prior = claimed.get(row["vendor_order_id"], since)
+            claimed[row["vendor_order_id"]] = (
+                None if prior is None or since is None else min(prior, since)
+            )
+        return claimed
 
     async def unanswered_attempts(self, _user, _vendor, _account):
         return [
@@ -357,6 +365,7 @@ def _patches(
     """Everything outside the engine: the ledger, the vendor, and the relay."""
     connection = SimpleNamespace(
         status="active",
+        server_name=vendor,
         server_url="https://mcp.moomoo.com/mcp",
         connection_id="conn-1",
     )
@@ -372,20 +381,21 @@ def _patches(
         patch(f"{_MOD}.record_observation", ledger.record_observation),
         patch(f"{_MOD}.own_cancel", ledger.own_cancel),
         patch(f"{_MOD}.mark_unlisted", ledger.mark_unlisted),
-        patch(f"{_MOD}.SERVABLE", frozenset({"active"})),
-        patch(f"{_MOD}.get_connection", _async(connection)),
-        patch(f"{_MOD}.vendor_for_url", lambda _url: vendor),
-        patch(f"{_MOD}.adapter_for", lambda _vendor: adapter),
+        patch(f"{_READ}.SERVABLE", frozenset({"active"})),
+        patch(f"{_READ}.get_connection", _async(connection)),
+        patch(f"{_READ}.vendor_for_url", lambda _url: vendor),
+        patch(f"{_READ}.adapter_for", lambda _vendor: adapter),
         patch(
-            f"{_MOD}.active_grant_for_connection",
+            f"{_READ}.active_grant_for_connection",
             _async({"grant_id": "g1", "workspace_id": "ws1"}),
         ),
         patch(
-            f"{_MOD}.mint_relay_jwt",
+            f"{_READ}.mint_relay_jwt",
             lambda *a, **k: SimpleNamespace(token="t", expires_at=0),
         ),
-        patch(f"{_MOD}.relay_mcp_client", lambda *a, **k: client),
+        patch(f"{_READ}.relay_mcp_client", lambda *a, **k: client),
         patch(f"{_MOD}.EGRESS_RELAY_SECRET", "secret"),
+        patch(f"{_READ}.EGRESS_RELAY_SECRET", "secret"),
     ]
 
 
@@ -681,7 +691,7 @@ async def test_absence_from_a_list_cut_short_settles_nothing(caplog):
     """Past the page bound the read is incomplete, and an absent call is left open."""
     ledger = FakeLedger([_row("a1", AttemptStatus.SUBMITTING)])
     adapter = StubAdapter([], pages=5)
-    with patch(f"{_MOD}.MAX_LISTING_PAGES", 2), caplog.at_level(logging.INFO):
+    with patch(f"{_READ}.MAX_LISTING_PAGES", 2), caplog.at_level(logging.INFO):
         report = await _run(ledger, adapter, FakeClient())
 
     assert report.moved == 0
@@ -1725,3 +1735,37 @@ async def test_a_crypto_approval_settles_through_the_account_it_was_placed_under
     assert report.moved == 2
     assert ledger.rows["a1"]["status"] == "handed_off"
     assert ledger.rows["a2"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_watch_read_first_leaves_a_lost_answer_its_order():
+    """A watch made no order, so reading it claims none: the placement that
+    lost its answer still settles on the order it made, not as never placed."""
+    # Watched after the placement, as when the agent finds its own order.
+    watch = {
+        **_row("w1", AttemptStatus.WORKING, "V1"),
+        "action": "watch",
+        "created_at": EXECUTED_AT + timedelta(minutes=2),
+    }
+    ledger = FakeLedger([watch, _row("a1", AttemptStatus.UNKNOWN)])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.WORKING)])
+    await _run(ledger, adapter, FakeClient())
+
+    assert ledger.rows["a1"]["status"] == "working"
+    assert ledger.rows["a1"]["vendor_order_id"] == "V1"
+
+
+@pytest.mark.asyncio
+async def test_an_order_watched_before_a_placement_is_not_that_placement():
+    """An order already watched existed before the placement was made, so a
+    lost answer must not adopt it as the order the placement made."""
+    watch = {
+        **_row("w1", AttemptStatus.WORKING, "V1"),
+        "action": "watch",
+        "created_at": EXECUTED_AT - timedelta(minutes=5),
+    }
+    ledger = FakeLedger([watch, _row("a1", AttemptStatus.UNKNOWN)])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.WORKING)])
+    await _run(ledger, adapter, FakeClient())
+
+    assert ledger.rows["a1"]["vendor_order_id"] is None

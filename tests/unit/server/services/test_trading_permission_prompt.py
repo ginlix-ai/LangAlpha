@@ -378,3 +378,27 @@ async def test_a_raised_level_reaches_the_model_when_a_profile_read_did_not_answ
     [line] = rows[0].text.rsplit("\n\n", 1)[1].splitlines()
     assert line.startswith("Trading permission: ")
     assert AUTONOMY in line.split("(the frozen block")[0]
+
+
+# ---------------------------------------------------------------------------
+# The order skill pointer
+# ---------------------------------------------------------------------------
+
+POINTER = "Before your first order in this conversation, read `.agents/skills/order-execution/SKILL.md`."
+
+
+def test_the_block_points_at_the_order_skill_when_it_is_on():
+    profile = _profile(_resolved(moomoo=_plan("moomoo", AUTONOMOUS)))
+    on = {**profile, "trading_order_skill": True}
+    assert POINTER in _section(on)
+    assert POINTER in ProfileSnapshot(user_profile=on).fields()["Trading permission"]
+    assert POINTER not in _section(profile)
+
+
+def test_a_thread_built_before_the_pointer_hears_it_as_a_row():
+    # A thread pinned before the user connected a brokerage gets the pointer
+    # through the profile row, with no prompt rebuild.
+    profile = _profile(_resolved(moomoo=_plan("moomoo", AUTONOMOUS)))
+    [line] = _diff({"name": "Demo"}, {**profile, "trading_order_skill": True})
+    assert line.startswith("Trading permission: ")
+    assert POINTER in line

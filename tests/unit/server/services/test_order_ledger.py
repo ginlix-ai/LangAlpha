@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import ToolMessage
 
-from ptc_agent.agent.middleware.order_governance import RECEIPT_KEY
+from ptc_agent.agent.middleware.order_governance import RECEIPT_KEY, Settled
 from src.server.database.order_attempts import CONFIRM_TOKEN_KEY
 from src.server.models.orders import attempt_row_to_response, receipt_from_attempt
 from src.server.services.brokerage_orders import BrokerOrder, OrderOutcome, adapter_for
@@ -139,8 +139,12 @@ def _fake_db(monkeypatch, row: dict[str, Any]) -> dict[str, Any]:
             row["completed_at"] = datetime(2026, 9, 9, 12, 0, 1, tzinfo=UTC)
         return dict(row)
 
+    async def placed_note(attempt, *, user_id, thread_id, now=None):
+        return None, None
+
     monkeypatch.setattr(module, "get_attempt", get_attempt)
     monkeypatch.setattr(module, "complete_attempt", complete_attempt)
+    monkeypatch.setattr(module, "placed_note", placed_note)
     return row
 
 
@@ -152,7 +156,7 @@ def _replayed(row: dict[str, Any]) -> dict:
 async def _complete(monkeypatch, row: dict[str, Any], result: ToolMessage) -> dict:
     _fake_db(monkeypatch, row)
     ledger = OrderAttemptLedger(user_id="u1", thread_id="t1")
-    fragment = await ledger.complete(row["attempt_id"], result)
+    fragment = (await ledger.complete(row["attempt_id"], result)).receipt
     assert fragment is not None
     # The client routes an artifact to its card by ``type``, like every other.
     assert fragment["type"] == RECEIPT_KEY
@@ -321,7 +325,49 @@ async def test_an_attempt_that_is_not_there_settles_nothing(monkeypatch):
         ToolMessage(content=PLACED, tool_call_id="call-1"),
     )
 
-    assert settled is None
+    assert settled == Settled()
+
+
+@pytest.mark.asyncio
+async def test_a_placement_hands_back_its_note_and_names_its_wakeup(monkeypatch):
+    row = _fake_db(monkeypatch, _row())
+    seen = {}
+
+    async def placed_note(attempt, *, user_id, thread_id, now=None):
+        seen.update(attempt=attempt, user_id=user_id, thread_id=thread_id)
+        return "Order ledger: order 900101 is working.", {"short_id": "w_3f2a"}
+
+    monkeypatch.setattr(module, "placed_note", placed_note)
+    ledger = OrderAttemptLedger(user_id="u1", thread_id="t1")
+
+    settled = await ledger.complete(
+        row["attempt_id"], ToolMessage(content=PLACED, tool_call_id="call-1")
+    )
+
+    # The settled row, so the note reads the state the write merged.
+    assert seen["attempt"]["status"] == "submitted"
+    assert (seen["user_id"], seen["thread_id"]) == ("u1", "t1")
+    assert settled.note == "Order ledger: order 900101 is working."
+    assert settled.receipt[module.ORDER_WAKEUP_KEY] == {"short_id": "w_3f2a"}
+
+
+@pytest.mark.asyncio
+async def test_a_note_that_fails_still_settles_with_the_receipt(monkeypatch):
+    row = _fake_db(monkeypatch, _row())
+
+    async def placed_note(attempt, *, user_id, thread_id, now=None):
+        raise RuntimeError("wakeups table unavailable")
+
+    monkeypatch.setattr(module, "placed_note", placed_note)
+    ledger = OrderAttemptLedger(user_id="u1", thread_id="t1")
+
+    settled = await ledger.complete(
+        row["attempt_id"], ToolMessage(content=PLACED, tool_call_id="call-1")
+    )
+
+    assert settled.note is None
+    assert settled.receipt[RECEIPT_KEY]["outcome"]["status"] == "submitted"
+    assert module.ORDER_WAKEUP_KEY not in settled.receipt
 
 
 @pytest.mark.asyncio

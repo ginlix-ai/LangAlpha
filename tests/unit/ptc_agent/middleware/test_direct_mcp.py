@@ -15,6 +15,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
     direct_tool_summary,
     refused_message,
 )
+from ptc_agent.agent.middleware.order_governance import places_order
 from ptc_agent.agent.middleware.tool.error_handling import format_tool_error
 
 
@@ -238,6 +239,23 @@ class TestDirectToolSummaryImportHint:
             [_tool("mcp__acme__bad", stamp={"server": "acme", "tool": "---", "sandboxed": True})]
         )
         assert "importable" not in line
+
+
+class TestPlacesOrder:
+    """The predicate that keeps the order guide in a build: an order stamp."""
+
+    def test_only_a_tool_with_an_order_stamp_counts(self):
+        plain = _tool("mcp__acme__quote", stamp={"server": "acme", "tool": "quote"})
+        foreign = _tool("mcp__acme__other", stamp=None)
+        assert not places_order(plain)
+        assert not places_order(foreign)
+
+    def test_an_order_stamp_counts(self):
+        order = _tool(
+            "mcp__acme__place",
+            stamp={"server": "acme", "tool": "place", "order": {"action": "place"}},
+        )
+        assert places_order(order)
 
 
 class TestDirectToolMiddleware:
