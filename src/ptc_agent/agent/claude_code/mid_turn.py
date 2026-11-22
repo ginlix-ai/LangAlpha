@@ -19,21 +19,71 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.background_subagent.steering import SubagentSteeringMiddleware
 from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker, config_own_run_id
-from ptc_agent.agent.middleware.credit_gate import current_credit_gate
+from ptc_agent.agent.middleware.credit_gate import account_ends, credit_stops
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
 from ptc_agent.agent.transcript.steer_text import report_text, sender_block, sender_runs, sent_steers
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.plan import PlanWatch
+
+
+@dataclass(frozen=True)
+class Query:
+    """What the turn lets one of its queries do. Every query is ``ORDINARY``
+    but one the turn sends of its own after an answer, whose shape is stated
+    here once rather than as flags across the hooks and steps that read it
+    (``_Run.query``).
+    """
+
+    #: The tools whose calls run; None runs every call. Any other call is
+    #: refused before it runs.
+    admits: frozenset[str] | None = None
+    #: Whether the CLI stops once a batch's results are in rather than asking
+    #: Claude again, so Claude is never asked about a refusal.
+    last_batch: bool = False
+    #: Whether its replies reach the stream, and ``on_reply``.
+    streamed: bool = True
+    #: What of each reply the thread keeps; None keeps it whole. A reply kept
+    #: with no calls is not kept at all.
+    keep: Callable[[AIMessage], AIMessage] | None = None
+    #: What takes the query out of the thread where nothing of it is kept: a
+    #: reply kept as nothing, or a query that failed. A query with any is
+    #: best-effort: it ends the turn on what came before it rather than
+    #: failing a turn whose answer the user already has.
+    dropped: tuple[RemoveMessage, ...] = ()
+    #: The calls of the newest reply ``keep`` left out, which the CLI answers
+    #: itself; set as each reply is read, so the step after it waits for
+    #: their records too.
+    refused: tuple[str, ...] = ()
+
+
+#: A query of the turn's own: its prompt, or what was sent into the thread.
+ORDINARY = Query()
+
+
+@dataclass(frozen=True)
+class HandOff:
+    """What a batch hands the CLI once its last result is in: the rows the
+    turn writes then, and what was sent into the thread, with the state the
+    rows go with. The step commits it all with the batch's results."""
+
+    rows: tuple[HumanMessage, ...] = ()
+    steer: HumanMessage | None = None
+    update: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def messages(self) -> list[HumanMessage]:
+        return [*self.rows, *([self.steer] if self.steer is not None else [])]
 
 
 class TurnSteering:
@@ -135,23 +185,6 @@ def _decision(decision: str, reason: str | None = None) -> dict[str, Any]:
     return {"hookSpecificOutput": {**out, "permissionDecisionReason": reason} if reason else out}
 
 
-def credit_stops() -> bool:
-    """Whether the run's credit gate says stop, as it does at a langalpha
-    model boundary; the CLI's next request is the one a call leads to. A
-    subagent's run is stopped too: its gate ends the run where a turn's
-    pauses."""
-    gate = current_credit_gate.get()
-    return gate is not None and gate.lease.should_stop(gate.lease.spend())
-
-
-async def account_ends() -> bool:
-    """Whether the run's account may no longer work, asked where
-    :func:`credit_stops` is, for the same reason: the CLI's next request
-    after a batch has no model step of ours ahead of it."""
-    gate = current_credit_gate.get()
-    return gate is not None and await gate.lease.account_refusal() is not None
-
-
 class BeforeTool:
     """The hook the CLI calls before each of our calls runs.
 
@@ -161,20 +194,29 @@ class BeforeTool:
     batch that would wait is answered as not run. Every other call runs, past
     the credit boundary too, as a langalpha turn runs the calls of a round:
     the gate stops the request after them (``AfterTool``). A call whose result
-    is already here, the one a resumed CLI asks for again, runs.
+    is already here, the one a resumed CLI asks for again, runs. A call the
+    query does not admit (``Query.admits``) is refused, and in a query that
+    ends at its batch, the CLI stops once the batch is done: no
+    ``PostToolUse`` follows a refusal to say so.
     """
 
     def __init__(self, results: ToolResults, waits: Waits) -> None:
         self.results = results
         self.waits = waits
+        self.query = ORDINARY
         self._deferred: str | None = None
 
-    def reopen(self) -> None:
+    def reopen(self, query: Query = ORDINARY) -> None:
         """The turn sent the CLI another query, which may defer a call of its own."""
         self._deferred = None
+        self.query = query
 
     async def __call__(self, hook_input: Mapping[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
-        if tool_use_id is None or self.results.holds(tool_use_id):
+        if tool_use_id is None:
+            return {}
+        if self.query.admits is not None and hook_input.get("tool_name") not in self.query.admits:
+            return {**_decision("deny"), **({"continue": False} if self.query.last_batch else {})}
+        if self.results.holds(tool_use_id):
             return {}
         if not self.waits(hook_input.get("tool_name") or "", hook_input.get("tool_input") or {}):
             return {}
@@ -193,8 +235,9 @@ class AfterTool:
     result. Once every call of a ``tools`` step's batch is in, what was sent
     into the thread while the agent worked is taken in and handed to the CLI,
     which places it after the batch's results: each steer as a message sent
-    mid-turn (``send``), which the CLI frames as the user's, and any report
-    ahead of them as the hook's context, which it frames as a tool hook's.
+    mid-turn (``send``), which the CLI frames as the user's, and the turn's
+    rows (``HandOff``) and any report ahead of them as the hook's context,
+    which it frames as a tool hook's, so a row costs no request of its own.
     The CLI waits for the hook, so nothing is taken after it has moved on,
     and the step commits what was taken with those results.
 
@@ -205,9 +248,10 @@ class AfterTool:
     longer work (``ToolResults.owes_gate``),
     which a quota refresh can do while a call runs, with no PreToolUse after
     it to catch the CLI's next request, or when the Claude plan is used up
-    under Stop (``PlanWatch.gate``), which ends the run there. It then
-    takes nothing in: what waits is for the next turn, or for the turn once
-    the gate lets it on.
+    under Stop (``PlanWatch.gate``), which ends the run there, or when the
+    query ends at its batch (``Query.last_batch``). It then takes nothing in:
+    what waits is for the next turn, for the turn once the gate lets it on,
+    or for the query after.
     """
 
     def __init__(self, results: ToolResults, send: Callable[[str], Awaitable[None]], plan: PlanWatch) -> None:
@@ -216,11 +260,17 @@ class AfterTool:
         self.plan = plan
         self._batch: frozenset[str] = frozenset()
         self._returned: set[str] = set()
-        self._take: Callable[[], Awaitable[HumanMessage | None]] | None = None
-        self._taking: asyncio.Future[HumanMessage | None] | None = None
+        self.query = ORDINARY
+        self._take: Callable[[], Awaitable[HandOff]] | None = None
+        self._taking: asyncio.Future[HandOff] | None = None
 
-    def open(self, ids: Sequence[str], take: Callable[[], Awaitable[HumanMessage | None]]) -> None:
-        """Start a batch, with what takes in what waits once its last call is in."""
+    def reopen(self, query: Query = ORDINARY) -> None:
+        """The turn sent the CLI another query."""
+        self.query = query
+
+    def open(self, ids: Sequence[str], take: Callable[[], Awaitable[HandOff]]) -> None:
+        """Start a batch, with what takes in what is handed over once its last
+        call is in, asked only where the CLI goes on to Claude."""
         self._batch, self._returned, self._take, self._taking = frozenset(ids), set(), take, None
 
     def close(self) -> None:
@@ -234,9 +284,9 @@ class AfterTool:
         """Whether the batch has started taking in what waits."""
         return self._taking is not None
 
-    async def taken(self) -> HumanMessage | None:
+    async def taken(self) -> HandOff:
         """What the batch took in, once it has."""
-        return await self._taking if self._taking is not None else None
+        return await self._taking if self._taking is not None else HandOff()
 
     async def __call__(self, hook_input: Mapping[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
         if tool_use_id is None:
@@ -255,14 +305,17 @@ class AfterTool:
             # The gate's ``before_model`` ahead of the next CLI ends the run
             # for an account that may no longer work.
             self.results.pass_gate(tool_use_id)
-        if ends or plan_stops or self.results.owes_gate(tool_use_id):
+        if ends or plan_stops or self.results.owes_gate(tool_use_id) or self.query.last_batch:
             return {"continue": False, **({"hookSpecificOutput": out} if len(out) > 1 else {})}
         if self._take is not None and self._taking is None:
             self._taking = asyncio.ensure_future(self._take())
-            if (message := await self._taking) is not None and self._take is not None:
-                if reports := report_text(message):
-                    out["additionalContext"] = reports
-                for text in mid_turn_messages(message):
+            handed = await self._taking
+            if self._take is not None:
+                steer = handed.steer
+                texts = [*(row.text for row in handed.rows), report_text(steer) if steer is not None else None]
+                if context := "\n\n".join(text for text in texts if text):
+                    out["additionalContext"] = context
+                for text in mid_turn_messages(steer) if steer is not None else ():
                     await self.send(text)
         return {"hookSpecificOutput": out} if len(out) > 1 else {}
 
