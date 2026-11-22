@@ -13,6 +13,7 @@ from typing import Any
 
 from src.server.database.conversation.replay_rows import with_replay_facts
 from src.server.database.replay_facts import archived_stream
+from src.server.services.history.replay.legacy import current_row
 from src.server.services.history.replay import items
 from src.server.services.history.replay.lines import Line, line_of
 
@@ -85,7 +86,9 @@ def _stub_items(
     response_id = str(response.get("conversation_response_id")) if response else None
     # A turn still going shows what its run streams; an archive on its row is
     # an earlier attempt's.
-    archived = [] if open_run else archived_stream(response) or []
+    archived = [] if open_run else [
+        row for stored in archived_stream(response) or [] if (row := current_row(stored))
+    ]
     closing = items.terminal_items(thread_id, response, archived)
     if not closing and _lost(response, open_run):
         closing.append(unavailable_item(thread_id))

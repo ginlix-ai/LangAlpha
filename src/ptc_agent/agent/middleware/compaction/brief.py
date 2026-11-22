@@ -32,6 +32,7 @@ from src.llms.claude_code import another_model_replied_last, last_reply_index
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
+    from ptc_agent.agent.tools.plan import PlanStepDict
     from ptc_agent.agent.transcript import Window
     from ptc_agent.agent.transcript.store import TranscriptTarget
 
@@ -206,14 +207,15 @@ async def digest_brief(
     transcript: TranscriptTarget | None,
     window: Window,
     notes_dir: str | None = None,
+    plan: Sequence[PlanStepDict] = (),
 ) -> HandOffBrief | None:
     """The brief put together without a model, for a turn no model could
-    write one for: each request and the last reply to it
-    (``server_summary``), pointing at the transcript, which keeps the rest,
-    where the file tools reach it. None when no brief is due."""
+    write one for: each request and the last reply to it, and ``plan``, the
+    plan in state (``server_summary``), pointing at the transcript, which
+    keeps the rest, where the file tools reach it. None when no brief is due."""
     return await _rendered(
         messages, None, backend=backend, workspace_id=workspace_id, transcript=transcript,
-        window=window, notes_dir=notes_dir,
+        window=window, notes_dir=notes_dir, plan=plan,
     )
 
 
@@ -245,6 +247,7 @@ async def _rendered(
     transcript: TranscriptTarget | None,
     window: Window,
     notes_dir: str | None,
+    plan: Sequence[PlanStepDict] = (),
 ) -> HandOffBrief | None:
     from ptc_agent.agent.middleware.compaction.compact import build_summary_event
     from ptc_agent.agent.middleware.compaction.notes import anotes_pointer
@@ -263,7 +266,7 @@ async def _rendered(
     summary = (
         thread_summary(to_summarize, turns=turns, limit=room, counter=count_tokens_claude)
         if room is not None
-        else server_summary(to_summarize, [], raw_messages=messages, turns=turns, window=window)
+        else server_summary(to_summarize, raw_messages=messages, turns=turns, window=window, plan=plan)
     )
     event = build_summary_event(
         summary,

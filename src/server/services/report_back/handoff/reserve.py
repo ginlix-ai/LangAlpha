@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 import uuid
 
 from src.server.services.report_back.handoff import pointer
@@ -890,6 +891,9 @@ async def reserve(
                 "report_back": True,
                 "user_id": user_id,
                 "dispatch_gen": dispatch_gen,
+                # When this dispatch was reserved, which tells the request
+                # that handed the work off from a later one.
+                "reserved_at": time.time(),
             }
             if requested_from is not None:
                 origin_payload[RF.KEY] = await _requests_to_report(

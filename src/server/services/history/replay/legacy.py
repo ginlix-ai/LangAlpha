@@ -26,7 +26,9 @@ from __future__ import annotations
 
 from typing import Any, Required, TypedDict
 
+from ptc_agent.agent.tools.plan import PLAN_ARTIFACT_TYPE
 from src.server.database.replay_facts import LEGACY_KEY
+from src.server.services.history.projector import todo_plan_payload
 from src.server.services.history.replay import facts as replay_facts
 from src.server.services.history.replay import widgets
 from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
@@ -227,11 +229,29 @@ def apply_turn(
     merge = facts.get("merge")
     if "verbatim" in facts:
         rows = [
-            {"event": row["event"], "data": dict(row["data"])}
-            for row in facts["verbatim"]
+            row
+            for stored in facts["verbatim"]
+            if (row := current_row({"event": stored["event"], "data": dict(stored["data"])}))
         ]
         return rows + apply(task_items, merge)
     return apply(turn_items, merge)
+
+
+#: The artifact a ``TodoWrite`` list streamed as, before the plan replaced it.
+_TODO_ARTIFACT_TYPE = "todo_update"
+
+
+def current_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    """``row`` as the projection would give it now: an archived
+    ``todo_update`` frame is the ``plan_update`` its list draws, as the
+    projector replays the ``TodoWrite`` call, and one with no item is none."""
+    data = row["data"]
+    if row["event"] != "artifact" or data.get("artifact_type") != _TODO_ARTIFACT_TYPE:
+        return row
+    payload = todo_plan_payload((data.get("payload") or {}).get("todos"))
+    if payload is None:
+        return None
+    return {"event": "artifact", "data": {**data, "artifact_type": PLAN_ARTIFACT_TYPE, "payload": payload}}
 
 
 def apply(

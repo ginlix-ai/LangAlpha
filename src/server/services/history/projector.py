@@ -5,10 +5,11 @@ The intermediate ``HistoryEvent`` model is modeled on the v3 stream channels
 is never exposed on the wire, so upstream protocol changes land in a future
 adapter instead of rippling through replay.
 
-Artifact derivation mirrors the live emitters: ``file_operation``/``todo_update``
-payloads are rebuilt from tool-call args (the same source the middleware reads),
-``html_widget``/``preview_url`` from the checkpointed
-ToolMessage artifact, and ``task`` from ``additional_kwargs.task_artifact``.
+Artifact derivation mirrors the live emitters: ``file_operation`` payloads are
+rebuilt from tool-call args, ``html_widget``/``preview_url``/``plan_update`` from
+the checkpointed ToolMessage artifact, and ``task`` from
+``additional_kwargs.task_artifact``. A legacy ``TodoWrite`` call is replayed as
+the ``plan_update`` its list would have drawn.
 Non-derivable payloads (image URL rewrites, widget ``data``) are merged by the
 replay endpoint from persisted sources, not synthesized here.
 """
@@ -18,7 +19,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
@@ -31,8 +32,15 @@ from ptc_agent.agent.middleware.compaction.utils import (
     parse_summary_message,
 )
 from ptc_agent.agent.middleware.compaction.usage_event import token_usage_fields
+from ptc_agent.agent.middleware.plan_close_out import is_close_out_reply
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.tools.computer_reach import ran_elsewhere
+from ptc_agent.agent.tools.plan import (
+    PLAN_ARTIFACT_TYPE,
+    PlanStepDict,
+    plan_payload,
+    settled,
+)
 from ptc_agent.agent.transcript.classify import STEERING_MARKERS, human_kind
 from src.llms.claude_code import PLAN_NOTICE_KEY, QUEUE_EVENT_TYPE
 from src.llms.content_utils import extract_content_with_type
@@ -61,9 +69,18 @@ HistoryEventKind = Literal[
 ]
 
 _FILE_OPERATION_TOOLS = {"Write", "Edit"}
+
+
+class _FromResult(NamedTuple):
+    artifact_type: str
+    carries_status: bool
+
+
 _ARTIFACT_FROM_TOOL_MESSAGE = {
-    "ShowWidget": "html_widget",
-    "GetPreviewUrl": "preview_url",
+    "ShowWidget": _FromResult("html_widget", True),
+    "GetPreviewUrl": _FromResult("preview_url", False),
+    # The resolved plan: an ``advance`` names no steps, so only the result has the list.
+    "UpdatePlan": _FromResult(PLAN_ARTIFACT_TYPE, True),
 }
 
 
@@ -301,6 +318,10 @@ def _project_ai_message(
     # streams, so the notice sits between the calls it fell between.
     events.extend(_stamped_summary(message, agent))
     text, reasoning, phase = split_content_blocks(message.content)
+    if is_close_out_reply(message):
+        # Live the plan's close-out is never streamed, and its reasoning is
+        # kept only for the provider: its plan calls alone are shown.
+        text = reasoning = None
     tool_calls = _filter_tool_calls(message.tool_calls or [])
 
     if reasoning:
@@ -456,21 +477,19 @@ def _derive_artifact(
         }
 
     if tool_name == "TodoWrite":
-        todos = _normalize_todos(args.get("todos"))
-        counts = {"completed": 0, "in_progress": 0, "pending": 0}
-        for todo in todos:
-            todo_status = todo.get("status", "pending")
-            if todo_status in counts:
-                counts[todo_status] += 1
+        todo_plan = todo_plan_payload(args.get("todos"))
+        if todo_plan is None:
+            return None
         return {
-            "artifact_type": "todo_update",
+            "artifact_type": PLAN_ARTIFACT_TYPE,
             "artifact_id": tool_call_id,
             "status": status,
-            "payload": {"todos": todos, "total": len(todos), **counts},
+            "payload": todo_plan,
         }
 
-    artifact_type = _ARTIFACT_FROM_TOOL_MESSAGE.get(tool_name or "")
-    if artifact_type:
+    from_result = _ARTIFACT_FROM_TOOL_MESSAGE.get(tool_name or "")
+    if from_result:
+        artifact_type = from_result.artifact_type
         tool_artifact = getattr(message, "artifact", None)
         if not isinstance(tool_artifact, dict) or not tool_artifact:
             return None
@@ -480,11 +499,26 @@ def _derive_artifact(
         return {
             "artifact_type": artifact_type,
             "artifact_id": artifact_id,
-            "status": status if artifact_type == "html_widget" else None,
+            "status": status if from_result.carries_status else None,
             "payload": tool_artifact,
         }
 
     return None
+
+
+def todo_plan_payload(todos: Any) -> dict[str, Any] | None:
+    """The ``plan_update`` payload a legacy ``TodoWrite`` list draws, or None
+    for one with no item. Its call and the ``todo_update`` frames it streamed
+    both carry the list as ``[{content, status}]``."""
+    steps: list[PlanStepDict] = [
+        PlanStepDict(
+            title=str(t.get("content", "")),
+            status=t["status"] if t.get("status") in ("pending", "in_progress", "completed") else "pending",
+        )
+        for t in (todos if isinstance(todos, list) else [])
+        if isinstance(t, dict)
+    ]
+    return plan_payload(settled(steps)) if steps else None
 
 
 def split_content_blocks(content: Any) -> tuple[str | None, str | None, str | None]:
@@ -527,22 +561,6 @@ def split_content_blocks(content: Any) -> tuple[str | None, str | None, str | No
 
 def _filter_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [tc for tc in tool_calls if (tc.get("name") or "").strip()]
-
-
-def _normalize_todos(todos: Any) -> list[dict[str, Any]]:
-    if not isinstance(todos, list):
-        return []
-    normalized = []
-    for todo in todos:
-        if isinstance(todo, dict):
-            normalized.append(
-                {
-                    "content": todo.get("content", ""),
-                    "activeForm": todo.get("activeForm", todo.get("content", "")),
-                    "status": todo.get("status", "pending"),
-                }
-            )
-    return normalized
 
 
 def _count_lines(text: str) -> int:

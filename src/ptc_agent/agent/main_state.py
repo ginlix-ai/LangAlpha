@@ -15,6 +15,7 @@ from ptc_agent.agent.middleware.compaction.brief import BriefState
 from ptc_agent.agent.middleware.compaction.notes import NotesDueState
 from ptc_agent.agent.middleware.compaction.types import CompactionState
 from ptc_agent.agent.middleware.file_operations.multimodal_strip import ImageSideState
+from ptc_agent.agent.middleware.plan import PlanState
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import SystemPinState
 from ptc_agent.agent.middleware.skills.middleware import LoadedSkillsState
 from ptc_agent.agent.middleware.subagent_switch import SubagentSwitchState
@@ -34,6 +35,7 @@ class MainAgentState(
     ToolSurfaceState,
     SystemPinState,
     WakeupCancelNoticeState,
+    PlanState,
     ImageSideState,
     DeltaAgentState,
 ):

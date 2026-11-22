@@ -41,15 +41,12 @@ import dataclasses
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables.base import RunnableBindingBase
-from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.config import get_config, get_stream_writer
-from langgraph.constants import TAG_NOSTREAM
 from langgraph.types import Command
 from typing_extensions import override
 
@@ -71,7 +68,7 @@ from src.llms.provider_compaction import (
 )
 
 from ptc_agent.agent.state import ensure_message_ids
-from ptc_agent.agent.middleware._utils import run_ids
+from ptc_agent.agent.middleware._utils import run_ids, unstreamed
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
 from ptc_agent.agent.middleware.compaction.between_turns import (
     Ask,
@@ -155,6 +152,7 @@ from ptc_agent.agent.middleware.compaction.window import (
 from ptc_agent.agent.middleware.model_resilience import as_sent
 from ptc_agent.agent.middleware.reasoning_compat import ORIGIN_KEY
 from ptc_agent.agent.transcript import TranscriptTarget, Window
+from ptc_agent.agent.tools.plan import PLAN_STATE_KEY
 from ptc_agent.agent.transcript.classify import human_kind, is_summary_message
 from ptc_agent.agent.transcript.identity import DIGEST_VERSION
 from ptc_agent.agent.transcript.pointer import (
@@ -201,21 +199,6 @@ def _log_rebuild_after(fitted: Fitted, rebuild: str | None, waits: str) -> None:
         _log_rebuild("yes", "no_bound_thinking")
     else:
         _log_rebuild("deferred", waits)
-
-
-@contextmanager
-def _unstreamed() -> Iterator[None]:
-    """Tag the model calls made inside ``nostream``. The model node calls the
-    model with the config it finds here, so the tag reaches the call, and the
-    callbacks that bill and trace it still see it."""
-    ambient = var_child_runnable_config.get() or {}
-    token = var_child_runnable_config.set(
-        {**ambient, "tags": [*(ambient.get("tags") or ()), TAG_NOSTREAM]}
-    )
-    try:
-        yield
-    finally:
-        var_child_runnable_config.reset(token)
 
 
 def _user_texts(messages: Sequence[AnyMessage]) -> list[str]:
@@ -816,6 +799,10 @@ class CompactionMiddleware(AgentMiddleware):
                 carried=carried,
                 own_only=own_only,
                 brief_room=brief_room,
+                # A summary written between turns serves a turn not yet
+                # known, which a new request opens with no plan; one written
+                # in a turn serves that turn's request, whose plan it is.
+                plan=() if asked() is not None else (request.state or {}).get(PLAN_STATE_KEY) or (),
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -852,7 +839,7 @@ class CompactionMiddleware(AgentMiddleware):
             request.model_settings,
             summary_prompt("native", kept, notes, carried=carried),
         )
-        with as_sent(), _unstreamed(), cache_scope(scope):
+        with as_sent(), unstreamed(), cache_scope(scope):
             response = await handler(
                 request.override(messages=to_summarize, model_settings=settings)
             )
@@ -888,7 +875,7 @@ class CompactionMiddleware(AgentMiddleware):
         its closing line was cut off, and counts as none. ``scope`` places
         its cache markers (``cache_markers.cache_scope``).
         """
-        with as_sent(), _unstreamed(), cache_scope(scope):
+        with as_sent(), unstreamed(), cache_scope(scope):
             response = await handler(
                 request.override(
                     messages=[

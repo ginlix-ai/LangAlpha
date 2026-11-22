@@ -47,10 +47,6 @@ _LAZY_IMPORTS = {
     "PTCSandbox": "ptc_agent.core",
     "Session": "ptc_agent.core",
     "SessionManager": "ptc_agent.core",
-    # ptc_agent.agent.tools.todo
-    "TodoWrite": "ptc_agent.agent.tools.todo",
-    "TodoItem": "ptc_agent.agent.tools.todo",
-    "TodoStatus": "ptc_agent.agent.tools.todo",
 }
 
 
@@ -83,10 +79,6 @@ __all__ = [
     "PTCSandbox",
     "Session",
     "SessionManager",
-    # Todo tracking (lazy)
-    "TodoWrite",
-    "TodoItem",
-    "TodoStatus",
     # Version
     "__version__",
 ]

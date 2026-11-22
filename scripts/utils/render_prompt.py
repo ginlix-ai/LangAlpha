@@ -9,8 +9,8 @@ Usage examples:
   # The Chief of Staff (the agent in Home)
   python scripts/utils/render_prompt.py --role chief_of_staff
 
-  # PTC with the TodoWrite opt-in + storage enabled
-  python scripts/utils/render_prompt.py --todo --storage
+  # PTC without the plan tool (a user who turned it off), storage enabled
+  python scripts/utils/render_prompt.py --no-plan --storage
 
   # General-purpose subagent prompt
   python scripts/utils/render_prompt.py --subagent general-purpose
@@ -117,7 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Feature flags
     p.add_argument(
-        "--todo", action="store_true", help="Render as if the user opted in to TodoWrite."
+        "--no-plan",
+        dest="plan",
+        action="store_false",
+        help="Render as if the user turned the UpdatePlan tool off (it is on by default).",
     )
     p.add_argument(
         "--crawl", action="store_true", help="Enable the site-crawl tool section (WebCrawl/WebMap)."
@@ -296,7 +299,6 @@ def render(args: argparse.Namespace) -> str:
                 "web_search",
                 "finance",
                 "think",
-                "todo",
             ]
         }
         compiler = SubagentCompiler(
@@ -323,7 +325,7 @@ def render(args: argparse.Namespace) -> str:
     prompt = loader.get_system_prompt(
         tool_summary=tool_summary,
         user_profile=user_profile,
-        todo_enabled=args.todo,
+        plan_enabled=args.plan,
         role=args.role,
         crawl_enabled=args.crawl,
         scratchpad_enabled=args.scratchpad,
