@@ -204,7 +204,52 @@
     "experiments": "Experiments",
     "experimentsIntro": "Early-access features still in development. Turn one on to enable it for your account. You can switch it off at any time.",
     "experimentsEmpty": "No experiments are available right now.",
-    "experimentTradeoff": "<lead>Trade-off:</lead> <text/>",
+    "features": {
+      "onByDefault": "On by default",
+      "offByDefault": "Off by default",
+      "needs": "Needs {{name}}",
+      "preview": "Preview",
+      "defaultLabel": "Default",
+      "costLabel": "Cost",
+      "on": "On",
+      "off": "Off",
+      "isOn": "{{name}} is on",
+      "isOff": "{{name}} is off",
+      "onIf": {
+        "opt_in": "Turn it on if",
+        "opt_out": "Keep it on if"
+      },
+      "offIf": {
+        "opt_in": "Leave it off if",
+        "opt_out": "Turn it off if"
+      },
+      "groups": {
+        "chat": {
+          "title": "In the chat",
+          "description": "What you see while the agent works."
+        },
+        "tools": {
+          "title": "Tools",
+          "description": "What the agent can use beyond its built-in research tools."
+        },
+        "autonomy": {
+          "title": "Working on its own",
+          "description": "When the agent may start a turn without a message from you."
+        },
+        "long_threads": {
+          "title": "Long threads",
+          "description": "How the agent keeps its place as a thread grows long."
+        },
+        "dashboard": {
+          "title": "Dashboard",
+          "description": "What your dashboard shows."
+        },
+        "other": {
+          "title": "More",
+          "description": "More features you can try."
+        }
+      }
+    },
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",

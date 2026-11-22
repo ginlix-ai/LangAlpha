@@ -47,7 +47,8 @@ class TestGetFeatures:
         assert mw["min_tier"] is None
         assert mw["user_override"] is None
         assert mw["label"] and mw["description"]
-        assert mw["tradeoffs"]
+        assert mw["category"] == "chat"
+        assert mw["guide"]["on_if"] and mw["guide"]["off_if"] and mw["guide"]["cost"]
 
     @pytest.mark.asyncio
     async def test_kill_switched_feature_is_omitted(self, features_client):

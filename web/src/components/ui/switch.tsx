@@ -37,7 +37,7 @@ export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel
       // a near-white track under a white thumb. On, they draw the fill alone,
       // its edge as clear as their fill is.
       className={cn(
-        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-[var(--cs-radius-small,calc(infinity*1px))] border-2 transition-colors',
+        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-[var(--cs-radius-small,calc(infinity*1px))] border-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       style={{

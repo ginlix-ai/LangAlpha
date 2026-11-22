@@ -20,7 +20,6 @@ function feature(overrides: Partial<FeatureState> & { key: string }): FeatureSta
   return {
     label: overrides.key,
     description: '',
-    tradeoffs: null,
     enabled: false,
     gate: 'opt_out',
     min_tier: null,

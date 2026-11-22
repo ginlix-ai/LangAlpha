@@ -26,12 +26,19 @@ def _add_feature(monkeypatch, key, **kwargs):
     )
 
 
+def test_every_feature_in_experiments_is_grouped():
+    """Experiments lists the user-controllable features under their category."""
+    for spec in FEATURES.values():
+        if spec.gate in (FeatureGate.OPT_IN, FeatureGate.OPT_OUT) and spec.home is None:
+            assert spec.category is not None, spec.key
+
+
 def test_market_watch_is_cataloged_enabled_opt_in():
     spec = FEATURES["market_watch"]
     assert spec.enabled is True
     assert spec.gate is FeatureGate.OPT_IN
     assert spec.label and spec.description
-    assert spec.tradeoffs  # experiments state their cost
+    assert spec.guide  # experiments say when each choice fits
 
 
 def test_scratchpad_is_on_unless_the_user_stored_false():
@@ -39,7 +46,7 @@ def test_scratchpad_is_on_unless_the_user_stored_false():
     assert spec.enabled is True
     assert spec.gate is FeatureGate.OPT_OUT
     assert spec.label and spec.description
-    assert spec.tradeoffs
+    assert spec.guide
     assert effective_flags(None)["scratchpad"] is True
     assert effective_flags({"scratchpad": False})["scratchpad"] is False
     assert default_feature_enabled("scratchpad") is True
@@ -60,7 +67,7 @@ def test_idle_compaction_is_off_until_the_user_opts_in(monkeypatch):
     _stub_config(monkeypatch)
     spec = FEATURES["idle_compaction"]
     assert spec.gate is FeatureGate.OPT_IN
-    assert spec.tradeoffs
+    assert spec.guide
     assert is_feature_enabled_system("idle_compaction") is True
     assert effective_flags(None)["idle_compaction"] is False
     assert effective_flags({"idle_compaction": True})["idle_compaction"] is True

@@ -127,8 +127,12 @@ export interface FeatureState {
   key: string;
   label: string;
   description: string;
-  /** Honest cost of opting in to an experimental feature, null when none. */
-  tradeoffs: string | null;
+  /** The Experiments group it is listed under; the web app names and orders them. */
+  category?: FeatureCategory | null;
+  /** Still changing: behavior and pricing may move under it. */
+  preview?: boolean;
+  /** What Experiments shows a user deciding whether to keep it. */
+  guide?: FeatureGuide | null;
   enabled: boolean;
   gate: 'none' | 'opt_in' | 'opt_out' | 'plan' | 'grant';
   min_tier: number | null;
@@ -138,6 +142,23 @@ export interface FeatureState {
   home?: 'model_access' | null;
   /** The account's organization decides it, so an override is refused. */
   set_by_organization?: boolean;
+  /** Features this one depends on: it is off wherever any of them is. */
+  requires?: string[];
+}
+
+export type FeatureCategory = 'chat' | 'tools' | 'autonomy' | 'long_threads' | 'dashboard';
+
+export interface FeatureGuide {
+  /** Finish "Turn it on if" / "Leave it off if" (or "Keep it on if" / "Turn
+   *  it off if" for an opt-out feature), so each starts in lower case. */
+  on_if: string;
+  off_if: string;
+  /** The price at a glance, set beside the default. */
+  cost: string | null;
+  /** What holds whichever way it is set. */
+  good_to_know: string | null;
+  /** What switching it loses, shown on the row beside its switch. */
+  caution: string | null;
 }
 
 // --- Workspace ---

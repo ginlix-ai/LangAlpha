@@ -234,6 +234,117 @@ label.settings-row-label { cursor: pointer; }
 
 .settings-card-body { padding: 14px 16px; scroll-margin: 24px; }
 
+/* A feature in Experiments. The whole row opens the case for each side in
+   a dialog, as a computer's row opens its details: the name is the button,
+   its hit area stretched over the row, with the hover tint and the chevron
+   saying so. The switch sits above that area, so it still toggles on its own.
+   A feature that needs another is indented under it. */
+.settings-row.is-feature {
+  position: relative;
+  align-items: flex-start;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.settings-row.is-feature:hover { background: var(--color-bg-hover); }
+.settings-card > .settings-row.is-feature:first-child { border-top-left-radius: inherit; border-top-right-radius: inherit; }
+.settings-card > .settings-row.is-feature:last-child { border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
+/* A ring a mouse click lights too, so it reads the pointer record as the
+   other stretched hit areas do (TurnFileCards.css). */
+:root:not([data-pointer-focus]) .settings-row.is-feature:has(.feature-open:focus-visible) { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
+.feature-open { text-align: left; cursor: pointer; }
+.feature-open:focus-visible { outline: none; }
+.feature-open::after { content: ""; position: absolute; inset: 0; }
+.settings-row.is-feature .settings-row-control { align-items: center; gap: 10px; margin-top: -1px; }
+.settings-row.is-feature [role='switch'] { position: relative; z-index: 1; }
+.settings-row.is-nested { padding-left: 40px; }
+.feature-facts { margin-top: 4px; }
+.feature-facts-dot { margin: 0 6px; }
+.feature-caution {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+}
+.feature-caution svg { color: var(--color-warning); }
+/* In the dialog it sets its own size, as the dialog's other lines do: there
+   is no row description to inherit it from. */
+.feature-dialog .feature-caution { margin-top: 0; font-size: 0.8125rem; line-height: 1.55; }
+
+.feature-dialog-lede {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.feature-side {
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  background: var(--color-bg-card);
+  padding: 12px 14px;
+}
+.feature-side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.feature-side p {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+/* A switch in miniature: filled with the knob right for on, an open track
+   with the knob left for off, as the real switch draws them. */
+.feature-switch-glyph {
+  position: relative;
+  flex: none;
+  width: 20px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--color-border-muted);
+}
+.feature-switch-glyph::after {
+  content: "";
+  position: absolute;
+  top: 1.5px;
+  left: 1.5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-text-tertiary);
+}
+.feature-switch-glyph.is-on {
+  border-color: var(--color-accent-primary);
+  background: var(--color-accent-primary);
+}
+.feature-switch-glyph.is-on::after { left: auto; right: 1.5px; background: var(--color-text-on-accent); }
+.feature-dialog-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.feature-dialog-facts dt { color: var(--color-text-tertiary); }
+.feature-dialog-facts dd { margin: 0; color: var(--color-text-primary); }
+.feature-dialog-know {
+  display: flex;
+  gap: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.feature-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
 /* A card too narrow for a name, its line and a choice side by side gives
    every row one shape: the name with its control beside it whenever the two
    fit, the line under both. Only a choice too wide for the name's line drops
@@ -246,6 +357,7 @@ label.settings-row-label { cursor: pointer; }
   .settings-row-control { order: 2; }
   .settings-row.is-wide .settings-row-control { flex: 1 1 180px; }
   .settings-row-desc { order: 3; flex: 1 0 100%; margin: 0; }
+  .settings-row.is-nested { padding-left: 28px; }
 }
 
 /* A computer in the Computers section: the whole row opens its details, so
@@ -303,7 +415,8 @@ label.settings-row-label { cursor: pointer; }
 }
 .settings-machine.is-static .settings-machine-desc { margin-top: 0; }
 .settings-machine-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
-.settings-machine-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--color-text-quaternary); }
+/* The mark that a row opens something: a computer's details, a feature's case. */
+.settings-row-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--color-text-quaternary); }
 
 /* The theme's style choices stand as tiles: the preview across the top, the
    name and its line under it, the check 7px inside the preview's corner
