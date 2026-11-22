@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from src.tools.wakeups.wording import (
+    ORDER_TARGET_FIELDS,
     PRICE_PCT_FROM,
     TRIGGER_FIELDS,
     TRIGGER_MODEL_DOC,
@@ -43,6 +44,16 @@ class PriceTarget(BaseModel):
     )
 
 
+class OrderTarget(BaseModel):
+    """An order placed outside this conversation, such as in the user's own account."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description=ORDER_TARGET_FIELDS["id"])
+    brokerage: str = Field(description=ORDER_TARGET_FIELDS["brokerage"])
+    account: str = Field(description=ORDER_TARGET_FIELDS["account"])
+
+
 _FIELD_TYPES = {
     "label": Optional[str],
     "at": Optional[str],
@@ -50,7 +61,7 @@ _FIELD_TYPES = {
     "until": Optional[str],
     "timezone": Optional[str],
     "price": Optional[PriceTarget],
-    "order": Optional[str],
+    "order": Optional[Union[str, OrderTarget]],
 }
 # A new wording key must come with a type, or the schema silently drops it.
 assert list(TRIGGER_FIELDS) == list(_FIELD_TYPES), list(TRIGGER_FIELDS)

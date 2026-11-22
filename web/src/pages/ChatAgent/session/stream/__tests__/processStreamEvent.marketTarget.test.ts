@@ -201,3 +201,36 @@ describe("live: the agent's schedule_wakeup call", () => {
     expect(deps.refreshWakeups).toHaveBeenCalledOnce();
   });
 });
+
+// Placing an order sets the wakeup that reports how it ends; the receipt
+// names it, and the pending list should show it without waiting for turn end.
+describe("live: an order the agent placed", () => {
+  const TOOL = 'mcp__moomoo__place_order';
+  const call = (id: string) => ({
+    event: 'tool_calls',
+    agent: 'main',
+    tool_calls: [{ id, name: TOOL, args: {} }],
+  } as unknown as SSEEvent);
+  const result = (id: string, artifact: Record<string, unknown>) =>
+    ({
+      event: 'tool_call_result',
+      agent: 'main',
+      tool_call_id: id,
+      content: [{ type: 'text', text: '{"order_id": "OID-1"}' }],
+      artifact: { type: 'order_receipt', ...artifact },
+    } as unknown as SSEEvent);
+
+  it('re-reads the wakeups when the placement set one', () => {
+    const { deps, process } = setup();
+    process(call('tc-o'));
+    process(result('tc-o', { order_wakeup: { short_id: 'w_3f2a' } }));
+    expect(deps.refreshWakeups).toHaveBeenCalledOnce();
+  });
+
+  it('leaves them alone when it set none', () => {
+    const { deps, process } = setup();
+    process(call('tc-o'));
+    process(result('tc-o', {}));
+    expect(deps.refreshWakeups).not.toHaveBeenCalled();
+  });
+});

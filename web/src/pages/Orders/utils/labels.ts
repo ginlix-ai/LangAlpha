@@ -32,4 +32,5 @@ export const ORDER_ACTION_KEY: Record<OrderAction, string> = {
   unstage: 'orders.action.unstage',
   exercise: 'orders.action.exercise',
   cancel_exercise: 'orders.action.cancel_exercise',
+  watch: 'orders.action.watch',
 };

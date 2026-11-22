@@ -37,7 +37,7 @@ class FakeWakeups:
         self.late: set[str] = set()
         self.attempts: dict[str, dict] = {}
 
-    async def arm(self, thread_id, user_id, specs, *, cap=10):
+    async def arm(self, thread_id, user_id, specs, *, cap=20):
         room = max(cap - len(self.rows), 0)
         armed = []
         for spec in specs[:room]:
@@ -77,7 +77,7 @@ class FakeWakeups:
                 row[key] = getattr(spec, key)
             self.rows.append(row)
             armed.append(dict(row))
-        return armed, list(range(room, len(specs)))
+        return armed + [None] * (len(specs) - len(armed))
 
     async def list_pending(self, thread_id):
         return [dict(r) for r in self.rows if r["status"] == "armed"]

@@ -27,6 +27,7 @@ from src.server.database.wakeups import cancel as cancel_db
 from src.server.database.wakeups import read as read_db
 from src.server.database.wakeups.arm import WakeupSpec
 from src.server.database.wakeups.cancel import CancelOutcome
+from src.server.services.features import user_feature_enabled_or
 from src.server.services.wakeups.changes import wakeups_changed
 from src.server.services.wakeups.listing import wakeup_out
 from src.tools.wakeups import orders as order_wakeups
@@ -42,6 +43,7 @@ from src.tools.wakeups.schedule import (
     OrderAsk,
     PriceAsk,
     Refused,
+    WatchAsk,
     check_trigger,
     refusal_lines,
 )
@@ -90,13 +92,15 @@ def _listed(rows: Sequence[Mapping[str, Any]], now: datetime) -> List[Dict[str, 
 class _Entry:
     """One trigger entry on its way to a row: its spec, or why it has none."""
 
-    __slots__ = ("label", "spec", "problems", "price", "attempt", "last", "level")
+    __slots__ = ("label", "spec", "problems", "price", "watch", "attempt", "last", "level")
 
     def __init__(self) -> None:
         self.label: Optional[str] = None
         self.spec: Optional[WakeupSpec] = None
         self.problems: List[str] = []
         self.price: Optional[PricePlan] = None
+        # An order placed elsewhere, read once the entries before it are known.
+        self.watch: Optional[WatchAsk] = None
         # The order an order entry watches, which its lines describe.
         self.attempt: Optional[Dict[str, Any]] = None
         self.last: Optional[float] = None
@@ -112,13 +116,7 @@ async def _flag_on(user_id: Optional[str]) -> bool:
     after the user turns it off. Fails open, since the build read it on."""
     if not user_id:
         return True
-    try:
-        from src.server.services.features import user_feature_enabled
-
-        return await user_feature_enabled(str(user_id), "wakeups")
-    except Exception:
-        logger.warning("[Wakeups] setting re-check failed; going with the build", exc_info=True)
-        return True
+    return await user_feature_enabled_or(str(user_id), "wakeups", on_error=True)
 
 
 class ScheduleWakeupTool(BaseTool):
@@ -126,6 +124,9 @@ class ScheduleWakeupTool(BaseTool):
     description: str = inspect.cleandoc(SCHEDULE_WAKEUP_DOC)
     args_schema: type[BaseModel] = _ToolInput
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+    # Watching an order placed elsewhere reads the user's own brokerage, which
+    # a turn that may not use the sender's own data never reaches.
+    watch_elsewhere: bool = True
 
     def _parse_input(self, tool_input: Any, tool_call_id: Optional[str]) -> Dict[str, Any]:
         args = dict(tool_input) if isinstance(tool_input, dict) else {}
@@ -139,7 +140,9 @@ class ScheduleWakeupTool(BaseTool):
         call_id = kwargs.pop("tool_call_id", None)
         state = kwargs.pop("state", None) or {}
         configurable = (run_config or {}).get("configurable") or {}
-        text, artifact, error = await _execute(kwargs, state, configurable)
+        text, artifact, error = await _execute(
+            kwargs, state, configurable, watch_elsewhere=self.watch_elsewhere
+        )
         if call_id is None:
             return text, artifact
         message = ToolMessage(
@@ -152,8 +155,8 @@ class ScheduleWakeupTool(BaseTool):
         return message, artifact
 
 
-def build_schedule_wakeup_tool() -> BaseTool:
-    return ScheduleWakeupTool()
+def build_schedule_wakeup_tool(*, watch_elsewhere: bool = True) -> BaseTool:
+    return ScheduleWakeupTool(watch_elsewhere=watch_elsewhere)
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +165,11 @@ def build_schedule_wakeup_tool() -> BaseTool:
 
 
 async def _execute(
-    args: Dict[str, Any], state: Mapping[str, Any], configurable: Mapping[str, Any]
+    args: Dict[str, Any],
+    state: Mapping[str, Any],
+    configurable: Mapping[str, Any],
+    *,
+    watch_elsewhere: bool = True,
 ) -> Tuple[str, WakeupArtifact, bool]:
     """``(text, artifact, is_error)`` in the harness's order: argument
     problems, cancel, set, refusals, the listing, quiet, or the listing alone."""
@@ -191,7 +198,9 @@ async def _execute(
     armed: List[Tuple[Dict[str, Any], _Entry]] = []
     refused: List[str] = []
     if call.triggers:
-        armed, refused = await _set(call.triggers, thread_id, user_id, user_tz, now)
+        armed, refused = await _set(
+            call.triggers, thread_id, user_id, user_tz, now, watch_elsewhere=watch_elsewhere
+        )
     if any(
         o.outcome in _ENDED and o.row is not None and o.row.get("kind") == "price"
         for o in outcomes
@@ -274,7 +283,80 @@ def _cancel_lines(outcomes: List[CancelOutcome]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-async def _entry_for(raw: Any, thread_id: str, user_tz: str, now: datetime) -> _Entry:
+class _WatchRoom:
+    """The slots this call's watches may still take, counted once, before the
+    first brokerage read: a watch the cap would refuse is a read for nothing."""
+
+    def __init__(self, thread_id: str) -> None:
+        self._thread_id = thread_id
+        self._left: Optional[int] = None
+        self._followed: set[str] = set()
+
+    async def _count(self) -> None:
+        if self._left is None:
+            pending = await read_db.list_pending(self._thread_id)
+            self._left = MAX_PENDING - len(pending)
+            self._followed = {str(w["attempt_id"]) for w in pending if w.get("attempt_id")}
+
+    async def follows(self, attempt_id: str) -> bool:
+        await self._count()
+        return attempt_id in self._followed
+
+    async def take(self) -> bool:
+        await self._count()
+        if self._left <= 0:
+            return False
+        self._left -= 1
+        return True
+
+    def give(self) -> None:
+        if self._left is not None:
+            self._left += 1
+
+    async def spend(self, spec: WakeupSpec) -> None:
+        """An entry ahead of the watches that the arm will give a slot, unless
+        it follows an order a wakeup already follows, which it reuses."""
+        await self._count()
+        if spec.kind == "order" and spec.attempt_id:
+            if spec.attempt_id in self._followed:
+                return
+            self._followed.add(spec.attempt_id)
+        self._left -= 1
+
+    def hold(self, attempt_id: str) -> None:
+        self._followed.add(attempt_id)
+
+
+async def _read_watches(
+    entries: List[_Entry], thread_id: str, user_id: Any, now: datetime
+) -> None:
+    """Read each watched order in entry order, the order the arm fills slots
+    in, so a watch the entries before it leave no room for reads nothing."""
+    if not any(e.watch is not None for e in entries):
+        return
+    room = _WatchRoom(thread_id)
+    for e in entries:
+        if e.watch is not None:
+            try:
+                e.attempt, e.spec = await order_wakeups.watch_spec(
+                    thread_id, user_id, e.watch, now, room=room
+                )
+            except Refused as r:
+                e.label = e.label or r.label
+                e.problems = r.lines
+        elif e.spec is not None and not e.problems:
+            await room.spend(e.spec)
+
+
+async def _entry_for(
+    raw: Any,
+    thread_id: str,
+    user_id: Any,
+    user_tz: str,
+    now: datetime,
+    *,
+    watch_elsewhere: bool = True,
+) -> _Entry:
     """An entry checked as far as it can be before prices are fetched: a
     timer's spec, a price's plan, an order's spec, or its refusal."""
     entry = _Entry()
@@ -285,6 +367,14 @@ async def _entry_for(raw: Any, thread_id: str, user_tz: str, now: datetime) -> _
             entry.price = price_wakeups.plan_price(ask)
         elif isinstance(ask, OrderAsk):
             entry.attempt, entry.spec = await order_wakeups.order_spec(thread_id, ask, now)
+        elif isinstance(ask, WatchAsk):
+            if not watch_elsewhere:
+                raise Refused(
+                    BUILD_TOOL_RESULTS["watch_no_grant"].format(
+                        id=ask.order_id, brokerage=ask.brokerage
+                    )
+                )
+            entry.watch = ask
         else:
             entry.spec = ask
     except Refused as e:
@@ -294,14 +384,23 @@ async def _entry_for(raw: Any, thread_id: str, user_tz: str, now: datetime) -> _
 
 
 async def _set(
-    triggers: List[Any], thread_id: str, user_id: Any, user_tz: str, now: datetime
+    triggers: List[Any],
+    thread_id: str,
+    user_id: Any,
+    user_tz: str,
+    now: datetime,
+    *,
+    watch_elsewhere: bool = True,
 ) -> Tuple[List[Tuple[Dict[str, Any], _Entry]], List[str]]:
     """Arm every valid entry; ``([(row, entry)], refusal lines)`` in entry order."""
     many = len(triggers) > 1
     if not await _flag_on(user_id):
         return [], [BUILD_TOOL_RESULTS["setting_off"]]
 
-    entries = [await _entry_for(raw, thread_id, user_tz, now) for raw in triggers]
+    entries = [
+        await _entry_for(raw, thread_id, user_id, user_tz, now, watch_elsewhere=watch_elsewhere)
+        for raw in triggers
+    ]
     priced = [e for e in entries if e.price is not None]
     if priced:
         snaps = await price_wakeups.snapshots(
@@ -315,6 +414,7 @@ async def _set(
                 )
             except Refused as r:
                 e.problems = r.lines
+    await _read_watches(entries, thread_id, user_id, now)
 
     ready = [e for e in entries if e.spec is not None and not e.problems]
     armed: List[Tuple[Dict[str, Any], _Entry]] = []
@@ -322,7 +422,7 @@ async def _set(
         try:
             if not user_id:
                 raise RuntimeError("no user to set wakeups for")
-            rows, left_out = await arm_db.arm_wakeups(
+            rows = await arm_db.arm_wakeups(
                 thread_id, str(user_id), [e.spec for e in ready], cap=MAX_PENDING
             )
         except Exception:
@@ -333,9 +433,10 @@ async def _set(
                 e.problems = [BUILD_TOOL_RESULTS["save_failed"].format(desc=short_desc(row))]
         else:
             for row, e in zip(rows, ready):
-                armed.append((e.row_of(row), e))
-            for i in left_out:
-                ready[i].problems = [TOOL_RESULTS["refused_cap"]]
+                if row is None:
+                    e.problems = [TOOL_RESULTS["refused_cap"]]
+                else:
+                    armed.append((e.row_of(row), e))
     if armed and not await _flag_on(user_id) and await _end_overtaken(thread_id, armed):
         return [], [BUILD_TOOL_RESULTS["setting_off"]]
 

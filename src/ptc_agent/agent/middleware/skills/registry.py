@@ -95,9 +95,10 @@ def _is_enabled(
 
 
 # Skills no subagent gets: the chart guide covers annotation tools that only
-# the main agent binds, so a subagent's manifest, its preloads and the names a
-# subagent setting may prefer all leave it out.
-SUBAGENT_WITHHELD_SKILLS: frozenset[str] = frozenset({"chart-annotation"})
+# the main agent binds, and the order guide covers brokerage tools that only
+# the main agent binds directly, so a subagent's manifest, its preloads and the
+# names a subagent setting may prefer all leave them out.
+SUBAGENT_WITHHELD_SKILLS: frozenset[str] = frozenset({"chart-annotation", "order-execution"})
 
 # Registry of all available skills
 # Skills are pre-registered at agent creation but tools are hidden until loaded
@@ -341,6 +342,20 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         skill_md_path="skills/trade-pitch/SKILL.md",
         command="trade-pitch",
         requires=("research-conventions",),
+    ),
+    "order-execution": SkillDefinition(
+        name="order-execution",
+        # Keep in sync with the `description:` in
+        # plugins/langalpha_service/skills/order-execution/SKILL.md
+        # frontmatter (locked by a unit test). Guidance only: agent.py drops it
+        # from any build that binds no brokerage order tool.
+        description=(
+            "Read before placing, changing or cancelling an order through a "
+            "brokerage tool. The rules every order follows, the defaults the "
+            "user's own order preferences replace, the wakeups and tools that "
+            "follow an order, and where to save how the user likes orders placed."
+        ),
+        skill_md_path="skills/order-execution/SKILL.md",
     ),
     "3-statements": SkillDefinition(
         name="3-statements",

@@ -17,6 +17,7 @@ from ptc_agent.agent.middleware.order_governance import (
     ExecutionGrant,
     Proposed,
     Refusal,
+    Settled,
 )
 from ptc_agent.agent.provenance.types import (
     fingerprint_result,
@@ -54,10 +55,14 @@ from src.server.services.egress.execution_token import (
     ExecutionTokenError,
     mint_execution_token,
 )
+from src.server.services.wakeups.placed import placed_note
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["OrderAttemptLedger"]
+__all__ = ["ORDER_WAKEUP_KEY", "OrderAttemptLedger"]
+
+# The artifact key naming the order wakeup a placement set; read by the client.
+ORDER_WAKEUP_KEY = "order_wakeup"
 
 
 def _sha256_of(args: Mapping[str, Any] | None) -> str | None:
@@ -260,13 +265,11 @@ class OrderAttemptLedger:
             )
         return ExecutionGrant(token=token)
 
-    async def complete(
-        self, attempt_id: str, result: ToolMessage
-    ) -> dict[str, Any] | None:
+    async def complete(self, attempt_id: str, result: ToolMessage) -> Settled:
         try:
             row = await get_attempt(attempt_id)
             if row is None:
-                return None
+                return Settled()
             outcome = self._outcome(row, result)
             if _lost_after_dispatch(row, outcome):
                 outcome = outcome.model_copy(
@@ -275,12 +278,12 @@ class OrderAttemptLedger:
             sha256, _, _ = fingerprint_result(result.content)
             settled = await complete_attempt(attempt_id, outcome, sha256)
             if settled is None:
-                return None
+                return Settled()
             # The settled row, not the answer: the completing write is what
             # merged this outcome with whatever a status read had already put
             # on the row, and only the vendor's own word for the state has no
             # column to come back from.
-            return receipt_from_attempt(
+            receipt = receipt_from_attempt(
                 attempt_row_to_response(settled), raw_status=outcome.raw_status
             )
         except Exception:
@@ -291,7 +294,31 @@ class OrderAttemptLedger:
                 attempt_id,
                 exc_info=True,
             )
-            return None
+            return Settled()
+        note, wakeup = await self._placed(settled)
+        if wakeup is not None:
+            # Beside the receipt, so the client refreshes the conversation's
+            # wakeups the way a schedule_wakeup result makes it.
+            receipt[ORDER_WAKEUP_KEY] = {"short_id": wakeup.get("short_id")}
+        return Settled(receipt, note)
+
+    async def _placed(
+        self, settled: Mapping[str, Any]
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """The line a placement's result ends with, and the wakeup it set."""
+        try:
+            return await placed_note(
+                settled, user_id=self._user_id, thread_id=self._thread_id
+            )
+        except Exception:
+            # The order is recorded either way; a missing line only costs the
+            # model the ledger's word for it.
+            logger.warning(
+                "[ORDERS] attempt %s: no placement note",
+                settled.get("attempt_id"),
+                exc_info=True,
+            )
+            return None, None
 
     @staticmethod
     def _outcome(row: Mapping[str, Any], result: ToolMessage) -> OrderOutcome:

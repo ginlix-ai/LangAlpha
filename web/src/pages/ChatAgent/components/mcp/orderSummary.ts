@@ -38,6 +38,7 @@ export const ORDER_ACTION_KEY: Record<OrderAction, string> = {
   unstage: 'toolArtifact.directTool.orderAction.unstage',
   exercise: 'toolArtifact.directTool.orderAction.exercise',
   cancel_exercise: 'toolArtifact.directTool.orderAction.cancelExercise',
+  watch: 'toolArtifact.directTool.orderAction.watch',
 };
 
 const ORDER_FIELD_KEY = {

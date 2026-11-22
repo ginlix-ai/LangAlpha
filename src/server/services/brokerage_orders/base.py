@@ -133,12 +133,22 @@ class VendorOrder:
     match_key: MatchKey | None = None
     placed_at: datetime | None = None
     instrument: InstrumentRef | None = None
+    #: The order itself as the listing describes it, for an order no attempt
+    #: of ours sent: what a watch records, so the ledger and its wakeup can
+    #: name it, and the instrument it records is this order's own, so an
+    #: adapter that fills this puts what the listing names there. None where
+    #: the adapter cannot read a listed row as an order.
+    order: BrokerOrder | None = None
 
 
 class OrderAdapter(ABC):
     """One vendor's translation between its order tools and the neutral shapes."""
 
     vendor: ClassVar[str]
+    #: An edit made at the brokerage places a new order and cancels the old
+    #: one, under a new id and with nothing linking the two, so a cancel read
+    #: back may be an edit rather than an end.
+    edits_by_replace: ClassVar[bool] = False
 
     def parse_result(
         self,
@@ -217,6 +227,16 @@ class OrderAdapter(ABC):
         nor a read that can go on.
         """
         return None
+
+    def watch_queries(self, account: str, vendor_order_id: str) -> list[StatusQuery]:
+        """The reads that could find an order placed elsewhere, by its id alone.
+
+        A watch knows the account and the id, not what kind of order it is, so
+        this is every read the id could be listed under; the one that lists it
+        decides the rest. Empty for a vendor whose orders a watch cannot find,
+        which refuses the watch.
+        """
+        return []
 
     def absent_status(self, action: str | None) -> AttemptStatus | None:
         """The state an open attempt reaches by leaving a complete listing, or None.

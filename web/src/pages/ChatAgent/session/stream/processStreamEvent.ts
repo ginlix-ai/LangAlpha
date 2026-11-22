@@ -1210,6 +1210,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         pendingRefreshCalls.delete(toolCallId);
         deps[refresh]();
       }
+      // Placing an order sets the wakeup that reports how it ends, which
+      // changes the pending list as much as a schedule_wakeup call does.
+      else if (event.artifact?.order_wakeup) deps.refreshWakeups();
 
       // Detect navigate_to_workspace action from start_question tool result
       if (rt.onWorkspaceCreated && typeof event.content === 'string') {

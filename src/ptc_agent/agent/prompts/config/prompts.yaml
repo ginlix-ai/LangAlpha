@@ -13,6 +13,7 @@ defaults:
   # NOTE: date/datetime are auto-injected by PromptLoader - do NOT set here
   tool_summary: ""  # Subagent-only MCP roster; the main agents read <mcp-servers> in the baseline
   direct_tool_summary: ""  # Set at runtime: tools bound to the model directly (empty = section omitted)
+  order_skill: false  # Set at runtime: an order tool is bound and its skill is on
   # Shape of the shared components/direct_tools.md.j2 section. Each template
   # that includes it sets these; the values here only keep an unset render from
   # dropping the heading.

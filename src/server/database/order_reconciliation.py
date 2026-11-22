@@ -28,6 +28,7 @@ from psycopg.rows import dict_row
 from src.server.database.order_attempts import row_as_json
 from src.server.database.pool import get_db_connection
 from src.server.database.session_lock import try_session_lock
+from src.server.database.wakeups.contract import pending_sql
 from src.server.database.wakeups.fire import fire_order_wakeups
 from src.server.services.brokerage_capabilities import OrderAction
 from src.server.services.brokerage_orders import OPEN_STATUSES, AttemptStatus
@@ -35,6 +36,7 @@ from src.server.services.brokerage_orders.models import (
     CREATING_ACTIONS,
     TERMINAL_STATUSES,
     UNLISTED_ACTIONS,
+    WAKEUP_ACTIONS,
 )
 from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
@@ -385,6 +387,17 @@ async def list_stale_attempts(
                                   AND updated_at < NOW() - make_interval(secs => %s)
                                 )
                            )
+                       -- A watch made no order and is read only for the wakeup
+                       -- waiting on it: with none pending (refused, lapsed,
+                       -- cancelled or fired), a read tells no one anything.
+                       AND (
+                             COALESCE(action, '') <> '{OrderAction.WATCH}'
+                             OR EXISTS (
+                                  SELECT 1 FROM wakeups w
+                                   WHERE w.attempt_id = order_attempts.attempt_id
+                                     AND {pending_sql("w")}
+                                )
+                           )
                        -- And not taken within the poll interval, by this worker
                        -- or any other. A read that settles nothing writes only
                        -- swept_at, so a row past the updated_at windows above
@@ -608,27 +621,46 @@ async def refuse_cut_off_proposal(
 
 async def claimed_vendor_order_ids(
     user_id: str, vendor: str, account_ref: str | None
-) -> set[str]:
-    """Vendor order ids already bound to one of this account's attempts.
+) -> dict[str, datetime | None]:
+    """Vendor order ids already bound to one of this account's attempts, each
+    with when it was first watched, or None when a placement owns it.
 
     An attempt with no id has to be recognized by what was ordered, and two
     identical orders minutes apart are indistinguishable that way. Excluding
     the ids a placement already owns is what keeps a re-placed order from being
-    matched to the earlier attempt that is still open.
+    matched to the earlier attempt that is still open. A watch made no order,
+    so it excludes its id only from attempts made after the watch began: the
+    order existed before them, while an attempt that lost its answer and was
+    then watched is still that order's.
     """
     async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT vendor_order_id FROM order_attempts
-                 WHERE user_id = %s AND vendor = %s
-                   AND account_ref IS NOT DISTINCT FROM %s
+                SELECT vendor_order_id,
+                       CASE WHEN action = ANY(%(creating)s) THEN NULL ELSE created_at END AS since
+                  FROM order_attempts
+                 WHERE user_id = %(user)s AND vendor = %(vendor)s
+                   AND account_ref IS NOT DISTINCT FROM %(account)s
                    AND vendor_order_id IS NOT NULL
-                   AND action = ANY(%s)
+                   AND action = ANY(%(claiming)s)
                 """,
-                (user_id, vendor, account_ref, [str(a) for a in CREATING_ACTIONS]),
+                {
+                    "user": user_id,
+                    "vendor": vendor,
+                    "account": account_ref,
+                    "creating": [str(a) for a in CREATING_ACTIONS],
+                    "claiming": [str(a) for a in WAKEUP_ACTIONS],
+                },
             )
-            return {row[0] for row in await cur.fetchall()}
+            claimed: dict[str, datetime | None] = {}
+            for row in await cur.fetchall():
+                order_id, since = row["vendor_order_id"], row["since"]
+                if order_id not in claimed:
+                    claimed[order_id] = since
+                elif claimed[order_id] is not None:
+                    claimed[order_id] = None if since is None else min(claimed[order_id], since)
+            return claimed
 
 
 async def unanswered_attempts(

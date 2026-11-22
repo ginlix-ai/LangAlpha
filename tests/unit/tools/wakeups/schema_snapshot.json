@@ -1,6 +1,34 @@
 {
   "ScheduleWakeupArgs": {
     "$defs": {
+      "OrderTarget": {
+        "additionalProperties": false,
+        "description": "An order placed outside this conversation, such as in the user's own account.",
+        "properties": {
+          "account": {
+            "description": "The account number the order list was read for.",
+            "title": "Account",
+            "type": "string"
+          },
+          "brokerage": {
+            "description": "The brokerage connection you read it through, as its tools are named (robinhood for mcp__robinhood__get_equity_orders).",
+            "title": "Brokerage",
+            "type": "string"
+          },
+          "id": {
+            "description": "The order's id as the brokerage's order list shows it.",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "brokerage",
+          "account"
+        ],
+        "title": "OrderTarget",
+        "type": "object"
+      },
       "PriceTarget": {
         "additionalProperties": false,
         "description": "Set exactly one of above, below, pct_up, pct_down.",
@@ -136,11 +164,14 @@
                 "type": "string"
               },
               {
+                "$ref": "#/$defs/OrderTarget"
+              },
+              {
                 "type": "null"
               }
             ],
             "default": null,
-            "description": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
+            "description": "Fire when this order first fills, even partly, or ends unfilled. For an order you placed in this conversation, its id from the brokerage's reply. For one placed elsewhere, such as in the user's own account, an object naming where you read it. It lasts until the order ends, at most 7 days.",
             "title": "Order"
           },
           "price": {
@@ -239,7 +270,7 @@
   },
   "as_the_model_sees_it": {
     "function": {
-      "description": "Come back to this conversation later, or when something happens, to carry on a task whose next step you already know: at a time, on a repeating schedule, on a price move, or when an order you placed fills or ends. Call with no arguments to see what is pending.\n\nA wakeup carries nothing but what fired, so before you end the turn tell the user what you set, when it stops, and what you will do when it fires; that reply is what you will pick up from. It is not for background tasks or hand-offs, which report back on their own. At most 10 can be pending in a conversation; a series counts as one.\n\nArgs:\n    triggers: Wakeups to set.\n    cancel: Ids of wakeups to cancel, or \"all\".\n    quiet: End a turn that a wakeup started, without a reply: one short line on what you checked and found, shown to the user in the list of quiet checks.\n\nReturns:\n    What is pending afterwards: each wakeup's id (for cancel; the user knows it by its label), what it waits for, and when it next fires and stops or lapses.\n\nA wakeup that fires while you are working arrives in this turn; otherwise it starts a new turn here with no user message. When that turn finds nothing the user needs to hear, end it with quiet instead of replying. Cancel your own wakeups once their goal is met, such as an entry taken or an order done.",
+      "description": "Come back to this conversation later, or when something happens, to carry on a task whose next step you already know: at a time, on a repeating schedule, on a price move, or when an order you placed fills or ends. Call with no arguments to see what is pending.\n\nA wakeup carries nothing but what fired, so before you end the turn tell the user what you set, when it stops, and what you will do when it fires; that reply is what you will pick up from. It is not for background tasks or hand-offs, which report back on their own. At most 20 can be pending in a conversation; a series counts as one.\n\nArgs:\n    triggers: Wakeups to set.\n    cancel: Ids of wakeups to cancel, or \"all\".\n    quiet: End a turn that a wakeup started, without a reply: one short line on what you checked and found, shown to the user in the list of quiet checks.\n\nReturns:\n    What is pending afterwards: each wakeup's id (for cancel; the user knows it by its label), what it waits for, and when it next fires and stops or lapses.\n\nA wakeup that fires while you are working arrives in this turn; otherwise it starts a new turn here with no user message. When that turn finds nothing the user needs to hear, end it with quiet instead of replying. Cancel your own wakeups once their goal is met, such as an entry taken or an order done.",
       "name": "schedule_wakeup",
       "parameters": {
         "properties": {
@@ -324,11 +355,39 @@
                           "type": "string"
                         },
                         {
+                          "additionalProperties": false,
+                          "description": "An order placed outside this conversation, such as in the user's own account.",
+                          "properties": {
+                            "account": {
+                              "description": "The account number the order list was read for.",
+                              "title": "Account",
+                              "type": "string"
+                            },
+                            "brokerage": {
+                              "description": "The brokerage connection you read it through, as its tools are named (robinhood for mcp__robinhood__get_equity_orders).",
+                              "title": "Brokerage",
+                              "type": "string"
+                            },
+                            "id": {
+                              "description": "The order's id as the brokerage's order list shows it.",
+                              "title": "Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "brokerage",
+                            "account"
+                          ],
+                          "title": "OrderTarget",
+                          "type": "object"
+                        },
+                        {
                           "type": "null"
                         }
                       ],
                       "default": null,
-                      "description": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
+                      "description": "Fire when this order first fills, even partly, or ends unfilled. For an order you placed in this conversation, its id from the brokerage's reply. For one placed elsewhere, such as in the user's own account, an object naming where you read it. It lasts until the order ends, at most 7 days.",
                       "title": "Order"
                     },
                     "price": {

@@ -44,7 +44,12 @@ INVESTMENT_PROFILE_LABELS = {
 
 #: The keys the turn runner adds from the binding plans that stamp this turn's
 #: order tools, not from the platform reads, so they answer when those do not.
-TRADING_KEYS = ("trading_permission", "trading_asks_on", "trading_settings_url")
+TRADING_KEYS = (
+    "trading_permission",
+    "trading_asks_on",
+    "trading_settings_url",
+    "trading_order_skill",
+)
 
 
 def line_text(value: Any) -> str | None:
@@ -182,6 +187,7 @@ class ProfileSnapshot:
                     level=profile["trading_permission"],
                     asks_on=profile.get("trading_asks_on"),
                     trading_settings_url=profile.get("trading_settings_url"),
+                    order_skill=bool(profile.get("trading_order_skill")),
                 ).split()
             )
         if counts.get("portfolio_count"):

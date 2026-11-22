@@ -1140,13 +1140,15 @@ def _listed_advanced(row: Any) -> VendorOrder:
     order_id = as_text(row.get("id")) if isinstance(row, Mapping) else None
     if order_id is None:
         raise StatusReadError("listed advanced order with no id")
+    listed = _advanced_listing(row)
     return VendorOrder(
         vendor_order_id=order_id,
-        match_key=_advanced_fingerprint(_advanced_listing(row)),
+        match_key=_advanced_fingerprint(listed),
         outcome=_advanced_record(
             row, absent=AttemptStatus.UNKNOWN, vendor_order_id=order_id
         ),
         placed_at=as_datetime(row.get("created_at")),
+        order=listed,
     )
 
 
@@ -1154,6 +1156,9 @@ class RobinhoodOrderAdapter(OrderAdapter):
     """The one place that knows a cancel is accepted before it is done."""
 
     vendor = VENDOR
+    # "Replace order" in Robinhood's app places the new order about a second
+    # before it cancels the old one; neither row names the other.
+    edits_by_replace = True
 
     def parse_request(self, tool: str, args: Mapping[str, Any]) -> BrokerOrder | None:
         entry = order_tool(VENDOR, tool)
@@ -1268,6 +1273,18 @@ class RobinhoodOrderAdapter(OrderAdapter):
             args["order_id"] = vendor_order_id
         return StatusQuery(tool, args)
 
+    def watch_queries(self, account: str, vendor_order_id: str) -> list[StatusQuery]:
+        # Every list takes the id, so each read is one order or none. The
+        # crypto list names the account its own way, and a watch is given
+        # whichever spelling the agent read, so a mismatch there is a refused
+        # read, not a wrong answer.
+        reads = {tool: key for tool, key in _STATUS_TOOLS.values()}
+        reads[ADVANCED_READ] = "account_number"
+        return [
+            StatusQuery(tool, {key: account, "order_id": vendor_order_id})
+            for tool, key in reads.items()
+        ]
+
     def parse_status(self, query: StatusQuery, body: ResultBody) -> list[VendorOrder]:
         if query.tool == ACCOUNTS_READ:
             _brokerage_account(body, query.carry["rhs_account_number"])
@@ -1297,17 +1314,15 @@ class RobinhoodOrderAdapter(OrderAdapter):
             )
             if order_id is None:
                 raise StatusReadError("listed order with no id")
+            as_order = _place(row, asset_class) if asset_class is not None else None
             listed.append(
                 VendorOrder(
                     vendor_order_id=order_id,
                     # A listed order and the request that made it go through
                     # the same reading, which is what makes the two
                     # fingerprints comparable.
-                    match_key=(
-                        _fingerprint(_place(row, asset_class))
-                        if asset_class is not None
-                        else None
-                    ),
+                    match_key=_fingerprint(as_order) if as_order is not None else None,
+                    order=as_order,
                     outcome=_order_record(
                         row,
                         absent=AttemptStatus.UNKNOWN,

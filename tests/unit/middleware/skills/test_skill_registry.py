@@ -7,6 +7,7 @@ import yaml
 
 from ptc_agent.agent.middleware.skills.registry import (
     SKILL_REGISTRY,
+    SUBAGENT_WITHHELD_SKILLS,
     get_command_to_skill_map,
     get_skill,
     get_skill_registry,
@@ -88,3 +89,10 @@ def test_registry_description_mirrors_frontmatter(name, shipped_skill_md):
     the agent reads once the skill loads. The two are one string, verbatim."""
     frontmatter = yaml.safe_load(_FRONTMATTER_RE.match(shipped_skill_md(name).read_text(encoding="utf-8")).group(1))
     assert frontmatter["description"] == SKILL_REGISTRY[name].description, name
+
+
+def test_order_execution_is_main_agent_guidance_only():
+    skill = SKILL_REGISTRY["order-execution"]
+    assert skill.tool_names == ()
+    assert skill.feature is None
+    assert "order-execution" in SUBAGENT_WITHHELD_SKILLS

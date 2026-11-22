@@ -185,7 +185,11 @@ must render the same at both levels.
   Subagents are bound no order tools, so their copy of the profile drops it.
   Beside it, `trading_asks_on` names the brokerages (by server) whose switch
   still asks at a level that skips approval, so the rule does not tell the
-  model those orders go straight out.
+  model those orders go straight out, and `trading_order_skill` (set in
+  `agent.py` from the user's skill switch, not from this turn's bound tools)
+  adds the one pointer to the order-execution skill. It rides this block
+  rather than the static prompt so a thread pinned before the user connected
+  a brokerage still gets it, as a row.
 - **The static prompt excludes every per-request value.** The clock, the user's
   identity, the surface this turn is running on, and anything that changes
   between turns are rendered from `templates/envelope/` and appended after the

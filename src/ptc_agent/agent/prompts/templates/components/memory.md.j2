@@ -62,7 +62,9 @@ Always convert relative dates to absolute (e.g. "next Friday" → "2026-05-01").
 
 The highest-value `user` memory is one mandate file with named slots: mandate and vehicle, benchmark, time horizon, risk posture and position-sizing norms, sectors and geographies in and out of scope, and delivery preferences. Fill the slots you learn and leave the rest named and empty, so the next gap is visible.
 
-Capture is explicit-only: the trigger is the user volunteering one of those facts or asking you to remember it. Starting a task is not a trigger, and a missing mandate never delays the first answer.
+Capture is explicit-only: the trigger is the user volunteering one of those facts or asking you to remember it. Starting a task is not a trigger, and a missing mandate never delays the first answer.{% if order_skill | default(false) %}
+
+How the user places orders (time in force, order type, sessions, follow-up) goes in its own `feedback` file, `feedback_order_placing.md`, which you read before placing an order.{% endif %}
 {% if guidance | default("detailed") == "detailed" %}
 
 ### When each type earns a file

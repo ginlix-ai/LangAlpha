@@ -16,7 +16,7 @@ from typing import Sequence
 SCHEDULE_WAKEUP_DOC = (
     "Come back to this conversation later, or when something happens, to carry on a task whose next step you already know: at a time, on a repeating schedule, on a price move, or when an order you placed fills or ends. Call with no arguments to see what is pending.\n"
     "\n"
-    "A wakeup carries nothing but what fired, so before you end the turn tell the user what you set, when it stops, and what you will do when it fires; that reply is what you will pick up from. It is not for background tasks or hand-offs, which report back on their own. At most 10 can be pending in a conversation; a series counts as one.\n"
+    "A wakeup carries nothing but what fired, so before you end the turn tell the user what you set, when it stops, and what you will do when it fires; that reply is what you will pick up from. It is not for background tasks or hand-offs, which report back on their own. At most 20 can be pending in a conversation; a series counts as one.\n"
     "\n"
     "Args:\n"
     "    triggers: Wakeups to set.\n"
@@ -40,7 +40,13 @@ TRIGGER_FIELDS = {
     "until": 'With cron: stop the series after this time, ISO 8601 ("2026-10-20T16:00" for today only), read like at.',
     "timezone": "The IANA timezone at, cron and until are read in (\"America/New_York\"); the user's by default. For a market's hours, use its exchange's timezone and write the hours on that clock, so they hold for a user elsewhere and across daylight-saving changes.",
     "price": "Fire when a price level or % move hits; US stocks can also hit on pre-market and after-hours trades. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go.",
-    "order": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
+    "order": "Fire when this order first fills, even partly, or ends unfilled. For an order you placed in this conversation, its id from the brokerage's reply. For one placed elsewhere, such as in the user's own account, an object naming where you read it. It lasts until the order ends, at most 7 days.",
+}
+
+ORDER_TARGET_FIELDS = {
+    "id": "The order's id as the brokerage's order list shows it.",
+    "brokerage": "The brokerage connection you read it through, as its tools are named (robinhood for mcp__robinhood__get_equity_orders).",
+    "account": "The account number the order list was read for.",
 }
 
 WAKE_OPEN = "<wakeup>"
@@ -75,7 +81,53 @@ BUILD_WAKE_LINES = {
     "order_handed_off": "Your staged order left the brokerage's instruction list: {order} (order {order_id}) was sent, deleted or expired there by {fire_time}, and the brokerage does not say which.",
 }
 
+# An order wakeup on an order the user placed elsewhere, which the agent only
+# watches: the same outcomes, naming the order as one it watches rather than
+# its own. A staged instruction is never watched, so it has no confirmed or
+# handed-off line.
+_OWN_ORDER = "Your order "
+_WATCHED_ORDER = "The order you watch "
+WATCHED_WAKE_LINES = {
+    key: _WATCHED_ORDER + line.removeprefix(_OWN_ORDER)
+    for key, line in {**WAKE_LINES, **BUILD_WAKE_LINES}.items()
+    if key.startswith("order_") and key not in ("order_confirmed", "order_handed_off")
+}
+assert all(
+    {**WAKE_LINES, **BUILD_WAKE_LINES}[key].startswith(_OWN_ORDER)
+    for key in WATCHED_WAKE_LINES
+), "a watched line is the agent's own line with the order named again"
+
+# Appended to a cancel at a brokerage whose own edit is a cancel plus a new
+# order under a new id (``OrderAdapter.edits_by_replace``): the agent checks
+# for the replacement instead of taking the cancel as the end.
+EDIT_SHOWS_AS_CANCEL = " An edit at {brokerage} shows as a cancel: check the account's open orders for a replacement before treating it as ended."
+
 WAKE_LABEL_PREFIX = "{label}: "
+
+# What an order's tool result ends with, after the brokerage's own reply: the
+# state the order ledger recorded, worded alike for every brokerage, then
+# whether a wakeup will say how the order ends. ``{at_avg}`` is PLACED_AT_AVG
+# filled in, or nothing when the brokerage gave no average.
+PLACED_LINES = {
+    "working": "Order ledger: order {order_id} is working and has not filled yet.",
+    "partial": "Order ledger: order {order_id} has partly filled, {filled} of {qty}{at_avg} so far; the rest is still working.",
+    "filled": "Order ledger: order {order_id} filled, {filled}{at_avg}.",
+    "cancelled": "Order ledger: order {order_id} ended unfilled: it was cancelled.",
+    "partial_cancelled": "Order ledger: order {order_id} ended partly filled, {filled} of {qty}{at_avg}; the rest was cancelled.",
+    "rejected": "Order ledger: the brokerage rejected this order: {reason}.",
+    "failed": "Order ledger: this order failed: {reason}.",
+    "confirm": "Order ledger: order {order_id} is not placed yet; the brokerage asks for a confirmation first.",
+    "unknown": "Order ledger: the brokerage's answer was lost after this order was sent, so it may exist. Read the open orders before you place it again; the ledger settles it from the brokerage within minutes.",
+}
+PLACED_AT_AVG = " at an average {avg}"
+PLACED_WATCH = {
+    "set": "Order wakeup {short_id} was set for you: you hear here when this order fills, even partly, or ends unfilled, so don't set another for it; it lapses {lapses} if it does neither. Wakeups on price or time, such as at the trade's exit levels, are still yours to set.",
+    "auto_off": "No order wakeup was set: the user turned automatic order wakeups off. Set one if you need to hear how it ends.",
+    "full": "No order wakeup was set: this conversation already has 20 pending wakeups. Cancel one and set an order wakeup if you need to hear how it ends.",
+    "unreadable": "No order wakeup can watch it: {vendor} orders can't be read back. Set a timer to check on it.",
+    "readback_off": "No order wakeup can watch it: this server doesn't read order status back. Set a timer to check on it.",
+    "failed": "No order wakeup was set: saving it failed. Set one if you need to hear how it ends.",
+}
 
 CANCEL_ROW_ONE = "The user cancelled a wakeup you set: {label}. Leave it cancelled unless the user asks for it again."
 CANCEL_ROW_MANY = (
@@ -105,11 +157,11 @@ TEMPLATES = {
     "refused_pct_from": "- price: pct_from goes with pct_up or pct_down.",
     "refused_soon": "- at {s}: under a minute from now or already past (now {now}).",
     "refused_horizon": "- at {s}: more than 7 days ahead.",
-    "refused_order_unknown": "- order {id}: no open order with that id was placed in this conversation.",
+    "refused_order_unknown": "- order {id}: no open order with that id was placed in this conversation. For one placed elsewhere, give its id, brokerage and account.",
     "refused_order_unreadable": "- order {id}: IBKR staged instructions can't be read back, so an order wakeup can't see them; set a timer instead.",
     "refused_label": "- label: at most 40 characters.",
     "refused_unknown_field": "- {key}: not a field; name a wakeup with label.",
-    "refused_cap": "- this conversation already has 10 pending wakeups; cancel one first.",
+    "refused_cap": "- this conversation already has 20 pending wakeups; cancel one first.",
     "quiet_refused": "quiet only ends a turn a wakeup started; this turn has a user message, so reply to it.",
     "quiet_ok": "Ended without a reply.",
 }
@@ -156,6 +208,13 @@ BUILD_TOOL_RESULTS = {
     "save_failed": "- {desc}: could not be saved, so it is not set.",
     "order_readback_off": "- order {id}: this server doesn't read order status back, so an order wakeup can't see it; set a timer instead.",
     "order_vendor_unreadable": "- order {id}: {vendor} orders can't be read back, so an order wakeup can't see them; set a timer instead.",
+    "watch_no_connection": "- order {id}: no brokerage connection is named {brokerage}; name it as its tools are named.",
+    "watch_not_connected": "- order {id}: the user has to reconnect {brokerage} before its orders can be read.",
+    "watch_vendor_unwatchable": "- order {id}: an order placed outside this conversation at {brokerage} can't be watched; set a timer to check on it.",
+    "watch_no_grant": "- order {id}: {brokerage} can't be read from this workspace right now; set a timer to check on it.",
+    "watch_not_found": "- order {id}: account {account} lists no order with that id; check both against the order list you read.",
+    "watch_ended": "- order {id}: it has already ended ({status}), so there is nothing to wait for.",
+    "watch_failed": "- order {id}: reading it from the brokerage failed; try again, or set a timer to check on it.",
     "setting_off": "- wakeups are turned off in Settings, so this was not set.",
     "cancelled_in_flight": "Cancelled: {desc}; its check {n} had already fired and still reaches you.",
     "trigger_not_object": "- each trigger is an object with one of at, cron, price, order.",

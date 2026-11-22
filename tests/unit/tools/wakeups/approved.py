@@ -24,12 +24,12 @@ TOOL_RESULTS = {
     "refused_soon": "- at 2026-10-20T15:40: under a minute from now or already past (now 15:40 EDT).",
     "refused_horizon": "- at 2026-11-02T09:00: more than 7 days ahead.",
     "refused_order_unknown": "- order 7712046: no open order with that id was placed in this "
-    "conversation.",
+    "conversation. For one placed elsewhere, give its id, brokerage and account.",
     "refused_order_unreadable": "- order 5520: IBKR staged instructions can't be read back, so an "
     "order wakeup can't see them; set a timer instead.",
     "refused_label": "- label: at most 40 characters.",
     "refused_unknown_field": "- title: not a field; name a wakeup with label.",
-    "refused_cap": "- this conversation already has 10 pending wakeups; cancel one first.",
+    "refused_cap": "- this conversation already has 20 pending wakeups; cancel one first.",
     "quiet_refused": "quiet only ends a turn a wakeup started; this turn has a user message, so reply "
     "to it.",
     "quiet_ok": "Ended without a reply.",
@@ -67,6 +67,13 @@ BUILD_TOOL_RESULTS = {
     "required": "- {path}: required.",
     "generic": "- {path}: {message}.",
     "cron_too_long": "- cron: at most 120 characters.",
+    "watch_ended": "- order {id}: it has already ended ({status}), so there is nothing to wait for.",
+    "watch_failed": "- order {id}: reading it from the brokerage failed; try again, or set a timer to check on it.",
+    "watch_no_connection": "- order {id}: no brokerage connection is named {brokerage}; name it as its tools are named.",
+    "watch_no_grant": "- order {id}: {brokerage} can't be read from this workspace right now; set a timer to check on it.",
+    "watch_not_connected": "- order {id}: the user has to reconnect {brokerage} before its orders can be read.",
+    "watch_not_found": "- order {id}: account {account} lists no order with that id; check both against the order list you read.",
+    "watch_vendor_unwatchable": "- order {id}: an order placed outside this conversation at {brokerage} can't be watched; set a timer to check on it.",
 }
 
 CONFIRM_RESULTS = {
@@ -168,3 +175,24 @@ CANCEL_ROW_SETTING_OFF = (
     "{lines}\n"
     "schedule_wakeup is no longer available in this conversation."
 )
+
+PLACED_LINES = {
+    "working": "Order ledger: order {order_id} is working and has not filled yet.",
+    "partial": "Order ledger: order {order_id} has partly filled, {filled} of {qty}{at_avg} so far; the rest is still working.",
+    "filled": "Order ledger: order {order_id} filled, {filled}{at_avg}.",
+    "cancelled": "Order ledger: order {order_id} ended unfilled: it was cancelled.",
+    "partial_cancelled": "Order ledger: order {order_id} ended partly filled, {filled} of {qty}{at_avg}; the rest was cancelled.",
+    "rejected": "Order ledger: the brokerage rejected this order: {reason}.",
+    "failed": "Order ledger: this order failed: {reason}.",
+    "confirm": "Order ledger: order {order_id} is not placed yet; the brokerage asks for a confirmation first.",
+    "unknown": "Order ledger: the brokerage's answer was lost after this order was sent, so it may exist. Read the open orders before you place it again; the ledger settles it from the brokerage within minutes.",
+}
+PLACED_AT_AVG = " at an average {avg}"
+PLACED_WATCH = {
+    "set": "Order wakeup {short_id} was set for you: you hear here when this order fills, even partly, or ends unfilled, so don't set another for it; it lapses {lapses} if it does neither. Wakeups on price or time, such as at the trade's exit levels, are still yours to set.",
+    "auto_off": "No order wakeup was set: the user turned automatic order wakeups off. Set one if you need to hear how it ends.",
+    "full": "No order wakeup was set: this conversation already has 20 pending wakeups. Cancel one and set an order wakeup if you need to hear how it ends.",
+    "unreadable": "No order wakeup can watch it: {vendor} orders can't be read back. Set a timer to check on it.",
+    "readback_off": "No order wakeup can watch it: this server doesn't read order status back. Set a timer to check on it.",
+    "failed": "No order wakeup was set: saving it failed. Set one if you need to hear how it ends.",
+}
