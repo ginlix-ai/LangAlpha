@@ -27,7 +27,6 @@ describe('MessageContentSegments: a reply billed to usage credits', () => {
           ] as SegmentsProps['segments']}
           reasoningProcesses={{}}
           toolCallProcesses={{}}
-          todoListProcesses={{}}
           subagentTasks={{}}
           isStreaming={false}
         />

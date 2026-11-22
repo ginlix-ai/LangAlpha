@@ -58,7 +58,6 @@ function renderItems(items: Item[]) {
         contentProjection={projectMessageContent(message)}
         reasoningProcesses={{}}
         toolCallProcesses={toolCallProcesses as never}
-        todoListProcesses={{}}
         subagentTasks={{}}
       />
     </TranscriptDisplayContext.Provider>,

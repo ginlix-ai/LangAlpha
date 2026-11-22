@@ -104,12 +104,34 @@ describe('FilePanel new tab menu', () => {
 
     fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart', 'Browser']);
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart', 'Browser', 'Status']);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Chart' }));
 
     await screen.findByTestId('chart-surface');
     expect(tabNames()).toHaveLength(2);
     expect(document.querySelector('.file-panel-tree')).toBeNull();
+  });
+
+  it("opens the thread's Status once, however often it is picked", async () => {
+    renderWithProviders(panel());
+    await openFromTheTree('notes.md');
+
+    for (let i = 0; i < 2; i += 1) {
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
+      fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Status' }));
+    }
+
+    expect(tabNames().filter((name) => name === 'Status')).toHaveLength(1);
+  });
+
+  it('offers no Status where there is no thread', async () => {
+    renderWithProviders(<FilePanel workspaceId="ws" onClose={() => {}} files={['notes.md', 'todo.md']} target={null} />);
+    await openFromTheTree('notes.md');
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
+    const menu = await screen.findByRole('menu');
+
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart']);
   });
 
   it('offers no Browser tab beside a machine brought over SSH, which runs no browser of ours', async () => {
@@ -120,7 +142,7 @@ describe('FilePanel new tab menu', () => {
 
     fireEvent.contextMenu(screen.getByRole('button', { name: 'New tab' }));
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart']);
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Files', 'Chart', 'Status']);
   });
 
   it('pins the Browser beside the listing on a computer with one', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MarketStatusData } from '@/lib/marketUtils';
-import { splitQuote } from '../quoteSplit';
+import { splitQuote } from '../splitQuote';
 
 const PRE: MarketStatusData = { market: 'extended-hours', earlyHours: true };
 

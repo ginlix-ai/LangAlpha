@@ -175,7 +175,7 @@ async function replay(items: Array<Record<string, unknown>>) {
 
 describe('history replay: a bubble with nothing to paint', () => {
   it('skips a bubble whose only segments are hidden tool calls', async () => {
-    // TodoWrite draws the floating todo card, never anything in the bubble.
+    // An older thread's TodoWrite draws nothing in the bubble: its plan shows under the ask.
     const { container } = await replay([
       user(0, 'Track the steps'),
       toolCall(0, 'call-todo', 'TodoWrite', { todos: [{ content: 'Pull the 10-K', status: 'pending' }] }),

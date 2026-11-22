@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { RouteLeaveGuardContext, type RouteLeaveGuard } from '../../../contexts/RouteLeaveGuardContext';
@@ -22,9 +22,10 @@ import type { CommandRun } from '@/types/commands';
 import type { RosterTask } from '../delegatedWork';
 import { ComposerTray } from '../ComposerTray';
 import { ThreadCommandsContext } from '../../commands/threadCommandsContext';
-import { trayWorking, type TrayContents } from '../useTrayContents';
+import type { TrayContents } from '../useTrayContents';
+import { ThreadStatusContext, threadWork, trayWorking, type StatusSectionId, type ThreadStatus } from '../threadStatus';
 
-const EMPTY: TrayContents = { watch: null, wakeups: null, commands: null, tasks: null, analysts: null, reportBackLabel: null };
+const EMPTY: TrayContents = { plan: null, watch: null, wakeups: null, commands: null, tasks: null, analysts: null, reportBack: null };
 const THREAD = '7d1c2a4e-0b3f-4c55-9a61-2f8e5d9b0c17';
 
 function Where() {
@@ -34,39 +35,46 @@ function Where() {
 
 function renderTray(
   contents: Partial<TrayContents>,
-  { onOpenTask = vi.fn(), onOpenWatch = vi.fn(), onOpenCommand = vi.fn(), guard = (go) => go() }: {
+  { onOpenTask = vi.fn(), onOpenStatus = vi.fn(), onOpenCommand = vi.fn(), awaitingAnswer = false, guard = (go) => go() }: {
     onOpenTask?: (agentId: string) => void;
-    onOpenWatch?: () => void;
+    onOpenStatus?: (section: StatusSectionId | null) => void;
     onOpenCommand?: (toolCallId: string) => void;
+    awaitingAnswer?: boolean;
     guard?: RouteLeaveGuard;
   } = {},
 ) {
+  const full = { ...EMPTY, ...contents };
+  const status: ThreadStatus = {
+    contents: full,
+    work: threadWork(full, awaitingAnswer),
+    latestPlan: null,
+    allWakeups: null,
+    focus: null,
+    from: { threadId: 'here', workspaceId: 'home' },
+    threadId: THREAD,
+    onOpenTask,
+    onOpenCommand,
+    onJumpToLatest: vi.fn(),
+    onOpenStatus,
+  };
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={['/chat/t/here']}>
         <RouteLeaveGuardContext value={guard}>
           <ThreadCommandsContext value={THREAD}>
+          <ThreadStatusContext value={status}>
           <Routes>
             <Route
               path="*"
               element={(
                 <>
-                  <ComposerTray
-                    contents={{ ...EMPTY, ...contents }}
-                    phase="open"
-                    trayRef={{ current: null }}
-                    dockRef={{ current: null }}
-                    from={{ threadId: 'here', workspaceId: 'home' }}
-                    onOpenTask={onOpenTask}
-                    onOpenWatch={onOpenWatch}
-                    onOpenCommand={onOpenCommand}
-                    threadId={THREAD}
-                  />
+                  <ComposerTray phase="open" trayRef={{ current: null }} dockRef={{ current: null }} onSettled={() => undefined} />
                   <Where />
                 </>
               )}
             />
           </Routes>
+          </ThreadStatusContext>
           </ThreadCommandsContext>
         </RouteLeaveGuardContext>
       </MemoryRouter>
@@ -95,18 +103,35 @@ function listed(...rows: RosterTask[]): TrayContents['tasks'] {
 }
 
 describe('ComposerTray', () => {
+  it('shows the step in progress and opens the whole plan', () => {
+    renderTray({
+      plan: [
+        { title: 'Pull segment data', status: 'completed' },
+        { title: 'Model margins by segment', status: 'in_progress' },
+        { title: 'Chart the comparison', status: 'pending' },
+      ],
+    });
+    const chip = screen.getByRole('button', { name: /Model margins by segment/ });
+    expect(chip).toHaveTextContent('Plan · step 2 of 3');
+    fireEvent.click(chip);
+    const list = screen.getByRole('dialog', { name: 'Plan · step 2 of 3' });
+    expect(list).toHaveTextContent('Pull segment data');
+    expect(list).toHaveTextContent('Chart the comparison');
+  });
+
   it('shows the watched tickers on a button that opens the watch', () => {
-    const onOpenWatch = vi.fn();
-    renderTray({ watch: { symbols: ['NVDA', 'TSLA'] } }, { onOpenWatch });
+    const onOpenStatus = vi.fn();
+    renderTray({ watch: { symbols: ['NVDA', 'TSLA'] } }, { onOpenStatus });
     const chip = screen.getByRole('button', { name: 'Open live market watch' });
     expect(chip).toHaveAttribute('title', 'Live prices for the tickers the agent is watching');
     fireEvent.click(chip);
-    expect(onOpenWatch).toHaveBeenCalledTimes(1);
+    expect(onOpenStatus).toHaveBeenCalledWith('watch');
   });
 
   it('announces the watch from its label, not the button', () => {
     renderTray({ watch: { symbols: ['AAPL'] } });
-    const label = screen.getByText('Watching AAPL');
+    // Within the chip: the unseen copies the tray measures carry the same words.
+    const label = within(screen.getByRole('button', { name: 'Open live market watch' })).getByText('Watching AAPL');
     expect(label).toHaveAttribute('role', 'status');
     expect(label).toHaveAttribute('aria-live', 'polite');
     expect(label.closest('button')).not.toHaveAttribute('role');
@@ -144,7 +169,7 @@ describe('ComposerTray', () => {
   it('closes the task list as a row opens its task', () => {
     const onOpenTask = vi.fn();
     renderTray({ tasks: listed(task('a', 'Pull filings'), task('b', '', false)) }, { onOpenTask });
-    fireEvent.click(screen.getByRole('button', { name: /2 tasks · 1 running/ }));
+    fireEvent.click(screen.getByRole('button', { name: /2 subagents · 1 running/ }));
     // A row is named by its task's words, and by its name without them.
     fireEvent.click(screen.getByRole('button', { name: /Pull filings/ }));
     expect(onOpenTask).toHaveBeenCalledWith('a');
@@ -163,9 +188,9 @@ describe('ComposerTray', () => {
 
   it('spins for a task no row names beside the rows it keeps', () => {
     const contents = { ...EMPTY, tasks: { rows: [task('b', 'Size the market', false)], unnamedRunning: true } };
-    expect(trayWorking(contents)).toBe(true);
+    expect(trayWorking(contents, threadWork(contents, false))).toBe(true);
     renderTray(contents);
-    const chip = screen.getByRole('button', { name: /1 task/ });
+    const chip = screen.getByRole('button', { name: /1 subagent/ });
     expect(chip.querySelector('[role="status"]')).not.toBeNull();
     fireEvent.click(chip);
     expect(screen.getByRole('button', { name: /Size the market/ })).toBeInTheDocument();
@@ -173,9 +198,15 @@ describe('ComposerTray', () => {
 
   it("names each task's status for a screen reader", () => {
     renderTray({ tasks: listed(task('a', 'Pull filings'), { ...task('b', 'Size the market', false), status: 'error' }) });
-    fireEvent.click(screen.getByRole('button', { name: /2 tasks · 1 running/ }));
-    expect(screen.getByRole('button', { name: /Working.*Pull filings/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Failed.*Size the market/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /2 subagents · 1 running/ }));
+    expect(screen.getByRole('button', { name: /Pull filings.*Subagent.*Working/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Size the market.*Subagent.*Failed/ })).toBeInTheDocument();
+  });
+
+  it('names a task by the subagent role that runs it', () => {
+    renderTray({ tasks: listed({ ...task('a', 'Pull filings'), type: 'research' }, task('b', 'Size the market', false)) });
+    fireEvent.click(screen.getByRole('button', { name: /2 subagents/ }));
+    expect(screen.getByRole('button', { name: /Pull filings.*research subagent/ })).toBeInTheDocument();
   });
 
   it('draws no status for an Analyst nothing has reported on yet', () => {
@@ -185,6 +216,7 @@ describe('ComposerTray', () => {
     const row = screen.getAllByRole('button', { name: /Chip demand/ })[0];
     expect(row.querySelector('[role="status"]')).toBeNull();
     expect(row).not.toHaveTextContent(/Starting|·/);
+    expect(row).toHaveTextContent('Analyst in Semis');
   });
 
   it("asks the leave guard before opening an Analyst's thread", () => {
@@ -198,6 +230,28 @@ describe('ComposerTray', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/chat/t/here');
     act(() => guard.mock.calls[0][0]());
     expect(screen.getByTestId('where')).toHaveTextContent('/chat/t/analyst-1');
+  });
+
+  it("opens the panel where the Analysts' list sits: waiting on the reader first", () => {
+    const onOpenStatus = vi.fn();
+    const analyst = { workspaceId: 'w1', workspaceName: 'Semis', title: 'Chip demand' };
+    renderTray({
+      analysts: [
+        { ...analyst, threadId: 'a1', status: 'running', running: true },
+        { ...analyst, threadId: 'a2', status: 'needs_input', running: false },
+      ],
+    }, { onOpenStatus });
+    fireEvent.click(screen.getByRole('button', { name: /2 Analysts/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show in Status' }));
+    expect(onOpenStatus).toHaveBeenCalledWith('needs');
+  });
+
+  it('opens the panel at Done for a task list that has all ended', () => {
+    const onOpenStatus = vi.fn();
+    renderTray({ tasks: listed(task('a', 'Pull filings', false), task('b', 'Size the market', false)) }, { onOpenStatus });
+    fireEvent.click(screen.getByRole('button', { name: /2 subagents/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show in Status' }));
+    expect(onOpenStatus).toHaveBeenCalledWith('done');
   });
 });
 
@@ -217,7 +271,8 @@ describe('ComposerTray: background commands', () => {
     const chip = screen.getByRole('button', { name: '1 command running' });
     expect(chip.querySelector('[role="status"]')).not.toBeNull();
     expect(screen.getByRole('button', { name: /Pull filings/ })).toBeInTheDocument();
-    expect(trayWorking({ ...EMPTY, commands: [command({})] })).toBe(true);
+    const commands = { ...EMPTY, commands: [command({})] };
+    expect(trayWorking(commands, threadWork(commands, false))).toBe(true);
   });
 
   it('lists each by its description and how long it has run, never its id, and says the Agent hears of it', () => {

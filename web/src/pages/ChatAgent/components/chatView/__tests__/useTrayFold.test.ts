@@ -3,9 +3,11 @@
  * composer, as it does while the reader is up, and comes back out once the
  * notice goes. A peek pours it out over the notice.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
+import { LIQUID_FALLBACK_MS, SHAPE_RUN } from '../trayLiquid';
 import { useTrayFold } from '../useTrayFold';
+import type { TrayContents } from '../useTrayContents';
 
 type Props = { covered?: boolean; scrolledUp?: boolean; docked?: boolean };
 
@@ -159,6 +161,51 @@ describe('useTrayFold: measuring the tray', () => {
     act(() => move({ scrollHeight: 940, scrollTop: 540 }));
     expect(fold.result.current.phase).toBe('open');
     act(() => move({ scrollTop: 480 }));
+    expect(fold.result.current.phase).toBe('folded');
+  });
+});
+
+const CONTENTS: TrayContents = {
+  plan: null, watch: { symbols: ['NVDA'] }, wakeups: null, commands: null, tasks: null, analysts: null, reportBack: null,
+};
+
+/** A tray with chips, so a fold runs as liquid; a notice above the composer folds it. */
+function renderRun() {
+  return renderHook(
+    ({ covered }: { covered: boolean }) =>
+      useTrayFold({ scrolledUp: false, jumping: false, contents: CONTENTS, getScroller: () => null, covered }),
+    { initialProps: { covered: false } },
+  );
+}
+
+describe('useTrayFold: a liquid run', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('ends when the liquid lands, and only the run that is going', () => {
+    const fold = renderRun();
+    fold.rerender({ covered: true });
+    expect(fold.result.current.phase).toBe('folding');
+    // A late word from another run moves nothing.
+    act(() => fold.result.current.settle('unfolding'));
+    expect(fold.result.current.phase).toBe('folding');
+    act(() => fold.result.current.settle('folding'));
+    expect(fold.result.current.phase).toBe('folded');
+
+    fold.rerender({ covered: false });
+    expect(fold.result.current.phase).toBe('unfolding');
+    act(() => fold.result.current.settle('unfolding'));
+    expect(fold.result.current.phase).toBe('open');
+  });
+
+  it('waits for the liquid past any count of chips, then moves on without it', () => {
+    vi.useFakeTimers();
+    const fold = renderRun();
+    fold.rerender({ covered: true });
+    // Where a timer counting one chip would have ended it, mid-fall.
+    act(() => vi.advanceTimersByTime(SHAPE_RUN * 1000));
+    expect(fold.result.current.phase).toBe('folding');
+    // A run that never drew (nothing to measure) still ends.
+    act(() => vi.advanceTimersByTime(LIQUID_FALLBACK_MS - SHAPE_RUN * 1000));
     expect(fold.result.current.phase).toBe('folded');
   });
 });

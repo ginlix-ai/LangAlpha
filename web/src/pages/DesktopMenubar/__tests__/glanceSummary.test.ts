@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   minutesLeftInPhase,
-  signedPercent,
   summarizePortfolioDay,
   type HoldingQuote,
 } from '../glanceSummary';
@@ -76,12 +75,6 @@ describe('summarizePortfolioDay', () => {
 
   it('has no extended move outside an extended session', () => {
     expect(summarizePortfolioDay([h('A', 1, 100, 1)])?.ext).toBeNull();
-  });
-});
-
-describe('signedPercent', () => {
-  it('signs with a hyphen-minus', () => {
-    expect(signedPercent(-0.5)).toBe('-0.50%');
   });
 });
 

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { TFunction } from 'i18next';
 import type { Wakeup } from '@/types/wakeups';
-import { chipLabel, nextFireAt, orderOutcomeLabel, triggerText, wakeupsAt, zoneCity } from '../wakeupLabels';
+import {
+  armedPrice, chipLabel, nearestPriceWakeup, nextFireAt, orderOutcomeLabel, priceDistance, triggerText, wakeupsAt, zoneCity,
+} from '../wakeupLabels';
+import type { WakeupPrice } from '@/types/wakeups';
 
 function wakeup(over: Partial<Wakeup>): Wakeup {
   return {
@@ -120,5 +123,87 @@ describe('triggerText zone', () => {
       .toBe('labelRepeatZone Tokyo');
     expect(triggerText({ ...fields, timezone: 'America/Indianapolis' }, t, 'en-US', now, 'America/Indiana/Indianapolis'))
       .toBe('labelRepeat');
+  });
+});
+
+describe('priceDistance', () => {
+  const reading = (kind: 'above' | 'below' | 'pct_up' | 'pct_down', level: number | null, last: number | null, armed: number | null = null) =>
+    ({ kind, level, last, armed_price: armed });
+
+  it('measures the level the monitor fires at from the price it last read', () => {
+    const d = priceDistance(reading('above', 130, 125, 120));
+    expect(d?.target).toBe(130);
+    expect(d?.away).toBeCloseTo(0.04);
+    expect(d?.progress).toBeCloseTo(0.5);
+  });
+
+  it('measures a fall as the way down to its level', () => {
+    const d = priceDistance(reading('pct_down', 360.73, 424.39, 424.39));
+    expect(d?.away).toBeCloseTo((424.39 - 360.73) / 424.39);
+    expect(d?.progress).toBe(0);
+  });
+
+  it('reads as there once the price has crossed, and as unknown with no reading', () => {
+    expect(priceDistance(reading('below', 100, 95))?.away).toBe(0);
+    expect(priceDistance(reading('above', 100, null))).toBeNull();
+    expect(priceDistance(reading('pct_up', null, 100))).toBeNull();
+  });
+
+  it('reads the live price over the monitor\'s, against the monitor\'s level', () => {
+    const d = priceDistance(reading('above', 130, 120, 120), 125);
+    expect(d?.last).toBe(125);
+    expect(d?.away).toBeCloseTo(0.04);
+    expect(d?.progress).toBeCloseTo(0.5);
+    expect(priceDistance(reading('above', 130, null), 125)?.last).toBe(125);
+    expect(priceDistance(reading('above', 130, 120), null)?.last).toBe(120);
+  });
+});
+
+// Neutral placeholder tickers and made-up levels only.
+function priced(symbol: string, over: Partial<WakeupPrice> = {}): WakeupPrice {
+  return { symbol, kind: 'above', value: 110, pct_from: null, armed_price: null, fired_price: null, last: 100, level: 110, ...over };
+}
+
+describe('armedPrice', () => {
+  it('is the price an armed price wakeup waits on, and null for any other', () => {
+    const price = priced('NVDA');
+    expect(armedPrice(wakeup({ price }))).toBe(price);
+    expect(armedPrice(wakeup({ price, state: 'fired' }))).toBeNull();
+    expect(armedPrice(wakeup({ price: null }))).toBeNull();
+    expect(armedPrice(wakeup({ kind: 'at', price }))).toBeNull();
+  });
+});
+
+describe('nearestPriceWakeup', () => {
+  const none = () => null;
+
+  it('picks the armed price wakeup with the least way to go', () => {
+    const items = [
+      wakeup({ wakeup_id: 'a', price: priced('NVDA', { last: 100, level: 110 }) }),
+      wakeup({ wakeup_id: 'b', price: priced('AMD', { last: 100, level: 104 }) }),
+      wakeup({ wakeup_id: 'c', kind: 'at', price: null }),
+    ];
+    const nearest = nearestPriceWakeup(items, none);
+    expect(nearest?.symbol).toBe('AMD');
+    expect(nearest?.distance.away).toBeCloseTo(0.04);
+  });
+
+  it('reads each at the live price where there is one', () => {
+    const items = [
+      wakeup({ wakeup_id: 'a', price: priced('NVDA', { last: 100, level: 110 }) }),
+      wakeup({ wakeup_id: 'b', price: priced('AMD', { last: 100, level: 104 }) }),
+    ];
+    const nearest = nearestPriceWakeup(items, (symbol) => (symbol === 'NVDA' ? 109 : null));
+    expect(nearest?.symbol).toBe('NVDA');
+    expect(nearest?.distance.last).toBe(109);
+  });
+
+  it('passes over one already at its level, one with no distance known, and one not armed', () => {
+    const items = [
+      wakeup({ wakeup_id: 'a', price: priced('NVDA', { last: 112, level: 110 }) }),
+      wakeup({ wakeup_id: 'b', price: priced('AMD', { last: null, level: 110 }) }),
+      wakeup({ wakeup_id: 'c', state: 'fired', price: priced('TSM') }),
+    ];
+    expect(nearestPriceWakeup(items, none)).toBeNull();
   });
 });

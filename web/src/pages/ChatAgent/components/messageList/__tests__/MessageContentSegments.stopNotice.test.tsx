@@ -58,7 +58,6 @@ const props: SegmentsProps = {
   ] as SegmentsProps['segments'],
   reasoningProcesses: {},
   toolCallProcesses: {},
-  todoListProcesses: {},
   subagentTasks: STOPPED_TASK,
   isStreaming: false,
 };

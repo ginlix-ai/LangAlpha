@@ -63,7 +63,6 @@ function props(
     segments: [{ type: 'tool_approval', order: 0, proposalId: 'int-1' }] as SegmentsProps['segments'],
     reasoningProcesses: {},
     toolCallProcesses,
-    todoListProcesses: {},
     subagentTasks: {},
     toolApprovals: { 'int-1': approval },
     isStreaming,

@@ -169,9 +169,7 @@ vi.mock('../../hooks/useCardState', () => ({
       'subagent-task:wfa': runCard('wfa', 'first run'),
       'subagent-task:wfb': runCard('wfb', 'second run'),
     },
-    updateTodoListCard: vi.fn(),
     updateSubagentCard: vi.fn(),
-    finalizePendingTodos: vi.fn(),
     clearSubagentCards: vi.fn(),
   }),
 }));

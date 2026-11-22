@@ -59,7 +59,6 @@ const view = (proc: ToolCallProcessRecord, procs: Record<string, ToolCallProcess
       segments={segs}
       reasoningProcesses={{}}
       toolCallProcesses={procs}
-      todoListProcesses={{}}
       subagentTasks={{}}
       isStreaming
       fold="live"

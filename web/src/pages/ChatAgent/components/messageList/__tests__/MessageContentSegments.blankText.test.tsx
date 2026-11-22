@@ -37,7 +37,6 @@ const base: SegmentsProps = {
   segments: [],
   reasoningProcesses: {},
   toolCallProcesses: {},
-  todoListProcesses: {},
   subagentTasks: {},
   isStreaming: false,
 };

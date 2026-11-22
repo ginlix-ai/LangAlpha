@@ -286,24 +286,6 @@ export const sseEvents = {
     },
   }),
 
-  todoUpdate: (todos) => ({
-    event: 'artifact',
-    data: {
-      artifact_type: 'todo_update',
-      artifact_id: `todo-${Date.now()}`,
-      agent: 'ptc',
-      timestamp: new Date().toISOString(),
-      status: 'completed',
-      payload: {
-        todos,
-        total: todos.length,
-        completed: todos.filter((t) => t.status === 'completed').length,
-        in_progress: todos.filter((t) => t.status === 'in_progress').length,
-        pending: todos.filter((t) => t.status === 'pending').length,
-      },
-    },
-  }),
-
   /** Backlog/live boundary on a reconnect stream. */
   caughtUp: () => ({ event: 'caught_up', data: {} }),
 

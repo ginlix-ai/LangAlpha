@@ -98,7 +98,6 @@ type SegmentsProps = React.ComponentProps<typeof MessageContentSegments>;
 const baseProps = {
   reasoningProcesses: {},
   toolCallProcesses: {},
-  todoListProcesses: {},
   subagentTasks: {},
 } satisfies Partial<SegmentsProps>;
 

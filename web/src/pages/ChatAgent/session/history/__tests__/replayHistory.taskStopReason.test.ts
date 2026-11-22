@@ -32,7 +32,6 @@ function buildRuntime() {
     workspaceId: 'ws-1',
     threadId: 'thread-1',
     t: (key: string) => key,
-    updateTodoListCard: null,
     setMessages: ((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
       messages = updater(messages);
     }) as HistoryRuntime['setMessages'],

@@ -38,7 +38,6 @@ function renderCard(record: Partial<SubagentTaskRecord>, onOpen = vi.fn()) {
           segments={[{ type: 'subagent_task', order: 0, subagentId: 'tc-1' }] as SegmentsProps['segments']}
           reasoningProcesses={{}}
           toolCallProcesses={{}}
-          todoListProcesses={{}}
           subagentTasks={{ 'tc-1': task }}
           isStreaming={false}
         />

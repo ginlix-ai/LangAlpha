@@ -57,7 +57,6 @@ function props(creditPauses: Record<string, CreditPauseState>): SegmentsProps {
     ] as SegmentsProps['segments'],
     reasoningProcesses: {},
     toolCallProcesses: {},
-    todoListProcesses: {},
     subagentTasks: RUNNING_TASK,
     creditPauses,
     isStreaming: false,

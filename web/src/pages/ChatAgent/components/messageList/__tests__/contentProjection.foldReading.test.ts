@@ -31,7 +31,7 @@ function message(): MessageRecord {
     reasoningProcesses: {},
     toolCallProcesses: {
       t1: { toolName: 'WebSearch', toolCall: { args: {} }, isInProgress: false, isComplete: true, isFailed: false },
-      t2: { toolName: 'TodoWrite', toolCall: { args: {} }, isInProgress: false, isComplete: true, isFailed: false },
+      t2: { toolName: 'UpdatePlan', toolCall: { args: {} }, isInProgress: false, isComplete: true, isFailed: false },
     },
   } as unknown as MessageRecord;
 }
