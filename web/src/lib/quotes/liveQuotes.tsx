@@ -1,20 +1,21 @@
 /**
- * The quotes the panel shows, and live prices for them while it is open. Each
- * section names its quotes here; the stocks among them stream over one
- * market-data socket, open only while the panel is on screen, which writes
- * each tick into the shared quote cache (`useMarketDataWS`'s write-through)
- * that the rows already read. Where the socket is down or the deployment has
- * none, the rows keep polling REST instead. The footer's liveness badge reads
- * the same list, so it speaks for exactly what is on screen.
+ * The quotes a surface shows, and live prices for them while it is on screen
+ * (the menu bar panel, a chat's watched tickers). Each part of it names its
+ * quotes here; the stocks among them stream over one market-data socket, open
+ * only while `active`, which writes each tick into the shared quote cache
+ * (`useMarketDataWS`'s write-through) that the rows already read. Where the
+ * socket is down or the deployment has none, the rows keep polling REST
+ * instead. The menu bar's liveness badge reads the same list, so it speaks
+ * for exactly what is on screen.
  *
- * The socket lives in its own component, mounted only while the panel shows,
- * so closing the panel closes it at once rather than after the hook's minute
- * of grace for a hidden tab.
+ * The socket lives in its own component, mounted only while active, so
+ * leaving closes it at once rather than after the hook's minute of grace for
+ * a hidden tab.
  */
-import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { isUSEquity } from '@/lib/bars/exchanges';
 import { createEmitter } from '@/lib/emitter';
-import { quoteKey } from '@/lib/quotes';
+import { quoteKey } from './quoteBatcher';
 import useMarketDataWS from '@/pages/MarketView/hooks/useMarketDataWS';
 
 /** A quote on screen: its cache key, and whether it is an index's. */
@@ -30,7 +31,7 @@ function joined(lists: Iterable<readonly string[]>): string {
   return [...all].sort().join(',');
 }
 
-class PanelQuotes {
+class LiveQuotes {
   private readonly streamedBySection = new Map<string, readonly string[]>();
   private readonly shownBySection = new Map<string, readonly string[]>();
   private streaming = false;
@@ -79,17 +80,17 @@ class PanelQuotes {
   readTicking = () => this.tickingKey;
 }
 
-const PanelQuotesContext = createContext<PanelQuotes | null>(null);
+const LiveQuotesContext = createContext<LiveQuotes | null>(null);
 
 export function LiveQuotesProvider({ active, children }: { active: boolean; children: ReactNode }) {
-  const [quotes] = useState(() => new PanelQuotes());
-  // No socket at all for a panel showing no stock.
+  const [quotes] = useState(() => new LiveQuotes());
+  // No socket at all for a surface showing no stock.
   const named = useSyncExternalStore(quotes.subscribe, quotes.readStreamed, quotes.readStreamed) !== '';
   return (
-    <PanelQuotesContext value={quotes}>
+    <LiveQuotesContext value={quotes}>
       {active && named && <LivePump quotes={quotes} />}
       {children}
-    </PanelQuotesContext>
+    </LiveQuotesContext>
   );
 }
 
@@ -97,18 +98,18 @@ const noSubscribe = () => () => {};
 const notStreaming = () => false;
 const nothingShown = () => '';
 
-function useStreaming(quotes: PanelQuotes | null): boolean {
+function useStreaming(quotes: LiveQuotes | null): boolean {
   return useSyncExternalStore(quotes?.subscribe ?? noSubscribe, quotes?.readStreaming ?? notStreaming, notStreaming);
 }
 
 /**
- * Name the quotes this section shows. Stocks are streamed while
- * the panel is open; answers whether they are, so the caller polls REST only
- * when not.
+ * Name the quotes this part of the surface shows. Stocks are streamed while
+ * it is active; answers whether they are, so the caller polls REST only when
+ * not.
  */
 // eslint-disable-next-line react-refresh/only-export-components
-export function usePanelQuotes(symbols: readonly string[], { isIndex = false }: { isIndex?: boolean } = {}): boolean {
-  const quotes = useContext(PanelQuotesContext);
+export function useLiveQuotes(symbols: readonly string[], { isIndex = false }: { isIndex?: boolean } = {}): boolean {
+  const quotes = useContext(LiveQuotesContext);
   const id = useId();
   const keys = symbols.map((s) => quoteKey(s, isIndex)).filter(Boolean);
   const shown = keys.map((k) => `${isIndex ? 'i' : 's'}:${k}`).join(',');
@@ -128,17 +129,26 @@ export function usePanelQuotes(symbols: readonly string[], { isIndex = false }: 
  * A connected socket alone says nothing, since a name with no prints sends none.
  */
 // eslint-disable-next-line react-refresh/only-export-components
-export function useShownQuotes(): { shown: ShownQuote[]; live: ReadonlySet<string> } {
-  const quotes = useContext(PanelQuotesContext);
+export function useShownQuotes(): { shown: ShownQuote[]; isLive: (quote: ShownQuote) => boolean } {
+  const quotes = useContext(LiveQuotesContext);
   const subscribe = quotes?.subscribe ?? noSubscribe;
   const shownKey = useSyncExternalStore(subscribe, quotes?.readShown ?? nothingShown, nothingShown);
   const tickingKey = useSyncExternalStore(subscribe, quotes?.readTicking ?? nothingShown, nothingShown);
   const streaming = useStreaming(quotes);
-  const shown = shownKey ? shownKey.split(',').map((s) => ({ key: s.slice(2), isIndex: s.startsWith('i:') })) : [];
-  return { shown, live: new Set(streaming && tickingKey ? tickingKey.split(',') : []) };
+  const shown = useMemo(
+    () => (shownKey ? shownKey.split(',').map((s) => ({ key: s.slice(2), isIndex: s.startsWith('i:') })) : []),
+    [shownKey],
+  );
+  // The socket ticks stocks under their cache key, and never an index. Kept
+  // while the ticking set holds, so a reader memoized on it holds too.
+  const isLive = useMemo(() => {
+    const live = new Set(streaming && tickingKey ? tickingKey.split(',') : []);
+    return ({ key, isIndex }: ShownQuote) => !isIndex && live.has(key);
+  }, [streaming, tickingKey]);
+  return { shown, isLive };
 }
 
-function LivePump({ quotes }: { quotes: PanelQuotes }): null {
+function LivePump({ quotes }: { quotes: LiveQuotes }): null {
   const { prices, subscribe, unsubscribe, connectionStatus } = useMarketDataWS();
   const key = useSyncExternalStore(quotes.subscribe, quotes.readStreamed, quotes.readStreamed);
 

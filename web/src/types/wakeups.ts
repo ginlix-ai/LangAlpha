@@ -20,6 +20,9 @@ export interface WakeupPrice {
   pct_from: 'previous_close' | 'now' | null;
   armed_price: number | null;
   fired_price: number | null;
+  /** While armed, the price the monitor last read and the level it fires at. */
+  last?: number | null;
+  level?: number | null;
   expires_at?: string | null;
 }
 

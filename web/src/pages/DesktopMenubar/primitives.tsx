@@ -7,8 +7,8 @@ import type { ReactNode } from 'react';
 import { TickerLabel } from '@/components/TickerLogo';
 import { DASH } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { changeDirection } from '@/pages/ChatAgent/components/charts/termChange';
-import { signedPercent, type ExtendedMove } from './glanceSummary';
+import { changeDirection, signedPercent } from '@/lib/priceMove';
+import type { ExtendedMove } from '@/lib/quotes/splitQuote';
 
 /** A value still on its way: a quiet bar where it will land, not the dash that means none. */
 export function Pending({ className }: { className?: string }) {

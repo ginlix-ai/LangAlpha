@@ -10,13 +10,15 @@ import { useTranslation } from 'react-i18next';
 import { Settings } from 'lucide-react';
 import { canDesktopSettings, openInMain, type PanelSectionId } from '@/lib/desktop';
 import { DEFAULT_MENUBAR, DEFAULT_PANEL, useDesktopSettings } from '@/lib/desktopSettings';
+import { LiveQuotesProvider } from '@/lib/quotes/liveQuotes';
+import { useMarketStatus } from '@/lib/quotes/useMarketStatus';
+import { usePageVisible } from '@/hooks/usePageVisible';
 import { AgentSection } from './AgentSection';
-import { LiveQuotesProvider } from './liveQuotes';
 import { LivenessBadge } from './LivenessBadge';
 import { MarketSection } from './MarketSection';
 import type { SectionProps } from './panelContext';
 import { PortfolioSection } from './PortfolioSection';
-import { useMarketStatusGlance, usePanelActive, useRefetchOnOpen } from './useGlanceData';
+import { useRefetchOnOpen } from './useGlanceData';
 import { WatchlistSection } from './WatchlistSection';
 
 const SECTIONS: Record<PanelSectionId, (props: SectionProps) => ReactNode> = {
@@ -39,11 +41,13 @@ export function MenubarPanel() {
 
 function PanelBody({ settings }: { settings: SectionProps['settings'] }) {
   const { t } = useTranslation();
-  const active = usePanelActive();
+  // Visible is open: the shell hides the window whenever the panel closes,
+  // and leaves it throttled so its visibility tells.
+  const active = usePageVisible();
   useRefetchOnOpen(active);
   const visible = settings.panel.sections.filter((s) => s.visible).map((s) => s.id);
   // Only the agent section goes without the session, so no status read for it alone.
-  const marketStatus = useMarketStatusGlance(active && visible.some((id) => id !== 'agent'));
+  const marketStatus = useMarketStatus(active && visible.some((id) => id !== 'agent'));
   const settingsPath = canDesktopSettings() ? '/settings?tab=desktop' : '/settings';
 
   return (

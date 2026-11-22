@@ -1,11 +1,14 @@
 /**
  * A quote row split the way every Dashboard row splits one (`sessionQuote`):
  * the official figure as the headline and the extended-hours print beside it.
- * The panel's rows and tiles and the menu bar's lines all read it through here.
+ * The menu bar panel's rows and tiles, its lines beside the icon, and a chat's
+ * watched tickers all read it through here.
  */
-import { sessionQuote, type MarketStatusData } from '@/lib/marketUtils';
+import { sessionQuote, type MarketStatusData, type SessionQuote } from '@/lib/marketUtils';
 import { snapshotToStockPrice, type QuoteRow } from '@/lib/quotes';
-import type { ExtendedMove } from './glanceSummary';
+
+/** A pre-market or after-hours move (`PM`/`AH`), measured off the official price beside it. */
+export type ExtendedMove = Omit<NonNullable<SessionQuote['ext']>, 'type'>;
 
 export interface SplitQuote {
   /** False when the symbol has no quote to be had. */

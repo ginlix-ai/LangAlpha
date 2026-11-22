@@ -10,7 +10,7 @@ import { extendedHoursLabel, marketStatusLabel } from './cardWords';
 import { FreshnessBadge } from './FreshnessBadge';
 import { DualName, PriceHero } from './PriceHero';
 import { TermCard, TermChange, TermRange, TermTag } from './TermCard';
-import { percentMove } from './termChange';
+import { percentMove } from '@/lib/priceMove';
 import { useCardNarrow } from './termContext';
 import { commonFreshness } from './termFreshness';
 import { TermTable, type TermColumn } from './TermTable';

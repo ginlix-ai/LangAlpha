@@ -6,7 +6,7 @@ import { useLocale } from '@/hooks/useLocale';
 import { formatMoney } from '@/lib/bars';
 import { openInMain } from '@/lib/desktop';
 import { DASH, integer } from '@/lib/format';
-import { changeDirection } from '@/pages/ChatAgent/components/charts/termChange';
+import { changeDirection } from '@/lib/priceMove';
 import { formatPortfolioMoney } from '@/pages/Dashboard/utils/portfolioSummary';
 import { summarizePortfolioDay } from './glanceSummary';
 import { ExtendedLine, Move, Pending, QuoteRowButton, Section } from './primitives';

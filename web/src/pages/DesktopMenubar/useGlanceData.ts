@@ -7,52 +7,26 @@
  *
  * A section the user hid is never mounted, so none of its reads run.
  */
-import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isLastingRefusal } from '@/api/errors';
 import { portfolioHoldingsQuery, watchlistItemsByIdQuery, watchlistItemsQuery } from '@/hooks/membershipQueries';
-import { isUSEquity } from '@/lib/bars/exchanges';
-import { sessionLineQuery } from '@/lib/bars/sessionQuery';
-import type { QuoteRef } from '@/lib/desktop';
-import { marketStatusQuery, type MarketStatusData } from '@/lib/marketUtils';
-import { quoteKey, stockKey, useQuotes, type QuoteRow } from '@/lib/quotes';
+import type { MarketStatusData } from '@/lib/marketUtils';
+import { stockKey, type QuoteRow } from '@/lib/quotes';
+import { splitQuote, type SplitQuote } from '@/lib/quotes/splitQuote';
+import { useStockQuotes } from '@/lib/quotes/useQuoteTiles';
 import { recentThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import type { HoldingQuote } from './glanceSummary';
-import { usePanelQuotes } from './liveQuotes';
-import { splitQuote, type SplitQuote } from './quoteSplit';
 
 /** Recent threads read for their titles; the run states come from the user feed. */
 export const AGENT_THREAD_LIMIT = 30;
 
-/** The lists themselves (holdings, watchlist entries, the session) change rarely. */
+/** The lists themselves (holdings, watchlist entries) change rarely. */
 const LIST_POLL_MS = 60_000;
-/** Quotes with nothing streaming them. */
-const REST_POLL_MS = 15_000;
-/** Quotes the socket keeps live: REST only refreshes the figures a tick does not carry. */
-const STREAMED_POLL_MS = 60_000;
 
 /** A read that runs, and polls, only while `on` (the panel on screen, its section wanting it). */
 function pollWhile(on: boolean, ms: number) {
   return { enabled: on, refetchInterval: on ? ms : (false as const) };
-}
-
-function subscribeActive(onChange: () => void): () => void {
-  document.addEventListener('visibilitychange', onChange);
-  return () => document.removeEventListener('visibilitychange', onChange);
-}
-
-/**
- * Visible is open: the shell hides the window whenever the panel closes, and
- * leaves it throttled so its visibility tells. Focus is no test: on macOS the
- * panel is a non-activating panel, whose page may report no focus while open.
- */
-function readActive(): boolean {
-  return document.visibilityState === 'visible';
-}
-
-/** Whether the panel is on screen, as the window lets the page tell. */
-export function usePanelActive(): boolean {
-  return useSyncExternalStore(subscribeActive, readActive, () => true);
 }
 
 /**
@@ -68,72 +42,6 @@ export function useRefetchOnOpen(active: boolean): void {
     if (active && !wasActive.current) void queryClient.refetchQueries({ type: 'active' }, { cancelRefetch: false });
     wasActive.current = active;
   }, [active, queryClient]);
-}
-
-export function useMarketStatusGlance(active: boolean): MarketStatusData | null {
-  const { data = null } = useQuery({ ...marketStatusQuery(), ...pollWhile(active, LIST_POLL_MS) });
-  return data;
-}
-
-/**
- * Quotes for stocks, streamed while the panel shows where the socket is up,
- * polled where it is not. The socket carries US equities only, so the rest
- * keep the REST pace in a list that mixes the two.
- */
-function useStockQuotes(symbols: string[], active: boolean) {
-  const streaming = usePanelQuotes(symbols);
-  const streamable = useMemo(() => symbols.filter((s) => isUSEquity(stockKey(s))), [symbols]);
-  const polled = useMemo(() => symbols.filter((s) => !isUSEquity(stockKey(s))), [symbols]);
-  const options = { enabled: active, staleTime: 10_000 };
-  const live = useQuotes(streamable, { ...options, refetchInterval: streaming ? STREAMED_POLL_MS : REST_POLL_MS });
-  const rest = useQuotes(polled, { ...options, refetchInterval: REST_POLL_MS });
-  return useMemo(
-    () => ({ quotes: { ...rest.quotes, ...live.quotes }, pending: { ...rest.pending, ...live.pending } }),
-    [live.quotes, live.pending, rest.quotes, rest.pending],
-  );
-}
-
-export interface GlanceTile extends SplitQuote {
-  ref: QuoteRef;
-  /** No quote yet, as opposed to none to be had. */
-  pending: boolean;
-  /** The latest session's closes, oldest first; empty for none. */
-  line: number[];
-}
-
-export function useTilesGlance(tiles: readonly QuoteRef[], active: boolean, marketStatus: MarketStatusData | null): GlanceTile[] {
-  const indexSymbols = useMemo(() => tiles.filter((t) => t.kind === 'index').map((t) => t.symbol), [tiles]);
-  const stockSymbols = useMemo(() => tiles.filter((t) => t.kind === 'stock').map((t) => t.symbol), [tiles]);
-  // Indices are never streamed, so they poll at the REST pace.
-  usePanelQuotes(indexSymbols, { isIndex: true });
-  const indexQuotes = useQuotes(indexSymbols, {
-    isIndex: true,
-    enabled: active,
-    staleTime: 10_000,
-    refetchInterval: REST_POLL_MS,
-  });
-  const stockQuotes = useStockQuotes(stockSymbols, active);
-
-  // The Dashboard's session line, asked for by the caret spelling that routes an index to its endpoint.
-  const lines = useQueries({
-    queries: tiles.map((ref) => ({
-      ...sessionLineQuery(ref.kind === 'index' ? `^${ref.symbol}` : ref.symbol),
-      ...pollWhile(active, LIST_POLL_MS),
-    })),
-  });
-
-  return tiles.map((ref, i) => {
-    const isIndex = ref.kind === 'index';
-    const key = quoteKey(ref.symbol, isIndex);
-    const { quotes, pending } = isIndex ? indexQuotes : stockQuotes;
-    const row = quotes[key];
-    return {
-      ...splitQuote(key, row, marketStatus),
-      ref,
-      pending: row === undefined && pending[key] !== false,
-      line: lines[i]?.data?.values ?? [],
-    };
-  });
 }
 
 export function usePortfolioGlance(active: boolean, marketStatus: MarketStatusData | null) {

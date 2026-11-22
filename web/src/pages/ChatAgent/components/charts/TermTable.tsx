@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { cn } from '@/lib/utils';
+import { MoveMark } from '@/components/ui/move-mark';
 import { TermMore } from './TermCard';
 import { useTermPanel } from './termContext';
 
@@ -114,11 +115,7 @@ export function TermTable<R>({
 
 /** The sort a header is under: a drawn triangle, as the cards draw a change. */
 export function TermSortMark({ dir }: { dir: 'asc' | 'desc' }): React.ReactElement {
-  return (
-    <svg className="term-chg-mark" viewBox="0 0 10 9" aria-hidden="true" style={{ marginLeft: '0.5ch' }}>
-      <path d={dir === 'asc' ? 'M5 0 L10 9 L0 9 Z' : 'M0 0 L10 0 L5 9 Z'} fill="currentColor" />
-    </svg>
-  );
+  return <MoveMark dir={dir === 'asc' ? 'up' : 'down'} className="ml-[0.5ch]" />;
 }
 
 /** A panel's column: sorted on its value, which also says whether a row fills it. */

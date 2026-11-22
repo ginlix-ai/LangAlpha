@@ -2,15 +2,12 @@
  * The menu bar panel's arithmetic, kept pure so the menu bar lines computed in
  * the background and the panel drawn in the foreground read one answer.
  */
-import { percentMove } from '@/pages/ChatAgent/components/charts/termChange';
 import {
   normalizePortfolioCurrency,
   summarizePortfolioByCurrency,
 } from '@/pages/Dashboard/utils/portfolioSummary';
-import type { MarketPhase, SessionQuote } from '@/lib/marketUtils';
-
-/** A pre-market or after-hours move (`PM`/`AH`), measured off the official price beside it. */
-export type ExtendedMove = Omit<NonNullable<SessionQuote['ext']>, 'type'>;
+import type { MarketPhase } from '@/lib/marketUtils';
+import type { ExtendedMove } from '@/lib/quotes/splitQuote';
 
 /**
  * A holding at its official price (`sessionQuote`'s headline): in an extended
@@ -95,12 +92,6 @@ export function summarizePortfolioDay(rows: readonly HoldingQuote[]): PortfolioD
     holdings,
     otherCurrencies: summaries.slice(1).map((s) => s.currency),
   };
-}
-
-/** A move as the menu bar prints it: `+0.78%`, `-1.20%`, `0.00%`. */
-export function signedPercent(value: number): string {
-  const { sign, size } = percentMove(value);
-  return `${sign}${size}`;
 }
 
 const OPEN_AT = 9 * 60 + 30;

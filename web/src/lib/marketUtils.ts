@@ -274,3 +274,16 @@ export function marketPhase(status: MarketStatusData | null | undefined): Market
   if (status.market === 'open') return 'open';
   return 'closed';
 }
+
+const PHASE_KEY: Record<MarketPhase, string> = {
+  open: 'menubar.market.open',
+  pre: 'menubar.market.pre',
+  after: 'menubar.market.after',
+  closed: 'menubar.market.closed',
+  unknown: 'menubar.market.unknown',
+};
+
+/** The locale key that names a session, for every surface that says it. */
+export function marketPhaseKey(phase: MarketPhase): string {
+  return PHASE_KEY[phase];
+}

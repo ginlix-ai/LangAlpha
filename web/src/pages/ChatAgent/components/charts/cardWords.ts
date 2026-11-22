@@ -14,6 +14,7 @@ import {
   integer,
   relativeTime,
 } from '@/lib/format';
+import { signedPercent } from '@/lib/priceMove';
 import { cronToHuman } from '@/pages/Automations/utils/cron';
 import { formatPriceTrigger } from '@/pages/Automations/utils/price';
 import type { Automation, MarketMovers, OptionRow, OptionsChain } from './cardReaders';
@@ -139,11 +140,9 @@ export function performancePoints(performance: Record<string, number> | undefine
     .map(([key, name]) => ({ name, value: performance[key] }));
 }
 
-/** A period's move, signed: `+1.25%`. */
+/** A period's move as every card prints one (`signedPercent`): `+1.25%`, `0.00%`. */
 export function formatPct(val: number | null | undefined): string {
-  if (val == null) return 'N/A';
-  const sign = val >= 0 ? '+' : '';
-  return `${sign}${val.toFixed(2)}%`;
+  return val == null ? 'N/A' : signedPercent(val);
 }
 
 // ─── Filings ────────────────────────────────────────────────────────

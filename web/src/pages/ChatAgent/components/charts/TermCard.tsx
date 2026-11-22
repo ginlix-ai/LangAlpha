@@ -1,9 +1,10 @@
 import React, { useRef } from 'react';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { TickerLogo } from '@/components/TickerLogo';
+import { MoveMark } from '@/components/ui/move-mark';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { cn } from '@/lib/utils';
-import { percentMove } from './termChange';
+import { percentMove } from '@/lib/priceMove';
 import { CardNarrowContext, useCardNarrow, useTermPanel } from './termContext';
 import './termCard.css';
 import './termCardStyles.css';
@@ -185,9 +186,7 @@ export function TermChange({
       {dir === 'flat' ? (
         <span aria-hidden="true">·</span>
       ) : (
-        <svg className="term-chg-mark" viewBox="0 0 10 9" aria-hidden="true">
-          <path d={dir === 'up' ? 'M5 0 10 9H0Z' : 'M5 9 0 0h10Z'} />
-        </svg>
+        <MoveMark dir={dir} />
       )}
       {/* The arrow is a picture; the sign is what a screen reader and a copy hear. */}
       {sign && <span className="sr-only">{sign}</span>}

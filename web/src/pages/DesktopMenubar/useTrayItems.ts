@@ -19,7 +19,7 @@ import { indexName } from '@/lib/indices';
 import { marketPhase, marketStatusQuery, type MarketStatusData } from '@/lib/marketUtils';
 import { quoteKey, quoteQueryOptions, stockKey, type QuoteRow } from '@/lib/quotes';
 import { summarizePortfolioDay } from './glanceSummary';
-import { splitQuote } from './quoteSplit';
+import { splitQuote } from '@/lib/quotes/splitQuote';
 import { formatTrayLine, trayRefreshMs, type TrayFigure } from './trayText';
 import { holdingQuotes } from './useGlanceData';
 
