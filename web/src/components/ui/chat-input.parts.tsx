@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from 'react';
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref, RefObject } from 'react';
 import { FileText, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -420,6 +420,7 @@ export function IconToggle({
   tooltip,
   children,
   measureOnly = false,
+  buttonRef,
 }: {
   active: boolean;
   onToggle: () => void;
@@ -429,6 +430,8 @@ export function IconToggle({
   tooltip: string;
   children: ReactNode;
   measureOnly?: boolean;
+  /** For a notice anchored to the toggle. */
+  buttonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const className = 'inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg border-none bg-transparent transition-colors';
   const style: CSSProperties = {
@@ -442,6 +445,7 @@ export function IconToggle({
       <Tooltip>
         <TooltipTrigger asChild>
           <button
+            ref={buttonRef}
             type="button"
             className={cn(className, 'hover:bg-(--color-border-muted) cursor-pointer')}
             style={style}

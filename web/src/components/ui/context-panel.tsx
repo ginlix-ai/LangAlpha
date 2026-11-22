@@ -5,7 +5,9 @@ import { cn } from '@/lib/utils';
 import { useLocale } from '@/hooks/useLocale';
 import { useContextBreakdown } from '@/pages/ChatAgent/hooks/useContextBreakdown';
 import { hitRate, type TokenUsage } from '@/pages/ChatAgent/session/tokenUsage';
+import type { DueSummary } from '@/pages/ChatAgent/hooks/useNextSummaryHint';
 import { SwapCell } from './crossfade';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip';
 import { SkeletonBar } from './skeleton';
 import { CONTEXT_PARTS, barSegments, contextRows, share, type ContextPart } from './context-panel.model';
 
@@ -35,17 +37,76 @@ const PLACEHOLDER_WIDTHS = ['w-20', 'w-10', 'w-16', 'w-12', 'w-14', 'w-20', 'w-2
 const LEGEND_ROW = 'flex h-4 items-center gap-2';
 
 interface ContextPanelProps {
-  tokenUsage: TokenUsage;
+  /** Null while the window has not been counted: the panel is then the
+   *  summary note alone, which is why the ring showed. */
+  tokenUsage: TokenUsage | null;
   /** The thread whose parts are counted; with none the panel is the window
    *  alone. */
   threadId: string | null | undefined;
+  /** The summary the next send writes first, said at the top while one is due. */
+  summary?: DueSummary | null;
 }
 
 /**
  * The ring's popover body. It mounts only while the popover is open, so its
  * count is asked for on open and never for a panel nobody is looking at.
  */
-export function ContextPanel({ tokenUsage, threadId }: ContextPanelProps) {
+export function ContextPanel({ tokenUsage, threadId, summary = null }: ContextPanelProps) {
+  const { t } = useTranslation();
+  const note = summary ? <SummaryNote summary={summary} /> : null;
+  if (!tokenUsage) {
+    return (
+      <>
+        <span className="text-sm font-medium">{t('chat.contextPanel.title')}</span>
+        {note}
+      </>
+    );
+  }
+  return <CountedPanel tokenUsage={tokenUsage} threadId={threadId} note={note} />;
+}
+
+const SUMMARY_ACTION = cn(
+  'tap-target flex-none rounded-md px-1.5 py-0.5 font-medium whitespace-nowrap text-(--color-text-secondary) outline-hidden transition-colors',
+  'underline decoration-(--color-border-elevated) underline-offset-4 hover:text-(--color-text-primary) hover:decoration-current',
+  'focus-visible:ring-2 focus-visible:ring-ring',
+);
+
+/* The next send summarizes the earlier conversation first. That is the plan,
+   so the sentence leads and the way out is a quiet action beside it. After a
+   break (`cold`) the user may skip it for that send, and the note then says
+   what that costs, with the way back; at the threshold, or for a rebuild, the
+   summary has to run, so the note only says so. Its dot is the ring's. */
+function SummaryNote({ summary }: { summary: DueSummary }) {
+  const { t } = useTranslation();
+  return (
+    <div data-summary-note className="mt-2.5 flex items-start gap-2 rounded-lg bg-(--color-warning-soft) px-2.5 py-2">
+      <span aria-hidden className="mt-[0.3125rem] h-1.5 w-1.5 flex-none rounded-full bg-(--color-warning)" />
+      <p className="min-w-0 flex-1 text-pretty leading-relaxed text-(--color-text-secondary)">
+        {t(summary.skipped ? 'chat.nextSummary.skipped' : 'chat.nextSummary.line')}
+      </p>
+      {/* One button for Skip and Undo, so focus stays on it across the
+          switch; only Skip has a hint to show. */}
+      {summary.reason === 'cold' && (
+        <TooltipProvider delayDuration={300}>
+          <Tooltip open={summary.skipped ? false : undefined}>
+            <TooltipTrigger asChild>
+              <button type="button" onClick={summary.toggleSkip} className={SUMMARY_ACTION}>
+                {t(summary.skipped ? 'chat.nextSummary.undo' : 'chat.nextSummary.skip')}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" align="end">{t('chat.nextSummary.skipHint')}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
+    </div>
+  );
+}
+
+function CountedPanel({ tokenUsage, threadId, note }: {
+  tokenUsage: TokenUsage;
+  threadId: string | null | undefined;
+  note: ReactNode;
+}) {
   const { t } = useTranslation();
   const locale = useLocale();
   const breakdown = useContextBreakdown(threadId);
@@ -73,6 +134,8 @@ export function ContextPanel({ tokenUsage, threadId }: ContextPanelProps) {
           })}
         </span>
       </div>
+
+      {note}
 
       <div className="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-(--color-border-muted)">
         {segments.length > 0

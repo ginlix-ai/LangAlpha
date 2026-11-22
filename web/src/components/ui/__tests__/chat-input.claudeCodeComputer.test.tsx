@@ -104,7 +104,6 @@ vi.mock('../chat-input.modelMenu', () => ({
       </>
     );
   },
-  ChatInputEffortMenu: () => null,
   ModelTriggerMeasure: () => null,
 }));
 

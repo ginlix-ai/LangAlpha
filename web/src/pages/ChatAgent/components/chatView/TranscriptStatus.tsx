@@ -14,8 +14,15 @@ import { useWaitingAutomations } from '../../../Automations/hooks/useWaitingAuto
 import { QueuedAutomationNotice } from '../QueuedAutomationNotice';
 import { CliQueueLine } from '../CliQueueNotice';
 import { ModelStatusPill } from './ModelStatusPill';
-import { RetiredModelNotice } from './ThreadModelBanner';
+import { RetiredModelNotice } from './RetiredModelNotice';
 import { StatusLine } from './StatusLine';
+
+/** A row with a surface of its own under the lines (the thread's error, its
+ *  computer's warnings), which decides on its own whether it shows. */
+export interface ThreadNotice {
+  key: string;
+  node: React.ReactNode;
+}
 
 /** Finds the block TranscriptStatus renders (its `data-transcript-status`). */
 export const TRANSCRIPT_STATUS_SELECTOR = '[data-transcript-status]';
@@ -36,6 +43,12 @@ interface TranscriptStatusProps {
   /** The thread whose due automations wait for its turn to end. */
   threadId: string;
   active: boolean;
+  /** In the block so a reader at the end sees one arrive as they see a line. */
+  notices?: readonly ThreadNotice[];
+  /** The notices went to the docked composer: they leave here at once, since
+   *  closing would keep a second copy mounted (and a warning's alert read out
+   *  twice) while the composer already shows them. */
+  noticesDocked?: boolean;
 }
 
 /* The thread's status lines, under the last reply and in the transcript's
@@ -50,7 +63,11 @@ interface TranscriptStatusProps {
    A line fades in, and leaves by fading as its height closes, gap included:
    under a reader at the end, a line that vanished at once would drop the
    reply by its height in one frame. Lines already showing when the transcript
-   mounts (a thread opening, a tab coming back) are simply there. */
+   mounts (a thread opening, a tab coming back) are simply there.
+   A notice leaves the same way when the host takes it away (an error
+   cleared, the workspace's computer gone). One that hides itself (dismissed,
+   or its condition read as cleared) still goes at once: only it knows, and
+   the block sees no more than an empty row. */
 export function TranscriptStatus({
   modelStatus,
   isLoading,
@@ -62,6 +79,8 @@ export function TranscriptStatus({
   queuedSend,
   threadId,
   active,
+  notices = [],
+  noticesDocked = false,
 }: TranscriptStatusProps): React.ReactElement {
   const { t } = useTranslation();
   const locale = useLocale();
@@ -111,9 +130,24 @@ export function TranscriptStatus({
   const waiting = useWaitingAutomations(threadId, active);
   if (waiting.length) lines.push({ key: 'automations', node: <QueuedAutomationNotice runs={waiting} /> });
   const exit = reducedMotion ? { duration: 0 } : { duration: DURATION.exit, ease: EASE_COLLAPSE };
+  const row = {
+    className: 'overflow-hidden',
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: reducedMotion ? { duration: 0 } : TWEEN.quick },
+    exit: { opacity: 0, height: 0, transition: exit },
+  };
+  // A leaving child has no props left to read, so whether it closes or goes
+  // at once reaches it through AnimatePresence's `custom`.
+  const noticeRow = {
+    ...row,
+    variants: {
+      gone: (docked: boolean) => ({ opacity: 0, height: 0, transition: docked ? { duration: 0 } : exit }),
+    },
+    exit: 'gone',
+  };
   return (
     <div data-transcript-status className="flex flex-col">
-      <AnimatePresence initial={false}>
+      <AnimatePresence initial={false} custom={noticesDocked}>
         {/* Its own box rather than the first line's, which a line leaving
             from the top would hand to the next one in a frame while its own
             was still closing. It closes with the block's last line. */}
@@ -121,14 +155,15 @@ export function TranscriptStatus({
           <motion.div key="gap" aria-hidden className="h-3" exit={{ height: 0, transition: exit }} />
         )}
         {lines.map(({ key, node }) => (
-          <motion.div
-            key={key}
-            className="overflow-hidden"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1, transition: reducedMotion ? { duration: 0 } : TWEEN.quick }}
-            exit={{ opacity: 0, height: 0, transition: exit }}
-          >
+          <motion.div key={key} {...row}>
             {node}
+          </motion.div>
+        ))}
+        {/* Each notice's gap is inside its own closing box, and hidden with
+            it while the notice renders nothing. */}
+        {notices.map(({ key, node }) => (
+          <motion.div key={`notice:${key}`} {...noticeRow} custom={noticesDocked}>
+            <div className="flex flex-col gap-3 pt-3 empty:hidden">{node}</div>
           </motion.div>
         ))}
       </AnimatePresence>

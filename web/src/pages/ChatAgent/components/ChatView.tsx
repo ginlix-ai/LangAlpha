@@ -105,7 +105,6 @@ import { usePublishFile } from './chatView/usePublishFile';
 import { DockTurnStatus } from './chatView/DockTurnStatus';
 import { QueuedCommentDeck } from './artifactComments/QueuedCommentDeck';
 import { useTrayFold } from './chatView/useTrayFold';
-import { useNoticeSlot } from './chatView/useNoticeSlot';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { motion, AnimatePresence, type PanInfo } from '@/lib/framer';
 import { DURATION, EASE_COLLAPSE, SPRING_FOLD, TWEEN } from '@/lib/motion';
@@ -132,10 +131,8 @@ import type {
   ActionCommand,
   ChatViewProps,
 } from './chatView/types';
-import { TranscriptStatus } from './chatView/TranscriptStatus';
-import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
-import { ThreadOffers } from './chatView/ThreadNotices';
-import { ClaudeCodePlanRow } from './chatView/ClaudeCodePlanRow';
+import { TranscriptStatus, type ThreadNotice } from './chatView/TranscriptStatus';
+import { useComposerNotices } from './chatView/useComposerNotices';
 import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { HomePlacementNotice } from './chatView/HomePlacementNotice';
@@ -377,8 +374,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     olderHistory: { snapshot: olderHistory, load: loadOlderHistory, backfill: backfillOlderHistory },
     isReconnecting,
     modelStatus,
-    fallbackSuggestion,
-    clearFallbackSuggestion,
     messageError,
     watchCommentSends,
     editDrafts,
@@ -455,15 +450,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   useEffect(() => () => releaseChatStrips(panelChatKey), [panelChatKey]);
   useEffect(() => { if (panelThreadId) handChatStrips(panelChatKey, panelThreadId); }, [panelChatKey, panelThreadId]);
 
-  // Fallback-suggestion pill action: adopt the model that actually answered,
-  // for this thread only. Making it the default is the banner's offer, which
-  // the pick raises like any other.
-  const handleSwitchModel = useCallback((model: string) => {
-    void pickThreadModel(model).then((saved) => {
-      if (saved) clearFallbackSuggestion();
-    });
-  }, [pickThreadModel, clearFallbackSuggestion]);
-
   // Spinner state merges the in-conversation signal (chat SSE `workspace_status`
   // events, set when this client's message owns the start) with the entry-time
   // warming signal (the /events stream, which sees the start even when a
@@ -531,6 +517,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   } = scroll;
   // What the next send summarizes first, which every turn the reader starts carries.
   const { summary: summaryHint, starters: summarized } = useNextSummary(chat);
+  // What the composer says about the next send, each on the control it is about.
+  const composerNotices = useComposerNotices({
+    threadId: currentThreadId,
+    threadModel,
+    subagents: threadSubagents,
+    chat,
+    summary: summaryHint,
+    workspaceId,
+    chiefOfStaff: isHome,
+  });
   const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
     { ...chat, ...summarized },
     scroll.follow,
@@ -1102,9 +1098,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     onOpenStatusPanel: handleOpenStatusFromChat, onJumpToLatest: jumpToLatest,
   });
   const trayContents = threadStatus.contents;
-  // A notice above the composer takes the tray's place, and the tray waits
-  // in its dock until it goes, as it does while the reader is up.
-  const [attachNotices, noticeShown] = useNoticeSlot();
   // The composer tray, and its fold: while the reader is up in the history the
   // tray folds into the composer's toolbar, on the jump-to-latest pill's
   // signal and until the pill's glide to the end has landed. Clicking the
@@ -1119,7 +1112,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     contents: floatingTray,
     getScroller: getMainScrollRoot,
     docked: composerDock.docked,
-    covered: noticeShown || !!othersTurn,
+    covered: !!othersTurn,
   });
   // Where the tray sits: above the composer with its dock in the toolbar, or
   // as the composer's strip.
@@ -1528,6 +1521,35 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // beside the chat. The transcript keeps its lines clear of it.
   const minimapShown = isActive && !isMobile && !rightPanelType && activeAgentId === 'main';
 
+  // About the thread and its computer rather than the next send, so they sit
+  // under the last reply and stay there when the reader scrolls up, instead of
+  // floating over the history with the composer. At a file's foot, where the
+  // transcript is out of view, they come along above the composer. Keyed, so
+  // the transcript can close a row that a condition here takes away.
+  const threadNotices: ThreadNotice[] = [];
+  // A notice is not about the running turn, so it need not wait for it to end.
+  if (messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice'))) {
+    threadNotices.push({
+      key: 'error',
+      node: (
+        <ErrorBanner
+          error={messageError}
+          reportThreadId={currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined}
+        />
+      ),
+    });
+  }
+  if (isHome) threadNotices.push({ key: 'home', node: <HomePlacementNotice /> });
+  if (workspaceRecord?.computer_id && capabilities.restoreOffer) {
+    threadNotices.push({
+      key: 'restore',
+      node: <ChatRestoreOffer workspaceId={workspaceId} computerId={workspaceRecord.computer_id} listed={!filesLoading} />,
+    });
+  }
+  if (workspaceRecord?.computer_id) {
+    threadNotices.push({ key: 'disk', node: <ChatDiskWarning computerId={workspaceRecord.computer_id} /> });
+  }
+
   // Early return if workspaceId or threadId is missing
   if (!workspaceId || !threadId) {
     return (
@@ -1783,6 +1805,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           queuedSend={queuedSend}
                           threadId={feedThreadId}
                           active={isActive}
+                          notices={composerDock.docked ? [] : threadNotices}
+                          noticesDocked={composerDock.docked}
                         />
                         {/* Under a finished reply (hosted only, in one thread, on screen). */}
                         {currentThreadId && currentThreadId !== '__default__' && (
@@ -1916,8 +1940,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   reads it. */}
               {/* The stack moves to the foot of a file tab while the chat is
                   out of view (chatView/useComposerDock), as the same elements. */}
-              {/* The rows here that draw a surface (the error, the restore
-                  offer, the disk warning) take the composer's corner, 16 unless
+              {/* The rows here that draw a surface (the thread's notices, at a
+                  file's foot) take the composer's corner, 16 unless
                   the card style says otherwise (--cs-composer-*,
                   styles/cardStyle.css), and set their text in where Soft's
                   rounder corner needs it. The same rows elsewhere keep their own. */}
@@ -1932,36 +1956,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         instead (data-transcript-status), and what it waits on
                         is chips in the tray. */}
                     {tray.above}
-                    {/* The notices, in one row so the tray can tell one holds its place. */}
-                    <div ref={attachNotices} hidden={!noticeShown} className="sibling-space-y-3">
-                      {/* A notice is not about the running turn, so it need not wait for it to end. */}
-                      {messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice')) && (
-                        <ErrorBanner
-                          error={messageError}
-                          reportThreadId={currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined}
-                        />
-                      )}
-                      {isHome && <HomePlacementNotice />}
-                      {workspaceRecord?.computer_id && capabilities.restoreOffer && (
-                        <ChatRestoreOffer
-                          workspaceId={workspaceId}
-                          computerId={workspaceRecord.computer_id}
-                          listed={!filesLoading}
-                        />
-                      )}
-                      {workspaceRecord?.computer_id && (
-                        <ChatDiskWarning computerId={workspaceRecord.computer_id} />
-                      )}
-                      <FallbackSuggestionPill
-                        fallbackSuggestion={fallbackSuggestion}
-                        isLoading={isLoading}
-                        composerModel={threadModel.model}
-                        onSwitchModel={handleSwitchModel}
-                        onDismiss={clearFallbackSuggestion}
-                      />
-                      <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
-                      <ClaudeCodePlanRow workspaceId={workspaceId} chiefOfStaff={isHome} model={threadModel.model} />
-                    </div>
+                    {/* Each a row of the stack; one that renders nothing leaves
+                        no element, so it takes no gap. */}
+                    {composerDock.docked && threadNotices.map(({ key, node }) => <React.Fragment key={key}>{node}</React.Fragment>)}
                     <SelectionChips chips={panelChart.chips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}
@@ -2003,6 +2000,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         inHome={isHome}
                         header={tray.strip}
                         toolbarStatus={(privacyChip || tray.dock) && <>{privacyChip}{tray.dock}</>}
+                        notices={composerNotices}
                       />
                     </div>
                     {/* Last in the stack: the parent's sibling gap gives every

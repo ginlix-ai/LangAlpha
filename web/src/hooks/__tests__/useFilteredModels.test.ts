@@ -564,6 +564,51 @@ describe('buildVisibleModels', () => {
     expect(result.metadata['model-shared'].prompt_guidance).toBe('lean');
   });
 
+  it("keeps a shadowed model's list price only on the provider it is the price of", () => {
+    const rawMetadata: Record<string, ModelMetadataEntry> = {
+      'model-shared': { provider: 'parent-prov', pricing: { input: 2, output: 10 }, task_cost_estimate: 1 },
+    };
+    const on = (provider: string) =>
+      withCustomModels(rawMetadata, [{ name: 'model-shared', model_id: 'model-shared', provider }], () => undefined)['model-shared'];
+
+    expect(on('byok-variant').pricing).toBeUndefined();
+    expect(on('byok-variant').task_cost_estimate).toBeUndefined();
+    expect(on('parent-prov').pricing).toEqual({ input: 2, output: 10 });
+    expect(on('parent-prov').task_cost_estimate).toBe(1);
+  });
+
+  it("keeps a shadowed model's measured cost per task only on the provider it was measured on", () => {
+    const measured = { medium: { value: 1.4, measured: true } };
+    const rawMetadata: Record<string, ModelMetadataEntry> = {
+      'model-shared': { provider: 'parent-prov', task_cost: measured },
+    };
+    const on = (provider: string) =>
+      withCustomModels(rawMetadata, [{ name: 'model-shared', model_id: 'model-shared', provider }], () => undefined)['model-shared'];
+
+    expect(on('byok-variant').task_cost).toBeUndefined();
+    expect(on('parent-prov').task_cost).toEqual(measured);
+  });
+
+  it("keeps no cost of a shadowed model for another model id on its provider", () => {
+    const rawMetadata: Record<string, ModelMetadataEntry> = {
+      'model-shared': {
+        provider: 'parent-prov',
+        pricing: { input: 2, output: 10 },
+        task_cost: { medium: { value: 1.4, measured: true } },
+        task_cost_estimate: 1,
+      },
+    };
+    const entry = withCustomModels(
+      rawMetadata,
+      [{ name: 'model-shared', model_id: 'another-model', provider: 'parent-prov' }],
+      () => undefined,
+    )['model-shared'];
+
+    expect(entry.pricing).toBeUndefined();
+    expect(entry.task_cost).toBeUndefined();
+    expect(entry.task_cost_estimate).toBeUndefined();
+  });
+
   it('platform mode: filters by tier, custom models pass', () => {
     const rawApiModels = {
       openai: { models: ['gpt-4o', 'gpt-4o-mini'], display_name: 'OpenAI' },

@@ -28,12 +28,14 @@ import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/
 import './chat-input.css';
 import type { ComposerDraft, ComposerScope, ComposerSend, ContextPayload, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
 import { isLargePaste, getModelDisplayName } from './chat-input.helpers';
-import { effortLabelFor, resolveEffort } from '@/lib/modelTuning';
+import { isCodexModel, resolveEffort } from '@/lib/modelTuning';
 import { ChatInputWidgetDeck, MentionAutocompleteList, SlashCommandList } from './chat-input.parts';
 import {
   ComposerAttachments, ComposerChips, DraftTokenLayer, DropOverlay, FilesHoldHint, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
 } from './chat-input.composerParts';
-import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
+import { ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
+import type { ModelTuning } from './chat-input.modelTuning';
+import { NoticePopover, type ComposerNotices } from './chat-input.notices';
 import type { ModelRowStatus } from './chat-input.modelPicker';
 import { claudeCodeHold, isClaudeCodeModel } from '@/lib/claudeCode';
 import { useStepsHold } from '@/hooks/useClaudeCodeSteps';
@@ -43,7 +45,7 @@ import { usePlanReader } from '@/hooks/useClaudeCodePlan';
 import { creditsRefused, pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
-import { useEffortToolbarItem, useToolbarItems } from './chat-input.toolbar';
+import { useToolbarItems } from './chat-input.toolbar';
 import {
   useToolbarFold, CONTAINER_BORDER, CONTAINER_PX, GROUP_GAP, ICON_BUTTON_W, TOOLBAR_GAP,
 } from './chat-input.useToolbarFold';
@@ -216,6 +218,13 @@ export interface ChatInputProps {
    * sendable. A press on it is its own and does not focus the text box.
    */
   deck?: React.ReactNode;
+  /**
+   * What a thread host says about the next send, each on the control it is
+   * about: the model's notices on its pill, the subagents offer on its
+   * toggle, a due summary on the context ring (`useComposerNotices`). Keep
+   * its identity while nothing in it changes, as the memo below relies on.
+   */
+  notices?: ComposerNotices | null;
 }
 
 /* --- MAIN COMPONENT --- */
@@ -280,6 +289,7 @@ function ChatInput({
   toolbarStatus = null,
   header = null,
   deck = null,
+  notices = null,
   ref,
 }: ChatInputProps & { ref?: React.Ref<ChatInputHandle> }) {
   const { t } = useTranslation();
@@ -287,7 +297,9 @@ function ChatInput({
   const isMobile = useIsMobile();
   const { preferences, isLoaded: preferencesRead } = usePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
-  const { models: visibleModels, validModelNames, metadata: modelMetadata, payers, isLoading: modelsLoading } = useAllModels();
+  const {
+    models: visibleModels, validModelNames, metadata: modelMetadata, payers, isLoading: modelsLoading, taskCostBaseline,
+  } = useAllModels();
   const lapsedSignIn = useLapsedSignIn();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const [message, setMessage] = useState('');
@@ -397,7 +409,7 @@ function ChatInput({
     else onPickModel?.(model);
   }, [pillModel, hostModel, setOwnModel, onPickModel]);
 
-  const isCodexModel = pillModel ? modelMetadata[pillModel]?.sdk === 'codex' : false;
+  const codexModel = isCodexModel(pillModel ? modelMetadata[pillModel] : undefined);
 
   // Widget context deck state. Snapshots arrive via ContextBus.attach (when
   // the user clicks "+" on any widget on the page) or via addWidgetSnapshot
@@ -860,6 +872,8 @@ function ChatInput({
    * declaration (priority) order. Widths come from a hidden measure row that
    * renders the SAME components, so any locale / workspace name / model label
    * is measured, never guessed. */
+  const subagentsRef = useRef<HTMLButtonElement>(null);
+  const overflowRef = useRef<HTMLButtonElement>(null);
   const toolbarItems = useToolbarItems({
     scope, onScopeChange, emptyWorkspacesHint,
     subagentsAllowed: shownSubagents, onToggleSubagents: handleToggleSubagents,
@@ -868,31 +882,23 @@ function ChatInput({
     menuDirection: dropdownDirection,
     menuContainer: chatContainer,
     draftRef: textareaRef,
+    subagentsRef,
   });
-  // The effort pill sits beside the model pill and folds last (`slot: 'right'`).
-  const effortLabel = effortLabelFor(t, resolvedEffort);
-  const taskCost = pillModel ? modelMetadata[pillModel]?.task_cost : undefined;
-  const effortProps = useMemo<EffortMenuProps>(() => ({
-    effortLabel,
+  // The model pill names the level and the picker sets it; the level is the
+  // first of the pill to go when the toolbar is short of room.
+  const modelTuning = useMemo<ModelTuning>(() => ({
     reasoningEffort: resolvedEffort,
     defaultEffort: settingsEffort,
-    reasoningEfforts,
     onReasoningEffortChange: handleReasoningEffortChange,
     fastMode: resolvedFastMode,
     onFastModeChange: handleFastModeChange,
-    isCodexModel,
-    dropdownDirection,
-    container: chatContainer,
-    taskCost,
-    disabled: modelsLoading,
-  }), [
-    effortLabel, resolvedEffort, settingsEffort, reasoningEfforts, handleReasoningEffortChange, resolvedFastMode,
-    handleFastModeChange, isCodexModel, dropdownDirection, chatContainer, taskCost, modelsLoading,
-  ]);
-  const effortItem = useEffortToolbarItem(effortProps, isMobile);
-  const foldItems = useMemo(() => [...toolbarItems, effortItem], [toolbarItems, effortItem]);
+  }), [resolvedEffort, settingsEffort, handleReasoningEffortChange, resolvedFastMode, handleFastModeChange]);
 
-  const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  const usageCounted = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  // A due summary keeps the ring up where the window is not counted yet (a
+  // thread loaded with no call replayed, say), since the ring is where it is said.
+  const summary = notices?.summary ?? null;
+  const ringVisible = usageCounted || !!summary;
   const ringSlot = ringVisible || tokenUsagePending;
   const micReserved = speechSupported && !!otherPref?.voice_input_enabled;
   // Right group: the model pill (measured), the mic, and send/stop. A turn
@@ -902,11 +908,11 @@ function ChatInput({
     + TOOLBAR_GAP + ICON_BUTTON_W;
   const { measureRowRef, statusRef, fold } = useToolbarFold({
     containerRef: chatContainerRef,
-    items: foldItems,
+    items: toolbarItems,
     // The model pill is measured too, but it isn't foldable. Its label joins
     // the key because an authored display_name comes with the models request,
     // which can land after the pill was first measured under the key's label.
-    measureKey: `${pillModel}|${getModelDisplayName(pillModel, modelMetadata)}|${resolvedEffort}|${resolvedFastMode && isCodexModel}`,
+    measureKey: `${pillModel}|${getModelDisplayName(pillModel, modelMetadata)}|${reasoningEfforts.join(',')}|${resolvedEffort}|${codexModel}`,
     // Left of the first pill: container border + px-3, the attach button, and
     // the optional ring / chart-capture button (see the action bar below).
     fixedLeft: CONTAINER_BORDER + CONTAINER_PX + ICON_BUTTON_W
@@ -916,7 +922,14 @@ function ChatInput({
     rightFloor: (widths) => rightGroup(widths.modelFloor ?? 0),
   });
   const inlineItems = toolbarItems.filter((i) => fold.inline.has(i.id));
-  const foldedItems = foldItems.filter((i) => fold.folded.includes(i.id));
+  const foldedItems = toolbarItems.filter((i) => fold.folded.includes(i.id));
+  // Folded into ⋯, the toggle's offer points at ⋯, where the toggle now is.
+  const subagentsAnchor = fold.folded.includes('subagents') ? overflowRef : subagentsRef;
+  // The subagents offer waits while ⋯ is open: its toggle there keeps the
+  // menu open, and the offer would open over it. A menu gone with the last
+  // folded item never says it closed.
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  if (overflowOpen && foldedItems.length === 0) setOverflowOpen(false);
 
   const favorites = useFavoriteModels();
   const account = useAccount();
@@ -981,7 +994,12 @@ function ChatInput({
       }
       if (planHold) return { unavailable: planHold };
     }
-    return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };
+    const signIn = lapsedSignIn(m)?.reason;
+    return {
+      tag: signIn === 'expired' ? t('modelAccess.status.needsReauth')
+        : signIn === 'missing' ? t('modelAccess.status.notConnected')
+        : undefined,
+    };
   };
 
   return (
@@ -1000,6 +1018,7 @@ function ChatInput({
           edge in theirs. */}
       <div
         ref={attachChatContainer}
+        data-composer-box
         className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[var(--cs-composer-radius,16px)] cursor-text border border-[color:var(--color-shell-edge,var(--color-border-input))] bg-(--color-bg-card)', isListening && 'recording')}
         onClick={(event) => {
           // A press on a control in the box is that control's, and the deck
@@ -1140,7 +1159,7 @@ function ChatInput({
 
               {/* Token Usage Ring */}
               {ringSlot && (
-                <TokenUsageRing tokenUsage={ringVisible ? tokenUsage : null} threadId={threadId} />
+                <TokenUsageRing tokenUsage={usageCounted ? tokenUsage : null} threadId={threadId} summary={summary} />
               )}
 
               {/* Chart Capture (trading only) */}
@@ -1166,8 +1185,17 @@ function ChatInput({
                   items={foldedItems}
                   side={dropdownDirection === 'down' ? 'bottom' : 'top'}
                   container={isMobile ? chatContainer : undefined}
+                  triggerRef={overflowRef}
+                  onOpenChange={setOverflowOpen}
                 />
               )}
+              <NoticePopover
+                notice={notices?.subagents ?? null}
+                anchorRef={subagentsAnchor}
+                blocked={overflowOpen}
+                align="start"
+                side={dropdownDirection === 'down' ? 'bottom' : 'top'}
+              />
 
               {/* Measured where it paints, for the fold's last resort. The
                   gap before it moves inside (its own cancelled, its child's
@@ -1183,14 +1211,14 @@ function ChatInput({
                 aria-hidden
                 className="invisible pointer-events-none absolute top-0 left-[-9999px] flex items-center gap-1 whitespace-nowrap"
               >
-                {foldItems.filter((i) => i.visible).map((item) => (
+                {toolbarItems.filter((i) => i.visible).map((item) => (
                   <span key={item.id} data-measure={item.id}>{item.inline({ measureOnly: true })}</span>
                 ))}
                 <span data-measure="model">
-                  <ModelTriggerMeasure pill="model" selectedModel={pillModel} metadata={modelMetadata} />
+                  <ModelTriggerMeasure selectedModel={pillModel} metadata={modelMetadata} reasoningEffort={resolvedEffort} />
                 </span>
                 <span data-measure="modelFloor">
-                  <ModelTriggerMeasure pill="model" selectedModel={pillModel} metadata={modelMetadata} floor />
+                  <ModelTriggerMeasure selectedModel={pillModel} metadata={modelMetadata} floor />
                 </span>
               </div>
             </div>
@@ -1213,8 +1241,11 @@ function ChatInput({
                 draftRef={textareaRef}
                 disabled={modelsLoading}
                 nameHidden={fold.nameHidden}
+                levelHidden={fold.levelHidden}
+                notice={notices?.model ?? null}
+                tuning={modelTuning}
+                taskCostBaseline={taskCostBaseline}
               />
-              {fold.inline.has(effortItem.id) && effortItem.inline({})}
               {/* Voice input, when enabled in settings. */}
               {micReserved && (
                 <VoiceButton

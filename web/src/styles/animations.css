@@ -176,6 +176,24 @@
   animation: pop-out var(--motion-exit) var(--ease-out);
 }
 
+/* --- A notice a composer control opened on its own (the model pill, the
+       subagents toggle) grows out of that control and shrinks back into it,
+       so a dismissal reads as the notice going home and nothing above the
+       composer seems to move. Radix names the anchor's edge as the origin.
+       After the pop-in rules, which it replaces on the way out. --- */
+@keyframes notice-home {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: translate(var(--pop-x, 0), var(--pop-y, 0)) scale(0.6); }
+}
+
+.notice-pop {
+  transform-origin: var(--radix-popover-content-transform-origin);
+}
+
+.notice-pop[data-state='closed'] {
+  animation: notice-home var(--motion-exit) var(--ease-out);
+}
+
 /* --- Centred fixed surface: the dialog. The keyframe carries the centring
        translate itself, because an animated `transform` replaces the one
        positioning the element rather than composing with it. --- */

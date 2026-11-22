@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { modelGroups } from '../modelGroups';
+import { favoriteSections, modelGroups } from '../modelGroups';
 import type { Payer } from '../modelPayer';
 
 function groups(payers: Record<string, Payer>, models: Record<string, { models?: string[]; display_name?: string }>) {
@@ -51,5 +51,26 @@ describe('modelGroups', () => {
 
   it('skips a group with no models', () => {
     expect(groups({}, { empty: { models: [] } })).toEqual([]);
+  });
+});
+
+describe('favoriteSections', () => {
+  const payers: Record<string, Payer> = {
+    sonnet: 'credits', glm: 'credits', opus: 'credits',
+    'opus-code': 'subscription:claude-code', flash: 'own_key',
+  };
+  const catalog = groups(payers, {
+    anthropic: { display_name: 'Anthropic', models: ['sonnet', 'opus', 'opus-code'] },
+    'z-ai': { display_name: 'Z.ai', models: ['glm'] },
+    deepseek: { display_name: 'DeepSeek', models: ['flash'] },
+  });
+
+  it("groups by who pays, plans and keys first, keeping each brand's models together", () => {
+    const sections = favoriteSections(['sonnet', 'glm', 'flash', 'opus', 'opus-code'], payers, catalog);
+    expect(sections).toEqual([
+      { payer: 'subscription:claude-code', models: ['opus-code'] },
+      { payer: 'own_key', models: ['flash'] },
+      { payer: 'credits', models: ['sonnet', 'opus', 'glm'] },
+    ]);
   });
 });

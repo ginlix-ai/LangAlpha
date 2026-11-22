@@ -289,3 +289,25 @@ export function chatTime(ms: number, locale: string, now: number): string {
     ? monthDayClockTime(ms, locale)
     : fullMonthDayClockTime(ms, locale);
 }
+
+const usdWhole = createFormatter({ style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+const usdCents = createFormatter({ style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const usdSmall = new Map<number, (n: number, locale: string) => string>();
+
+/** A list price in USD per 1M tokens: whole dollars where it has no cents
+ *  ("$2"), cents where it has them or is under a dollar ("$0.30", "$1.25").
+ *  Under a dime, cents would misstate it ("$0.075" as "$0.08") or zero it, so
+ *  it takes up to three decimals and always one significant digit. */
+export function formatTokenPrice(value: number, locale: string): string {
+  if (value > 0 && value < 0.1) {
+    const digits = Math.min(20, Math.max(3, Math.ceil(-Math.log10(value))));
+    let format = usdSmall.get(digits);
+    if (!format) {
+      format = createFormatter({ style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: digits });
+      usdSmall.set(digits, format);
+    }
+    return format(value, locale);
+  }
+  return (value < 1 || !Number.isInteger(value) ? usdCents : usdWhole)(value, locale);
+}

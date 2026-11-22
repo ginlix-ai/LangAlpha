@@ -31,7 +31,7 @@ const TINT = 'var(--color-warning-soft)';
 
 interface RestoreOfferProps {
   workspaceId: string;
-  /** `banner` above the chat input; `notice` in the file panel's narrow strip. */
+  /** `banner` in a chat; `notice` in the file panel's narrow strip. */
   variant: 'banner' | 'notice';
   className?: string;
 }
@@ -87,8 +87,8 @@ export function RestoreOffer({ workspaceId, variant, className }: RestoreOfferPr
         notice ? 'mx-2 mt-2 rounded-md px-2.5 py-2' : 'rounded-[var(--stack-row-radius,var(--radius-lg))] py-2.5 pr-3 pl-[var(--stack-row-pad,0.75rem)]',
         className,
       )}
-      // Opaque, like the disk warning: above the composer the transcript
-      // scrolls under it.
+      // Over the page surface, like the disk warning, so the tint reads the
+      // same wherever the row sits.
       style={{
         backgroundColor: 'var(--color-bg-page)',
         backgroundImage: `linear-gradient(${TINT}, ${TINT})`,
@@ -97,8 +97,8 @@ export function RestoreOffer({ workspaceId, variant, className }: RestoreOfferPr
       }}
     >
       <FolderX className="mt-0.5 h-4 w-4 shrink-0" style={{ color: 'var(--color-warning)' }} aria-hidden="true" />
-      {/* The panel is narrow, so its actions always sit below the text; above
-          the chat input they sit beside it where the row is wide enough. */}
+      {/* The panel is narrow, so its actions always sit below the text; in a
+          chat they sit beside it where the row is wide enough. */}
       <div className={cn('flex flex-1 min-w-0 flex-col gap-2', !notice && 'sm:flex-row sm:items-center')}>
         <div className="flex-1 min-w-0">
           <p className="font-medium">{missing}</p>

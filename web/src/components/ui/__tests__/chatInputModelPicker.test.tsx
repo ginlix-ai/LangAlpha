@@ -229,7 +229,8 @@ describe('a row', () => {
 
   it('checks the current model', () => {
     const dialog = open();
-    expect(within(within(dialog).getByRole('row')).getByText('Current model')).toBeInTheDocument();
+    const row = within(dialog).getAllByRole('row').find((r) => r.dataset.key === 'gpt-x');
+    expect(row && within(row).getByText('Current model')).toBeInTheDocument();
   });
 });
 
@@ -283,10 +284,17 @@ describe('Claude Code', () => {
   });
 
   // Among Favorites the tag is all that tells it from the same model on a key.
-  it('keeps its tag on a row beside other providers', () => {
+  // Favorites group by who pays, so a plan's models sit under its name, ahead
+  // of what a key pays for, and the rows carry no tag of their own.
+  it('names its plan once above its favorites, ahead of a key', () => {
     const dialog = open({ metadata: codeMetadata, payers: codePayers, groups: codeGroups, favorites: ['gpt-x', 'claude-opus-code'] });
-    const row = within(dialog).getAllByRole('row').find((r) => r.dataset.key === 'claude-opus-code');
-    expect(row && within(row).getByText('Claude Code')).toBeInTheDocument();
+    const rows = within(dialog).getAllByRole('row');
+    const header = rows.findIndex((r) => !r.dataset.key && within(r).queryByText('Claude Code'));
+    const model = rows.findIndex((r) => r.dataset.key === 'claude-opus-code');
+    expect(header).toBeGreaterThanOrEqual(0);
+    expect(model).toBe(header + 1);
+    expect(within(rows[model]).queryByText('Claude Code')).toBeNull();
+    expect(model).toBeLessThan(rows.findIndex((r) => r.dataset.key === 'gpt-x'));
   });
 
   // A row held back with nothing to fix from here (the token is still being

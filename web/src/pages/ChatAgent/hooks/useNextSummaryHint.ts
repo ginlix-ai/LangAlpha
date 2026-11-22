@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePreferences } from '@/hooks/usePreferences';
 import { modelPrefs } from '@/lib/modelPreferences';
 import type { NextSummary } from '../utils/api';
@@ -17,6 +17,11 @@ export interface NextSummaryHint {
   keepFullContext: boolean;
   toggleSkip: () => void;
 }
+
+/** The hint while a summary is due, the only time the composer says it. */
+export type DueSummary = NextSummaryHint & { reason: NonNullable<NextSummaryHint['reason']> };
+
+const isDue = (hint: NextSummaryHint): hint is DueSummary => hint.reason !== null;
 
 /**
  * What the composer says the next send summarizes first: the server's
@@ -52,21 +57,26 @@ export function useNextSummaryHint(next: NextSummary | null, running: boolean, a
   const reason = running || !next || hidden ? null : next.reason;
   const skipped = reason === 'cold' && skippedAt === at;
   const toggleSkip = useCallback(() => setSkippedAt(skipped ? null : at), [skipped, at]);
-  return { reason, skipped, keepFullContext: skipped || turnedOff, toggleSkip };
+  const keepFullContext = skipped || turnedOff;
+  // Kept while nothing in it changes: the host re-renders with every streamed
+  // token, and the composer's controls take it as a prop.
+  return useMemo(() => ({ reason, skipped, keepFullContext, toggleSkip }), [reason, skipped, keepFullContext, toggleSkip]);
 }
 
 /**
- * The hint for a chat surface's composer, with the chat's turn starters
- * carrying the skip while it asks for one, so a surface that shows the line
+ * The hint for a chat surface's composer, null while nothing is due, with the
+ * chat's turn starters carrying the skip while it asks for one (a hidden cold
+ * summary asks for it too), so a surface that shows the line
  * starts every turn with it: a send, a widget's prompt, an edit, a regenerate
  * or a Retry. Otherwise they are the chat's own, called as given.
  */
 export function useNextSummary(
   chat: TurnStarters & Pick<ChatHandle, 'nextSummary' | 'isLoading'>,
-): { summary: NextSummaryHint; starters: TurnStarters } {
+): { summary: DueSummary | null; starters: TurnStarters } {
   const { preferences } = usePreferences();
-  const summary = useNextSummaryHint(chat.nextSummary, chat.isLoading, modelPrefs(preferences).cold_compaction === false);
-  if (!summary.keepFullContext) return { summary, starters: chat };
+  const hint = useNextSummaryHint(chat.nextSummary, chat.isLoading, modelPrefs(preferences).cold_compaction === false);
+  const summary = isDue(hint) ? hint : null;
+  if (!hint.keepFullContext) return { summary, starters: chat };
   return {
     summary,
     starters: {

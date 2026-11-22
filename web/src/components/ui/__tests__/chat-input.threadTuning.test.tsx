@@ -15,6 +15,7 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputHandle } from '../chat-input';
 import type { ThreadTuning } from '../chat-input.types';
+import type { ModelTuning } from '../chat-input.modelTuning';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { queryKeys } from '@/lib/queryKeys';
 
@@ -56,25 +57,19 @@ vi.mock('../use-toast', () => ({
   toast: vi.fn(),
 }));
 
-// The menu's own rendering is pinned in chatInputModelMenu's tests; this one
-// reads the props it is handed and reaches the same handlers its options call.
+// The picker's own rendering is pinned in chatInputModelTuning's tests; this
+// one reads the tuning the pill is handed and reaches the same handlers its
+// levels and speeds call.
 vi.mock('../chat-input.modelMenu', () => ({
-  ChatInputModelMenu: () => null,
-  ChatInputEffortMenu: ({ reasoningEffort, defaultEffort, fastMode, onReasoningEffortChange, onFastModeChange }: {
-    reasoningEffort: string | null;
-    defaultEffort: string | null;
-    fastMode: boolean | null;
-    onReasoningEffortChange: (effort: string | null) => void;
-    onFastModeChange: (fast: boolean) => void;
-  }) => (
+  ChatInputModelMenu: ({ tuning }: { tuning: ModelTuning }) => (
     <>
-      <span>{`effort:${reasoningEffort}`}</span>
-      <span>{`default:${defaultEffort}`}</span>
-      <span>{`fast:${fastMode}`}</span>
-      <button type="button" onClick={() => onReasoningEffortChange('high')}>pick-high</button>
-      <button type="button" onClick={() => onReasoningEffortChange(null)}>pick-default</button>
-      <button type="button" onClick={() => onFastModeChange(true)}>pick-fast</button>
-      <button type="button" onClick={() => onFastModeChange(false)}>pick-standard</button>
+      <span>{`effort:${tuning.reasoningEffort}`}</span>
+      <span>{`default:${tuning.defaultEffort}`}</span>
+      <span>{`fast:${tuning.fastMode}`}</span>
+      <button type="button" onClick={() => tuning.onReasoningEffortChange('high')}>pick-high</button>
+      <button type="button" onClick={() => tuning.onReasoningEffortChange(null)}>pick-default</button>
+      <button type="button" onClick={() => tuning.onFastModeChange(true)}>pick-fast</button>
+      <button type="button" onClick={() => tuning.onFastModeChange(false)}>pick-standard</button>
     </>
   ),
   ModelTriggerMeasure: () => null,

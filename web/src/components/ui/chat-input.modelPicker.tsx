@@ -1,5 +1,5 @@
 import {
-  useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type Ref, type RefObject,
+  useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref, type RefObject,
 } from 'react';
 import { Building2, Check, Settings, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -17,15 +17,21 @@ import { CheckNowFor } from '@/components/modelAccess/PlanCheck';
 import { PickerPlanMeter, type PickerMeter } from '@/components/modelAccess/PlanUsage';
 import type { CheckTarget } from '@/components/modelAccess/usePlanCheck';
 import { isImeComposing } from '@/lib/ime';
-import type { ModelConnection, ModelGroup } from '@/lib/modelGroups';
+import { favoriteSections, type ModelConnection, type ModelGroup } from '@/lib/modelGroups';
 import { isSubscription, subscriptionPayer, type Payer } from '@/lib/modelPayer';
 import { usePayerLabel } from '@/hooks/usePayerLabel';
 import { useAccount } from '@/hooks/useAccount';
 import { MODEL_RULE_COPY, modelsRule } from '@/lib/accountRules';
 import { useNow } from '@/hooks/useNow';
-import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
+import type { ModelMetadataEntry, TaskCostBaseline } from '@/hooks/useFilteredModels';
 import { ModelMark, MarkedModelName } from '@/components/model/ModelMark';
 import { PayerBadge } from '@/components/model/PayerBadge';
+import { CostMarksGlyph, TaskCostHeading } from '@/components/model/TaskCost';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip';
+import { TuningPane, TuningStrip, type ModelTuning } from './chat-input.modelTuning';
+import { catalogCostRange, costMarks, formatCostMultiple, type CostMarks } from '@/lib/taskCost';
+import { effortLabelFor, modelHasTuning } from '@/lib/modelTuning';
+import { useLocale } from '@/hooks/useLocale';
 
 export const FAVORITES_TAB = '__favorites__';
 
@@ -39,7 +45,8 @@ type Metadata = Record<string, ModelMetadataEntry>;
  *  one is, though a press on the row itself does nothing. */
 export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void; fixLabel?: string; check?: CheckTarget };
 
-interface ListProps {
+/** What the model list shows, which the pill's wrapper hands through whole. */
+export interface ModelListProps {
   selectedModel: string | null;
   metadata?: Metadata;
   payers: Record<string, Payer>;
@@ -56,32 +63,88 @@ interface ListProps {
   /** The Claude plan Claude Code's models run on here, which heads their
    *  tab, and Favorites while the current model is one of them. */
   planMeter?: PickerMeter;
+  /** What each row's cost marks are measured against. */
+  taskCostBaseline?: TaskCostBaseline | null;
+}
+
+/** The list's own width beside the pane: the rail and a row with room for
+ *  most names, their cost and the star. A payer's tag sits on its section's
+ *  header, or the tab's, so few rows carry one, and a longer name truncates
+ *  and shows whole on hover. */
+const LIST_WIDTH = 352;
+/** The tuning pane beside it (`w-60`). */
+const PANE_WIDTH = 240;
+
+/**
+ * The room the picker has, for whether its tuning fits beside the list: the
+ * composer's width, which is what the picker opens over, and never more than
+ * the viewport less its gutters. Zero while closed; read before paint when it
+ * opens, so the first frame is laid out for the room there is. Where nothing
+ * can be measured (jsdom) the composer reads as unbounded.
+ */
+function usePickerRoom(container: HTMLElement | null | undefined, isOpen: boolean): number {
+  const [room, setRoom] = useState(0);
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const read = () => {
+      const composer = container?.getBoundingClientRect().width || Infinity;
+      setRoom(Math.min(composer, window.innerWidth - 32));
+    };
+    read();
+    window.addEventListener('resize', read);
+    const box = container && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(read) : null;
+    if (container) box?.observe(container);
+    return () => {
+      window.removeEventListener('resize', read);
+      box?.disconnect();
+    };
+  }, [container, isOpen]);
+  return room;
 }
 
 /**
  * The composer's model picker: a rail of tabs, favorites first and then one
- * per connection, beside the list of the tab's models. Typing searches every
- * model whatever the tab.
+ * per connection, beside the list of the tab's models, and the current
+ * model's tuning (its reasoning level, and speed on a Codex model) in a pane
+ * beside the list where the composer has room for one, else in a strip under
+ * it. Typing searches every model whatever the tab.
  *
- * A grid rather than a menu because each row holds a second control, the
- * star; a pick closes the picker, a star does not.
+ * The list is a grid rather than a menu because each row holds a second
+ * control, the star. A pick that leaves the new model something to tune
+ * keeps the picker open, so its tuning is right there; one that does not
+ * closes it, as a level or a speed never does.
  */
 export function ModelPicker({
-  triggerRef, isOpen, onOpenChange, direction, container, draftRef, onPick, onManage, ...list
-}: ListProps & {
+  triggerRef, isOpen, onOpenChange, direction, container, draftRef, onPick, onManage, notice, tuning, disabled = false, ...list
+}: ModelListProps & {
+  /** A warning about the next send on the current model, heading the picker. */
+  notice?: ReactNode;
   triggerRef: RefObject<HTMLButtonElement | null>;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   direction: 'up' | 'down';
-  /** The composer, which a phone portals the picker into. */
+  /** The composer, which a phone portals the picker into and whose width
+   *  says whether the tuning fits beside the list. */
   container?: HTMLElement | null;
   /** The message the pick is for, which takes focus after a pick by pointer. */
   draftRef?: RefObject<HTMLElement | null>;
   onPick: (model: string) => void;
   onManage: () => void;
+  /** The current model's tuning. Without it the picker lists models alone. */
+  tuning?: ModelTuning;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const pickToDraft = usePickToDraft(isOpen, draftRef);
+  const room = usePickerRoom(container, isOpen);
+  const wide = !!tuning && room >= LIST_WIDTH + PANE_WIDTH;
+  const { selectedModel, metadata, payers } = list;
+  const currentMeta = selectedModel ? metadata?.[selectedModel] : undefined;
+  const range = useMemo(() => catalogCostRange(metadata), [metadata]);
+  const close = () => {
+    pickToDraft();
+    onOpenChange(false);
+  };
   return (
     <ComposerPopover
       triggerRef={triggerRef}
@@ -91,27 +154,46 @@ export function ModelPicker({
       align="end"
       container={container}
       label={t('chat.modelSelector.select')}
-      className="w-96"
+      // A height of its own, not its content's: it opens up from the pill, so
+      // a pick whose model has more or fewer levels, or a search that thins
+      // the list, would move its top and the rows under the pointer with it.
+      // Tall enough for the longest pane; a short window still caps it.
+      className={cn('h-[23rem]', wide ? 'w-[37rem]' : 'w-96')}
     >
-      <ModelList
-        {...list}
-        onPick={(model) => {
-          const status = list.rowStatus(model, Date.now());
-          if ('unavailable' in status) {
-            if (!status.fix) return;
-            onOpenChange(false);
-            status.fix();
-            return;
-          }
-          onPick(model);
-          pickToDraft();
-          onOpenChange(false);
-        }}
-        onManage={() => {
-          onOpenChange(false);
-          onManage();
-        }}
-      />
+      {notice}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ModelList
+            {...list}
+            onPick={(model) => {
+              const status = list.rowStatus(model, Date.now());
+              if ('unavailable' in status) {
+                if (!status.fix) return;
+                onOpenChange(false);
+                status.fix();
+                return;
+              }
+              onPick(model);
+              // Picking the current model again is how a pick is confirmed.
+              if (!tuning || model === selectedModel || !modelHasTuning(metadata?.[model])) close();
+            }}
+            onManage={() => {
+              onOpenChange(false);
+              onManage();
+            }}
+          />
+          {tuning && !wide && <TuningStrip tuning={tuning} meta={currentMeta} disabled={disabled} />}
+        </div>
+        {tuning && wide && (
+          <TuningPane
+            tuning={tuning}
+            meta={currentMeta}
+            payer={selectedModel ? payers[selectedModel] : undefined}
+            range={range}
+            disabled={disabled}
+          />
+        )}
+      </div>
     </ComposerPopover>
   );
 }
@@ -154,8 +236,10 @@ function viewOf({ query, tab, connectionTab, groups, favorites, recent, selected
  *  the brand's payer start over on each opening. */
 function ModelList({
   selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, rowStatus, planMeter, onPick, onManage,
-}: ListProps & { onPick: (model: string) => void; onManage: () => void }) {
+  taskCostBaseline,
+}: ModelListProps & { onPick: (model: string) => void; onManage: () => void }) {
   const { t } = useTranslation();
+  const costLabel = useCostMarksLabel(taskCostBaseline, metadata);
   const payerLabel = usePayerLabel();
   const now = useNow();
   // A rule that narrows the models is named once under the list, so a model
@@ -186,18 +270,43 @@ function ModelList({
   // The tab's own subscription (Claude Code's) is named by its header already.
   const headerNamesPayer = view.kind === 'brand' && headerPayer === subscriptionPayer(view.group.id);
   const inThread = view.kind === 'favorites' ? view.recent : [];
-  const first = [...view.rows, ...inThread].find((m) => !('unavailable' in rowStatus(m, now)));
+  // Favorites by who pays, each payer's run kept together by brand; the
+  // section's header names the payer, so its rows carry no badge of their own.
+  const sections = view.kind === 'favorites' ? favoriteSections(view.rows, payers, groups) : null;
+  const rows = sections ? sections.flatMap((section) => section.models) : view.rows;
+  const first = [...rows, ...inThread].find((m) => !('unavailable' in rowStatus(m, now)));
   // Claude Code's plan heads the tab of its models, and Favorites while the
   // current model is one of them.
   const isClaudeCode = (m: string | null) => !!m && isClaudeCodeModel(metadata?.[m]);
   const meter = (view.kind === 'brand' && view.connection.models.some(isClaudeCode))
     || (view.kind === 'favorites' && isClaudeCode(selectedModel)) ? planMeter : undefined;
   const favoriteSet = new Set(favorites);
+  const marksOf = (m: string) => costMarks(metadata?.[m], payers[m]);
+  // The column's heading, over the marks, wherever a row on the tab has some.
+  const showCosts = [...view.rows, ...inThread].some((m) => marksOf(m) !== null);
 
   // The current model's check is what the user looks for on opening, and a
   // long first tab can hold it below the fold.
   useEffect(() => {
-    const frame = requestAnimationFrame(() => currentRowRef.current?.scrollIntoView({ block: 'nearest' }));
+    const frame = requestAnimationFrame(() => {
+      const row = currentRowRef.current;
+      const list = row?.closest<HTMLElement>('[role="grid"]');
+      if (!row || !list) return;
+      const view = list.getBoundingClientRect();
+      const at = row.getBoundingClientRect();
+      if (at.top >= view.top && at.bottom <= view.bottom) return;
+      // The panel scales in as it opens, and what the screen measures is
+      // scaled with it; scrolling is in the list's own pixels.
+      const scale = view.height / list.offsetHeight || 1;
+      // From its section's top, so the header saying who pays comes into view
+      // with it, unless that would leave the row below the fold.
+      const section = row.closest('[role="rowgroup"]')?.getBoundingClientRect();
+      if (section && (at.bottom - section.top) / scale <= list.clientHeight) {
+        list.scrollTop += (section.top - view.top) / scale;
+      } else {
+        row.scrollIntoView({ block: 'nearest' });
+      }
+    });
     return () => cancelAnimationFrame(frame);
   }, []);
 
@@ -212,7 +321,7 @@ function ModelList({
     inputRef.current?.focus();
   };
 
-  const row = (m: string) => (
+  const row = (m: string, badged = !headerPayer) => (
     <ModelRow
       key={m}
       model={m}
@@ -220,10 +329,13 @@ function ModelList({
       // scrolled to on opening, which a first row never needs.
       rowRef={m === first ? firstRowRef : m === selectedModel ? currentRowRef : undefined}
       metadata={metadata}
-      payer={headerPayer ? undefined : payers[m]}
+      payer={badged ? payers[m] : undefined}
       selected={m === selectedModel}
       favorite={favoriteSet.has(m)}
       status={rowStatus(m, now)}
+      marks={marksOf(m)}
+      costColumn={showCosts}
+      costLabel={costLabel}
       onToggleFavorite={onToggleFavorite}
     />
   );
@@ -267,11 +379,13 @@ function ModelList({
           <Settings aria-hidden className="h-4 w-4" />
         </Button>
       </div>
-      {/* Room for about four and a half rows (2rem each) under the tab
-          header: a curated list fits, and a cut row says there is more. */}
-      <div className="flex h-[11.5rem] min-h-0">
+      {/* It takes the panel's height and is the first part to give way: a
+          notice and the levels strip under it both have to fit in the fixed
+          panel, and on a phone the strip is the only place to set a level. It
+          keeps three rows (2rem each), so a cut row still says there is more. */}
+      <div className="flex min-h-24 flex-[1_1_11.5rem]">
         {/* Out of the flow, so a long rail scrolls rather than sets the
-            height; a curated list keeps the picker short. */}
+            height. */}
         <div className="relative w-11 flex-none border-r border-[color:var(--color-shell-divider,var(--color-border-muted))]">
           {/* The toggle group takes no ref, so a box of its own scrolls it. */}
           <div
@@ -305,8 +419,12 @@ function ModelList({
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           {header && (
-            <div className="flex flex-none items-center justify-between gap-2 px-3 pb-1 pt-2 text-xs text-(--color-text-tertiary)">
-              {meter ? <PickerPlanMeter meter={meter} /> : <span data-slot="menu-label" className="truncate">{header}</span>}
+            // The list's gutter too, so the cost heading stands over the marks
+            // whether or not a scrollbar takes room beside the rows.
+            <div className="flex flex-none items-center gap-2 overflow-hidden px-3 pb-1 pt-2 text-xs text-(--color-text-tertiary) [scrollbar-gutter:stable]">
+              {meter
+                ? <span className="min-w-0 flex-1"><PickerPlanMeter meter={meter} /></span>
+                : <span data-slot="menu-label" className="min-w-0 flex-1 truncate">{header}</span>}
               {view.kind === 'brand' && view.group.connections.length > 1 ? (
                 <ToggleButtonGroup
                   aria-label={t('chat.modelSelector.paidBy')}
@@ -339,31 +457,49 @@ function ModelList({
               ) : (
                 <PayerBadge payer={headerNamesPayer ? undefined : headerPayer} />
               )}
+              {/* Over the marks, which end each row at its edge. */}
+              {showCosts && (
+                <TaskCostHeading note={t('chat.modelSelector.costMarksNote')} />
+              )}
             </div>
           )}
+          <TooltipProvider delayDuration={300}>
           <GridList
             id={listId}
             ref={attachList}
             style={listFade}
             aria-label={header ?? t('chat.modelSelector.search')}
             onAction={(key) => onPick(String(key))}
-            className="min-h-0 flex-1 overflow-y-auto p-1 outline-hidden"
+            className="min-h-0 flex-1 overflow-y-auto p-1 outline-hidden [scrollbar-gutter:stable]"
             renderEmptyState={() => (
               <p className="px-3 py-4 text-center text-[0.8125rem] text-(--color-text-tertiary)">
                 {view.kind === 'favorites' ? t('chat.modelSelector.noFavorites') : t('chat.modelSelector.noMatch')}
               </p>
             )}
           >
-            {view.rows.map(row)}
+            {sections
+              ? sections.map((section) => (
+                <GridListSection key={section.payer ?? ''}>
+                  <GridListHeader
+                    data-slot="menu-label"
+                    className="px-2 pb-1 pt-2.5 text-xs font-medium text-(--color-text-secondary)"
+                  >
+                    {section.payer ? payerLabel(section.payer) : t('chat.modelSelector.unbilled')}
+                  </GridListHeader>
+                  {section.models.map((m) => row(m, false))}
+                </GridListSection>
+              ))
+              : view.rows.map((m) => row(m))}
             {inThread.length > 0 && (
               <GridListSection>
                 <GridListHeader data-slot="menu-label" className="px-2 pb-1 pt-2.5 text-xs text-(--color-text-tertiary)">
                   {t('chat.modelSelector.inThread')}
                 </GridListHeader>
-                {inThread.map(row)}
+                {inThread.map((m) => row(m))}
               </GridListSection>
             )}
           </GridList>
+          </TooltipProvider>
         </div>
       </div>
       {narrowedBy && (
@@ -424,6 +560,7 @@ function RailTab({ id, label, dot = false, children }: {
       className={cn(
         'relative flex h-8 w-8 flex-none items-center justify-center rounded-[var(--cs-radius-control,var(--radius-lg))] outline-hidden',
         // The open card styles pick a provider with the front tab's edge, not a fill.
+        // The rail's gap-1 keeps a chosen tab and a hovered neighbour apart.
         'data-hovered:bg-(--color-bg-hover) data-selected:bg-[color:var(--color-shell-fill,var(--color-bg-tag))]',
         'data-selected:shadow-[inset_0_0_0_1px_var(--color-shell-front,transparent)]',
         'data-focus-visible:outline-current',
@@ -451,7 +588,25 @@ function RailIcon({ provider, label }: { provider: string; label: string }) {
   );
 }
 
-function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, onToggleFavorite }: {
+/**
+ * What a row's cost marks say, for their tooltip and a screen reader: the
+ * model's figure against the baseline model, named, at its level; a bound
+ * said as one; one from the list price said to be an estimate.
+ */
+function useCostMarksLabel(baseline: TaskCostBaseline | null | undefined, metadata?: Metadata) {
+  const { t } = useTranslation();
+  const locale = useLocale();
+  const model = baseline ? getModelDisplayName(baseline.model, metadata) : t('chat.modelSelector.costBaselineFallback');
+  const level = baseline ? effortLabelFor(t, baseline.effort) : null;
+  return (marks: CostMarks) => {
+    if (marks.kind === 'estimate') return t('chat.modelSelector.costMarksEstimate');
+    const args = { value: formatCostMultiple(marks.value, locale), model, level };
+    const key = marks.kind === 'measured' ? 'costMarksMeasured' : 'costMarksBound';
+    return t(`chat.modelSelector.${key}${level ? 'AtLevel' : ''}`, args);
+  };
+}
+
+function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, marks, costColumn = false, costLabel, onToggleFavorite }: {
   model: string;
   rowRef?: Ref<HTMLDivElement>;
   metadata?: Metadata;
@@ -459,6 +614,11 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
   selected: boolean;
   favorite: boolean;
   status: ModelRowStatus;
+  marks: CostMarks | null;
+  /** The tab shows costs, so a row without marks keeps their room and its
+   *  star stays in the column. */
+  costColumn?: boolean;
+  costLabel: (marks: CostMarks) => string;
   onToggleFavorite: (model: string, favorite: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -469,13 +629,15 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
   const fixLabel = 'unavailable' in status && status.fix ? status.fixLabel : undefined;
   const actionable = 'unavailable' in status && (!!status.fix || !!check);
   const tag = 'tag' in status ? status.tag : undefined;
+  const cost = marks ? costLabel(marks) : undefined;
   return (
     <GridListItem
       ref={rowRef}
       id={model}
       // A row a reason holds back says it as part of its name, which is all a
-      // screen reader reads of a row.
-      textValue={[name, reason, fixLabel].filter(Boolean).join(', ')}
+      // screen reader reads of a row; so does its cost, after the name, where
+      // typing a name to find the row still matches.
+      textValue={[name, reason, fixLabel, cost].filter(Boolean).join(', ')}
       isDisabled={reason !== undefined && !actionable}
       data-slot="menu-item"
       className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', actionable && 'text-(--color-text-tertiary)')}
@@ -485,27 +647,56 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2">
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            <MarkedModelName provider={provider} name={name} nameClassName="min-w-0 truncate" />
+            <MarkedModelName provider={provider} name={name} nameClassName="min-w-0 truncate" wholeOnHover />
           </span>
           <PayerBadge payer={payer} markLegacy={false} />
           {tag && <span className="flex-none text-xs text-(--color-text-tertiary)">{tag}</span>}
-          <Check aria-hidden className={cn('h-4 w-4 flex-none text-(--color-accent-primary)', !selected && 'invisible')} />
-          {selected && <span className="sr-only">{t('chat.modelSelector.current')}</span>}
-          <Button
-            aria-label={t(favorite ? 'chat.modelSelector.unfavorite' : 'chat.modelSelector.favorite', { model: name })}
-            onPress={() => onToggleFavorite(model, !favorite)}
-            className={cn(
-              'flex h-5 w-5 flex-none items-center justify-center rounded outline-hidden data-focus-visible:outline-current',
-              favorite
-                ? 'text-(--color-text-secondary)'
-                // Shown on the row's hover or focus where there is a pointer to
-                // hover with. A touch screen has none, so it stays shown rather
-                // than sit there invisible and still take a tap.
-                : 'text-(--color-text-tertiary) opacity-0 group-data-focused:opacity-100 group-data-hovered:opacity-100 data-focus-visible:opacity-100 [@media(hover:none)]:opacity-100',
+          {/* The check and the star share one place: the current model shows
+              its check until the row is hovered or reached by keyboard, when the star
+              takes it to be toggled. A touch screen hovers nothing, so there
+              the current row shows both. */}
+          <span className="flex flex-none items-center gap-2">
+            {selected && (
+              <>
+                <Check
+                  aria-hidden
+                  className="mx-0.5 h-4 w-4 flex-none text-(--color-accent-primary) group-data-focus-visible:hidden group-data-hovered:hidden [@media(hover:none)]:block!"
+                />
+                <span className="sr-only">{t('chat.modelSelector.current')}</span>
+              </>
             )}
-          >
-            <Star aria-hidden className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />
-          </Button>
+            <Button
+              aria-label={t(favorite ? 'chat.modelSelector.unfavorite' : 'chat.modelSelector.favorite', { model: name })}
+              onPress={() => onToggleFavorite(model, !favorite)}
+              className={cn(
+                'h-5 w-5 flex-none items-center justify-center rounded outline-hidden data-focus-visible:outline-current',
+                selected
+                  ? 'hidden group-data-focus-visible:flex group-data-hovered:flex data-focus-visible:flex [@media(hover:none)]:flex'
+                  : 'flex',
+                favorite
+                  ? 'text-(--color-text-secondary)'
+                  // Shown on the row's hover or focus where there is a pointer to
+                  // hover with. A touch screen has none, so it stays shown rather
+                  // than sit there invisible and still take a tap.
+                  : 'text-(--color-text-tertiary) opacity-0 group-data-focus-visible:opacity-100 group-data-hovered:opacity-100 data-focus-visible:opacity-100 [@media(hover:none)]:opacity-100',
+              )}
+            >
+              <Star aria-hidden className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />
+            </Button>
+          </span>
+          {/* Last, against the row's edge, under their heading. */}
+          {marks && cost ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span data-cost-marks={marks.kind} className="flex-none cursor-default">
+                  <CostMarksGlyph marks={marks} />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-60">{cost}</TooltipContent>
+            </Tooltip>
+          ) : costColumn && (
+            <CostMarksGlyph marks={null} />
+          )}
         </span>
         {/* Under the name itself, past the mark and its gap, and clear of the
             star's column, which Check now takes on this line where it is offered. */}

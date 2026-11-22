@@ -169,7 +169,6 @@ vi.mock('@/components/ui/chat-input.modelMenu', () => ({
       <button type="button" onClick={() => onSelectModel('model-y')}>pick-y</button>
     </>
   ),
-  ChatInputEffortMenu: () => null,
   ModelTriggerMeasure: () => null,
 }));
 

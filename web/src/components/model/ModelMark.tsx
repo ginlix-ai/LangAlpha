@@ -35,17 +35,26 @@ export function ModelMark({ provider, className }: { provider: string | undefine
  * the mark, still hears it. A list keeps full names, which is where models of
  * one maker are told apart.
  */
-export function MarkedModelName({ provider, name, nameClassName, short = false }: {
+export function MarkedModelName({ provider, name, nameClassName, short = false, wholeOnHover = false }: {
   provider: string | undefined;
   name: string;
   nameClassName?: string;
   short?: boolean;
+  /** A name cut short (a custom model's long id) shows whole on hover. */
+  wholeOnHover?: boolean;
 }) {
   const { shown, brand } = short ? nameBesideMark(name, provider) : { shown: name, brand: undefined };
   return (
     <>
       <ModelMark provider={provider} />
-      <span className={nameClassName}>
+      <span
+        className={nameClassName}
+        // Read on the way in, since the room the name has changes with the
+        // picker's layout; a name that fits gets no tooltip repeating it.
+        onPointerEnter={wholeOnHover
+          ? (e) => { const el = e.currentTarget; el.title = el.scrollWidth > el.clientWidth ? name : ''; }
+          : undefined}
+      >
         {brand && <span className="sr-only">{brand} </span>}
         {shown}
       </span>

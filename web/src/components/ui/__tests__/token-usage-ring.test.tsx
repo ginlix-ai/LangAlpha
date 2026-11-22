@@ -8,6 +8,7 @@
  * counts behind it are known. Before the count lands it holds its slot as an
  * inert track, which turns into the trigger in place.
  */
+import { useState } from 'react';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
@@ -15,6 +16,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient } from '@tanstack/react-query';
 import { renderWithProviders } from '@/test/utils';
 import type { TokenUsage } from '@/pages/ChatAgent/session/tokenUsage';
+import type { DueSummary } from '@/pages/ChatAgent/hooks/useNextSummaryHint';
 import type { ThreadContextResponse } from '@/pages/ChatAgent/utils/api/threads';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({ fetchThreadContext: vi.fn() }));
@@ -171,5 +173,95 @@ describe('TokenUsageRing', () => {
     await open({ totalCached: null, lastCached: null });
     expect(screen.queryByText('Cache hit rate')).toBeNull();
     expect(screen.queryByText('0%')).toBeNull();
+  });
+});
+
+/**
+ * A summary the next send runs first is said on the ring: a mark on it, its
+ * name, and the panel's first line. The summary is the plan, so the override
+ * is a quiet action, and the cost shows only once the user has taken it. At
+ * the threshold the summary has to run, and so does a rebuild, so there is
+ * nothing to take. With no window counted yet the ring still shows, since it
+ * is where the summary is said.
+ */
+describe('TokenUsageRing with a summary due', () => {
+  const hint = (reason: DueSummary['reason'], skipped = false, toggleSkip = vi.fn()): DueSummary => ({
+    reason, skipped, keepFullContext: skipped, toggleSkip,
+  });
+  const LINE = 'Earlier messages will be summarized before your next one.';
+
+  async function openDue(summary: DueSummary, usage: TokenUsage | null = USAGE) {
+    renderWithProviders(<TokenUsageRing tokenUsage={usage} threadId={THREAD} summary={summary} />, { queryClient: client() });
+    const ring = screen.getByRole('button', { name: /Earlier messages will be summarized/ });
+    expect(ring.querySelector('[data-summary-due]')).toBeTruthy();
+    await userEvent.click(ring);
+    return screen.getByRole('dialog', { name: 'Context' });
+  }
+
+  it('marks nothing while no summary is due', () => {
+    renderWithProviders(<TokenUsageRing tokenUsage={USAGE} threadId={THREAD} summary={null} />, { queryClient: client() });
+    expect(trigger().querySelector('[data-summary-due]')).toBeNull();
+  });
+
+  it('states the cold summary as the plan, with Skip beside it', async () => {
+    const toggleSkip = vi.fn();
+    const panel = await openDue(hint('cold', false, toggleSkip));
+    expect(panel.textContent).toContain(LINE);
+    expect(panel.textContent).not.toContain('costs more');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Skip' }));
+    expect(toggleSkip).toHaveBeenCalledOnce();
+  });
+
+  it('after Skip, drops the mark and the due label, and still opens to name the cost and offer Undo', async () => {
+    const toggleSkip = vi.fn();
+    renderWithProviders(<TokenUsageRing tokenUsage={USAGE} threadId={THREAD} summary={hint('cold', true, toggleSkip)} />, { queryClient: client() });
+    const ring = trigger();
+    expect(ring.querySelector('[data-summary-due]')).toBeNull();
+    await userEvent.click(ring);
+    const panel = screen.getByRole('dialog', { name: 'Context' });
+    expect(panel.textContent).toContain('Your next message will include the whole conversation, which costs more.');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Undo' }));
+    expect(toggleSkip).toHaveBeenCalledOnce();
+  });
+
+  it('keeps focus on the action from Skip to Undo and back', async () => {
+    function Stateful() {
+      const [skipped, setSkipped] = useState(false);
+      return <TokenUsageRing tokenUsage={USAGE} threadId={THREAD} summary={hint('cold', skipped, vi.fn(() => setSkipped((v) => !v)))} />;
+    }
+    renderWithProviders(<Stateful />, { queryClient: client() });
+    await userEvent.click(screen.getByRole('button', { name: /^Context window/ }));
+    const panel = screen.getByRole('dialog', { name: 'Context' });
+    within(panel).getByRole('button', { name: 'Skip' }).focus();
+    await userEvent.keyboard('{Enter}');
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: 'Undo' }));
+    await userEvent.keyboard('{Enter}');
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: 'Skip' }));
+  });
+
+  it('after Skip with no window counted, stays a trigger so the skip can be undone', async () => {
+    const { container } = renderWithProviders(
+      <TokenUsageRing tokenUsage={null} threadId={THREAD} summary={hint('cold', true)} />, { queryClient: client() },
+    );
+    const ring = screen.getByRole('button', { name: 'Context' });
+    expect(ring).toBeEnabled();
+    expect(container.querySelector('[data-summary-due]')).toBeNull();
+    await userEvent.click(ring);
+    const panel = screen.getByRole('dialog', { name: 'Context' });
+    expect(within(panel).getByRole('button', { name: 'Undo' })).toBeTruthy();
+  });
+
+  it.each(['threshold', 'rebuild'] as const)('for %s says so with nothing to skip', async (reason) => {
+    const panel = await openDue(hint(reason));
+    expect(panel.textContent).toContain(LINE);
+    expect(within(panel).queryByRole('button', { name: /Skip|Undo/ })).toBeNull();
+  });
+
+  it('shows with no window counted, and the panel is the summary alone', async () => {
+    const panel = await openDue(hint('rebuild'), null);
+    expect(panel.textContent).toContain(LINE);
+    expect(screen.queryByText('Compact at')).toBeNull();
+    await act(async () => {});
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

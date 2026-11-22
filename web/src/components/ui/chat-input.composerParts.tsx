@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, type CSSProperties, type Ref, type WheelEvent } from 'react';
+import { Fragment, useRef, useState, type CSSProperties, type Ref, type RefObject, type WheelEvent } from 'react';
 import {
   Archive, ArrowUp, ChartCandlestick, ClipboardList, Mic, MicOff, MoreHorizontal, Quote, Square, TextSelect, X,
 } from 'lucide-react';
@@ -393,17 +393,24 @@ export function ToolbarOverflowMenu({
   items,
   side,
   container,
+  triggerRef,
+  onOpenChange,
 }: {
   items: ToolbarItem[];
   side: 'top' | 'bottom';
   /** Where the menu portals to; unset portals to the body. */
   container?: HTMLElement | null;
+  /** For a notice about an item folded in here, which ⋯ then stands in for. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
+  /** Such a notice waits while the menu is open, since a toggle in it keeps it open. */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu modal={false} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
+          ref={triggerRef}
           className="relative inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-(--color-icon-muted) hover:text-(--color-text-muted) hover:bg-foreground/5 data-[state=open]:bg-foreground/5 data-[state=open]:text-(--color-text-muted)"
           onClick={(e) => e.stopPropagation()}
           type="button"

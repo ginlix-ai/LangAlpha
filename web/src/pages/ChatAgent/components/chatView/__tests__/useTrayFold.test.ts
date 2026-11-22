@@ -1,7 +1,7 @@
 /**
- * The tray folds into its dock while a notice holds its place above the
- * composer, as it does while the reader is up, and comes back out once the
- * notice goes. A peek pours it out over the notice.
+ * The tray folds into its dock while a row holds its place above the
+ * composer (another person's turn), as it does while the reader is up, and
+ * comes back out once the row goes. A peek pours it out over the row.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -20,15 +20,15 @@ function renderFold(initial: Props) {
   );
 }
 
-describe('useTrayFold: a notice above the composer', () => {
-  it('folds the tray while a notice holds its place, and opens it when the notice goes', () => {
+describe('useTrayFold: a row above the composer', () => {
+  it('folds the tray while a row holds its place, and opens it when the row goes', () => {
     const fold = renderFold({ covered: true });
     expect(fold.result.current.phase).toBe('folded');
     fold.rerender({ covered: false });
     expect(fold.result.current.phase).toBe('open');
   });
 
-  it('keeps the tray folded when the notice goes while the reader is up or the composer is docked', () => {
+  it('keeps the tray folded when the row goes while the reader is up or the composer is docked', () => {
     const up = renderFold({ covered: true, scrolledUp: true });
     up.rerender({ covered: false, scrolledUp: true });
     expect(up.result.current.phase).toBe('folded');
@@ -38,7 +38,7 @@ describe('useTrayFold: a notice above the composer', () => {
     expect(docked.result.current.phase).toBe('folded');
   });
 
-  it('pours the tray out over the notice on a peek, until the notice goes', () => {
+  it('pours the tray out over the row on a peek, until the row goes', () => {
     const fold = renderFold({ covered: true });
     act(() => fold.result.current.peek());
     expect(fold.result.current.phase).toBe('open');

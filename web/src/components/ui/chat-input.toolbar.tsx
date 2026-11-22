@@ -6,11 +6,7 @@ import {
   DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
 } from './dropdown-menu';
 import { IconToggle, PillToggle, SubagentsGlyph } from './chat-input.parts';
-import {
-  ChatInputEffortMenu, EffortMenuSection, EffortSubmenu, ModelTriggerMeasure, type EffortMenuProps,
-} from './chat-input.modelMenu';
 import type { ToolbarItem } from './chat-input.useToolbarFold';
-import { hasTuningMenu } from '@/lib/modelTuning';
 import type { ComposerScope, Workspace } from './chat-input.types';
 import { ALL_WORKSPACES_KEY, WorkspacePicker } from './chat-input.workspacePicker';
 
@@ -37,6 +33,7 @@ export function useToolbarItems({
   menuDirection = 'up',
   menuContainer = null,
   draftRef,
+  subagentsRef,
 }: {
   /** Null while the thread's value is not read, which hides the toggle. */
   subagentsAllowed: boolean | null;
@@ -55,6 +52,8 @@ export function useToolbarItems({
   menuContainer?: HTMLElement | null;
   /** The composer's text field, where a pick made with the pointer leaves focus. */
   draftRef?: RefObject<HTMLTextAreaElement | null>;
+  /** The subagents toggle, which its default offer is anchored to. */
+  subagentsRef?: RefObject<HTMLButtonElement | null>;
 }): ToolbarItem[] {
   const { t } = useTranslation();
 
@@ -167,6 +166,7 @@ export function useToolbarItems({
           label={t('chat.pills.subagents')}
           tooltip={t(subagentsOn ? 'chat.pills.subagentsOn' : 'chat.pills.subagentsOff')}
           measureOnly={measureOnly}
+          buttonRef={measureOnly ? undefined : subagentsRef}
         >
           <SubagentsGlyph on={subagentsOn} />
         </IconToggle>
@@ -228,34 +228,6 @@ export function useToolbarItems({
     watchMode, setWatchMode, marketWatchEnabled, showWorkspaceMenu,
     workspaces, selectedWorkspaceId, t,
     hasScopePicker, allSelected, scopeLabel, noWorkspacesHint, hasSecondSection,
-    pickAll, pickWorkspace, menuDirection, menuContainer, draftRef,
+    pickAll, pickWorkspace, menuDirection, menuContainer, draftRef, subagentsRef,
   ]);
-}
-
-/**
- * The effort pill as a toolbar item: beside the model pill while the row has
- * room for both, a submenu of ⋯ once it has not. It folds last of all, after
- * the model name has truncated to its floor (`slot: 'right'`). On a phone ⋯
- * lists the levels itself, since there is no room beside it for a submenu.
- * `props` must keep its identity while nothing in it changes: the item's
- * identity re-measures the toolbar.
- */
-export function useEffortToolbarItem(props: EffortMenuProps, phone: boolean): ToolbarItem {
-  return useMemo<ToolbarItem>(() => ({
-    id: 'effort',
-    group: 'tuning',
-    slot: 'right',
-    visible: hasTuningMenu(props.reasoningEfforts, props.isCodexModel),
-    inline: ({ measureOnly }) => (measureOnly
-      ? (
-        <ModelTriggerMeasure
-          pill="effort"
-          effortLabel={props.effortLabel}
-          reasoningEfforts={props.reasoningEfforts}
-          isCodexModel={props.isCodexModel}
-        />
-      )
-      : <ChatInputEffortMenu {...props} />),
-    menu: () => (phone ? <EffortMenuSection {...props} /> : <EffortSubmenu {...props} />),
-  }), [props, phone]);
 }

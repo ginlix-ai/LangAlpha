@@ -60,6 +60,9 @@ const combineStatuses = (results: UseQueryResult<OAuthStatus>[]) => ({
   /** In `SUBSCRIPTIONS` order. */
   statuses: results.map((r) => r.data),
   isLoading: results.some((r) => r.isLoading),
+  // Pending, not loading: a query paused offline is not loading yet has no
+  // data, and reading it as loaded would call a sign-in missing.
+  isPending: results.some((r) => r.isPending),
   isError: results.some((r) => r.isError),
   unread: results.some((r) => r.isError && r.data === undefined),
 });
@@ -128,6 +131,8 @@ export function useConfiguredProviders({ enabled = true }: { enabled?: boolean }
     isLoading: keysLoading || oauth.isLoading,
     /** The subscriptions' statuses are still being read. */
     statusLoading: oauth.isLoading,
+    /** A status not read yet, fetching or paused offline: what it holds is unknown. */
+    statusPending: oauth.isPending,
     /** A status that could not be read; its row shows unknown, not disconnected. */
     statusError: oauth.isError,
     /** The keys, or a subscription's status, never read: what is connected is unknown. */

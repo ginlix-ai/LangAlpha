@@ -23,9 +23,6 @@ export interface ToolbarItem {
    *  no call site ever places one by hand. */
   group: string;
   visible: boolean;
-  /** Sits in the right group beside the model pill. It folds last, once the
-   *  model name has no room left to give (see `computeFold`). */
-  slot?: 'right';
   /** Toggle is on — surfaces the ⋯ trigger dot while folded. */
   active?: boolean;
   inline: (opts: ToolbarItemRender) => ReactNode;
@@ -48,13 +45,16 @@ export const CONTAINER_BORDER = 2;
 export interface FoldResult {
   inline: Set<string>;
   folded: string[];
+  /** The model pill has no room for its reasoning level beside the name. */
+  levelHidden: boolean;
   /** Even with every item in ⋯ the row cannot keep the model name at its
    *  floor, so the pill shows its logo alone rather than a sliver of name. */
   nameHidden: boolean;
 }
 
 /**
- * Which toolbar items keep their inline slot at `containerWidth`.
+ * Which toolbar items keep their inline slot at `containerWidth`, and how
+ * much of the model pill shows.
  *
  * Items are consumed in declaration order and the loop STOPS at the first one
  * that doesn't fit: priority is a real ordering, not a best-effort packing, so
@@ -62,10 +62,11 @@ export interface FoldResult {
  * low-priority one. With no measurements (jsdom, ResizeObserver unavailable)
  * everything stays inline.
  *
- * Right-slot items are the last resort. The model name truncates before they
- * move, so they fold only when the row cannot hold them with every left item
- * folded and the name cut to its floor; the last declared folds first. Past
- * that, the name itself goes.
+ * The pill gives way last, and in steps: every item folds before it loses
+ * anything, then its level goes, then the name truncates to its floor, and
+ * past that the name itself goes. The level goes before the name shrinks,
+ * since a cut name stops saying which model runs while the picker it opens
+ * names the level anyway.
  */
 export function computeFold({
   containerWidth,
@@ -80,58 +81,54 @@ export function computeFold({
 }: {
   containerWidth: number;
   widths: Readonly<Record<string, number>> | null;
-  items: readonly { id: string; visible: boolean; slot?: 'right' }[];
+  items: readonly { id: string; visible: boolean }[];
   /** Left chrome + container padding/border consumed before the first item. */
   fixedLeft: number;
-  /** Right group (model pill, mic, send) + the gap between the two groups,
-   *  without its right-slot items. */
+  /** Right group (model pill with its level, mic, send) + the gap between
+   *  the two groups. */
   rightReserve: number;
-  /** The same with the model name cut to its floor. */
+  /** The same with the level gone and the model name cut to its floor. */
   rightFloor?: number;
-  /** The host's status at the end of the left group. The model name gives
+  /** The host's status at the end of the left group. The model pill gives
    *  up the room for it, so items don't hop into ⋯ as it comes and goes;
    *  only past the name's floor does it cost them their slot. */
   status?: number;
   gap?: number;
   overflowWidth?: number;
 }): FoldResult {
-  const visible = items.filter((i) => i.visible);
-  const candidates = visible.filter((i) => i.slot !== 'right').map((i) => i.id);
-  const right = visible.filter((i) => i.slot === 'right').map((i) => i.id);
+  const candidates = items.filter((i) => i.visible).map((i) => i.id);
   const measured = widths && Object.values(widths).some((w) => w > 0) ? widths : null;
   if (!containerWidth || !measured) {
-    return { inline: new Set([...candidates, ...right]), folded: [], nameHidden: false };
+    return { inline: new Set(candidates), folded: [], levelHidden: false, nameHidden: false };
   }
 
   const cost = (ids: readonly string[]) => ids.reduce((sum, id) => sum + (measured[id] ?? 0) + gap, 0);
   const trigger = gap + overflowWidth; // the ⋯ trigger itself
+  const nameHidden = fixedLeft + status + rightFloor + (candidates.length > 0 ? trigger : 0) > containerWidth;
+  // The row as it paints with the pill whole: whatever it lacks, the level
+  // gives up first.
+  const levelHidden = (inline: readonly string[]) =>
+    fixedLeft + cost(inline) + (inline.length < candidates.length ? trigger : 0) + status + rightReserve > containerWidth;
 
-  const rightInline = [...right];
-  const floorRow = () => fixedLeft + status + rightFloor + cost(rightInline)
-    + (candidates.length > 0 || rightInline.length < right.length ? trigger : 0);
-  while (rightInline.length > 0 && floorRow() > containerWidth) rightInline.pop();
-  const rightFolded = right.filter((id) => !rightInline.includes(id));
-  // With every right-slot item gone, this is the row with everything folded.
-  const nameHidden = floorRow() > containerWidth;
-  // Folding last ranks a right-slot item above every left one, so once one
-  // has folded they all have.
-  if (rightFolded.length > 0) {
-    return { inline: new Set(rightInline), folded: [...candidates, ...rightFolded], nameHidden };
+  let budget = containerWidth - fixedLeft - Math.max(rightReserve, rightFloor + status);
+  if (cost(candidates) <= budget) {
+    return { inline: new Set(candidates), folded: [], levelHidden: levelHidden(candidates), nameHidden };
   }
 
-  // The model name gives up room for the status, but only down to its floor.
-  let budget = containerWidth - fixedLeft - cost(right) - Math.max(rightReserve, rightFloor + status);
-  if (cost(candidates) <= budget) return { inline: new Set([...candidates, ...right]), folded: [], nameHidden };
-
   budget -= trigger;
-  const inline = new Set<string>(right);
+  const inline: string[] = [];
   for (const id of candidates) {
     const w = cost([id]);
     if (w > budget) break;
-    inline.add(id);
+    inline.push(id);
     budget -= w;
   }
-  return { inline, folded: candidates.filter((id) => !inline.has(id)), nameHidden };
+  return {
+    inline: new Set(inline),
+    folded: candidates.filter((id) => !inline.includes(id)),
+    levelHidden: levelHidden(inline),
+    nameHidden,
+  };
 }
 
 const sameWidths = (a: Record<string, number>, b: Record<string, number>) =>
@@ -155,7 +152,7 @@ export function useToolbarFold({
   fixedLeft: number;
   /** Takes the measured widths: the model pill's width is measured, not fixed. */
   rightReserve: (widths: Readonly<Record<string, number>>) => number;
-  /** `rightReserve` with the model name at its floor. */
+  /** `rightReserve` with no level and the model name at its floor. */
   rightFloor?: (widths: Readonly<Record<string, number>>) => number;
 }): {
   measureRowRef: RefObject<HTMLDivElement | null>;

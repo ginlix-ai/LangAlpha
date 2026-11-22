@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatUnitList, relativeTime, signedFixed2 } from '@/lib/format';
+import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatTokenPrice, formatUnitList, relativeTime, signedFixed2 } from '@/lib/format';
 
 describe('createFormatter', () => {
   it('formats numbers in the given locale', () => {
@@ -202,5 +202,26 @@ describe('chatTime', () => {
     ['the year for an earlier year', at(2025, 11, 31, 23, 59), 'Dec 31, 2025, 11:59 PM'],
   ])('shows %s', (_, ms, label) => {
     expect(plain(chatTime(ms, 'en-US', now))).toBe(label);
+  });
+});
+
+describe('formatTokenPrice', () => {
+  it('keeps whole dollars whole and cents as cents', () => {
+    expect(formatTokenPrice(2, 'en-US')).toBe('$2');
+    expect(formatTokenPrice(0.3, 'en-US')).toBe('$0.30');
+    expect(formatTokenPrice(1.25, 'en-US')).toBe('$1.25');
+    expect(formatTokenPrice(0, 'en-US')).toBe('$0.00');
+  });
+
+  it('gives a price under a dime its third decimal rather than rounding it to cents', () => {
+    expect(formatTokenPrice(0.075, 'en-US')).toBe('$0.075');
+    expect(formatTokenPrice(0.05, 'en-US')).toBe('$0.05');
+    expect(formatTokenPrice(0.0995, 'en-US')).toBe('$0.10');
+  });
+
+  it('never shows a price above zero as zero', () => {
+    expect(formatTokenPrice(0.004, 'en-US')).toBe('$0.004');
+    expect(formatTokenPrice(0.0004, 'en-US')).toBe('$0.0004');
+    expect(formatTokenPrice(0.00002, 'en-US')).toBe('$0.00002');
   });
 });

@@ -61,21 +61,22 @@ vi.mock('../use-toast', () => ({
 // The menu's own rendering is not under test; the buttons reach the same
 // onSelectModel the dropdown items call.
 vi.mock('../chat-input.modelMenu', () => ({
-  ChatInputModelMenu: ({ onSelectModel, disabled, selectedModel }: {
+  ChatInputModelMenu: ({ onSelectModel, disabled, selectedModel, metadata, tuning }: {
     onSelectModel: (m: string) => void;
     disabled?: boolean;
     selectedModel: string | null;
+    metadata?: Record<string, { reasoning_efforts?: string[] }>;
+    tuning?: { reasoningEffort: string | null };
   }) => (
     <>
       <span>{disabled ? 'menu-disabled' : 'menu-enabled'}</span>
+      <span>{`efforts:${selectedModel ? metadata?.[selectedModel]?.reasoning_efforts?.join(',') : ''}`}</span>
+      <span>{`effort:${tuning?.reasoningEffort}`}</span>
       <span>{`pill:${selectedModel}`}</span>
       <button type="button" onClick={() => onSelectModel('model-beta')}>pick-beta</button>
       <button type="button" onClick={() => onSelectModel('model-gamma')}>pick-gamma</button>
       <button type="button" onClick={() => onSelectModel('model-default')}>pick-default</button>
     </>
-  ),
-  ChatInputEffortMenu: ({ reasoningEfforts }: { reasoningEfforts: string[] }) => (
-    <span>{`efforts:${reasoningEfforts.join(',')}`}</span>
   ),
   ModelTriggerMeasure: () => null,
 }));
@@ -214,6 +215,7 @@ describe('ChatInput: the thread owns the model', () => {
     expect(screen.getByText('pill:model-default')).toBeInTheDocument();
     // The controls are the named model's, so its ladder is offered.
     expect(screen.getByText('efforts:low,high')).toBeInTheDocument();
+    expect(screen.getByText('effort:high')).toBeInTheDocument();
     expect(ref.current?.getModelOptions()).toMatchObject({ model: 'model-default' });
   });
 
