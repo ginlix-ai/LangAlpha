@@ -131,6 +131,29 @@ async def test_an_archived_turn_replays_its_stream():
     assert "turn_index" not in response["replay_facts"][ARCHIVE_KEY][0]["data"]
 
 
+async def test_an_archived_todo_list_replays_as_the_plan_it_drew():
+    """An archive kept the ``todo_update`` its ``TodoWrite`` streamed, which
+    the chat no longer reads: it replays as the ``plan_update`` the projector
+    gives the same call, and one with no item draws nothing."""
+    todos = [
+        {"content": "Pull the 10-K", "status": "completed"},
+        {"content": "Compare margins", "status": "pending"},
+    ]
+    archive = [
+        {"event": "artifact", "data": {"artifact_type": "todo_update", "artifact_id": "tc-1", "payload": {"todos": todos}}},
+        {"event": "artifact", "data": {"artifact_type": "todo_update", "artifact_id": "tc-2", "payload": {"todos": []}}},
+    ]
+
+    items, _ = await _stub(_archived(0, archive))
+
+    artifacts = [i["data"] for i in items if i["event"] == "artifact"]
+    assert [(a["artifact_type"], a["artifact_id"]) for a in artifacts] == [("plan_update", "tc-1")]
+    assert artifacts[0]["payload"]["steps"] == [
+        {"title": "Pull the 10-K", "status": "completed"},
+        {"title": "Compare margins", "status": "in_progress"},
+    ]
+
+
 async def test_an_archive_written_empty_is_a_whole_replay():
     # A turn stopped before it streamed archived an empty list: nothing is lost.
     items, lost = await _stub(_archived(0, []))

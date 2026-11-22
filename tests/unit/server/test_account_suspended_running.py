@@ -85,13 +85,13 @@ async def _after_batch(port):
     """The CLI's after-tool hook as the batch's last result comes back."""
     from langchain_core.messages import ToolMessage
 
-    from ptc_agent.agent.claude_code.mid_turn import AfterTool
+    from ptc_agent.agent.claude_code.mid_turn import AfterTool, HandOff
     from tests.unit.ptc_agent.agent.claude_code.test_runtime import UNWATCHED
     from ptc_agent.agent.claude_code.tools_bridge import ToolResults
     from ptc_agent.agent.middleware.credit_gate import current_credit_gate
 
     async def take():
-        return None
+        return HandOff()
 
     results = ToolResults()
     results.resolve(ToolMessage("ok", tool_call_id="t1"))

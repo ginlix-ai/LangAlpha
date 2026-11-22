@@ -10,7 +10,8 @@ import pytest
 
 from src.server.services.price_monitor import target_hit
 from src.server.models.automation import MarketType
-from src.tools.wakeups.price import already_met, last_and_base, plan_price, price_spec
+from src.server.services.wakeups.price_reading import last_and_base
+from src.tools.wakeups.price import already_met, plan_price, price_spec
 from src.tools.wakeups.schedule import PriceAsk, Refused, check_trigger
 
 NY = ZoneInfo("America/New_York")

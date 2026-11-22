@@ -24,9 +24,11 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
+from ptc_agent.agent.claude_code.agent_plan import AgentPlan
 from ptc_agent.agent.claude_code.cli import COMPACT_INSTRUCTIONS
 from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import Credential, LocalLauncher
+from ptc_agent.agent.claude_code import runtime
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.runtime import (
     TURN_KEY,
@@ -37,15 +39,29 @@ from ptc_agent.agent.claude_code.runtime import (
     token_works,
 )
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY, BRIEF_KEY, BRIEF_PREFIX, HANDOFF_UI_NAME, THREAD_PREFIX
+from ptc_agent.agent.middleware.credit_gate import CreditGateState, CreditLease, current_credit_gate
 from ptc_agent.agent.middleware.model_resilience import CATALOG_MODEL_KEY
 from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, TaskResume, steers_ahead_message
-from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
+from ptc_agent.agent.middleware.plan import PLAN_CALLS_KEY
+from ptc_agent.agent.middleware.plan_close_out import CLOSE_OUT_KEY, PlanCloseOutMiddleware
+from ptc_agent.agent.middleware.runtime_context.durable import (
+    DurableUpdate,
+    build_update_message,
+    render_update_row,
+    runtime_update_from_message,
+)
+from ptc_agent.agent.middleware.runtime_context.turn import (
+    PLAN_CHECK_IN_ROW_KIND,
+    PLAN_CLOSE_OUT_ROW_KIND,
+    PLAN_NUDGE_ROW_KIND,
+)
+from ptc_agent.agent.tools.plan import UpdatePlanTool
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.llms.claude_code import PLAN_NOTICE_KEY, PlanLimit, PlanStopped
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
-from .fake_api import TOKEN, FakeMessagesAPI, unified
+from .fake_api import CLOSE_OUT_TEXT, TOKEN, FakeMessagesAPI, unified
 from .harness import bash, new_graph, run_turn, spec
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
@@ -1464,3 +1480,206 @@ async def test_a_call_another_model_left_open_is_answered_without_asking_the_cli
     assert isinstance(answer, ToolMessage) and answer.tool_call_id == "call-other" and answer.status == "error"
     assert again.content == "go on" and reply.text == "ECHO go on"
     assert took < 8
+
+
+#: A plan with its first step running and its second to come.
+RUNNING_PLAN = [{"title": "Gather the data", "status": "in_progress"}, {"title": "Write it up", "status": "pending"}]
+FINISHED_PLAN = [{**s, "status": "completed"} for s in RUNNING_PLAN]
+
+
+async def _planned_turn(api, thread: str, prompt: str, *, plan=RUNNING_PLAN, pending: bool = False,
+                        ran: list | None = None, steer: str | None = None) -> tuple[dict, list]:
+    """A turn whose agent keeps a plan, from ``plan``, with the real
+    ``UpdatePlan``; ``pending`` says something will report back, and
+    ``steer`` is sent into the thread as the close-out's pending read is
+    made, so it waits while the close-out runs. Returns its state and what it
+    streamed as messages."""
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        (ran if ran is not None else []).append(command)
+        return f"ran: {command}"
+
+    inbox = _Inbox()
+
+    async def work_pending(since) -> bool:
+        if steer is not None:
+            inbox.send(steer)
+        return pending
+
+    update_plan = UpdatePlanTool()
+    graph = build_claude_code_graph(ToolNode([bash, update_plan]), checkpointer=InMemorySaver(),
+                                    plan=AgentPlan(PlanCloseOutMiddleware(work_pending)))
+    launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+    claude = ClaudeTurn(dataclasses.replace(SPEC, tools=[bash, update_plan]), launcher, identity="test-user", thread_key=thread,
+                        steering=SteeringMiddleware(report_inbox=inbox, kinds=("steer",)))
+    config = {"configurable": {"thread_id": thread, TURN_KEY: claude}, "metadata": {"run_id": "run-1"}}
+    streamed = []
+    try:
+        with mock.patch("ptc_agent.agent.claude_code.mid_turn.build_message_checker", inbox.checker):
+            async with asyncio.timeout(120):
+                async for chunk, _ in graph.astream({"messages": [HumanMessage(prompt)], "plan": plan}, config,
+                                                    stream_mode="messages"):
+                    streamed.append(chunk)
+    finally:
+        await claude.close()
+    return (await graph.aget_state({"configurable": {"thread_id": thread}})).values, streamed
+
+
+def _rows(values: dict, kind: str) -> list:
+    return [m for m in values["messages"] if (row := runtime_update_from_message(m)) is not None and row.kind == kind]
+
+
+def _hook_context(api) -> list[str]:
+    """What the CLI sent Claude as tool hooks' context, request by request."""
+    return [b["text"] for r in api.model_requests for m in r["messages"] if m["role"] == "system" and isinstance(m["content"], list)
+            for b in m["content"] if "hook additional context" in b.get("text", "")]
+
+
+def _ask_text(request: dict) -> str:
+    (asked,) = [m for m in request["messages"] if m["role"] == "user"][-1:]
+    return asked["content"] if isinstance(asked["content"], str) else " ".join(b.get("text", "") for b in asked["content"])
+
+
+def _unstreamed_after(answer: AIMessage, streamed: list) -> None:
+    """Nothing of the close-out reached the stream: no token of its reply's
+    text, and no message but the plan calls the thread keeps."""
+    assert not any(CLOSE_OUT_TEXT in str(c.content) for c in streamed)
+    assert all(not c.text and [t["name"] for t in c.tool_calls] == ["UpdatePlan"]
+               for c in streamed if isinstance(c, AIMessage) and c.id != answer.id)
+
+
+async def test_a_step_left_running_through_a_run_of_calls_is_checked_in_on_with_the_calls_results():
+    async with FakeMessagesAPI() as api:
+        values, _ = await _planned_turn(api, "t-check-in", "SERIAL 7", pending=True)
+        told = _hook_context(api)
+        requests = len(api.model_requests)
+    (row,) = _rows(values, PLAN_CHECK_IN_ROW_KIND)
+    # No request of its own: seven calls, one batch each, and the answer.
+    assert requests == 8
+    assert row.content.startswith("Your plan has not moved for a while")
+    assert "Step 1 of 2, “Gather the data”, has been the step in progress for your last 6 tool calls." in row.content
+    assert len(told) == 1 and told[0].startswith(f"PostToolUse:Bash hook additional context: {row.content}\n")
+    # Committed right after the sixth result, where Claude read it.
+    results = [i for i, m in enumerate(values["messages"]) if isinstance(m, ToolMessage)]
+    assert values["messages"].index(row) == results[5] + 1
+    # The check-in restarts the count, which the request's later turns carry on.
+    assert values[PLAN_CALLS_KEY]["since_touch"] == 1
+
+
+async def test_a_request_running_long_with_no_plan_is_asked_for_one_once():
+    async with FakeMessagesAPI() as api:
+        values, _ = await _planned_turn(api, "t-nudge", "SERIAL 10", plan=[])
+        told = _hook_context(api)
+    (row,) = _rows(values, PLAN_NUDGE_ROW_KIND)
+    assert row.content == ("You have made 8 tool calls on this request without a plan. "
+                           "If the work has three or more distinct steps, show it with `UpdatePlan`.")
+    assert len(told) == 1 and told[0].startswith(f"PostToolUse:Bash hook additional context: {row.content}\n")
+    assert values[PLAN_CALLS_KEY] == {"since_touch": 10, "without_plan": None}
+    assert not _rows(values, PLAN_CLOSE_OUT_ROW_KIND)
+
+
+@pytest.mark.parametrize("prompt", ["CLOSE_OUT", "CLOSE_OUT_BASH_FIRST"])
+async def test_an_answer_leaving_steps_unfinished_is_closed_out_in_one_silent_request(prompt):
+    """Whichever order its calls come in, the refused one never runs and the
+    CLI stops once the plan call's result is in."""
+    ran = []
+    async with FakeMessagesAPI() as api:
+        values, streamed = await _planned_turn(api, f"t-close-out-{prompt}", prompt, ran=ran)
+        requests = api.model_requests
+    assert len(requests) == 2
+    assert "Your turn ended with 2 plan steps not marked finished: “Gather the data”, “Write it up”." in _ask_text(requests[1])
+    assert ran == []
+    _, answer, ask, reply, result = values["messages"]
+    assert isinstance(answer, AIMessage) and answer.text == f"ECHO {prompt}"
+    _unstreamed_after(answer, streamed)
+    assert runtime_update_from_message(ask).kind == PLAN_CLOSE_OUT_ROW_KIND
+    assert [c["name"] for c in reply.tool_calls] == ["UpdatePlan"] and not reply.text
+    assert reply.additional_kwargs[CLOSE_OUT_KEY] is True
+    assert isinstance(result, ToolMessage) and result.content == "Plan finished."
+    assert values["plan"] == FINISHED_PLAN
+    # The plan call moved the plan, so nothing counts against a step.
+    assert values[PLAN_CALLS_KEY] == {"since_touch": 0, "without_plan": None}
+
+
+@pytest.mark.parametrize("prompt, requested", [("CLOSE_OUT_BASH", 2), ("CLOSE_OUT_UNKNOWN", 3), ("CLOSE_OUT_FAIL", 2)],
+                         ids=["no-plan-call", "unknown-tool", "request-fails"])
+async def test_a_close_out_that_keeps_nothing_leaves_the_turn_ending_on_its_answer(prompt, requested):
+    """A reply with no plan call is not kept, and neither is its ask, which
+    the next turn's prompt would otherwise hand Claude again. A call the CLI
+    turns away itself has it ask Claude again, which is read as the
+    close-out's too; a request that fails ends the turn as if none had been
+    asked, since the user has the answer."""
+    ran = []
+    async with FakeMessagesAPI() as api:
+        values, streamed = await _planned_turn(api, f"t-kept-nothing-{prompt}", prompt, ran=ran)
+        requests = len(api.model_requests)
+    assert requests == requested and ran == []
+    _, answer = values["messages"]
+    assert isinstance(answer, AIMessage) and answer.text == f"ECHO {prompt}"
+    assert [c for c in streamed if isinstance(c, AIMessage) and c.id != answer.id and (c.text or c.tool_calls)] == []
+    assert values["plan"] == RUNNING_PLAN
+
+
+async def test_a_cli_that_exits_during_the_close_out_leaves_the_turn_ending_on_its_answer(monkeypatch):
+    """The CLI's exit after its init fails a query as the SDK reports it,
+    not as a result the turn reads, and a close-out's is given up all the
+    same: the user has the answer, and the ask leaves with it."""
+    again = runtime._Run.again
+
+    async def exits(self, prompt, *args):
+        await again(self, prompt, *args)
+        transport = self.client._transport
+        while not hasattr(transport, "_process"):
+            transport = transport._transport
+        transport._process.kill()
+
+    monkeypatch.setattr(runtime._Run, "again", exits)
+    async with FakeMessagesAPI() as api:
+        values, _ = await _planned_turn(api, "t-close-out-exits", "CLOSE_OUT")
+    _, answer = values["messages"]
+    assert isinstance(answer, AIMessage) and answer.text == "ECHO CLOSE_OUT"
+    assert values["plan"] == RUNNING_PLAN
+
+
+async def test_a_steer_sent_during_the_close_out_is_the_turns_next_query():
+    async with FakeMessagesAPI() as api:
+        values, streamed = await _planned_turn(api, "t-close-out-steer", "CLOSE_OUT", steer="Use the other file.")
+        requests = len(api.model_requests)
+    assert requests == 3
+    _, answer, ask, reply, result, trigger, steering, steered = values["messages"]
+    assert runtime_update_from_message(ask).kind == PLAN_CLOSE_OUT_ROW_KIND and reply.additional_kwargs[CLOSE_OUT_KEY]
+    assert result.content == "Plan finished." and values["plan"] == FINISHED_PLAN
+    assert trigger.additional_kwargs["lc_source"] == "orchestrator" and steering.content == STEERED
+    # Answered as any steer is, and streamed: it is the turn's answer now.
+    assert isinstance(steered, AIMessage) and steered.text
+    assert any(isinstance(c, AIMessage) and c.text == steered.text for c in streamed)
+
+
+@pytest.mark.parametrize("held", ["query-limit", "credit-gate"])
+async def test_no_close_out_is_asked_where_the_turn_may_send_no_query(held, monkeypatch):
+    if held == "query-limit":
+        monkeypatch.setattr(runtime, "TURN_QUERIES", 1)
+    lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
+    lease.denial = {"message": "Out of credits."}
+    token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease)) if held == "credit-gate" else None
+    try:
+        async with FakeMessagesAPI() as api:
+            values, _ = await _planned_turn(api, f"t-held-{held}", "CLOSE_OUT")
+            requests = len(api.model_requests)
+    finally:
+        if token is not None:
+            current_credit_gate.reset(token)
+    assert requests == 1
+    assert not _rows(values, PLAN_CLOSE_OUT_ROW_KIND) and values["messages"][-1].text == "ECHO CLOSE_OUT"
+
+
+@pytest.mark.parametrize("plan, pending", [(RUNNING_PLAN, True), (FINISHED_PLAN, False)],
+                         ids=["work-pending", "plan-finished"])
+async def test_no_close_out_is_asked_when_work_will_report_back_or_the_plan_is_finished(plan, pending):
+    async with FakeMessagesAPI() as api:
+        values, _ = await _planned_turn(api, "t-no-close-out", "CLOSE_OUT", plan=plan, pending=pending)
+        requests = len(api.model_requests)
+    assert requests == 1
+    assert not _rows(values, PLAN_CLOSE_OUT_ROW_KIND) and values["messages"][-1].text == "ECHO CLOSE_OUT"

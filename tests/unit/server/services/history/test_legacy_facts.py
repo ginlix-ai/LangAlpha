@@ -819,3 +819,40 @@ async def test_only_a_row_read_without_its_facts_is_read_again(monkeypatch):
     read.assert_awaited_once_with(["resp-0"])
     assert out[0] is whole
     assert out[1] is rows[1]
+
+
+def test_an_archived_todo_frame_held_verbatim_replays_as_the_plan():
+    """The web reads only ``plan_update``, so a main lane held verbatim gets
+    the frame the projector makes of the same ``TodoWrite`` list."""
+    frame = {
+        "agent": "main",
+        "artifact_type": "todo_update",
+        "artifact_id": "tc-t",
+        "status": "completed",
+        "payload": {
+            "todos": [
+                {"content": "a", "activeForm": "a", "status": "completed"},
+                {"content": "b", "status": "in_progress"},
+            ],
+            "total": 2,
+            "completed": 1,
+            "in_progress": 1,
+            "pending": 0,
+        },
+    }
+    empty = {**frame, "artifact_id": "tc-e", "payload": {"todos": [], "total": 0}}
+    facts = {"v": legacy.FACTS_VERSION, "verbatim": [{"event": "artifact", "data": frame}, {"event": "artifact", "data": empty}]}
+
+    (item,) = legacy.apply_turn([], [], facts)
+
+    assert item["data"] == {
+        **frame,
+        "artifact_type": "plan_update",
+        "payload": {
+            "steps": [{"title": "a", "status": "completed"}, {"title": "b", "status": "in_progress"}],
+            "total": 2,
+            "completed": 1,
+            "current": 1,
+        },
+    }
+    assert facts["verbatim"][0]["data"]["artifact_type"] == "todo_update"

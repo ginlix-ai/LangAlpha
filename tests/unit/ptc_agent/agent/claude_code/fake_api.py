@@ -17,6 +17,14 @@ CA, trusted through ``NODE_EXTRA_CA_CERTS`` in the CLI's environment only.
   turn holds its result, answer quoting it.
 - ``CALLS <name>:<command> ...``: make each call in one message, in order, with
   the command as its input; answer once the turn holds their results.
+- ``SERIAL <n>``: call ``Bash`` once per message (``step-1``, ``step-2``, ...)
+  until the turn holds ``n`` results since the prompt, then answer.
+- ``CLOSE_OUT``: answer as ``ECHO`` until asked to close out the plan (a
+  ``plan_close_out`` row), then reply with text, an ``UpdatePlan`` call
+  completing steps 1 and 2, and a ``Bash`` call; ``CLOSE_OUT_BASH_FIRST``
+  makes the same calls the other way round, ``CLOSE_OUT_BASH`` the ``Bash``
+  call alone, ``CLOSE_OUT_UNKNOWN`` a call to a tool that does not exist,
+  and ``CLOSE_OUT_FAIL`` is answered 529 on the close-out's request.
 - ``RECALL``: answer with every earlier ``FACT:`` line the CLI sent.
 - ``FAIL_AUTH`` / ``FAIL_LIMIT``: refuse with 401 / 429.
 - ``overloaded_after_compaction``: answer that many requests that resume
@@ -45,6 +53,17 @@ API_HOST = "api.anthropic.com"
 TOKEN = "sk-ant-oat01-" + "0" * 80
 #: A ``limits`` entry holding this key is answered with a 429.
 STATUS_429 = "x-fake-status-429"
+#: What the plan's close-out ask says, which ``CLOSE_OUT`` answers.
+CLOSE_OUT_ASK = "not marked finished"
+#: The text of the close-out's reply, which must never reach the stream.
+CLOSE_OUT_TEXT = "Closing out the plan now."
+#: The calls each ``CLOSE_OUT`` prompt's close-out reply makes, in order.
+CLOSE_OUT_CALLS = {
+    "CLOSE_OUT": ["UpdatePlan", "Bash"],
+    "CLOSE_OUT_BASH_FIRST": ["Bash", "UpdatePlan"],
+    "CLOSE_OUT_BASH": ["Bash"],
+    "CLOSE_OUT_UNKNOWN": ["NoSuchTool"],
+}
 
 
 def unified(status: str = "allowed", *, five_hour: float | None = None, seven_day: float | None = None,
@@ -103,6 +122,21 @@ def plan(body: dict[str, Any]) -> list[dict[str, Any]]:
         elif _texts(blocks):
             result = None
     think = {"type": "thinking", "thinking": "Reasoning about it.", "signature": "sig-" + uuid.uuid4().hex}
+    if "CLOSE_OUT" in prompt and turns and any(CLOSE_OUT_ASK in b.get("text", "") for b in turns[-1]):
+        mode = next(word for word in prompt.split() if word.startswith("CLOSE_OUT"))
+        names = CLOSE_OUT_CALLS.get(mode, CLOSE_OUT_CALLS["CLOSE_OUT"])
+        inputs = {"Bash": {"command": "never"}, "UpdatePlan": {"done": [1, 2]}}
+        calls = [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": name, "input": inputs.get(name, {})}
+                 for name in names]
+        return [think, {"type": "text", "text": CLOSE_OUT_TEXT}, *calls]
+    if "SERIAL" in prompt:
+        held = 0
+        for blocks in turns:
+            held = 0 if _texts(blocks) else held + sum(b.get("type") == "tool_result" for b in blocks)
+        if held < int(prompt.split("SERIAL", 1)[1].split()[0]):
+            return [think, {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": "Bash",
+                            "input": {"command": f"step-{held + 1}"}}]
+        return [think, {"type": "text", "text": f"Done after {held} steps."}]
     if any("<summary>" in t for t in _texts(turns[-1] if turns else [])):
         # The CLI's summary request asks for a <summary> block, and it retries
         # a reply without one as a failed summary.
@@ -259,6 +293,8 @@ class FakeMessagesAPI:
         opening = " ".join(t for blocks in _user_blocks(body)[:1] for t in _texts(blocks))
         if self.overloaded_after_compaction and opening.startswith("This session is being continued"):
             self.overloaded_after_compaction -= 1
+            return web.json_response({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}, status=529)
+        if "CLOSE_OUT_FAIL" in opening and any(CLOSE_OUT_ASK in b.get("text", "") for b in _user_blocks(body)[-1]):
             return web.json_response({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}, status=529)
         headers = self.limits.pop(0) if self.limits else {}
         if headers.pop(STATUS_429, None):

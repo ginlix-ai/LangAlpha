@@ -117,7 +117,7 @@ def db(monkeypatch):
     monkeypatch.setattr(tool_mod, "_flag_on", AsyncMock(return_value=True))
     monkeypatch.setattr(tool_mod, "datetime", _Frozen)
     # No market feed: a level needs no price, and a listing of levels reads none.
-    monkeypatch.setattr(tool_mod.price_wakeups, "snapshots", AsyncMock(return_value={}))
+    monkeypatch.setattr(tool_mod.price_reading, "snapshots", AsyncMock(return_value={}))
     return fake
 
 

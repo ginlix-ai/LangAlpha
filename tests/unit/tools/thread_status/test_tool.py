@@ -531,3 +531,106 @@ async def test_pending_work_counts_what_runs_or_comes_due_before_the_cutoff(monk
     sources(_source("command", running))
     assert await tool.pending_work(THREAD, "u-1", analysts=False, before=cutoff) == "command"
 
+
+
+@pytest.mark.asyncio
+async def test_pending_work_since_counts_only_what_was_set_since(db):
+    """A close-out waits on what its own request set: a wakeup an earlier
+    request left standing would otherwise hold every later plan open."""
+    from src.tools.thread_status import tool
+
+    now = datetime.now(UTC)
+    began = now - timedelta(minutes=10)
+
+    def wakeup(created_at: datetime) -> dict:
+        return {
+            "short_id": "w_3fa9",
+            "kind": "at",
+            "status": "armed",
+            "label": "Look again",
+            "schedule": [now + timedelta(days=1)],
+            "next_fire_at": now + timedelta(days=1),
+            "created_at": created_at,
+        }
+
+    db.list_thread_wakeups.return_value = [wakeup(now - timedelta(days=3))]
+    assert await tool.pending_work(THREAD, "u-1", analysts=False) == "wakeup"
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, since=began) is None
+    db.list_thread_wakeups.return_value = [wakeup(now - timedelta(minutes=2))]
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, since=began) == "wakeup"
+    db.list_thread_wakeups.return_value = []
+    db.list_for_thread.return_value = [_row("bg-old", "running", started_at=now - timedelta(hours=1))]
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, since=began) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_work_since_leaves_out_an_analyst_handed_work_before(db):
+    """A Chief of Staff's analyst from an earlier request holds no later plan
+    open; one whose hand-off predates the stamp still counts."""
+    from src.tools.thread_status import tool
+
+    now = datetime.now(UTC)
+    began = now - timedelta(minutes=10)
+    analyst = {"thread_id": "00000000-0000-4000-8000-0000000000a1", "workspace_name": "Semis", "title": "NVDA"}
+
+    db.read_owed_analysts.return_value = [{**analyst, "handed_at": (now - timedelta(days=1)).timestamp()}]
+    assert await tool.pending_work(THREAD, "u-1", analysts=True, since=began) is None
+    db.read_owed_analysts.return_value = [{**analyst, "handed_at": (now - timedelta(minutes=2)).timestamp()}]
+    assert await tool.pending_work(THREAD, "u-1", analysts=True, since=began) == "analyst"
+    db.read_owed_analysts.return_value = [analyst]
+    assert await tool.pending_work(THREAD, "u-1", analysts=True, since=began) == "analyst"
+
+
+class TestPendingWorkCountsAnEndStillToReport:
+    """An end the agent has not been told of yet reports back as surely as
+    work still running, and is counted only since the turn began: a task's
+    report-back leaves its run unstamped, so an older end may well have been
+    told already."""
+
+    @pytest.mark.parametrize(
+        "row, owed",
+        [
+            ({"status": "completed"}, True),
+            ({"status": "failed", "failure_reason": "exit", "exit_code": 1}, True),
+            ({"status": "completed", "reported": True}, False),
+            # Told at the thread's next turn, which it never starts.
+            ({"status": "stopped", "stopped_by": "user"}, False),
+            ({"status": "failed", "failure_reason": "after_turn_limit"}, False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_command(self, db, row, owed):
+        from src.tools.thread_status import tool
+
+        turn = datetime.now(UTC) - timedelta(minutes=3)
+        db.list_for_thread.return_value = [_row("bg-1", **row)]
+        found = await tool.pending_work(THREAD, "u-1", analysts=False, ended_since=turn)
+        assert found == ("command" if owed else None)
+        assert await tool.pending_work(THREAD, "u-1", analysts=False) is None
+
+    @pytest.mark.asyncio
+    async def test_a_task_that_ended_in_this_turn_only(self, db):
+        from src.tools.thread_status import tool
+
+        now = datetime.now(UTC)
+        task = {
+            "task_id": "L_EAWw",
+            "description": "Compare momentum papers",
+            "subagent_type": "research",
+            "status": "completed",
+            "started_at": now - timedelta(minutes=8),
+            "finalized_at": now - timedelta(minutes=1),
+            "result_delivered_at": None,
+        }
+        db.list_reporting_tasks.return_value = [task]
+        assert await tool.pending_work(THREAD, "u-1", analysts=False, ended_since=now - timedelta(minutes=3)) == "task"
+        assert await tool.pending_work(THREAD, "u-1", analysts=False, ended_since=now) is None
+        db.list_reporting_tasks.return_value = [{**task, "result_delivered_at": now}]
+        assert await tool.pending_work(THREAD, "u-1", analysts=False, ended_since=now - timedelta(minutes=3)) is None
+
+    @pytest.mark.asyncio
+    async def test_the_listing_shows_it_as_any_ended_command(self, db):
+        db.list_for_thread.return_value = [_row("bg-1", "completed")]
+        message = await _call()
+        assert "Completed, failed or stopped in the last 24 hours" in message.content
+        assert "completed after" in message.content and "reported" not in message.content

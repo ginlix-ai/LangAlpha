@@ -708,7 +708,7 @@ class TestServerSummaryAfterAnEarlierSummary:
         to_summarize = [earlier, raw[3], raw[4]]
 
         text = server_summary(
-            to_summarize, [raw[5]], raw_messages=raw, turns=None, window=Window()
+            to_summarize, raw_messages=raw, turns=None, window=Window()
         ).text
 
         second, third = text.split("## Turn 2\n", 1)[1].split("## Turn 3\n", 1)
@@ -755,11 +755,67 @@ class TestServerSummaryAfterAnEarlierSummary:
             AIMessage(content="done", id="a1"),
         ]
 
-        text = server_summary(raw, [], raw_messages=raw, turns=None, window=Window()).text
+        text = server_summary(raw, raw_messages=raw, turns=None, window=Window()).text
 
         assert text.count(f"Then: {report}") == 2
         assert "Then: Also chart it." in text
         assert "sent a new message" not in text
+
+
+class TestServerSummaryPlan:
+    """The plan in state closes the digest while a step is unfinished; a
+    finished one, or none, adds nothing."""
+
+    @staticmethod
+    def _summary(plan):
+        from langchain_core.messages import AIMessage
+
+        from ptc_agent.agent.middleware.compaction.summarize import server_summary
+        from ptc_agent.agent.transcript import Window
+
+        raw = [HumanMessage(content="analyse AAPL", id="h1"), AIMessage(content="done", id="a1")]
+        return server_summary(raw, raw_messages=raw, turns=None, window=Window(), plan=plan).text
+
+    def test_an_unfinished_plan_is_listed_last(self):
+        plan = [{"title": "Pull prices", "status": "completed"}, {"title": "Chart them", "status": "in_progress"}]
+        assert self._summary(plan).endswith("## Plan\n- [completed] Pull prices\n- [in_progress] Chart them")
+
+    def test_a_finished_plan_or_none_adds_nothing(self):
+        assert "## Plan" not in self._summary([{"title": "Pull prices", "status": "completed"}])
+        assert "## Plan" not in self._summary([])
+
+    def test_an_earlier_digest_leaves_its_plan_behind(self):
+        """The plan it held may since have finished; only the current one is stated."""
+        from langchain_core.messages import AIMessage
+
+        from ptc_agent.agent.middleware.compaction.summarize import server_summary
+        from ptc_agent.agent.middleware.compaction.utils import build_summary_message
+        from ptc_agent.agent.transcript import Window
+
+        earlier = build_summary_message(
+            "Lead.\n\n## Turn 1\nRequest: analyse AAPL\n\n## Plan\n- [in_progress] Pull prices",
+            None,
+            source="server",
+        )
+        raw = [HumanMessage(content="chart it", id="h2"), AIMessage(content="done", id="a2")]
+        text = server_summary([earlier, *raw], raw_messages=raw, turns=None, window=Window(), plan=[]).text
+
+        assert "## Earlier summary\n## Turn 1\nRequest: analyse AAPL" in text
+        assert "## Plan" not in text
+
+    def test_a_reply_ending_on_a_plan_heading_of_its_own_is_kept(self):
+        from langchain_core.messages import AIMessage
+
+        from ptc_agent.agent.middleware.compaction.summarize import server_summary
+        from ptc_agent.agent.middleware.compaction.utils import build_summary_message
+        from ptc_agent.agent.transcript import Window
+
+        reply = "Last reply: Use these steps:\n\n## Plan\n1. Fetch prices\n2. Compare margins"
+        earlier = build_summary_message(f"Lead.\n\n## Turn 1\nRequest: analyse AAPL\n{reply}", None, source="server")
+        raw = [HumanMessage(content="chart it", id="h2"), AIMessage(content="done", id="a2")]
+        text = server_summary([earlier, *raw], raw_messages=raw, turns=None, window=Window(), plan=[]).text
+
+        assert "## Plan\n1. Fetch prices\n2. Compare margins" in text
 
 
 class TestServerSummaryLead:
@@ -782,9 +838,9 @@ class TestServerSummaryLead:
         from ptc_agent.agent.transcript import Window
 
         raw = self._raw()
-        default = server_summary(raw, [], raw_messages=raw, turns=None, window=Window()).text
+        default = server_summary(raw, raw_messages=raw, turns=None, window=Window()).text
         text = server_summary(
-            raw, [], raw_messages=raw, turns=None, window=Window(), lead=PROVIDER_LEAD
+            raw, raw_messages=raw, turns=None, window=Window(), lead=PROVIDER_LEAD
         ).text
 
         assert text.startswith(PROVIDER_LEAD + "\n\n")
@@ -808,7 +864,6 @@ class TestServerSummaryLead:
 
         text = server_summary(
             [earlier, raw[2], raw[3]],
-            [],
             raw_messages=raw,
             turns=None,
             window=Window(),
@@ -834,7 +889,7 @@ class TestServerSummaryLead:
         )
 
         text = server_summary(
-            [earlier, raw[2], raw[3]], [], raw_messages=raw, turns=None, window=Window()
+            [earlier, raw[2], raw[3]], raw_messages=raw, turns=None, window=Window()
         ).text
 
         assert "## Earlier summary\nGoal: chart AAPL.\n\nProgress: data pulled." in text
@@ -861,7 +916,6 @@ class TestServerSummaryLead:
 
         text = server_summary(
             [earlier, raw[2], raw[3]],
-            [],
             raw_messages=raw,
             turns=None,
             window=Window(),

@@ -28,7 +28,7 @@ from ptc_agent.agent.transcript import pointer
 from ptc_agent.agent.transcript.pointer import transcript_note
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.core.sandbox.livefs_mount import TranscriptReach
-from ptc_agent.agent.claude_code.mid_turn import NOT_RUN, AfterTool, BeforeTool, mid_turn_messages
+from ptc_agent.agent.claude_code.mid_turn import NOT_RUN, AfterTool, BeforeTool, HandOff, Query, mid_turn_messages
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.runtime import (
@@ -41,6 +41,7 @@ from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.credit_gate import CreditGateState, CreditLease, current_credit_gate
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_KEY
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
+from ptc_agent.agent.transcript.steer_text import STEERS_AT
 
 #: A watch that only records, as a token's check opens one: nothing it sees stops a run.
 UNWATCHED = PlanWatch(LocalLauncher(), "m", stop_at_limit=False)
@@ -792,7 +793,7 @@ async def test_past_the_credit_boundary_only_a_call_that_waits_for_the_user_is_d
 async def test_a_result_that_ends_the_turn_stops_the_cli_once_the_rest_of_its_batch_is_in():
     """As a langalpha turn runs every call of the round before quiet ends it."""
     async def take():
-        return None
+        return HandOff()
 
     results = ToolResults(ends_turn=lambda message: message.content == "Ended without a reply.")
     for content, tool_use_id in [("Ended without a reply.", "t1"), ("Set w1.", "t2"), ("ok", "t3")]:
@@ -803,6 +804,63 @@ async def test_a_result_that_ends_the_turn_stops_the_cli_once_the_rest_of_its_ba
     assert (await hook({"hook_event_name": "PostToolUse"}, "t2", None))["continue"] is False
     hook.open(["t3"], take)
     assert "continue" not in await hook({"hook_event_name": "PostToolUse"}, "t3", None)
+
+
+#: A query that runs only its UpdatePlan calls and ends at its batch.
+_PLAN_ONLY = Query(admits=frozenset({"UpdatePlan"}), last_batch=True)
+
+
+@pytest.mark.asyncio
+async def test_a_query_that_admits_some_calls_refuses_the_rest_and_ends_at_its_batch():
+    """No PostToolUse follows a refusal, so the refusal itself stops the CLI
+    after the batch: Claude is never asked again about it."""
+    results = ToolResults()
+    hook = BeforeTool(results, _asks)
+    hook.reopen(_PLAN_ONLY)
+    refused = await hook({"tool_name": "Bash", "tool_input": {}}, "t1", None)
+    assert refused["hookSpecificOutput"]["permissionDecision"] == "deny" and refused["continue"] is False
+    assert await hook({"tool_name": "UpdatePlan", "tool_input": {}}, "t2", None) == {}
+    hook.reopen()
+    assert await _before(hook, "Bash", "t3") is None
+
+
+@pytest.mark.asyncio
+async def test_a_query_that_ends_at_its_batch_stops_the_cli_there_and_takes_nothing_in():
+    taken = []
+
+    async def take():
+        taken.append(True)
+        return HandOff()
+
+    results = ToolResults()
+    results.resolve(ToolMessage("Plan finished.", tool_call_id="t1"))
+    hook = AfterTool(results, send=_unsent, plan=UNWATCHED)
+    hook.reopen(_PLAN_ONLY)
+    hook.open(["t1"], take)
+    assert (await hook({"hook_event_name": "PostToolUse"}, "t1", None))["continue"] is False
+    assert taken == [] and not results.ends_turn("t1")
+
+
+@pytest.mark.asyncio
+async def test_the_turns_rows_go_to_claude_ahead_of_the_reports_only_where_the_cli_goes_on():
+    taken = []
+
+    async def take():
+        taken.append(True)
+        delivered = {"messages": [{"report_source": "task"}]}
+        report = HumanMessage("A report came in.", additional_kwargs={STEERS_AT: 17, "steering_delivered": delivered})
+        return HandOff((HumanMessage("Your plan has not moved for a while"),), report)
+
+    results = ToolResults(ends_turn=lambda message: message.content == "Ended without a reply.")
+    results.resolve(ToolMessage("ok", tool_call_id="t1"))
+    results.resolve(ToolMessage("Ended without a reply.", tool_call_id="t2"))
+    hook = AfterTool(results, send=_unsent, plan=UNWATCHED)
+    hook.open(["t1"], take)
+    out = await hook({"hook_event_name": "PostToolUse"}, "t1", None)
+    assert out["hookSpecificOutput"]["additionalContext"] == "Your plan has not moved for a while\n\nA report came in."
+    hook.open(["t2"], take)
+    assert (await hook({"hook_event_name": "PostToolUse"}, "t2", None))["continue"] is False
+    assert taken == [True]
 
 
 class _Ends:
@@ -1414,7 +1472,7 @@ async def test_a_batch_past_the_credit_boundary_stops_the_cli_in_a_subagents_run
     """The step after it then stops at the gate, where a turn pauses and a
     subagent's run ends, resumable, as a langalpha run's does."""
     async def take():
-        return None
+        return HandOff()
 
     lease = CreditLease(recorded_as="u", sender="u", run_ref="r", port=None)
     lease.denial = {"message": "Out of credits."}
