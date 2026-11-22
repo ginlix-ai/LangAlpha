@@ -673,7 +673,8 @@ class TestWorkspaceOverlayGate:
         sandbox._start_internal_mcp_servers = AsyncMock()
         sandbox._write_unified_manifest = AsyncMock()
         sandbox._cleanup_legacy_manifests = AsyncMock()
-        sandbox._upload_mcp_server_files_impl = AsyncMock()
+        sandbox._upload_mcp_server_files_impl = AsyncMock(return_value=set())
+        sandbox._prune_mcp_server_files = AsyncMock()
         sandbox._upload_internal_packages = AsyncMock()
         sandbox.adownload_file_bytes = AsyncMock(
             return_value=json.dumps(ledger).encode("utf-8")
@@ -753,6 +754,78 @@ class TestWorkspaceOverlayGate:
 
         assert "tool_modules" in result.refreshed_modules
         sandbox._install_tool_modules.assert_awaited_once()
+
+    async def _current_ledger(self, sandbox):
+        manifest = await sandbox._compute_sandbox_manifest()
+        ledger = self._ledger("ws-sibling", self.WORKSPACE)
+        ledger["tool_versions"] = {
+            self.WORKSPACE: manifest["modules"]["tool_modules"]["version"]
+        }
+        return ledger
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_installs_a_current_overlay_and_reuploads_nothing_shared(
+        self,
+    ):
+        """A rebuild is for one workspace's damaged overlay; the files its
+        siblings share still follow the manifest."""
+        sandbox = self._sandbox()
+        ledger = await self._current_ledger(sandbox)
+
+        result = await self._settled_sync(sandbox, ledger, rebuild_overlay=True)
+
+        assert result.refreshed_modules == ["tool_modules"]
+        sandbox._install_tool_modules.assert_awaited_once()
+        sandbox._upload_mcp_server_files_impl.assert_not_awaited()
+        sandbox._upload_internal_packages.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("stale", "replace"),
+        [
+            (None, False),
+            ("client", True),
+            ("mcp_servers", True),
+            ("internal_packages", True),
+        ],
+        ids=["same-code", "client-changed", "servers-changed", "packages-changed"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_daemon_is_replaced_only_when_it_runs_code_this_sync_replaced(
+        self, stale, replace
+    ):
+        """A replacement waits out the calls the daemon is running, a
+        sibling workspace's included, so one on current code is left be."""
+        sandbox = self._sandbox()
+        manifest = await sandbox._compute_sandbox_manifest()
+        if stale == "client":
+            versions = manifest["modules"]["tool_modules"]["source_versions"]
+            versions["client_codegen"] = "before-this-sync"
+        elif stale:
+            manifest["modules"][stale]["version"] = "before-this-sync"
+
+        await self._settled_sync(
+            sandbox, self._ledger("ws-sibling"), remote_manifest=manifest
+        )
+
+        sandbox._start_internal_mcp_servers.assert_awaited_once_with(replace=replace)
+
+    @pytest.mark.asyncio
+    async def test_packages_replaced_under_a_current_overlay_still_replace_the_daemon(
+        self,
+    ):
+        """The daemon's own package ships with the internal packages, which
+        no workspace's tool version covers: waiting for the next install
+        could leave it on the old code until the computer stops."""
+        sandbox = self._sandbox()
+        manifest = await sandbox._compute_sandbox_manifest()
+        manifest["modules"]["internal_packages"]["version"] = "before-this-sync"
+
+        await self._settled_sync(
+            sandbox, await self._current_ledger(sandbox), remote_manifest=manifest
+        )
+
+        sandbox._install_tool_modules.assert_not_awaited()
+        sandbox._start_internal_mcp_servers.assert_awaited_once_with(replace=True)
 
     @pytest.mark.asyncio
     async def test_the_prune_is_told_the_same_folder(self):

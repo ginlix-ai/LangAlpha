@@ -206,7 +206,8 @@ class ProvisioningMixin:
         user_id: str | None,
         sandbox: Any,
         reusing_sandbox: bool = False,
-        force_refresh: bool = False,
+        *,
+        rebuild_overlay: bool = False,
     ) -> Any:
         """``_sync_project_assets`` for code about to run on ``sandbox``: the
         file mount comes up beside the sync when due."""
@@ -215,7 +216,11 @@ class ProvisioningMixin:
             user_id,
             sandbox,
             self._sync_project_assets(
-                binding, user_id, sandbox, reusing_sandbox, force_refresh
+                binding,
+                user_id,
+                sandbox,
+                reusing_sandbox,
+                rebuild_overlay=rebuild_overlay,
             ),
             workspace_id=binding.workspace_id,
         )
@@ -227,6 +232,8 @@ class ProvisioningMixin:
         sandbox: Any,
         reusing_sandbox: bool = False,
         force_refresh: bool = False,
+        *,
+        rebuild_overlay: bool = False,
     ) -> Any:
         """Upload this project's assets, returning the asset leg's result or None.
 
@@ -274,6 +281,7 @@ class ProvisioningMixin:
                         skill_dirs=skill_dirs,
                         reusing_sandbox=reusing_sandbox,
                         force_refresh=force_refresh,
+                        rebuild_overlay=rebuild_overlay,
                         project=ProjectContext(workspace_id, dir_name or ""),
                         root_owner_dir_name=await self._layout_root_owner_dir(
                             replace(binding, dir_name=dir_name)
@@ -1185,17 +1193,18 @@ class ProvisioningMixin:
         *,
         source: str,
         mark: Callable[[str], None] = lambda _phase: None,
-    ) -> None:
+    ) -> bool:
         """A start's asset sync and folder restore, then the skill pass.
 
         In that order so the pass sees the final disk, and a start that did
-        both records the attach it spared (``_claim_attached``)."""
+        both records the attach it spared (``_claim_attached``). Says whether
+        the asset sync ran to its end."""
         synced = await self._sync_sandbox_assets(
             binding, user_id, session.sandbox, reusing_sandbox=True
         )
         mark("asset_sync")
         if not session.sandbox:
-            return
+            return False
         restored = await self._maybe_restore_files(binding, session.sandbox)
         if not restored:
             # A key from before a stop on this sandbox would have the next
@@ -1218,6 +1227,7 @@ class ProvisioningMixin:
             attach_key=attach_key,
         )
         mark("skill_reconcile")
+        return synced is not None
 
     async def _ensure_project_attached(
         self, binding: ComputerBinding, session: Any, *, user_id: str | None = None
@@ -1313,12 +1323,14 @@ class ProvisioningMixin:
                     f"its MCP config did not resolve"
                 )
                 return False
+            # Only the overlay: what the computer shares with its other
+            # workspaces follows the manifest, as on any other sync.
             result = await self._sync_sandbox_assets(
                 binding,
                 user_id,
                 sandbox,
                 reusing_sandbox=True,
-                force_refresh=True,
+                rebuild_overlay=True,
             )
             if result is None or await sandbox.workspace_overlay_missing(
                 workspace_id=workspace_id, dir_name=dir_name

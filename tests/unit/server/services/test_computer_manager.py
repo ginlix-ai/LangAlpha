@@ -3956,7 +3956,7 @@ class TestWarmSkillChange(_Base):
     """
 
     @staticmethod
-    async def _warm_sync(manager, session, *, mcp_changed):
+    async def _warm_sync(manager, session, *, mcp_changed, synced=True):
         session.sandbox.ensure_sandbox_ready = AsyncMock()
         session.skills_signature = "before"
         patches = (
@@ -3969,7 +3969,7 @@ class TestWarmSkillChange(_Base):
             ("tool_view", MagicMock()),
             ("_servers_needing_discovery", MagicMock(return_value=[])),
             ("_kick_mcp_discovery", MagicMock()),
-            ("_sync_sandbox_assets", AsyncMock()),
+            ("_sync_sandbox_assets", AsyncMock(return_value=object() if synced else None)),
             ("_reconcile_skills", AsyncMock()),
         )
         with ExitStack() as stack:
@@ -4001,6 +4001,17 @@ class TestWarmSkillChange(_Base):
         assert session.skills_signature == "after"
 
     @pytest.mark.asyncio
+    async def test_a_warm_sync_that_failed_keeps_the_old_signature(self):
+        """The signature is the retry signal: stamped over a failed upload,
+        the next acquire would trust skills that never landed."""
+        manager = _make_manager()
+        session = _make_session()
+
+        await self._warm_sync(manager, session, mcp_changed=False, synced=False)
+
+        assert session.skills_signature == "before"
+
+    @pytest.mark.asyncio
     async def test_an_mcp_only_change_does_not_reconcile_skills(self):
         manager = _make_manager()
         session = _make_session()
@@ -4028,7 +4039,9 @@ class TestAStartAttachesItsOwnProject(_Base):
     KEY = ("ws-a", "sandbox-abc")
 
     @staticmethod
-    async def _start(manager, session, *, stats, synced=True, restored=True):
+    async def _start(
+        manager, session, *, stats, synced=True, restored=True, skills_signature=None
+    ):
         @asynccontextmanager
         async def held(_workspace_id):
             yield "alpha-1a2b"
@@ -4067,6 +4080,7 @@ class TestAStartAttachesItsOwnProject(_Base):
                 phase2_owner=True,
                 phase2_event=None,
                 mark=lambda _phase: None,
+                skills_signature=skills_signature,
             )
         return reconcile
 
@@ -4129,6 +4143,29 @@ class TestAStartAttachesItsOwnProject(_Base):
 
         attach_pass.assert_awaited_once()
         assert attach_pass.await_args.kwargs["source"] == "attach_project"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("synced", "stamped"), [(True, "after"), (False, "before")])
+    async def test_a_start_stamps_the_skills_signature_only_once_its_sync_ran(
+        self, synced, stamped
+    ):
+        """A start whose upload failed leaves the old signature, so the next
+        acquire syncs again instead of trusting the cooldown."""
+        from src.server.services.user_skills.reconcile import ReconcileStats
+
+        manager = _make_manager()
+        session = _make_session()
+        session.skills_signature = "before"
+
+        await self._start(
+            manager,
+            session,
+            stats=ReconcileStats(),
+            synced=synced,
+            skills_signature="after",
+        )
+
+        assert session.skills_signature == stamped
 
     @pytest.mark.asyncio
     async def test_a_start_never_withdraws_an_attachment_it_did_not_record(self):
@@ -4285,6 +4322,20 @@ class TestEveryProjectsToolOverlay(_Base):
         assert reached.sync.await_args.args[0].workspace_id == "ws-joiner"
         assert reached.sync.await_args.kwargs["reusing_sandbox"] is True
         assert reached.sync.await_args.args[0].dir_name == "joiner-6c06"
+
+    @pytest.mark.asyncio
+    async def test_a_joining_projects_sync_rebuilds_only_its_overlay(self):
+        """A forced refresh would re-upload the servers and packages every
+        sibling shares and replace a daemon running their calls."""
+        manager = _make_manager()
+        session = self._joining()
+
+        with _attaching(manager, session) as reached:
+            await manager.get_session_for_workspace("ws-joiner", user_id="user-1")
+
+        kwargs = reached.sync.await_args.kwargs
+        assert kwargs["rebuild_overlay"] is True
+        assert not kwargs.get("force_refresh")
 
     @pytest.mark.asyncio
     async def test_the_joining_projects_own_server_set_is_resolved_first(self):

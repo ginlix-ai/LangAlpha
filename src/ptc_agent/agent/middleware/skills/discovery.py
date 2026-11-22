@@ -5,7 +5,6 @@ replacing the deepagents dependency. Follows the Agent Skills specification
 (https://agentskills.io/specification).
 """
 
-import hashlib
 import re
 from pathlib import PurePosixPath
 from typing import Any, TypedDict
@@ -238,8 +237,10 @@ async def adiscover_skills(
     the skills-lock.json first (single file), falling back to individual
     SKILL.md downloads only when no lock entry exists.
 
-    Self-healing: orphaned skill dirs (no lock entry) get a lock entry
-    written back after SKILL.md parse.
+    Read-only. A dir with no lock entry is parsed from its SKILL.md on each
+    call and no entry is written for it: the lock is merged under its flock by
+    the asset sync and the reconciler, and a whole-file write from here could
+    land over entries one of them had just merged.
     """
     result = await backend.als(source_path)  # 1 API call
     items = result.entries or []
@@ -287,7 +288,6 @@ async def adiscover_skills(
 
     # Resolve unknown skills: lock entry -> SKILL.md download -> unconfirmed
     to_download: list[tuple[str, str]] = []  # (dir_path, skill_md_path)
-    new_lock_entries: dict[str, Any] = {}  # Self-healing entries to write back
 
     for dir_path in unknown_dirs:
         dir_name = PurePosixPath(dir_path).name
@@ -324,47 +324,5 @@ async def adiscover_skills(
                 continue
             meta = parse_skill_metadata(content, skill_md_path, directory_name)
             results.append(meta)
-
-            # Self-healing: create lock entry for orphaned skill
-            try:
-                from ptc_agent.agent.middleware.skills.lock import build_lock_entry
-
-                entry = build_lock_entry(
-                    meta,
-                    owner="user",
-                    source="local",
-                    source_type="local",
-                    content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
-                )
-                new_lock_entries[directory_name] = entry
-            except Exception:
-                pass  # Best-effort self-healing
-
-    # Write back self-healing lock entries if any
-    if new_lock_entries:
-        try:
-            from ptc_agent.agent.middleware.skills.lock import (
-                LOCK_FILENAME,
-                LOCK_FILE_VERSION,
-                serialize_skills_lock,
-            )
-
-            all_entries = dict(lock_entries or {})
-            all_entries.update(new_lock_entries)
-            lock_data = {"version": LOCK_FILE_VERSION, "skills": all_entries}
-            lock_content = serialize_skills_lock(lock_data)
-            lock_path = str(PurePosixPath(source_path) / LOCK_FILENAME)
-            await backend.aupload_files([(lock_path, lock_content.encode("utf-8"))])
-            logger.info(
-                "Self-healing: wrote lock entries for orphaned skills",
-                count=len(new_lock_entries),
-                skills=list(new_lock_entries.keys()),
-            )
-        except Exception:
-            logger.debug("Self-healing lock write failed (non-critical)")
-
-    # NOTE: Full lock ↔ filesystem reconciliation (adds + removes) is handled
-    # post-turn by reconcile_workspace_skills. The self-healing above is a
-    # fallback for the window before that pass runs, or when it failed.
 
     return results
