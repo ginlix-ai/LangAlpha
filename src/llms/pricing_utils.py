@@ -330,22 +330,16 @@ def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optio
     return None
 
 
-# Coarse cost tier (1-5) for the model-detail flyout, from blended $/1M tokens
-# (3:1 input:output). Credits are linear in USD (credit_conversion), so this tier
-# reads the same whether the user pays per-token (BYOK) or in credits.
-PRICE_TIER_BANDS = [(8.0, 5), (4.0, 4), (1.5, 3), (0.5, 2), (0.0, 1)]
-
-
 def _representative_rate(
     pricing: Dict[str, Any],
     flat_key: str,
     tier_key: str,
     tier_field: str = 'rate',
 ) -> Optional[float]:
-    """A single $/1M rate for tiering: the flat rate, else the base (first) tier.
+    """A single $/1M rate to stand for a card: the flat rate, else the base (first) tier.
 
     Base tier is deliberate: it's the standard-context rate nearly all requests
-    pay; long-context surcharge tiers are excluded from the headline cost dot.
+    pay; long-context surcharge tiers are excluded from the headline rate.
 
     ``tier_field`` names the rate to read inside a tier, because a tiered card
     carries its cache rates as siblings of ``rate`` rather than as tiers of
@@ -359,12 +353,14 @@ def _representative_rate(
     return None
 
 
-def get_price_tier(model_name: str, provider: Optional[str] = None) -> Optional[int]:
-    """Map a model's canonical providers.json pricing to a 1-5 cost tier.
+def get_list_rates(
+    model_name: str, provider: Optional[str] = None
+) -> Optional[Tuple[float, float]]:
+    """Representative (input, output) USD per 1M tokens, or None when unpriced.
 
-    Resolves pricing through :func:`find_model_pricing` (provider→parent fallback,
-    aliases, tiered rates). Returns None when no price is known so the flyout omits
-    the row. Blends input/output 3:1 then buckets via ``PRICE_TIER_BANDS``.
+    Resolves through :func:`find_model_pricing` (provider to parent fallback,
+    aliases, tiered rates). One source for the price the picker prints and the
+    estimate its cost marks fall back on, so the two cannot disagree.
     """
     pricing = find_model_pricing(model_name, provider)
     if not pricing:
@@ -373,11 +369,7 @@ def get_price_tier(model_name: str, provider: Optional[str] = None) -> Optional[
     pout = _representative_rate(pricing, 'output', 'output_tiers')
     if pin is None or pout is None:
         return None
-    blended = pin * 0.75 + pout * 0.25
-    for lo, tier in PRICE_TIER_BANDS:
-        if blended >= lo:
-            return tier
-    return 1
+    return pin, pout
 
 
 # The token mix a typical platform-billed call bills at, measured over 30 days
@@ -969,7 +961,7 @@ def resolve_schedule(
 
     The top level of the manifest entry holds the peak rates and ``off_peak``
     carries only what differs. That way every reader predating this — the model
-    picker's price tier, the aggregate display path — keeps working untouched and
+    picker's list price, the aggregate display path — keeps working untouched and
     errs toward the higher rate rather than quietly quoting the cheaper one.
 
     Returns the card and the window that chose it, or ``(pricing, None)`` for the

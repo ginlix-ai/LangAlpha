@@ -99,7 +99,7 @@ class TestTheCardHandedToTheEngine:
         assert card["unit"] == "per_1m_tokens"
 
     def test_peak_rates_live_at_the_top_level(self):
-        """Every reader predating schedules -- the price tier on the model
+        """Every reader predating schedules -- the list price on the model
         picker, the aggregate display path -- reads the top level untouched."""
         card, window = resolve_schedule(CARD, _at(2))
         assert window == "peak"

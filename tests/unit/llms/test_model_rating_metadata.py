@@ -1,4 +1,5 @@
-"""Editorial rating metadata (speed/intelligence/context) and derived price tier."""
+"""Editorial rating metadata (speed/intelligence/context), list prices and the
+task-cost estimate a list price gives."""
 
 import json
 from pathlib import Path
@@ -8,7 +9,8 @@ import pytest
 
 from src.llms.llm import ModelConfig
 from src.llms import pricing_utils
-from src.llms.pricing_utils import PRICE_TIER_BANDS, _representative_rate, get_price_tier
+from src.llms.pricing_utils import _representative_rate, get_list_rates
+from src.llms.task_costs import task_cost_baseline, task_cost_estimate
 
 MANIFEST = Path(__file__).resolve().parents[3] / "src/llms/manifest/models.json"
 
@@ -71,19 +73,20 @@ class TestDisplayNameSurfacing:
             assert entry.get("display_name") == manifest[key].get("display_name"), key
 
 
-class TestPriceTier:
-    def test_metadata_price_is_valid_tier(self, metadata):
-        priced = {k: v for k, v in metadata.items() if "price" in v}
-        assert priced, "Expected at least one model with derived price tier"
+class TestListPrice:
+    def test_unknown_model_has_no_rates(self):
+        assert get_list_rates("no-such-model-xyz") is None
+
+    def test_pricing_is_input_and_output(self, metadata):
+        priced = {k: v for k, v in metadata.items() if "pricing" in v}
+        assert priced, "Expected at least one model with list pricing"
         for key, entry in priced.items():
-            assert entry["price"] in range(1, 6), f"{key}: price tier must be 1-5"
+            assert set(entry["pricing"]) == {"input", "output"}, key
+            assert entry["pricing"]["input"] >= 0 and entry["pricing"]["output"] > 0, key
 
-    def test_unknown_model_returns_none(self):
-        assert get_price_tier("no-such-model-xyz") is None
-
-    def test_oauth_variant_inherits_parent_tier(self, manifest):
-        """OAuth variants have no own pricing list; the tier must resolve to
-        whatever the parent provider's rates give (None when the parent has no
+    def test_oauth_variant_inherits_parent_rates(self, manifest):
+        """OAuth variants have no own pricing list; the rates must resolve to
+        whatever the parent provider's give (None when the parent has no
         per-token pricing either, e.g. subscription-only providers)."""
         mc = ModelConfig()
         oauth = {
@@ -95,28 +98,23 @@ class TestPriceTier:
         inherited = []
         for key, entry in oauth.items():
             parent = mc.get_provider_info(entry["provider"]).get("parent_provider")
-            tier = get_price_tier(entry["model_id"], entry["provider"])
-            assert tier == get_price_tier(entry["model_id"], parent), (
-                f"{key}: oauth tier should match parent provider resolution"
+            rates = get_list_rates(entry["model_id"], entry["provider"])
+            assert rates == get_list_rates(entry["model_id"], parent), (
+                f"{key}: oauth rates should match parent provider resolution"
             )
-            if tier is not None:
+            if rates is not None:
                 inherited.append(key)
         assert inherited, "Expected at least one oauth variant inheriting per-token pricing"
 
-    def test_bands_are_descending_and_cover_zero(self):
-        lows = [lo for lo, _ in PRICE_TIER_BANDS]
-        assert lows == sorted(lows, reverse=True)
-        assert lows[-1] == 0.0
-
-    def test_priced_pricing_without_usable_rates_returns_none(self, monkeypatch):
+    def test_pricing_without_usable_rates_returns_none(self, monkeypatch):
         """When pricing resolves but has neither flat rate nor tiers (e.g. a
-        2d_matrix-only entry), the tier must be None — distinct from the
-        'no pricing at all' early return."""
+        2d_matrix-only entry), there are no rates — distinct from the 'no
+        pricing at all' early return."""
         monkeypatch.setattr(
             pricing_utils, "find_model_pricing",
             lambda name, provider=None: {"pricing_mode": "2d_matrix", "matrix": []},
         )
-        assert get_price_tier("placeholder-model", "placeholder-provider") is None
+        assert get_list_rates("placeholder-model", "placeholder-provider") is None
 
     def test_representative_rate_prefers_flat_then_base_tier(self):
         """Flat rate wins when present; otherwise fall back to the first tier's
@@ -142,3 +140,48 @@ class TestTaskCostOnSubscriptions:
         """Priced on its own terms, so the parent's figure would mislead."""
         assert "task_cost" in metadata["glm-5.3"]
         assert "task_cost" not in metadata["glm-5.3-cn"]
+
+
+class TestTaskCostEstimate:
+    """A model no task was measured on is estimated from its list price, as a
+    multiple of the baseline's, so its marks band on the measured scale."""
+
+    def test_a_model_priced_like_the_baseline_reads_as_the_baseline(self):
+        """The regression: an estimate once banded a price tier on its own
+        scale, so a model at the baseline's price took a mark more than the
+        baseline itself."""
+        assert task_cost_estimate((3.0, 15.0), (3.0, 15.0)) == pytest.approx(1.0)
+
+    def test_blends_three_input_tokens_to_one_output(self):
+        assert task_cost_estimate((1.0, 3.0), (2.0, 6.0)) == pytest.approx(0.5)
+        # Input weighs three times output: doubling the input rate adds half.
+        assert task_cost_estimate((4.0, 6.0), (2.0, 6.0)) == pytest.approx(1.5)
+
+    @pytest.mark.parametrize("rates, baseline", [
+        (None, (3.0, 15.0)), ((3.0, 15.0), None), ((3.0, 15.0), (0.0, 0.0)),
+    ])
+    def test_none_without_both_prices(self, rates, baseline):
+        assert task_cost_estimate(rates, baseline) is None
+
+    def test_only_an_unmeasured_model_carries_one(self, metadata):
+        """Measured, bound and estimated stay apart: a figure in `task_cost`
+        or an estimate beside it, never both."""
+        estimated = {k: v for k, v in metadata.items() if "task_cost_estimate" in v}
+        assert estimated, "Expected at least one priced model with no task cost"
+        for key, entry in estimated.items():
+            assert "task_cost" not in entry, key
+            assert "pricing" in entry, key
+            assert entry["task_cost_estimate"] > 0, key
+
+    def test_it_is_the_list_price_against_the_baselines(self, metadata):
+        baseline = task_cost_baseline()
+        assert baseline is not None
+        base = metadata[baseline["model"]]["pricing"]
+        for key, entry in metadata.items():
+            if "task_cost_estimate" not in entry:
+                continue
+            price = entry["pricing"]
+            expected = task_cost_estimate(
+                (price["input"], price["output"]), (base["input"], base["output"])
+            )
+            assert entry["task_cost_estimate"] == pytest.approx(expected, rel=1e-3), key
