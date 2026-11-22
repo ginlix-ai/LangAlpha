@@ -270,13 +270,11 @@ def _internal_package_uploads(
     Walks ``_SANDBOX_INTERNAL_PACKAGES`` with ``rglob("*")`` — every regular
     file except ``__pycache__`` ships, so data seeds can never silently drop
     out of the sync. Empty when ``src/__init__.py`` is missing. A *provider*
-    whose computers never mount leaves out the file mount's daemon, and one
-    whose image this does not build the browser, whose wrapper would shadow
-    whatever is there. Read off the class, so the upload and the manifest that
-    gates it cannot be handed different sets.
+    whose computers never mount leaves out the file mount's daemon. Read off
+    the class, so the upload and the manifest that gates it cannot be handed
+    different sets.
     """
     livefs = provider is None or provider.mounts_livefs
-    browser = provider is None or provider.browser_use
     src_init = src_dir / "__init__.py"
     if not src_init.exists():
         return []
@@ -296,10 +294,9 @@ def _internal_package_uploads(
     # The engine's config file ships beside the modules: the wrapper points the
     # engine at it, and an engine handed a config path that is not there fails.
     browser_files = [*_BROWSER_SOURCE_DIR.glob("*.py"), *_BROWSER_SOURCE_DIR.glob("*.json")]
-    for browser_file in sorted(browser_files) if browser else ():
+    for browser_file in sorted(browser_files):
         files.append((browser_file, Path(browser_protocol.PACKAGE_NAME) / browser_file.name, None))
-    if browser:
-        files.append((_BROWSER_SOURCE_DIR / "agent-browser", Path(_CLI_BIN, "agent-browser"), 0o755))
+    files.append((_BROWSER_SOURCE_DIR / "agent-browser", Path(_CLI_BIN, "agent-browser"), 0o755))
     cli_bundle = src_dir.parent / "cli" / "dist" / "la.mjs"
     if cli_bundle.is_file():
         files.append((cli_bundle, Path(_CLI_BIN.parent, "la.mjs"), None))

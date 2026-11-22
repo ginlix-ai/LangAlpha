@@ -1770,6 +1770,39 @@
       "hint": "越清晰，画面越锐利，占用的带宽也越多。下次打开浏览器时生效。",
       "failed": "无法更改实时画面清晰度"
     },
+    "browserWindow": {
+      "label": "显示为窗口",
+      "onHint": "浏览器也会在这台 Mac 上以窗口打开，你可以直接查看和操作，它会一直开着，直到你关闭。下次打开浏览器时生效。",
+      "offHint": "浏览器只显示在「浏览器」标签页中。开启后，也会在这台 Mac 上以窗口显示。下次打开浏览器时生效。",
+      "failed": "无法更改浏览器窗口设置"
+    },
+    "browserSignins": {
+      "label": "保留登录状态",
+      "offHint": "浏览器关闭后会忘记所有网站。开启后，只需在「浏览器」标签页登录一次，这台电脑上的所有对话都能沿用。下次打开浏览器时生效。",
+      "onHint": "在「浏览器」标签页登录过的网站会保持登录，这台电脑上的所有对话都能沿用。关闭此项会退出所有网站。",
+      "signOut": "退出所有网站",
+      "signedOut": "已退出所有网站",
+      "signOutWaits": "已保存，但这台电脑没有响应",
+      "signOutWaitsHint": "下次使用这台电脑时，它的浏览器会退出所有网站。",
+      "failed": "无法更改登录状态设置",
+      "import": {
+        "title": "导入登录状态",
+        "hint": "从这台电脑上的另一个浏览器复制你的登录状态，Agent 也能使用。原浏览器不受影响。",
+        "bring": "导入",
+        "bringing": "正在导入…",
+        "askHint": "如果这台电脑询问是否允许使用钥匙串或密钥环，请允许。",
+        "done": "已从 {{name}} 导入登录状态",
+        "count": "{{cookies}} 个 Cookie",
+        "countSkipped": "{{cookies}} 个 Cookie，{{skipped}} 个无法读取",
+        "keychain": "无法解锁 {{name}} 的登录状态。请在这台电脑询问密码时允许，或通过桌面应用连接这台电脑，以便它能弹出询问。",
+        "notKept": "浏览器在开启保留登录之前就已打开。请在它关闭后再试。",
+        "lowMemory": "这台电脑内存不足，浏览器无法打开。请稍后再试。",
+        "notRunning": "这台电脑未在运行。",
+        "notFound": "这台电脑上已找不到 {{name}}。",
+        "failed": "无法导入登录状态。",
+        "listFailed": "无法列出这台电脑上的浏览器。"
+      }
+    },
     "filesBackup": {
       "label": "备份文件",
       "offTitle": "停止备份文件？",
@@ -3211,7 +3244,12 @@
       "outdatedTitle": "这台电脑没有浏览器",
       "outdatedBody": "它创建于浏览器功能上线之前。新建的电脑都带有浏览器。",
       "unavailableTitle": "这台电脑不提供浏览器",
-      "unavailableBody": "浏览器只在云电脑上运行，这台是你自己连接的机器。",
+      "unavailableBody": "Agent 的浏览器无法在这台电脑上运行。",
+      "noChromeTitle": "这台电脑上没有供 Agent 使用的浏览器",
+      "noChromeBody": "如果这里装有 Chrome、Edge、Brave 或 Chromium，Agent 会使用它。你可以安装其中一个，或者获取 Chrome for Testing（约 300 MB），它只供 Agent 使用。",
+      "getChrome": "获取 Chrome for Testing",
+      "installingTitle": "正在下载 Chrome for Testing",
+      "installingBody": "需要几分钟。下载完成后，浏览器会在这里打开。",
       "failedTitle": "实时画面连接失败",
       "failedBody": "浏览器可能仍在电脑上运行。",
       "retry": "重试",

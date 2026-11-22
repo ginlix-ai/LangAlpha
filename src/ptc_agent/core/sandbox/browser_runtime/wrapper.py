@@ -5,9 +5,13 @@ afford and on the port the view watches, with every request through the proxy
 that keeps it off the machine's own services, and keeps the bridge in front of
 that stream up. The arguments are read once, as the engine reads them, and every
 check judges that one reading, so an option placed before the command, or a
-value that looks like one, is no way around it. This browser is logged out, so
-what would save or bring in a login is refused, and so is what would start a
-browser the view cannot see. A launch option given on one command and not the
+value that looks like one, is no way around it. The agent never brings a login
+into this browser: one is kept only on the computer's own profile (``signin``),
+from a person signing in in the live view, so what would save or bring in a
+login is refused, and so is what would start a browser the view cannot see.
+What would print the sign-ins a kept profile holds is refused as well, and the
+headers that carry them are hidden in what the network commands print, since
+the agent's output reaches the model. A launch option given on one command and not the
 next restarts the browser and loses its pages, so those are refused too, except
 a user agent, which sites may need and which is held from the first command that
 sets it until the browser closes. While the person holds the page, only what
@@ -18,30 +22,28 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import subprocess
 import sys
 import tempfile
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from . import launch
+from . import host, launch, signin
 from .launch import Launch
 from .protocol import (
-    CHROME_BIN,
-    ENGINE_BIN,
     GATE_REFUSED,
     LOGGED_OUT_MESSAGE,
     NOT_INSTALLED,
+    NO_CHROME_MESSAGE,
     NOT_INSTALLED_MESSAGE,
-    PROXY_PORT,
     REFUSED,
     RESTART_MESSAGE,
-    STREAM_PORT,
-    StreamQuality,
+    SETTING_UP_MESSAGE,
+    SIGNINS_MESSAGE,
+    installing,
 )
 
 Takes = Literal["value", "flag", "optional"]
@@ -98,6 +100,9 @@ _LOGIN_COMMANDS = frozenset(
 )
 # A command whose subcommand brings in a login: ``cookies set``, ``set credentials``.
 _LOGIN_SUBCOMMANDS = {"cookies": frozenset({"set"}), "set": frozenset({"credentials", "auth", "headers"})}
+#: Headers whose values are sign-ins, hidden in what the network commands print.
+_SIGNIN_HEADERS = frozenset({"cookie", "set-cookie", "authorization", "proxy-authorization"})
+_HIDDEN = "[hidden]"
 _LOOK_COMMANDS = frozenset(
     {"", "skills", "snapshot", "read", "get", "is", "wait", "screenshot", "pdf", "console", "errors", "diff"}
 )
@@ -107,48 +112,6 @@ _SCRIPT_COMMANDS = frozenset({"eval", "addinitscript"})
 # Any of these among a command's words, the engine prints help or its version
 # and returns before it reaches a daemon.
 _INFO_FLAGS = frozenset({"--help", "-h", "--version", "-V"})
-# What would log the browser in or launch it some other way, from the environment,
-# and the daemon's own settings, any of which differing restarts it and closes
-# the browser (``daemon_config_fingerprint``).
-_UNSET = (
-    "AGENT_BROWSER_DEBUG", "AGENT_BROWSER_ACTION_POLICY", "AGENT_BROWSER_CONFIRM_ACTIONS",
-    "AGENT_BROWSER_DEFAULT_TIMEOUT", "AGENT_BROWSER_NO_AUTO_DIALOG",
-    "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_STATE", "AGENT_BROWSER_RESTORE",
-    "AGENT_BROWSER_SESSION_NAME", "AGENT_BROWSER_SESSION", "AGENT_BROWSER_NAMESPACE",
-    "AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_CONFIG", "AGENT_BROWSER_CDP",
-    "AGENT_BROWSER_AUTO_CONNECT", "AGENT_BROWSER_EXTENSIONS", "AGENT_BROWSER_PLUGINS",
-    "AGENT_BROWSER_USER_AGENT", "AGENT_BROWSER_HEADED", "AGENT_BROWSER_ARGS",
-    "AGENT_BROWSER_PROXY", "AGENT_BROWSER_PROXY_BYPASS", "AGENT_BROWSER_ALLOW_FILE_ACCESS",
-    "AGENT_BROWSER_ALLOWED_DOMAINS", "AGENT_BROWSER_ENABLE", "AGENT_BROWSER_INIT_SCRIPTS",
-    "AGENT_BROWSER_ENGINE", "AGENT_BROWSER_WEBGPU", "AGENT_BROWSER_HIDE_SCROLLBARS",
-    "AGENT_BROWSER_PROXY_USERNAME", "AGENT_BROWSER_PROXY_PASSWORD", "AGENT_BROWSER_CA_CERT",
-    "AGENT_BROWSER_CLEAR_CA_CERT", "AGENT_BROWSER_USE_SYSTEM_CA", "AGENT_BROWSER_NO_XVFB",
-)
-# The page's size: a laptop's 16:10, which every stream quality's frame scales
-# evenly. The engine's own window is 1280 by 720, and headless Chrome keeps 143
-# pixels of a window for a toolbar it never draws, which left the page a strip
-# 577 tall that cut off most forms. A window size given here replaces the engine's.
-VIEWPORT = (1280, 800)
-_UNDRAWN_TOOLBAR_PX = 143
-# Every request goes through the proxy, loopback too, which Chrome would
-# otherwise send direct (``proxy.py``). The same on every command, or the
-# engine would restart the browser.
-_ENGINE_ENV = {
-    "AGENT_BROWSER_PROXY": f"http://127.0.0.1:{PROXY_PORT}",
-    "AGENT_BROWSER_PROXY_BYPASS": "<-loopback>",
-    "AGENT_BROWSER_EXECUTABLE_PATH": CHROME_BIN,
-    "AGENT_BROWSER_STREAM_PORT": str(STREAM_PORT),
-    "AGENT_BROWSER_CONTENT_BOUNDARIES": "1",
-    "AGENT_BROWSER_NO_WEBMCP": "1",
-    # An open Chrome holds memory the computer's other work needs, so one left
-    # unused ends well before the engine's default hour.
-    "AGENT_BROWSER_IDLE_TIMEOUT_MS": "1200000",
-    # A config file named here replaces the engine's search for one in the
-    # folder a command runs from and in the home directory, either of which
-    # could launch the browser some other way, or differently for the person's
-    # commands, which run from elsewhere, and so restart it.
-    "AGENT_BROWSER_CONFIG": str(Path(__file__).with_name("engine.json")),
-}
 # Run as root, Chrome raises its own threads above everything else, and on one CPU
 # a job beside it takes twice as long. Without the capability it stays level with them.
 _DROP_NICE = ("setpriv", "--bounding-set=-sys_nice", "--inh-caps=-sys_nice")
@@ -249,7 +212,7 @@ def _shell_words(text: str) -> list[str]:
 
 
 def refusal(commands: Sequence[Invocation]) -> str | None:
-    """Why the wrapper itself refuses these commands, or None."""
+    """Why the wrapper refuses these commands for their arguments alone, or None."""
     for each in commands:
         for flag, _ in each.options:
             policy = _OPTIONS[flag][1]
@@ -266,6 +229,85 @@ def refusal(commands: Sequence[Invocation]) -> str | None:
             # one open.
             return RESTART_MESSAGE.format("`open` without an address")
     return None
+
+
+#: What leaves a page's cookies and storage unread: setting or clearing them.
+#: The engine reads them on any other form, a shorthand ``storage local <key>``
+#: or a verb it does not know included, so a read is anything but these, at the
+#: place the engine reads the verb from.
+_COOKIE_WRITES = frozenset({"set", "clear"})
+_STORAGE_WRITES = frozenset({"set", "clear"})
+#: What a command would do with the sign-ins a kept browser holds: print them,
+#: so it is refused, or print the headers that carry them, which are hidden.
+_Shown = Literal["signins", "headers"]
+
+
+def _shows(each: Invocation) -> tuple[_Shown, str] | None:
+    """What *each* would print of the browser's sign-ins, with the command named
+    as the agent wrote it, or None. Its cookies, its pages' storage, a HAR,
+    which records both, and the DevTools address that reaches all of them are
+    sign-ins; a request's headers carry them. Setting or clearing them prints
+    nothing."""
+    if each.name == "cookies" and not _writes(each, 0, _COOKIE_WRITES):
+        return "signins", "`cookies`"
+    if each.name == "storage" and not _writes(each, 1, _STORAGE_WRITES):
+        return "signins", "`storage` read"
+    if each.name == "network" and each.sub == "har":
+        return "signins", "`network har`"
+    if each.name == "get" and each.sub == "cdp-url":
+        return "signins", "`get cdp-url`"
+    if each.name == "network" and each.sub in ("requests", "request"):
+        return "headers", f"`network {each.sub}`"
+    return None
+
+
+def _writes(each: Invocation, at: int, writes: frozenset[str]) -> bool:
+    """Whether the engine reads the argument at *at* after *each*'s word as one
+    of *writes*. It keeps an option it does not know among those arguments, so
+    one there takes the verb's place, and an ``--option=value`` too, which
+    ``args`` leaves out, so with one given the place is not known here."""
+    if any(_OPTIONS.get(arg.partition("=")[0], ("flag",))[0] != "flag" for arg in each.given if "=" in arg):
+        return False
+    return len(each.args) > at and each.args[at] in writes
+
+
+def signins_shown(commands: Sequence[Invocation]) -> tuple[str | None, bool]:
+    """For a browser that keeps sign-ins: why these commands are refused, or
+    None, and whether what they print must have the sign-ins' headers hidden."""
+    shown = [found for found in map(_shows, commands) if found]
+    printed = next((named for what, named in shown if what == "signins"), None)
+    return (SIGNINS_MESSAGE.format(printed) if printed else None), any(what == "headers" for what, _ in shown)
+
+
+def hide_signins(printed: str) -> str:
+    """*printed* by the engine with the values of the headers that carry
+    sign-ins hidden. Only its JSON carries headers: a document whole, or one
+    per line for a batch; any other line passes as printed."""
+    try:
+        return json.dumps(_hidden(json.loads(printed)), ensure_ascii=False) + "\n"
+    except ValueError:
+        pass
+    lines = []
+    for line in printed.splitlines(keepends=True):
+        try:
+            lines.append(json.dumps(_hidden(json.loads(line)), ensure_ascii=False) + "\n")
+        except ValueError:
+            lines.append(line)
+    return "".join(lines)
+
+
+def _hidden(value: object) -> object:
+    if isinstance(value, dict):
+        # A HAR-style entry names its header and gives its value apart.
+        if isinstance(value.get("name"), str) and value["name"].lower() in _SIGNIN_HEADERS and "value" in value:
+            return {**value, "value": _HIDDEN}
+        return {
+            key: _HIDDEN if key.lower() in _SIGNIN_HEADERS else _hidden(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_hidden(item) for item in value]
+    return value
 
 
 def _runs_script(word: str) -> bool:
@@ -362,14 +404,15 @@ def _restore_stdin(data: bytes) -> None:
         os.dup2(f.fileno(), 0)
 
 
-def _gate(use: str, user_agent: str) -> Launch:
-    """The launch the gate settles. Only its own refusal stops a command: a
-    bridge that cannot run costs the view, not the browser."""
+def _gate(use: str, user_agent: str) -> tuple[Launch, Callable[[], None]]:
+    """The launch the gate settles, and what lets the next command in. Only its
+    own refusal stops a command: a bridge that cannot run costs the view, not
+    the browser."""
     try:
         from . import gate
     except Exception:
         traceback.print_exc()
-        return _unsettled()
+        return _unsettled(), _admitted_by_none
     try:
         return gate.check(use, user_agent)
     except gate.Refused as refused:
@@ -377,7 +420,7 @@ def _gate(use: str, user_agent: str) -> Launch:
         sys.exit(GATE_REFUSED)
     except Exception:
         traceback.print_exc()
-        return _unsettled()
+        return _unsettled(), _admitted_by_none
 
 
 def _unsettled() -> Launch:
@@ -386,48 +429,19 @@ def _unsettled() -> Launch:
     return launch.current() or Launch("", "standard")
 
 
-def _launch_env(quality: StreamQuality) -> dict[str, str]:
-    """What the engine starts the browser with for *quality*, and so must get on
-    every command while that browser is open."""
-    args = ["--proxy-bypass-list=<-loopback>", f"--window-size={VIEWPORT[0]},{VIEWPORT[1] + _UNDRAWN_TOOLBAR_PX}"]
-    if quality.scale != 1:
-        # Rendered at this scale, the screencast's frames are too. Emulating it
-        # for the page instead leaves the frames at one pixel a page pixel.
-        args.append(f"--force-device-scale-factor={quality.scale}")
-    return {
-        # One argument a line: the window size holds a comma.
-        "AGENT_BROWSER_ARGS": "\n".join(args),
-        "AGENT_BROWSER_STREAM_QUALITY": str(quality.jpeg),
-        "AGENT_BROWSER_STREAM_MAX_WIDTH": str(quality.width),
-        "AGENT_BROWSER_STREAM_MAX_HEIGHT": str(quality.height),
-    }
+def _not_ready(here: host.Host) -> str:
+    """Why there is no browser to run, as the agent tells the person: one being
+    set up, a machine of the person's own with no Chrome-family browser, or
+    neither, which the Browser tab sets up or explains."""
+    if installing():
+        return SETTING_UP_MESSAGE
+    if here.own and os.access(here.engine, os.X_OK):
+        return NO_CHROME_MESSAGE
+    return NOT_INSTALLED_MESSAGE
 
 
-def engine_env(base: Mapping[str, str], launched: Launch) -> dict[str, str]:
-    """What the engine runs with here: *base* without what would launch the
-    browser another way, and *launched*, so a command never restarts the
-    browser that launch opened."""
-    env = dict(base)
-    for name in _UNSET:
-        env.pop(name, None)
-    env.update(_ENGINE_ENV)
-    env["AGENT_BROWSER_SOCKET_DIR"] = _daemon_dir()
-    env.update(_launch_env(launched.stream))
-    user_agent = launched.user_agent.rstrip("\n")
-    if user_agent:
-        env["AGENT_BROWSER_USER_AGENT"] = user_agent
-    return env
-
-
-def _daemon_dir() -> str:
-    """Where the engine finds its daemon, the same for every command: another
-    folder would mean a second daemon and Chrome that the gate, the hold and
-    the viewer never see. The engine's own default, from the account rather
-    than HOME, which a command can set; its last resort with no account."""
-    try:
-        return os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".agent-browser")
-    except KeyError:
-        return os.path.join(tempfile.gettempdir(), "agent-browser")
+def _admitted_by_none() -> None:
+    """The release of a command no gate admitted, which holds nothing."""
 
 
 def _can_drop_nice() -> bool:
@@ -445,13 +459,39 @@ def main(args: list[str]) -> int:
     if refused:
         print(refused, file=sys.stderr)
         return REFUSED
-    if not os.access(ENGINE_BIN, os.X_OK):
-        print(NOT_INSTALLED_MESSAGE, file=sys.stderr)
+    here = host.current()
+    if not here.ready():
+        print(_not_ready(here), file=sys.stderr)
         return NOT_INSTALLED
+    # Refused before the gate wherever the browser open or the next keeps
+    # sign-ins, so a refused command changes nothing the gate would record.
+    opened = launch.current()
+    if signin.kept() or (opened and opened.kept):
+        refused, _ = signins_shown(commands)
+        if refused:
+            print(refused, file=sys.stderr)
+            return REFUSED
     user_agent = asked_user_agent(top, os.environ.get("AGENT_BROWSER_USER_AGENT", ""))
     used = use(commands)
     # Help reaches no browser, so neither memory nor the person's hold stops it.
-    env = engine_env(os.environ, _unsettled() if used == "none" else _gate(used, user_agent))
+    launched, release = (_unsettled(), _admitted_by_none) if used == "none" else _gate(used, user_agent)
+    # Read again once admitted: a setup holds the same admission while it
+    # records another engine, Chrome or ports, which this command must run on.
+    here = host.current()
+    if not here.ready():
+        release()
+        print(_not_ready(here), file=sys.stderr)
+        return NOT_INSTALLED
+    # Judged again on the browser the command will run on, as settled, and on
+    # the choice: either can change between the reading above and the gate.
+    hidden = False
+    if launched.kept or signin.kept():
+        refused, hidden = signins_shown(commands)
+        if refused:
+            release()
+            print(refused, file=sys.stderr)
+            return REFUSED
+    env = launched.engine_env(os.environ, here)
     # The browser, and nothing it is started beside, goes before the person's own
     # work if the computer runs out of memory: the next command brings a browser
     # back, and analysis cannot be. The bridge the gate started keeps its own.
@@ -461,7 +501,22 @@ def main(args: list[str]) -> int:
         pass
     if data is not None:
         _restore_stdin(data)
-    argv = [ENGINE_BIN, *args]
+    argv = [here.engine, *args]
     if os.getuid() == 0 and _can_drop_nice():
-        os.execvpe(_DROP_NICE[0], [*_DROP_NICE, *argv], env)
-    os.execve(ENGINE_BIN, argv, env)
+        argv = [*_DROP_NICE, *argv]
+    if hidden:
+        return _run_hiding_signins(argv, env, release)
+    os.execvpe(argv[0], argv, env)
+    return 0
+
+
+def _run_hiding_signins(argv: list[str], env: Mapping[str, str], release: Callable[[], None]) -> int:
+    """Run the engine beside the wrapper, which passes on what it prints with
+    the sign-ins hidden. The next command is let in once the engine's has
+    started, as when the wrapper becomes it, since its command counts as busy."""
+    engine = subprocess.Popen(argv, env=dict(env), stdout=subprocess.PIPE)
+    release()
+    printed, _ = engine.communicate()
+    sys.stdout.write(hide_signins(printed.decode(errors="replace")))
+    sys.stdout.flush()
+    return engine.returncode

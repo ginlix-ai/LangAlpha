@@ -33,16 +33,13 @@ def _reach(owner_id: str = USER) -> AsyncMock:
 MANAGER = SimpleNamespace(keep_sandbox_alive=AsyncMock(return_value=True))
 
 
-def _setup(
-    *, available: bool = True, running: object = SANDBOX, reach: AsyncMock | None = None, on: bool = True
-):
+def _setup(*, running: object = SANDBOX, reach: AsyncMock | None = None, on: bool = True):
     acquire = AsyncMock(return_value=(SANDBOX, {"workspace_id": WS}))
     if_running = AsyncMock(return_value=running)
     MANAGER.keep_sandbox_alive.reset_mock()
     patches = (
         patch.object(module, "reached_workspace_on_computer", reach or _reach()),
         patch.object(module, "user_feature_enabled", AsyncMock(return_value=on)),
-        patch.object(module, "browser_available", AsyncMock(return_value=available)),
         patch.object(module, "acquire_sandbox", acquire),
         patch.object(module, "sandbox_if_running", if_running),
         patch.object(module.WorkspaceManager, "get_instance", return_value=MANAGER),
@@ -63,21 +60,6 @@ async def _post(path: str, body: dict, *patches):
 
 
 @pytest.mark.parametrize("start", [False, True])
-async def test_a_computer_with_no_browser_is_never_reached(start: bool):
-    patches, acquire, if_running = _setup(available=False)
-
-    view = await _post("/browser-view", {"start": start}, *patches)
-    control = await _post(*CONTROL, *patches)
-    navigate = await _post(*NAVIGATE, *patches)
-
-    assert view.json() == {"state": "unavailable", "url": None, "expires_in": None}
-    assert control.json() == {"held": False}
-    assert navigate.json() == {"done": False, "reason": "not_running"}
-    acquire.assert_not_awaited()
-    if_running.assert_not_awaited()
-
-
-@pytest.mark.parametrize("start", [False, True])
 async def test_a_person_who_has_not_turned_the_browser_on_is_shown_none(start: bool):
     """Each person's own switch, read for whoever calls: in a shared workspace
     the owner having it on says nothing about a member."""
@@ -90,7 +72,7 @@ async def test_a_person_who_has_not_turned_the_browser_on_is_shown_none(start: b
         control = await _post(*CONTROL, *patches)
         navigate = await _post(*NAVIGATE, *patches)
 
-    assert view.json() == {"state": "unavailable", "url": None, "expires_in": None}
+    assert view.json() == {"state": "unavailable", "url": None, "expires_in": None, "local_url": None}
     assert control.json() == {"held": False}
     assert navigate.json() == {"done": False, "reason": "not_running"}
     acquire.assert_not_awaited()
@@ -108,7 +90,7 @@ async def test_a_stopped_computer_is_read_as_stopped_and_never_started():
 
     assert (view.status_code, view.json()) == (
         200,
-        {"state": "stopped", "url": None, "expires_in": None},
+        {"state": "stopped", "url": None, "expires_in": None, "local_url": None},
     )
     assert control.json() == {"held": False}
     assert navigate.json() == {"done": False, "reason": "not_running"}
@@ -123,12 +105,12 @@ async def test_only_a_start_acquires_and_access_is_checked_once():
     with patch.object(module, "browser_view", view):
         resp = await _post("/browser-view", {"start": True}, *patches)
 
-    assert resp.json() == {"state": "running", "url": "https://p.example.com/b/t", "expires_in": 3600}
+    assert resp.json() == {"state": "running", "url": "https://p.example.com/b/t", "expires_in": 3600, "local_url": None}
     reach.assert_awaited_once_with(WS, USER)
     acquire.assert_awaited_once_with(WS, USER, "browser_view")
     if_running.assert_not_awaited()
     assert view.await_args.args[0] is SANDBOX
-    assert view.await_args.kwargs == {"start": True, "viewer_id": None}
+    assert view.await_args.kwargs == {"start": True, "get_chrome": False, "viewer_id": None}
 
 
 async def test_a_shared_workspaces_member_gets_a_stream_minted_for_them():
@@ -140,7 +122,7 @@ async def test_a_shared_workspaces_member_gets_a_stream_minted_for_them():
     with patch.object(module, "browser_view", view):
         await _post("/browser-view", {}, *patches)
 
-    assert view.await_args.kwargs == {"start": False, "viewer_id": USER}
+    assert view.await_args.kwargs == {"start": False, "get_chrome": False, "viewer_id": USER}
 
 
 async def test_a_running_computer_is_acted_on_where_it_runs():

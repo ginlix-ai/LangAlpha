@@ -12,7 +12,7 @@ async function watched(answer: () => Promise<BrowserViewAnswer>, granted = false
   view = new BrowserViewSession();
   const ask = vi.fn(answer);
   render(<BrowserViewer view={view} />);
-  await act(async () => { stopWatching = view.watch({ ask, control: async () => granted, navigate: async () => null }); });
+  await act(async () => { stopWatching = view.watch({ ask, control: async () => granted, navigate: async () => null, local: false }); });
   return ask;
 }
 
@@ -35,14 +35,14 @@ describe('the browser view with no page to show', () => {
       return;
     }
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: action })); });
-    expect(ask).toHaveBeenLastCalledWith(true);
+    expect(ask).toHaveBeenLastCalledWith('start');
   });
 
   it('offers to connect again when asking failed, without starting anything', async () => {
     const ask = await watched(async () => { throw new Error('down'); });
     expect(screen.getByText("The live view couldn't connect")).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Try again' })); });
-    expect(ask).toHaveBeenLastCalledWith(false);
+    expect(ask).toHaveBeenLastCalledWith('look');
   });
 
   it('shows a spinner and nothing to press while it looks', async () => {

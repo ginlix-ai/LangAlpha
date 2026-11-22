@@ -12,7 +12,8 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from .protocol import STREAM_PORT, state_file
+from . import host
+from .protocol import state_file
 
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -101,10 +102,11 @@ async def serve_while_stream(
     browser ended. *tick* runs at each look, told whether the stream is up."""
     server = await asyncio.start_server(handle, sock=listener, limit=limit)
     last_seen = time.monotonic()
+    stream = host.current().stream_port
     async with server:
         while time.monotonic() - last_seen < _STREAM_GONE_S:
             await asyncio.sleep(_WATCH_INTERVAL_S)
-            up = listening(STREAM_PORT)
+            up = listening(stream)
             if up:
                 last_seen = time.monotonic()
             await tick(up)

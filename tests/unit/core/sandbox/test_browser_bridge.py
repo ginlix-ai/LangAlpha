@@ -3,6 +3,7 @@ through is the contract; the wrapper and the gate decide what reaches the engine
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import fcntl
 import io
@@ -28,17 +29,24 @@ from ptc_agent.core.sandbox._defaults import (
 from ptc_agent.core.sandbox._shared import _internal_package_files, _internal_package_uploads
 from ptc_agent.core.sandbox.browser_runtime import (
     care,
+    choices,
     daemon,
     gate,
     hold,
+    host,
+    install,
     launch,
     machine,
     protocol,
     proxy,
     quality,
     relay,
+    signin,
+    system,
+    window,
     wrapper,
 )
+from ptc_agent.core.sandbox.browser_runtime.host import Host
 from ptc_agent.core.sandbox.browser_runtime.launch import Launch
 from ptc_agent.core.sandbox.browser_runtime.relay import rewrite_head
 from ptc_agent.core.sandbox.providers import provider_class
@@ -117,15 +125,45 @@ def test_anything_else_is_a_bad_request(head: bytes):
     assert rewrite_head(head, TOKEN) == (None, b"400 Bad Request")
 
 
+def _use_host(monkeypatch, **recorded) -> Host:
+    """Stand *recorded* in for what ``install`` would have recorded."""
+    chosen = Host(**recorded)
+    monkeypatch.setattr(host, "current", lambda: chosen)
+    return chosen
+
+
+def _read_proc(monkeypatch, root: Path) -> None:
+    """Read processes from *root* as from Linux's ``/proc``, on any machine."""
+    monkeypatch.setattr(system, "_PROC", root)
+    monkeypatch.setattr(system, "processes", lambda wanted=None: system._linux_processes())
+
+
 class _Ran(Exception):
     """Stands in for exec, which would replace the test process."""
 
 
 _STANDARD = Launch("", "standard")
-#: The real one: the ``state`` fixture stands a no-op in for it.
-_TEND = care.tend
+#: The real ones, where a fixture or test stands others in for them.
 _REAL_CHECK = gate.check
-_REAL_ENGINE_GONE = care.engine_gone
+
+
+def _admits(launched: Launch, release=lambda: None):
+    """A gate that admits every command on *launched*."""
+    return lambda use, user_agent: (launched, release)
+
+
+def _check(use: str, user_agent: str = "") -> Launch:
+    """The launch the gate settles, its admission let go at once, as a command
+    that becomes the engine's lets it go."""
+    launched, release = gate.check(use, user_agent)
+    release()
+    return launched
+
+
+def _choose(**chosen: object) -> None:
+    """Hold *chosen* as the server's last save, sign-ins off unless it says."""
+    choices.keep(protocol.Choices(**{"signins": False, **chosen}))
+_REAL_ENGINE_GONE = care.Look.engine_gone
 _REAL_CURRENT = launch.current
 
 
@@ -135,10 +173,10 @@ def engine(tmp_path, monkeypatch):
     binary = tmp_path / "engine"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
-    monkeypatch.setattr(wrapper, "ENGINE_BIN", str(binary))
+    _use_host(monkeypatch, engine=str(binary))
     monkeypatch.setattr(wrapper.os, "getuid", lambda: 1000)
     monkeypatch.setattr(wrapper, "_OOM_SCORE", tmp_path / "oom_score_adj")
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: _STANDARD)
+    monkeypatch.setattr(gate, "check", _admits(_STANDARD))
     monkeypatch.setattr(launch, "current", lambda: None)
     ran: dict = {}
 
@@ -210,14 +248,30 @@ def test_help_runs_whatever_the_browser_s_state(engine, monkeypatch):
 
     monkeypatch.setattr(gate, "check", refuse)
     assert _run("--help") is None
-    assert engine["argv"] == [wrapper.ENGINE_BIN, "--help"]
+    assert engine["argv"] == [host.current().engine, "--help"]
     assert _run("snapshot") == protocol.GATE_REFUSED
 
 
-def test_a_computer_built_before_the_browser_says_so(engine, monkeypatch, capsys):
-    monkeypatch.setattr(wrapper, "ENGINE_BIN", "/nowhere/agent-browser")
+@pytest.mark.parametrize(
+    ("setting_up", "own", "said"),
+    [
+        (True, True, protocol.SETTING_UP_MESSAGE),
+        (False, True, protocol.NO_CHROME_MESSAGE),
+        (False, False, protocol.NOT_INSTALLED_MESSAGE),
+    ],
+    ids=["being set up", "own machine with no Chrome", "neither"],
+)
+def test_a_computer_with_no_browser_to_run_says_why(engine, monkeypatch, capsys, setting_up, own, said):
+    """What the agent tells the person, who acts on it in the Browser tab."""
+    engine_bin = host.current().engine
+    if own:
+        _use_host(monkeypatch, own=True, engine=engine_bin, chrome="/nowhere/chrome")
+    else:
+        _use_host(monkeypatch, engine="/nowhere/agent-browser")
+    monkeypatch.setattr(wrapper, "installing", lambda: setting_up)
     assert _run("get", "url") == protocol.NOT_INSTALLED
-    assert capsys.readouterr().err == protocol.NOT_INSTALLED_MESSAGE + "\n"
+    assert capsys.readouterr().err == said + "\n"
+    assert engine == {}
 
 
 @pytest.mark.parametrize(
@@ -359,11 +413,29 @@ def test_a_click_past_an_unknown_option_is_refused_while_the_person_holds_the_pa
     assert engine == {}
 
 
+def test_a_command_runs_on_the_host_recorded_while_it_waited_for_admission(engine, tmp_path, monkeypatch):
+    """A setup holds the same admission while it records another engine or
+    ports, so what the command read before waiting is not what it runs on."""
+    upgraded = tmp_path / "engine-new"
+    upgraded.write_text("#!/bin/sh\n")
+    upgraded.chmod(0o755)
+    newer = Host(engine=str(upgraded), proxy_port=40123)
+
+    def admitted_after_a_setup(use, user_agent):
+        monkeypatch.setattr(host, "current", lambda: newer)
+        return _STANDARD, lambda: None
+
+    monkeypatch.setattr(gate, "check", admitted_after_a_setup)
+    assert _run("get", "url") is None
+    assert engine["argv"] == [str(upgraded), "get", "url"]
+    assert engine["env"]["AGENT_BROWSER_PROXY"] == newer.proxy_url
+
+
 def test_the_wrapper_runs_a_command_with_the_user_agent_the_gate_holds(engine, monkeypatch):
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: Launch("Held a@example.com", "standard"))
+    monkeypatch.setattr(gate, "check", _admits(Launch("Held a@example.com", "standard")))
     monkeypatch.setenv("AGENT_BROWSER_PROFILE", "Default")
     assert _run("get", "url") is None
-    assert engine["argv"] == [wrapper.ENGINE_BIN, "get", "url"]
+    assert engine["argv"] == [host.current().engine, "get", "url"]
     assert engine["env"]["AGENT_BROWSER_USER_AGENT"] == "Held a@example.com"
     assert engine["env"]["AGENT_BROWSER_STREAM_PORT"] == str(protocol.STREAM_PORT)
     assert "AGENT_BROWSER_PROFILE" not in engine["env"]
@@ -382,6 +454,138 @@ def test_a_daemon_setting_from_the_environment_never_reaches_the_engine(engine, 
     monkeypatch.setenv(name, "1")
     assert _run("get", "url") is None
     assert name not in engine["env"]
+
+
+@pytest.mark.parametrize(
+    ("args", "named"),
+    [
+        (("cookies",), "`cookies`"),
+        (("cookies", "get"), "`cookies`"),
+        (("cookies", "list"), "`cookies`"),
+        (("--json", "cookies"), "`cookies`"),
+        # The engine takes the word after `cookies` as the operation and reads
+        # any it does not know, a flag included.
+        (("cookies", "--all", "clear"), "`cookies`"),
+        (("cookies", "--user-agent=x", "clear"), "`cookies`"),
+        (("storage", "local"), "`storage` read"),
+        (("storage", "local", "access_token"), "`storage` read"),
+        (("storage", "session", "get", "token"), "`storage` read"),
+        (("network", "har", "start"), "`network har`"),
+        (("get", "cdp-url"), "`get cdp-url`"),
+        (("batch", "open https://example.com", "cookies"), "`cookies`"),
+    ],
+)
+def test_what_would_print_kept_sign_ins_is_refused(engine, monkeypatch, capsys, args, named):
+    """What the agent's commands print reaches the model, and is kept with the thread."""
+    monkeypatch.setattr(signin, "kept", lambda: True)
+    assert _run(*args) == protocol.REFUSED
+    assert capsys.readouterr().err == protocol.SIGNINS_MESSAGE.format(named) + "\n"
+    assert engine == {}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("cookies", "clear"), ("storage", "local", "set", "k", "v"), ("storage", "local", "clear"), ("get", "url")],
+)
+def test_clearing_or_setting_what_a_page_keeps_prints_nothing_and_runs(engine, monkeypatch, args):
+    monkeypatch.setattr(signin, "kept", lambda: True)
+    assert _run(*args) is None
+    assert engine["argv"][1:] == list(args)
+
+
+def test_a_browser_that_keeps_no_sign_ins_reads_its_cookies(engine, monkeypatch):
+    monkeypatch.setattr(signin, "kept", lambda: False)
+    assert _run("cookies") is None
+
+
+@pytest.mark.parametrize(
+    ("launched", "chosen"), [(True, [False, False]), (False, [False, True])], ids=["settled kept", "chosen since"]
+)
+def test_the_sign_in_refusal_follows_the_settled_launch_and_the_choice(engine, monkeypatch, capsys, launched, chosen):
+    """The gate settles on a browser kept or not after the wrapper has read its
+    arguments, and a choice saved meanwhile keeps the next browser's sign-ins."""
+    released = []
+    monkeypatch.setattr(gate, "check", _admits(Launch("", "standard", kept=launched), lambda: released.append(True)))
+    choices = iter(chosen)
+    monkeypatch.setattr(signin, "kept", lambda: next(choices))
+    assert _run("cookies") == protocol.REFUSED
+    assert capsys.readouterr().err == protocol.SIGNINS_MESSAGE.format("`cookies`") + "\n"
+    assert (engine, released) == ({}, [True])
+
+
+@pytest.mark.parametrize(("open_kept", "chosen"), [(True, False), (False, True)], ids=["open kept", "chosen"])
+def test_a_read_refused_where_it_reads_changes_nothing_the_gate_records(engine, monkeypatch, capsys, open_kept, chosen):
+    """Refused before the gate, so a batch that would also close the browser or
+    set a user agent leaves the launch the next command finds as it was."""
+    monkeypatch.setattr(launch, "current", lambda: Launch("", "standard", kept=True) if open_kept else None)
+    monkeypatch.setattr(signin, "kept", lambda: chosen)
+    monkeypatch.setattr(gate, "check", lambda use, user_agent: pytest.fail("the gate ran"))
+    assert _run("batch", "close", "cookies") == protocol.REFUSED
+    assert capsys.readouterr().err == protocol.SIGNINS_MESSAGE.format("`cookies`") + "\n"
+    assert engine == {}
+
+
+def test_the_headers_that_carry_sign_ins_are_hidden_and_nothing_else():
+    printed = json.dumps(
+        {
+            "data": {
+                "requests": [
+                    {
+                        "url": "https://example.com/api",
+                        "headers": {"Authorization": "Bearer t", "Cookie": "sid=1", "Accept": "*/*"},
+                        "responseHeaders": {"set-cookie": "sid=2", "content-type": "text/html"},
+                    }
+                ],
+                "har": [{"name": "Proxy-Authorization", "value": "Basic x"}, {"name": "Accept", "value": "*/*"}],
+                "title": "株価",
+            }
+        }
+    )
+    hidden = json.loads(wrapper.hide_signins(printed))["data"]
+    [request] = hidden["requests"]
+    assert request["headers"] == {"Authorization": "[hidden]", "Cookie": "[hidden]", "Accept": "*/*"}
+    assert request["responseHeaders"] == {"set-cookie": "[hidden]", "content-type": "text/html"}
+    assert hidden["har"] == [{"name": "Proxy-Authorization", "value": "[hidden]"}, {"name": "Accept", "value": "*/*"}]
+    assert "株価" in wrapper.hide_signins(printed)
+
+
+def test_a_sign_in_header_is_hidden_whatever_its_value_holds():
+    """A response's cookies come as a list of each when there are several."""
+    printed = json.dumps({"responseHeaders": {"Set-Cookie": ["a=1", "b=2"], "Vary": ["Accept"]}})
+    assert json.loads(wrapper.hide_signins(printed)) == {
+        "responseHeaders": {"Set-Cookie": "[hidden]", "Vary": ["Accept"]}
+    }
+
+
+def test_a_batch_s_lines_are_each_hidden_and_text_passes_as_printed():
+    printed = 'GET https://example.com\n{"headers": {"cookie": "sid=1"}}\n'
+    assert wrapper.hide_signins(printed) == 'GET https://example.com\n{"headers": {"cookie": "[hidden]"}}\n'
+
+
+def test_the_network_commands_of_a_kept_browser_run_beside_the_wrapper_with_sign_ins_hidden(
+    engine, monkeypatch, capsys
+):
+    """It reads what the engine prints, so it does not become the engine, and
+    lets the next command in once the engine's has started."""
+    monkeypatch.setattr(signin, "kept", lambda: True)
+    released = []
+    monkeypatch.setattr(gate, "check", _admits(_STANDARD, lambda: released.append(True)))
+
+    class Engine:
+        returncode = 0
+
+        def __init__(self, argv, env, stdout):
+            self.argv = argv
+            assert released == []
+
+        def communicate(self):
+            assert released == [True]
+            return json.dumps({"headers": {"Cookie": "sid=1"}}).encode(), None
+
+    monkeypatch.setattr(wrapper.subprocess, "Popen", Engine)
+    assert _run("--json", "network", "requests") == 0
+    assert json.loads(capsys.readouterr().out) == {"headers": {"Cookie": "[hidden]"}}
+    assert engine == {}
 
 
 def test_the_wrapper_passes_on_a_refusal_and_runs_nothing(engine, monkeypatch, capsys):
@@ -415,7 +619,7 @@ def test_the_wrapper_keeps_chrome_from_raising_its_threads_when_run_as_root(
     monkeypatch.setattr(wrapper.os, "getuid", lambda: uid)
     monkeypatch.setattr(wrapper, "_can_drop_nice", lambda: can_drop)
     assert _run("get", "url") is None
-    expected = [wrapper.ENGINE_BIN, "get", "url"]
+    expected = [host.current().engine, "get", "url"]
     if dropped:
         expected = ["setpriv", "--bounding-set=-sys_nice", "--inh-caps=-sys_nice", *expected]
     assert engine["argv"] == expected
@@ -460,26 +664,25 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr(protocol, "_STATE_ROOT", tmp_path)
     directory = tmp_path / protocol.STATE_DIR
     directory.mkdir()
-    monkeypatch.setattr(quality, "_CGROUP", tmp_path)
+    # The machine's limits, none set until a test writes them.
+    monkeypatch.setattr(system, "_CGROUP", tmp_path)
+    monkeypatch.setattr(system, "_MEMINFO", tmp_path / "no-meminfo")
     monkeypatch.setattr(quality.os, "cpu_count", lambda: 1)
     monkeypatch.setattr(relay, "ensure", lambda wait_s=0.0: True)
     monkeypatch.setattr(proxy, "ensure", lambda: True)
-    monkeypatch.setattr(care, "engine_gone", lambda admitting=False: False)
+    monkeypatch.setattr(care.Look, "engine_gone", lambda self: False)
     monkeypatch.setattr(daemon, "listening", _listening(False))
-    monkeypatch.setattr(care, "_CGROUP", tmp_path / "no-cgroup")
-    monkeypatch.setattr(care, "_MEMINFO", tmp_path / "no-meminfo")
-    monkeypatch.setattr(care, "tend", lambda up, admitting=False: None)
-    monkeypatch.setattr(gate, "_admission", None)
+    monkeypatch.setattr(care, "_GONE_S", 0)
     # No process of the host's: the gate ends a browserless daemon it finds.
-    monkeypatch.setattr(care, "_PROC", tmp_path / "no-proc")
+    _read_proc(monkeypatch, tmp_path / "no-proc")
     return directory
 
 
 def test_reading_runs_and_acting_is_refused_while_the_person_holds_the_page(state):
     assert hold.control("a", "take") is True
-    assert gate.check("look") == _STANDARD
+    assert _check("look") == _STANDARD
     with pytest.raises(gate.Refused, match=re.escape(protocol.HELD_MESSAGE)):
-        gate.check("act")
+        _check("act")
 
 
 @pytest.mark.parametrize("failing", ["proxy", "bridge"])
@@ -492,9 +695,9 @@ def test_a_start_that_cannot_spawn_still_leaves_the_hold_to_decide(state, monkey
     monkeypatch.setattr(proxy if failing == "proxy" else relay, "ensure", no_fork)
     monkeypatch.setattr(daemon, "listening", _listening(True))
     hold.control("a", "take")
-    assert gate.check("look") == _STANDARD
+    assert _check("look") == _STANDARD
     with pytest.raises(gate.Refused, match=re.escape(protocol.HELD_MESSAGE)):
-        gate.check("act")
+        _check("act")
 
 
 def test_a_hold_that_stopped_renewing_lapses_by_itself(state, monkeypatch):
@@ -506,25 +709,25 @@ def test_a_hold_that_stopped_renewing_lapses_by_itself(state, monkeypatch):
 
 
 def test_acting_after_a_hold_is_refused_once_until_the_page_is_read(state):
-    assert gate.check("act") == _STANDARD
+    assert _check("act") == _STANDARD
     hold.control("a", "take")
     hold.control("a", "release")
     with pytest.raises(gate.Refused, match=re.escape(protocol.CHANGED_MESSAGE)):
-        gate.check("act")
-    assert gate.check("act") == _STANDARD
+        _check("act")
+    assert _check("act") == _STANDARD
 
     hold.control("a", "take")
     hold.control("a", "release")
-    assert gate.check("look") == _STANDARD
-    assert gate.check("act") == _STANDARD
+    assert _check("look") == _STANDARD
+    assert _check("act") == _STANDARD
 
 
 def test_a_read_during_a_hold_does_not_clear_the_refusal_after_it(state):
     hold.control("a", "take")
-    assert gate.check("look") == _STANDARD
+    assert _check("look") == _STANDARD
     hold.control("a", "release")
     with pytest.raises(gate.Refused, match=re.escape(protocol.CHANGED_MESSAGE)):
-        gate.check("act")
+        _check("act")
 
 
 def test_renewing_a_hold_is_not_a_new_hold(state):
@@ -551,7 +754,7 @@ def test_a_take_landing_while_the_agent_reads_is_not_marked_seen(state):
     reader.join(5)
     hold.control("a", "release")
     with pytest.raises(gate.Refused, match=re.escape(protocol.CHANGED_MESSAGE)):
-        gate.check("act")
+        _check("act")
 
 
 def test_the_hold_is_one_document_written_whole(state):
@@ -569,27 +772,27 @@ def test_a_user_agent_holds_until_the_browser_closes(state, monkeypatch):
     up = [False]
     monkeypatch.setattr(daemon, "listening", lambda port, wait_s=0.0: up[0])
     one = Launch("One a@example.com", "standard")
-    assert gate.check("act", "One a@example.com") == one
+    assert _check("act", "One a@example.com") == one
     up[0] = True
-    assert gate.check("look") == one
-    assert gate.check("act", "One a@example.com") == one
+    assert _check("look") == one
+    assert _check("act", "One a@example.com") == one
 
     with pytest.raises(gate.Refused, match=re.escape(protocol.USER_AGENT_MESSAGE)):
-        gate.check("look", "Two a@example.com")
-    assert gate.check("close") == dataclasses.replace(one, closing=True)
+        _check("look", "Two a@example.com")
+    assert _check("close") == dataclasses.replace(one, closing=True)
     # A close that never finished: the browser is up on what it was launched with.
-    assert gate.check("look") == one
-    assert gate.check("close") == dataclasses.replace(one, closing=True)
+    assert _check("look") == one
+    assert _check("close") == dataclasses.replace(one, closing=True)
     with pytest.raises(gate.Refused):
-        gate.check("look", "Two a@example.com")
+        _check("look", "Two a@example.com")
     up[0] = False
-    assert gate.check("act", "Two a@example.com") == Launch("Two a@example.com", "standard")
+    assert _check("act", "Two a@example.com") == Launch("Two a@example.com", "standard")
 
 
 def test_a_user_agent_set_on_a_running_browser_is_refused(state, monkeypatch):
     monkeypatch.setattr(daemon, "listening", _listening(True))
     with pytest.raises(gate.Refused, match=re.escape(protocol.USER_AGENT_MESSAGE)):
-        gate.check("act", "Late a@example.com")
+        _check("act", "Late a@example.com")
 
 
 @pytest.mark.parametrize(
@@ -609,15 +812,18 @@ def test_what_belongs_to_a_browser_lasts_while_the_engine_runs(
     timeout by its grace, and here it is up throughout."""
     hold.control("a", "take")
     launch.write(Launch("Kept a@example.com", "light"))
-    daemons = [care._Process(pid=7, ppid=1, uid=0, argv=[])] if engine == "daemon" else []
-    monkeypatch.setattr(care, "engine_gone", _REAL_ENGINE_GONE)
-    monkeypatch.setattr(care, "end_browserless", lambda admitting=False: False)
-    monkeypatch.setattr(care, "_engine_daemons", lambda processes: daemons)
-    monkeypatch.setattr(
-        care, "_engine_busy", lambda processes, exclude=None, wrappers=True: engine == "command"
-    )
+    daemons = [system.Process(pid=7, ppid=1, uid=0, argv=[])] if engine == "daemon" else []
+
+    def gone(pid, sig):
+        raise ProcessLookupError(pid)
+
+    # A daemon that runs no Chrome the reading shows, whose end finds it gone.
+    monkeypatch.setattr(care.os, "kill", gone)
+    monkeypatch.setattr(care.Look, "engine_gone", _REAL_ENGINE_GONE)
+    monkeypatch.setattr(care.Look, "daemons", lambda self: daemons)
+    monkeypatch.setattr(care.Look, "busy", lambda self: engine == "command")
     monkeypatch.setattr(daemon, "listening", _listening(stream_up))
-    gate.check("look")
+    _check("look")
     assert hold.held() is kept
     assert (launch.current().user_agent == "Kept a@example.com") is kept
 
@@ -626,8 +832,8 @@ def test_a_restarted_computer_keeps_nothing_of_the_last_browser(state, monkeypat
     """Its state files are left and every process is gone."""
     hold.control("a", "take")
     launch.write(Launch("Before the restart", "light"))
-    monkeypatch.setattr(care, "engine_gone", lambda admitting=False: True)
-    assert gate.check("act") == _STANDARD
+    monkeypatch.setattr(care.Look, "engine_gone", lambda self: True)
+    assert _check("act") == _STANDARD
     assert hold.held() is False
 
 
@@ -649,13 +855,13 @@ def test_a_restarted_computer_keeps_nothing_of_the_last_browser(state, monkeypat
 def test_more_browser_is_refused_when_memory_is_short(state, monkeypatch, use, up, refused):
     (state / "memory.max").write_text("1000\n")
     (state / "memory.stat").write_text("anon 590\nshmem 20\nfile 300\n")
-    monkeypatch.setattr(care, "_CGROUP", state)
+    monkeypatch.setattr(system, "_CGROUP", state)
     monkeypatch.setattr(daemon, "listening", _listening(up))
     if refused:
         with pytest.raises(gate.Refused, match=re.escape(protocol.MEMORY_MESSAGE)):
-            gate.check(use)
+            _check(use)
     else:
-        assert dataclasses.replace(gate.check(use), closing=False) == _STANDARD
+        assert dataclasses.replace(_check(use), closing=False) == _STANDARD
 
 
 def test_a_batch_that_ends_closed_runs_on_its_browser_and_ends_the_user_agent(state, monkeypatch):
@@ -666,17 +872,17 @@ def test_a_batch_that_ends_closed_runs_on_its_browser_and_ends_the_user_agent(st
     up = [True]
     monkeypatch.setattr(daemon, "listening", lambda port, wait_s=0.0: up[0])
     launch.write(Launch("Old", "light"))
-    assert gate.check("closes") == Launch("Old", "light", closing=True)
+    assert _check("closes") == Launch("Old", "light", closing=True)
     assert launch.current() == Launch("Old", "light", closing=True)
     # The batch stopped before its close: the browser and what it runs with stay.
-    assert gate.check("look") == Launch("Old", "light")
-    assert gate.check("closes") == Launch("Old", "light", closing=True)
+    assert _check("look") == Launch("Old", "light")
+    assert _check("closes") == Launch("Old", "light", closing=True)
     up[0] = False
-    assert gate.check("act").user_agent == ""
+    assert _check("act").user_agent == ""
     up[0] = True
     hold.control("a", "take")
     with pytest.raises(gate.Refused, match=re.escape(protocol.HELD_MESSAGE)):
-        gate.check("closes")
+        _check("closes")
 
 
 def test_a_batch_that_closes_and_goes_on_starts_its_browser_afresh(state, monkeypatch):
@@ -684,21 +890,21 @@ def test_a_batch_that_closes_and_goes_on_starts_its_browser_afresh(state, monkey
     agent and quality are this command's, as for any browser that starts."""
     monkeypatch.setattr(daemon, "listening", _listening(True))
     launch.write(Launch("Old", "light"))
-    assert gate.check("reopen", "New") == Launch("New", "standard")
-    assert gate.check("reopen") == Launch("", "standard")
+    assert _check("reopen", "New") == Launch("New", "standard")
+    assert _check("reopen") == Launch("", "standard")
 
 
 def test_a_browser_ended_while_tending_is_one_this_command_must_open(state, monkeypatch):
-    """Its Chrome died after the gate looked, so tending ended its daemon and
+    """Its Chrome had died, so tending ended its daemon and
     stream: acting now opens a browser, which memory must have room for."""
     (state / "memory.max").write_text("1000\n")
     (state / "memory.stat").write_text("anon 590\nshmem 20\nfile 300\n")
-    monkeypatch.setattr(care, "_CGROUP", state)
+    monkeypatch.setattr(system, "_CGROUP", state)
     stream = {"up": True}
     monkeypatch.setattr(daemon, "listening", lambda port, wait_s=0.0: stream["up"])
-    monkeypatch.setattr(care, "tend", lambda up, admitting=False: stream.update(up=False))
+    monkeypatch.setattr(care.Look, "tend", lambda self, up: stream.update(up=False) or self)
     with pytest.raises(gate.Refused, match=re.escape(protocol.MEMORY_MESSAGE)):
-        gate.check("act")
+        _check("act")
 
 
 @pytest.mark.parametrize("cgroup", ["max\n", None], ids=["no limit", "no controller"])
@@ -712,8 +918,8 @@ def test_a_machine_with_no_limit_of_its_own_is_measured_against_all_its_memory(
     meminfo.write_text(
         f"MemTotal:  1000 kB\nMemAvailable:  300 kB\nAnonPages:  {anon} kB\nShmem:  20 kB\nHugePages_Total:  0\n"
     )
-    monkeypatch.setattr(care, "_CGROUP", state)
-    monkeypatch.setattr(care, "_MEMINFO", meminfo)
+    monkeypatch.setattr(system, "_CGROUP", state)
+    monkeypatch.setattr(system, "_MEMINFO", meminfo)
     assert care.memory_full() is full
 
 
@@ -722,7 +928,7 @@ def test_a_cgroup_v1_limit_is_the_computer_s_share(state, monkeypatch, rss, full
     (state / "memory").mkdir()
     (state / "memory" / "memory.limit_in_bytes").write_text("1000\n")
     (state / "memory" / "memory.stat").write_text(f"rss 1\nshmem 1\ntotal_rss {rss}\ntotal_shmem 20\ntotal_cache 300\n")
-    monkeypatch.setattr(care, "_CGROUP", state)
+    monkeypatch.setattr(system, "_CGROUP", state)
     assert care.memory_full() is full
 
 
@@ -732,27 +938,31 @@ def test_a_cgroup_v1_with_no_limit_is_measured_against_all_memory(state, monkeyp
     (state / "memory" / "memory.stat").write_text("total_rss 590\ntotal_shmem 20\n")
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal:  1000 kB\nAnonPages:  590 kB\nShmem:  20 kB\n")
-    monkeypatch.setattr(care, "_CGROUP", state)
-    monkeypatch.setattr(care, "_MEMINFO", meminfo)
+    monkeypatch.setattr(system, "_CGROUP", state)
+    monkeypatch.setattr(system, "_MEMINFO", meminfo)
     assert care.memory_full() is True
 
 
 def test_a_machine_that_says_neither_is_never_full(state, monkeypatch, tmp_path):
     (state / "memory.max").write_text("max\n")
-    monkeypatch.setattr(care, "_CGROUP", state)
-    monkeypatch.setattr(care, "_MEMINFO", tmp_path / "absent")
+    monkeypatch.setattr(system, "_CGROUP", state)
+    monkeypatch.setattr(system, "_MEMINFO", tmp_path / "absent")
     assert care.memory_full() is False
 
 
-#: How the engine starts each Chrome: by its name for it, on a throwaway profile.
-_ENGINE_CHROME = [protocol.CHROME_BIN, f"--user-data-dir=/tmp/{protocol.ENGINE_PROFILE_PREFIX}x"]
+#: How the engine starts each Chrome: by its name for it, through the runtime's
+#: proxy, on a throwaway profile.
+_OUR_PROXY = f"--proxy-server=http://127.0.0.1:{protocol.PROXY_PORT}"
+_ENGINE_CHROME = [protocol.CHROME_BIN, _OUR_PROXY, f"--user-data-dir=/tmp/{protocol.ENGINE_PROFILE_PREFIX}x"]
 
 
-def _fake_proc(root: Path, pid: int, ppid: int, argv: list[str], exe: str = "/bin/sh", cwd: str = "/") -> Path:
+def _fake_proc(
+    root: Path, pid: int, ppid: int, argv: list[str], exe: str = "/bin/sh", cwd: str = "/", run_state: str = "S"
+) -> Path:
     """A process entry as ``care`` reads one: its stat, command line, exe and cwd."""
     entry = root / str(pid)
     entry.mkdir(parents=True)
-    (entry / "stat").write_text(f"{pid} (a name) with spaces) S {ppid} 1 1 0")
+    (entry / "stat").write_text(f"{pid} (a name) with spaces) {run_state} {ppid} 1 1 0")
     (entry / "cmdline").write_bytes("\0".join(argv).encode() + b"\0")
     (entry / "exe").symlink_to(exe)
     (entry / "cwd").symlink_to(cwd)
@@ -761,22 +971,31 @@ def _fake_proc(root: Path, pid: int, ppid: int, argv: list[str], exe: str = "/bi
 
 
 def test_one_reading_of_the_processes_carries_each_parent_owner_and_command(tmp_path, monkeypatch):
-    monkeypatch.setattr(care, "_PROC", tmp_path)
+    _read_proc(monkeypatch, tmp_path)
     _fake_proc(tmp_path, 7, 3, ["python3", "-I", "x"])
     (tmp_path / "self").mkdir()
-    assert care._processes() == [care._Process(7, 3, os.getuid(), ["python3", "-I", "x", ""])]
+    assert care.look().processes == (system.Process(7, 3, os.getuid(), ["python3", "-I", "x", ""], "/bin/sh"),)
+
+
+def test_a_process_that_has_ended_is_not_one_of_the_machine_s(tmp_path, monkeypatch):
+    """Its files are closed; only its parent has yet to collect it, which on a
+    machine with no init to do so is never."""
+    _read_proc(monkeypatch, tmp_path)
+    _fake_proc(tmp_path, 7, 3, ["python3"])
+    _fake_proc(tmp_path, 8, 3, [], run_state="Z")
+    assert [p.pid for p in care.look().processes] == [7]
 
 
 def test_only_a_browser_whose_daemon_died_is_reaped(tmp_path, monkeypatch):
     monkeypatch.setattr(protocol, "_STATE_ROOT", tmp_path)
-    monkeypatch.setattr(care, "_BROWSER_GONE_S", 0)
+    monkeypatch.setattr(care, "_GONE_S", 0)
     profile = tmp_path / f"{protocol.ENGINE_PROFILE_PREFIX}1"
     profile.mkdir()
     processes = tmp_path / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
-    _fake_proc(processes, 10, 1, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    _fake_proc(processes, 10, 1, [protocol.CHROME_BIN, _OUR_PROXY, f"--user-data-dir={profile}"])
     _fake_proc(processes, 20, 2, _ENGINE_CHROME)
     killed = []
     monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
@@ -785,27 +1004,47 @@ def test_only_a_browser_whose_daemon_died_is_reaped(tmp_path, monkeypatch):
     assert not profile.exists()
 
 
+def test_another_engine_s_browser_on_the_machine_is_never_reaped(tmp_path, monkeypatch):
+    """A second computer on the same machine, or the person's own engine, names
+    its throwaway profiles the same; its daemon is not ours, but its browser is
+    not ours to end either."""
+    monkeypatch.setattr(protocol, "_STATE_ROOT", tmp_path)
+    profile = tmp_path / f"{protocol.ENGINE_PROFILE_PREFIX}1"
+    profile.mkdir()
+    processes = tmp_path / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 3, 1, ["/elsewhere/agent-browser"], exe="/elsewhere/agent-browser")
+    other = [protocol.CHROME_BIN, "--proxy-server=http://127.0.0.1:1", f"--user-data-dir={profile}"]
+    _fake_proc(processes, 30, 3, other)
+    killed = []
+    monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
+    care.tend(False)
+    assert killed == []
+    assert profile.exists()
+
+
 def test_a_reaped_browser_takes_its_hold_and_launch_along(state, tmp_path, monkeypatch):
     """The next browser starts neither held nor on the dead one's user agent,
     though the bridge, still up, keeps the gate from forgetting them itself."""
     processes = tmp_path / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(processes, 10, 1, _ENGINE_CHROME)
     monkeypatch.setattr(care.os, "kill", lambda pid, sig: shutil.rmtree(processes / str(pid)))
     hold.control("a", "take")
     launch.write(Launch("Old", "light"))
-    _TEND(False)
+    care.tend(False)
     assert not (processes / "10").exists()
     assert (hold.held(), launch.current()) == (False, None)
-    assert gate.check("act") == _STANDARD
+    assert _check("act") == _STANDARD
 
 
 def test_the_bridge_reaps_nothing_while_a_command_is_admitted(state, tmp_path, monkeypatch):
     """What the command records may be for the browser it is about to start;
     its own gate reaps, under the lock, before it records anything."""
     processes = tmp_path / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(processes, 10, 1, _ENGINE_CHROME)
     killed = []
@@ -813,7 +1052,7 @@ def test_the_bridge_reaps_nothing_while_a_command_is_admitted(state, tmp_path, m
     launch.write(Launch("New", "light"))
     with open(state / care.ADMISSION_LOCK, "a") as admitting:
         fcntl.flock(admitting, fcntl.LOCK_EX)
-        _TEND(False)
+        care.tend(False)
     assert (killed, launch.current()) == ([], Launch("New", "light"))
 
 
@@ -824,7 +1063,7 @@ def test_a_chrome_the_agent_started_on_its_own_profile_is_never_reaped(tmp_path,
     profile = tmp_path / "my-profile"
     profile.mkdir()
     processes = tmp_path / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(processes, 10, 1, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
     _fake_proc(processes, 11, 1, [protocol.CHROME_BIN])
@@ -838,20 +1077,20 @@ def test_a_chrome_the_agent_started_on_its_own_profile_is_never_reaped(tmp_path,
 def test_only_a_browser_its_daemon_runs_is_up(tmp_path, monkeypatch):
     """A Chrome whose daemon died answers no command, so a start must run one,
     whose gate reaps it, rather than wait on a stream that never comes."""
-    monkeypatch.setattr(care, "_PROC", tmp_path)
+    _read_proc(monkeypatch, tmp_path)
     _fake_proc(tmp_path, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(tmp_path, 10, 1, _ENGINE_CHROME)
-    assert care.browser_up() is False
+    assert care.look().browser_up() is False
     _fake_proc(tmp_path, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     _fake_proc(tmp_path, 20, 2, _ENGINE_CHROME)
-    assert care.browser_up() is True
+    assert care.look().browser_up() is True
 
 
 def test_a_daemon_whose_chrome_died_is_ended_with_its_hold_and_launch(state, monkeypatch):
     """The OOM killer can take Chrome and leave the daemon's stream on the last
     frame; the closed browser's hold would then refuse the start that brings one back."""
     processes = state / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     monkeypatch.setattr(daemon, "listening", _listening(False))
     killed = []
     monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
@@ -859,7 +1098,7 @@ def test_a_daemon_whose_chrome_died_is_ended_with_its_hold_and_launch(state, mon
     _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     hold.control("view-1", "take")
     launch.write(Launch("", "standard"))
-    assert care.end_browserless() is True
+    assert care.look().end_browserless().daemons() == []
     assert killed == [2]
     assert hold.refusal("act") is None
     assert launch.current() is None
@@ -867,22 +1106,24 @@ def test_a_daemon_whose_chrome_died_is_ended_with_its_hold_and_launch(state, mon
 
 def test_a_daemon_with_its_chrome_or_one_still_starting_is_left(state, monkeypatch):
     processes = state / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     killed = []
     monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
     _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     _fake_proc(processes, 20, 2, _ENGINE_CHROME)
-    assert care.end_browserless() is False
+    care.look().end_browserless()
+    assert killed == []
     shutil.rmtree(processes / "20")
     # A command that may be launching the daemon's Chrome; the caller's own does not count.
     _fake_proc(processes, 3, 1, [protocol.ENGINE_BIN, "open", "x"], exe=protocol.ENGINE_BIN)
-    assert care.end_browserless() is False
+    care.look().end_browserless()
+    assert killed == []
     shutil.rmtree(processes / "3")
     runtime = str(Path(care.__file__).resolve().parent)
     me = os.getpid()
     _fake_proc(processes, me, 1, ["python3", "-I", runtime, "agent-browser", "open", "x"], exe="/usr/bin/python3")
     monkeypatch.setattr(daemon, "listening", _listening(False))
-    assert care.end_browserless() is True
+    care.look().end_browserless()
     assert killed == [2]
 
 
@@ -891,22 +1132,69 @@ def test_commands_arriving_together_end_a_browserless_daemon_one_at_a_time(state
     leave the dead browser's stream up; the one admitted ends it, and the next
     waits for the gate."""
     processes = state / "processes"
-    monkeypatch.setattr(care, "_PROC", processes)
+    _read_proc(monkeypatch, processes)
     killed = []
     monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
     _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     runtime = str(Path(care.__file__).resolve().parent)
     _fake_proc(processes, 7, 1, ["python3", "-I", runtime, "agent-browser", "open", "x"], exe="/usr/bin/python3")
-    assert care.end_browserless() is False
-    assert care.end_browserless(admitting=True) is True
+    care.look().end_browserless()
+    assert killed == []
+    with care.admitted() as seen:
+        seen.end_browserless()
     assert killed == [2]
-    gate.check("act")
+    _, release = gate.check("act")
     with open(state / "admitting.lock") as waiting, pytest.raises(BlockingIOError):
+        fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    release()
+    with open(state / "admitting.lock") as waiting:
         fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def test_the_whole_browser_goes_first_and_nothing_beside_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(care, "_PROC", tmp_path)
+def test_ending_processes_returns_the_reading_without_them(state, monkeypatch):
+    """Each check after it sees the machine as the end left it, not as read."""
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    monkeypatch.setattr(care.os, "kill", lambda pid, sig: None)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, _ENGINE_CHROME)
+    _fake_proc(processes, 21, 20, ["/chrome/renderer"])
+    seen = care.look()
+    # A daemon takes the Chrome it runs, and that its own processes.
+    left = seen.close(seen.daemons())
+    assert (sorted(p.pid for p in seen.processes), [p.pid for p in left.processes]) == ([1, 2, 20, 21], [1])
+    assert left.close([]) is left
+
+
+def test_the_bridge_tick_leaves_a_command_being_admitted_to_its_gate(state, monkeypatch):
+    """A command recording a new launch meanwhile would lose it to a browser
+    the tick ends."""
+    monkeypatch.setattr(care.Look, "tend", lambda self, up: pytest.fail("tended under a command's admission"))
+    admitted = care.admit()
+    try:
+        care.tend(True)
+        care.tend(False)
+    finally:
+        admitted.release()
+
+
+def test_the_bridge_tick_that_cannot_take_the_gate_tends_nothing(state, monkeypatch):
+    """It cannot tell whether a command holds it, so it leaves this tick."""
+
+    def unopenable(name, *, wait=True):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(care, "locked", unopenable)
+    monkeypatch.setattr(care.Look, "tend", lambda self, up: pytest.fail("tended without the gate's lock"))
+    care.tend(True)
+    care.tend(False)
+
+
+def test_the_whole_browser_goes_first_and_nothing_beside_it(tmp_path, tmp_path_factory, monkeypatch):
+    # The tick's lock file, kept apart from the process table it reads.
+    monkeypatch.setattr(protocol, "_STATE_ROOT", tmp_path_factory.mktemp("state"))
+    _read_proc(monkeypatch, tmp_path)
     _fake_proc(tmp_path, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     _fake_proc(tmp_path, 10, 2, _ENGINE_CHROME)
     _fake_proc(tmp_path, 11, 10, ["/chrome/renderer", "--type=renderer"])
@@ -921,7 +1209,7 @@ def test_the_whole_browser_goes_first_and_nothing_beside_it(tmp_path, monkeypatc
 def engine_runs(state, monkeypatch):
     """The engine commands ``navigate`` runs, on an open browser launched at retina."""
     monkeypatch.setattr(daemon, "listening", _listening(True))
-    monkeypatch.setattr(care, "browser_up", lambda: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: True)
     launch.write(Launch("", "retina"))
     runs: list[tuple[list[str], dict[str, str]]] = []
 
@@ -977,9 +1265,9 @@ def test_the_person_s_navigation_and_the_agent_s_command_run_with_one_launch(sta
     monkeypatch.setattr(quality.os, "cpu_count", lambda: 8)
     assert _run("--user-agent", "Agent a@example.com", "open", "https://example.com") is None
     monkeypatch.setattr(daemon, "listening", _listening(True))
-    monkeypatch.setattr(care, "browser_up", lambda: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: True)
     # A choice made while the browser is open reaches the next one, not this one.
-    assert quality.choose("light") is True
+    _choose(quality="light")
     assert _run("snapshot") is None
     agent_env = engine["env"]
     hold.control("a", "take")
@@ -1036,7 +1324,7 @@ def test_a_stream_whose_chrome_died_is_not_navigated(engine_runs, monkeypatch):
     """The engine's daemon outlives a Chrome the OOM killer took, and the next
     command it runs launches another, outside the wrapper's memory check."""
     hold.control("a", "take")
-    monkeypatch.setattr(care, "browser_up", lambda: False)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
     assert machine.navigate("a", "reload") == {"done": False, "reason": "not_running"}
     assert engine_runs == []
 
@@ -1111,7 +1399,7 @@ def test_a_navigation_queued_behind_another_goes_nowhere_once_the_browser_ended(
     hold.control("b", "take")
     started, finish = threading.Event(), threading.Event()
     up = [True]
-    monkeypatch.setattr(care, "browser_up", lambda: up[0])
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: up[0])
 
     def run(argv, **kwargs):
         if not started.is_set():
@@ -1141,14 +1429,12 @@ def test_a_navigation_queued_behind_another_goes_nowhere_once_the_browser_ended(
 def test_every_command_finds_the_one_daemon_whatever_folder_it_asks_for(monkeypatch):
     """Another folder holds another daemon, whose Chrome the gate, the hold and
     the viewer never see."""
-    env = wrapper.engine_env(
-        {"AGENT_BROWSER_SOCKET_DIR": "/tmp/other", "HOME": "/tmp/elsewhere"}, _STANDARD
-    )
+    env = _STANDARD.engine_env({"AGENT_BROWSER_SOCKET_DIR": "/tmp/other", "HOME": "/tmp/elsewhere"}, Host())
     assert env["AGENT_BROWSER_SOCKET_DIR"] == os.path.join(
-        wrapper.pwd.getpwuid(os.getuid()).pw_dir, ".agent-browser"
+        launch.pwd.getpwuid(os.getuid()).pw_dir, ".agent-browser"
     )
-    monkeypatch.setattr(wrapper.os, "getuid", lambda: 2**31 - 7)
-    assert wrapper.engine_env({}, _STANDARD)["AGENT_BROWSER_SOCKET_DIR"].endswith("/agent-browser")
+    monkeypatch.setattr(launch.os, "getuid", lambda: 2**31 - 7)
+    assert _STANDARD.engine_env({}, Host())["AGENT_BROWSER_SOCKET_DIR"].endswith("/agent-browser")
 
 
 def test_a_page_the_engine_could_not_reach_is_a_failure_and_a_slow_one_is_not(engine_runs, monkeypatch):
@@ -1164,9 +1450,9 @@ def test_a_page_the_engine_could_not_reach_is_a_failure_and_a_slow_one_is_not(en
 
 
 def test_starting_leaves_a_browser_already_up_on_its_page(state, monkeypatch):
-    monkeypatch.setattr(machine.os, "access", lambda *_: True)
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
     monkeypatch.setattr(daemon, "listening", _listening(True))
-    monkeypatch.setattr(care, "browser_up", lambda: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: True)
     (state / protocol.TOKEN_FILE).write_text("tok")
     spawned = []
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: spawned.append(a))
@@ -1177,10 +1463,10 @@ def test_starting_leaves_a_browser_already_up_on_its_page(state, monkeypatch):
 def test_a_stream_whose_chrome_is_gone_is_not_up_and_a_start_brings_one_back(state, monkeypatch):
     """The engine's daemon keeps its stream listening after the OOM killer takes
     Chrome, and the next command it runs launches another."""
-    monkeypatch.setattr(machine.os, "access", lambda *_: True)
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
     monkeypatch.setattr(daemon, "listening", _listening(True))
-    monkeypatch.setattr(care, "browser_up", lambda: False)
-    monkeypatch.setattr(care, "engine_busy", lambda: False)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
+    monkeypatch.setattr(care.Look, "busy", lambda self: False)
     monkeypatch.setattr(care, "memory_full", lambda: False)
     (state / protocol.TOKEN_FILE).write_text("tok")
     spawned = []
@@ -1193,8 +1479,8 @@ def test_a_stream_whose_chrome_is_gone_is_not_up_and_a_start_brings_one_back(sta
 def test_an_open_with_memory_short_tries_nothing_and_says_so(state, monkeypatch):
     """The wrapper would refuse the open, and a viewer waiting out the start for a
     browser that never comes would learn nothing."""
-    monkeypatch.setattr(machine.os, "access", lambda *_: True)
-    monkeypatch.setattr(care, "engine_busy", lambda: False)
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
+    monkeypatch.setattr(care.Look, "busy", lambda self: False)
     monkeypatch.setattr(care, "memory_full", lambda: True)
     spawned = []
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: spawned.append(a))
@@ -1214,7 +1500,7 @@ def test_asking_for_the_status_starts_the_bridge_once_and_waits_for_it(tmp_path,
         return port == protocol.STREAM_PORT
 
     monkeypatch.setattr(daemon, "listening", stream_only)
-    monkeypatch.setattr(care, "browser_up", lambda: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: True)
     spawned = []
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda argv, **k: spawned.append(argv[3:]))
     assert machine.status(0).running is False
@@ -1282,15 +1568,15 @@ def test_the_recipe_picks_each_architecture_and_carries_on(arch: str):
     assert result.stdout.strip() == SANDBOX_AGENT_BROWSER_SHA256[arch]
 
 
-def test_only_a_machine_of_our_own_is_sent_the_browser():
-    names = {str(rel) for _, rel in _internal_package_files(_SANDBOX_SRC, provider_class("docker"))}
-    without = {str(rel) for _, rel in _internal_package_files(_SANDBOX_SRC, provider_class("ssh"))}
-    added = names - without
-    assert any(name.endswith("agent-browser") for name in added)
-    assert f"{protocol.PACKAGE_NAME}/protocol.py" in added
+@pytest.mark.parametrize("kind", ["docker", "ssh"])
+def test_every_machine_is_sent_the_browser(kind):
+    """A machine of the person's own sets the browser up with what is sent."""
+    names = {str(rel) for _, rel in _internal_package_files(_SANDBOX_SRC, provider_class(kind))}
+    assert any(name.endswith("agent-browser") for name in names)
+    assert f"{protocol.PACKAGE_NAME}/install.py" in names
     # The engine fails every command when the config it is pointed at is missing.
-    config = Path(wrapper._ENGINE_ENV["AGENT_BROWSER_CONFIG"]).name
-    assert f"{protocol.PACKAGE_NAME}/{config}" in added
+    config = Path(launch._ENGINE_ENV["AGENT_BROWSER_CONFIG"]).name
+    assert f"{protocol.PACKAGE_NAME}/{config}" in names
 
 
 def test_only_the_stream_s_own_settings_reach_it():
@@ -1355,12 +1641,12 @@ def test_a_second_viewer_holds_until_both_let_go(state):
     assert hold._read().epoch == epoch
     assert hold.control("a", "release") is False
     with pytest.raises(gate.Refused, match=re.escape(protocol.HELD_MESSAGE)):
-        gate.check("act")
+        _check("act")
     assert hold.control("b", "renew") is True
     assert hold.control("b", "release") is False
     with pytest.raises(gate.Refused, match=re.escape(protocol.CHANGED_MESSAGE)):
-        gate.check("act")
-    assert gate.check("act") == _STANDARD
+        _check("act")
+    assert _check("act") == _STANDARD
 
 
 def test_a_renewal_after_a_release_takes_nothing_back(state):
@@ -1433,7 +1719,7 @@ def test_releases_reach_only_the_holder_s_open_browser(engine_runs, monkeypatch,
     if why != "not held":
         hold.control("a", "take")
     if why == "browser closed":
-        monkeypatch.setattr(care, "browser_up", lambda: False)
+        monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
     if why == "no launch":
         launch.forget()
     assert machine.control("a", "release", protocol.release_commands(_RELEASES)) is False
@@ -1490,9 +1776,9 @@ def test_only_a_short_opaque_holder_and_a_known_action_are_taken(state, holder, 
 def test_a_start_drops_a_hold_taken_on_a_browser_that_closed(state, monkeypatch):
     """A take can land just after the browser closed; its lease would refuse the
     open that brings one back for as long as it runs."""
-    monkeypatch.setattr(machine.os, "access", lambda *_: True)
-    monkeypatch.setattr(care, "browser_up", lambda: False)
-    monkeypatch.setattr(care, "engine_busy", lambda: False)
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
+    monkeypatch.setattr(care.Look, "busy", lambda self: False)
     monkeypatch.setattr(care, "memory_full", lambda: False)
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: None)
     hold.control("late", "take")
@@ -1509,22 +1795,22 @@ def test_a_start_only_reads_so_it_can_never_take_the_agent_s_page_away():
 
 def test_an_open_waits_for_a_browser_the_agent_is_still_starting(state, monkeypatch):
     """Two starts at once reach one daemon, so the second is not sent."""
-    monkeypatch.setattr(machine.os, "access", lambda *_: True)
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
     spawned = []
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda argv, **k: spawned.append(argv[3:]))
-    monkeypatch.setattr(care, "engine_busy", lambda: True)
+    monkeypatch.setattr(care.Look, "busy", lambda self: True)
     machine.start(0)
     assert spawned == []
-    monkeypatch.setattr(care, "engine_busy", lambda: False)
+    monkeypatch.setattr(care.Look, "busy", lambda self: False)
     machine.start(0)
     assert spawned == [["agent-browser", *machine._ENGINE_START_ARGS]]
 
 
 def test_a_command_of_ours_or_the_engine_is_seen_starting(tmp_path, monkeypatch):
     runtime = str(Path(care.__file__).resolve().parent)
-    monkeypatch.setattr(care, "_PROC", tmp_path)
+    _read_proc(monkeypatch, tmp_path)
     _fake_proc(tmp_path, 1, 0, ["/bin/sh", "-c", "agent-browser open x"])
-    assert care.engine_busy() is False
+    assert care.look().busy() is False
     wrapper_entry = _fake_proc(
         tmp_path,
         2,
@@ -1532,14 +1818,14 @@ def test_a_command_of_ours_or_the_engine_is_seen_starting(tmp_path, monkeypatch)
         ["python3", "-I", f"{runtime}/../{Path(runtime).name}", "agent-browser", "open", "x"],
         exe="/usr/bin/python3",
     )
-    assert care.engine_busy() is True
+    assert care.look().busy() is True
     shutil.rmtree(wrapper_entry)
     # The engine's daemon alone starts nothing: it can outlive a Chrome the OOM killer took.
     daemon_entry = _fake_proc(tmp_path, 3, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
-    assert care.engine_busy() is False
+    assert care.look().busy() is False
     shutil.rmtree(daemon_entry)
     _fake_proc(tmp_path, 4, 1, [protocol.ENGINE_BIN, "open", "x"], exe=protocol.ENGINE_BIN)
-    assert care.engine_busy() is True
+    assert care.look().busy() is True
 
 
 @pytest.mark.parametrize(
@@ -1574,7 +1860,7 @@ def test_a_batch_read_from_stdin_is_checked_and_handed_on(engine, monkeypatch, c
     handed = []
     monkeypatch.setattr(wrapper, "_restore_stdin", handed.append)
     uses = []
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: uses.append(use) or _STANDARD)
+    monkeypatch.setattr(gate, "check", lambda use, user_agent: (uses.append(use) or _STANDARD, lambda: None))
     monkeypatch.setattr(wrapper.sys, "stdin", io.TextIOWrapper(io.BytesIO(b'[["click", "@e1"]]')))
     assert _run("--json", "batch", "--bail") is None
     assert handed == [b'[["click", "@e1"]]']
@@ -1649,13 +1935,14 @@ def test_every_request_goes_through_the_proxy_loopback_included(engine, monkeypa
         # The page 1280 by 800 under headless Chrome's undrawn toolbar, which the
         # engine's own 1280 by 720 window left a strip 577 tall.
         "--window-size=1280,943",
+        "--disk-cache-size=67108864",
     ]
     assert (env["AGENT_BROWSER_STREAM_MAX_WIDTH"], env["AGENT_BROWSER_STREAM_MAX_HEIGHT"]) == ("1280", "800")
     assert env["AGENT_BROWSER_STREAM_QUALITY"] == "70"
 
 
 def test_retina_renders_at_twice_the_page_and_streams_it_whole(engine, monkeypatch):
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: Launch("", "retina"))
+    monkeypatch.setattr(gate, "check", _admits(Launch("", "retina")))
     assert _run("open", "https://example.com") is None
     env = engine["env"]
     # Emulating the scale for the page leaves the screencast at one pixel a page pixel.
@@ -1693,73 +1980,59 @@ def test_a_gate_that_cannot_settle_runs_the_launch_on_record(engine, monkeypatch
 def test_a_browser_starts_with_the_chosen_quality_or_one_its_size_can_keep_up_with(
     state, cpu_max, chosen, launched
 ):
-    (quality._CGROUP / "cpu.max").write_text(cpu_max)
+    (system._CGROUP / "cpu.max").write_text(cpu_max)
     if chosen:
-        assert quality.choose(chosen) is True
-    assert gate.check("act") == Launch("", launched)
+        _choose(quality=chosen)
+    assert _check("act") == Launch("", launched)
     assert launch.current() == Launch("", launched)
 
 
-def test_a_choice_that_is_not_a_quality_is_refused_and_one_found_garbled_is_ignored(state):
-    (quality._CGROUP / "cpu.max").write_text("400000 100000")
-    assert quality.choose("garbage") is False
-    assert quality.chosen() == "retina"
-    protocol.write_state(quality._FILE, "garbage")
+def test_choices_found_garbled_are_none(state):
+    (system._CGROUP / "cpu.max").write_text("400000 100000")
+    _choose(quality="light")
+    stored = json.loads(protocol.state_file(choices._FILE).read_text())
+    protocol.write_state(choices._FILE, json.dumps({**stored, "quality": "garbage"}))
+    assert choices.held() is None
     assert quality.chosen() == "retina"
 
 
 def test_an_open_browser_keeps_its_quality_until_it_closes(state, monkeypatch):
     """A launch option that changes between commands restarts the browser and
     loses its pages."""
-    quality.choose("light")
-    assert gate.check("act").quality == "light"
+    _choose(quality="light")
+    assert _check("act").quality == "light"
     monkeypatch.setattr(daemon, "listening", _listening(True))
-    quality.choose("sharp")
-    assert gate.check("look").quality == "light"
-    assert gate.check("close").quality == "light"
+    _choose(quality="sharp")
+    assert _check("look").quality == "light"
+    assert _check("close").quality == "light"
     monkeypatch.setattr(daemon, "listening", _listening(False))
-    assert gate.check("act").quality == "sharp"
+    assert _check("act").quality == "sharp"
 
 
 def test_a_machine_with_no_cpu_limit_counts_its_cpus(state, monkeypatch):
     monkeypatch.setattr(quality.os, "cpu_count", lambda: 8)
     assert quality.cpus() == 8
-    (quality._CGROUP / "cpu.max").write_text("150000 100000")
+    (system._CGROUP / "cpu.max").write_text("150000 100000")
     assert quality.cpus() == 1.5
 
 
 @pytest.mark.parametrize(("quota", "cpus"), [("100000", 1.0), ("-1", 8.0)])
 def test_a_cgroup_v1_cpu_quota_is_the_computer_s_limit(state, monkeypatch, quota, cpus):
     monkeypatch.setattr(quality.os, "cpu_count", lambda: 8)
-    (quality._CGROUP / "cpu").mkdir()
-    (quality._CGROUP / "cpu" / "cpu.cfs_quota_us").write_text(f"{quota}\n")
-    (quality._CGROUP / "cpu" / "cpu.cfs_period_us").write_text("100000\n")
+    (system._CGROUP / "cpu").mkdir()
+    (system._CGROUP / "cpu" / "cpu.cfs_quota_us").write_text(f"{quota}\n")
+    (system._CGROUP / "cpu" / "cpu.cfs_period_us").write_text("100000\n")
     assert quality.cpus() == cpus
-
-
-@pytest.mark.parametrize(
-    ("argv", "answer", "kept"),
-    [
-        (["quality", "sharp"], {"done": True}, "sharp"),
-        (["quality", "default"], {"done": True}, None),
-        (["quality", "ultra"], {"done": False}, "light"),
-    ],
-)
-def test_the_server_hands_the_machine_its_choice_of_quality(state, capsys, argv, answer, kept):
-    quality.choose("light")
-    assert machine.main(argv) == 0
-    assert json.loads(capsys.readouterr().out) == answer
-    assert quality._choice() == kept
 
 
 def test_no_hold_is_taken_or_kept_on_a_browser_that_has_closed(state, capsys, monkeypatch):
     """It would only keep the agent from opening the next browser until it lapsed."""
     holder = "11111111-1111-4111-8111-111111111111"
     up = [False]
-    monkeypatch.setattr(care, "browser_up", lambda: up[0])
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: up[0])
     assert machine.main(["control", holder, "take"]) == 0
     assert json.loads(capsys.readouterr().out) == {"held": False}
-    assert gate.check("act") == _STANDARD
+    assert _check("act") == _STANDARD
     up[0] = True
     assert machine.main(["control", holder, "take"]) == 0
     assert json.loads(capsys.readouterr().out) == {"held": True}
@@ -1769,20 +2042,630 @@ def test_no_hold_is_taken_or_kept_on_a_browser_that_has_closed(state, capsys, mo
     assert hold.held() is False
 
 
-def test_the_usage_names_every_command(state, capsys):
-    assert machine.main(["nothing"]) == 2
+@pytest.mark.parametrize(
+    "argv", [["nothing"], [], ["quality", "sharp"], ["status", "1", "2"], ["start", "soon"], ["choices"], ["install", "x"]]
+)
+def test_the_usage_names_every_command(state, capsys, argv):
+    assert machine.main(argv) == 2
     usage = capsys.readouterr().err
-    for word in ("status", "start", "control", "navigate", "reload", "quality", "default", "serve", "proxy"):
+    for word in ("status", "start", "control", "navigate", "reload", "choices", "signins_revision", "serve", "proxy"):
         assert word in usage
 
 
 def test_where_the_browser_must_not_go_is_one_list(state):
     """Chrome's policy names each place, and the proxy refuses each address."""
     blocked = SANDBOX_CHROME_POLICY["URLBlocklist"]
-    for host in (*protocol.METADATA_HOSTS, *protocol.DOCKER_HOSTS):
-        assert (f"[{host}]" if ":" in host else host) in blocked
+    for name in (*protocol.METADATA_HOSTS, *protocol.DOCKER_HOSTS):
+        assert (f"[{name}]" if ":" in name else name) in blocked
         try:
-            address = ipaddress.ip_address(host)
+            address = ipaddress.ip_address(name)
         except ValueError:
             continue
         assert proxy.refused(address, 80, proxy.Places())
+
+
+#: Saves of the computer's choices, in the order the server made them.
+_EARLIER, _LATER, _LATEST = "0000000000000000000a", "0000000000000000000b", "0000000000000000000c"
+
+
+def test_a_browser_starts_on_the_kept_profile_and_keeps_its_profile_until_it_closes(state, monkeypatch):
+    """Changing the profile under an open browser would restart it and lose its pages."""
+    _choose(signins=True)
+    assert _check("act").kept is True
+    monkeypatch.setattr(daemon, "listening", _listening(True))
+    _choose(signins=False)
+    assert _check("look").kept is True
+    monkeypatch.setattr(daemon, "listening", _listening(False))
+    monkeypatch.setattr(care.Look, "engine_gone", lambda self: True)
+    assert _check("act").kept is False
+
+
+def test_a_command_joining_a_browser_still_starting_keeps_the_launch_it_starts_with(state, monkeypatch):
+    """Before its stream listens, a browser another command is opening is not up,
+    and a save made meanwhile would otherwise restart it."""
+    _choose(quality="light")
+    assert _check("act").quality == "light"
+    _choose(quality="retina")
+    assert _check("look").quality == "light"
+
+
+def test_a_read_joining_a_browser_still_starting_is_not_refused_for_memory(state, monkeypatch):
+    _check("act")
+    monkeypatch.setattr(care, "memory_full", lambda: True)
+    _check("look")
+    with pytest.raises(gate.Refused):
+        _check("grow")
+
+
+@pytest.mark.parametrize("full", [True, False])
+def test_a_start_that_ended_without_a_browser_is_not_joined(state, monkeypatch, full):
+    """The engine's command the gate's first reading showed may have ended
+    since, so the gate reads again before joining what it was starting."""
+    ended = []
+    monkeypatch.setattr(care.Look, "reread", lambda self: ended.append(True) or self)
+    monkeypatch.setattr(care.Look, "engine_gone", lambda self: bool(ended))
+    _choose(quality="light")
+    assert _check("act").quality == "light"
+    _choose(quality="sharp")
+    monkeypatch.setattr(care, "memory_full", lambda: full)
+    if full:
+        with pytest.raises(gate.Refused):
+            _check("look")
+    else:
+        assert _check("look").quality == "sharp"
+    assert ended
+
+
+def test_asking_for_chrome_behind_a_setup_under_way_queues_the_download(monkeypatch):
+    """The setup under way may be one an acquire began, which downloads nothing."""
+    detached = []
+    monkeypatch.setattr(daemon, "detach", lambda *argv, log=None: detached.append(argv))
+    monkeypatch.setattr(protocol, "installing", lambda: True)
+    install.get_chrome()
+    assert detached == [("install", "chrome", "--wait")]
+
+
+@pytest.mark.parametrize("wait", ["nan", "inf", "-inf"])
+def test_a_status_wait_that_would_never_end_is_refused(state, capsys, wait):
+    assert machine.main(["status", wait]) == 2
+
+
+@pytest.mark.parametrize("kept", [True, False])
+def test_only_a_kept_launch_runs_the_engine_on_the_kept_profile(state, engine, monkeypatch, kept):
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", "/home/someone/.config/google-chrome")
+    monkeypatch.setattr(gate, "check", _admits(Launch("", "standard", kept=kept)))
+    assert _run("open", "https://example.com") is None
+    assert engine["env"].get("AGENT_BROWSER_PROFILE") == (signin.profile() if kept else None)
+
+
+def test_a_chrome_on_the_kept_profile_is_the_engine_s_and_its_profile_outlives_a_reap(state, monkeypatch):
+    """Up while its daemon runs; reaped once that died, the sign-ins staying for the next."""
+    profile = Path(signin.profile())
+    profile.mkdir()
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    monkeypatch.setattr(care, "_GONE_S", 0)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    assert care.look().browser_up() is True
+    shutil.rmtree(processes / "2")
+    killed = []
+    monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
+    care.tend(False)
+    assert killed == [20]
+    assert profile.exists()
+
+
+def test_ending_the_kept_profile_s_browser_ends_all_of_its_processes_first(state, monkeypatch):
+    """Chrome's own processes show their arguments as one string, so only the
+    browser names the profile; its network service, which keeps the cookies,
+    would otherwise write them back after the profile is erased."""
+    profile = Path(signin.profile())
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    joined = f"{protocol.CHROME_BIN} --type=zygote --user-data-dir={profile}"
+    _fake_proc(processes, 21, 20, [joined])
+    _fake_proc(processes, 22, 21, [joined.replace("zygote", "utility")])
+    _fake_proc(processes, 30, 1, [protocol.CHROME_BIN, "--user-data-dir=/home/someone/.config/chromium"])
+    killed = []
+
+    def kill(pid, sig):
+        killed.append(pid)
+        shutil.rmtree(processes / str(pid))
+
+    monkeypatch.setattr(care.os, "kill", kill)
+    with care.admitted() as seen:
+        seen.end_on_profile()
+    assert sorted(killed) == [2, 20, 21, 22]
+
+
+def test_erasing_the_kept_profile_ends_a_browser_a_command_was_starting_on_it(state, monkeypatch):
+    """Admitted before the erase, its Chrome shows only once the engine has
+    started it, so the engine goes first, the daemon with the Chrome it runs,
+    and the processes are read again."""
+    _choose(signins=True)
+    profile = Path(signin.profile())
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 3, 1, [protocol.ENGINE_BIN, "open", "x"], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 21, 2, _ENGINE_CHROME)
+    _fake_proc(processes, 22, 21, ["/chrome/renderer"])
+    killed = []
+
+    def kill(pid, sig):
+        killed.append(pid)
+        shutil.rmtree(processes / str(pid))
+        if pid == 2:
+            # The daemon had started it as it went.
+            _fake_proc(processes, 20, 1, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+
+    monkeypatch.setattr(care.os, "kill", kill)
+    with care.admitted() as seen:
+        seen.end_on_profile()
+    assert sorted(killed) == [2, 3, 20, 21, 22]
+
+
+@pytest.mark.parametrize("recorded", [Launch("", "standard"), None], ids=["throwaway launch", "none, not kept"])
+def test_a_command_starting_a_browser_on_a_profile_of_its_own_outlives_a_sign_out(
+    state, monkeypatch, recorded, capsys
+):
+    """It cannot be starting one on the kept profile, which is all a sign-out erases."""
+    if recorded:
+        launch.write(recorded)
+        _choose(signins=True)
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 3, 1, [protocol.ENGINE_BIN, "open", "x"], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, _ENGINE_CHROME)
+    killed = []
+    monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
+    assert _hand(capsys, signins_revision=_LATER) is True
+    assert choices.held().signins_revision == _LATER
+    assert killed == []
+    assert launch.current() == recorded
+
+
+def test_the_lock_a_killed_chrome_left_on_the_kept_profile_is_cleared_only_with_none_on_it(state, monkeypatch):
+    """Chrome takes over its own stale lock only when it names this host, and a
+    computer restored or moved comes back under another name."""
+    profile = Path(signin.profile())
+    profile.mkdir()
+    (profile / "SingletonLock").symlink_to("otherhost-99")
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 20, 1, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    with care.admitted() as seen:
+        seen.ready_profile()
+    assert (profile / "SingletonLock").is_symlink()
+    shutil.rmtree(processes / "20")
+    _choose(signins=True)
+    _check("act")
+    assert not (profile / "SingletonLock").is_symlink()
+
+
+def test_the_kept_profile_is_left_to_a_browser_a_command_is_starting(state, monkeypatch):
+    """Its Chrome may not show yet, and would find its lock and its tabs gone."""
+    profile = Path(signin.profile())
+    (profile / "Default" / "Sessions").mkdir(parents=True)
+    (profile / "SingletonLock").symlink_to("thishost-99")
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 3, 1, [protocol.ENGINE_BIN, "open", "x"], exe=protocol.ENGINE_BIN)
+    with care.admitted() as seen:
+        seen.ready_profile()
+    assert (profile / "SingletonLock").is_symlink()
+    assert (profile / "Default" / "Sessions").exists()
+
+
+def test_a_command_reads_the_machine_s_processes_once(state, monkeypatch):
+    """A reading costs tens of milliseconds on a machine running a thousand."""
+    reads = []
+    real = system.processes
+    monkeypatch.setattr(system, "processes", lambda wanted=None: reads.append(wanted) or real(wanted))
+    _choose(signins=True)
+    _check("act")
+    assert len(reads) == 1
+
+
+def test_a_window_on_the_screen_is_drawn_at_the_screens_own_scale():
+    """Retina's forced scale would blur a window the person looks at; the
+    stream's frames keep their cap either way."""
+    retina = Launch("", "retina")
+    shown = dataclasses.replace(retina, window=True)._browser_env()
+    assert shown["AGENT_BROWSER_HEADED"] == "1"
+    assert not any(a.startswith("--force-device-scale-factor") for a in shown["AGENT_BROWSER_ARGS"].split("\n"))
+    assert shown["AGENT_BROWSER_STREAM_MAX_WIDTH"] == str(protocol.STREAM_QUALITIES["retina"].width)
+    hidden = retina._browser_env()
+    assert "AGENT_BROWSER_HEADED" not in hidden
+    assert "--force-device-scale-factor=2" in hidden["AGENT_BROWSER_ARGS"].split("\n")
+
+
+def test_a_window_on_the_screen_stays_until_the_person_closes_it(state, monkeypatch):
+    """The engine cannot see the person using a window, and keeps a headed one
+    open unless an idle timeout is given; a hidden browser closes when unused."""
+    monkeypatch.setenv("AGENT_BROWSER_IDLE_TIMEOUT_MS", "5")
+    h = host.current()
+    shown = Launch("", "standard", window=True).engine_env(os.environ, h)
+    hidden = Launch("", "standard").engine_env(os.environ, h)
+    assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in shown
+    assert hidden["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "1200000"
+
+
+@pytest.mark.parametrize(
+    ("platform", "own", "desktop", "shows"),
+    [
+        ("darwin", True, "Aqua", True),
+        # A login over the Mac's own SSH runs outside the person's desktop.
+        ("darwin", True, "Background", False),
+        ("darwin", False, "Aqua", False),
+        ("linux", True, "Aqua", False),
+    ],
+)
+def test_only_a_persons_own_mac_in_its_desktop_shows_a_window(state, monkeypatch, platform, own, desktop, shows):
+    monkeypatch.setattr(window.sys, "platform", platform)
+    monkeypatch.setattr(window.host, "current", lambda: Host(own=own))
+    monkeypatch.setattr(
+        window.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{desktop}\n")
+    )
+    assert not window.chosen()
+    _choose(window=True)
+    assert window.chosen() is shows
+    _choose(window=False)
+    assert not window.chosen()
+
+
+def test_an_open_browser_keeps_whether_it_shows_a_window(state, monkeypatch):
+    """Showing one or not restarts the engine's browser, so a change waits for
+    the next browser, as the quality does."""
+    monkeypatch.setattr(window, "chosen", lambda: True)
+    assert _check("act").window
+    monkeypatch.setattr(window, "chosen", lambda: False)
+    monkeypatch.setattr(gate.daemon, "listening", lambda port: True)
+    assert _check("act").window
+    assert launch.current().window
+
+
+def test_the_kept_profile_continues_where_it_left_off_but_on_no_earlier_tabs(state):
+    """Chrome keeps a session's cookies only when it continues where it left off,
+    and the tabs that would reopen are another thread's."""
+    kept = dataclasses.replace(_STANDARD, kept=True)._browser_env()
+    assert "--restore-last-session" in kept["AGENT_BROWSER_ARGS"].split("\n")
+    assert "--restore-last-session" not in _STANDARD._browser_env()["AGENT_BROWSER_ARGS"]
+    default = Path(signin.profile()) / "Default"
+    (default / "Sessions").mkdir(parents=True)
+    (default / "Sessions" / "Tabs_1").write_text("last session")
+    (default / "Preferences").write_text("{}")
+    with care.admitted() as seen:
+        seen.ready_profile()
+    assert not (default / "Sessions").exists()
+    assert (default / "Preferences").read_text() == "{}"
+
+
+def _choices(**changed: object) -> str:
+    """The computer's choices as the server hands them over, with *changed*."""
+    chosen: dict[str, object] = {
+        "quality": "sharp",
+        "window": False,
+        "signins": True,
+        "signins_revision": _LATER,
+        "revision": _LATER,
+        "computer": "c-1",
+    }
+    chosen.update(changed)
+    return json.dumps(chosen)
+
+
+def _hand(capsys, **changed: object) -> bool:
+    """Hand the machine the choices with *changed*; whether it answers done."""
+    assert machine.main(["choices", _choices(**changed)]) == 0
+    return json.loads(capsys.readouterr().out)["done"]
+
+
+def test_the_server_hands_the_machine_every_choice_at_once(state, capsys, monkeypatch):
+    monkeypatch.setattr(window, "can_show", lambda: True)
+    assert _hand(capsys, window=True) is True
+    assert choices.held() == protocol.Choices("sharp", True, True, _LATER, _LATER, "c-1")
+    assert (quality.chosen(), window.chosen(), signin.kept()) == ("sharp", True, True)
+    # No quality follows the computer's size.
+    assert _hand(capsys, quality=None) is True
+    assert (choices.held().quality, quality.chosen(), window.chosen()) == (None, "standard", False)
+    # One record, written whole.
+    assert sorted(path.name for path in state.iterdir() if not path.name.endswith(".lock")) == [choices._FILE]
+
+
+def test_the_choices_wait_for_a_command_being_admitted(state, monkeypatch):
+    """A browser starts on all of one save's choices, never on some of them."""
+    reached = threading.Event()
+    take = care.lock
+
+    def observed(name, *, wait=True):
+        if name == care.ADMISSION_LOCK:
+            reached.set()
+        return take(name, wait=wait)
+
+    monkeypatch.setattr(care, "lock", observed)
+    saving = threading.Thread(target=machine.main, args=(["choices", _choices()],), daemon=True)
+    with protocol.locked(care.ADMISSION_LOCK):
+        saving.start()
+        assert reached.wait(5)
+        saving.join(0.2)
+        assert saving.is_alive()
+        assert choices.held() is None
+    saving.join(5)
+    assert not saving.is_alive()
+    assert choices.held().quality == "sharp"
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "not json",
+        "[]",
+        json.dumps({"quality": "sharp", "window": False, "signins": True, "signins_revision": _LATER}),
+        _choices(quality="ultra"),
+        _choices(quality=["sharp"]),
+        _choices(window="on"),
+        _choices(window=1),
+        _choices(signins=None),
+        _choices(signins_revision="not-a-revision"),
+        _choices(signins_revision=10),
+        _choices(revision=_LATER.upper()),
+        _choices(extra=1),
+    ],
+)
+def test_choices_the_machine_cannot_read_change_nothing(state, capsys, monkeypatch, given):
+    """Read whole before any is kept, so a malformed one leaves none half kept."""
+    ended = []
+    monkeypatch.setattr(care.Look, "end_on_profile", lambda self: ended.append(True) or self)
+    _choose(quality="light")
+    held = choices.held()
+    assert machine.main(["choices", given]) == 0
+    assert json.loads(capsys.readouterr().out) == {"done": False}
+    assert (choices.held(), ended) == (held, [])
+
+
+def test_a_save_older_than_the_one_held_changes_nothing(state, capsys, monkeypatch):
+    """However late it arrives, it never erases a sign-in made since, nor takes
+    back what a later save chose."""
+    ended = []
+    monkeypatch.setattr(care.Look, "end_on_profile", lambda self: ended.append(True) or self)
+    profile = Path(signin.profile())
+    profile.mkdir()
+    assert _hand(capsys) is True
+    assert (profile.exists(), ended) == (False, [True])
+    held = choices.held()
+
+    profile.mkdir()
+    assert _hand(capsys, quality="light", signins=False, signins_revision=_EARLIER, revision=_EARLIER) is True
+    assert (choices.held(), profile.exists(), ended) == (held, True, [True])
+
+
+def test_a_save_at_the_held_revision_is_taken_again_and_signs_nothing_out(state, capsys, monkeypatch):
+    """The server hands the same save again whenever it cannot tell it landed."""
+    ended = []
+    monkeypatch.setattr(care.Look, "end_on_profile", lambda self: ended.append(True) or self)
+    assert _hand(capsys) is True
+    profile = Path(signin.profile())
+    profile.mkdir()
+    assert _hand(capsys, quality="light") is True
+    assert (choices.held().quality, profile.exists(), ended) == ("light", True, [True])
+
+
+def test_only_a_newer_sign_ins_save_erases_the_kept_profile(state, capsys, monkeypatch):
+    """A save of the quality or the window keeps the sign-ins; one of the
+    sign-ins, even to the same choice, is how the person signs out."""
+    ended = []
+    monkeypatch.setattr(care.Look, "end_on_profile", lambda self: ended.append(True) or self)
+    assert _hand(capsys, signins_revision=_EARLIER, revision=_EARLIER) is True
+    profile = Path(signin.profile())
+    profile.mkdir()
+    assert _hand(capsys, quality="light", signins_revision=_EARLIER, revision=_LATER) is True
+    assert (profile.exists(), len(ended)) == (True, 1)
+    assert _hand(capsys, signins_revision=_LATEST, revision=_LATEST) is True
+    assert (profile.exists(), len(ended)) == (False, 2)
+
+
+def test_a_sign_out_that_cannot_erase_keeps_nothing_and_says_so(state, capsys, monkeypatch):
+    """The server hands the save again, and the machine erases it then."""
+    assert _hand(capsys, signins_revision=_EARLIER, revision=_EARLIER) is True
+    held = choices.held()
+    profile = Path(signin.profile())
+    (profile / "Default").mkdir(parents=True)
+
+    real, failing = shutil.rmtree, [True]
+
+    def rmtree(path, *args, **kwargs):
+        if failing:
+            raise PermissionError(13, "Permission denied", path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(signin.shutil, "rmtree", rmtree)
+    assert _hand(capsys) is False
+    assert choices.held() == held
+    failing.clear()
+    assert _hand(capsys) is True
+    assert not profile.exists()
+    assert choices.held() == protocol.Choices("sharp", False, True, _LATER, _LATER, "c-1")
+
+
+def test_a_folder_taken_over_from_another_computer_starts_from_this_one_s_choices(state, capsys, monkeypatch):
+    """Revisions order one computer's saves only. The kept profile the other
+    computer left, its sign-ins, goes with its choices, however new they are."""
+    ended = []
+    monkeypatch.setattr(care.Look, "end_on_profile", lambda self: ended.append(True) or self)
+    assert _hand(capsys, computer="c-old", quality="light") is True
+    profile = Path(signin.profile())
+    profile.mkdir()
+    assert _hand(capsys, computer="c-new", signins_revision=_EARLIER, revision=_EARLIER) is True
+    assert (profile.exists(), len(ended)) == (False, 2)
+    assert choices.held() == protocol.Choices("sharp", False, True, _EARLIER, _EARLIER, "c-new")
+
+
+def test_an_engine_upgrade_ends_what_the_old_engine_runs_before_removing_it(state, monkeypatch):
+    """On Linux a process whose binary is gone reads as that path marked
+    deleted, which no reading would know as the engine's to end."""
+    engines = protocol.state_file("engine")
+    engines.mkdir()
+    old, new = engines / "agent-browser-0.1.0", engines / f"agent-browser-{protocol.ENGINE_VERSION}"
+    for binary in (old, new):
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    chrome = state / "chrome-bin"
+    _use_host(monkeypatch, own=True, engine=str(old), chrome=str(chrome), executable=str(chrome))
+    monkeypatch.setattr(install, "platform_name", lambda: "linux")
+    monkeypatch.setattr(install, "find_chrome", lambda: str(chrome))
+    monkeypatch.setattr(install, "_executable", lambda found: found)
+    monkeypatch.setattr(host, "record", lambda recorded: None)
+    monkeypatch.setattr(daemon, "listening", lambda port, wait_s=0.0: False)
+    ended, navigating = [], []
+
+    @contextlib.contextmanager
+    def held_navigation():
+        navigating.append("in")
+        yield
+        navigating.append("out")
+
+    # A person's navigation runs the engine outside admission, so the swap waits for it.
+    monkeypatch.setattr(hold, "navigating", held_navigation)
+    monkeypatch.setattr(care.Look, "end_all", lambda self: ended.append((old.exists(), list(navigating))) or self)
+    assert install.install()["done"] is True
+    assert ended == [(True, ["in"])]
+    assert navigating == ["in", "out"]
+    assert sorted(path.name for path in engines.iterdir()) == [new.name]
+
+
+class _Seen:
+    """A reading of what runs, for the port choice: *running* is a browser's."""
+
+    def __init__(self, running: bool) -> None:
+        self.running, self.closed = running, []
+
+    def daemons(self):
+        return ["daemon"] if self.running else []
+
+    def browsers(self):
+        return []
+
+    def busy(self):
+        return False
+
+    def services(self):
+        return ["proxy"]
+
+    def close(self, ending):
+        self.closed.extend(ending)
+        return self
+
+
+@pytest.mark.parametrize(("running", "taken", "kept"), [(True, True, True), (False, False, True), (False, True, False)])
+def test_a_person_s_machine_keeps_its_ports_until_another_program_takes_one(monkeypatch, running, taken, kept):
+    """Whatever listens on a recorded port passes for the browser's own, so
+    one taken while the browser is closed is given up for three free ones."""
+    before = Host(own=True, engine="e", chrome="c", executable="c", stream_port=41001, bridge_port=41002, proxy_port=41003)
+    monkeypatch.setattr(daemon, "listening", lambda port, wait_s=0.0: taken and port == 41003)
+    monkeypatch.setattr(install, "_free_ports", lambda: (42001, 42002, 42003))
+    seen = _Seen(running)
+    chosen = install._ports(seen, before)
+    assert chosen == ((41001, 41002, 41003) if kept else (42001, 42002, 42003))
+    # The runtime's own idle proxy and bridge are ended before the ports are checked.
+    assert seen.closed == ([] if running else ["proxy"])
+
+
+def test_a_runtime_before_the_record_starts_from_the_first_choices_handed(state, capsys):
+    """A browser started meanwhile follows the computer's size and keeps no sign-ins."""
+    assert (choices.held(), quality.chosen(), signin.kept()) == (None, "standard", False)
+    assert _hand(capsys) is True
+    assert (quality.chosen(), signin.kept()) == ("sharp", True)
+
+
+def test_signing_out_ends_the_kept_browser_and_what_lasts_as_long_as_it(state, capsys, monkeypatch):
+    """Erased under a browser still open, the profile would be written back as it closed."""
+    _choose(signins=True)
+    profile = Path(signin.profile())
+    profile.mkdir()
+    processes = state / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, [protocol.CHROME_BIN, f"--user-data-dir={profile}"])
+    killed = []
+
+    def kill(pid, sig):
+        killed.append(pid)
+        shutil.rmtree(processes / str(pid))
+
+    monkeypatch.setattr(care.os, "kill", kill)
+    real, erased_after = shutil.rmtree, []
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == profile:
+            erased_after.append(sorted(killed))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(signin.shutil, "rmtree", rmtree)
+    hold.control("view-1", "take")
+    launch.write(Launch("", "sharp", kept=True))
+    assert _hand(capsys) is True
+    assert erased_after == [[2, 20]]
+    assert (sorted(killed), profile.exists(), hold.held(), launch.current()) == ([2, 20], False, False, None)
+
+
+def test_a_record_lacking_a_key_takes_its_default_and_one_of_another_kind_is_none(state):
+    """A runtime that wrote fewer fields still reads; a value of the wrong kind,
+    a bool for an int or a quality not on the list, is no record."""
+    protocol.write_state("launch", json.dumps({"user_agent": "ua", "quality": "light"}))
+    assert launch.current() == Launch("ua", "light")
+    for stored in (
+        {"quality": "light"},
+        {"user_agent": "ua", "quality": "ultra"},
+        {"user_agent": 1, "quality": "light"},
+        {"user_agent": "ua", "quality": "light", "kept": 1},
+        ["ua", "light"],
+    ):
+        protocol.write_state("launch", json.dumps(stored))
+        assert launch.current() is None
+    protocol.write_state("launch", "not json")
+    assert launch.current() is None
+    launch.write(Launch("ua", "retina", closing=True, window=True))
+    assert launch.current() == Launch("ua", "retina", closing=True, window=True)
+
+
+def test_a_host_record_short_of_any_field_is_the_image_s(state):
+    """Read with the image's defaults, it would mix a person's machine with the
+    image's engine or ports."""
+    recorded = Host(own=True, engine="/e", chrome="/c", executable="/c", stream_port=20001, bridge_port=20002, proxy_port=20003)
+    host.record(recorded)
+    assert host.current() == recorded
+    stored = json.loads((state / "host").read_text())
+    short = {name: value for name, value in stored.items() if name != "proxy_port"}
+    for record in (short, {**stored, "proxy_port": True}, {**stored, "extra": 1}):
+        protocol.write_state("host", json.dumps(record))
+        assert host.current() == Host()
+
+
+def test_a_lock_not_waited_for_is_not_taken_while_held_elsewhere(state):
+    with protocol.locked("test.lock") as taken:
+        assert taken is True
+        with protocol.locked("test.lock", wait=False) as again:
+            assert again is False
+    with protocol.locked("test.lock", wait=False) as free:
+        assert free is True
+
+
+def test_the_status_says_whether_the_open_browser_keeps_its_sign_ins(state, monkeypatch):
+    monkeypatch.setattr(machine, "_browser_up", lambda deadline: True)
+    protocol.write_state(protocol.TOKEN_FILE, "t" * 43)
+    launch.write(Launch("", "standard", kept=True))
+    assert machine.status().kept is True
+    assert protocol.Status.read(machine.status().to_wire()).kept is True
+    launch.write(Launch("", "standard"))
+    assert machine.status().kept is False

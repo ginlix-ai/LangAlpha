@@ -571,6 +571,77 @@ async def set_computer_settings(
         return cur.rowcount > 0
 
 
+# What a computer's owner chose for its browser (``services.browser_settings``):
+# the live view's quality, whether it also shows as a window, and whether it
+# keeps sign-ins between its starts.
+BROWSER_QUALITY_KEY = "browser_quality"
+BROWSER_WINDOW_KEY = "browser_window"
+BROWSER_SIGNINS_KEY = "browser_signins"
+# The revision of the last save of any of them, and of the last that included
+# the sign-ins: 20 lowercase hex digits of nanoseconds, which the machine
+# compares as text, dropping what is older than what it holds.
+BROWSER_REVISION_KEY = "browser_rev"
+BROWSER_SIGNINS_REVISION_KEY = "browser_signins_rev"
+
+
+def _stored_revision(key: str) -> str:
+    return f"""CASE WHEN config->>'{key}' ~ '^[0-9a-f]{{20}}$'
+        THEN ('x' || right(config->>'{key}', 16))::bit(64)::bigint
+        ELSE 0
+    END"""
+
+
+# The next revision, made under the row's lock so revisions follow commit
+# order: now, or one past the stored ones when that is later. Made in Python
+# before the write, two saves could commit in the opposite order to their
+# revisions and leave the row behind what the machine took, for good. The
+# sign-ins revision counts too, for a row saved before every save had one.
+_NEXT_BROWSER_REVISION = f"""lpad(to_hex(GREATEST(
+    (extract(epoch FROM clock_timestamp()) * 1000000000)::bigint,
+    {_stored_revision(BROWSER_REVISION_KEY)} + 1,
+    {_stored_revision(BROWSER_SIGNINS_REVISION_KEY)} + 1
+)), 20, '0')"""
+
+
+async def save_browser_choices(
+    computer_id: str, user_id: str, choices: Mapping[str, Any], *, conn=None
+) -> Optional[Dict[str, Any]]:
+    """Save browser *choices* (config keys, None removing one) on the user's
+    computer under one new revision, also the sign-ins revision when they are
+    among them, and answer the row as saved. None where the computer is gone
+    or not theirs.
+
+    The revision is read once, in a subquery, so the two stay equal.
+    """
+    removed = [key for key, value in choices.items() if value is None]
+    kept = {key: value for key, value in choices.items() if value is not None}
+    stamped = [BROWSER_REVISION_KEY]
+    if BROWSER_SIGNINS_KEY in choices:
+        stamped.append(BROWSER_SIGNINS_REVISION_KEY)
+    stamps = ", ".join(f"'{key}', saved.revision" for key in stamped)
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = (
+                    SELECT saved.config || jsonb_build_object({stamps})
+                    FROM (
+                        SELECT (COALESCE(config, '{{}}'::jsonb) - %s::text[]) || %s::jsonb AS config,
+                            {_NEXT_BROWSER_REVISION} AS revision
+                    ) AS saved
+                ),
+                updated_at = NOW()
+            WHERE computer_id = %s
+              AND user_id = %s
+              AND {FENCE_NOT_DELETED}
+            RETURNING {_COMPUTER_COLS}
+            """,
+            (removed, Json(kept), computer_id, user_id),
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
 # What a computer's owner asked of it that the server carries out later, in
 # its config, so every worker reads the same and it outlives a restart.
 # ``make_primary``: make it primary once its first start completes

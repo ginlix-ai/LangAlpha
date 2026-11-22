@@ -7,17 +7,32 @@ to the engine that the server needs to know sits here.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import MISSING, asdict, dataclass, fields
 from pathlib import Path
-from typing import Literal, get_args
+from typing import IO, Literal, Optional, TypeVar, Union, get_args, get_origin, get_type_hints
 from urllib.parse import urlsplit
 
 #: The package directory under ``_internal/src/``, run as ``python3 -I <it> <command>``:
 #: ``agent-browser`` with the CLI's own arguments is the wrapper on the agent's
 #: PATH, and the commands ``machine.main`` reads answer the server.
 PACKAGE_NAME = "browser_runtime"
+
+#: The engine's release, one binary per platform, keyed by the release's name
+#: for each, with the release's own digest. A computer's image bakes in the
+#: Linux one; a person's own machine downloads the one for its platform (``install``).
+ENGINE_VERSION = "0.41.1"
+ENGINE_SHA256 = {
+    "linux-x64": "2a89295b62ddd497986a9a80b52e1dbe4c1f6bd68ffde67eaae82eec2206af61",
+    "linux-arm64": "f0b3bdaa40abf2a5111ec08e6d242110aaf56045ef5108cbc633bacc8e53ca17",
+    "darwin-x64": "7802f053e7fb25e10548ee10ca60d892c73d42ed2dbb7fc30c2d5925a5c82859",
+    "darwin-arm64": "63b0a97b85a54b4c9b2871318af74104c29b80abd507b53a30316884e062854b",
+}
 
 #: Where the image installs the real CLI. ``agent-browser`` on a command's PATH
 #: is the wrapper, which runs this one.
@@ -152,6 +167,16 @@ NAVIGATE_ACTIONS: tuple[NavigateAction, ...] = get_args(NavigateAction)
 #: browser is open, the address is not a web page's, or the engine failed.
 NavigateRefusal = Literal["not_held", "not_running", "bad_address", "failed"]
 NAVIGATE_REFUSALS: tuple[NavigateRefusal, ...] = get_args(NavigateRefusal)
+#: Why bringing in an everyday browser's sign-ins did nothing, as the machine
+#: answers: no such profile here, sign-ins are not kept, the browser's key could
+#: not be read, memory is short, or anything else.
+BringRefusal = Literal["not_found", "not_kept", "keychain", "low_memory", "failed"]
+BRING_REFUSALS: tuple[BringRefusal, ...] = get_args(BringRefusal)
+#: Why a machine of the person's own could not set its browser up: a platform the
+#: engine has no build for, the engine's download, no free ports, or no
+#: Chrome-family browser to drive.
+InstallRefusal = Literal["unsupported", "engine", "ports", "no_chrome"]
+INSTALL_REFUSALS: tuple[InstallRefusal, ...] = get_args(InstallRefusal)
 MAX_ADDRESS_LENGTH = 2048
 # Typed without a scheme, these are the person's own apps, which serve plain HTTP,
 # the wildcard addresses included, which a dev server prints as where it listens.
@@ -201,6 +226,97 @@ def write_state(name: str, text: str, mode: int = 0o600) -> None:
     os.replace(temporary, target)
 
 
+R = TypeVar("R")
+
+
+def read_record(name: str, cls: type[R], *, exact: bool = False) -> R | None:
+    """The frozen dataclass *cls* kept in the state file *name*, or None when
+    there is none or it holds something else. Fields are str, int, bool or a
+    ``Literal`` of those, any of them ``Optional``, and a value of any other
+    type is something else, a bool for an int included. A field whose key is
+    absent takes its default, as from a runtime that wrote fewer of them;
+    *exact* asks for every field and no other key."""
+    try:
+        stored = json.loads(state_file(name).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    kinds = get_type_hints(cls)
+    each = fields(cls)  # type: ignore[arg-type]
+    if exact and stored.keys() != {f.name for f in each}:
+        return None
+    values = {}
+    for f in each:
+        if f.name not in stored:
+            if f.default is MISSING:
+                return None
+            continue
+        if not _holds(kinds[f.name], stored[f.name]):
+            return None
+        values[f.name] = stored[f.name]
+    return cls(**values)
+
+
+def _holds(kind: object, value: object) -> bool:
+    if get_origin(kind) is Union:
+        return any(_holds(option, value) for option in get_args(kind))
+    if kind is type(None):
+        return value is None
+    if get_origin(kind) is Literal:
+        return any(type(value) is type(option) and value == option for option in get_args(kind))
+    return type(value) is kind
+
+
+def write_record(name: str, record: object) -> None:
+    """Keep the dataclass *record* in the state file *name*, for ``read_record``."""
+    write_state(name, json.dumps(asdict(record)))  # type: ignore[call-overload]
+
+
+def lock(name: str, *, wait: bool = True) -> IO[str] | None:
+    """Take the lock file *name*: the open file that holds it until it is
+    closed, or None when, without *wait*, it is held elsewhere. The file is not
+    inherited, so a process that execs another lets the lock go as it does."""
+    path = state_file(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    held = open(path, "a")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        held.close()
+        return None
+    except BaseException:
+        held.close()
+        raise
+    return held
+
+
+#: Held for as long as an install runs (``install``), so another waits for it
+#: and a status, or a command that finds no browser, can say one is under way.
+INSTALL_LOCK = "installing.lock"
+
+
+def installing() -> bool:
+    """Whether an install is under way."""
+    try:
+        with locked(INSTALL_LOCK, wait=False) as taken:
+            return not taken
+    except OSError:
+        return False
+
+
+@contextmanager
+def locked(name: str, *, wait: bool = True) -> Iterator[bool]:
+    """Hold the lock file *name* for the block; whether it was taken. Without
+    *wait*, one held elsewhere is not waited for, and the block runs untaken."""
+    held = lock(name, wait=wait)
+    if held is None:
+        yield False
+        return
+    with held:
+        yield True
+
+
 #: What the wrapper exits with when it refuses an argument.
 REFUSED = 2
 #: What it exits with when the gate refuses the command.
@@ -212,8 +328,22 @@ LOGGED_OUT_MESSAGE = (
     "agent-browser: {} is off here: this browser is logged out and is the one the live view shows."
 )
 RESTART_MESSAGE = "agent-browser: {} is off here: it would restart this browser and lose its pages."
+SIGNINS_MESSAGE = (
+    "agent-browser: {} is off here: this browser keeps the person's sign-ins, and what it "
+    "prints would carry them. To see whether a site is signed in, or read what it shows, use "
+    "`snapshot` or `get text` on the page."
+)
 NOT_INSTALLED_MESSAGE = (
-    "agent-browser: this computer was built before the browser. A new computer has it."
+    "agent-browser: the browser is not set up on this computer. Use `web-scraping` instead, "
+    "and tell the person the Browser tab sets it up or says why it cannot."
+)
+SETTING_UP_MESSAGE = (
+    "agent-browser: the browser is still being set up on this computer. Try again in a few "
+    "minutes; use `web-scraping` meanwhile."
+)
+NO_CHROME_MESSAGE = (
+    "agent-browser: this computer has no Chrome, Edge, Brave, Arc or Chromium for the browser. "
+    "The person can get Chrome from the Browser tab; use `web-scraping` meanwhile."
 )
 HELD_MESSAGE = (
     "browser: the person has taken control of this browser. Nothing was done. "
@@ -238,12 +368,18 @@ USER_AGENT_MESSAGE = (
 class Status:
     """What ``status`` and ``start`` print: whether the image has the engine,
     whether a browser is up behind a bridge, and the token its stream opens on.
-    ``low_memory`` is a start that opened nothing because memory is short."""
+    ``low_memory`` is a start that opened nothing because memory is short;
+    ``kept``, a running browser on the kept profile, which keeps its sign-ins;
+    ``port``, where the bridge listens; ``installing``, a machine with no
+    browser yet that is setting one up (``install``)."""
 
     installed: bool
     running: bool = False
     token: str | None = None
     low_memory: bool = False
+    kept: bool = False
+    port: int = BRIDGE_PORT
+    installing: bool = False
 
     def to_wire(self) -> dict[str, object]:
         return asdict(self)
@@ -258,9 +394,70 @@ class Status:
         token = answer.get("token")
         token = token if isinstance(token, str) and TOKEN_PATTERN.fullmatch(token) else None
         running = bool(answer.get("running")) and token is not None
+        port = answer.get("port")
         return cls(
             bool(answer.get("installed")),
             running,
             token,
             low_memory=not running and answer.get("low_memory") is True,
+            kept=running and answer.get("kept") is True,
+            # A runtime from before a machine's ports were its own says none.
+            port=port if type(port) is int and 0 < port < 65536 else BRIDGE_PORT,
+            installing=answer.get("installing") is True,
         )
+
+
+#: A revision: fixed-width lowercase hex nanoseconds, so text order is save order.
+REVISION_PATTERN = re.compile(r"[0-9a-f]{20}")
+NO_REVISION = "0" * 20
+
+
+@dataclass(frozen=True)
+class Choices:
+    """What a computer's owner chose for its browser, as the server hands it to
+    the machine in one ``choices`` command and the machine keeps it.
+
+    ``quality`` is the live view's, None to follow the computer's size;
+    ``window``, whether it also shows on a Mac's screen; ``signins``, whether a
+    browser starts on the kept profile. ``revision`` orders every save of any of
+    them, made by the database under the row's lock, so a machine drops a
+    bundle older than the one it holds, however late it arrives.
+    ``signins_revision`` is the revision of the last save of the sign-ins
+    choice: a machine erases the kept profile whenever that one advances, which
+    is how a save of the same choice signs the browser out. ``computer`` is
+    whose choices these are: revisions order one computer's saves only, so a
+    bundle from another computer than the one held, as on a folder one took
+    over from another, is taken as the first, erasing the kept profile the
+    other left, however their revisions compare.
+
+    ``Optional`` rather than ``X | None``: the runtime reads this on a Mac's
+    own Python 3.9, where ``get_type_hints`` cannot evaluate the latter.
+    """
+
+    quality: Optional[StreamQualityName] = None
+    window: bool = False
+    signins: bool = True
+    signins_revision: str = NO_REVISION
+    revision: str = NO_REVISION
+    computer: str = ""
+
+    def to_wire(self) -> str:
+        return json.dumps(asdict(self), separators=(",", ":"))
+
+    @classmethod
+    def from_wire(cls, text: str) -> Optional[Choices]:
+        """The choices *text* holds, or None unless it holds every one, each of
+        its kind."""
+        try:
+            given = json.loads(text)
+        except ValueError:
+            return None
+        names = {f.name for f in fields(cls)}
+        if not isinstance(given, dict) or given.keys() != names:
+            return None
+        kinds = get_type_hints(cls)
+        if not all(_holds(kinds[name], given[name]) for name in names):
+            return None
+        if not (REVISION_PATTERN.fullmatch(given["revision"]) and REVISION_PATTERN.fullmatch(given["signins_revision"])):
+            return None
+        return cls(**given)

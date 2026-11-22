@@ -23,7 +23,6 @@ from ptc_agent.core.sandbox.browser_runtime.protocol import (
 
 from src.server.services.browser_view import (
     ViewState,
-    browser_available,
     browser_control,
     browser_navigate,
     browser_view,
@@ -71,8 +70,6 @@ async def _browser_sandbox(
     # about whether a member turned the browser on.
     if not await user_feature_enabled(user_id, "browser"):
         raise _NoBrowser("unavailable")
-    if not await browser_available(workspace_id):
-        raise _NoBrowser("unavailable")
     if start:
         sandbox, _workspace = await acquire_sandbox(workspace_id, user_id, "browser_view")
         return sandbox, viewer
@@ -85,12 +82,17 @@ async def _browser_sandbox(
 class BrowserViewRequest(BaseModel):
     # Opens the browser if it is not up, and starts a stopped computer to do it.
     start: bool = False
+    # On a machine of the person's own with no Chrome-family browser, starts
+    # downloading Chrome for Testing to it.
+    get_chrome: bool = False
 
 
 class BrowserViewResponse(BaseModel):
     state: ViewState
     url: str | None = None
     expires_in: int | None = None
+    # The same stream from an app on the machine itself, past the server.
+    local_url: str | None = None
 
 
 class BrowserControlRequest(BaseModel):
@@ -204,7 +206,9 @@ async def get_browser_view(
     """
     try:
         sandbox, viewer = await _browser_sandbox(workspace_id, x_user_id, start=body.start)
-        view = await browser_view(sandbox, workspace_id, start=body.start, viewer_id=viewer)
+        view = await browser_view(
+            sandbox, workspace_id, start=body.start, get_chrome=body.get_chrome, viewer_id=viewer
+        )
     except _NoBrowser as e:
         return BrowserViewResponse(state=e.state)
     except HTTPException:
@@ -214,4 +218,6 @@ async def get_browser_view(
     except Exception:
         logger.exception("Failed to read the browser view of workspace %s", workspace_id)
         raise HTTPException(status_code=500, detail="Failed to read the browser") from None
-    return BrowserViewResponse(state=view.state, url=view.url, expires_in=view.expires_in)
+    return BrowserViewResponse(
+        state=view.state, url=view.url, expires_in=view.expires_in, local_url=view.local_url
+    )

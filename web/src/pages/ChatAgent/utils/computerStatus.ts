@@ -145,17 +145,6 @@ export function takesWorkspaces(computer: Pick<Computer, 'status' | 'provider_re
 }
 
 /**
- * Whether the computer has a browser the panel can show. A machine the user
- * brings over SSH runs none of ours, so it has no Browser tab, no quality
- * setting and no "Open in agent browser". A member of a `shared` workspace is
- * not sent its computer, but a shared workspace only ever runs on one of the
- * deployment's own computers, which all have one.
- */
-export function hasBrowser(computer: Pick<Computer, 'kind'> | null | undefined, shared = false): boolean {
-  return computer ? computer.kind !== 'ssh' : shared;
-}
-
-/**
  * A machine the user brought whose tunnel is down: asleep or offline, so
  * nothing can be laid on it, Home included, until it connects again.
  */

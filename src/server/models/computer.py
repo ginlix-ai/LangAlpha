@@ -11,11 +11,11 @@ import posixpath
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ptc_agent.core.sandbox.browser_runtime.protocol import StreamQualityName
+from ptc_agent.core.sandbox.browser_runtime.protocol import BringRefusal, StreamQualityName
 from ptc_agent.core.sandbox.providers.ssh_errors import MACHINE_ID_PATTERN
 
 from src.server.services.persistence.sync_result import UnsavedReason
@@ -722,7 +722,8 @@ class ComputerFilesBackupRequest(BaseModel):
 
 
 class ComputerBrowserQualityRequest(BaseModel):
-    """Request model for how sharply a computer's live browser view is drawn."""
+    """Request model for how sharply a computer's live browser view is drawn,
+    as the route before ``PATCH /browser`` took it."""
 
     quality: Optional[StreamQualityName] = Field(
         description=(
@@ -730,6 +731,114 @@ class ComputerBrowserQualityRequest(BaseModel):
             "applies the next time the browser opens"
         )
     )
+
+
+class BrowserChoicesUpdate(BaseModel):
+    """What a computer's owner changes about its browser: only the fields sent,
+    saved together. Each applies the next time the browser opens."""
+
+    quality: Optional[StreamQualityName] = Field(
+        None, description="The live view's quality; null follows the computer's size"
+    )
+    window: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether the browser also opens as a window on the Mac's screen, "
+            "beside the Browser tab. Only a Mac under remote control can show one"
+        ),
+    )
+    signins: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether sites stay signed in between the browser's starts. Every "
+            "save signs the browser out of every site, closing it if it is open "
+            "on what it kept, so sending it as it is signs out"
+        ),
+    )
+
+    @field_validator("window", "signins")
+    @classmethod
+    def _yes_or_no(cls, value: Optional[bool]) -> bool:
+        # Only quality has a null meaning; a default is not validated.
+        if value is None:
+            raise ValueError("must be true or false")
+        return value
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> "BrowserChoicesUpdate":
+        if not self.model_fields_set:
+            raise ValueError("name at least one of quality, window or signins")
+        return self
+
+
+class ComputerBrowser(BaseModel):
+    """What a computer's browser is set to, as its machine is handed it."""
+
+    quality: Optional[StreamQualityName] = Field(
+        None, description="The live view's quality; null follows the computer's size"
+    )
+    signins: bool = Field(
+        description=(
+            "Whether sites stay signed in between the browser's starts; never "
+            "on a computer holding shared workspaces"
+        )
+    )
+    window: bool = Field(description="Whether the browser also shows as a window on the Mac's screen")
+    window_available: bool = Field(
+        description="Whether this computer can show one: a Mac under remote control"
+    )
+
+
+class BrowserChoicesSaved(BaseModel):
+    browser: ComputerBrowser
+    applied: bool = Field(
+        description=(
+            "Whether its machine has the choices, or is not running and takes them before "
+            "its next browser. False when a running machine did not answer: it takes "
+            "them at its next acquire, and a browser open meanwhile keeps what it had."
+        )
+    )
+
+
+#: Why no everyday browser's sign-ins were listed or brought: the machine's own
+#: reasons, or the server's, a computer that is not a machine of the person's
+#: own or does not keep sign-ins (``unavailable``), or one not running.
+BrowserSigninRefusal = Literal[BringRefusal, "unavailable", "not_running"]
+
+# A browser's id from the machine's list, and a profile folder as Chromium names
+# them ("Default", "Profile 3"). A source outside these is not listed, since a
+# bring would refuse it.
+BrowserId = Annotated[str, Field(pattern=r"^[a-z]{1,32}$", description="The browser's id")]
+BrowserProfile = Annotated[
+    str, Field(pattern=r"^[A-Za-z0-9 _.-]{1,128}$", description="The profile's folder")
+]
+
+
+class BrowserSigninSource(BaseModel):
+    browser: BrowserId
+    name: str = Field(description="The browser's name, as the person knows it")
+    profile: BrowserProfile
+    profile_name: str = Field(description="The name the person gave the profile")
+
+
+class BrowserSigninSourcesResponse(BaseModel):
+    sources: List[BrowserSigninSource] = Field(default_factory=list)
+    # Why none are listed.
+    reason: Optional[BrowserSigninRefusal] = None
+
+
+class BrowserSigninBringRequest(BaseModel):
+    browser: BrowserId
+    profile: BrowserProfile
+
+
+class BrowserSigninBringResponse(BaseModel):
+    done: bool
+    # Cookies set in the computer's browser.
+    count: int = 0
+    # Cookies the person's browser holds that could not be brought.
+    skipped: int = 0
+    reason: Optional[BrowserSigninRefusal] = None
 
 
 class ComputerRenameRequest(BaseModel):
@@ -1015,6 +1124,7 @@ class ComputerResponse(BaseModel):
             "reinstall or reconnect is accepted"
         ),
     )
+    browser: ComputerBrowser = Field(description="What its browser is set to")
 
     model_config = ConfigDict(from_attributes=True)
 

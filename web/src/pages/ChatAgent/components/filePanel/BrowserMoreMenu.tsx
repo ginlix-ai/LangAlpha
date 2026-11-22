@@ -15,7 +15,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { copyWithToast } from '@/lib/clipboard';
 import type { Computer } from '@/types/api';
-import { hasBrowser } from '../../utils/computerStatus';
 import { QUALITY_CHOICES, isQualityChoice, useBrowserQuality } from '../browserQuality';
 
 /**
@@ -58,7 +57,7 @@ export function BrowserMoreMenu({
           <RefreshCw className="h-4 w-4" />
           {t('filePanel.browser.reconnect')}
         </DropdownMenuItem>
-        {computer && hasBrowser(computer) && (
+        {computer && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuSub>

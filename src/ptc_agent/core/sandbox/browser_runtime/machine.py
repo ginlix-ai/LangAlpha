@@ -1,28 +1,32 @@
 """What the server asks of the machine's browser: ``status`` and ``start`` print
 a ``Status``, ``control`` takes, renews or hands back a viewer's hold,
-``navigate`` takes the page somewhere for the viewer holding it, ``quality``
-keeps the computer's choice of live view quality, ``serve`` runs the bridge and
-``proxy`` the filter the browser's requests go through. Each that answers does
-so with one line of JSON."""
+``navigate`` takes the page somewhere for the viewer holding it, ``choices``
+keeps the computer's choices for the browsers it starts (the live view's
+quality, whether one shows as a window on a Mac's screen, whether sign-ins are
+kept), ``install`` sets the browser up on a person's own machine, ``everyday``
+lists its everyday browsers and brings one's sign-ins into the kept profile,
+``serve`` runs the bridge and ``proxy`` the filter the browser's requests go
+through. Each that answers does so with one line of JSON."""
 
 from __future__ import annotations
 
 import json
-import os
+import math
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
-from . import care, daemon, hold, launch, proxy, quality, relay, wrapper
+from . import care, choices, daemon, everyday, hold, host, install, launch, proxy, relay, signin
 from .protocol import (
-    ENGINE_BIN,
     HOLD_ACTIONS,
     NAVIGATE_ACTIONS,
-    STREAM_PORT,
     TOKEN_FILE,
+    Choices,
     NavigateRefusal,
     Status,
+    installing,
     page_address,
     release_commands,
     state_file,
@@ -58,7 +62,16 @@ def status(wait_s: float = 0.0) -> Status:
             token = state_file(TOKEN_FILE).read_text().strip() or None
         except OSError:
             token = None
-    return Status(os.access(ENGINE_BIN, os.X_OK), token is not None, token)
+    launched = launch.current() if token else None
+    h = host.current()
+    return Status(
+        h.ready(),
+        token is not None,
+        token,
+        kept=bool(launched and launched.kept),
+        port=h.bridge_port,
+        installing=not h.ready() and installing(),
+    )
 
 
 def start(wait_s: float) -> Status:
@@ -68,7 +81,8 @@ def start(wait_s: float) -> Status:
     rather than started twice. With memory short the wrapper would refuse the
     open, so it is not tried and the answer says why.
     """
-    if os.access(ENGINE_BIN, os.X_OK) and not care.browser_up() and not care.engine_busy():
+    seen = care.look()
+    if seen.host.ready() and not seen.browser_up() and not seen.busy():
         if care.memory_full():
             return Status(installed=True, low_memory=True)
         # No browser is up, so a hold is a closed one's: a take that raced its
@@ -81,13 +95,8 @@ def start(wait_s: float) -> Status:
 
 
 def _browser_up(deadline: float) -> bool:
-    """Whether Chrome is up behind the engine's stream, waiting until *deadline*.
-
-    The stream is the engine's daemon, which outlives a Chrome the OOM killer
-    took, so a listening port alone would show a person a frozen page and keep
-    their start from bringing a browser back.
-    """
-    while not (care.browser_up() and daemon.listening(STREAM_PORT)):
+    """Whether the browser is live (``Look.live``), waiting until *deadline*."""
+    while not care.look().live():
         if time.monotonic() >= deadline:
             return False
         time.sleep(_POLL_S)
@@ -104,9 +113,8 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
     """
     if not hold.holds(holder):
         return _refused("not_held")
-    if not (care.browser_up() and daemon.listening(STREAM_PORT)):
-        # A daemon whose Chrome died would launch another on this command,
-        # outside the wrapper's memory check.
+    seen = care.look()
+    if not seen.live():
         return _refused("not_running")
     args = [action]
     if action == "open":
@@ -114,12 +122,6 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
         if url is None:
             return _refused("bad_address")
         args.append(url)
-    launched = launch.current()
-    if launched is None:
-        # A browser no command of the wrapper's opened, whose launch is unknown,
-        # so any command could restart it.
-        return _refused("failed")
-    env = wrapper.engine_env(os.environ, launched)
     try:
         with hold.navigating():
             # Another viewer's navigation may have held the lock past this
@@ -127,10 +129,17 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
             if not hold.holds(holder):
                 return _refused("not_held")
             # Nor past the browser's own end, after which this would open another.
-            if not (care.browser_up() and daemon.listening(STREAM_PORT)):
+            if not care.look().live():
                 return _refused("not_running")
+            # Read under the lock, so a save that ended the browser meanwhile
+            # (``choose``) leaves this no launch of the closed one's to run.
+            launched = launch.current()
+            if launched is None:
+                # A browser no command of the wrapper's opened, whose launch is
+                # unknown, so any command could restart it.
+                return _refused("failed")
             try:
-                moved = _engine(env, *args)
+                moved = launched.run(seen.host, *args, timeout=_NAVIGATE_WAIT_S) is not None
             finally:
                 # However the engine ended, the page may have changed after the
                 # person handed it back, which the take that began their hold has
@@ -142,7 +151,7 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
                 # nothing. Reading the address is what does, and the tab list the
                 # engine sends after a command carries the page's new address only
                 # once the next one has run, so the panel's address follows it too.
-                moved = _engine(env, "get", "url")
+                moved = launched.run(seen.host, "get", "url", timeout=_NAVIGATE_WAIT_S) is not None
     except subprocess.TimeoutExpired:
         # A page slow to finish loading is still the page the browser is on.
         return {"done": True}
@@ -161,7 +170,7 @@ def control(holder: str, action: str, releases: list[list[str]] | None = None) -
     could not is kept, so the agent waits while the viewer asks again rather
     than acting on a page with the key still down.
     """
-    if action != "release" and not care.browser_up():
+    if action != "release" and not care.look().browser_up():
         action = "release"
     if action == "release" and releases and not _let_go(holder, releases):
         return hold.holds(holder)
@@ -171,25 +180,57 @@ def control(holder: str, action: str, releases: list[list[str]] | None = None) -
 def _let_go(holder: str, releases: list[list[str]]) -> bool:
     """Whether nothing of *releases* is left down: each let go of, or no page
     of this holder's to let go of it on."""
-    launched = launch.current()
-    if launched is None:
-        return True
-    env = wrapper.engine_env(os.environ, launched)
     deadline = time.monotonic() + _RELEASES_WAIT_S
     # Taken as a navigation is: an agent command waits for it, so it never runs
-    # on a page that still has the person's key down.
+    # on a page that still has the person's key down, and so does a save that
+    # would end the browser (``choose``).
     with hold.navigating():
         # Only into this holder's page: one whose hold lapsed is the agent's
         # again, and a browser that ended would start another for the engine.
-        if not (hold.holds(holder) and care.browser_up() and daemon.listening(STREAM_PORT)):
+        seen = care.look()
+        launched = launch.current()
+        if launched is None or not (hold.holds(holder) and seen.live()):
             return True
         for args in releases:
             left = deadline - time.monotonic()
             try:
-                if left <= 0 or not _engine(env, *args, timeout=left):
+                if left <= 0 or launched.run(seen.host, *args, timeout=left) is None:
                     return False
             except (subprocess.TimeoutExpired, OSError):
                 return False
+    return True
+
+
+def choose(chosen: Choices) -> bool:
+    """Keep *chosen* for the browsers the computer starts from now, unless the
+    machine holds a later save; whether it holds this save or a later one.
+
+    Under the admission lock, so no command starts a browser on some of one
+    save's choices, or on the kept profile while it is erased. A save whose
+    sign-ins revision is newer than the one held erases that profile, ending a
+    browser open on it at once, whoever is using it: the person asked for their
+    sign-ins gone, and a browser left open would write them back as it closed.
+    An erase that fails keeps nothing of the save, so the server hands it again.
+    """
+    with care.admitted() as seen:
+        held = choices.held()
+        ours = held is not None and held.computer == chosen.computer
+        if ours and chosen.revision < held.revision:
+            # It reached the machine after a later save, which stands.
+            return True
+        if not ours or chosen.signins_revision > held.signins_revision:
+            # A person's navigation, or the hand-back's releases, runs the engine
+            # outside the gate, and would start a browser on the profile being
+            # erased if this ended the open one under it. Taken after admission,
+            # in the gate's own order (``hold.refusal``), and the processes read
+            # again, since the wait can be long.
+            with hold.navigating():
+                seen.reread().end_on_profile()
+                try:
+                    signin.erase()
+                except OSError:
+                    return False
+        choices.keep(chosen)
     return True
 
 
@@ -197,46 +238,100 @@ def _refused(reason: NavigateRefusal) -> dict[str, object]:
     return {"done": False, "reason": reason}
 
 
-def _engine(env: dict[str, str], *args: str, timeout: float = _NAVIGATE_WAIT_S) -> bool:
-    result = subprocess.run(
-        [ENGINE_BIN, *args],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd="/",
-        timeout=timeout,
-    )
-    return result.returncode == 0
+def _wait_s(args: list[str]) -> float | None:
+    if len(args) > 1:
+        return None
+    try:
+        wait_s = float(args[0]) if args else 0.0
+    except ValueError:
+        return None
+    # A wait that never ends, or never compares, would poll for good.
+    return wait_s if math.isfinite(wait_s) else None
+
+
+def _status_command(args: list[str]) -> object | None:
+    wait_s = _wait_s(args)
+    return None if wait_s is None else status(wait_s).to_wire()
+
+
+def _start_command(args: list[str]) -> object | None:
+    wait_s = _wait_s(args)
+    return None if wait_s is None else start(wait_s).to_wire()
+
+
+def _control_command(args: list[str]) -> object | None:
+    if len(args) not in (2, 3) or not hold.valid_holder(args[0]) or args[1] not in HOLD_ACTIONS:
+        return None
+    releases = None
+    if len(args) == 3:
+        # Releases ride only a hand-back.
+        releases = _releases(args[2]) if args[1] == "release" else None
+        if releases is None:
+            return None
+    return {"held": control(args[0], args[1], releases)}
+
+
+def _navigate_command(args: list[str]) -> object | None:
+    if len(args) not in (2, 3) or not hold.valid_holder(args[0]) or args[1] not in NAVIGATE_ACTIONS:
+        return None
+    return navigate(args[0], args[1], args[2] if len(args) == 3 else "")
+
+
+def _choices_command(args: list[str]) -> object | None:
+    if len(args) != 1:
+        return None
+    # Read whole before any is kept, so a malformed one changes nothing.
+    chosen = Choices.from_wire(args[0])
+    if chosen is None:
+        return {"done": False}
+    return {"done": choose(chosen)}
+
+
+def _install_command(args: list[str]) -> object | None:
+    if args == []:
+        return install.install()
+    if args == ["chrome", "--wait"]:
+        return install.install(chrome=True)
+    if args == ["chrome"]:
+        install.get_chrome()
+        return {"done": True}
+    return None
+
+
+def _everyday_command(args: list[str]) -> object | None:
+    if args == ["list"]:
+        return {"sources": [s.to_wire() for s in everyday.sources()]}
+    if len(args) == 3 and args[0] == "bring":
+        return everyday.bring_signins(args[1], args[2], start)
+    return None
+
+
+#: Each command that answers: its handler checks its arguments and returns the
+#: answer, or None for the usage.
+_COMMANDS: dict[str, Callable[[list[str]], object | None]] = {
+    "status": _status_command,
+    "start": _start_command,
+    "control": _control_command,
+    "navigate": _navigate_command,
+    "choices": _choices_command,
+    "install": _install_command,
+    "everyday": _everyday_command,
+}
 
 
 def main(argv: list[str]) -> int:
     command, args = (argv[0], argv[1:]) if argv else ("", [])
-    if command in ("status", "start"):
-        wait_s = float(args[0]) if args else 0.0
-        print(json.dumps((status if command == "status" else start)(wait_s).to_wire()))
-        return 0
-    if command == "control" and len(args) in (2, 3) and hold.valid_holder(args[0]) and args[1] in HOLD_ACTIONS:
-        releases = _releases(args[2]) if len(args) == 3 and args[1] == "release" else None
-        if len(args) == 2 or releases is not None:
-            print(json.dumps({"held": control(args[0], args[1], releases)}))
-            return 0
-    if (
-        command == "navigate"
-        and len(args) in (2, 3)
-        and hold.valid_holder(args[0])
-        and args[1] in NAVIGATE_ACTIONS
-    ):
-        print(json.dumps(navigate(args[0], args[1], args[2] if len(args) == 3 else "")))
-        return 0
-    if command == "quality" and len(args) == 1:
-        print(json.dumps({"done": quality.choose(args[0])}))
-        return 0
+    # The bridge and the proxy run as processes of their own, until they end.
     if command == "serve":
         return relay.serve()
     if command == "proxy":
         return proxy.serve()
-    return _usage()
+    handler = _COMMANDS.get(command)
+    answer = handler(args) if handler else None
+    if answer is None:
+        return _usage()
+    print(json.dumps(answer))
+    return 0
 
 
 def _releases(text: str) -> list[list[str]] | None:
@@ -251,7 +346,10 @@ def _usage() -> int:
         f"usage: python3 -I {Path(__file__).resolve().parent.name} agent-browser [argument ...]"
         " | status [wait seconds] | start [wait seconds] | control <holder> take|renew|release [releases]"
         " | navigate <holder> open <address>|back|forward|reload"
-        " | quality light|standard|sharp|retina|default | serve | proxy",
+        ' | choices \'{"quality": light|standard|sharp|retina|null, "window": bool,'
+        ' "signins": bool, "signins_revision": <revision>, "revision": <revision>}\''
+        " | install [chrome [--wait]] | everyday list | everyday bring <browser> <profile>"
+        " | serve | proxy",
         file=sys.stderr,
     )
     return 2

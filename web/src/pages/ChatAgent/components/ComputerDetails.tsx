@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
 import { SwapCell } from '@/components/ui/crossfade';
 import { Loader } from '@/components/ui/loader';
-import { ToggleSwitch } from '@/components/ui/switch';
 import { useLocale } from '@/hooks/useLocale';
 import { formatBytes } from '@/lib/format';
 import { useIsPresent } from '@/lib/framer';
@@ -24,7 +23,13 @@ import { useBrowserHere } from '../hooks/useBrowserHere';
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
 import { BrowserQualitySetting } from './BrowserQualitySetting';
-import { homeEligibility, isComputerPreparing, isComputerStatusTransitional } from '../utils/computerStatus';
+import { BrowserSigninsSetting } from './BrowserSigninsSetting';
+import { BrowserWindowSetting } from './BrowserWindowSetting';
+import {
+  homeEligibility,
+  isComputerPreparing,
+  isComputerStatusTransitional,
+} from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
@@ -40,6 +45,7 @@ import {
   PowerButton,
   SpecRow,
   StartFailureAction,
+  ToggleRow,
   type MachineActions,
 } from './computerParts';
 import { railOrdinal } from './computerRailState';
@@ -191,39 +197,31 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
           </section>
 
           {browserHere && <BrowserQualitySetting computer={computer} />}
+          {browserHere && computer.browser?.window_available && <BrowserWindowSetting computer={computer} />}
+          {browserHere && <BrowserSigninsSetting computer={computer} />}
 
           {hasSettings && (
             <section className="computer-details-group">
               <dl className="computer-card-spec mt-0">
                 {/* Always-on is no longer offered, so the switch is only there to turn it off. */}
                 {managesSpec && computer.is_always_on && (
-                  <div>
-                    <dt>{t('computer.alwaysOn', 'Always-on')}</dt>
-                    <dd>
-                      <ToggleSwitch
-                        checked
-                        onChange={actions.turnOffAlwaysOn}
-                        // Mid start or stop the switch would promise a state the machine
-                        // is about to leave; it opens again once the machine settles.
-                        disabled={actions.alwaysOnBusy || isTransitional || computer.status === 'deleted'}
-                        ariaLabel={t('computer.alwaysOn', 'Always-on')}
-                      />
-                    </dd>
-                  </div>
+                  <ToggleRow
+                    label={t('computer.alwaysOn', 'Always-on')}
+                    checked
+                    onChange={actions.turnOffAlwaysOn}
+                    // Mid start or stop the switch would promise a state the machine
+                    // is about to leave; it opens again once the machine settles.
+                    disabled={actions.alwaysOnBusy || isTransitional || computer.status === 'deleted'}
+                  />
                 )}
                 {/* Only a machine the user brings offers the choice: a hosted one always backs up. */}
                 {computer.kind === 'ssh' && (
-                  <div>
-                    <dt>{t('computer.filesBackup.label', 'Back up files')}</dt>
-                    <dd>
-                      <ToggleSwitch
-                        checked={computer.files_backup !== false}
-                        onChange={() => actions.setFilesBackup(computer.files_backup === false)}
-                        disabled={actions.filesBackupBusy || computer.status === 'deleted'}
-                        ariaLabel={t('computer.filesBackup.label', 'Back up files')}
-                      />
-                    </dd>
-                  </div>
+                  <ToggleRow
+                    label={t('computer.filesBackup.label', 'Back up files')}
+                    checked={computer.files_backup !== false}
+                    onChange={() => actions.setFilesBackup(computer.files_backup === false)}
+                    disabled={actions.filesBackupBusy || computer.status === 'deleted'}
+                  />
                 )}
               </dl>
             </section>

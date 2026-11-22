@@ -1521,6 +1521,7 @@ from src.server.app.sessions import router as sessions_router
 from src.server.app.utilities import health_router
 from src.server.app.computers import router as computers_router
 from src.server.app.computers_ssh import router as computers_ssh_router
+from src.server.app.computers_browser import router as computers_browser_router
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.home import router as home_router
 from src.server.app.workspace_files import router as workspace_files_router
@@ -1615,6 +1616,9 @@ app.include_router(
 app.include_router(
     computers_router
 )  # /api/v1/computers/* - Computer lifecycle (the workspace routes alias these)
+app.include_router(
+    computers_browser_router
+)  # /api/v1/computers/{id}/browser* - Browser choices, and bringing in an everyday browser's sign-ins
 app.include_router(
     workspace_files_router
 )  # /api/v1/workspaces/{id}/files/* - Live file access

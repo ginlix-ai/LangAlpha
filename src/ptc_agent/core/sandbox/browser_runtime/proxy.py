@@ -10,8 +10,11 @@ that was checked, never to a second lookup. Chrome sends everything here,
 loopback included, which it would otherwise send direct.
 
 Refused: the machine's own service ports at any address that is the machine,
-and link-local, cloud metadata, the default gateway and the Docker host at any
-port. The rest of loopback stays open, where the person's own apps run.
+and link-local and cloud metadata at any port, which a person's own machine
+may be a cloud VM with. On a cloud computer the default gateway and the Docker
+host are too, being what it runs on. The rest of loopback stays open, where the
+person's own apps run, and on their own machine so does their network, as other
+agents' browsers leave both.
 """
 
 from __future__ import annotations
@@ -24,13 +27,14 @@ import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 from urllib.parse import urlsplit
 
-from . import daemon
-from .protocol import DOCKER_HOSTS, METADATA_HOSTS, PROXY_PORT, SERVICE_PORTS
+from . import daemon, host
+from .host import Host
+from .protocol import DOCKER_HOSTS, METADATA_HOSTS
 
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 _LOG = "proxy.log"
 # Chrome opens sockets ahead of use and may leave one quiet for a while.
@@ -46,9 +50,9 @@ _UP_S = 3.0
 def _metadata_addresses() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     # The names among them resolve to link-local addresses, refused already.
     found = []
-    for host in METADATA_HOSTS:
+    for name in METADATA_HOSTS:
         try:
-            found.append(ipaddress.ip_network(host))
+            found.append(ipaddress.ip_network(name))
         except ValueError:
             continue
     return tuple(found)
@@ -86,10 +90,12 @@ def _address(text: str) -> IPAddress:
 
 @dataclass(frozen=True)
 class Places:
-    """The addresses that are this machine, and those of what it runs on."""
+    """The addresses that are this machine, those of what it runs on, and the
+    ports on it the browser must not reach."""
 
     own: frozenset[IPAddress] = frozenset()
     hosts: frozenset[IPAddress] = frozenset()
+    ports: frozenset[int] = Host().service_ports
 
 
 def refused(address: IPAddress, port: int, places: Places) -> bool:
@@ -102,7 +108,7 @@ def refused(address: IPAddress, port: int, places: Places) -> bool:
         or address in places.own
         or (address.version == 4 and address in _THIS_NETWORK)
     )
-    return this_machine and port in SERVICE_PORTS
+    return this_machine and port in places.ports
 
 
 def _own_addresses() -> set[IPAddress]:
@@ -166,7 +172,10 @@ def _host_addresses() -> set[IPAddress]:
 
 
 def read_places() -> Places:
-    return Places(frozenset(_own_addresses()), frozenset(_host_addresses()))
+    h = host.current()
+    # A person's own machine runs on nothing of ours: its gateway is their router.
+    hosts = frozenset() if h.own else frozenset(_host_addresses())
+    return Places(frozenset(_own_addresses()), hosts, h.service_ports)
 
 
 @dataclass(frozen=True)
@@ -262,7 +271,7 @@ class Proxy:
                 asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM),
                 _RESOLVE_TIMEOUT_S,
             )
-        except (OSError, TimeoutError, UnicodeError):
+        except (OSError, asyncio.TimeoutError, UnicodeError):
             return b"502 Bad Gateway"
         found: list[str] = []
         for *_, sockaddr in infos:
@@ -279,7 +288,7 @@ class Proxy:
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _IDLE_S)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError, OSError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, OSError):
             writer.close()
             return
         request = parse_head(head)
@@ -331,7 +340,7 @@ async def _dial(addresses: list[str], port: int) -> tuple[asyncio.StreamReader, 
             return await asyncio.wait_for(
                 asyncio.open_connection(address, port, limit=_HEAD_LIMIT), _DIAL_TIMEOUT_S
             )
-        except (OSError, TimeoutError):
+        except (OSError, asyncio.TimeoutError):
             continue
     return None
 
@@ -360,11 +369,11 @@ async def _answer_from(up_reader: asyncio.StreamReader, writer: asyncio.StreamWr
 def ensure() -> bool:
     """Whether the proxy is up, starting it and waiting a moment when it is not.
     A browser that starts without it reaches nothing, which is the safe way to fail."""
-    return daemon.ensure("proxy", PROXY_PORT, _LOG, _UP_S)
+    return daemon.ensure("proxy", host.current().proxy_port, _LOG, _UP_S)
 
 
 def serve() -> int:
-    listener = daemon.bind("127.0.0.1", PROXY_PORT, 256)
+    listener = daemon.bind("127.0.0.1", host.current().proxy_port, 256)
     if listener is None:
         return 0
 

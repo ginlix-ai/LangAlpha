@@ -9,6 +9,7 @@ while both paths are live.
 
 import contextlib
 import functools
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -3052,56 +3053,228 @@ async def test_the_file_backup_switch_answers_with_the_machine(
     write.assert_awaited_once_with(COMPUTER_ID, enabled)
 
 
+@pytest_asyncio.fixture
+async def browser_client():
+    """The browser routes, mounted after the computer routes as the app mounts
+    them, so a path the computer routes would take is seen here."""
+    from src.server.app.computers import router
+    from src.server.app.computers_browser import router as browser_router
+
+    app = create_test_app(router, browser_router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+@contextlib.contextmanager
+def _browser_route(before, saved=None, *, applied=True):
+    """The owned computer *before* the save, the row *saved* as the save's one
+    write answers it, and its machine taking it or not."""
+    write = AsyncMock(return_value=saved)
+    apply_now = AsyncMock(return_value=applied)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch("src.server.app.computers.get_computer", AsyncMock(return_value=before))
+        )
+        stack.enter_context(patch("src.server.database.computer.save_browser_choices", write))
+        stack.enter_context(patch("src.server.services.browser_settings.apply_now", apply_now))
+        stack.enter_context(
+            patch(
+                "src.server.app.computers.count_live_workspaces_by_computer",
+                AsyncMock(return_value={COMPUTER_ID: 1}),
+            )
+        )
+        yield SimpleNamespace(write=write, apply_now=apply_now)
+
+
+def _mac(sample_computer_dict, *, helper=True):
+    return {
+        **sample_computer_dict(computer_id=COMPUTER_ID, kind="ssh"),
+        "provider_config": {"helper": helper, "os": "Darwin"},
+    }
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("quality", ["retina", None], ids=["chosen", "follows-size"])
-async def test_the_live_view_quality_is_kept_on_the_computer_and_reaches_its_machine(
-    client, sample_computer_dict, quality
+@pytest.mark.parametrize("applied", [True, False], ids=["taken", "not-taken"])
+async def test_a_browser_save_writes_only_what_it_names_and_answers_the_browser(
+    browser_client, sample_computer_dict, applied
 ):
-    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="daytona")
-    after = {**before, "config": {"browser_quality": quality} if quality else {}}
-    write = AsyncMock(return_value=True)
-    apply_now = AsyncMock()
-    with (
-        patch("src.server.app.computers.get_computer", AsyncMock(side_effect=[before, after])),
-        patch("src.server.app.computers.set_computer_settings", write),
-        patch("src.server.services.browser_quality.apply_now", apply_now),
-        patch(
-            "src.server.app.computers.count_live_workspaces_by_computer",
-            AsyncMock(return_value={COMPUTER_ID: 1}),
-        ),
-    ):
-        resp = await client.post(
-            f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json={"quality": quality}
+    """The answer says whether the machine took it: a running one that did not
+    keeps an open browser as it was until its next acquire."""
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="docker")
+    saved = {**before, "config": {"browser_quality": "sharp", "browser_signins": False}}
+    with _browser_route(before, saved, applied=applied) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"quality": "sharp", "signins": False}
         )
 
     assert resp.status_code == 200
-    assert resp.json()["config"] == after["config"]
-    # None removes the key, which is what following the computer's size is.
-    write.assert_awaited_once_with(
-        COMPUTER_ID, "test-user-123", {"browser_quality": quality, "browser_quality_rev": ANY}
+    assert resp.json() == {
+        "browser": {"quality": "sharp", "signins": False, "window": False, "window_available": False},
+        "applied": applied,
+    }
+    route.write.assert_awaited_once_with(
+        COMPUTER_ID, "test-user-123", {"browser_quality": "sharp", "browser_signins": False}
     )
-    apply_now.assert_awaited_once_with(after)
+    route.apply_now.assert_awaited_once_with(saved)
+
+
+@pytest.mark.asyncio
+async def test_a_null_quality_follows_the_computers_size(browser_client, sample_computer_dict):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="daytona")
+    with _browser_route(before, before) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"quality": None}
+        )
+
+    assert resp.status_code == 200
+    # None removes the key, which is what following the computer's size is.
+    route.write.assert_awaited_once_with(COMPUTER_ID, "test-user-123", {"browser_quality": None})
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("kind", "body", "status"),
-    [("ssh", {"quality": "sharp"}, 409), ("daytona", {"quality": "8k"}, 422)],
-    ids=["no-browser", "unknown"],
+    "body",
+    [{}, {"quality": "8k"}, {"signins": "yes please"}, {"window": None}],
+    ids=["nothing", "unknown-quality", "not-yes-or-no", "null-window"],
 )
-async def test_the_live_view_quality_is_refused_where_it_means_nothing(
-    client, sample_computer_dict, kind, body, status
-):
-    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind)
-    write = AsyncMock(return_value=True)
-    with (
-        patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
-        patch("src.server.app.computers.set_computer_settings", write),
-    ):
-        resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json=body)
+async def test_a_browser_save_that_means_nothing_is_refused(browser_client, sample_computer_dict, body):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="daytona")
+    with _browser_route(before, before) as route:
+        resp = await browser_client.patch(f"/api/v1/computers/{COMPUTER_ID}/browser", json=body)
 
-    assert resp.status_code == status
-    write.assert_not_awaited()
+    assert resp.status_code == 422
+    route.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_browser_save_on_a_computer_gone_meanwhile_is_not_found(
+    browser_client, sample_computer_dict
+):
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="docker")
+    with _browser_route(before, None) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"signins": True}
+        )
+
+    assert resp.status_code == 404
+    route.apply_now.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_macs_browser_window_is_saved_and_reaches_its_machine(
+    browser_client, sample_computer_dict
+):
+    before = _mac(sample_computer_dict)
+    saved = {**before, "config": {"browser_window": True}}
+    with _browser_route(before, saved) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"window": True}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["browser"]["window"] is True
+    assert resp.json()["browser"]["window_available"] is True
+    route.write.assert_awaited_once_with(COMPUTER_ID, "test-user-123", {"browser_window": True})
+
+
+@pytest.mark.asyncio
+async def test_only_a_mac_under_remote_control_can_show_a_browser_window(
+    browser_client, sample_computer_dict
+):
+    """The whole save is refused, the other choices sent with it included."""
+    before = _mac(sample_computer_dict, helper=False)
+    with _browser_route(before, before) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"window": True, "quality": "sharp"}
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Only a Mac under remote control can show the browser as a window."
+    route.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_browser_save_on_someone_elses_computer_is_refused(
+    browser_client, sample_computer_dict
+):
+    before = {**sample_computer_dict(computer_id=COMPUTER_ID, kind="docker"), "user_id": "someone-else"}
+    with _browser_route(before, before) as route:
+        resp = await browser_client.patch(
+            f"/api/v1/computers/{COMPUTER_ID}/browser", json={"quality": "sharp"}
+        )
+
+    assert resp.status_code == 403
+    route.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quality", ["retina", None], ids=["chosen", "follows-size"])
+async def test_the_quality_route_a_web_deployed_ahead_calls_still_answers_the_computer(
+    browser_client, sample_computer_dict, quality
+):
+    """The route before ``PATCH /browser``, kept so a web Worker deployed
+    before the backend still saves: it answers the whole computer, as it did."""
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="daytona")
+    saved = {**before, "config": {"browser_quality": quality} if quality else {}}
+    with _browser_route(before, saved) as route:
+        resp = await browser_client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/browser-quality", json={"quality": quality}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["config"] == saved["config"]
+    assert resp.json()["workspace_count"] == 1
+    assert resp.json()["browser"]["quality"] == quality
+    assert "applied" not in resp.json()
+    route.write.assert_awaited_once_with(COMPUTER_ID, "test-user-123", {"browser_quality": quality})
+    route.apply_now.assert_awaited_once_with(saved)
+
+
+@pytest.mark.asyncio
+async def test_a_computer_says_what_its_browser_is_set_to(client, sample_computer_dict):
+    """Read off the row as its machine is handed it: an unknown quality is none."""
+    computer = {
+        **_mac(sample_computer_dict),
+        "config": {"browser_quality": "blurry", "browser_window": True},
+    }
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=computer)),
+        patch(
+            "src.server.app.computers.count_live_workspaces_by_computer",
+            AsyncMock(return_value={}),
+        ),
+    ):
+        resp = await client.get(f"/api/v1/computers/{COMPUTER_ID}")
+
+    assert resp.status_code == 200
+    assert resp.json()["browser"] == {
+        "quality": None,
+        "signins": True,
+        "window": True,
+        "window_available": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_bringing_in_sign_ins_answers_what_the_machine_brought(
+    browser_client, sample_computer_dict
+):
+    from src.server.models.computer import BrowserSigninBringResponse
+
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="ssh")
+    bring = AsyncMock(return_value=BrowserSigninBringResponse(done=True, count=7, skipped=1))
+    with (
+        _browser_route(before),
+        patch("src.server.services.browser_everyday.bring", bring),
+    ):
+        resp = await browser_client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/browser-signins/bring",
+            json={"browser": "arc", "profile": "Default"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"done": True, "count": 7, "skipped": 1, "reason": None}
+    bring.assert_awaited_once_with(before, "arc", "Default")
 
 
 @pytest.mark.asyncio

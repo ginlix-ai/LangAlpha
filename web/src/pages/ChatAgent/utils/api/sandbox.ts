@@ -47,9 +47,14 @@ export type BrowserViewAnswer =
     state: 'running';
     /** Where the live stream opens; a short-lived key, held in memory only. */
     url: string;
+    /** The same stream from an app on the computer itself, past the server:
+     *  a machine of the user's own, to its owner. */
+    local_url?: string | null;
   }
-  /** `low_memory`: an open the computer refused because its memory is short. */
-  | { state: 'idle' | 'low_memory' | 'stopped' | 'outdated' | 'unavailable' };
+  /** `low_memory`: an open the computer refused because its memory is short.
+   *  `no_chrome`: a machine of the user's own with no Chrome-family browser,
+   *  and `installing` one downloading Chrome for Testing. */
+  | { state: 'idle' | 'low_memory' | 'stopped' | 'outdated' | 'no_chrome' | 'installing' | 'unavailable' };
 
 /** A server that has no browser routes yet, as a web deployed ahead of its backend
  *  meets. Asking again cannot help there, so it reads as a browser not on offer.
@@ -59,8 +64,6 @@ function routeMissing(err: unknown): boolean {
   return err instanceof ApiError && err.status === 404 && apiErrorDetail(err) === 'Not Found';
 }
 
-/** The state of the computer's browser. With `start` it opens it, and starts a
- *  stopped computer to do so. Any other failure is the caller's to read. */
 /** How long a view request may take before the tab gives up and offers to try
  *  again: a look asks the machine once, while a start may first bring a stopped
  *  computer up and then wait for Chrome. */
@@ -71,12 +74,25 @@ const BROWSER_START_TIMEOUT_MS = 240_000;
 const BROWSER_CONTROL_TIMEOUT_MS = 20_000;
 const BROWSER_NAVIGATE_TIMEOUT_MS = 75_000;
 
-export async function getBrowserView(workspaceId: string, start = false): Promise<BrowserViewAnswer> {
+/** What a view request asks of the computer's browser: its state, to open it
+ *  (starting a stopped computer to do so), or, on a machine of the user's own
+ *  with no browser, to download Chrome for Testing. */
+export type BrowserViewWant = 'look' | 'start' | 'chrome';
+
+const BROWSER_VIEW_BODY: Record<BrowserViewWant, Record<string, true>> = {
+  look: {},
+  start: { start: true },
+  chrome: { get_chrome: true },
+};
+
+/** The state of the computer's browser, after doing what `want` asks. Any
+ *  failure but a missing route is the caller's to read. */
+export async function getBrowserView(workspaceId: string, want: BrowserViewWant = 'look'): Promise<BrowserViewAnswer> {
   try {
     const { data } = await api.post<BrowserViewAnswer>(
       `/api/v1/workspaces/${workspaceId}/sandbox/browser-view`,
-      { ...(start && { start: true }) },
-      { timeout: start ? BROWSER_START_TIMEOUT_MS : BROWSER_LOOK_TIMEOUT_MS },
+      BROWSER_VIEW_BODY[want],
+      { timeout: want === 'start' ? BROWSER_START_TIMEOUT_MS : BROWSER_LOOK_TIMEOUT_MS },
     );
     return data;
   } catch (err) {

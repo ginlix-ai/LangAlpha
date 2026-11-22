@@ -9,6 +9,7 @@ import { api } from '@/api/client';
 import type {
   Computer,
   ComputerActionResponse,
+  ComputerBrowser,
   ComputerCreate,
   ComputerProvidersResponse,
   ComputerReconnectTarget,
@@ -282,20 +283,88 @@ export async function setComputerAlwaysOn(computerId: string, enabled: boolean):
   return data;
 }
 
-/** How sharply the computer's live browser view is drawn. */
-export type BrowserQuality = 'light' | 'standard' | 'sharp' | 'retina';
+export type { BrowserQuality } from '@/types/api';
+
+/** The choices a save may change; only the keys present are sent. */
+export type BrowserChoices = Partial<Pick<ComputerBrowser, 'quality' | 'window' | 'signins'>>;
+
+/** `applied` is false when the machine is running and did not take the save,
+ *  which then waits for the computer's next use. */
+export interface BrowserChoicesSaved {
+  browser: ComputerBrowser;
+  applied: boolean;
+}
 
 /**
- * Choose the live view's quality, or with null go back to the one the
- * computer's size gets. The open browser keeps the one it started with, since
- * changing it would restart the browser, so it applies the next time it opens.
+ * Change what the computer's browser is set to. A null quality follows the
+ * computer's size. The open browser keeps the way it started, since changing it
+ * would restart the browser, so a change applies the next time it opens. Every
+ * save of `signins` signs the browser out of every site, so saving it as it is
+ * signs out. Only a Mac under remote control can show a window.
  */
-export async function setComputerBrowserQuality(computerId: string, quality: BrowserQuality | null): Promise<Computer> {
+export async function setComputerBrowser(computerId: string, patch: BrowserChoices): Promise<BrowserChoicesSaved> {
   if (!computerId) throw new Error('Computer ID is required');
-  const { data } = await api.post<Computer>(
-    `/api/v1/computers/${computerId}/browser-quality`,
-    { quality },
+  const { data } = await api.patch<BrowserChoicesSaved>(
+    `/api/v1/computers/${computerId}/browser`,
+    patch,
     { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
+  );
+  return data;
+}
+
+/** One profile of a browser the person uses on their own machine. */
+export interface BrowserSigninSource {
+  browser: string;
+  name: string;
+  profile: string;
+  profile_name: string;
+}
+
+/** Why a machine lists no browsers, or brought nothing in. */
+export type BrowserSigninRefusal =
+  | 'unavailable'
+  | 'not_running'
+  | 'not_kept'
+  | 'not_found'
+  | 'keychain'
+  | 'low_memory'
+  | 'failed';
+
+export interface BrowserSigninSources {
+  sources: BrowserSigninSource[];
+  reason: BrowserSigninRefusal | null;
+}
+
+export interface BrowserSigninsBrought {
+  done: boolean;
+  count: number;
+  skipped: number;
+  reason: BrowserSigninRefusal | null;
+}
+
+/**
+ * The browsers on the computer's machine whose sign-ins can be brought into
+ * its own browser. A computer that is not running is not started to ask.
+ */
+export async function listBrowserSigninSources(computerId: string): Promise<BrowserSigninSources> {
+  if (!computerId) throw new Error('Computer ID is required');
+  const { data } = await api.get<BrowserSigninSources>(`/api/v1/computers/${computerId}/browser-signins/sources`);
+  return data;
+}
+
+// The machine may wait on the person to let a Mac's keychain be read.
+const BRING_SIGNINS_TIMEOUT_MS = 200000;
+
+/** Bring one browser profile's sign-ins into the computer's browser, on the machine. */
+export async function bringBrowserSignins(
+  computerId: string,
+  source: Pick<BrowserSigninSource, 'browser' | 'profile'>,
+): Promise<BrowserSigninsBrought> {
+  if (!computerId) throw new Error('Computer ID is required');
+  const { data } = await api.post<BrowserSigninsBrought>(
+    `/api/v1/computers/${computerId}/browser-signins/bring`,
+    { browser: source.browser, profile: source.profile },
+    { timeout: BRING_SIGNINS_TIMEOUT_MS },
   );
   return data;
 }

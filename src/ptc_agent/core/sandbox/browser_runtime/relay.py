@@ -20,8 +20,8 @@ import asyncio
 import hmac
 import secrets
 
-from . import care, daemon
-from .protocol import BRIDGE_PORT, PATH_PREFIX, STREAM_PORT, TOKEN_FILE, write_state
+from . import care, daemon, host
+from .protocol import PATH_PREFIX, TOKEN_FILE, write_state
 
 _LOG = "bridge.log"
 _HEAD_LIMIT = 16 * 1024
@@ -46,7 +46,7 @@ _STREAM_SETTINGS = frozenset({b"pacing", b"maxFps"})
 
 def ensure(wait_s: float = 0.0) -> bool:
     """Whether the bridge is up, starting it when it is not."""
-    return daemon.ensure("serve", BRIDGE_PORT, _LOG, wait_s)
+    return daemon.ensure("serve", host.current().bridge_port, _LOG, wait_s)
 
 
 def rewrite_head(head: bytes, token: str) -> tuple[bytes | None, bytes]:
@@ -93,7 +93,8 @@ def rewrite_head(head: bytes, token: str) -> tuple[bytes | None, bytes]:
 
 
 def serve() -> int:
-    listener = daemon.bind("0.0.0.0", BRIDGE_PORT, 64)
+    h = host.current()
+    listener = daemon.bind(h.bridge_address, h.bridge_port, 64)
     if listener is None:
         # One is already up, whose token this must not overwrite.
         return 0
@@ -104,7 +105,7 @@ def serve() -> int:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _HEAD_TIMEOUT_S)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError, OSError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, OSError):
             await daemon.answer(writer, b"400 Bad Request")
             return
         upgrade, refusal = rewrite_head(head, token)
@@ -113,10 +114,10 @@ def serve() -> int:
             return
         try:
             up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", STREAM_PORT, limit=_HEAD_LIMIT),
+                asyncio.open_connection("127.0.0.1", h.stream_port, limit=_HEAD_LIMIT),
                 _DIAL_TIMEOUT_S,
             )
-        except (OSError, TimeoutError):
+        except (OSError, asyncio.TimeoutError):
             # The browser is restarting or has gone: a viewer reconnects.
             await daemon.answer(writer, b"502 Bad Gateway")
             return
