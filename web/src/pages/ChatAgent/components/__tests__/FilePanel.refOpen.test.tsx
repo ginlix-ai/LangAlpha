@@ -245,7 +245,7 @@ describe('FilePanel reference opens', () => {
     const writes = createTranscriptStore({ messages: [], collectWrites });
     const files = ['notes.md'];
     const first = renderWithProviders(
-      <FilePanel workspaceId="ws" onClose={() => {}} files={files} transcript={writes.reader} target={{ kind: 'file', path: 'notes.md', seq: 1 }} />,
+      <FilePanel workspaceId="ws" threadId="t1" onClose={() => {}} files={files} transcript={writes.reader} target={{ kind: 'file', path: 'notes.md', seq: 1 }} />,
       { queryClient },
     );
     await screen.findByText('My private notes body.');
@@ -258,7 +258,7 @@ describe('FilePanel reference opens', () => {
     );
     // No target: the strip comes back from storage with notes.md active.
     renderWithProviders(
-      <FilePanel workspaceId="ws" onClose={() => {}} files={files} transcript={writes.reader} />,
+      <FilePanel workspaceId="ws" threadId="t1" onClose={() => {}} files={files} transcript={writes.reader} />,
       { queryClient },
     );
     await screen.findByText('Rewritten notes body.');
@@ -274,7 +274,7 @@ describe('FilePanel reference opens', () => {
     const writes = createTranscriptStore({ messages: [], collectWrites });
     const first = { kind: 'file', path: 'notes.md', seq: 1 } as const;
     const { rerender } = renderWithProviders(
-      <FilePanel workspaceId="ws" onClose={() => {}} files={['notes.md']} transcript={writes.reader} target={first} />,
+      <FilePanel workspaceId="ws" threadId="t1" onClose={() => {}} files={['notes.md']} transcript={writes.reader} target={first} />,
     );
     // The marker is stamped once the bytes are in hand, so the write has to
     // come after the body is on screen to count as a change.
@@ -286,7 +286,7 @@ describe('FilePanel reference opens', () => {
     fireEvent.click(screen.getByLabelText('Close notes.md'));
 
     rerender(
-      <FilePanel workspaceId="ws" onClose={() => {}} files={['notes.md']} transcript={writes.reader} target={{ kind: 'file', path: 'notes.md', seq: 2 }} />,
+      <FilePanel workspaceId="ws" threadId="t1" onClose={() => {}} files={['notes.md']} transcript={writes.reader} target={{ kind: 'file', path: 'notes.md', seq: 2 }} />,
     );
     await waitFor(() => expect(api.readWorkspaceFile).toHaveBeenCalledTimes(2));
   });

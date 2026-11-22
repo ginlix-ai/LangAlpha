@@ -49,7 +49,7 @@ vi.mock('@/pages/ChatAgent/components/StatusPanel', () => ({
 }));
 
 import FilePanel from '@/pages/ChatAgent/components/FilePanel';
-import { tabsStorageKey } from '@/pages/ChatAgent/components/filePanel/useFileTabs';
+import { threadTabsStorageKey } from '@/pages/ChatAgent/components/filePanel/useFileTabs';
 import { userLocalStorage } from '@/lib/userStorage';
 import { ThreadStatusContext, threadWork, type ThreadStatus } from '@/pages/ChatAgent/components/chatView/threadStatus';
 import { trayContentsOf } from '@/pages/ChatAgent/components/chatView/useTrayContents';
@@ -166,11 +166,11 @@ describe('FilePanel store tabs', () => {
   });
 
   it('keeps the store tabs in the strip it saves, and not the watch', async () => {
-    renderWithProviders(panel({ marketWatch: { symbols: [] } }));
+    renderWithProviders(panel({ marketWatch: { symbols: [] }, threadId: 't1' }));
     fireEvent.click(storeRow('Memory'));
     await screen.findByTestId('memory-panel');
 
-    expect(JSON.parse(userLocalStorage.getItem(tabsStorageKey('ws'))!).tabs).toEqual([{ kind: 'memory' }]);
+    expect(JSON.parse(userLocalStorage.getItem(threadTabsStorageKey('ws', 't1'))!).tabs).toEqual([{ kind: 'memory' }]);
   });
 });
 

@@ -134,9 +134,13 @@ interface FilePanelProps {
   canDownload?: boolean;
   /** Lock to one file: no tree. */
   singleFileMode?: boolean;
-  /** False keeps the strip in memory only: a panel browsing beside a gallery
-   *  must not write over the strip the workspace's conversations seed from. */
+  /** False keeps the strip in memory only, for the life of this mount: a panel
+   *  browsing beside a gallery is not a conversation's strip. */
   persistTabs?: boolean;
+  /** The chat this panel belongs to, stable for that chat's life. Before its
+   *  first message the strip is held under it, so closing the panel or a
+   *  layout change that remounts it does not lose what the chat opened. */
+  chatKey?: string;
   /** False for a panel mounted off screen (a recently visited thread the chat
    *  keeps warm): it holds its strip but does not save it, since the saved
    *  strip is the one the reader is looking at. */
@@ -191,6 +195,7 @@ function FilePanel({
   canDownload = true,
   singleFileMode = false,
   persistTabs = true,
+  chatKey,
   isActive = true,
   apiAdapter = null,
   onAddContext = null,
@@ -271,7 +276,7 @@ function FilePanel({
   // this workspace's: pointing the panel at another one starts that
   // workspace's strip rather than leaving these tabs under the new id.
   const persistStrip = !singleFileMode && persistTabs;
-  const tabs = useFileTabs(workspaceId, threadId, { persist: persistStrip, active: isActive });
+  const tabs = useFileTabs(workspaceId, threadId, { persist: persistStrip, active: isActive, chat: chatKey });
   const activeTab = tabs.activeTab;
   // The tree lists the workspace's files, so it sits beside a file or the
   // empty tab and nothing else: a chart, a tool result or an app is its own

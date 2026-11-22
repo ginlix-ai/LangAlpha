@@ -3,7 +3,7 @@ import { othersTurnWords } from '@/lib/turnRefusal';
 import { SharedThreadContext } from './messageList/SharedThreadContext';
 import { useSharedThreadView } from '../hooks/useSharedThreadView';
 import { useSharedEntry, useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
-import React, { Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { Suspense, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { MessageSelectionQuote } from './selectionQuote/MessageSelectionQuote';
@@ -149,6 +149,7 @@ import { isTurnOpen, useTranscriptFollow } from './chatView/useTranscriptFollow'
 import { useSubagentTabs } from './chatView/useSubagentTabs';
 import { publishSidebarAgents, clearSidebarAgents } from './sidebarAgentsBridge';
 import { useRightPanel } from './chatView/useRightPanel';
+import { handChatStrips, releaseChatStrips } from './filePanel/freshStrips';
 import { handOffToggleFocus } from './filePanel/panelToggleFocus';
 import { PanelLoadingStrip } from './filePanel/PanelLoadingStrip';
 import { usePanelFiles } from './chatView/usePanelFiles';
@@ -446,6 +447,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // to the panel would give every unsent chat in a workspace one shared strip.
   const liveThreadId = currentThreadId || threadId;
   const panelThreadId = liveThreadId && liveThreadId !== '__default__' ? liveThreadId : undefined;
+  // The host keys this view by chat instance, so this lives as long as the
+  // chat, across the panel's own remounts. What the chat held goes to its
+  // thread once it has one, whether or not the panel is open, and the rest
+  // goes with the chat.
+  const panelChatKey = useId();
+  useEffect(() => () => releaseChatStrips(panelChatKey), [panelChatKey]);
+  useEffect(() => { if (panelThreadId) handChatStrips(panelChatKey, panelThreadId); }, [panelChatKey, panelThreadId]);
 
   // Fallback-suggestion pill action: adopt the model that actually answered,
   // for this thread only. Making it the default is the banner's offer, which
@@ -2092,6 +2100,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <FilePanel
                   workspaceId={panelWorkspaceId}
                   threadId={panelThreadId}
+                  chatKey={panelChatKey}
                   isActive={isActive}
                   onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                   onLeaveGuardChange={handleFilesLeaveGuardChange}
@@ -2164,6 +2173,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     <FilePanel
                       workspaceId={panelWorkspaceId}
                       threadId={panelThreadId}
+                      chatKey={panelChatKey}
                       isActive={isActive}
                       onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                       expanded={panelExpanded}
