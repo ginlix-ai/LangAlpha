@@ -165,6 +165,9 @@ export interface ChatInputProps {
    */
   hasExternalContext?: boolean;
   tokenUsage?: TokenUsage | null;
+  /** The thread's history is loading, so its usage is still to come: the
+   *  ring holds its slot as an empty track until then. */
+  tokenUsagePending?: boolean;
   /** The thread the context panel breaks down; absent for a chat with no
    *  thread yet. */
   threadId?: string | null;
@@ -256,6 +259,7 @@ function ChatInput({
   hasExternalContext = false,
   // Token usage (context window progress)
   tokenUsage = null,
+  tokenUsagePending = false,
   threadId,
   // Action commands (e.g. /compact) — dispatched on send, not on selection
   onAction = null,
@@ -889,6 +893,7 @@ function ChatInput({
   const foldItems = useMemo(() => [...toolbarItems, effortItem], [toolbarItems, effortItem]);
 
   const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  const ringSlot = ringVisible || tokenUsagePending;
   const micReserved = speechSupported && !!otherPref?.voice_input_enabled;
   // Right group: the model pill (measured), the mic, and send/stop. A turn
   // hides the mic but keeps its room, so the fold set holds through it.
@@ -905,7 +910,7 @@ function ChatInput({
     // Left of the first pill: container border + px-3, the attach button, and
     // the optional ring / chart-capture button (see the action bar below).
     fixedLeft: CONTAINER_BORDER + CONTAINER_PX + ICON_BUTTON_W
-      + (ringVisible ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
+      + (ringSlot ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
       + (onCaptureChart ? TOOLBAR_GAP + ICON_BUTTON_W : 0),
     rightReserve: (widths) => rightGroup(widths.model ?? 0),
     rightFloor: (widths) => rightGroup(widths.modelFloor ?? 0),
@@ -1134,8 +1139,8 @@ function ChatInput({
               </button>
 
               {/* Token Usage Ring */}
-              {ringVisible && tokenUsage && (
-                <TokenUsageRing tokenUsage={tokenUsage} threadId={threadId} />
+              {ringSlot && (
+                <TokenUsageRing tokenUsage={ringVisible ? tokenUsage : null} threadId={threadId} />
               )}
 
               {/* Chart Capture (trading only) */}

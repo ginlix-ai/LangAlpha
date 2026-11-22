@@ -24,7 +24,10 @@ function getColor(pct: number): string {
 }
 
 interface TokenUsageRingProps {
-  tokenUsage: TokenUsage;
+  /** Null while the thread's history loads: the ring holds its slot as a
+   *  bare track, so the toolbar does not shift when the count lands and the
+   *  arc fills in from empty rather than popping in. */
+  tokenUsage: TokenUsage | null;
   /** The thread the panel counts the parts of; absent for a composer with
    *  no thread yet. */
   threadId?: string | null;
@@ -33,9 +36,11 @@ interface TokenUsageRingProps {
 export function TokenUsageRing({ tokenUsage, threadId }: TokenUsageRingProps) {
   const { t } = useTranslation();
   const locale = useLocale();
-  const { total, threshold } = tokenUsage;
+  const pending = tokenUsage === null;
+  const total = tokenUsage?.total ?? 0;
+  const threshold = tokenUsage?.threshold ?? 0;
 
-  const pct = share(total, threshold);
+  const pct = pending ? 0 : share(total, threshold);
   const color = getColor(pct);
   const dashOffset = CIRCUMFERENCE * (1 - pct);
   const usedPercent = percent(threshold > 0 ? total / threshold : 0, locale);
@@ -47,8 +52,10 @@ export function TokenUsageRing({ tokenUsage, threadId }: TokenUsageRingProps) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={t('chat.contextPanel.trigger', { percent: usedPercent })}
-          className="press tap-target inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg cursor-pointer hover:bg-foreground/5"
+          disabled={pending}
+          aria-hidden={pending || undefined}
+          aria-label={pending ? undefined : t('chat.contextPanel.trigger', { percent: usedPercent })}
+          className="press tap-target inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg cursor-pointer hover:bg-foreground/5 disabled:cursor-default disabled:hover:bg-transparent"
         >
           <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
             <circle
@@ -69,7 +76,7 @@ export function TokenUsageRing({ tokenUsage, threadId }: TokenUsageRingProps) {
               strokeLinecap="round"
               strokeDasharray={CIRCUMFERENCE}
               initial={false}
-              animate={{ strokeDashoffset: dashOffset }}
+              animate={{ strokeDashoffset: dashOffset, opacity: pending ? 0 : 1 }}
               transition={TWEEN.fold}
               style={{ transform: 'rotate(-90deg)', transformOrigin: '50% 50%' }}
             />
@@ -83,7 +90,7 @@ export function TokenUsageRing({ tokenUsage, threadId }: TokenUsageRingProps) {
         aria-label={t('chat.contextPanel.title')}
         className="w-80 max-w-[calc(100vw-2rem)] rounded-xl border-(--color-border-elevated) bg-(--color-bg-elevated) p-3 text-xs text-(--color-text-primary) shadow-lg tabular-nums"
       >
-        <ContextPanel tokenUsage={tokenUsage} threadId={threadId} />
+        {tokenUsage && <ContextPanel tokenUsage={tokenUsage} threadId={threadId} />}
       </PopoverContent>
     </Popover>
   );
