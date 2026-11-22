@@ -15,6 +15,7 @@ import { WorkspaceCreatedSlip } from '../../messageList/WorkspaceCreatedSlip';
 import { preapprovedCardOf } from '../../../utils/preapprovedCards';
 import ToolCallDetailView from '../../ToolCallDetailView';
 import { ComposerTray } from '../../chatView/ComposerTray';
+import { ThreadStatusContext, threadWork } from '../../chatView/threadStatus';
 import type { TrayContents } from '../../chatView/useTrayContents';
 import type { RosterTask } from '../../chatView/delegatedWork';
 import { MessageActionsProvider } from '../../messageList/MessageActionsContext';
@@ -187,7 +188,7 @@ function Surfaces(): React.ReactElement {
   const [opened, setOpened] = useState<string | null>(null);
   const running = runningCommands(listing);
   const contents: TrayContents = {
-    watch: null, wakeups: null, analysts: null, reportBackLabel: null,
+    plan: null, watch: null, wakeups: null, analysts: null, reportBack: null,
     commands: running.length ? running : null,
     tasks: { rows: TASKS, unnamedRunning: false },
   };
@@ -238,17 +239,23 @@ function Surfaces(): React.ReactElement {
         <Section id="tray" label="Composer tray (open the commands chip)">
           <div className="h-56" />
           <div className="rounded-2xl border border-(--color-border-muted) pt-3 pb-14">
-            <ComposerTray
-              contents={contents}
-              phase="open"
-              trayRef={{ current: null }}
-              dockRef={{ current: null }}
-              from={null}
-              onOpenTask={(id) => console.info('[commands-preview] open task', id)}
-              onOpenWatch={() => undefined}
-              onOpenCommand={setOpened}
-              threadId={THREAD}
-            />
+            <ThreadStatusContext
+              value={{
+                contents,
+                work: threadWork(contents, false),
+                latestPlan: null,
+                allWakeups: null,
+                focus: null,
+                from: null,
+                threadId: THREAD,
+                onOpenTask: (id) => console.info('[commands-preview] open task', id),
+                onOpenCommand: setOpened,
+                onJumpToLatest: () => undefined,
+                onOpenStatus: () => undefined,
+              }}
+            >
+              <ComposerTray phase="open" trayRef={{ current: null }} dockRef={{ current: null }} onSettled={() => undefined} />
+            </ThreadStatusContext>
           </div>
         </Section>
       </MessageActionsProvider>

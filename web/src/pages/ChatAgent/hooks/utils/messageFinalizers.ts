@@ -5,7 +5,6 @@
  */
 
 import type { ChatMessage, AssistantMessage, ModelFallbackNotice, NotificationSegment } from '@/types/chat';
-import type { TodoItem } from '@/types/sse';
 import { INTERRUPT_CARD_BUCKETS } from '../../session/interrupts/buckets';
 import type { ToolCallAgentIndex } from '../../session/subagents/historyStore';
 
@@ -94,47 +93,6 @@ function isWorkspaceChangingToolSuccess(resultContent: unknown): boolean {
   }
 }
 
-
-/**
- * Marks incomplete todos as 'stale' in todoListProcesses of assistant messages.
- * Used when the agent stream ends without completing all todos.
- * @param messages - Current messages array
- * @param targetMessageId - If provided, only finalize the specific message; otherwise finalize all
- */
-export function finalizeTodoListProcessesInMessages(
-  messages: ChatMessage[],
-  targetMessageId?: string
-): ChatMessage[] {
-  let anyChanged = false;
-  const updated = messages.map((m) => {
-    if (m.role !== 'assistant') return m;
-    if (targetMessageId && m.id !== targetMessageId) return m;
-    const am = m as AssistantMessage;
-    if (!am.todoListProcesses || Object.keys(am.todoListProcesses).length === 0) return m;
-    const entries = Object.entries(am.todoListProcesses);
-    const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
-    const [lastKey, lastVal] = lastEntry;
-    if (!Array.isArray(lastVal.todos)) return m;
-    const hasIncomplete = lastVal.todos.some(
-      (todo: TodoItem) => todo.status !== 'completed' && todo.status !== 'stale'
-    );
-    if (!hasIncomplete) return m;
-    anyChanged = true;
-    const finalizedTodos: TodoItem[] = lastVal.todos.map((todo: TodoItem) =>
-      todo.status === 'completed' || todo.status === 'stale'
-        ? todo
-        : { ...todo, status: 'stale' as const }
-    );
-    return {
-      ...am,
-      todoListProcesses: {
-        ...am.todoListProcesses,
-        [lastKey]: { ...lastVal, todos: finalizedTodos, in_progress: 0, pending: 0 },
-      },
-    };
-  });
-  return anyChanged ? updated : messages;
-}
 
 /**
  * Map a task artifact event's tool_call_id to its agentId and drain the pending queue.

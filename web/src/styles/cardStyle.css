@@ -84,9 +84,9 @@
      card is. Frame shadows are the ones Soft drops too. */
   --cs-float-shadow: none;
   --cs-frame-shadow: none;
-  /* The composer squared, and the todo tab and the rows above it on its
-     corner. The send button stays centred in its row, where Balanced's is set
-     into its corner (chat-input.composerParts). */
+  /* The composer squared, and the rows above it on its corner. The send
+     button stays centred in its row, where Balanced's is set into its
+     corner (chat-input.composerParts). */
   --cs-composer-radius: 6px;
   --cs-composer-send-radius: 3px;
   --cs-composer-stack-radius: 6px;
@@ -142,8 +142,8 @@
      their shadow. */
   --cs-frame-shadow: none;
   /* A rounder composer, off the radius scale, since every Soft button
-     is a pill and so is its send button. The todo tab and the rows above
-     share its corner, the rows' text set in to clear it. */
+     is a pill and so is its send button. The rows above share its
+     corner, their text set in to clear it. */
   --cs-composer-radius: 22px;
   --cs-composer-send-radius: 999px;
   --cs-composer-stack-radius: 22px;

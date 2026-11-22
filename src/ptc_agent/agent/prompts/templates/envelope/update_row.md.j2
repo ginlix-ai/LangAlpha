@@ -73,6 +73,19 @@
    A `notes_check_in` row (`turn.NOTES_CHECK_IN_ROW_KIND`) asks between
    summaries, once a run of tool calls has gone by with no write to the
    notes, and splits its words the same way.
+   A `plan_check_in` row (`turn.PLAN_CHECK_IN_ROW_KIND`) follows a run of
+   tool calls since the plan last moved or was checked in on, counted across
+   the turns that carry its request on, with a step still shown running
+   (`middleware/plan.py`). Its text names the step and the count; the ask is
+   here.
+   A `plan_nudge` row (`turn.PLAN_NUDGE_ROW_KIND`) follows a run of tool
+   calls in a request with no plan, once per request (`middleware/plan.py`).
+   Its text gives the count; the ask is here.
+   A `plan_close_out` row (`turn.PLAN_CLOSE_OUT_ROW_KIND`) follows a final
+   answer that left plan steps unfinished with nothing set to report back
+   (`middleware/plan_close_out.py`). Its text names the steps; the ask is
+   here. The model call it asks for is never streamed, and only its
+   `UpdatePlan` calls are kept, which is what the ask tells the model.
    A `rebuild_notes` row (`turn.REBUILD_NOTES_ROW_KIND`) asks for the notes
    once, on the step before a summary that keeps no turn mid-turn, when the
    prompt is rebuilt; its text is empty, the folder rides
@@ -184,6 +197,14 @@ This conversation will be summarized soon
 Your checkpoint notes have not been written for a while
 
 {{ update.text }} If something significant has happened since, add it to the note of the task it belongs to, starting that note if there is none, one terse line each: what the user decided or told you, an approach you took or dropped and why, a finding with its source, a step finished and what it produced, a hand-off sent or reported back. Correct in place, or remove, any line that is no longer true, a plan line included. If nothing significant happened, or this is a quick answer, carry on without writing: a line that only says the work continues adds nothing.
+{% elif update.kind == "plan_check_in" %}
+Your plan has not moved for a while
+
+{{ update.text }} If that step is done, call `UpdatePlan` with `advance` in the same message as your next tool call, or send the new `steps` if the plan itself has changed. If you are still on that step, carry on without calling it.
+{% elif update.kind == "plan_nudge" %}
+{{ update.text }} If the work has three or more distinct steps, show it with `UpdatePlan`.
+{% elif update.kind == "plan_close_out" %}
+{{ update.text }} Nothing you started will report back. Mark the ones you finished with `UpdatePlan` (`done` or `advance`) and leave the rest. Send only that call: the user already has your answer, and any text or other call here is discarded.
 {% elif update.kind == "rebuild_notes" %}
 This conversation will be summarized after your next step
 

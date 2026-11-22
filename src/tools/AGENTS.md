@@ -59,8 +59,7 @@ Which copy to keep depends on the decorator, so check it before deleting either.
 Most tools here do not set `parse_docstring=True`, so their `Args:` block does not
 reach the JSON schema: it is prose the model reads alongside a schema carrying only
 names, types and defaults, and the `Annotated`/`Field` text is the copy that ships.
-`TodoWrite` (`ptc_agent/agent/tools/todo/tool.py`) and `think_tool`
-(`ptc_agent/agent/tools/think.py`) **do** set it, so there the `Args:` block *is* the
+`think_tool` (`ptc_agent/agent/tools/think.py`) **does** set it, so there the `Args:` block *is* the
 published description and the `Field`/`Annotated` copy is the one to drop. Deleting
 the wrong half silently changes what the model is told a parameter means.
 

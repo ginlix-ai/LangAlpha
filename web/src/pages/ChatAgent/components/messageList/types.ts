@@ -25,7 +25,6 @@ export interface ContentSegmentRecord extends Partial<Omit<NotificationSegment, 
   chunks?: TextChunkMark;
   reasoningId?: string;
   toolCallId?: string;
-  todoListId?: string;
   subagentId?: string;
   questionId?: string;
   proposalId?: string;

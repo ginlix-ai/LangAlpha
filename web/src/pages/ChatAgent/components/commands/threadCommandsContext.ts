@@ -6,8 +6,8 @@
  */
 import { createContext, useContext } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { queryKeys } from '@/lib/queryKeys';
 import type { CommandRun, CommandsResponse } from '@/types/commands';
+import { threadCommandsQuery } from '../../hooks/useCommands';
 
 export const ThreadCommandsContext = createContext<string | null>(null);
 
@@ -19,7 +19,7 @@ export const ThreadCommandsContext = createContext<string | null>(null);
 export function useCommandForToolCall(toolCallId: string): CommandRun | null {
   const threadId = useContext(ThreadCommandsContext);
   const { data } = useQuery({
-    queryKey: queryKeys.threads.commands(threadId ?? ''),
+    ...threadCommandsQuery(threadId ?? ''),
     enabled: false,
     select: (listing: CommandsResponse) => listing.commands.find((row) => row.tool_call_id === toolCallId) ?? null,
   });

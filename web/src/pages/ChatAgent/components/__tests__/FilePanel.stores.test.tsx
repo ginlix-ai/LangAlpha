@@ -43,21 +43,45 @@ vi.mock('@/pages/ChatAgent/components/MemoPanel', () => ({
     <div data-testid="memo-panel" data-key={targetKey ?? 'none'}>memo</div>
   ),
 }));
+// The panel reads the chat view's thread status, not the file panel's props.
 vi.mock('@/pages/ChatAgent/components/StatusPanel', () => ({
-  default: ({ marketWatch }: { marketWatch?: { symbols: string[] } | null }) => (
-    <div data-testid="status-panel">{(marketWatch?.symbols ?? []).join(',')}</div>
-  ),
+  default: () => <div data-testid="status-panel" />,
 }));
 
 import FilePanel from '@/pages/ChatAgent/components/FilePanel';
 import { tabsStorageKey } from '@/pages/ChatAgent/components/filePanel/useFileTabs';
 import { userLocalStorage } from '@/lib/userStorage';
+import { ThreadStatusContext, threadWork, type ThreadStatus } from '@/pages/ChatAgent/components/chatView/threadStatus';
+import { trayContentsOf } from '@/pages/ChatAgent/components/chatView/useTrayContents';
+import type { MarketWatchState } from '@/pages/ChatAgent/session/marketWatchEvents';
 
 const FILES = ['notes.md'];
 
-const panel = (props: Record<string, unknown> = {}) => (
-  <FilePanel workspaceId="ws" onClose={() => {}} files={FILES} {...props} />
-);
+/** The panel inside a chat view whose status holds `marketWatch`, the one
+ *  part of it the panel follows here. */
+const panel = ({ marketWatch, ...props }: Record<string, unknown> & { marketWatch?: MarketWatchState } = {}) => {
+  const contents = trayContentsOf({
+    watch: marketWatch?.symbols.length ? marketWatch : null, wakeups: null, commands: null, tasks: null, analysts: null, reportBack: null,
+  }, null);
+  const status: ThreadStatus = {
+    contents,
+    work: threadWork(contents, false),
+    latestPlan: null,
+    allWakeups: null,
+    focus: null,
+    from: null,
+    threadId: null,
+    onOpenTask: () => {},
+    onOpenCommand: () => {},
+    onJumpToLatest: () => {},
+    onOpenStatus: () => {},
+  };
+  return (
+    <ThreadStatusContext value={status}>
+      <FilePanel workspaceId="ws" onClose={() => {}} files={FILES} {...props} />
+    </ThreadStatusContext>
+  );
+};
 
 const tabNames = () => within(screen.getByRole('tablist')).getAllByRole('tab').map((el) => el.textContent);
 const storeRow = (name: string) => within(document.querySelector<HTMLElement>('.file-panel-store-group')!).getByRole('button', { name });
@@ -151,24 +175,24 @@ describe('FilePanel store tabs', () => {
 });
 
 describe('FilePanel status tab', () => {
-  it('adds the Status tab as a watch starts, and leaves it showing nothing watched as the watch ends', async () => {
+  it('adds the Status tab as a watch starts, and keeps it as the watch ends', async () => {
     const { rerender } = renderWithProviders(panel({ marketWatch: { symbols: [] } }));
     expect(screen.queryByTestId('status-panel')).toBeNull();
 
     rerender(panel({ marketWatch: { symbols: ['NVDA', 'TSLA'] } }));
     expect(tabNames()).toEqual(['Open a file', 'Status']);
     fireEvent.click(within(screen.getByRole('tablist')).getByRole('tab', { name: /Status/ }));
-    expect((await screen.findByTestId('status-panel')).textContent).toBe('NVDA,TSLA');
+    expect(await screen.findByTestId('status-panel')).toBeInTheDocument();
 
     // The tab is the reader's to close: taken away it would go from under
     // them, and a watch resumed would bring it back unfocused as a new tab.
     rerender(panel({ marketWatch: { symbols: [] } }));
     expect(tabNames()).toEqual(['Open a file', 'Status']);
-    expect(screen.getByTestId('status-panel').textContent).toBe('');
+    expect(screen.getByTestId('status-panel')).toBeInTheDocument();
 
     rerender(panel({ marketWatch: { symbols: ['NVDA'] } }));
     expect(tabNames()).toEqual(['Open a file', 'Status']);
-    expect(screen.getByTestId('status-panel').textContent).toBe('NVDA');
+    expect(screen.getByTestId('status-panel')).toBeInTheDocument();
   });
 
   it('leaves the reader where they are when the panel mounts under a running watch', () => {

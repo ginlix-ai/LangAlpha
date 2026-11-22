@@ -39,7 +39,6 @@ def subagent_compiler(
     filesystem: list[Any],
     web: list[Any],
     finance: list[Any],
-    todo: list[Any],
     search_tool: Callable[..., Any],
     sandbox_tools: Callable[[frozenset[str]], list[Any]],
     turn_context: TurnContext | None,
@@ -72,7 +71,9 @@ def subagent_compiler(
         "web_search": web,
         "finance": finance,
         "think": [think_tool],
-        "todo": todo,
+        # Binds nothing: the plan is the main agent's, and the name stays so
+        # an operator's subagent that still lists it is not an unknown set.
+        "todo": [],
     }
     return SubagentCompiler(
         sandbox=sandbox,

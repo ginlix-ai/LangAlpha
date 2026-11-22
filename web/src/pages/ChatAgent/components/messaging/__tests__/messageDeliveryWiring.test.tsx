@@ -56,7 +56,6 @@ function renderTranscript(onToolCallDetailClick: (id: string) => void, artifact?
         segments={[{ type: 'tool_call', toolCallId: CALL_ID }] as never}
         reasoningProcesses={{}}
         toolCallProcesses={{ [CALL_ID]: proc(artifact) } as never}
-        todoListProcesses={{}}
         subagentTasks={{}}
         isStreaming={false}
       />

@@ -14,7 +14,7 @@ import { dateStrInTz, utcMsToChartSec } from '@/lib/utils';
 import { isPriceTriggerConfig } from '@/pages/Automations/utils/price';
 import type { PriceTriggerConfig } from '@/types/automation';
 import type { Freshness } from '@/types/market';
-import { percentMove } from './termChange';
+import { percentMove } from '@/lib/priceMove';
 
 /** What every inline card is handed: the artifact, which both render sites
  *  only draw a card for when there is one. */

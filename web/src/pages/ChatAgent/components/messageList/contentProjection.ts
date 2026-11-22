@@ -178,8 +178,9 @@ const ASKS_USER = new Set([
   'delete_workspace', 'stop_workspace', 'delete_thread', 'credit_pause',
 ]);
 /** Calls that record the work rather than do it. An answer often ends on one,
- *  ticking the todo list, so it says nothing about whether the turn went on. */
-const BOOKKEEPING_TOOLS = new Set(['TodoWrite']);
+ *  ticking the plan, so it says nothing about whether the turn went on. An
+ *  older thread's plan is a `TodoWrite`. */
+const BOOKKEEPING_TOOLS = new Set(['UpdatePlan', 'TodoWrite']);
 
 /** What the agent did after each text before its next one. Reasoning opens the
  *  next model call and a notice is not the agent's, so neither counts. */
@@ -206,8 +207,6 @@ function readFollows(
 }
 
 function isBookkeeping(group: ContentSegmentRecord, toolCallProcesses: Record<string, ToolCallProcessRecord>): boolean {
-  // The list a TodoWrite draws lands as a segment of its own, live and replayed.
-  if (group.type === 'todo_list') return true;
   const name = group.type === 'tool_call' && group.toolCallId ? toolCallProcesses[group.toolCallId]?.toolName : undefined;
   return name !== undefined && BOOKKEEPING_TOOLS.has(name);
 }
@@ -344,9 +343,9 @@ export function projectMessageContent(
  * the list skips rendering them.
  *
  * Empty is judged on the render blocks the bubble would draw, not on its raw
- * segments: the builder drops hidden tool calls (TodoWrite's list floats
- * outside the bubble) and todo-list segments, so a turn of only those has
- * segments and still paints a blank column. Beyond the blocks, the Sources
+ * segments: the builder drops hidden tool calls, so a turn of only those has
+ * segments and still paints a blank column. The plan is no segment at all: it
+ * shows under the message that asked for the work. Beyond the blocks, the Sources
  * pill, the Stopped chip, an error, and a live stream keep the bubble.
  *
  * INVARIANT: everything an assistant bubble can render must surface through

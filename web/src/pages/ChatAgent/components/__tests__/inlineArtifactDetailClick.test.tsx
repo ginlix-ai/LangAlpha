@@ -96,7 +96,6 @@ function renderTranscript(onToolCallDetailClick: () => void) {
           [RECEIPT_ID]: proc('mcp__moomoo__sim_trade_input_order', RECEIPT_ID, RECEIPT_ARTIFACT),
           [SEARCH_ID]: proc('web_search', SEARCH_ID, SEARCH_ARTIFACT),
         } as never}
-        todoListProcesses={{}}
         subagentTasks={{}}
         isStreaming={false}
       />

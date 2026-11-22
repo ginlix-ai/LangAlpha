@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import type { CommandRun, CommandsResponse } from '@/types/commands';
 import { fetchCommands, stopCommand } from '../utils/api';
@@ -17,6 +17,22 @@ function anyRunning(data: CommandsResponse | undefined): boolean {
 }
 
 /**
+ * The listing's read, which the host's query and every tool card's observer
+ * both spread: an observer's options become the query's, so one that set its
+ * own would change how the host's refetch runs.
+ */
+export function threadCommandsQuery(threadId: string) {
+  return queryOptions({
+    queryKey: queryKeys.threads.commands(threadId),
+    queryFn: () => fetchCommands(threadId),
+    staleTime: 0,
+    // An older server has no listing; every chat reads it, so a failure
+    // leaves what was shown rather than retrying.
+    retry: false,
+  });
+}
+
+/**
  * The thread's background commands, newest first, read once per view: the
  * tray takes them from here and every tool card watches this read in the
  * cache (`useCommandForToolCall`). A command ends on the server, so the
@@ -30,13 +46,8 @@ function anyRunning(data: CommandsResponse | undefined): boolean {
 export function useThreadCommands(threadId: string | null | undefined, active = true): readonly CommandRun[] {
   const thread = isValidUuid(threadId) ? threadId : null;
   const { data } = useQuery({
-    queryKey: queryKeys.threads.commands(thread ?? ''),
-    queryFn: () => fetchCommands(thread as string),
+    ...threadCommandsQuery(thread ?? ''),
     enabled: thread !== null && active,
-    staleTime: 0,
-    // An older server has no listing; every chat reads it, so a failure
-    // leaves what was shown rather than retrying.
-    retry: false,
     refetchInterval: (query) => (anyRunning(query.state.data) ? COMMAND_TICK_MS : false),
   });
   return data?.commands ?? NO_COMMANDS;

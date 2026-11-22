@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { usePreferences } from '@/hooks/usePreferences';
 import { turnEndScrollPatch, readTurnEndScroll } from '@/lib/turnEndScroll';
+import { composerTrayPatch, readComposerTray } from '@/lib/composerTray';
 import {
   readStreamingMode,
   readToolCallLayout,
@@ -27,6 +28,7 @@ export function ChatPanel() {
   const streamingMode = readStreamingMode(prefsData);
   const toolCallLayout = readToolCallLayout(prefsData);
   const turnEndScroll = readTurnEndScroll(prefsData);
+  const composerTray = readComposerTray(prefsData);
   const voiceInput = (prefsData as Preferences | null)?.other_preference?.voice_input_enabled === true;
 
   return (
@@ -71,6 +73,15 @@ export function ChatPanel() {
       </SettingsGroup>
 
       <SettingsGroup title={t('settings.composerGroup')}>
+        <SegmentedRow
+          {...copy(SETTINGS.composerTray)}
+          value={composerTray}
+          onChange={(v) => { if (v !== composerTray) void write(composerTrayPatch(v)); }}
+          options={[
+            { value: 'above', label: t('settings.composerTrayAbove') },
+            { value: 'inside', label: t('settings.composerTrayInside') },
+          ]}
+        />
         <ToggleRow
           {...copy(SETTINGS.voiceInput)}
           checked={voiceInput}

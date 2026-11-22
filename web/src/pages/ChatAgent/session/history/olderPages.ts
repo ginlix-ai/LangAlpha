@@ -100,8 +100,8 @@ function mergeSubagentHistory(older: SubagentHistoryData, newer: SubagentHistory
  * Only the transcript comes from an older page, and its calls' tokens when the
  * server sent no count for the totals. The rest of the thread-level state a
  * replay sets (the context window and the newest call, the fallback suggestion,
- * the todo card, the rendered-turn watermark, the replayed run ids, a paused
- * interrupt) belongs to the newest turns, which the newest page already set.
+ * the rendered-turn watermark, the replayed run ids, a paused interrupt)
+ * belongs to the newest turns, which the newest page already set.
  */
 export async function loadOlderHistoryPage(
   rt: HistoryRuntime,
@@ -119,7 +119,6 @@ export async function loadOlderHistoryPage(
     workspaceId: rt.workspaceId,
     threadId: request.threadId,
     t: rt.t,
-    updateTodoListCard: null,
     setMessages: (next) => {
       local = typeof next === 'function' ? next(local) : next;
     },

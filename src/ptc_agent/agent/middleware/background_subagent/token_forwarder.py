@@ -210,10 +210,10 @@ class _SubagentTokenForwarder:
         Only the shapes ``_ALLOWED_CUSTOM_EVENT_TYPES`` and
         ``_FORWARDED_ARTIFACT_PAYLOAD_KEYS`` name pass, each stamped with the
         stable ``task:{task_id}`` agent_id so the per-task consumer and
-        frontend can route it. Everything else (todo_operations, show_widget
-        and the like) drops: it would bloat the per-task buffer and Redis
-        stream, and a payload with ``type: "message_chunk"`` would spoof a real
-        subagent SSE event on the frontend.
+        frontend can route it. Everything else (show_widget and the like)
+        drops: it would bloat the per-task buffer and Redis stream, and a
+        payload with ``type: "message_chunk"`` would spoof a real subagent SSE
+        event on the frontend.
         """
         if not isinstance(data, dict):
             return

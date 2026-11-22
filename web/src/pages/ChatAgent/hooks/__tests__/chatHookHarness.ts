@@ -58,7 +58,6 @@ export function mainHandlersMockModule(
     handleToolCalls: vi.fn(),
     handleToolCallResult: vi.fn(),
     handleToolCallChunks: vi.fn(),
-    handleTodoUpdate: vi.fn(),
     ...overrides,
   };
 }
@@ -109,7 +108,6 @@ export function historyHandlersMockModule(
     handleHistoryTextContent: vi.fn(),
     handleHistoryToolCalls: vi.fn(),
     handleHistoryToolCallResult: vi.fn(),
-    handleHistoryTodoUpdate: vi.fn(),
     handleHistorySteeringDelivered: vi.fn(),
     ...overrides,
   };

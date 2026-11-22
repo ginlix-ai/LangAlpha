@@ -132,6 +132,91 @@ export function conditionLabel(kind: WakeupPrice['kind'], value: number, locale:
   }
 }
 
+/** Where a price wakeup stands against the price it is read at. */
+export interface PriceDistance {
+  /** The price it is read at. */
+  last: number;
+  /** The price that sets it off. */
+  target: number;
+  /** How far the price still has to move, as a share of it; 0 once there. */
+  away: number;
+  /** The way covered from the price it was set at, 0 to 1; null when that price is unknown. */
+  progress: number | null;
+}
+
+/**
+ * How far a price wakeup is from going off: against `live`, the price the
+ * chat streams, else the monitor's own last reading, and the level it fires
+ * at, which for a move rolls with the close it measures from. Null until a
+ * price and a level are known.
+ */
+export function priceDistance(
+  price: Pick<WakeupPrice, 'kind' | 'armed_price' | 'last' | 'level'>,
+  live: number | null = null,
+): PriceDistance | null {
+  const last = live ?? price.last;
+  const target = price.level;
+  if (last == null || !(last > 0) || target == null) return null;
+  const rising = price.kind === 'above' || price.kind === 'pct_up';
+  const away = Math.max(0, (rising ? target - last : last - target) / last);
+  const from = price.armed_price;
+  const progress = from != null && from !== target
+    ? Math.min(1, Math.max(0, (last - from) / (target - from)))
+    : null;
+  return { last, target, away, progress };
+}
+
+/** The price an armed price wakeup waits on, or null for any other wakeup. */
+export function armedPrice(w: Pick<Wakeup, 'kind' | 'state' | 'price'>): WakeupPrice | null {
+  return w.kind === 'price' && w.state === 'armed' && w.price ? w.price : null;
+}
+
+/**
+ * The armed price wakeup nearest its level and how far it still has to go,
+ * each read at `liveOf` its ticker's price where there is one. A wakeup
+ * already at its level or with no distance known is passed over.
+ */
+export function nearestPriceWakeup(
+  items: readonly Wakeup[],
+  liveOf: (symbol: string) => number | null,
+): { symbol: string; distance: PriceDistance } | null {
+  let nearest: { symbol: string; distance: PriceDistance } | null = null;
+  for (const w of items) {
+    const price = armedPrice(w);
+    if (!price) continue;
+    const distance = priceDistance(price, liveOf(price.symbol));
+    if (distance && distance.away > 0 && (!nearest || distance.away < nearest.distance.away)) {
+      nearest = { symbol: price.symbol, distance };
+    }
+  }
+  return nearest;
+}
+
+const awayFormat = createFormatter({ style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 });
+// A worked-out level and a last trade, to the cent.
+const centsFormat = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** How far a price wakeup is from going off, for the line under its name. */
+export function distanceLabel(distance: PriceDistance, showTarget: boolean, t: TFunction, locale: string): string {
+  const values = {
+    price: centsFormat(distance.last, locale),
+    target: centsFormat(distance.target, locale),
+    away: awayFormat(distance.away, locale),
+  };
+  if (distance.away === 0) return t('chat.wakeups.distanceReached', values);
+  return showTarget ? t('chat.wakeups.distanceToTarget', values) : t('chat.wakeups.distance', values);
+}
+
+/** The chip's few words on the same distance. */
+export function awayLabel(distance: PriceDistance, t: TFunction, locale: string): string {
+  return t('chat.wakeups.away', { away: awayPercent(distance, locale) });
+}
+
+/** The distance alone, `17.9%`, for a tray chip with room for nothing else. */
+export function awayPercent(distance: PriceDistance, locale: string): string {
+  return awayFormat(distance.away, locale);
+}
+
 /** A price condition in full: a move says what it is measured from. */
 export function priceConditionLabel(
   price: Pick<WakeupPrice, 'kind' | 'value' | 'pct_from' | 'armed_price'>,
@@ -252,6 +337,21 @@ export function chipLabel(
   if (!next) return count === 1 ? t('chat.wakeups.chip_one_untimed') : t('chat.wakeups.chip_other_untimed', { count });
   const time = whenLabel(next, userTimezone, locale, now);
   return count === 1 ? t('chat.wakeups.chip_one', { time }) : t('chat.wakeups.chip_other', { count, time });
+}
+
+/** The chip's own line, the next time alone (`2 · 3:30 PM`); `chipLabel`
+ *  stays its accessible name. Untimed, it is that whole label. */
+export function chipShortLabel(
+  pending: readonly Wakeup[],
+  t: TFunction,
+  locale: string,
+  now: number,
+  userTimezone: string | null,
+): string {
+  const next = nextFireAt(pending);
+  if (!next) return chipLabel(pending, t, locale, now, userTimezone);
+  const time = whenLabel(next, userTimezone, locale, now);
+  return t('chat.wakeups.chipShort', { count: pending.length, time });
 }
 
 /** What sets the wakeup off, for the line under its name. */

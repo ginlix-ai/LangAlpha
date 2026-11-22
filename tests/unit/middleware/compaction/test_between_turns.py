@@ -201,6 +201,24 @@ class TestCompact:
         # Nothing is written: the caller installs the answer.
         assert "_summarization_event" not in state
 
+    async def test_the_summary_lists_no_plan(self, monkeypatch):
+        """The next turn may open a new request, which starts with no plan,
+        so a plan listed here would be one it can no longer move."""
+        given: list = []
+        compact = Summarizer.compact
+
+        async def spy(self, *args, **kwargs):
+            given.append(kwargs.get("plan"))
+            return await compact(self, *args, **kwargs)
+
+        monkeypatch.setattr(Summarizer, "compact", spy)
+        agent, _ = _agent(_model())
+        state = {"messages": _history(), "plan": [{"title": "Chart it", "status": "in_progress"}]}
+
+        await ask_between_turns(agent, state, Compact(), thread_id="t-1")
+
+        assert given == [()]
+
     async def test_a_view_no_longer_than_what_is_kept_has_nothing_to_compact(self):
         agent, sent = _agent(_model(), keep_tokens=6)
 

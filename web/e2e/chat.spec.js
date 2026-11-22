@@ -707,7 +707,7 @@ test.describe('Chat View -- SSE Streaming', () => {
 
     await page.getByRole('button', { name: 'New tab' }).click({ button: 'right' });
     const menu = page.getByRole('menu');
-    await expect(menu.getByRole('menuitem')).toHaveText(['Files', 'Chart']);
+    await expect(menu.getByRole('menuitem')).toHaveText(['Files', 'Chart', 'Status']);
     await menu.getByRole('menuitem', { name: 'Files' }).click();
 
     await expect(page.locator('[role="tab"]')).toHaveCount(2);

@@ -113,6 +113,7 @@ export const SETTINGS = {
   streamingMode: { section: 'chat', anchor: 'response-delivery', labelKey: 'settings.streamingMode', descKey: 'settings.streamingModeDesc' },
   toolCallLayout: { section: 'chat', anchor: 'tool-calls', labelKey: 'settings.toolCallLayout', descKey: 'settings.toolCallLayoutDesc' },
   turnEndScroll: { section: 'chat', anchor: 'turn-end', labelKey: 'settings.turnEndScroll', descKey: 'settings.turnEndScrollDesc' },
+  composerTray: { section: 'chat', anchor: 'composer-tray', labelKey: 'settings.composerTray', descKey: 'settings.composerTrayDesc' },
   voiceInput: { section: 'chat', anchor: 'voice-input', labelKey: 'settings.voiceInput', descKey: 'settings.voiceInputDesc' },
   commentDestination: { section: 'artifacts', anchor: 'comment-destination', labelKey: 'settings.artifacts.destination', descKey: 'settings.artifacts.destinationDesc' },
   commentEnter: { section: 'artifacts', anchor: 'comment-enter', labelKey: 'settings.artifacts.enter', descKey: 'settings.artifacts.enterDesc' },

@@ -58,7 +58,6 @@ function tree(isTurnTail: boolean) {
         contentProjection={contentProjection}
         reasoningProcesses={{}}
         toolCallProcesses={toolCallProcesses}
-        todoListProcesses={{}}
         subagentTasks={{}}
         isTurnTail={isTurnTail}
       />

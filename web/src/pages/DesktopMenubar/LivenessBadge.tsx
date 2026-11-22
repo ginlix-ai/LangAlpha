@@ -17,7 +17,7 @@ import { providerLabel } from '@/lib/providerLabels';
 import { queryKeys } from '@/lib/queryKeys';
 import type { QuoteRow } from '@/lib/quotes';
 import { panelLiveness, rowLiveness, stateKey, type LivenessDot, type LivenessRow, type RowLiveness } from './feedLiveness';
-import { useShownQuotes, type ShownQuote } from './liveQuotes';
+import { useShownQuotes, type ShownQuote } from '@/lib/quotes/liveQuotes';
 
 /** Names listed per state before the rest are counted. */
 const NAMES_LISTED = 4;
@@ -69,14 +69,14 @@ export function LivenessBadge({ active }: { active: boolean }) {
   const locale = useLocale();
   const { online } = useNetworkStatus();
   const now = useNow(15_000, active);
-  const { shown, live } = useShownQuotes();
+  const { shown, isLive } = useShownQuotes();
   const cached = useCachedQuotes(shown);
 
   const rows: (LivenessRow & { name: string; source: string | null })[] = shown.flatMap((q) => {
     const c = cached[q.key];
     if (!c) return [];
     const name = (q.isIndex && indexName(q.key, 'short', t)) || q.key;
-    return [{ ...q, ...c, name, streaming: !q.isIndex && live.has(q.key) }];
+    return [{ ...q, ...c, name, streaming: isLive(q) }];
   });
   const textFor = (state: RowLiveness): string =>
     state.kind === 'streaming'

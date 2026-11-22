@@ -29,6 +29,7 @@ from src.server.database.wakeups.arm import WakeupSpec
 from src.server.database.wakeups.cancel import CancelOutcome
 from src.server.services.features import user_feature_enabled_or
 from src.server.services.wakeups.changes import wakeups_changed
+from src.server.services.wakeups import price_reading
 from src.server.services.wakeups.listing import wakeup_out
 from src.tools.wakeups import orders as order_wakeups
 from src.tools.wakeups import price as price_wakeups
@@ -40,6 +41,7 @@ from src.tools.wakeups.price import PricePlan
 from src.tools.wakeups.quiet import TOOL_NAME, changed_this_turn, quiet_refusal
 from src.tools.wakeups.schedule import (
     MAX_PENDING,
+    PCT_KINDS,
     OrderAsk,
     PriceAsk,
     Refused,
@@ -403,7 +405,7 @@ async def _set(
     ]
     priced = [e for e in entries if e.price is not None]
     if priced:
-        snaps = await price_wakeups.snapshots(
+        snaps = await price_reading.snapshots(
             [(e.price.listing.key, e.price.listing.market) for e in priced], user_id
         )
         for e in priced:
@@ -496,8 +498,11 @@ async def _pending_block(
         rows = [row for row, _ in armed]
     if not rows and not armed:
         return TOOL_RESULTS["none"]
-    prices = await price_wakeups.readback(
-        [r for r in rows if r["wakeup_id"] not in new], user_id, now
+    # A level row needs no price, so a listing of levels fetches nothing.
+    prices = await price_reading.price_readings(
+        [r for r in rows if r["wakeup_id"] not in new and r.get("price_kind") in PCT_KINDS],
+        user_id,
+        now,
     )
     lines: List[str] = []
     for row in rows:
@@ -506,8 +511,8 @@ async def _pending_block(
             shown, entry = new[wid]
             lines.append(set_line(shown, now, user_tz, last=entry.last, level=entry.level))
         else:
-            last, level = prices.get(wid, (None, None))
-            lines.append(pending_line(row, now, user_tz, last=last, level=level))
+            reading = prices.get(wid, price_reading.PriceReading())
+            lines.append(pending_line(row, now, user_tz, last=reading.last, level=reading.level))
     return header(user_tz, now) + "\n" + "\n".join(lines)
 
 

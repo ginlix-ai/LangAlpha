@@ -93,7 +93,6 @@ function renderSegments(
         contentProjection={projectMessageContent(message)}
         reasoningProcesses={{}}
         toolCallProcesses={toolCallProcesses}
-        todoListProcesses={{}}
         subagentTasks={{ 'task-1': { status: 'running' } as never }}
         userQuestions={{ 'q-1': { question: 'Which tickers?', options: [], interruptId: 'q-1', status: 'pending' } }}
         isStreaming

@@ -77,6 +77,7 @@ from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.compaction import brief
 from ptc_agent.agent.middleware.compaction.brief import HandOffBrief
 from ptc_agent.agent.middleware.compaction.rebuild import NextSummary, cold_threshold
+from ptc_agent.agent.tools.plan import PLAN_STATE_KEY
 from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
 from ptc_agent.agent.middleware.compaction.utils import attachment_tokens
 from ptc_agent.agent.prompts import release
@@ -298,6 +299,7 @@ class CompactionRules:
         return await brief.digest_brief(
             state["messages"], backend=self.backend, workspace_id=self.workspace_id,
             transcript=transcript_target(self.backend, thread_id, checkpoint_ns), window=Window.of(state),
+            plan=state.get(PLAN_STATE_KEY) or (),
         )
 
     async def thread_brief(

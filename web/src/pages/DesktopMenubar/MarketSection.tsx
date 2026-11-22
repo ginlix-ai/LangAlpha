@@ -6,21 +6,13 @@ import { useNow } from '@/hooks/useNow';
 import { openInMain } from '@/lib/desktop';
 import { DASH, grouped2 } from '@/lib/format';
 import { indexName } from '@/lib/indices';
-import { marketPhase, type MarketPhase } from '@/lib/marketUtils';
+import { marketPhase, marketPhaseKey, type MarketPhase } from '@/lib/marketUtils';
+import { moveTone } from '@/lib/priceMove';
 import { utcMsToETTime } from '@/lib/utils';
-import { changeDirection } from '@/pages/ChatAgent/components/charts/termChange';
 import { minutesLeftInPhase } from './glanceSummary';
 import { ExtendedLine, Move, Pending } from './primitives';
 import { marketPath, type SectionProps } from './panelContext';
-import { useTilesGlance, type GlanceTile } from './useGlanceData';
-
-const PHASE_KEY: Record<MarketPhase, string> = {
-  open: 'menubar.market.open',
-  pre: 'menubar.market.pre',
-  after: 'menubar.market.after',
-  closed: 'menubar.market.closed',
-  unknown: 'menubar.market.unknown',
-};
+import { useQuoteTiles, type QuoteTile } from '@/lib/quotes/useQuoteTiles';
 
 function useDuration() {
   const { t } = useTranslation();
@@ -47,19 +39,18 @@ function MarketStatusLine({ phase, active }: { phase: MarketPhase; active: boole
   return (
     <div className="mb-status">
       <span className="mb-status-dot" data-phase={phase} aria-hidden="true" />
-      <span className="mb-status-label">{t(PHASE_KEY[phase])}</span>
+      <span className="mb-status-label">{t(marketPhaseKey(phase))}</span>
       {countdown && <span className="mb-status-left">{countdown}</span>}
     </div>
   );
 }
 
-function Tile({ tile }: { tile: GlanceTile }) {
+function Tile({ tile }: { tile: QuoteTile }) {
   const { t } = useTranslation();
   const locale = useLocale();
   const symbol = tile.ref.symbol.toUpperCase();
   const isIndex = tile.ref.kind === 'index';
-  const dir = tile.quoteAvailable ? changeDirection(tile.pct) : 'flat';
-  const tone = dir === 'up' ? 'var(--color-profit)' : dir === 'down' ? 'var(--color-loss)' : 'var(--color-text-tertiary)';
+  const tone = moveTone(tile.quoteAvailable ? tile.pct : null);
   const name = (isIndex && indexName(symbol, 'long', t)) || symbol;
   return (
     <button
@@ -88,7 +79,7 @@ function Tile({ tile }: { tile: GlanceTile }) {
 
 export function MarketSection({ active, settings, marketStatus }: SectionProps) {
   const { t } = useTranslation();
-  const tiles = useTilesGlance(settings.panel.tiles, active, marketStatus);
+  const tiles = useQuoteTiles(settings.panel.tiles, active, marketStatus, { lines: true });
   return (
     <section className="mb-section mb-market" aria-label={t('menubar.market.title')}>
       <MarketStatusLine phase={marketPhase(marketStatus)} active={active} />

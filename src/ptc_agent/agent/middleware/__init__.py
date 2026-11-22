@@ -53,11 +53,6 @@ from .file_operations import (
     MultimodalStripMiddleware,
 )
 
-# Todo operations middleware
-from .todo_operations import (
-    TodoWriteMiddleware,
-)
-
 # Provenance middleware (data-access tracing → provenance SSE events)
 from .provenance import (
     ProvenanceMiddleware,
@@ -155,8 +150,6 @@ __all__ = [
     # File operations
     "FileOperationMiddleware",
     "FileOperationState",
-    # Todo operations
-    "TodoWriteMiddleware",
     # Provenance
     "ProvenanceMiddleware",
     # Compaction

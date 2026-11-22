@@ -47,7 +47,17 @@ export function DispatchStatusGlyph({ status }: { status: PTCDispatchStatus }) {
 
 /** A dispatched run's status word and glyph, with the time it has been working
  *  while it runs. */
-export function DispatchStatusIndicator({ status, startedAt }: { status: PTCDispatchStatus; startedAt?: number }) {
+export function DispatchStatusIndicator({
+  status,
+  startedAt,
+  clock = true,
+}: {
+  status: PTCDispatchStatus;
+  startedAt?: number;
+  /** Off where the run's start is unknown, since the clock would count from
+   *  the moment the row mounted. */
+  clock?: boolean;
+}) {
   const { t } = useTranslation();
   const ui = STATUS_LOOK[status];
   // One persistent role="status" live region; only the inner glyph/label swap
@@ -62,7 +72,7 @@ export function DispatchStatusIndicator({ status, startedAt }: { status: PTCDisp
     >
       <ComposerGlyph kind={ui.glyph} />
       {t(ui.labelKey)}
-      {status === 'running' && (
+      {status === 'running' && clock && (
         <ElapsedClock startedAt={startedAt} className="text-[0.6875rem] text-(--color-text-quaternary)" />
       )}
     </span>

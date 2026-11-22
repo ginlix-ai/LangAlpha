@@ -123,7 +123,7 @@ async def test_a_percent_from_now_names_the_price_it_measures_from(db, monkeypat
     listing, _ = target_listing("NVDA")
     snap = {(listing.key, listing.market): {"price": 200.0, "previous_close": 195.0}}
     monkeypatch.setattr(
-        tool_mod.price_wakeups, "snapshots", AsyncMock(return_value=snap)
+        tool_mod.price_reading, "snapshots", AsyncMock(return_value=snap)
     )
     trigger = {"price": {"symbol": "NVDA", "pct_up": 3, "pct_from": "now"}}
     text = await text_of({"triggers": [trigger]})

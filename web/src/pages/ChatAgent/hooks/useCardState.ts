@@ -6,20 +6,6 @@ import { withoutPending } from '../session/stream/toolCallChunks';
 
 // --- Card-level types ---
 
-interface TodoItem {
-  status: 'pending' | 'in_progress' | 'completed' | 'stale';
-  [key: string]: unknown;
-}
-
-interface TodoData {
-  todos: TodoItem[];
-  total: number;
-  completed: number;
-  in_progress: number;
-  pending: number;
-  [key: string]: unknown;
-}
-
 interface SubagentMessage {
   role: string;
   isStreaming?: boolean;
@@ -60,7 +46,6 @@ interface SubagentData {
 
 interface Card {
   title?: string;
-  todoData?: TodoData;
   subagentData?: SubagentData;
   [key: string]: unknown;
 }
@@ -69,9 +54,7 @@ type CardsMap = Record<string, Card>;
 
 export interface UseCardStateResult {
   cards: CardsMap;
-  updateTodoListCard: (todoData: TodoData) => void;
   updateSubagentCard: (agentId: string, subagentDataUpdate: SubagentData, options?: { nextFrame?: boolean }) => void;
-  finalizePendingTodos: () => void;
   clearSubagentCards: () => void;
 }
 
@@ -87,30 +70,6 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
   const setCards = (update: (prev: CardsMap) => CardsMap) => {
     chunkQueue.flush();
     setCardsState(update);
-  };
-
-  const updateTodoListCard = (todoData: TodoData) => {
-    const cardId = 'todo-list-card';
-
-    setCards((prev) => {
-      if (prev[cardId]) {
-        return {
-          ...prev,
-          [cardId]: {
-            ...prev[cardId],
-            todoData: todoData,
-          },
-        };
-      } else {
-        return {
-          ...prev,
-          [cardId]: {
-            title: 'Todo List',
-            todoData: todoData,
-          },
-        };
-      }
-    });
   };
 
   const updateSubagentCard = (agentId: string, subagentDataUpdate: SubagentData, { nextFrame = false } = {}) => {
@@ -283,37 +242,6 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     else setCards(apply);
   };
 
-  const finalizePendingTodos = () => {
-    setCards((prev) => {
-      const card = prev['todo-list-card'];
-      if (!Array.isArray(card?.todoData?.todos)) return prev;
-
-      const hasIncomplete = card.todoData.todos.some(
-        (t) => t.status !== 'completed' && t.status !== 'stale'
-      );
-      if (!hasIncomplete) return prev;
-
-      const finalizedTodos = card.todoData.todos.map((t) =>
-        t.status === 'completed' || t.status === 'stale'
-          ? t
-          : { ...t, status: 'stale' as const }
-      );
-
-      return {
-        ...prev,
-        'todo-list-card': {
-          ...card,
-          todoData: {
-            ...card.todoData,
-            todos: finalizedTodos,
-            in_progress: 0,
-            pending: 0,
-          },
-        },
-      };
-    });
-  };
-
   const clearSubagentCards = () => {
     setCards((prev) => {
       const cleaned: CardsMap = {};
@@ -328,9 +256,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
 
   return {
     cards,
-    updateTodoListCard,
     updateSubagentCard,
-    finalizePendingTodos,
     clearSubagentCards,
   };
 }

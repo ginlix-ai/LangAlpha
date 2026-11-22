@@ -2,9 +2,10 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { useLocale } from '@/hooks/useLocale';
-import type { Wakeup } from '@/types/wakeups';
+import type { Wakeup, WakeupPrice } from '@/types/wakeups';
 import { useCancelWakeups } from '../../hooks/useWakeups';
-import { stateLabel, triggerLabel, wakeupTitle } from '../wakeupLabels';
+import { armedPrice, distanceLabel, priceDistance, stateLabel, triggerLabel, wakeupTitle } from '../wakeupLabels';
+import { lastTrade, useThreadQuotes } from '../chatView/threadQuotesContext';
 
 type RowError = 'cancelFailed' | 'cancelTooLate';
 
@@ -53,8 +54,9 @@ function WakeupListItem({ wakeup, now, userTimezone, busy, error, onCancel }: Wa
   const locale = useLocale();
   const title = wakeupTitle(wakeup, t, locale, now, userTimezone);
   const trigger = wakeup.label ? triggerLabel(wakeup, t, locale, now, userTimezone) : null;
+  const armed = armedPrice(wakeup);
   return (
-    <li className="flex items-start gap-3 px-2.5 py-2" data-wakeup-state={wakeup.state}>
+    <li className="flex items-start gap-2.5 px-2 py-1.5" data-wakeup-state={wakeup.state}>
       <div className="min-w-0 flex-1">
         <div className="wrap-break-word text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
           {title}
@@ -67,6 +69,7 @@ function WakeupListItem({ wakeup, now, userTimezone, busy, error, onCancel }: Wa
         <div className="mt-0.5 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
           {stateLabel(wakeup, t, locale, now, userTimezone)}
         </div>
+        {armed && <PriceDistanceLine price={armed} />}
         {error && (
           <div className="mt-0.5 text-xs" style={{ color: 'var(--color-loss)' }} role="alert">
             {t(`chat.wakeups.${error}`)}
@@ -87,6 +90,38 @@ function WakeupListItem({ wakeup, now, userTimezone, busy, error, onCancel }: Wa
         </Button>
       )}
     </li>
+  );
+}
+
+/**
+ * How far an armed price wakeup is from going off: the words, then a bar
+ * filling from the price it was set at toward its level. Read at the last
+ * trade in the chat's quote of its ticker, which follows it closer than the
+ * listing does, else at the monitor's last reading. A move names the level it
+ * works out to, which its own words do not.
+ */
+function PriceDistanceLine({ price }: { price: WakeupPrice }) {
+  const { t } = useTranslation();
+  const locale = useLocale();
+  const live = lastTrade(useThreadQuotes().bySymbol[price.symbol]);
+  const distance = priceDistance(price, live);
+  if (!distance) return null;
+  const isMove = price.kind === 'pct_up' || price.kind === 'pct_down';
+  return (
+    <>
+      <div className="mt-0.5 text-xs tabular-nums" style={{ color: 'var(--color-text-secondary)' }}>
+        {distanceLabel(distance, isMove, t, locale)}
+      </div>
+      {distance.progress != null && (
+        <div aria-hidden="true" className="relative mt-1.5 mr-1 h-1 rounded-full" style={{ background: 'var(--color-bg-hover)' }}>
+          <div
+            className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-enter ease-out"
+            style={{ width: `${Math.round(distance.progress * 100)}%`, background: 'var(--color-text-quaternary)' }}
+          />
+          <div className="absolute -top-0.5 right-0 h-2 w-0.5 rounded-full" style={{ background: 'var(--color-text-tertiary)' }} />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -119,7 +154,7 @@ export function WakeupListRows({ threadId, wakeups, now, userTimezone, cancelAll
         />
       ))}
       {cancellable.length >= cancelAllFrom && (
-        <li className="flex justify-end px-2.5 pt-1 pb-0.5">
+        <li className="flex justify-end px-2 pt-1 pb-0.5">
           <Button
             variant="ghost"
             size="sm"

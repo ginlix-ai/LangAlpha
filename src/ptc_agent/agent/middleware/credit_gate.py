@@ -655,6 +655,23 @@ async def refuse_ended_account() -> None:
         raise refusal
 
 
+def credit_stops() -> bool:
+    """Whether the run's credit gate says stop, as :class:`CreditGateMiddleware`
+    decides at a model boundary, for a caller about to make a model call that
+    boundary does not guard: one the user's answer no longer needs, or the
+    Claude Code CLI's next request. A subagent's run is stopped too: its gate
+    ends the run where a turn's pauses."""
+    gate = current_credit_gate.get()
+    return gate is not None and gate.lease.should_stop(gate.lease.spend())
+
+
+async def account_ends() -> bool:
+    """Whether the run's account may no longer work, asked where
+    :func:`credit_stops` is, for the same reason."""
+    gate = current_credit_gate.get()
+    return gate is not None and await gate.lease.account_refusal() is not None
+
+
 class CreditGateMiddleware(AgentMiddleware):
     """Model-boundary enforcement point. Stateless — shared across lanes."""
 

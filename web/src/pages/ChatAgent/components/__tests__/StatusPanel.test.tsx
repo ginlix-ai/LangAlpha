@@ -3,12 +3,20 @@ import type { Mock } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import type { Wakeup } from '@/types/wakeups';
+import type { MarketWatchState } from '../../session/marketWatchEvents';
 
 let flag = true;
 vi.mock('@/hooks/useFeatures', () => ({ useFeatureEnabled: () => flag }));
 vi.mock('../../utils/api', () => ({ fetchWakeups: vi.fn(), cancelWakeups: vi.fn() }));
 
 import { cancelWakeups, fetchWakeups } from '../../utils/api';
+import type { ChatMessage, PlanStep } from '@/types/chat';
+import type { CommandRun } from '@/types/commands';
+import { createAssistantMessage, createUserMessage } from '../../hooks/utils/messageHelpers';
+import { FixedThreadQuotes } from '../chatView/threadQuotes';
+import type { ThreadQuote } from '../chatView/threadQuotesContext';
+import { ThreadStatusContext } from '../chatView/threadStatus';
+import { useThreadStatusValue } from '../chatView/useThreadStatusValue';
 import StatusPanel from '../StatusPanel';
 
 const mockFetch = fetchWakeups as Mock;
@@ -66,10 +74,54 @@ const WAKEUPS: Wakeup[] = [
   }),
 ];
 
+const NO_COMMANDS: CommandRun[] = [];
+const NO_MESSAGES: ChatMessage[] = [];
+
+/** A transcript whose one request set `steps`. */
+function planned(steps: PlanStep[]): ChatMessage[] {
+  return [
+    createUserMessage('Compare margins', undefined, { id: 'u1' }) as ChatMessage,
+    { ...createAssistantMessage('a1', undefined), planSnapshots: [{ order: 1, steps }] },
+  ];
+}
+
+/** The panel as the chat view provides it: the status built by the view's
+ *  own hook, from the watch, the thread's wakeups and the transcript. */
+function Panel({ watch = null, threadId = null, messages = NO_MESSAGES, awaitingAnswer = false }: {
+  watch?: MarketWatchState | null;
+  threadId?: string | null;
+  messages?: ChatMessage[];
+  awaitingAnswer?: boolean;
+}) {
+  const { status } = useThreadStatusValue({
+    marketWatch: watch,
+    commands: NO_COMMANDS,
+    threadId,
+    isActive: true,
+    cards: {},
+    taskHistory: {},
+    messages,
+    isLoading: false,
+    hasActiveSubagents: false,
+    reportBackOwed: false,
+    owedThreads: null,
+    owedKinds: null,
+    isHome: false,
+    awaitingAnswer,
+    from: null,
+    onSelectAgent: vi.fn(),
+    onOpenSubagentTask: vi.fn(),
+    onOpenCommand: vi.fn(),
+    onOpenStatusPanel: vi.fn(),
+    onJumpToLatest: vi.fn(),
+  });
+  return <ThreadStatusContext value={status}><StatusPanel /></ThreadStatusContext>;
+}
+
 /** The panel on a thread whose listing answers with `items`. */
 function renderWakeups(items: Wakeup[], userTimezone = 'America/New_York') {
   mockFetch.mockResolvedValue({ thread_id: THREAD, user_timezone: userTimezone, wakeups: items });
-  return renderWithProviders(<StatusPanel marketWatch={null} threadId={THREAD} />);
+  return renderWithProviders(<Panel threadId={THREAD} />);
 }
 
 const cancelledAs = (w: Wakeup): Wakeup => ({ ...w, state: 'cancelled', cancellable: false });
@@ -83,13 +135,13 @@ describe('StatusPanel', () => {
   });
 
   it('renders the watched symbols', () => {
-    renderWithProviders(<StatusPanel marketWatch={{ symbols: ['NVDA', 'TSLA'] }} />);
+    renderWithProviders(<Panel watch={{ symbols: ['NVDA', 'TSLA'] }} />);
     expect(screen.getByText('NVDA')).toBeInTheDocument();
     expect(screen.getByText('TSLA')).toBeInTheDocument();
   });
 
   it('renders the quote block — header line plus quote rows — when content is present', () => {
-    renderWithProviders(<StatusPanel marketWatch={{ symbols: ['NVDA', 'TSLA'], content: CONTENT }} />);
+    renderWithProviders(<Panel watch={{ symbols: ['NVDA', 'TSLA'], content: CONTENT }} />);
     // First line is the muted "As of …" header.
     expect(screen.getByText(/As of 14:30:00 ET/)).toBeInTheDocument();
     // Remaining lines are the quote rows (invented prices).
@@ -98,23 +150,33 @@ describe('StatusPanel', () => {
   });
 
   it('shows the waiting hint (and no updated caption) when content is absent', () => {
-    renderWithProviders(<StatusPanel marketWatch={{ symbols: ['NVDA'] }} />);
+    renderWithProviders(<Panel watch={{ symbols: ['NVDA'] }} />);
     expect(screen.getByText(/Live prices appear here/)).toBeInTheDocument();
     expect(screen.queryByText(/Updated /)).not.toBeInTheDocument();
   });
 
+  it('falls back to the agent\'s block when the quotes came back with no price', () => {
+    const none: ThreadQuote = { price: null, pct: null, ext: null, places: 2, currency: 'USD', line: [], live: false };
+    renderWithProviders(
+      <FixedThreadQuotes quotes={{ bySymbol: { NVDA: none, TSLA: none }, phase: 'open' }}>
+        <Panel watch={{ symbols: ['NVDA', 'TSLA'], content: CONTENT }} />
+      </FixedThreadQuotes>,
+    );
+    expect(screen.getByText(/178\.34/)).toBeInTheDocument();
+  });
+
   it('shows an updated-at caption when timestamp is set', () => {
-    renderWithProviders(<StatusPanel marketWatch={{ symbols: ['NVDA'], timestamp: 1_700_000_000 }} />);
+    renderWithProviders(<Panel watch={{ symbols: ['NVDA'], timestamp: 1_700_000_000 }} />);
     expect(screen.getByText(/Updated /)).toBeInTheDocument();
   });
 
   it('renders a defensive empty state when there are no symbols', () => {
-    renderWithProviders(<StatusPanel marketWatch={{ symbols: [] }} />);
+    renderWithProviders(<Panel watch={{ symbols: [] }} />);
     expect(screen.getByText(/No tickers are being watched/)).toBeInTheDocument();
   });
 
-  it('does not crash when marketWatch is null', () => {
-    renderWithProviders(<StatusPanel marketWatch={null} />);
+  it('says nothing is watched when there is no watch', () => {
+    renderWithProviders(<Panel />);
     expect(screen.getByText(/No tickers are being watched/)).toBeInTheDocument();
   });
 
@@ -212,8 +274,8 @@ describe('StatusPanel', () => {
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(THREAD, 'all'));
   });
 
-  it('lists no wakeups for a panel with no thread, as a share has', () => {
-    renderWithProviders(<StatusPanel marketWatch={null} />);
+  it('lists no wakeups for a thread it has not read', () => {
+    renderWithProviders(<Panel />);
     expect(screen.queryByText('Wakeups')).not.toBeInTheDocument();
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -234,5 +296,21 @@ describe('StatusPanel', () => {
     renderWakeups([WAKEUPS[0]]);
     expect(await screen.findByText('Wakeups')).toBeInTheDocument();
     expect(screen.queryByText(/No tickers are being watched/)).not.toBeInTheDocument();
+  });
+
+  it('shows nothing outside a chat view', () => {
+    const { container } = renderWithProviders(<StatusPanel />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('counts the plan in its caption, and a waiting step says so', () => {
+    // A question to the reader keeps the unfinished plan waiting.
+    renderWithProviders(<Panel awaitingAnswer messages={planned([
+      { title: 'Pull filings', status: 'completed' },
+      { title: 'Chart margins', status: 'in_progress' },
+    ])} />);
+    expect(screen.getByText('1 of 2 done')).toBeInTheDocument();
+    expect(screen.getByText('waiting')).toBeInTheDocument();
+    expect(screen.queryByText('not done')).not.toBeInTheDocument();
   });
 });

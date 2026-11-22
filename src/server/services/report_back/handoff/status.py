@@ -13,7 +13,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from src.server.services.report_back.handoff import reserve
 from src.server.services.report_back.handoff.keys import (
@@ -36,6 +36,9 @@ class OwedThread(TypedDict):
     thread_id: str
     workspace_name: str | None
     title: str | None
+    #: When its current dispatch was reserved (epoch seconds), on
+    #: ``read_owed_analysts`` only; absent where the origin predates the stamp.
+    handed_at: NotRequired[float]
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,8 @@ class _Watch:
     recent: list[str] = field(default_factory=list)
     ended: list[str] = field(default_factory=list)
     owed: list[str] = field(default_factory=list)
+    #: Each owed member's reservation time, where its origin carries one.
+    handed_at: dict[str, float] = field(default_factory=dict)
 
 
 async def read_owed_analysts(thread_id: str, user_id: str | None) -> list[OwedThread]:
@@ -54,7 +59,12 @@ async def read_owed_analysts(thread_id: str, user_id: str | None) -> list[OwedTh
     the analysts of queued jobs alike, as ``read_report_back_status`` names
     them in ``owed_threads``. Raises when the registry or the labels cannot be
     read. ``user_id`` is the thread's owner; no owner names nothing."""
-    return await _owed_labels((await _read_watch(thread_id)).owed, user_id)
+    watch = await _read_watch(thread_id)
+    labels = await _owed_labels(watch.owed, user_id)
+    for label in labels:
+        if (at := watch.handed_at.get(label["thread_id"])) is not None:
+            label["handed_at"] = at
+    return labels
 
 
 async def read_report_back_status(thread_id: str, user_id: str | None) -> dict:
@@ -195,13 +205,18 @@ async def _read_watch(thread_id: str) -> _Watch:
         ended=ended,
         # A report queued behind an ended summary is owed by the
         # thread its job names, though that member has settled.
-        owed=list(
+        owed=(owed := list(
             dict.fromkeys(
                 t
                 for t in [*unsettled, *(p.get("ptc_thread_id") for p in open_jobs)]
                 if t
             )
-        ),
+        )),
+        handed_at={
+            t: at
+            for t in owed
+            if isinstance(at := (origins.get(t) or {}).get("reserved_at"), int | float)
+        },
     )
 
 

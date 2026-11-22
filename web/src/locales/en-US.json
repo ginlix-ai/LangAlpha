@@ -228,6 +228,10 @@
     "streamingModeDesc": "Show text as it arrives, or reveal one paragraph at a time.",
     "streamingModeToken": "Continuous",
     "streamingModeParagraph": "By paragraph",
+    "composerTray": "Running work",
+    "composerTrayDesc": "Where the plan, tasks and wakeups show while the agent works: as chips above the composer, or in a strip inside it.",
+    "composerTrayAbove": "Above",
+    "composerTrayInside": "Inside",
     "toolCallLayout": "Tool calls",
     "toolCallLayoutDesc": "Show each step as a row, or try the new status line: one line that names the current step.",
     "toolCallLayoutRows": "Rows",
@@ -2430,11 +2434,13 @@
     "backgroundTasksRunning": "Background tasks are still running",
     "taskReportBackPending": "Waiting for subagent results to report back",
     "tray": {
-      "tasks_one": "{{count}} task",
-      "tasks_other": "{{count}} tasks",
-      "tasksRunning_one": "{{count}} task · {{running}} running",
-      "tasksRunning_other": "{{count}} tasks · {{running}} running",
-      "tasksHeading": "From this thread",
+      "tasks_one": "{{count}} subagent",
+      "tasks_other": "{{count}} subagents",
+      "tasksRunning_one": "{{count}} subagent · {{running}} running",
+      "tasksRunning_other": "{{count}} subagents · {{running}} running",
+      "tasksHeading": "Subagents in this thread",
+      "commands_one": "{{count}} command",
+      "commands_other": "{{count}} commands",
       "commandsHeading": "Running in the background",
       "show": "Show this thread's work"
     },
@@ -2595,6 +2601,7 @@
       "alwaysApproveHint": "Hand this and later work to Analysts without asking. Turn it off in Settings."
     },
     "marketWatch": {
+      "live": "Live",
       "watching": "Watching {{symbols}}",
       "chipTitle": "Live prices for the tickers the agent is watching",
       "chipTitleUpdated": "Live prices for watched tickers — updated {{time}}",
@@ -2621,12 +2628,18 @@
       "generic": "Price alert"
     },
     "wakeups": {
+      "chipShort_one": "{{time}}",
+      "chipShort_other": "{{count}} · {{time}}",
       "chip_one": "1 wakeup · {{time}}",
       "chip_other": "{{count}} wakeups · next {{time}}",
       "chipTitle": "Wakeups the agent set in this thread. Open to cancel any of them.",
       "panelTitle": "Wakeups",
       "panelEmpty": "No wakeups in this thread.",
       "cancel": "Cancel",
+      "distance": "last trade {{price}} · {{away}} to go",
+      "distanceToTarget": "goes off at {{target}} · last trade {{price}} · {{away}} to go",
+      "distanceReached": "last trade {{price}} · at its level",
+      "away": "{{away}} away",
       "cancelAll": "Cancel all",
       "cancelling": "Cancelling…",
       "cancelLabel": "Cancel the wakeup {{label}}",
@@ -2986,6 +2999,30 @@
         "needs_bigger_computer_plan": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec or upgrade your LangAlpha plan, or choose to run Claude Code on your own computers in Settings under Model access.",
         "needs_bigger_computer_plan_home": "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec or upgrade your LangAlpha plan, or choose to run Claude Code on your own computers in Settings under Model access."
       }
+    },
+    "status": {
+      "openPanel": "Open Status",
+      "openPanelMore": "Open Status · {{count}} more",
+      "openInPanel": "Show in Status",
+      "needsYou": "Needs you",
+      "awaitingAnswer": "The agent is waiting for your answer",
+      "workingNow": "Working now",
+      "done": "Done",
+      "subagent": "Subagent",
+      "analyst": "Analyst",
+      "analystIn": "Analyst in {{workspace}}",
+      "subagentOfType": "{{type}} subagent"
+    },
+    "plan": {
+      "label": "Plan",
+      "heading": "Plan · {{progress}}",
+      "headingRunning": "step {{current}} of {{total}}",
+      "headingSettled": "{{done}} of {{total}} done",
+      "notDone": "not done",
+      "waiting": "waiting",
+      "stepDone": "done",
+      "stepRunning": "in progress",
+      "stepPending": "not started"
     }
   },
   "context": {

@@ -17,7 +17,7 @@ export const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-pro
 /** Tools that should stay in the live zone for their entire duration (no MAX_IN_PROGRESS_MS cap) */
 export const ALWAYS_LIVE_TOOLS = new Set(['TaskOutput', 'WebFetch']);
 /** Tools the transcript never draws a card for; the spinner gate skips them too. */
-export const HIDDEN_TOOL_CALL_NAMES = new Set(['TodoWrite', 'task', 'Task', 'AskUserQuestion', 'manage_workspaces', 'ptc_agent', 'agent_output', 'manage_threads', 'ShowWidget', 'delegate_to_analyst']);
+export const HIDDEN_TOOL_CALL_NAMES = new Set(['TodoWrite', 'UpdatePlan', 'task', 'Task', 'AskUserQuestion', 'manage_workspaces', 'ptc_agent', 'agent_output', 'manage_threads', 'ShowWidget', 'delegate_to_analyst']);
 
 /** Render block types for the inline activity grouping */
 export interface ActivityRenderBlock {

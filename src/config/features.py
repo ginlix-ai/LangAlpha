@@ -165,19 +165,18 @@ FEATURES: dict[str, FeatureSpec] = {
             "yourself don't have it."
         ),
     ),
-    "todo_write": FeatureSpec(
-        key="todo_write",
-        label="Task checklist (legacy)",
+    "agent_plan": FeatureSpec(
+        key="agent_plan",
+        label="Show the agent's plan",
         description=(
-            "Gives the agent a TodoWrite tool to keep a checklist of its steps "
-            "on long tasks, shown as a live todo list in chat."
+            "On longer tasks, the agent shows its plan at the top of its work "
+            "in the chat and marks which step it is on."
         ),
         enabled=True,
-        gate=FeatureGate.OPT_IN,
+        gate=FeatureGate.OPT_OUT,
         tradeoffs=(
-            "Each checklist update is an extra tool call, which adds a little "
-            "time and cost to long turns. Legacy, and may be removed in a "
-            "future release."
+            "Plan updates travel with calls the agent is already making, so "
+            "they add little time or cost. Quick answers show no plan."
         ),
     ),
     "scratchpad": FeatureSpec(

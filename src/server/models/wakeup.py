@@ -31,6 +31,10 @@ class WakeupPriceOut(BaseModel):
     pct_from: Optional[Literal["previous_close", "now"]] = None
     armed_price: Optional[float] = None
     fired_price: Optional[float] = None
+    # While armed: the price the monitor last read and the level it fires
+    # at, from the base it measures a move from. None when no price was read.
+    last: Optional[float] = None
+    level: Optional[float] = None
 
 
 class WakeupOrderOut(BaseModel):

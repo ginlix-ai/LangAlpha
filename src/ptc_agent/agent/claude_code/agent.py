@@ -15,6 +15,8 @@ A call that may wait for the user (``waits_for_user``) is held until the
 model-side hooks a langalpha turn runs before its calls (``_HOLDS``: the
 credit gate, an order or a hand-off put to the user) have run, and the rows a
 langalpha turn writes before a model call (``_OPENING_ROWS``) open the turn.
+The plan's model-call hooks (its check-in, nudge and close-out) the runtime
+asks itself where its next request starts (``agent_plan``).
 
 The pieces are read off the compiled agent's builder by the names
 ``create_agent`` gives them (``tools``, ``<middleware>.before_agent``), since it
@@ -29,6 +31,7 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 
+from ptc_agent.agent.claude_code.agent_plan import AgentPlan
 from ptc_agent.agent.claude_code.cli import RuntimeSpec
 from ptc_agent.agent.claude_code.cli_waits import CliWaits
 from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules
@@ -140,6 +143,7 @@ def claude_code_graph(
     checkpointer: Any, launcher: Callable[[CliQueue], Launcher], entry: Sequence[Any] = (),
     compaction: CompactionRules, middleware: Sequence[Any] = (), baseline: Baseline | None = None,
     steering: SteeringMiddleware | TaskSteering | None = None, alert_senders: frozenset[str] = frozenset(),
+    plan: AgentPlan | None = None,
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
@@ -148,7 +152,9 @@ def claude_code_graph(
     stack, in the order ``create_agent`` runs them. ``baseline`` renders the thread's frozen baseline, and ``steering`` is the
     agent's own, which the turn takes in what is sent into the thread with
     between tool calls and as each query ends, coming back for a notice of
-    ``alert_senders`` as a langalpha turn does. The user is who
+    ``alert_senders`` as a langalpha turn does. ``plan`` is the agent's plan
+    as the turn asks its check-in, nudge and close-out itself, where the
+    agent keeps one. The user is who
     Claude Code is told the device belongs to, so a graph without one is
     refused, and each run's thread and namespace name its working
     directory (``ClaudeTurn.run_key``). ``launcher`` makes where a turn's
@@ -189,6 +195,7 @@ def claude_code_graph(
         checkpointer=checkpointer,
         abandon=governance.abandon if governance else None,
         on_reply=capture.capture if capture else None,
+        plan=plan,
     ).with_config({"recursion_limit": agent.config["recursion_limit"]})
     builder = agent.builder
     return ClaudeCodeGraph(graph, turn, frozenset(builder.schemas[builder.input_schema]), compaction=compaction)

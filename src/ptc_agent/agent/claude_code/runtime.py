@@ -27,16 +27,17 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from functools import partial
 from itertools import pairwise
-from typing import Annotated, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ClaudeSDKError,
     ClaudeSDKClient,
     RateLimitEvent,
     ResultMessage,
@@ -67,8 +68,8 @@ from ptc_agent.agent.claude_code.compaction import (
     report_usage,
 )
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
-from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
-from ptc_agent.agent.middleware.credit_gate import refuse_ended_account
+from ptc_agent.agent.claude_code.mid_turn import ORDINARY, AfterTool, BeforeTool, HandOff, Query, TaskSteering, TurnSteering
+from ptc_agent.agent.middleware.credit_gate import account_ends, credit_stops, refuse_ended_account
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, DeltaJoin, anthropic_content
 from ptc_agent.agent.claude_code.session import (
@@ -108,6 +109,7 @@ from ptc_agent.agent.middleware.compaction.brief import (
     stored_brief,
 )
 from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, stamp_compaction_summary
+from ptc_agent.agent.middleware._utils import nostream
 from ptc_agent.agent.pending_calls import pending_calls
 from ptc_agent.agent.middleware.runtime_context.carrier import compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
@@ -122,6 +124,9 @@ from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_re
 from src.llms.model_identity import CATALOG_MODEL_KEY
 from src.tools.secretary.approvals import StandingApprovalState
 
+if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.agent_plan import AgentPlan
+
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -132,6 +137,10 @@ DRAIN_TIMEOUT_S = 5.0
 #: (``BackgroundSubagentOrchestrator.max_iterations``).
 TURN_QUERIES = 3
 TOKEN_CHECK_TIMEOUT_S = 60
+#: How a query fails: as its end reads (``turn_failure``), or as the SDK
+#: reports a CLI that exited or lost its connection after its init, out of
+#: the run's reads and its writes to the CLI.
+_QUERY_FAILED = (ClaudeTurnFailed, ClaudeSDKError)
 
 
 
@@ -285,6 +294,8 @@ class _Run:
         #: The queries sent the CLI this run: the turn's own, then one for
         #: each time steers waited as the last ended.
         self.queries = 1
+        #: What the query running now may do (``again``).
+        self.query = ORDINARY
         #: When the CLI was last handed something to send Claude (a query, or
         #: the results of a batch) or reported itself started, on this
         #: server's clock: the request it sends next starts after it.
@@ -339,15 +350,18 @@ class _Run:
         (``ToolResults.owes_gate``), which only a new CLI carries on from."""
         return self.result is not None and (self.result.terminal_reason == "tool_deferred" or self.results.owes_gate())
 
-    async def again(self, prompt: Prompt) -> None:
+    async def again(self, prompt: Prompt, query: Query = ORDINARY) -> None:
         """Send the turn's next query on the same CLI, once the last one ended
-        done. What the CLI said of the last one's end goes with it."""
+        done, with what ``query`` lets it do. What the CLI said of the last
+        one's end goes with it."""
         self.queries += 1
         self.result, self._finishing = None, None
         self.assistant_errors = []
+        self.query = query
         self.plan.reopen()
         self.results.reopen()
-        self.before_tool.reopen()
+        self.before_tool.reopen(query)
+        self.after_tool.reopen(query)
         self._input_at = time.time()
         await self.client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
         self._pump = asyncio.create_task(self._read())
@@ -735,20 +749,14 @@ class ClaudeTurn:
         """What a turn whose query ended sends the CLI next: what waited as
         it ended, after the trigger a langalpha turn re-enters its agent
         with, when a langalpha turn would re-enter for it (a steer, or a
-        notice of ``alert_senders``). Empty once the turn has sent its last
-        query, or when nothing that would waits, which ends it. A query that
-        would take a session on another pin to the threshold, where the CLI
-        would compact it on that pin, ends the run instead: the next step
-        then compacts and moves it as a turn start does, and launches the
-        query on this build's pin (``CompactionRules.moves_mid_turn``). So
-        does a query past the credit boundary, which the step after the run
-        stops at the gate before it is sent, as a langalpha turn's next model
-        call is (``credit_stops``). None is sent once the Claude plan is used
-        up under Stop: it would be billed to usage credits (``PlanWatch.gate``).
+        notice of ``alert_senders``). Empty when the turn may send no more
+        queries (``_room``), or when nothing that would waits, which ends it.
+        A query the turn holds back (``_held_back``) ends the run instead:
+        the next step then compacts and moves the session as a turn start
+        does, or stops at the credit gate before it is sent, as a langalpha
+        turn's next model call is, and launches the query on a new CLI.
         What waits stays for the next turn."""
-        if run.queries >= TURN_QUERIES or not (senders := await self.steering.waiting(config)):
-            return []
-        if await run.plan.gate():
+        if not (senders := await self.steering.waiting(config)) or not await self._room(run):
             return []
         if (message := await self.steering.take(config)) is None:
             return []
@@ -756,14 +764,41 @@ class ClaudeTurn:
             content=reentry_trigger(senders), name="orchestrator", additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE}
         )
         sent = ensure_message_ids([trigger, message])
-        prompt = turn_prompt({**state, "messages": [*state["messages"], *sent]})
-        if credit_stops() or self.compaction.moves_mid_turn(state.get("claude_session") or {}, self.current_pin(), prompt_tokens(prompt)):
+        prompt = _followed_by(state, sent)
+        if await self._held_back(state, prompt):
             await run.close()
             self._run, self._sent_before = None, run.queries
         else:
             await run.again(prompt)
         self.steering.delivered(config, message)
         return sent
+
+    async def sendable(self, state: ClaudeCodeState, run: _Run, added: Sequence[BaseMessage]) -> Prompt | None:
+        """The prompt that sends ``added`` as the turn's next query on
+        ``run``, or None where ``again`` would send none or hold it back: for
+        a query the turn sends of its own, which no new CLI is worth
+        launching for."""
+        if not await self._room(run):
+            return None
+        prompt = _followed_by(state, added)
+        return None if await self._held_back(state, prompt) else prompt
+
+    @staticmethod
+    async def _room(run: _Run) -> bool:
+        """Whether the run may take another query: within the turn's queries,
+        and not once the Claude plan is used up under Stop, where it would be
+        billed to usage credits (``PlanWatch.gate``)."""
+        return run.queries < TURN_QUERIES and not await run.plan.gate()
+
+    async def _held_back(self, state: ClaudeCodeState, prompt: Prompt) -> bool:
+        """Whether ``prompt`` may not go on the same CLI: past the credit
+        boundary or for an account that may no longer work, which the gate
+        stops before a request (``credit_stops``), or where it would take a
+        session on another pin to the threshold, where the CLI would compact
+        it on that pin (``CompactionRules.moves_mid_turn``)."""
+        if credit_stops() or await account_ends():
+            return True
+        return self.compaction.moves_mid_turn(state.get("claude_session") or {}, self.current_pin(), prompt_tokens(prompt))
 
     async def _briefed(self, state: ClaudeCodeState) -> ClaudeCodeState:
         """``state`` with the text of the brief it keeps, which it keeps none
@@ -1152,6 +1187,14 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
     return blocks
 
 
+def _followed_by(state: ClaudeCodeState, added: Sequence[BaseMessage]) -> Prompt:
+    """The turn's next query: ``added``, as ``turn_prompt`` hands Claude what
+    came since it last spoke."""
+    prompt = turn_prompt({**state, "messages": [*state["messages"], *added]})
+    assert prompt is not None, "a prompt holds the messages added"
+    return prompt
+
+
 async def _user_message(blocks: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
     yield {"type": "user", "message": {"role": "user", "content": blocks}, "parent_tool_use_id": None}
 
@@ -1159,7 +1202,7 @@ async def _user_message(blocks: list[dict[str, Any]]) -> AsyncIterator[dict[str,
 def build_claude_code_graph(
     tool_node: ToolNode, *, entry: Sequence[tuple[str, Any]] = (), pause: Sequence[tuple[str, Any]] = (),
     checkpointer: Any = None, abandon: Callable[[AIMessage, Sequence[ToolCall]], Awaitable[None]] | None = None,
-    on_reply: Callable[[AIMessage], Awaitable[None]] | None = None,
+    on_reply: Callable[[AIMessage], Awaitable[None]] | None = None, plan: AgentPlan | None = None,
 ) -> Any:
     """The turn graph. ``tool_node`` is the one a langalpha turn runs tools with.
 
@@ -1207,12 +1250,36 @@ def build_claude_code_graph(
     request of the run's is saved the same way (``ClaudeTurn.compacted``).
     So is one the turn's next query is due, which the step after the run
     that ended for it makes (``ClaudeTurn.again``).
+
+    A query the turn sends of its own is shaped by its ``Query``. An
+    unstreamed reply is not handed to ``on_reply`` either: it is no step of
+    a task, as a call kept out of the stream is not. A reply kept as nothing
+    is not committed, and the query's own messages leave with it; the next
+    ``model`` step reads on, so the query ends as any other does.
+
+    ``plan`` keeps the agent's plan honest as a langalpha turn's model-call
+    hooks do (``agent_plan``): a reply is counted as it is committed, a
+    ``tools`` step hands its batch's check-in or nudge over with the results,
+    and the close-out follows a query's end where it is due.
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
-        # Each of the CLI's model steps, as a langalpha turn's model call.
+        """Each of the CLI's model steps, as a langalpha turn's model call.
+
+        A best-effort query (``Query.dropped``) that fails, whether the CLI
+        ends it as failed or exits or loses its connection while it runs, is
+        given up wherever the step finds it: the user already has the answer
+        before it. Any other query's failure fails the turn."""
         await refuse_ended_account()
         turn = _turn(config)
+        try:
+            return await model_step(turn, state, config)
+        except _QUERY_FAILED:
+            if not turn.started or not (run := turn.current).query.dropped:
+                raise
+            return await given_up(turn, state, run)
+
+    async def model_step(turn: ClaudeTurn, state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn.waits.after = state["messages"][-1].id if state["messages"] else None
         opening = not turn.started
         if opening and (handed := await turn.hand_off(state, config)):
@@ -1247,13 +1314,26 @@ def build_claude_code_graph(
             if sent := await turn.again(state, config, run):
                 return Command(update={"messages": sent, **turn.commit(run.store.drain())},
                                goto="model" if turn.started else held[0])
-            return Command(update={**turn.commit(run.store.drain()), **(await turn.ended(state, run)),
-                                   RULES_KEY: turn.reading(run)}, goto=END)
+            if plan is not None and (step := await plan.close_out_step(turn, state, run)) is not None:
+                return step
+            return await end(turn, state, run)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
-        ai: AIMessage = await relay.ainvoke([], config)
+        ai: AIMessage = await relay.ainvoke([], config if run.query.streamed else nostream(config))
         await run.complete(message)
         if message.restarted:
             return Command(goto="model")
+        if (keep := run.query.keep) is not None:
+            kept = keep(ai)
+            ids = {c["id"] for c in kept.tool_calls}
+            # An unparsable call is among them: the CLI answers it itself.
+            run.query = replace(run.query, refused=tuple(
+                c["id"] for c in [*ai.tool_calls, *ai.invalid_tool_calls] if c.get("id") and c["id"] not in ids))
+            ai = kept
+            if not ai.tool_calls:
+                uuids = [*run.assistant_records(message.id), *await run.tool_result_records(run.query.refused)]
+                await run.settle(uuids)
+                return Command(update={"messages": _still_in(state, run.query.dropped),
+                                       **turn.commit(run.store.drain(through=uuids))}, goto="model")
         if ai.invalid_tool_calls:
             raise ClaudeTurnFailed("api_error", f"tool calls that did not parse: {[c.get('name') for c in ai.invalid_tool_calls]}")
         ai.response_metadata.setdefault("model_name", turn.spec.model)
@@ -1266,12 +1346,29 @@ def build_claude_code_graph(
         await run.settle(uuids)
         turn.settled(state)
         turn.stamp(ai)
-        if on_reply is not None:
+        if on_reply is not None and run.query.streamed:
             await on_reply(ai)
+        counted = plan.counted(state, ai) if plan is not None else {}
         return Command(
-            update={"messages": [ai], **turn.commit(run.store.drain(through=uuids))},
+            update={"messages": [ai], **counted, **turn.commit(run.store.drain(through=uuids))},
             goto="tools" if ai.tool_calls else "model",
         )
+
+    async def end(turn: ClaudeTurn, state: ClaudeCodeState, run: _Run, gone: Sequence[RemoveMessage] = ()) -> Command:
+        """The step that ends the turn as its query ended, taking ``gone``
+        out first: the end reads the thread without them."""
+        ids = {r.id for r in gone}
+        state = {**state, "messages": [m for m in state["messages"] if m.id not in ids]}
+        update = {**turn.commit(run.store.drain()), **(await turn.ended(state, run)), RULES_KEY: turn.reading(run)}
+        if gone:
+            update["messages"] = [*gone, *update.get("messages", [])]
+        return Command(update=update, goto=END)
+
+    async def given_up(turn: ClaudeTurn, state: ClaudeCodeState, run: _Run) -> Command:
+        """The end of a turn whose best-effort query failed (``Query.dropped``):
+        on what came before it, since the user already has that answer."""
+        logger.warning("[ClaudeCode] the turn's own query failed; the turn ends on what came before it", exc_info=True)
+        return await end(turn, state, run, _still_in(state, run.query.dropped))
 
     async def tools(state: ClaudeCodeState, config: RunnableConfig) -> Any:
         """Run each call once the CLI asks for it, with the arguments it sends,
@@ -1282,7 +1379,14 @@ def build_claude_code_graph(
         turn = _turn(config)
         run = turn.current
         calls = state["messages"][-1].tool_calls
-        run.after_tool.open([c["id"] for c in calls], partial(turn.steering.take, config))
+        #: Each call's output as it comes back, which the rows read.
+        outs: list[Any] = []
+
+        async def take() -> HandOff:
+            rows, update = plan.rows(state, outs) if plan is not None else ((), {})
+            return HandOff(rows, await turn.steering.take(config), update)
+
+        run.after_tool.open([c["id"] for c in calls], take)
         put_off: str | None = None
 
         async def call(c: ToolCall) -> list[_Update]:
@@ -1298,6 +1402,7 @@ def build_claude_code_graph(
                     return [{"messages": [_as_given(ToolMessage(content="", tool_call_id=c["id"], name=c["name"]), block)]}]
                 case Run(args):
                     out = await tool_node.ainvoke([{**c, "args": args}], config)
+                    outs.append(out)
                     for m in _tool_messages(out):
                         run.results.resolve(m)
                     return out if isinstance(out, list) else [out]
@@ -1307,21 +1412,20 @@ def build_claude_code_graph(
                 tasks = [group.create_task(call(c)) for c in calls]
         except BaseExceptionGroup as failed:
             raise failed.exceptions[0] from None
-        uuids = await run.tool_result_records([c["id"] for c in calls if c["id"] != put_off])
+        uuids = await run.tool_result_records([*(c["id"] for c in calls if c["id"] != put_off), *run.query.refused])
         gated = put_off or any(run.results.owes_gate(c["id"]) for c in calls)
         stop = held[0] if gated else END if any(run.results.ends_turn(c["id"]) for c in calls) else None
         if stop:
             await run.finish()
             uuids += [await run.deferral_record(put_off)] if put_off else []
         await run.settle(uuids)
-        steered: list[HumanMessage] = []
-        if (message := await run.after_tool.taken()) is not None:
-            turn.steering.delivered(config, message)
-            steered.append(message)
+        handed = await run.after_tool.taken()
+        if handed.steer is not None:
+            turn.steering.delivered(config, handed.steer)
         session = turn.commit(run.store.drain() if stop else run.store.drain(through=uuids))
         updates = [_given_instead(u, run.results, c) for c, t in zip(calls, tasks, strict=True) for u in t.result()]
         rules = {RULES_KEY: turn.reading(run)} if stop else {}
-        return _step(updates, {"messages": steered, **session, **rules}, stop or "model")
+        return _step(updates, {"messages": handed.messages, **handed.update, **session, **rules}, stop or "model")
 
     async def resume(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         """Resume the tasks whose runs ended with messages they never read,
@@ -1407,12 +1511,20 @@ def _given_instead(update: _Update, results: ToolResults, call: ToolCall) -> _Up
     return replace(command, update=values) if command is not None else values
 
 
-def _tool_messages(out: Any) -> list[ToolMessage]:
-    if isinstance(out, dict):
-        return [m for m in out.get("messages", []) if isinstance(m, ToolMessage)]
-    found: list[ToolMessage] = []
-    for item in out:
+def node_updates(out: Any) -> Iterator[dict[str, Any]]:
+    """The state updates in a tool node's output, whatever its shape: an
+    update, a Command, or a list of either."""
+    for item in out if isinstance(out, list) else [out]:
         update = item.update if isinstance(item, Command) else item
         if isinstance(update, dict):
-            found.extend(m for m in update.get("messages", []) if isinstance(m, ToolMessage))
-    return found
+            yield update
+
+
+def _tool_messages(out: Any) -> list[ToolMessage]:
+    return [m for update in node_updates(out) for m in update.get("messages", []) if isinstance(m, ToolMessage)]
+
+
+def _still_in(state: ClaudeCodeState, removals: Sequence[RemoveMessage]) -> list[RemoveMessage]:
+    """``removals`` that still name a message of the thread."""
+    ids = {m.id for m in state["messages"]}
+    return [r for r in removals if r.id in ids]

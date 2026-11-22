@@ -9,34 +9,24 @@ monitor fires at.
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 from market_protocol import MarketPhase
 
 from src.data_client.instrument_clock import clock_for_ref
-from src.data_client.registry import get_market_data_provider
 from src.server.database.wakeups.arm import WakeupSpec
-from src.server.models.automation import MarketType
 from src.server.services.market_targets.listing import (
     PCT_FROM_STORED,
     TargetListing,
     target_listing,
 )
 from src.server.services.market_targets.window import target_window
-from src.server.services.price_monitor import (
-    Listing,
-    fire_price,
-    listing_snapshots,
-    reference_close,
-    target_hit,
-    traded_since_close,
-    watched_listing,
-)
-from src.tools.wakeups.schedule import PCT_KINDS, PriceAsk, Refused
+from src.server.services.price_monitor import target_hit, traded_since_close, watched_listing
+from src.server.services.wakeups.price_reading import last_and_base, trigger_level
+from src.tools.wakeups.schedule import PriceAsk, Refused
 from src.tools.wakeups.wording import (
     BUILD_TOOL_RESULTS,
     PRICE_ALREADY_MET,
@@ -45,9 +35,6 @@ from src.tools.wakeups.wording import (
     PRICE_REFUSALS,
 )
 from src.utils.market_watch import clean_symbols
-
-logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class PricePlan:
@@ -92,54 +79,6 @@ def plan_price(ask: PriceAsk) -> PricePlan:
     if listing is None:
         raise Refused(PRICE_REFUSALS["reason"].format(desc=desc, reason=reason))
     return PricePlan(symbol, listing, ask.kind, ask.value, ask.pct_from, desc)
-
-
-async def snapshots(
-    listings: Sequence[Listing], user_id: Any
-) -> Dict[Listing, Dict[str, Any]]:
-    """Rows by the monitor's listing, fetched as it fetches its reference
-    prices, so the trigger shown is the one it fires at. {} on any failure,
-    since a level can still be set without a price."""
-    wanted = list(dict.fromkeys(listings))
-    if not wanted:
-        return {}
-    try:
-        provider = await get_market_data_provider()
-        return await listing_snapshots(provider, wanted, user_id=user_id)
-    except Exception:
-        logger.warning("[Wakeups] price snapshot fetch failed", exc_info=True)
-        return {}
-
-
-def last_and_base(
-    listing: Listing, snap: Mapping[str, Any], now: datetime
-) -> Tuple[Optional[float], Optional[float]]:
-    """``(last, base)``: the price and the previous close the monitor reads
-    off the row, so a level shown is the level it fires at."""
-    if not snap:
-        return None, None
-    return fire_price(snap), reference_close(listing, snap, now)
-
-
-def trigger_level(
-    kind: str,
-    value: float,
-    pct_from: Optional[str],
-    last: Optional[float],
-    prev_close: Optional[float],
-    armed_price: Optional[float] = None,
-) -> Optional[float]:
-    """The price a wakeup fires at; ``pct_from`` as stored."""
-    if kind in ("above", "below"):
-        return value
-    if pct_from == "armed":
-        base = armed_price if armed_price is not None else last
-    else:
-        base = prev_close
-    if base is None:
-        return None
-    sign = 1 if kind == "pct_up" else -1
-    return base * (1 + sign * value / 100)
 
 
 def _base_is_live(plan: PricePlan, now: datetime) -> bool:
@@ -217,37 +156,3 @@ def price_spec(
     )
     level = trigger_level(plan.kind, plan.value, pct_from, last, prev_close)
     return spec, last, level
-
-
-def row_listing(row: Mapping[str, Any]) -> Optional[Listing]:
-    try:
-        return (str(row["symbol"]), MarketType(row.get("market") or "stock"))
-    except (KeyError, ValueError):
-        return None
-
-
-async def readback(
-    rows: List[Mapping[str, Any]], user_id: Any, now: datetime
-) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
-    """``{wakeup_id: (last, level)}`` for the % rows among ``rows``, which
-    read back as a distance from the latest price. A level row needs no
-    price, so a listing of levels fetches nothing."""
-    pct_rows = [r for r in rows if r.get("kind") == "price" and r.get("price_kind") in PCT_KINDS]
-    listings = [listing for r in pct_rows if (listing := row_listing(r)) is not None]
-    snaps = await snapshots(listings, user_id)
-    out: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
-    for row in pct_rows:
-        listing = row_listing(row)
-        last, prev_close = (
-            last_and_base(listing, snaps.get(listing) or {}, now) if listing else (None, None)
-        )
-        level = trigger_level(
-            str(row.get("price_kind")),
-            float(row.get("price_value") or 0),
-            row.get("pct_from"),
-            last,
-            prev_close,
-            armed_price=row.get("armed_price"),
-        )
-        out[str(row.get("wakeup_id"))] = (last, level)
-    return out

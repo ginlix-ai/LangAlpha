@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
@@ -18,9 +18,9 @@ function container(width: number): HTMLDivElement {
   return el;
 }
 
-function open(containerWidth = 1600, isMobile = false) {
+function open(containerWidth = 1600) {
   const { result } = renderHook(() => useRightPanel({
-    isMobile,
+    isMobile: false,
     workspaceId: 'ws',
     isActive: true,
     containerRef: { current: container(containerWidth) },
@@ -36,14 +36,19 @@ function drag(result: ReturnType<typeof open>, by: number) {
   act(() => document.dispatchEvent(new MouseEvent('mouseup')));
 }
 
+beforeEach(() => localStorage.clear());
+
 describe('the chart tab floor', () => {
-  it('widens a narrow panel when a chart tab comes to the front', () => {
+  it('never stands a chart under its floor, even at a width dragged narrower', () => {
     const result = open();
     act(() => result.current.handleToolCallDetailClick('tc1'));
     expect(result.current.rightPanelWidth).toBe(480);
 
-    act(() => result.current.handleActiveTabKindChange('chart'));
-    expect(result.current.rightPanelWidth).toBe(CHART_SURFACE_MIN_WIDTH);
+    localStorage.setItem('filePanel.widths', JSON.stringify({ surface: 400 }));
+    const narrow = open();
+    act(() => narrow.current.handleToolCallDetailClick('tc1'));
+    act(() => narrow.current.handleActiveTabKindChange('chart'));
+    expect(narrow.current.rightPanelWidth).toBe(CHART_SURFACE_MIN_WIDTH);
   });
 
   it('holds the divider at the floor while the chart is in front, and frees it once it is not', () => {
@@ -61,11 +66,12 @@ describe('the chart tab floor', () => {
   });
 
   it('raises the cap for a chart that came to the front without landing', () => {
-    // 1000 wide: the default 55% cap (550) sits under the floor, the raised one does not.
+    // 1000 wide: the default 55% cap (550) would hold a chart under its floor;
+    // the raised one (920) lets it stand at its own width.
     const result = open(1000);
     act(() => result.current.handleToolCallDetailClick('tc1'));
     act(() => result.current.handleActiveTabKindChange('chart'));
-    expect(result.current.rightPanelWidth).toBe(CHART_SURFACE_MIN_WIDTH);
+    expect(result.current.rightPanelWidth).toBe(850);
   });
 
   it('lets the container cap win on a screen too narrow for the floor', () => {
@@ -79,9 +85,18 @@ describe('the chart tab floor', () => {
     expect(result.current.rightPanelWidth).toBeCloseTo(552);
   });
 
-  it('leaves a mobile panel alone, which has no divider', () => {
-    const result = open(1600, true);
+  it('stands at the front tab\'s width once a phone-width window widens', () => {
+    const { result, rerender } = renderHook(({ isMobile }) => useRightPanel({
+      isMobile,
+      workspaceId: 'ws',
+      isActive: true,
+      containerRef: { current: container(1600) },
+      setFilePanelWorkspaceId: vi.fn(),
+      messages: MESSAGES,
+    }), { initialProps: { isMobile: true }, wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter> });
     act(() => result.current.handleActiveTabKindChange('chart'));
-    expect(result.current.rightPanelWidth).toBe(750);
+
+    rerender({ isMobile: false });
+    expect(result.current.rightPanelWidth).toBe(850);
   });
 });

@@ -28,6 +28,8 @@ vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMo
 
 import { getWorkflowStatus, reconnectToWorkflowStream, replayThreadHistory, sendChatMessageStream, sendRetryStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
+import { latestPlanSteps } from '../../components/messageList/requestPlans';
+import type { PlanSnapshot } from '@/types/chat';
 import type { MessageRecord } from '../utils/types';
 import type { StructuredError } from '@/utils/rateLimitError';
 
@@ -46,25 +48,25 @@ const chunk = (content: string, extra: Record<string, unknown> = {}) => ({
 /** The user steered the run: the rest of it lands on a continuation bubble. */
 const steered = { event: 'steering_delivered', messages: [{ content: 'also this', timestamp: 1_700_000_000 }] };
 
-/** The run's todo list, one step done and one under way. */
-const todoUpdate = {
+/** The run's plan, one step done and one under way. */
+const planUpdate = {
   event: 'artifact',
-  artifact_type: 'todo_update',
-  artifact_id: 'todos-1',
-  payload: {
-    todos: [{ content: 'gather', status: 'completed' }, { content: 'write', status: 'in_progress' }],
-    total: 2, completed: 1, in_progress: 1, pending: 0,
-  },
+  artifact_type: 'plan_update',
+  artifact_id: 'plan-1',
+  payload: { steps: [{ title: 'gather', status: 'completed' }, { title: 'write', status: 'in_progress' }] },
 };
 
-/** The statuses of the open todo list on the bubble showing `text`. */
-function todosOn(messages: MessageRecord[], text: string): string[] {
+/** How the bubble showing `text` ended: whether it still streams, and the
+ *  statuses of its newest plan. The plan keeps the statuses the agent gave
+ *  it; where an unfinished one stands is the view's to say. */
+function endedOn(messages: MessageRecord[], text: string): { streaming: boolean; plan: string[] } {
   const bubble = messages.find((m) => m.role === 'assistant' && String(m.content ?? '').includes(text));
-  const lists = Object.values((bubble?.todoListProcesses ?? {}) as Record<string, { order?: number; todos: { status: string }[] }>);
-  if (lists.length === 0) throw new Error(`no todo list on the bubble showing ${text}`);
-  const last = lists.reduce((a, b) => ((a.order || 0) >= (b.order || 0) ? a : b));
-  return last.todos.map((t) => t.status);
+  const steps = latestPlanSteps(bubble?.planSnapshots as PlanSnapshot[] | undefined);
+  if (steps.length === 0) throw new Error(`no plan on the bubble showing ${text}`);
+  return { streaming: !!bubble?.isStreaming, plan: steps.map((step) => step.status) };
 }
+
+const SETTLED = { streaming: false, plan: ['completed', 'in_progress'] };
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -445,12 +447,12 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     expect(hook.result.current.messageError).toBeNull();
   });
 
-  it('giving up closes the todo list a dropped reconnect was keeping', async () => {
+  it('giving up settles the bubble a dropped reconnect was keeping', async () => {
     const hook = await mount();
     // The give-up reloads; what it left is what the reload starts from.
     const { atReload, seeing } = watchReload(hook);
     let reconnectDropped = false;
-    const dropsOnce: Attempt = failsAfter([{ ...todoUpdate, _eventId: 3 }, { ...chunk(' and then'), _eventId: 4 }], 'drops');
+    const dropsOnce: Attempt = failsAfter([{ ...planUpdate, _eventId: 3 }, { ...chunk(' and then'), _eventId: 4 }], 'drops');
     await dropThenReconnect(
       hook,
       async (...args: Parameters<Attempt>) => {
@@ -462,27 +464,24 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     );
     await waitFor(() => expect(atReload.current).not.toBeNull(), { timeout: 3000 });
 
-    const keeper = atReload.current!.find((m) => String(m.content ?? '').includes('and then'));
-    const lists = Object.values((keeper?.todoListProcesses ?? {}) as Record<string, { todos: { status: string }[] }>);
-    expect(lists).toHaveLength(1);
-    expect(lists[0].todos.map((t) => t.status)).toEqual(['completed', 'stale']);
+    expect(endedOn(atReload.current!, 'and then')).toEqual(SETTLED);
   });
 
-  it('a turn a reconnect ends closes the todo list on every bubble it wrote to', async () => {
+  it('a turn a reconnect ends settles every bubble it wrote to', async () => {
     const hook = await mount();
     mockStatus.mockImplementation(async () => running());
     mockReconnect.mockImplementation(endsAfter([
       { ...chunk(' then more'), _eventId: 4 },
-      { ...todoUpdate, _eventId: 5 },
+      { ...planUpdate, _eventId: 5 },
       { ...steered, _eventId: 6 },
       { ...chunk('after the steer'), _eventId: 7 },
-      { ...todoUpdate, _eventId: 8 },
+      { ...planUpdate, _eventId: 8 },
       { ...chunk('', { finish_reason: 'stop' }), _eventId: 9 },
     ]));
     mockSendStream.mockImplementation(async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: Emit }) => {
       onEvent({ event: 'metadata', thread_id: 'th-1', run_id: 'run-1', _eventId: 1 });
       onEvent({ ...chunk('the first half'), _eventId: 2 });
-      onEvent({ ...todoUpdate, _eventId: 3 });
+      onEvent({ ...planUpdate, _eventId: 3 });
       return { disconnected: true };
     });
     await act(async () => {
@@ -494,7 +493,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     const messages = hook.result.current.liveMessages.get() as MessageRecord[];
     // The bubble it continued, its own, and the steer's continuation.
     for (const text of ['the first half', 'then more', 'after the steer']) {
-      expect(todosOn(messages, text)).toEqual(['completed', 'stale']);
+      expect(endedOn(messages, text)).toEqual(SETTLED);
     }
   });
 
@@ -509,7 +508,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
   };
 
   it.each(Object.keys(secondRetry) as (keyof typeof secondRetry)[])(
-    'a turn whose second reconnect %s closes the todo list the send left',
+    'a turn whose second reconnect %s settles the bubble the send left',
     async (outcome) => {
       const hook = await mount();
       mockStatus.mockImplementation(async () => running());
@@ -520,7 +519,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
       mockSendStream.mockImplementation(async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: Emit }) => {
         onEvent({ event: 'metadata', thread_id: 'th-1', run_id: 'run-1', _eventId: 1 });
         onEvent({ ...chunk('the first half'), _eventId: 2 });
-        onEvent({ ...todoUpdate, _eventId: 3 });
+        onEvent({ ...planUpdate, _eventId: 3 });
         return { disconnected: true };
       });
       await act(async () => {
@@ -531,18 +530,18 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
 
       expect(mockReconnect).toHaveBeenCalledTimes(2);
       // Two hops back from the reconnect that ended the turn.
-      expect(todosOn(hook.result.current.liveMessages.get() as MessageRecord[], 'the first half')).toEqual(['completed', 'stale']);
+      expect(endedOn(hook.result.current.liveMessages.get() as MessageRecord[], 'the first half')).toEqual(SETTLED);
     },
   );
 
-  it('giving up closes the todo list on every bubble a dropped reconnect wrote to', async () => {
+  it('giving up settles every bubble a dropped reconnect wrote to', async () => {
     const hook = await mount();
     const { atReload, seeing } = watchReload(hook);
     let reconnectDropped = false;
     // The list is on the reconnect's own bubble; a steer moved it on before the drop.
     const dropsOnce: Attempt = failsAfter([
       { ...chunk(' then more'), _eventId: 3 },
-      { ...todoUpdate, _eventId: 4 },
+      { ...planUpdate, _eventId: 4 },
       { ...steered, _eventId: 5 },
       { ...chunk('after the steer'), _eventId: 6 },
     ], 'drops');
@@ -557,7 +556,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     );
     await waitFor(() => expect(atReload.current).not.toBeNull(), { timeout: 3000 });
 
-    expect(todosOn(atReload.current!, 'then more')).toEqual(['completed', 'stale']);
+    expect(endedOn(atReload.current!, 'then more')).toEqual(SETTLED);
   });
 
   it('giving up on a steered run that ended during the drop settles its continuation, though the reload fails', async () => {
@@ -1016,11 +1015,11 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     expect(hook.result.current.messageError).toBe('Failed to send message');
   });
 
-  it('an attach that drops after a steer closes the todo list on the bubble before the steer', async () => {
+  it('an attach that drops after a steer settles the bubble before the steer', async () => {
     const hook = await openMidTurn(inTurn(
       failsAfter([
         { ...chunk('and then'), _eventId: 3 },
-        { ...todoUpdate, _eventId: 4 },
+        { ...planUpdate, _eventId: 4 },
         { ...steered, _eventId: 5 },
         { ...chunk('after the steer'), _eventId: 6 },
       ], 'drops'),
@@ -1033,7 +1032,7 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
 
     expect(mockReconnect).toHaveBeenCalledTimes(2);
     // The retry continues the steer's bubble; the list is on the one before it.
-    expect(todosOn(hook.result.current.liveMessages.get() as MessageRecord[], 'and then')).toEqual(['completed', 'stale']);
+    expect(endedOn(hook.result.current.liveMessages.get() as MessageRecord[], 'and then')).toEqual(SETTLED);
   });
 
   it('giving up on a run that ended during the drop shows the turn once, as the reload has it', async () => {

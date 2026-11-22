@@ -81,6 +81,20 @@ NOTES_DUE_ROW_KIND = "notes_due"
 #: ``update_row.md.j2`` hardcodes the same way.
 NOTES_CHECK_IN_ROW_KIND = "notes_check_in"
 
+#: Row kind of the plan check-in (``middleware/plan.py``), which
+#: ``update_row.md.j2`` hardcodes the same way.
+PLAN_CHECK_IN_ROW_KIND = "plan_check_in"
+
+#: Row kind of the ask, once per request, to show a plan for work that has
+#: run a while without one (``middleware/plan.py``), which
+#: ``update_row.md.j2`` hardcodes the same way.
+PLAN_NUDGE_ROW_KIND = "plan_nudge"
+
+#: Row kind of the ask, after a final answer, to mark the plan steps the turn
+#: finished (``middleware/plan_close_out.py``), which ``update_row.md.j2``
+#: hardcodes the same way.
+PLAN_CLOSE_OUT_ROW_KIND = "plan_close_out"
+
 #: Row kind of the ask to bring the notes up to date before a summary that
 #: keeps no turn mid-turn (``compaction/notes.py``), which
 #: ``update_row.md.j2`` hardcodes the same way.
@@ -134,6 +148,9 @@ NON_CHANGE_ROW_KINDS = frozenset(
         SUBAGENTS_ROW_KIND,
         NOTES_DUE_ROW_KIND,
         NOTES_CHECK_IN_ROW_KIND,
+        PLAN_CHECK_IN_ROW_KIND,
+        PLAN_NUDGE_ROW_KIND,
+        PLAN_CLOSE_OUT_ROW_KIND,
         REBUILD_NOTES_ROW_KIND,
         TIME_UP_ROW_KIND,
         TIME_UP_WITHDRAWN_ROW_KIND,

@@ -389,7 +389,6 @@ describe('in the transcript', () => {
     segments: ids.map((id, i) => ({ type: 'subagent_task', order: i, subagentId: id })) as SegmentsProps['segments'],
     reasoningProcesses: {},
     toolCallProcesses: {},
-    todoListProcesses: {},
     subagentTasks: Object.fromEntries(ids.map((id) => [id, task(id)])),
     isStreaming: true,
   });

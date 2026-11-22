@@ -7,7 +7,6 @@ This package contains all tools available to the PTC agent:
 - glob: File pattern matching
 - grep: Content search (ripgrep-based)
 - think: Strategic reflection for research
-- todo: Task tracking and progress management
 
 Note: Web search tools are provided via src/tools/search.py (configurable: Tavily, Bocha, Serper).
 
@@ -25,23 +24,6 @@ from .preview_url import create_preview_url_tool
 from .show_widget import create_show_widget_tool
 from .think import think_tool
 
-# Todo tracking
-from .todo import (
-    TodoWrite,
-    TodoItem,
-    TodoStatus,
-    checkout_todos,
-    checkin_todos,
-    extract_todos_from_messages,
-    mark_in_progress,
-    mark_completed,
-    add_todo,
-    remove_todo,
-    get_next_pending_todo,
-    validate_single_in_progress,
-    validate_todo_list_dict,
-)
-
 __all__ = [
     # Bash
     "create_execute_bash_tool",
@@ -58,19 +40,5 @@ __all__ = [
     "create_show_widget_tool",
     # Research
     "think_tool",
-    # Todo tracking
-    "TodoWrite",
-    "TodoItem",
-    "TodoStatus",
-    "checkout_todos",
-    "checkin_todos",
-    "extract_todos_from_messages",
-    "mark_in_progress",
-    "mark_completed",
-    "add_todo",
-    "remove_todo",
-    "get_next_pending_todo",
-    "validate_single_in_progress",
-    "validate_todo_list_dict",
 ]
 

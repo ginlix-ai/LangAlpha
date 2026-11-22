@@ -203,6 +203,9 @@ export interface ChatInputProps {
    * Only once the label is down to its floor does the status cost a slot.
    */
   toolbarStatus?: React.ReactNode;
+  /** A strip the host draws across the top of the box, ruled off from the
+   *  rest (the chat view's tray, for a reader who keeps it inside). */
+  header?: React.ReactNode;
   /**
    * Context the host gathers above the text box, ruled off from it (the chat
    * view's queued file comments). The host owns what it holds and what a send
@@ -271,6 +274,7 @@ function ChatInput({
   // Minimum visible rows for the textarea (default 1 = compact; pass 2 for roomier non-ChatView callsites)
   minRows = 1,
   toolbarStatus = null,
+  header = null,
   deck = null,
   ref,
 }: ChatInputProps & { ref?: React.Ref<ChatInputHandle> }) {
@@ -1001,6 +1005,7 @@ function ChatInput({
         }}
       >
         {isListening && <VoiceOverlay />}
+        {header}
         <div className="flex flex-col px-3 pt-3 pb-2 gap-2">
 
           {/* The deck folds, and the column's gap below it cannot: a gap lands

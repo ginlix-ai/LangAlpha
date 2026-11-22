@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, _Gated, turn_failure
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
-from ptc_agent.agent.claude_code.mid_turn import AfterTool
+from ptc_agent.agent.claude_code.mid_turn import AfterTool, HandOff
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.runtime import ClaudeTurn
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
@@ -214,7 +214,7 @@ def test_a_used_up_plans_refusal_names_its_window_and_what_was_billed_first():
 @pytest.mark.asyncio
 async def test_the_cli_stops_at_the_batch_end_the_plan_stops_at():
     async def take():
-        return None
+        return HandOff()
 
     watch = _watch()
     hook = AfterTool(ToolResults(), send=AsyncMock(), plan=watch)

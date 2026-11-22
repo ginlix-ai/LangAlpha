@@ -27,16 +27,6 @@ export interface ToolCallResultRecord {
   [key: string]: unknown;
 }
 
-/** Shape of the todo update payload. */
-export interface TodoPayload {
-  todos?: unknown[];
-  total?: number;
-  completed?: number;
-  in_progress?: number;
-  pending?: number;
-  [key: string]: unknown;
-}
-
 /** Data for an inline HTML widget. */
 export interface HtmlWidgetData {
   html: string;

@@ -1,7 +1,6 @@
 import React, { Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { OpenFileHandler } from '../../utils/fileLocation';
-import type { MarketWatchState } from '../../session/marketWatchEvents';
 import { SandboxSettingsContent } from '../SandboxSettingsPanel';
 import type { SubagentInfo } from '../ToolCallDetailView';
 import type { ContextPayload } from '@/components/ui/chat-input.types';
@@ -28,9 +27,6 @@ interface ActiveTabBodyProps {
   target: PanelTarget | null;
   onTargetMemoryHandled?: (seq?: number) => void;
   onTargetMemoHandled?: (seq?: number) => void;
-  marketWatch: MarketWatchState | null;
-  threadId: string | null;
-  isActive: boolean;
   onOpenFile: OpenFileHandler | null;
   onOpenSubagentTask: ((info: SubagentInfo) => void) | null;
   transcript: TranscriptReader | null;
@@ -47,8 +43,8 @@ interface ActiveTabBodyProps {
 
 /** What fills the viewer slot for the active tab. Preview panes are rendered beside this, kept mounted. */
 export function ActiveTabBody({
-  activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled, marketWatch,
-  threadId, isActive, onOpenFile, onOpenSubagentTask, transcript, onAddContext,
+  activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled,
+  onOpenFile, onOpenSubagentTask, transcript, onAddContext,
   onOpenInMarketView, file, onPageCount, canUpload, browser,
 }: ActiveTabBodyProps): React.ReactNode {
   switch (activeTab.kind) {
@@ -92,9 +88,6 @@ export function ActiveTabBody({
           onTargetMemoryHandled={onTargetMemoryHandled}
           onTargetMemoHandled={onTargetMemoHandled}
           onOpenFile={onOpenFile}
-          marketWatch={marketWatch}
-          threadId={threadId}
-          isActive={isActive}
         />
       );
     case 'sources':

@@ -20,7 +20,7 @@ import inspect
 import logging
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
@@ -134,22 +134,46 @@ def _sources(reader: _Reader, analysts: bool) -> list[Source]:
 
 
 async def pending_work(
-    thread_id: str, user_id: str | None, *, analysts: bool, before: datetime
+    thread_id: str,
+    user_id: str | None,
+    *,
+    analysts: bool,
+    before: datetime | None = None,
+    kinds: Collection[ItemType] = TYPES,
+    since: datetime | None = None,
+    ended_since: datetime | None = None,
 ) -> ItemType | None:
     """The first type of item set to report back to the thread, as
-    ThreadStatus lists it, that is running or comes due by ``before``, or None.
-    A type that cannot be read counts as one: the thread may be coming back
-    on its own."""
+    ThreadStatus lists it, that is running or comes due by ``before`` (at any
+    time when None), or, given ``ended_since``, that ended since then with
+    its report still to come; among ``kinds`` only, and given ``since``, only
+    those set since then (an item whose rows say not when counts). None when
+    there is none. A type that cannot be read counts as one: the thread may
+    be coming back on its own."""
     reader = _Reader(thread_id=thread_id, user_id=user_id, user_tz="UTC", registry=None)
     for source in _sources(reader, analysts):
+        if source.type not in kinds:
+            continue
         try:
             items = await source.items()
         except Exception:
             logger.warning("[ThreadStatus] %s read failed thread_id=%s", source.type, thread_id, exc_info=True)
             return source.type
-        if any(item.status == "running" or (item.status == "pending" and _utc(item.at) <= before) for item in items):
+        if any(_reports_back(item, before, since, ended_since) for item in items):
             return source.type
     return None
+
+
+def _reports_back(
+    item: Item, before: datetime | None, since: datetime | None, ended_since: datetime | None
+) -> bool:
+    if since is not None and item.set_at is not None and _utc(item.set_at) < since:
+        return False
+    if item.status == "running":
+        return True
+    if item.status == "pending":
+        return before is None or _utc(item.at) <= before
+    return item.owed and ended_since is not None and _utc(item.at) >= ended_since
 
 
 def _utc(at: datetime) -> datetime:

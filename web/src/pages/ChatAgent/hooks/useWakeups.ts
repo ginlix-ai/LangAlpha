@@ -3,15 +3,25 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { onPageReturn } from '@/lib/pageVisibility';
 import { queryKeys } from '@/lib/queryKeys';
-import type { WakeupList, WakeupsResponse } from '@/types/wakeups';
+import type { Wakeup, WakeupList, WakeupsResponse } from '@/types/wakeups';
 import { cancelWakeups, fetchWakeups } from '../utils/api';
 import { isValidUuid } from '../utils/uuid';
 import { patchListingAfterMutation } from './utils/patchListing';
-import { nextWakeupLapse, wakeupsAt } from '../components/wakeupLabels';
+import { armedPrice, nextWakeupLapse, wakeupsAt } from '../components/wakeupLabels';
 
 // setTimeout keeps its delay in a signed 32-bit count and fires at once past
 // it; a later lapse is re-armed from the wake this cap ends in.
 const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** How often a listing reads again while a level can move on its own: a move
+ *  off the previous close is measured from the close of its ticker's last
+ *  session, so its level is set anew when a session rolls over, in whatever
+ *  market the ticker trades. The chat's quotes carry the price, never the level. */
+const ROLLING_LEVEL_READ_MS = 5 * 60_000;
+
+function levelRolls(data: { wakeups: Wakeup[] } | undefined): boolean {
+  return !!data?.wakeups.some((w) => armedPrice(w)?.pct_from === 'previous_close');
+}
 
 /** The wall clock as a render input that moves only when a price or order
  *  wakeup lapses, the one instant what reads armed changes. */
@@ -94,6 +104,10 @@ export function useThreadWakeups(threadId: string | null | undefined, active = t
     queryFn: () => fetchWakeups(thread as string),
     enabled: readable && active,
     staleTime: 0,
+    // No poll for an armed price wakeup's moving `last`: the chat quotes each
+    // one's ticker (`ThreadQuotesProvider`), and the distance reads that. Only
+    // a level that rolls with the session is read again.
+    refetchInterval: (query) => (levelRolls(query.state.data) ? ROLLING_LEVEL_READ_MS : false),
     // Every open chat reads it, and the next event or page return reads it
     // again, so a failure leaves what was shown rather than retrying.
     retry: false,

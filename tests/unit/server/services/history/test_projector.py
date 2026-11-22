@@ -346,12 +346,7 @@ def test_failed_tool_marks_artifact_failed():
     assert artifact["status"] == "failed"
 
 
-def test_todo_write_derives_todo_update():
-    todos = [
-        {"content": "a", "activeForm": "doing a", "status": "completed"},
-        {"content": "b", "status": "in_progress"},
-        {"content": "c", "status": "pending"},
-    ]
+def _todo_write_artifact(todos):
     msgs = [
         AIMessage(
             content="",
@@ -360,14 +355,67 @@ def test_todo_write_derives_todo_update():
         ),
         ToolMessage(content="ok", tool_call_id="tc-t", name="TodoWrite", id="tm-1"),
     ]
+    return next(i for i in _sse(msgs) if i["event"] == "artifact")["data"]
+
+
+def test_todo_write_replays_as_plan_update():
+    artifact = _todo_write_artifact(
+        [
+            {"content": "a", "activeForm": "a", "status": "completed"},
+            {"content": "b", "activeForm": "b", "status": "in_progress"},
+            {"content": "c", "status": "in_progress"},
+        ]
+    )
+    assert artifact["artifact_type"] == "plan_update"
+    # Settled: the second running step goes back to pending.
+    assert artifact["payload"] == {
+        "steps": [
+            {"title": "a", "status": "completed"},
+            {"title": "b", "status": "in_progress"},
+            {"title": "c", "status": "pending"},
+        ],
+        "total": 3,
+        "completed": 1,
+        "current": 1,
+    }
+
+
+def test_todo_write_with_no_running_step_starts_the_first_pending():
+    artifact = _todo_write_artifact(
+        [
+            {"content": "a", "status": "completed"},
+            {"content": "b", "status": "pending"},
+        ]
+    )
+    assert artifact["payload"]["steps"][1]["status"] == "in_progress"
+    assert artifact["payload"]["current"] == 1
+
+
+def test_update_plan_replays_the_resolved_plan_from_its_result():
+    # An ``advance`` names no steps, so the list comes from the result.
+    payload = {
+        "steps": [{"title": "a", "status": "completed"}, {"title": "b", "status": "in_progress"}],
+        "total": 2,
+        "completed": 1,
+        "current": 1,
+    }
+    msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "UpdatePlan", "args": {"advance": True}, "id": "tc-p"}],
+        ),
+        ToolMessage(
+            content="Step 2 of 2 is in progress: b",
+            tool_call_id="tc-p",
+            name="UpdatePlan",
+            id="tm-1",
+            artifact=payload,
+        ),
+    ]
     artifact = next(i for i in _sse(msgs) if i["event"] == "artifact")["data"]
-    assert artifact["artifact_type"] == "todo_update"
-    assert artifact["payload"]["total"] == 3
-    assert artifact["payload"]["completed"] == 1
-    assert artifact["payload"]["in_progress"] == 1
-    assert artifact["payload"]["pending"] == 1
-    # activeForm defaults to content when absent.
-    assert artifact["payload"]["todos"][1]["activeForm"] == "b"
+    assert artifact["artifact_type"] == "plan_update"
+    assert artifact["payload"] == payload
 
 
 def test_show_widget_artifact_from_tool_message():
@@ -1145,3 +1193,33 @@ def test_a_reply_the_claude_plan_ran_out_during_replays_its_notice_after_it():
     assert [i["event"] for i in items] == ["message_chunk", "claude_code_plan"]
     assert items[1]["data"] == {"thread_id": THREAD_ID, "agent": "main", **notice}
     assert [i["event"] for i in _sse([AIMessage(content="done", id="ai-2")])] == ["message_chunk"]
+
+
+def test_a_close_out_reply_replays_its_plan_calls_alone():
+    # Live it is never streamed; its reasoning stays only for the provider,
+    # so a reload must not draw a Thinking block after the answer.
+    from ptc_agent.agent.middleware.plan_close_out import CLOSE_OUT_KEY
+
+    msgs = [
+        AIMessage(content="The answer.", id="ai-answer"),
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "mark step 2", "signature": "s"},
+                {"type": "tool_use", "id": "p2", "name": "UpdatePlan", "input": {"advance": True}},
+            ],
+            id="ai-close",
+            tool_calls=[{"name": "UpdatePlan", "args": {"advance": True}, "id": "p2"}],
+            additional_kwargs={CLOSE_OUT_KEY: True},
+        ),
+        ToolMessage(
+            content="Plan finished.",
+            tool_call_id="p2",
+            name="UpdatePlan",
+            id="tm-p2",
+            artifact={"steps": [{"title": "a", "status": "completed"}], "total": 1, "completed": 1, "current": None},
+        ),
+    ]
+    items = _sse(msgs)
+    assert [i["data"].get("content_type") for i in items if i["data"].get("id") == "ai-close"] == [None]
+    assert [i["event"] for i in items if i["data"].get("id") == "ai-close"] == ["tool_calls"]
+    assert any(i["event"] == "artifact" and i["data"]["artifact_type"] == "plan_update" for i in items)

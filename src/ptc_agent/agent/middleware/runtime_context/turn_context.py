@@ -120,3 +120,13 @@ class TurnContext:
     # ``timezone``, else the request locale's default, since a tool needs a
     # clock even when nothing named one.
     tool_timezone: str = "UTC"
+
+    @property
+    def continues_request(self) -> bool:
+        """Whether the turn carries an earlier request on rather than starting
+        one: a turn the server posted (a report-back, a wake) or a retry of
+        one, the cases ``inherits_rules`` marks. A resumed interrupt and a
+        retry that resumes from the checkpoint carry it on too, which only the
+        graph knows, as each re-enters at the node it left; a retry that sends
+        its message again starts the request over."""
+        return self.inherits_rules

@@ -48,7 +48,7 @@ vi.mock('@/lib/quotes', async (importOriginal) => ({
   },
 }));
 
-vi.mock('../quoteSplit', () => ({
+vi.mock('@/lib/quotes/splitQuote', () => ({
   splitQuote: (_key: string, price: number | undefined) => ({ quoteAvailable: price !== undefined, price, pct: 0, ext: null, places: 2 }),
 }));
 

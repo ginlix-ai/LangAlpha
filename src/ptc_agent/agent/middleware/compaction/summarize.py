@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 from ptc_agent.agent.transcript.render import message_turns, visible_text
 from ptc_agent.agent.transcript.steer_text import report_text, sender_name, sent_steers
+from ptc_agent.agent.tools.plan import PlanStepDict
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,7 @@ _SERVER_CHARS = 24_000
 _EARLIER_CHARS = 12_000
 _REQUEST_CHARS = 1_500
 _REPLY_CHARS = 4_000
-_TODO_CHARS = 4_000
+_PLAN_CHARS = 4_000
 
 _LEAD = (
     "The summary model could not be reached, so this summary was put "
@@ -262,18 +264,19 @@ def summary_text(response: Any) -> str:
 
 def server_summary(
     to_summarize: Sequence[AnyMessage],
-    preserved: Sequence[AnyMessage],
     *,
     raw_messages: Sequence[AnyMessage],
     turns: TranscriptTurns | None,
     window: Window,
+    plan: Sequence[PlanStepDict] = (),
     lead: str = _LEAD,
 ) -> Summary:
     """A summary built without a model: each request and the reply to it,
     the newest first to stay when they do not all fit, plus an earlier
-    summary and the todo list. ``turns`` is set when the transcript is
-    readable, and names the file each turn is in. ``window`` is what was
-    trimmed from the head of ``raw_messages``. ``lead`` says why."""
+    summary and the plan in state while a step is unfinished. ``turns`` is
+    set when the transcript is readable, and names the file each turn is in.
+    ``window`` is what was trimmed from the head of ``raw_messages``.
+    ``lead`` says why."""
     head = list(to_summarize[:1]) if to_summarize and is_summary_message(to_summarize[0]) else []
     numbers = (
         turns.turns if turns is not None else message_turns(raw_messages, base=window.runs)
@@ -284,12 +287,12 @@ def server_summary(
 
     if head:
         # An earlier server summary already said the model failed; its own
-        # lead would only say it twice. Its newest turns and todo list come
-        # last, so it keeps its end where a model's summary, which opens on
-        # the goal, keeps its start.
+        # lead would only say it twice, and its plan is this summary's to
+        # state. Its newest turns come last, so it keeps its end where a
+        # model's summary, which opens on the goal, keeps its start.
         text = parse_summary_message(head[0])
         by_server = summary_source(head[0]) == "server" or provider_only(head[0])
-        body = text.partition("\n\n")[2] if by_server else text
+        body = _without_plan(text.partition("\n\n")[2]) if by_server else text
         cut = (_cut_start if by_server else _cut)(body, _EARLIER_CHARS)
         if cut == body and head[0].id:
             covered.add(head[0].id)
@@ -320,9 +323,9 @@ def server_summary(
         )
     sections += reversed(blocks)
 
-    todos = _todo_list(to_summarize, preserved)
-    if todos:
-        sections.append(f"## Todo list\n{_cut(todos, _TODO_CHARS)}")
+    if any(step["status"] != "completed" for step in plan):
+        steps = "\n".join(f"- [{step['status']}] {step['title']}" for step in plan)
+        sections.append(f"## Plan\n{_cut(steps, _PLAN_CHARS)}")
 
     lead += _LEAD_TRANSCRIPT if turns is not None else ""
     return Summary(
@@ -330,6 +333,19 @@ def server_summary(
         "server",
         [m for m in to_summarize if m.id in covered],
     )
+
+
+#: A plan section as ``server_summary`` writes it: last, one ``- [status]``
+#: line per step, so a reply that happens to end on a "## Plan" heading of
+#: its own is not taken for one.
+_PLAN_SECTION = re.compile(r"\n\n## Plan\n(?:- \[(?:pending|in_progress|completed)\] [^\n]*(?:\n|$))+\Z")
+
+
+def _without_plan(body: str) -> str:
+    """An earlier server summary's body without its ``## Plan``: the plan it
+    held may since have moved or finished, and this summary states the
+    current one itself."""
+    return _PLAN_SECTION.sub("", body)
 
 
 def thread_summary(
@@ -462,26 +478,3 @@ def _cut(text: str, limit: int) -> str:
 
 def _cut_start(text: str, limit: int) -> str:
     return text if len(text) <= limit else "…" + text[len(text) - limit + 1 :].lstrip()
-
-
-def _todo_list(to_summarize: Sequence[AnyMessage], preserved: Sequence[AnyMessage]) -> str:
-    """The newest todo list among the summarized messages, unless a kept
-    message has a newer one the agent still sees."""
-    if _latest_todos(preserved) is not None:
-        return ""
-    return "\n".join(
-        f"- [{item.get('status', 'pending')}] {item.get('content', '')}"
-        for item in _latest_todos(to_summarize) or ()
-        if isinstance(item, Mapping)
-    )
-
-
-def _latest_todos(messages: Sequence[AnyMessage]) -> list[Any] | None:
-    for message in reversed(messages):
-        if not isinstance(message, AIMessage):
-            continue
-        for call in reversed(message.tool_calls or []):
-            if call.get("name") == "TodoWrite":
-                todos = (call.get("args") or {}).get("todos")
-                return todos if isinstance(todos, list) else None
-    return None

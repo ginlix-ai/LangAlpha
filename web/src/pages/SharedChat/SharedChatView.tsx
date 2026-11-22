@@ -28,7 +28,6 @@ import {
   handleHistoryTextContent,
   handleHistoryToolCalls,
   handleHistoryToolCallResult,
-  handleHistoryTodoUpdate,
   handleHistoryTaskArtifactStatus,
 } from '../ChatAgent/hooks/utils/historyEventHandlers';
 import type { PairState } from '../ChatAgent/hooks/utils/historyEventHandlers';
@@ -53,6 +52,9 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { DispatchStatusProvider } from '../ChatAgent/hooks/usePTCDispatchStatus';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import type { MessageRecord, SetMessages } from '../ChatAgent/hooks/utils/types';
+import { applyPlanSnapshot, readPlanSteps } from '@/pages/ChatAgent/session/planUpdate';
+import { eventOrder } from '@/pages/ChatAgent/session/eventOrder';
+import { threadPlans } from '../ChatAgent/components/messageList/requestPlans';
 
 
 /** The divider's bounds: a floor any tab fits, and a share of the window the thread keeps. */
@@ -261,20 +263,14 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
           // tool_call_chunks — skip
           if (eventType === 'tool_call_chunks') return;
 
-          // artifact (todo_update)
-          if (eventType === 'artifact' && event.artifact_type === 'todo_update' && hasPairIndex) {
+          // artifact (the plan)
+          const steps = eventType === 'artifact' ? readPlanSteps(event.artifact_type, event.payload) : null;
+          if (steps && hasPairIndex) {
             const pairIndex = event.turn_index as number;
             const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
             const pairState = pairStateByPair.get(pairIndex);
             if (currentAssistantMessageId && pairState) {
-              handleHistoryTodoUpdate({
-                assistantMessageId: currentAssistantMessageId,
-                artifactType: event.artifact_type as string,
-                artifactId: event.artifact_id as string,
-                payload: (event.payload as Record<string, unknown>) || {},
-                pairState,
-                setMessages: setMessagesCompat,
-              });
+              applyPlanSnapshot(setMessagesCompat, currentAssistantMessageId, steps, eventOrder(event, () => ++pairState.contentOrderCounter));
             }
             return;
           }
@@ -432,6 +428,8 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
 
   const imageDownloader = useCallback((path: string) => servedObjectUrl(servePrefix, path), [servePrefix]);
 
+  // A share is a finished thread: nothing runs, and nothing will come back.
+  const plans = useMemo(() => threadPlans(messages, false, false).underMessages, [messages]);
   // The workspace's folder, so its absolute paths read as workspace paths here
   // as they do in the owner's view, a turn from before a move included. Its
   // siblings are not the viewer's, nor are the owner's other computers.
@@ -679,6 +677,7 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
                           messages={messages}
                           readOnly={true}
                           allowFiles={canBrowseFiles}
+                          plans={plans}
                         />
                       </DispatchStatusProvider>
                       </MessageActionsProvider>

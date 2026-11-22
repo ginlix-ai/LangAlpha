@@ -15,6 +15,7 @@ from langchain_core.tools import StructuredTool
 
 from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
 from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddleware
+from ptc_agent.agent.middleware.plan_close_out import PlanCloseOutMiddleware
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import SystemPinMiddleware
 from ptc_agent.config.agent import AgentConfig, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
@@ -65,3 +66,8 @@ def test_the_approval_and_order_hooks_run_ahead_of_any_after_model_hook_that_wri
     ahead = order[: order.index(OrderGovernanceMiddleware)]
     assert set(ahead) <= {StandingApprovalMiddleware, SystemPinMiddleware}
     assert set(order[: order.index(StandingApprovalMiddleware)]) <= {SystemPinMiddleware}
+
+
+def test_the_plan_close_out_runs_last_so_its_jump_back_to_the_model_skips_no_hook():
+    order = _after_model_order(_main_stack())
+    assert order[-1] is PlanCloseOutMiddleware

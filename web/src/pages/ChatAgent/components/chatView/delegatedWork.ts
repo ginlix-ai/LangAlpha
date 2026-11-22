@@ -70,6 +70,8 @@ function latest(...times: (number | null | undefined)[]): number | null {
 
 export interface RosterTask extends SidebarAgentRow {
   running: boolean;
+  /** The subagent's role (`research`, `data-prep`, …), when one is known. */
+  type?: string;
 }
 
 /** The fields of a live card the roster reads. */
@@ -77,6 +79,7 @@ interface TaskCardLike {
   subagentData?: {
     displayId?: string;
     description?: string;
+    type?: string;
     status?: string;
     messages?: unknown[];
     ownerTaskId?: string;
@@ -87,6 +90,7 @@ interface TaskCardLike {
 /** The fields of a history entry the roster reads. */
 interface TaskHistoryLike {
   description: string;
+  type?: string;
   status: string;
   messages: unknown[];
   ownerTaskId?: string;
@@ -97,6 +101,7 @@ interface TaskHistoryLike {
 interface TaskDraft {
   name: string;
   description: string;
+  type?: string;
   status: SidebarAgentRow['status'];
   lastActivityMs: number | null;
 }
@@ -129,6 +134,7 @@ export function taskRoster({
     drafts.set(agentId, {
       name: `Task-${taskIdFromAgentId(agentId) ?? agentId}`,
       description: entry.description,
+      type: entry.type || undefined,
       status: deriveSubagentStatus({ status: entry.status, messages: entry.messages }),
       // Before the ledger reported activity, the newest run's start.
       lastActivityMs: latest(entry.lastActivityMs ?? entry.projectedRunStartedMs),
@@ -145,6 +151,7 @@ export function taskRoster({
     drafts.set(agentId, {
       name: sd.displayId || known?.name || `Task-${taskIdFromAgentId(agentId) ?? agentId}`,
       description: sd.description || known?.description || '',
+      type: sd.type || known?.type,
       // The card is live; history is the page load.
       status: deriveSubagentStatus({ status: sd.status ?? 'initializing', messages: sd.messages }),
       lastActivityMs: latest(sd.lastActivityMs, known?.lastActivityMs),
@@ -155,7 +162,7 @@ export function taskRoster({
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
     if (m.role !== 'user' || m.provenance?.kind !== 'task_report') continue;
-    const { taskId, displayId, description, failed } = m.provenance;
+    const { taskId, displayId, description, failed, subagentType } = m.provenance;
     const agentId = `task:${taskId}`;
     if (history[agentId]?.ownerTaskId) continue;
     const known = drafts.get(agentId);
@@ -169,10 +176,11 @@ export function taskRoster({
         ...known,
         // A card its close created has no description yet; the report has one.
         description: known.description || (description ?? ''),
+        type: known.type || subagentType || undefined,
         status: stale ? outcome : known.status,
         lastActivityMs: latest(known.lastActivityMs, reportedMs),
       }
-      : { name: displayId, description: description ?? '', status: outcome, lastActivityMs: reportedMs });
+      : { name: displayId, description: description ?? '', type: subagentType || undefined, status: outcome, lastActivityMs: reportedMs });
   }
 
   const rows: (RosterTask & { lastActivityMs: number | null })[] = [];
@@ -183,6 +191,7 @@ export function taskRoster({
       id,
       name: draft.name,
       description: draft.description,
+      type: draft.type,
       isMainAgent: false,
       status: draft.status,
       running,
@@ -196,7 +205,7 @@ export function taskRoster({
 export function rosterTasksEqual(a: readonly RosterTask[], b: readonly RosterTask[]): boolean {
   return a.length === b.length && a.every((x, i) => {
     const y = b[i];
-    return x.id === y.id && x.name === y.name && x.description === y.description
+    return x.id === y.id && x.name === y.name && x.description === y.description && x.type === y.type
       && x.status === y.status && x.running === y.running;
   });
 }

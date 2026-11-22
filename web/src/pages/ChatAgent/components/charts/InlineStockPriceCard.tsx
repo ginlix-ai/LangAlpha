@@ -6,7 +6,7 @@ import { compactNumber, formatCalendarDayRange, formatCalendarMonthDay, grouped2
 import { readStockPrices, type InlineCardProps } from './cardReaders';
 import { FreshnessBadge } from './FreshnessBadge';
 import { TermCard, TermChange, TermPriceLine, TermStats } from './TermCard';
-import { changeDirection } from './termChange';
+import { changeDirection } from '@/lib/priceMove';
 import { useCardNarrow } from './termContext';
 
 function downsample<T>(arr: readonly T[], maxPoints = 60): readonly T[] {

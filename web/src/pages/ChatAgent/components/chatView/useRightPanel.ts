@@ -8,11 +8,9 @@ import { opensShareLinksInPanel } from '@/lib/shareLinkOpen';
 import type { ComputerFolders } from '../../utils/agentPaths';
 import { collectRecentWritePaths, collectWriteLog } from '../../utils/fileRefResolver';
 import { useStableHandler } from '@/hooks/useStableHandler';
-import { useLatestRef } from '@/hooks/useLatestRef';
 import { isValidUuid } from '../../utils/uuid';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
-import { CHART_SURFACE_MIN_WIDTH } from '@/pages/MarketView/components/chartSurfaceLayout';
 import type { FileTab } from '../filePanel/useFileTabs';
 import type { Computer } from '@/types/api';
 import type { LinkActions } from '../../contexts/LinkActionsContext';
@@ -21,7 +19,8 @@ import type { PreviewData } from '../../hooks/utils/types';
 import { readArtifactCommentReply, type ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
 import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './toolCallLookup';
 import { useTranscriptReader } from '../filePanel/transcriptStore';
-import { DEFAULT_PANEL_WIDTH, PREVIEW_MAX_RATIO, detailPanelWidth } from '../filePanel/detailWidth';
+import { DEFAULT_PANEL_WIDTH, detailPanelWidth } from '../filePanel/detailWidth';
+import { panelWidthFor, panelWidthKind, readKeptWidths, saveKeptWidths, withKeptWidth, type PanelTabKind } from '../filePanel/panelWidths';
 import { usePanelAsks, usePanelLinkOpen } from './usePanelLinks';
 import { useFileDeepLink } from './useFileDeepLink';
 import { useChatBrowser } from './useChatBrowser';
@@ -115,14 +114,9 @@ export function useRightPanel({
   const panelExpanded = expanded && !isMobile;
   const handleTogglePanelExpanded = useCallback(() => setExpanded((v) => !v), []);
 
-  // What the file panel has in front, reported by the panel as it changes. A
-  // chart is the one tab with a width of its own: below the surface's floor
-  // its toolbar collides, so while a chart is in front the divider stops
-  // there and the panel grows to it on the way in. The container's own cap
-  // still wins on a screen too narrow for both.
+  // What the file panel has in front, reported by the panel as it changes.
   const [activeTabKind, setActiveTabKind] = useState<FileTab['kind'] | null>(null);
   const handleActiveTabKindChange = useCallback((kind: FileTab['kind'] | null) => setActiveTabKind(kind), []);
-  const panelMinWidth = activeTabKind === 'chart' ? CHART_SURFACE_MIN_WIDTH : 0;
   // Mobile-sheet-only preview state. On desktop a running app is a tab in the
   // file panel, which mints and refreshes its own URL; the bottom sheet has no
   // tab strip, shows one app at a time, and keeps this Map keyed by port in a
@@ -152,17 +146,22 @@ export function useRightPanel({
   // A tool call is held by id and read live below, like a tab holds it.
   const [detailToolCallId, setDetailToolCallId] = useState<string | null>(null);
 
-  // The width chosen (by a landing, a chart's floor or the divider) and the
-  // cap the open content asked for. A running app opens past the default cap
-  // on purpose, and the divider has to hold that width instead of snapping it
-  // back on the first pixel, so the ask is recorded rather than inferred from
-  // the width. The width shown is the choice held to the container as it is
-  // now: a window made narrower squeezes it and one made wide again gives it
-  // back, or a width set while it was wide leaves the chat a sliver.
-  const [panelChoice, setPanelChoice] = useState<{ width: number; maxRatio?: number }>({ width: 750 });
+  // The kind of tab the panel is sized for: what is landing, else what is in
+  // front. It outlives a close, so the header's toggle reopens at its width.
+  const [widthKind, setWidthKind] = useState<PanelTabKind | null>(null);
+  // The widths dragged per kind of tab, and the width the last tool result
+  // asked for, which differs call by call.
+  const [keptWidths, setKeptWidths] = useState(readKeptWidths);
+  const [detailWidth, setDetailWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
-  const rightPanelWidth = clampPanelWidthUtil(panelChoice.width, containerWidth, panelChoice.maxRatio);
-  const applyPanelWidth = useCallback((width: number, maxRatio?: number) => setPanelChoice({ width, maxRatio }), []);
+  // The panel stands at its kind's width (`panelWidths`), held to the
+  // container as it is now: a window made narrower squeezes it and one made
+  // wide again gives it back. A running app or a chart asks for a higher cap,
+  // which the divider holds rather than snapping back on the first pixel. A
+  // chart's floor stops the divider too, since below it the toolbar collides;
+  // the container's cap still wins on a screen too narrow for both.
+  const { width: chosenWidth, maxRatio: panelMaxRatio, minWidth: panelMinWidth } = panelWidthFor(widthKind, keptWidths, detailWidth);
+  const rightPanelWidth = clampPanelWidthUtil(chosenWidth, containerWidth, panelMaxRatio);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -177,42 +176,17 @@ export function useRightPanel({
     return () => observer.disconnect();
   }, [containerRef]);
 
-  // Read by the landing below, which is called from handlers whose identity
-  // must not follow the panel type.
-  const rightPanelTypeRef = useLatestRef(rightPanelType);
-
-  /**
-   * Size the file panel for what is landing in it. A closed panel opens at
-   * the landing's own width and cap. An open one only widens: a reader who
-   * dragged it wide keeps that, and a tool result landing beside a chart does
-   * not fold the panel back to the tool's width. The cap holds for the same
-   * reason, since the wider one is still in the strip; every cap a landing
-   * asks for is wider than the default, so the higher of the two is the one
-   * to keep and "none asked" reads as the default.
-   */
-  const growPanelWidth = useCallback((desired: number, maxRatio?: number) => {
-    const open = rightPanelTypeRef.current === 'file';
-    setPanelChoice((prev) => open
-      ? { width: Math.max(prev.width, desired), maxRatio: Math.max(prev.maxRatio ?? 0, maxRatio ?? 0) || undefined }
-      : { width: desired, maxRatio });
-  }, [rightPanelTypeRef]);
-
-  // A chart coming to the front, by landing, by a click on its tab or by a
-  // strip restored with it in front, widens the panel to its floor and no
-  // further. Mobile shows the panel full width and has no divider.
-  // The cap rises with it, as a chart landing raises it, so the floor holds
-  // however the chart came to the front. Applied as the floor arrives, in the
-  // render that brings it.
-  const floor = isMobile ? 0 : panelMinWidth;
-  const [floorSeen, setFloorSeen] = useState(0);
-  if (floor !== floorSeen) {
-    setFloorSeen(floor);
-    if (floor) {
-      setPanelChoice((prev) => ({
-        width: Math.max(prev.width, floor),
-        maxRatio: Math.max(prev.maxRatio ?? 0, PREVIEW_MAX_RATIO),
-      }));
-    }
+  // The panel moves to the width of the tab in front whenever that changes,
+  // by a click on a tab or a strip restored, narrower as well as wider,
+  // applied in the render that brings the tab. Change is told by the front
+  // kind last seen, not by `widthKind`: a landing sets that ahead of the
+  // panel's report, which arrives after paint, and comparing against it
+  // would put back the old tab's width meanwhile. A close reports no tab and
+  // changes nothing, so the strip it reopens on finds its kind still seen.
+  const [frontSeen, setFrontSeen] = useState<FileTab['kind'] | null>(null);
+  if (activeTabKind && activeTabKind !== frontSeen) {
+    setFrontSeen(activeTabKind);
+    setWidthKind(activeTabKind);
   }
 
   // Handle drag panel width: direct DOM manipulation for smooth, jank-free resize.
@@ -224,7 +198,7 @@ export function useRightPanel({
     const startX = e.clientX;
     const startWidth = rightPanelWidth;
     const containerW = containerWidth;
-    const { maxRatio } = panelChoice;
+    const maxRatio = panelMaxRatio;
     const minWidth = panelMinWidth;
 
     // Immediately disable pointer events on iframes to prevent them from
@@ -267,11 +241,23 @@ export function useRightPanel({
       // width committed and later changes animate again.
       requestAnimationFrame(() => setDragJustEnded(false));
       setIsDragging(false);
-      // Only a drag changes the choice: the width shown is held to the
-      // container, so a click on the divider would set the squeezed width as
-      // the one a wider window gives back. Kept at least at the floor, for
-      // the same reason.
-      if (moved) setPanelChoice((prev) => ({ ...prev, width: Math.max(currentWidth, minWidth) }));
+      // Only a drag sets a width: the width shown is held to the container,
+      // so a click on the divider would keep the squeezed width as the one a
+      // wider window gives back. Kept at least at the floor, for the same
+      // reason. The width is the reader's for this kind of tab from now on.
+      if (moved) {
+        const width = Math.max(currentWidth, minWidth);
+        const kind = panelWidthKind(widthKind);
+        if (kind === 'detail') {
+          setDetailWidth(width);
+        } else {
+          // Merged onto what is stored, which another chat view may have
+          // saved since this one read it.
+          const kept = withKeptWidth(readKeptWidths(), kind, width);
+          setKeptWidths(kept);
+          saveKeptWidths(kept);
+        }
+      }
       teardown();
     }
 
@@ -280,7 +266,7 @@ export function useRightPanel({
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
     dragCleanupRef.current = teardown;
-  }, [rightPanelWidth, panelChoice, containerWidth, containerRef, panelMinWidth]);
+  }, [rightPanelWidth, panelMaxRatio, containerWidth, containerRef, panelMinWidth, widthKind]);
 
   // Push a sentinel history entry when a panel opens so that the browser back
   // gesture closes the panel instead of navigating away from ChatView.
@@ -345,18 +331,31 @@ export function useRightPanel({
     };
   }, []);
 
+  // What this controller reads a tool call through: remade per transcript
+  // change and read at render, so the mobile sheet and a click see the call as
+  // it is now (see useToolCallLookup for why a click-time copy would not do).
+  const getToolCallProcess = useToolCallLookup(messages, subagentTranscripts);
+  // Read when a tool lands, so the landing keeps its identity as the
+  // transcript streams and the openers built on it do too.
+  const toolWidth = useStableHandler((toolCallId: string) => detailPanelWidth(getToolCallProcess(toolCallId) ?? null));
+
   /**
    * The one landing for everything the right panel is pointed at: stamps the
    * ask's `seq`, sizes the panel, opens it on the file view and arms the mobile
-   * back gesture. Sizing is in one place so the divider reads the cap that was
-   * asked for.
+   * back gesture. The panel opens, or moves, straight to the width of what
+   * lands rather than waiting for the tab to report itself; a tool result is
+   * sized for what its record holds, and for one whose record is gone (a
+   * regenerated turn), for the note its tab shows instead.
    */
-  const landInFilePanel = useCallback((target: UnsequencedTarget, opts?: { maxRatio?: number; width?: number }) => {
+  const landInFilePanel = useCallback((target: UnsequencedTarget) => {
     askPanel(target);
-    growPanelWidth(opts?.width ?? DEFAULT_PANEL_WIDTH, opts?.maxRatio);
+    if (panelWidthKind(target.kind) === 'detail') {
+      setDetailWidth(target.kind === 'tool' ? toolWidth(target.toolCallId) : DEFAULT_PANEL_WIDTH);
+    }
+    setWidthKind(target.kind);
     setRightPanelType('file');
     pushPanelHistory();
-  }, [askPanel, growPanelWidth, pushPanelHistory]);
+  }, [askPanel, pushPanelHistory, toolWidth]);
 
   const handleOpenFileFromChat = usePanelLinkOpen({
     workspaceId,
@@ -378,11 +377,6 @@ export function useRightPanel({
   const handleOpenStatusFromChat = useCallback(() => {
     landInFilePanel({ kind: 'status' });
   }, [landInFilePanel]);
-
-  // What this controller reads a tool call through: remade per transcript
-  // change and read at render, so the mobile sheet and a click see the call as
-  // it is now (see useToolCallLookup for why a click-time copy would not do).
-  const getToolCallProcess = useToolCallLookup(messages, subagentTranscripts);
 
   // The file panel reads the transcript through a subscription instead: a
   // tool or sources tab follows its records, and the changed-file dot the
@@ -470,7 +464,6 @@ export function useRightPanel({
     if (!isMobile) {
       const land = () => landInFilePanel(
         { kind: 'preview', port: data.port, title: data.title, path: data.path, command: data.command },
-        { maxRatio: PREVIEW_MAX_RATIO },
       );
       // The panel mints an app's URL for the workspace it shows, so it shows
       // the app's: the view's own, or the sibling the app runs in.
@@ -495,13 +488,12 @@ export function useRightPanel({
     activePreviewPortRef.current = data.port;
     setPreviewData(entry);
     setRightPanelType('preview');
-    applyPanelWidth(DEFAULT_PANEL_WIDTH, PREVIEW_MAX_RATIO);
     pushPanelHistory();
     // If opened with loading state (no URL yet), resolve via authenticated endpoint
     if (data.loading && !data.url && appWorkspaceId) {
       resolveAndSetPreview(appWorkspaceId, data.port, data.command, data.path);
     }
-  }, [isMobile, landInFilePanel, filePanelWorkspaceId, leaveFiles, setFilePanelWorkspaceId, applyPanelWidth, pushPanelHistory, workspaceId, resolveAndSetPreview]);
+  }, [isMobile, landInFilePanel, filePanelWorkspaceId, leaveFiles, setFilePanelWorkspaceId, pushPanelHistory, workspaceId, resolveAndSetPreview]);
 
   const { viewFor: browserViewFor, handleBrowserUse, openInBrowser } = useChatBrowser({
     workspaceId, threadId: threadId ?? null, computer, shared, browserOn, isMobile, panelOpen: rightPanelType === 'file',
@@ -593,7 +585,7 @@ export function useRightPanel({
     if (rightPanelType === 'detail') {
       const toolCallId = detailToolCallId;
       setDetailToolCallId(null);
-      if (toolCallId) landInFilePanel({ kind: 'tool', toolCallId }, { width: detailPanelWidth(getToolCallProcess(toolCallId) ?? null) });
+      if (toolCallId) landInFilePanel({ kind: 'tool', toolCallId });
       else setRightPanelType(null);
       return;
     }
@@ -607,7 +599,7 @@ export function useRightPanel({
     // Through the opener, so the panel shows the workspace the app runs in,
     // a sibling's for an `/a/` link, before it mints the tab's URL.
     handleOpenPreview(data);
-  }, [isMobile, rightPanelType, previewData, detailToolCallId, getToolCallProcess, landInFilePanel, handleOpenPreview]);
+  }, [isMobile, rightPanelType, previewData, detailToolCallId, landInFilePanel, handleOpenPreview]);
 
   /** The full MarketView page on one symbol, with a way back to this chat. */
   const handleOpenInMarketView = useCallback((spec: ChartTabSpec) => {
@@ -633,7 +625,7 @@ export function useRightPanel({
       handleOpenInMarketView(spec);
       return;
     }
-    landInFilePanel({ kind: 'chart', ...spec }, { maxRatio: PREVIEW_MAX_RATIO });
+    landInFilePanel({ kind: 'chart', ...spec });
   }, [isMobile, handleOpenInMarketView, landInFilePanel]);
 
   /** Opens a file beside the chat on one of its comments. The path is the
@@ -694,14 +686,13 @@ export function useRightPanel({
       return;
     }
     if (!isMobile) {
-      landInFilePanel({ kind: 'tool', toolCallId }, { width: detailPanelWidth(toolCallProcess) });
+      landInFilePanel({ kind: 'tool', toolCallId });
       return;
     }
     setDetailToolCallId(toolCallId);
-    applyPanelWidth(detailPanelWidth(toolCallProcess));
     setRightPanelType('detail');
     pushPanelHistory();
-  }, [isMobile, getToolCallProcess, landInFilePanel, applyPanelWidth, pushPanelHistory, workspaceId, handleOpenPreview, watching, handleOpenArtifactComment]);
+  }, [isMobile, getToolCallProcess, landInFilePanel, pushPanelHistory, workspaceId, handleOpenPreview, watching, handleOpenArtifactComment]);
 
   // Close the mobile detail sheet
   const handleCloseDetailPanel = useCallback(() => {
@@ -764,11 +755,10 @@ export function useRightPanel({
       // the panel closed was reached through a link, and the closed panel
       // holds no draft to lose.
       if (filePanelWorkspaceId) setFilePanelWorkspaceId(null);
-      applyPanelWidth(DEFAULT_PANEL_WIDTH);
       setRightPanelType('file');
       pushPanelHistory();
     }
-  }, [rightPanelType, applyPanelWidth, pushPanelHistory, popPanelHistory, leaveFiles, filePanelWorkspaceId, setFilePanelWorkspaceId]);
+  }, [rightPanelType, pushPanelHistory, popPanelHistory, leaveFiles, filePanelWorkspaceId, setFilePanelWorkspaceId]);
 
   return {
     activeTabKind,

@@ -5,8 +5,8 @@
 # rebuild. A thread pinned below rebuild_before rebuilds at its next turn
 # start, whatever its size; a build below a thread's pinned version, a
 # rollback, never forces one. When to bump: templates/AGENTS.md.
-prompt_version: 2
-rebuild_before: 2
+prompt_version: 3
+rebuild_before: 3
 
 defaults:
   # Runtime variables (set at render time, these are just documentation)
@@ -56,9 +56,10 @@ defaults:
   # tool_guide. Agent render overrides with the config.yaml master switch.
   market_watch_enabled: true
 
-  # TodoWrite (opt-in feature). Gates the task_workflow line that names the
-  # tool; the agent render and the subagent compiler pass the real value.
-  todo_enabled: false
+  # UpdatePlan (opt-out feature, main agent only). Gates the task_workflow
+  # line that names the tool; the agent render passes the real value, and a
+  # subagent, which never binds the tool, keeps this default.
+  plan_enabled: false
 
   # Scratchpad (opt-out feature). Gates every scratchpad mention in the system
   # prompt, which names only the folders' pattern; this thread's own folder
