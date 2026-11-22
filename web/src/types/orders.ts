@@ -21,7 +21,10 @@ export type OrderAction =
   | 'stage'
   | 'unstage'
   | 'exercise'
-  | 'cancel_exercise';
+  | 'cancel_exercise'
+  /** Not a tool's: the ledger's record of an order placed elsewhere, such as
+   *  in the user's own account, that the agent asked to hear about. */
+  | 'watch';
 
 /** Which money an order tool moves. `staged` moves none and still writes into
  *  the real account, which is why it is its own answer and not a kind of live. */

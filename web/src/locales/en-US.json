@@ -4325,7 +4325,8 @@
         "stage": "Stage order",
         "unstage": "Remove staged order",
         "exercise": "Exercise option",
-        "cancelExercise": "Cancel exercise"
+        "cancelExercise": "Cancel exercise",
+        "watch": "Watch order"
       },
       "orderField": {
         "quantity": "Quantity",
@@ -5854,7 +5855,8 @@
       "stage": "Stage",
       "unstage": "Unstage",
       "exercise": "Exercise",
-      "cancel_exercise": "Cancel exercise"
+      "cancel_exercise": "Cancel exercise",
+      "watch": "Watched"
     },
     "side": {
       "buy": "Buy",
