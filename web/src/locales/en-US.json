@@ -8823,6 +8823,10 @@
       "creating": "Creating…",
       "teamHint": "Everyone in the team can open it, beside the people you list."
     },
+    "memberContext": {
+      "label": "Members' own context",
+      "body": "On each member's own messages, the agent also uses their answer preferences and can read their personal memory. It never changes their memory. Everyone here sees what the agent writes."
+    },
     "members": {
       "open": "People",
       "openLabel": "People in this workspace",

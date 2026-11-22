@@ -11,7 +11,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { ToggleSwitch } from '@/components/ui/switch';
 import { PersonAvatar } from '@/components/organization/PersonAvatar';
 import { useAccount } from '@/hooks/useAccount';
 import { useUser } from '@/hooks/useUser';
@@ -21,6 +20,8 @@ import { sharedRefusal, type SharedRefusal } from '@/lib/sharedWorkspaceRefusal'
 import { deleteWorkspace } from '@/pages/ChatAgent/utils/api';
 import type { SharedMember } from '@/types/sharedWorkspaces';
 import { SharedRefusalRow } from './SharedRefusalRow';
+import { MemberContextSetting } from './MemberContextSetting';
+import { SwitchRow } from './SwitchRow';
 import { ShareOutSetting } from './ShareOutSetting';
 import { SectionLabel, TeamSection } from './TeamSection';
 import { personLabel } from '@/lib/sharedThreads';
@@ -141,29 +142,21 @@ export function MembersDialog({ workspaceId, workspaceName, open, onClose }: Pro
           <SharedRefusalRow refusal={sharedRefusal(members.error)} />
         ) : (
           <div className="flex min-w-0 flex-col gap-4">
-            <div className="flex items-start justify-between gap-3">
-              <label htmlFor={ids.everyone} className="flex min-w-0 flex-col gap-0.5 text-sm">
-                <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('sharedWorkspace.everyone', { organization: org })}</span>
-                <span style={{ color: 'var(--color-text-secondary)' }}>
-                  {canManage
-                    ? (team ? t('sharedWorkspace.team.everyoneClears') : t('sharedWorkspace.members.everyoneBody'))
-                    : view?.everyone
-                      ? t('sharedWorkspace.members.everyoneOn')
-                      : team
-                        ? t('sharedWorkspace.members.everyoneOffTeam', { team: teamName ?? t('sharedWorkspace.team.unnamedLower') })
-                        : t('sharedWorkspace.members.everyoneOff')}
-                </span>
-              </label>
-              {canManage && (
-                <ToggleSwitch
-                  id={ids.everyone}
-                  checked={!!view?.everyone}
-                  disabled={busy}
-                  onChange={() => void run(() => change.mutateAsync({ kind: 'everyone', everyone: !view?.everyone }))}
-                  className="mt-0.5"
-                />
-              )}
-            </div>
+            <SwitchRow
+              id={ids.everyone}
+              label={t('sharedWorkspace.everyone', { organization: org })}
+              description={canManage
+                ? (team ? t('sharedWorkspace.team.everyoneClears') : t('sharedWorkspace.members.everyoneBody'))
+                : view?.everyone
+                  ? t('sharedWorkspace.members.everyoneOn')
+                  : team
+                    ? t('sharedWorkspace.members.everyoneOffTeam', { team: teamName ?? t('sharedWorkspace.team.unnamedLower') })
+                    : t('sharedWorkspace.members.everyoneOff')}
+              checked={!!view?.everyone}
+              disabled={busy}
+              showSwitch={canManage}
+              onChange={() => void run(() => change.mutateAsync({ kind: 'everyone', everyone: !view?.everyone }))}
+            />
 
             {view && !view.everyone && (
               <ShareOutSetting
@@ -172,6 +165,15 @@ export function MembersDialog({ workspaceId, workspaceName, open, onClose }: Pro
                 disabled={busy}
                 organization={org}
                 onChange={(sharing) => void run(() => change.mutateAsync({ kind: 'sharing', sharing }))}
+              />
+            )}
+
+            {view && (view.member_context.organization || (canManage && view.member_context.offered)) && (
+              <MemberContextSetting
+                on={view.member_context.workspace}
+                canManage={canManage}
+                disabled={busy}
+                onChange={(on) => void run(() => change.mutateAsync({ kind: 'memberContext', on }))}
               />
             )}
 

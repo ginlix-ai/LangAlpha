@@ -74,10 +74,21 @@ export interface SharedMember {
   added_at: string;
 }
 
+/** Whether members' own answer preferences and personal memory reach the agent here. */
+export interface MemberContextView {
+  /** The caller's organization grants members' own context, and this deployment lets it. */
+  organization: boolean;
+  /** The workspace's managers have not turned it off here. */
+  workspace: boolean;
+  /** This deployment offers it, so a manager sees the switch whatever their own grant. */
+  offered: boolean;
+}
+
 export interface MembersView {
   workspace_id: string;
   everyone: boolean;
   sharing: ShareOut;
+  member_context: MemberContextView;
   members: SharedMember[];
   you: Pick<SharedBlock, 'role' | 'can_manage' | 'can_share_out' | 'can_change_links' | 'listed'>;
   team?: TeamRef | null;
