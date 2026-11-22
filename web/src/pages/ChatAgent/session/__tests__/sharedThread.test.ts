@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { sharedBubble, threadTurns, turnOwner, type SharedThreadView } from '../sharedThread';
+import { bubbleSender, continuesSender, sharedBubble, threadTurns, turnOwner, type SharedThreadView } from '../sharedThread';
 
 const ME = { userId: 'u-lee', name: 'Lee Chen' };
 const MAYA = { userId: 'u-maya', name: 'Maya Okafor' };
@@ -33,19 +33,19 @@ describe('sharedBubble', () => {
 
   it('names the sender either source gave, mine or not, with their picture', () => {
     expect(sender(view({ avatars: { 'u-maya': 'maya.png' } }), { role: 'user', sender: MAYA, isHistory: true }))
-      .toEqual({ name: 'Maya Okafor', avatarUrl: 'maya.png', mine: false });
-    expect(sender(view(), { role: 'user', sender: ME })).toEqual({ name: 'Lee Chen', avatarUrl: null, mine: true });
+      .toEqual({ userId: 'u-maya', name: 'Maya Okafor', avatarUrl: 'maya.png', mine: false });
+    expect(sender(view(), { role: 'user', sender: ME })).toEqual({ userId: 'u-lee', name: 'Lee Chen', avatarUrl: null, mine: true });
   });
 
   it("keeps a send of this view as the viewer's after its stream ends unnamed", () => {
-    expect(sender(view(), { role: 'user', isHistory: true, sentHere: true })).toEqual({ name: 'Lee Chen', avatarUrl: null, mine: true });
-    expect(sender(view(), { role: 'user' })).toEqual({ name: 'Lee Chen', avatarUrl: null, mine: true });
+    expect(sender(view(), { role: 'user', isHistory: true, sentHere: true })).toEqual({ userId: 'u-lee', name: 'Lee Chen', avatarUrl: null, mine: true });
+    expect(sender(view(), { role: 'user' })).toEqual({ userId: 'u-lee', name: 'Lee Chen', avatarUrl: null, mine: true });
   });
 
   it("names a sender given by id alone from the workspace's people", () => {
     const steer = { role: 'user', sender: { userId: 'u-maya', name: null }, steeringDelivered: true };
-    expect(sender(view({ names: { 'u-maya': 'Maya Okafor' } }), steer)).toEqual({ name: 'Maya Okafor', avatarUrl: null, mine: false });
-    expect(sender(view({ names: { 'u-maya': 'Maya Okafor' } }), { ...steer, isHistory: true })).toEqual({ name: 'Maya Okafor', avatarUrl: null, mine: false });
+    expect(sender(view({ names: { 'u-maya': 'Maya Okafor' } }), steer)).toEqual({ userId: 'u-maya', name: 'Maya Okafor', avatarUrl: null, mine: false });
+    expect(sender(view({ names: { 'u-maya': 'Maya Okafor' } }), { ...steer, isHistory: true })).toEqual({ userId: 'u-maya', name: 'Maya Okafor', avatarUrl: null, mine: false });
   });
 
   it('draws none for an unnamed history row, an agent-sent message, or a reply', () => {
@@ -103,5 +103,25 @@ describe('threadTurns', () => {
     expect(threadTurns(thread, ME.userId, true).othersTurn).toEqual(MAYA);
     expect(threadTurns([user({ turnIndex: 1 })], ME.userId, true).othersTurn).toBeNull();
     expect(threadTurns([user({ turnIndex: 1, isHistory: true })], ME.userId, true).othersTurn).toBeNull();
+  });
+});
+
+describe('continuesSender', () => {
+  const v = view();
+  const theirs = (sender: typeof MAYA, extra: Record<string, unknown> = {}) => bubbleSender(v, { role: 'user', sender, isHistory: true, ...extra });
+
+  it("joins another member's message to theirs drawn just before it", () => {
+    expect(continuesSender(theirs(MAYA), theirs(MAYA, { steeringDelivered: true }))).toBe(true);
+  });
+
+  it('breaks the run on another sender, a reply, the reader, an agent-sent message or nothing before', () => {
+    const SAM = { userId: 'u-sam', name: 'Sam' };
+    expect(continuesSender(theirs(MAYA), theirs(SAM))).toBe(false);
+    expect(continuesSender(bubbleSender(v, { role: 'assistant' }), theirs(MAYA))).toBe(false);
+    expect(continuesSender(theirs(ME), theirs(ME))).toBe(false);
+    expect(continuesSender(theirs(MAYA), theirs(MAYA, { provenance: { kind: 'task_report' } }))).toBe(false);
+    expect(continuesSender(undefined, theirs(MAYA))).toBe(false);
+    // An unnamed history row is nobody's the view can tell.
+    expect(continuesSender(bubbleSender(v, { role: 'user', isHistory: true }), theirs(MAYA))).toBe(false);
   });
 });

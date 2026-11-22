@@ -25,6 +25,7 @@ export interface SharedThreadView {
 
 /** Who sent a user message, as its caption draws them. */
 export interface BubbleSender {
+  userId: string;
   name: string | null;
   avatarUrl: string | null;
   mine: boolean;
@@ -96,15 +97,28 @@ export function threadTurns(
   return { ownTurns, lastOthersTurn, othersTurn: running ? opener : null };
 }
 
-/** A message another agent sent is captioned by where it came from, so it
- *  names no sender. */
-export function sharedBubble(view: SharedThreadView, message: OwnedMessage, turnIndex: number | null): SharedBubble {
+/** Who sent a user message, as its bubble draws them. A message another
+ *  agent sent is captioned by where it came from, so it names no sender. */
+export function bubbleSender(view: SharedThreadView, message: OwnedMessage): BubbleSender | undefined {
   const owner = message.role === 'user' && !message.provenance ? turnOwner(message, view.me.userId) : 'none';
-  const sender = message.sender ?? view.me;
+  if (owner === 'none') return undefined;
+  const { userId, name } = message.sender ?? view.me;
+  return { userId, name: name ?? view.names[userId] ?? null, avatarUrl: view.avatars[userId] ?? null, mine: owner === 'mine' };
+}
+
+export function sharedBubble(view: SharedThreadView, message: OwnedMessage, turnIndex: number | null): SharedBubble {
   return {
-    sender: owner === 'none' ? undefined : { name: sender.name ?? view.names[sender.userId] ?? null, avatarUrl: view.avatars[sender.userId] ?? null, mine: owner === 'mine' },
+    sender: bubbleSender(view, message),
     canRewrite: turnIndex !== null && turnIndex > view.lastOthersTurn,
     humanReview: turnIndex !== null && view.ownTurns.has(turnIndex),
     answersPause: turnIndex === null || view.ownTurns.has(turnIndex),
   };
+}
+
+/** Whether another member's message follows one of theirs with nothing
+ *  drawn between (`prev` is the sender of the entry just above), so it joins
+ *  their run and shows no name or picture of its own, as a group chat draws
+ *  one. The reader's own messages carry neither. */
+export function continuesSender(prev: BubbleSender | undefined, sender: BubbleSender | undefined): boolean {
+  return !!prev && !!sender && !prev.mine && !sender.mine && prev.userId === sender.userId;
 }

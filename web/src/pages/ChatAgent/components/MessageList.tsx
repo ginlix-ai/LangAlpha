@@ -6,6 +6,8 @@ import { NotificationDivider } from './messageList/NotificationDivider';
 import { WakeupRow } from './messageList/WakeupRow';
 import { QuietChecksRow } from './messageList/QuietChecksRow';
 import { MessageBubble } from './messageList/MessageBubble';
+import { SharedThreadContext } from './messageList/SharedThreadContext';
+import { bubbleSender, continuesSender, type BubbleSender } from '../session/sharedThread';
 import { TurnFold } from './messageList/TurnFold';
 import { AgentPlan } from './messageList/AgentPlan';
 import type { ShownPlan } from './messageList/requestPlans';
@@ -30,6 +32,9 @@ import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import type { FeedbackResult, FoldState, MessageRecord } from './messageList/types';
 
 const NO_QUIET_ENDS: ReadonlyMap<number, QuietEnd> = new Map();
+/** Between messages of one member's run: the action row under each already
+ *  spaces them, so the list's own gap would hold them a message apart. */
+const RUN_GAP: React.CSSProperties = { marginTop: 8 };
 
 /** What the fold row for one backend turn needs to know about it. */
 interface TurnFoldInfo {
@@ -362,6 +367,26 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   }, [visible, turned, turnTails, replyEnds, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
 
   const items = React.useMemo(() => planQuietChecks(visible, quietEnds), [visible, quietEnds]);
+  // In a shared workspace's thread, the entries that carry on another
+  // member's run of messages, read against the entry drawn just above. A
+  // plan drawn under a message ends the run, since it sits between.
+  const sharedView = React.useContext(SharedThreadContext);
+  const continuing = React.useMemo(() => {
+    const runs = new Set<number>();
+    if (!sharedView) return runs;
+    let above: BubbleSender | undefined;
+    for (const item of items) {
+      if (item.kind !== 'entry') {
+        above = undefined;
+        continue;
+      }
+      const { message } = visible[item.index];
+      const sender = bubbleSender(sharedView, message as ChatMessage);
+      if (continuesSender(above, sender)) runs.add(item.index);
+      above = plans?.has(message.id as string) ? undefined : sender;
+    }
+    return runs;
+  }, [items, visible, sharedView, plans]);
 
   // Empty state - show when no messages exist (hidden in subagent view)
   if (messages.length === 0) {
@@ -481,6 +506,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           allowFiles,
           isMobile,
           dispatcherContext,
+          continuesSender: continuing.has(i),
         };
         const plan = plans?.get(message.id as string);
         // Every bubble gets the wrapper from its first paint: a turn's row comes
@@ -488,8 +514,10 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
         // wrapped at the same key would remount it.
         // The row and the answer it heads are one item of the list's rhythm, so
         // the gap between them is the row's own margin, not the list's.
+        // A run of one member's messages sits closer together than the
+        // list's rhythm, as a group chat stacks them.
         return (
-          <div key={message.id as string}>
+          <div key={message.id as string} style={continuing.has(i) ? RUN_GAP : undefined}>
             {info && turnIndex !== null && info.rowPos === i && (
               <TurnFold
                 state={fold}

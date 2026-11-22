@@ -27,7 +27,8 @@ import { useWorkspaceFolders } from '../../contexts/WorkspaceContext';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useEditDraft, useEditDraftStore } from '../../hooks/utils/editDrafts';
 import { isSteeringUserMessage } from './messagePredicates';
-import { UserBubble } from './UserBubble';
+import { SenderPicture, UserBubble } from './UserBubble';
+import { cn } from '@/lib/utils';
 import { HomeTurnBadge } from './HomeTurnBadge';
 import type { HomeFallback } from '@/types/sse';
 import { MessageTime } from './MessageTime';
@@ -179,6 +180,10 @@ interface MessageBubbleProps {
   allowFiles?: boolean;
   isMobile?: boolean;
   dispatcherContext?: { threadId: string; workspaceId: string } | null;
+  /** Another member's message right after another of theirs, in a shared
+   *  workspace's thread: drawn without their name and picture
+   *  (`continuesSender`). */
+  continuesSender?: boolean;
 }
 
 /**
@@ -187,7 +192,7 @@ interface MessageBubbleProps {
  * MessageActionsContext (one identity-stable object per host), so a streamed
  * chunk never re-renders settled bubbles through a handler identity.
  */
-export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
+export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext, continuesSender }: MessageBubbleProps): React.ReactElement | null {
   const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
@@ -203,6 +208,13 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const hasChartSelections = isUser && chartSelections && chartSelections.length > 0;
   const provenance = isUser ? (message.provenance as MessageProvenance | undefined) : undefined;
   const shared = useSharedBubble(message as UserMessage, turnIndex);
+  // Another member's message in a shared workspace's thread, drawn at the
+  // start under their name, as a group chat draws everyone but the reader.
+  const theirSender = isUser && shared.sender && !shared.sender.mine ? shared.sender : undefined;
+  const theirs = !!theirSender;
+  // Only the reader's own words keep the end; the agent's and another
+  // member's keep the start.
+  const atEnd = isUser && !theirs;
   const homeFallback = isUser ? (message.homeFallback as HomeFallback | undefined) : undefined;
 
   // Edit mode lives in the host's draft store, so a reload that remounts the
@@ -350,8 +362,10 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     // no turn checkpoint of their own, so an edit fork would target the NEXT
     // turn and leave the original steering text in the agent's context. Nor
     // does a send of file comments: an edit sends text, and the comments it
-    // carried are no longer queued to go again.
-    edit: showActions && isUser && !!onEditMessage && !isSteering && !artifactComments && shared.canRewrite,
+    // carried are no longer queued to go again. Nor another member's
+    // message, which the server keeps theirs to rewrite (`canRewrite` already
+    // says so for their turn).
+    edit: showActions && isUser && !!onEditMessage && !isSteering && !artifactComments && shared.canRewrite && !theirs,
     // The same turn's message in a new chat, to change and send there. It
     // changes nothing here, so it needs no say over this thread's turns; a
     // steer or a send of comments has no turn of its own to stop before.
@@ -482,18 +496,19 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   <div
     aria-hidden={!rowShown}
     inert={!rowShown || undefined}
-    className={`flex flex-wrap gap-1 min-h-7 transition-opacity ${
+    className={cn(
+      'flex flex-wrap gap-1 min-h-7 transition-opacity',
       rowShown
         ? (isMobile ? '' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
-        : 'opacity-0 pointer-events-none'
-    } ${
+        : 'opacity-0 pointer-events-none',
+      atEnd ? 'justify-end' : 'justify-start',
       // The top margin belongs to the user placement only: under a bubble the
       // row needs its own gap, while beside the Sources pill the meta row's
       // `items-center` is what puts it on the line.
-      isUser ? 'justify-end mt-0.5' : 'justify-start'
-    }`}
+      isUser && 'mt-0.5',
+    )}
   >
-    {isUser && shownTime}
+    {atEnd && shownTime}
     {visible.edit && (
       <button
         onClick={handleStartEdit}
@@ -572,7 +587,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     {visible.fork && (
       <ForkActionButton cut="through_turn" turnIndex={turnIndex!} icon={GitBranch} label={t('chat.actions.forkFromHere')} />
     )}
-    {!isUser && shownTime}
+    {!atEnd && shownTime}
   </div>
   ) : null;
 
@@ -704,11 +719,14 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     <div
       data-message-id={message.id as string}
       data-message-role={isUser ? 'user' : 'assistant'}
-      className={`group flex items-start ${isUser ? 'justify-end' : 'justify-start'}`}
+      className={cn('group flex items-start', atEnd ? 'justify-end' : 'justify-start', theirs && 'gap-2')}
+      data-sender={theirs ? 'theirs' : undefined}
     >
 
+      {theirSender && <SenderPicture sender={theirSender} continues={continuesSender} />}
+
       {/* Message content column -- bubble + standalone attachment cards */}
-      <div ref={columnRef} className={isUser ? (isEditing && isMobile ? 'w-full' : 'max-w-[80%]') + ' flex flex-col items-end gap-2' : 'w-full min-w-0'}>
+      <div ref={columnRef} className={isUser ? cn('flex flex-col gap-2', isEditing && isMobile ? 'w-full' : 'max-w-[80%]', atEnd ? 'items-end' : 'min-w-0 items-start') : 'w-full min-w-0'}>
 
         {/* ===== EDIT MODE (user messages) ===== */}
         {isEditing && isUser ? (
@@ -779,7 +797,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         {/* ===== NORMAL MODE ===== */}
         {isUser ? (
           <>
-            <UserBubble provenance={provenance} sender={shared.sender} steered={!!message.steeringDelivered} readOnly={readOnly} isMobile={isMobile}>
+            <UserBubble provenance={provenance} sender={shared.sender} continues={continuesSender} steered={!!message.steeringDelivered} readOnly={readOnly} isMobile={isMobile}>
               {bubbleContent}
             </UserBubble>
             {homeFallback && <HomeTurnBadge fallback={homeFallback} />}
