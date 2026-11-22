@@ -21,10 +21,10 @@ from src.server.utils.api import CurrentUserId
 from ._deps import logger, router
 
 
-async def _cancel(thread_id: str, ids: Optional[List[str]]) -> WakeupCancelResponse:
+async def _cancel(thread_id: str, ids: Optional[List[str]], user_id: str) -> WakeupCancelResponse:
     outcomes: List[CancelOutcome] = await wakeups_cancel.user_cancel(thread_id, ids)
     try:
-        wakeups = await thread_wakeups(thread_id)
+        wakeups = await thread_wakeups(thread_id, user_id)
     except Exception:
         # The cancel has committed, so a 500 would have the user retry what
         # is done; without a listing the client reads it again.
@@ -51,7 +51,7 @@ async def list_wakeups(thread_id: str, x_user_id: CurrentUserId):
 @router.delete("/{thread_id}/wakeups/{wakeup_id}", response_model=WakeupCancelResponse)
 async def cancel_wakeup(thread_id: str, wakeup_id: str, x_user_id: CurrentUserId):
     await thread_access(thread_id, x_user_id)
-    return await _cancel(thread_id, [wakeup_id])
+    return await _cancel(thread_id, [wakeup_id], x_user_id)
 
 
 @router.post("/{thread_id}/wakeups/cancel", response_model=WakeupCancelResponse)
@@ -59,4 +59,4 @@ async def cancel_wakeups(
     thread_id: str, request: WakeupCancelRequest, x_user_id: CurrentUserId
 ):
     await thread_access(thread_id, x_user_id)
-    return await _cancel(thread_id, None if request.all else request.wakeup_ids)
+    return await _cancel(thread_id, None if request.all else request.wakeup_ids, x_user_id)
