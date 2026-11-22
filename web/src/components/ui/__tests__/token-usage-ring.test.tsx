@@ -5,7 +5,8 @@
  * once counted, placeholders while counting, a line when the computer is
  * stopped and the window alone when the parts cannot be had; the model's
  * window only when it declares one, and a cache hit rate only when the
- * counts behind it are known.
+ * counts behind it are known. Before the count lands it holds its slot as an
+ * inert track, which turns into the trigger in place.
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
@@ -51,6 +52,22 @@ beforeEach(() => {
 });
 
 describe('TokenUsageRing', () => {
+  it('holds its slot as an inert track until the count lands, then becomes the trigger in place', async () => {
+    const { container, rerender } = renderWithProviders(
+      <TokenUsageRing tokenUsage={null} threadId={THREAD} />, { queryClient: client() },
+    );
+    const slot = container.querySelector('button')!;
+    expect(slot.disabled).toBe(true);
+    expect(screen.queryByRole('button')).toBeNull();
+    await userEvent.click(slot);
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    rerender(<TokenUsageRing tokenUsage={USAGE} threadId={THREAD} />);
+    expect(trigger()).toBe(slot);
+    expect(slot.disabled).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('reads nothing until it opens, then once', async () => {
     renderWithProviders(<TokenUsageRing tokenUsage={USAGE} threadId={THREAD} />, { queryClient: client() });
     await act(async () => {});
