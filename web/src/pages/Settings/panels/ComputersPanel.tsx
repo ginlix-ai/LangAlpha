@@ -113,7 +113,7 @@ function MachineRow({ computer, isThisMac }: { computer: Computer; isThisMac: bo
         </span>
       </span>
       <DiskPercent computer={computer} className="text-xs" />
-      <ChevronRight className="settings-machine-chevron" aria-hidden="true" />
+      <ChevronRight className="settings-row-chevron" aria-hidden="true" />
     </button>
   );
 }
