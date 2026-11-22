@@ -32,6 +32,7 @@ from ptc_agent.core.paths import (
     BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
+    OS_LITTER_BASENAMES,
     THREAD_DIRS_SET_ASIDE,
     SandboxLayout,
     WorkspaceLayout,
@@ -88,7 +89,7 @@ EXCLUDE_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".so", ".dylib", "
 # ``__init__.py`` is NOT here: it is the file that makes a directory a Python
 # package, and dropping it by basename cost the user their own packages on
 # every sandbox rebuild.
-EXCLUDE_BASENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db"})
+EXCLUDE_BASENAMES: frozenset[str] = frozenset(OS_LITTER_BASENAMES)
 
 SYNC_MARKER_NAME = ".file_sync_marker"
 
