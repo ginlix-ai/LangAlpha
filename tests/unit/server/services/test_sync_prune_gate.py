@@ -18,7 +18,7 @@ repair) against a real sandbox and bucket; these pin the decision table.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from datetime import datetime, timezone
 
@@ -27,6 +27,7 @@ import pytest
 from ptc_agent.core.paths import SandboxLayout
 from src.server.services.persistence import backup
 from src.server.services.persistence.transfer import ScanEntry, ScanResult
+from tests.unit.server.services._no_db import NoDbConn
 
 WS = "ws-prune-gate"
 PATH = "reports/gone.txt"
@@ -55,7 +56,7 @@ def _sync_lock():
 
     @asynccontextmanager
     async def _lock(_workspace_id):
-        yield None
+        yield NoDbConn()
 
     with patch.object(backup, "workspace_sync_lock", _lock):
         yield
@@ -526,7 +527,7 @@ async def test_a_folder_waiting_on_its_owner_holds_the_whole_pass(recreatable):
         waits.assert_not_awaited()
         scan.assert_awaited_once()
         return
-    waits.assert_awaited_once_with(WS, sandbox, layout=LAYOUT, conn=None)
+    waits.assert_awaited_once_with(WS, sandbox, layout=LAYOUT, conn=ANY)
     assert result.held is True
     assert result.pruned is False
     scan.assert_not_awaited()
@@ -569,7 +570,7 @@ async def test_a_routine_pass_reads_its_computers_switch_under_the_lock(
     assert result.backups_off is not reads
     assert scan.await_count == (1 if reads else 0)
     if not reads:
-        switch.assert_awaited_once_with(WS, conn=None)
+        switch.assert_awaited_once_with(WS, conn=ANY)
         deleter.assert_not_awaited()
         stamp.assert_not_awaited()
 

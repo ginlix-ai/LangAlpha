@@ -27,6 +27,7 @@ from src.server.services.persistence.transfer import (
     TransferRuntimeError,
     sweep_projects,
 )
+from tests.unit.server.services._no_db import NoDbConn
 
 WS = "ws-scan-mark"
 STARTED_NS = 1_750_000_000_000_000_000
@@ -36,7 +37,7 @@ SANDBOX_ID = "sb-1"
 RULES = ScanRules.of(None)
 RULES_CAP = 100 * 1024 * 1024
 LAYOUT = SandboxLayout.for_root("/home/workspace").for_workspace("mark-ab12")
-LOCK_CONN = object()
+LOCK_CONN = NoDbConn()
 
 
 def _scan(
@@ -263,6 +264,8 @@ def _db():
 
     clock = datetime(2026, 9, 24, 12, 0, 0, tzinfo=timezone.utc)
     with (
+        # The marks below name the rules of a deployment with object storage.
+        patch.object(backup, "is_storage_enabled", return_value=True),
         patch.object(backup, "workspace_sync_lock", _lock),
         patch.object(backup, "manifest_clock", new=AsyncMock(return_value=clock)),
         patch.object(backup, "get_file_metadata_for_sync", new=AsyncMock(return_value={})),
