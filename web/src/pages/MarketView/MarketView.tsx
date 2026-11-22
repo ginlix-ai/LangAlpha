@@ -25,7 +25,8 @@ import { attachmentSendParts, type AttachmentMeta } from '../ChatAgent/utils/fil
 import { useThreadModel } from '../ChatAgent/hooks/useThreadModel';
 import { useThreadSubagents } from '../ChatAgent/hooks/useThreadSubagents';
 import { useThreadTuning } from '../ChatAgent/hooks/useThreadTuning';
-import { ThreadNotices } from '../ChatAgent/components/chatView/ThreadNotices';
+import { RetiredModelNotice } from '../ChatAgent/components/chatView/RetiredModelNotice';
+import { useComposerNotices } from '../ChatAgent/components/chatView/useComposerNotices';
 import { motion, AnimatePresence } from '@/lib/framer';
 import { SPRING_DRAG, TWEEN } from '@/lib/motion';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
@@ -234,6 +235,14 @@ function MarketViewInner() {
   const subagents = useThreadSubagents({ threadId: null });
   // The thread's own effort and fast mode, held here for the same reason.
   const tuning = useThreadTuning({ threadId: null });
+  // What the FAB's composer says about its next send, as every thread host's does.
+  const notices = useComposerNotices({
+    threadId: null,
+    threadModel,
+    subagents,
+    workspaceId: selectedWorkspaceId,
+    chiefOfStaff: scope === 'all',
+  });
 
   // Home's id, which the Chief of Staff runs in. Retried, since
   // a failed first fetch would otherwise leave the Chief of Staff's chart
@@ -639,14 +648,15 @@ function MarketViewInner() {
             onCollapse={() => setChatExpanded(false)}
             className="market-mobile-chat-float"
           >
-            {(threadModel.retired || threadModel.lapsed || threadModel.offer || subagents.offer !== null) && (
+            {threadModel.retired && (
               // A card of its own: the retired notice is transparent, and the
-              // FAB floats over the chart.
+              // FAB floats over the chart. What else the thread says about the
+              // next send is on the composer's controls.
               <div
                 className="flex flex-col gap-1.5 mb-1.5 p-1.5 rounded-2xl border"
                 style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-muted)' }}
               >
-                <ThreadNotices model={threadModel} subagents={subagents} />
+                <RetiredModelNotice {...threadModel.retired} className="px-3" />
               </div>
             )}
             <ChatInput
@@ -675,6 +685,7 @@ function MarketViewInner() {
               // the restored workspace there is none to send to, and
               // a send would clear the draft into the no-workspace toast.
               disabled={scope === 'workspace' && workspacePending}
+              notices={notices}
             />
           </MobileFabChat>
 

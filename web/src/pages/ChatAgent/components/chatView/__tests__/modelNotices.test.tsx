@@ -1,15 +1,18 @@
 /**
- * The default question the banner opens is about one model. A composer pick
+ * The default question an offer opens is about one model. A composer pick
  * made while it is open moves the thread to another, so the question must go
- * with it rather than confirm the earlier model as the default.
+ * with it rather than confirm the earlier model as the default. The
+ * subagents offer writes the thread's side as the default, and says so when
+ * that write is refused.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
-import { LapsedSignInNotice, ThreadModelBanner } from '../ThreadModelBanner';
+import { DefaultModelOfferNotice, SubagentsOfferNotice } from '../modelNotices';
 
 const mocks = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
+  toast: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePreferences', () => ({
@@ -32,24 +35,27 @@ vi.mock('@/hooks/useAllModels', () => ({
 }));
 
 vi.mock('@/hooks/useUpdatePreferences', () => ({
-  useUpdatePreferences: () => ({ mutateAsync: mocks.mutateAsync }),
+  useUpdatePreferences: () => ({ mutateAsync: mocks.mutateAsync, isPending: false }),
 }));
 
-describe('ThreadModelBanner', () => {
+vi.mock('@/components/ui/use-toast', () => ({
+  toast: mocks.toast,
+}));
+
+const offer = (model: string) => <DefaultModelOfferNotice model={model} />;
+
+describe('DefaultModelOfferNotice', () => {
   beforeEach(() => {
     mocks.mutateAsync.mockReset();
   });
 
   it('drops an open default question when the thread moves to another model', async () => {
-    const onDismiss = vi.fn();
-    const { rerender } = renderWithProviders(
-      <ThreadModelBanner model="model-a" defaultModel="model-default" onDismiss={onDismiss} />,
-    );
+    const { rerender } = renderWithProviders(offer('model-a'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Make Model A my default' }));
     await waitFor(() => expect(screen.getByText('Make Model A your default model?')).toBeTruthy());
 
-    rerender(<ThreadModelBanner model="model-b" defaultModel="model-default" onDismiss={onDismiss} />);
+    rerender(offer('model-b'));
 
     expect(screen.queryByText('Make Model A your default model?')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Make default' })).toBeNull();
@@ -58,9 +64,7 @@ describe('ThreadModelBanner', () => {
   });
 
   it('keeps focus with the question that replaces its button, and returns it on cancel', async () => {
-    renderWithProviders(
-      <ThreadModelBanner model="model-a" defaultModel="model-default" onDismiss={vi.fn()} />,
-    );
+    renderWithProviders(offer('model-a'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Make Model A my default' }));
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('radio', { checked: true })));
@@ -70,17 +74,22 @@ describe('ThreadModelBanner', () => {
   });
 });
 
-describe('LapsedSignInNotice', () => {
-  // Said before a send, which would be refused, with the way to the reconnect.
-  it('names the account and the model, and links to the reconnect', () => {
-    renderWithProviders(<LapsedSignInNotice model="model-a" provider="codex-oauth" />, { route: '/chat' });
-    expect(screen.getByText('Your ChatGPT sign-in has expired. Reconnect it to use Model A.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy();
+describe('SubagentsOfferNotice', () => {
+  beforeEach(() => {
+    mocks.mutateAsync.mockReset().mockResolvedValue({});
+    mocks.toast.mockReset();
   });
 
-  it('stays down once dismissed', () => {
-    renderWithProviders(<LapsedSignInNotice model="model-a" provider="codex-oauth" />, { route: '/chat' });
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(screen.queryByText(/sign-in has expired/)).toBeNull();
+  it("makes the thread's side the default", () => {
+    renderWithProviders(<SubagentsOfferNotice allowed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off by default' }));
+    expect(mocks.mutateAsync).toHaveBeenCalledWith({ other_preference: { subagents_default: false } });
+  });
+
+  it('says so when the default could not be saved', async () => {
+    mocks.mutateAsync.mockRejectedValue(new Error('500'));
+    renderWithProviders(<SubagentsOfferNotice allowed />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Turn on by default' })); });
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' }));
   });
 });

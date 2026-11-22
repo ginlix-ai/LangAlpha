@@ -4,7 +4,7 @@
  */
 import { api } from '@/api/client';
 import type { KeyCandidates, ProviderCatalogEntry, ReasoningDeclaration } from '@/components/model/types';
-import type { GatewayIndex, ModelMetadataEntry } from '@/hooks/useFilteredModels';
+import type { GatewayIndex, ModelMetadataEntry, TaskCostBaseline } from '@/hooks/useFilteredModels';
 import type { CompactionProfileCatalog, SearchProviderCatalog, SystemDefaults } from '@/hooks/useAllModels';
 import { apiErrorStatus } from '@/api/errors';
 
@@ -22,6 +22,8 @@ export interface ModelsResponse {
   key_candidates: Record<string, KeyCandidates>;
   /** How a pick from a gateway's list meets the built-in it is tuned as. */
   gateway_index?: GatewayIndex;
+  /** What every `task_cost` figure is a multiple of; null without figures. */
+  task_cost_baseline?: TaskCostBaseline | null;
 }
 
 export async function getAvailableModels(): Promise<ModelsResponse> {

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -164,6 +164,7 @@ import { useThreadModel } from '@/pages/ChatAgent/hooks/useThreadModel';
 import { chartSelectionStore } from '../../stores/chartSelectionStore';
 import { userLocalStorage } from '@/lib/userStorage';
 import type { ComposerSend } from '@/components/ui/chat-input.types';
+import type { ComposerNotices } from '@/components/ui/chat-input.notices';
 
 type OnSend = (send: ComposerSend) => void;
 
@@ -665,8 +666,11 @@ describe('MarketChatPanel', () => {
   it('says the next send summarizes first, and every turn it starts carries the skip', async () => {
     h.nextSummary = { reason: 'cold', at: 1, now: 1 };
     renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
-    expect(screen.getByText('Your next message will include the whole conversation, which costs more.')).toBeInTheDocument();
+    // Said on the composer's context ring, which the composer draws.
+    const summary = () => (ci.props!.notices as ComposerNotices).summary;
+    await waitFor(() => expect(summary()?.reason).toBe('cold'));
+    act(() => summary()!.toggleSkip());
+    expect(summary()?.skipped).toBe(true);
 
     const a = ml.actions!;
     act(() => (ci.props!.onSend as OnSend)(composed('hi')));

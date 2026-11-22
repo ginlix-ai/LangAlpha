@@ -2,10 +2,12 @@
  * A key stored for a provider the catalog no longer has is listed so the user
  * can remove it, and is never a connection: no model, default or "connected"
  * count may read it as one. A subscription waiting to be signed in again is
- * listed for its reconnect, and does not count as access to models.
+ * listed for its reconnect, and does not count as access to models. A status
+ * paused offline is pending: not loading, and not read either.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
+import { onlineManager } from '@tanstack/react-query';
 import { renderHookWithProviders } from '@/test/utils';
 
 const KEYS = [
@@ -45,5 +47,23 @@ describe('useConfiguredProviders', () => {
 
     await waitFor(() => expect(result.current.providers.map((p) => p.provider)).toEqual(['codex-oauth']));
     expect(result.current.hasAny).toBe(false);
+  });
+
+  describe('offline', () => {
+    afterEach(() => onlineManager.setOnline(true));
+
+    it('holds a status paused offline as pending, though it is not loading', async () => {
+      onlineManager.setOnline(false);
+      h.keys = [];
+      h.status = () => ({ connected: true, state: 'connected' });
+      const { result } = renderHookWithProviders(() => useConfiguredProviders());
+
+      expect(result.current.statusLoading).toBe(false);
+      expect(result.current.statusPending).toBe(true);
+      expect(result.current.providers).toEqual([]);
+
+      onlineManager.setOnline(true);
+      await waitFor(() => expect(result.current.statusPending).toBe(false));
+    });
   });
 });

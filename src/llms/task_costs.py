@@ -30,6 +30,11 @@ tokens as one it did, at no more than a known multiple of that model's rates:
 a faster tier of the same model, say. The file's ``bounds`` names the measured
 model and the multiple, and every level carries that model's figure times the
 multiple, marked as not measured, for the same reason a gap is.
+
+Any other model gets only an estimate: its list price against the baseline's,
+on the same scale, so a reader can rank it among the measured ones. It knows
+nothing of how many tokens the model spends on a task, so it travels apart
+from the figures and is shown as an estimate.
 """
 
 from __future__ import annotations
@@ -183,6 +188,32 @@ def task_cost_baseline() -> Optional[dict[str, str]]:
     """
     shipped = _shipped()
     return dict(shipped.baseline) if shipped is not None else None
+
+
+#: Input and output weights a list price is blended at for an estimate: three
+#: input tokens to one output token, roughly an agent turn's mix.
+LIST_PRICE_BLEND = (0.75, 0.25)
+
+
+def task_cost_estimate(
+    rates: Optional[tuple[float, float]],
+    baseline_rates: Optional[tuple[float, float]],
+) -> Optional[float]:
+    """A model's blended list price as a multiple of the baseline model's.
+
+    ``rates`` and ``baseline_rates`` are (input, output) USD per 1M tokens. The
+    estimate for a model no task was measured on, a multiple like the measured
+    figures so the two band on one scale: a model priced like the baseline
+    reads 1.0, as the baseline does. None when either price is unknown or the
+    baseline's blends to nothing.
+    """
+    if rates is None or baseline_rates is None:
+        return None
+    w_in, w_out = LIST_PRICE_BLEND
+    base = baseline_rates[0] * w_in + baseline_rates[1] * w_out
+    if base <= 0:
+        return None
+    return (rates[0] * w_in + rates[1] * w_out) / base
 
 
 def task_cost(

@@ -32,7 +32,7 @@ interface TrayFoldInputs {
    *  transcript: the tray stays in its dock there, where a row of chips would
    *  take the page's room. A peek still pours it out until the composer moves. */
   docked?: boolean;
-  /** A row above the composer holds the tray's place (a notice, another's turn):
+  /** A row above the composer holds the tray's place (another person's turn):
    *  the tray waits in its dock until the row goes, and a peek pours it out. */
   covered?: boolean;
 }

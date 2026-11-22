@@ -218,6 +218,18 @@
   color: var(--color-text-primary);
 }
 
+/* A warning about the next send on this model (chat-input.notices): the pill
+   holds the warning's wash until the condition clears, and its hover and open
+   states lay their own fill over the wash rather than lose it. */
+.model-selector-trigger[data-notice=warning] {
+  background: var(--color-warning-soft);
+}
+
+.model-selector-trigger[data-notice=warning]:hover:not(:disabled),
+.model-selector-trigger[data-notice=warning][data-state=open] {
+  background: linear-gradient(var(--color-warning-soft), var(--color-warning-soft)), var(--color-border-muted);
+}
+
 /* ====== Send / stop button (quiet ink) ====== */
 
 /* One button for both, so a turn starting or ending changes its face in place

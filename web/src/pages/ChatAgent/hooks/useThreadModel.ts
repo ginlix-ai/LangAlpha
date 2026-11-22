@@ -3,9 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { resolveComposerModel } from '@/components/ui/chat-input.models';
-import type { SubscriptionProvider } from '@/api/oauth';
 import { useAllModels } from '@/hooks/useAllModels';
-import { useLapsedSignIn } from '@/hooks/useLapsedSignIn';
+import { useLapsedSignIn, type SignInGap } from '@/hooks/useLapsedSignIn';
 import { useDefaultModel } from '@/hooks/useSlotDefaultModels';
 import { useSeededModel } from '@/hooks/useSeededModel';
 import { useTurnDefaultModel } from '@/hooks/useTurnModels';
@@ -27,10 +26,9 @@ export interface RetiredModel {
   fallback: string;
 }
 
-/** The composer's model, on a subscription whose sign-in has to be renewed. */
-export interface LapsedSignIn {
+/** The composer's model, on a subscription whose sign-in cannot run it. */
+export interface LapsedSignIn extends SignInGap {
   model: string;
-  provider: SubscriptionProvider;
 }
 
 /** The account's Default, a Claude Code model a Chief of Staff turn cannot
@@ -188,6 +186,8 @@ export function useThreadModel({
     setOffered(null);
     if (liveThreadId) userSessionStorage.setItem(OFFER_DISMISSED_PREFIX + liveThreadId, '1');
   }, [liveThreadId]);
+  // Running out answers nothing, so the next pick on the thread offers again.
+  const expireOffer = useCallback(() => setOffered(null), []);
 
   // Named only once there is a default to name beside it, and never when the
   // default is the retired model too: the row would promise a move that the
@@ -195,8 +195,8 @@ export function useThreadModel({
   const retired: RetiredModel | null = retiredName && startsOn && retiredName !== startsOn
     ? { model: retiredName, fallback: startsOn }
     : null;
-  const lapsedProvider = lapsedOf(model);
-  const lapsed: LapsedSignIn | null = model && lapsedProvider ? { model, provider: lapsedProvider } : null;
+  const gap = lapsedOf(model);
+  const lapsed: LapsedSignIn | null = model && gap ? { model, ...gap } : null;
   const offer: DefaultModelOffer | null = offered && offered === model && defaultModel && offered !== defaultModel
     ? { model: offered, defaultModel }
     : null;
@@ -211,5 +211,5 @@ export function useThreadModel({
 
   const sendModel = thread && seed !== own && model === seed ? null : model;
 
-  return { model, sendModel, retired, lapsed, offer, heldDefault, pickModel, dismissOffer };
+  return { model, sendModel, retired, lapsed, offer, heldDefault, pickModel, dismissOffer, expireOffer };
 }

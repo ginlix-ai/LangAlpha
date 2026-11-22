@@ -6,7 +6,7 @@ import { CheckboxChoice } from '@/components/ui/choice';
 import { Input } from '@/components/ui/input';
 import { Disclosure } from '@/components/ui/Disclosure';
 import { useLocale } from '@/hooks/useLocale';
-import { createFormatter } from '@/lib/format';
+import { createFormatter, formatTokenPrice } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { modelLabel } from '@/lib/modelLabel';
 import { isSubscriptionProvider } from '@/api/oauth';
@@ -17,7 +17,6 @@ import { QuietNote, StatusLabel } from './parts';
 import type { ModelPickerState } from './useModelPicker';
 
 const compact = createFormatter({ notation: 'compact', maximumFractionDigits: 1 });
-const usd = createFormatter({ style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 
 /** Search results shown at once; a narrower search finds the rest. */
 const RESULT_CAP = 50;
@@ -81,7 +80,7 @@ function ListedRow({ picker, model }: { picker: ModelPickerState; model: ListedM
   const parts: string[] = [];
   if (model.context_window) parts.push(t('modelAccess.models.context', { size: compact(model.context_window, locale) }));
   if (model.pricing?.input != null && model.pricing?.output != null) {
-    parts.push(t('modelAccess.models.price', { input: usd(model.pricing.input, locale), output: usd(model.pricing.output, locale) }));
+    parts.push(t('modelAccess.models.price', { input: formatTokenPrice(model.pricing.input, locale), output: formatTokenPrice(model.pricing.output, locale) }));
   }
   const name = picker.nameOf(model);
   return (

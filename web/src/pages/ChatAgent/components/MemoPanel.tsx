@@ -1212,7 +1212,9 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         )}
 
         {sortedEntries.length > 0 && (
-          <table className="w-full text-xs">
+          // Separate borders so each body cell keeps its own transparent
+          // edge: collapsed, two rows would share one.
+          <table className="w-full border-separate border-spacing-0 text-xs">
             <thead>
               <tr
                 className="text-left"
@@ -1262,28 +1264,14 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                     onClick={() =>
                       selectMode ? toggleSelectKey(entry.key) : handleOpen(entry.key)
                     }
-                    className="cursor-pointer transition-colors"
-                    style={{
-                      color: 'var(--color-text-primary)',
-                      backgroundColor:
-                        selectMode && isSelected
-                          ? 'var(--color-bg-elevated)'
-                          : 'transparent',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (selectMode && isSelected) return;
-                      (e.currentTarget as HTMLTableRowElement).style.backgroundColor =
-                        'var(--color-border-muted)';
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLTableRowElement).style.backgroundColor =
-                        selectMode && isSelected
-                          ? 'var(--color-bg-elevated)'
-                          : 'transparent';
-                    }}
+                    data-selected={selectMode && isSelected ? '' : undefined}
+                    // The fill sits on the cells: a <tr> has no edge of its
+                    // own for row-inset to clip to.
+                    className="cursor-pointer [&>td]:row-inset-2 [&>td]:transition-colors not-data-selected:hover:[&>td]:bg-(--color-border-muted) data-selected:[&>td]:bg-(--color-bg-elevated)"
+                    style={{ color: 'var(--color-text-primary)' }}
                   >
                     {selectMode && (
-                      <td className="px-2 py-2 w-6">
+                      <td className="px-2 w-6">
                         {isSelected ? (
                           <CheckSquare
                             className="h-4 w-4"
@@ -1297,7 +1285,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                         )}
                       </td>
                     )}
-                    <td className="px-3 py-2">
+                    <td className="px-3">
                       <div className="flex items-center gap-2 min-w-0">
                         <FileText
                           className="h-4 w-4 shrink-0"
@@ -1323,22 +1311,22 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                       </div>
                     </td>
                     <td
-                      className="hidden @min-[640px]:table-cell px-2 py-2 whitespace-nowrap"
+                      className="hidden @min-[640px]:table-cell px-2 whitespace-nowrap"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
                       {mimeToLabel(entry.mime_type, entry.key)}
                     </td>
                     <td
-                      className="hidden @min-[420px]:table-cell px-2 py-2 whitespace-nowrap"
+                      className="hidden @min-[420px]:table-cell px-2 whitespace-nowrap"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
                       {formatBytes(entry.size_bytes, locale)}
                     </td>
-                    <td className="px-2 py-2 whitespace-nowrap">
+                    <td className="px-2 whitespace-nowrap">
                       <StatusBadge status={entry.metadata_status} />
                     </td>
                     <td
-                      className="px-2 py-2"
+                      className="px-2"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
                       <div className="line-clamp-2 max-w-[20rem]">
@@ -1346,7 +1334,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                       </div>
                     </td>
                     <td
-                      className="hidden @min-[420px]:table-cell px-2 py-2 whitespace-nowrap"
+                      className="hidden @min-[420px]:table-cell px-2 whitespace-nowrap"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
                       {formatDate(entry.created_at, now, locale)}

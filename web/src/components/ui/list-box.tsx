@@ -51,12 +51,14 @@ const ListBoxItem = <T extends object>({
       }
       className={composeRenderProps(className, (className) =>
         cn(
-          "relative flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm",
+          "relative flex w-full cursor-default select-none items-center rounded-sm px-2 row-inset text-sm",
           /* Disabled */
           "data-disabled:pointer-events-none data-disabled:opacity-50",
-          /* Focused and hovered: the tint a menu item takes (dropdown-menu's
-             ITEM_HIGHLIGHT), so every floating list marks its row alike */
-          "data-focused:bg-accent/15 data-hovered:bg-accent/15",
+          /* Hovered, or focused from the keyboard: the tint a menu item takes
+             (dropdown-menu's ITEM_HIGHLIGHT), so every floating list marks its
+             row alike. Not on any focus: a pressed row keeps focus, and lit by
+             it, it would stay lit beside the hovered one */
+          "data-focus-visible:bg-accent/15 data-hovered:bg-accent/15",
           /* Keyboard focus: the inward ring tokens.css draws on a focused
              option. Colored here as well because a list driven from a search
              field moves a virtual focus, which :focus-visible never sees, and

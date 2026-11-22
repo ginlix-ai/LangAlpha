@@ -1,6 +1,7 @@
 /**
- * The effort and speed list in the composer's effort menu, reached the way
- * someone without a mouse reaches them.
+ * The reasoning levels and speeds in the composer's model picker, beside the
+ * model list (its pane) or under it (its strip), reached the way someone
+ * without a mouse reaches them.
  *
  * These were plain `<div role="menuitemradio">` once. That reads correctly to a
  * screen reader and works under a mouse, which is why it survived: the failure
@@ -12,58 +13,46 @@
  * actually arrives is a question with an answer in one place, here.
  *
  * The mouse half is the other risk. Menu items deliberately wear no ring under
- * a pointer -- `outline-hidden`, indication via the `data-focused` tint for
- * pointer and keyboard alike -- so the rows must not pick up the app's
- * baseline `:focus-visible` ring.
+ * a pointer -- `outline-hidden`, indication via a tint, the hovered row's under
+ * a pointer and the focused one's from the keyboard -- so the rows must not
+ * pick up the app's baseline `:focus-visible` ring.
  *
- * The menu is react-aria's now, as the model picker beside it is; it opens on
- * the current level, so arrowing starts from what is set.
+ * The pane is a react-aria menu beside the picker's model grid, each one Tab
+ * stop; Tabbing into the pane lands on the current level, so arrowing starts
+ * from what is set. Where the composer has no room for the pane, the levels
+ * are a segmented control under the list, arrowed through the same way.
  */
 import { test, expect, mockAPI } from './fixtures.js';
-import { defaultResponses } from './helpers/mockResponses.js';
+import { defaultResponses, sampleThread } from './helpers/mockResponses.js';
+import { chatViewOverrides, replayNothing, TH } from './helpers/chatScenario.js';
 import { unpainted } from './helpers/focusPaint.js';
 
 const MODEL = 'claude-sonnet-4-20250514';
 
-/** Mirrors the server's deep merge closely enough for this spec: object into
- *  object, a null deletes its key, anything else replaces. */
-function merge(base, patch) {
-  const out = { ...base };
-  const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === null) delete out[k];
-    else out[k] = plain(v) && plain(out[k]) ? merge(out[k], v) : v;
-  }
-  return out;
-}
-
 /**
- * Preferences that remember what was written.
+ * The thread row that remembers what was written.
  *
- * Picking a level writes it and reads it straight back out of the one
- * preference entry, which the mutation replaces with the server's answer. Left
- * unmocked the write falls through and fails, the hook rolls the optimistic
- * value back, and whether that lands before or after the assertion is a coin
- * flip -- which read as flake in a spec about focus.
+ * A level picked on a thread is saved on its row, and the composer reads it
+ * back from the server's answer. Left unmocked the save fails, the hook rolls
+ * the optimistic value back, and whether that lands before or after the
+ * assertion is a coin flip -- which read as flake in a spec about focus.
  */
-function preferenceRoutes() {
-  let prefs = {
-    ...defaultResponses['GET /users/me/preferences'],
-    model_preference: { preferred_model: MODEL },
-  };
+function threadRoutes() {
+  let thread = sampleThread({ llm_model: MODEL });
   const send = (route) => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify(prefs),
+    status: 200, contentType: 'application/json', body: JSON.stringify(thread),
   });
   return {
-    'GET /users/me/preferences': send,
-    'PUT /users/me/preferences': (route) => {
-      prefs = merge(prefs, JSON.parse(route.request().postData() ?? '{}'));
+    ...chatViewOverrides({ threads: [thread] }),
+    [`GET /threads/${TH}`]: send,
+    [`PATCH /threads/${TH}`]: (route) => {
+      thread = { ...thread, ...JSON.parse(route.request().postData() ?? '{}') };
       return send(route);
     },
   };
 }
 
-// The pill renders nothing without a model to configure, and nothing for a
+// The picker lists no levels without a model to configure, and none for a
 // model with no ladder on it. Both come from the manifest in real use.
 const overrides = {
   'GET /models': {
@@ -78,8 +67,10 @@ const overrides = {
   },
 };
 
-const TRIGGER = 'button[data-pill="effort"]';
-const OPTION = '[role="menuitemradio"]';
+const TRIGGER = 'button[data-pill="model"]';
+const PANE = '[data-slot="tuning-pane"]';
+const OPTION = `${PANE} [role="menuitemradio"]`;
+const SEGMENT = '[data-slot="tuning-strip"] [role="radio"]';
 
 /** The row react-aria marks as focused, and whether it holds focus. */
 function highlighted(page, sel = `${OPTION}[data-focused]`) {
@@ -89,47 +80,76 @@ function highlighted(page, sel = `${OPTION}[data-focused]`) {
   }, sel);
 }
 
-async function openMenuByKeyboard(page) {
+/** What holds focus, by its text, once it is inside `within`. */
+function focusedIn(page, within) {
+  return page.evaluate((w) => {
+    const el = document.activeElement;
+    return el && el.closest(w) ? el.textContent : null;
+  }, within);
+}
+
+async function openPickerByKeyboard(page) {
   await page.locator(TRIGGER).evaluate((el) => el.focus());
   await page.keyboard.press('Enter');
-  await expect(page.locator(OPTION).first()).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Select model' })).toBeVisible();
+}
+
+/** Tabs from the search field until focus is inside `within`: the list and
+ *  the tuning are each a stop of their own, so a few presses reach it. */
+async function tabInto(page, within) {
+  for (let i = 0; i < 8; i += 1) {
+    if (await focusedIn(page, within) !== null) return;
+    await page.keyboard.press('Tab');
+  }
+  throw new Error(`Tab never reached ${within}`);
 }
 
 test.beforeEach(async ({ page }) => {
-  await mockAPI(page, { ...preferenceRoutes(), ...overrides });
-  await page.goto('/dashboard');
-  // The pill is the dashboard's first render: on the dev server its route is
-  // some 650 modules fetched one import level at a time after the load event,
-  // and on a busy two-worker runner that alone takes 5-8s.
-  await expect(page.locator(TRIGGER)).toBeVisible({ timeout: 15000 });
+  await mockAPI(page, {
+    ...threadRoutes(),
+    'GET /users/me/preferences': defaultResponses['GET /users/me/preferences'],
+    ...overrides,
+  });
+  await replayNothing();
 });
 
-test.describe('the effort list on a keyboard', () => {
-  test('takes focus when arrowed through, and picking one leaves the menu open', async ({ page }) => {
-    await openMenuByKeyboard(page);
-    // It opens on the current level, the one Settings gives here.
+/** Opens the thread at the viewport the test set, its pill naming the level. */
+async function openThread(page) {
+  await page.goto(`/chat/t/${TH}`);
+  await expect(page.locator(TRIGGER)).toBeVisible({ timeout: 15000 });
+  await expect(page.locator(TRIGGER)).toContainText('Medium');
+}
+
+test.describe('the levels on a keyboard', () => {
+  test('are a Tab stop past the list, and picking one leaves the picker open', async ({ page }) => {
+    await openThread(page);
+    await openPickerByKeyboard(page);
+    await tabInto(page, PANE);
+    // It lands on the current level, the one Settings gives here.
     await expect.poll(() => highlighted(page)).toEqual({ text: 'MediumDefault', focused: true });
 
     await page.keyboard.press('ArrowDown');
     await expect.poll(() => highlighted(page)).toEqual({ text: 'High', focused: true });
 
     await page.keyboard.press('Enter');
-    // Choosing an effort is a setting, not a send: the pill updates in place
-    // and the menu stays up for the next choice.
-    await expect(page.locator(TRIGGER)).toHaveText('High');
+    // Choosing a level is a setting, not a send: the pill names it in place
+    // and the picker stays up for the next choice.
+    await expect(page.locator(TRIGGER)).toContainText('High');
     await expect(page.locator(OPTION).first()).toBeVisible();
   });
 
-  test('works the same on a narrow screen', async ({ page }) => {
+  test('works the same in the strip on a narrow screen', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.click('.langalpha-fab');
-    await expect(page.locator(TRIGGER)).toBeVisible();
+    await openThread(page);
 
-    await openMenuByKeyboard(page);
-    await expect.poll(() => highlighted(page)).toEqual({ text: 'MediumDefault', focused: true });
-    await page.keyboard.press('ArrowUp');
+    await openPickerByKeyboard(page);
+    await expect(page.locator(PANE)).toHaveCount(0);
+    await tabInto(page, '[data-slot="tuning-strip"]');
+    await expect.poll(() => focusedIn(page, '[data-slot="tuning-strip"]')).toBe('Medium');
+    await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Enter');
-    await expect(page.locator(TRIGGER)).toHaveText('Low');
+    await expect(page.locator(TRIGGER)).toContainText('Low');
+    await expect(page.locator(SEGMENT).first()).toBeVisible();
   });
 });
 
@@ -152,6 +172,7 @@ test.describe('the options under forced colors', () => {
   });
 
   test("keep the primitive's ring", async ({ page }) => {
+    await openThread(page);
     await page.click(TRIGGER);
     await expect(page.locator(OPTION).first()).toBeVisible();
 
@@ -165,10 +186,11 @@ test.describe('the options under forced colors', () => {
 
 test.describe('the same list under a mouse', () => {
   test('paints no ring on the option that was clicked', async ({ page }) => {
+    await openThread(page);
     await page.click(TRIGGER);
     await expect(page.locator(OPTION).first()).toBeVisible();
     await page.locator(OPTION).nth(1).click();
-    await expect(page.locator(TRIGGER)).toHaveText('Low');
+    await expect(page.locator(TRIGGER)).toContainText('Low');
 
     // The click leaves the option holding focus, which is what makes this
     // worth measuring: a rule keyed on :focus rather than :focus-visible would
@@ -192,7 +214,8 @@ test.describe('the same list under a mouse', () => {
   test('still marks the clicked option, so the row is not left silent', async ({ page }) => {
     // The over-eager reading of the test above: drop the indication as well as
     // the ring and every assertion there still passes, with nothing on screen
-    // saying which effort is armed.
+    // saying which level is armed.
+    await openThread(page);
     await page.click(TRIGGER);
     await page.locator(OPTION).nth(1).click();
     await expect.poll(() => highlighted(page))

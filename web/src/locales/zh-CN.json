@@ -2304,6 +2304,8 @@
   "chat": {
     "contextPanel": {
       "trigger": "上下文已用 {{percent}}",
+      "triggerDue": "上下文已用 {{percent}}。发送下一条消息前，会先总结之前的对话。",
+      "triggerDueUncounted": "上下文窗口。发送下一条消息前，会先总结之前的对话。",
       "title": "上下文",
       "used": "已用 {{used}} / {{threshold}}（{{percent}}）",
       "compactAt": "压缩阈值",
@@ -2562,7 +2564,7 @@
       "offline": "未运行",
       "private": "私有 · 仅所有者可以打开"
     },
-    "modelTroubleSuggestion": "{{from}} 出现问题 — 本次回答由 {{to}} 完成",
+    "modelTroubleSuggestion": "{{from}} 出现问题，本次回答由 {{to}} 完成。",
     "switchToModel": "切换到 {{model}}",
     "switchToModelPaid": "切换到 {{model}}（{{payer}}）",
     "threadSubagents": {
@@ -2575,6 +2577,8 @@
       "pickFailed": "无法更改此对话的模型",
       "retired": "{{model}} 已不再可用，此对话现在使用 {{fallback}}。",
       "lapsed": "你的 {{account}} 登录已过期。重新连接后即可使用 {{model}}。",
+      "notConnected": "你的 {{account}} 订阅尚未连接。连接后即可使用 {{model}}，或换一个模型。",
+      "connect": "连接",
       "offer": "此对话使用 {{model}}，新对话默认使用 {{defaultModel}}。",
       "handoff": "OpenAI 已将此对话的一部分压缩成只有其模型能读取的摘要。之前的模型正在为 {{model}} 把它写成文字，下一条消息可能要稍等片刻才会开始。",
       "brief": "正在把这段对话的上下文交接给 {{model}}，好让它接着往下做。下一条消息可能要稍等片刻才会开始。",
@@ -2950,7 +2954,6 @@
     "modelSelector": {
       "manageModels": "管理模型",
       "setUpModel": "设置模型",
-      "reasoningEffort": "推理强度",
       "effortNone": "关闭",
       "effortMinimal": "极简",
       "effortLow": "低",
@@ -2982,6 +2985,20 @@
       "taskCostUnmeasured": "该档位未实测，花费不超过上一档。",
       "taskCostHeader": "单个任务花费",
       "taskCostNote": "粗略估计调整推理强度后，一个典型任务的花费相对默认档位如何变化。",
+      "reasoning": "推理",
+      "defaultLevel": "默认：{{level}}",
+      "nothingToTune": "此模型没有可调整的设置",
+      "apiPrice": "API 价格（每百万 token）",
+      "apiPriceValue": "输入 {{input}} · 输出 {{output}}",
+      "taskCostVsDefault": "单个任务的花费约为默认档位的 {{value}}×",
+      "taskCostVsDefaultAtMost": "单个任务的花费至多为默认档位的 {{value}}×",
+      "costMarksNote": "各模型在其标准档位下完成一个典型任务的大致花费，从 $ 到 $$$$$。悬停可查看具体倍数。",
+      "costMarksMeasuredAtLevel": "约为 {{model}}（{{level}}）的 {{value}}×",
+      "costMarksMeasured": "约为 {{model}} 的 {{value}}×",
+      "costMarksBoundAtLevel": "至多为 {{model}}（{{level}}）的 {{value}}×。该模型的默认档位未经实测，这是上限",
+      "costMarksBound": "至多为 {{model}} 的 {{value}}×。该模型的默认档位未经实测，这是上限",
+      "costMarksEstimate": "根据 API 价格估算，尚未经过任务实测",
+      "costBaselineFallback": "参考模型",
       "claudeCodeRejected": "Claude 拒绝了你的 setup token，请在设置中添加新的 token 后使用此模型",
       "claudeCodeNeedsOwnComputer": "仅可在你自己电脑上的工作区中使用",
       "claudeCodePolicyBlocked": "你所在组织的 Claude Code 策略不允许它在这台电脑上运行",
@@ -3126,6 +3143,9 @@
       "skipHint": "改为发送完整对话，费用更高。",
       "skipped": "下一条消息会带上完整对话，费用更高。",
       "undo": "撤销"
+    },
+    "composerNotice": {
+      "notNow": "暂不"
     },
     "claudeCode": {
       "off": {

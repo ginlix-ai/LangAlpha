@@ -2226,6 +2226,8 @@
   "chat": {
     "contextPanel": {
       "trigger": "Context window, {{percent}} used",
+      "triggerDue": "Context window, {{percent}} used. Earlier messages will be summarized before your next one.",
+      "triggerDueUncounted": "Context window. Earlier messages will be summarized before your next one.",
       "title": "Context",
       "used": "{{used}} / {{threshold}} used ({{percent}})",
       "compactAt": "Compact at",
@@ -2491,7 +2493,7 @@
       "offline": "Not running",
       "private": "Private · only the owner can open it"
     },
-    "modelTroubleSuggestion": "{{from}} is having trouble — this answer came from {{to}}",
+    "modelTroubleSuggestion": "{{from}} is having trouble, so this answer came from {{to}}.",
     "switchToModel": "Switch to {{model}}",
     "switchToModelPaid": "Switch to {{model}} ({{payer}})",
     "threadSubagents": {
@@ -2504,6 +2506,8 @@
       "pickFailed": "Couldn't change this thread's model",
       "retired": "{{model}} is no longer available. This thread now uses {{fallback}}.",
       "lapsed": "Your {{account}} sign-in has expired. Reconnect it to use {{model}}.",
+      "notConnected": "Your {{account}} plan isn't connected. Connect it to use {{model}}, or pick another model.",
+      "connect": "Connect",
       "offer": "This thread uses {{model}}. New threads start on {{defaultModel}}.",
       "handoff": "OpenAI compacted part of this thread into a summary only its models can read. The previous model is writing it out for {{model}}, so your next message may take a little longer to start.",
       "brief": "Handing this thread's context to {{model}} so it can pick up where it left off. Your next message may take a little longer to start.",
@@ -2885,7 +2889,6 @@
     "modelSelector": {
       "manageModels": "Manage models",
       "setUpModel": "Set up a model",
-      "reasoningEffort": "Effort",
       "effortNone": "Off",
       "effortMinimal": "Minimal",
       "effortLow": "Low",
@@ -2917,6 +2920,20 @@
       "taskCostUnmeasured": "Not measured at this level. Costs no more than the level above.",
       "taskCostHeader": "Cost per task",
       "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level.",
+      "reasoning": "Reasoning",
+      "defaultLevel": "Default: {{level}}",
+      "nothingToTune": "Nothing to tune on this model",
+      "apiPrice": "API price per 1M tokens",
+      "apiPriceValue": "{{input}} in · {{output}} out",
+      "taskCostVsDefault": "About {{value}}× the default level's cost per task",
+      "taskCostVsDefaultAtMost": "At most {{value}}× the default level's cost per task",
+      "costMarksNote": "Roughly what a typical task costs on each model at its standard level, from $ to $$$$$. Hover the marks for the figure.",
+      "costMarksMeasuredAtLevel": "About {{value}}× {{model}} at {{level}}",
+      "costMarksMeasured": "About {{value}}× {{model}}",
+      "costMarksBoundAtLevel": "At most {{value}}× {{model}} at {{level}}. This model's default level was not measured, so this is an upper bound",
+      "costMarksBound": "At most {{value}}× {{model}}. This model's default level was not measured, so this is an upper bound",
+      "costMarksEstimate": "Estimated from the API price, not yet measured on tasks",
+      "costBaselineFallback": "the reference model",
       "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model",
       "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers",
       "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer",
@@ -3061,6 +3078,9 @@
       "skipHint": "Send the whole conversation instead. It costs more.",
       "skipped": "Your next message will include the whole conversation, which costs more.",
       "undo": "Undo"
+    },
+    "composerNotice": {
+      "notNow": "Not now"
     },
     "claudeCode": {
       "off": {

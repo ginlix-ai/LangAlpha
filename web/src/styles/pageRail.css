@@ -7,6 +7,7 @@
    rules here are one class deep and a page's own sizes are written a class
    deeper (`.settings-rail .page-rail-link`), so a page wins wherever its
    sheet loads. */
+@reference './tokens.css';
 
 /* ---------- Rail ---------- */
 .page-rail {
@@ -31,16 +32,18 @@
   color: var(--color-shell-label, var(--color-text-quaternary));
 }
 
+/* The open section and a hovered neighbour sit with no gap between them. The
+   fixed height holds the row's size, so it keeps no vertical padding. */
 .page-rail-link {
+  @apply row-inset;
   display: flex;
   align-items: center;
   gap: 9px;
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  border: 0;
   border-radius: 6px;
-  background: transparent;
+  background-color: transparent;
   color: var(--color-text-tertiary);
   font-size: var(--cs-text-row, 0.8125rem);
   text-align: left;
@@ -48,12 +51,12 @@
   cursor: pointer;
   transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
-.page-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.page-rail-link:hover { background-color: var(--color-bg-subtle); color: var(--color-text-primary); }
 /* The open card styles mark the open section as the sidebar marks its row:
    no wash, hovered too, full ink, and an edge on a desktop rail. Terminal's
    prompt before its name is the rail-prompt class (styles/cardStyle.css). */
 .page-rail-link.is-active {
-  background: var(--color-shell-fill, var(--color-bg-hover));
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
   font-weight: var(--cs-weight-selected, 400);
 }
@@ -129,7 +132,7 @@
   /* The open one outlined in ink in the open card styles. The viewport can
      still be a desktop's here, so its active corner and edge are undone. */
   .page-rail-link.is-active {
-    background: var(--color-shell-fill, var(--color-bg-elevated));
+    background-color: var(--color-shell-fill, var(--color-bg-elevated));
     border-color: var(--color-shell-ink, var(--color-border-default));
     border-radius: var(--cs-radius-small, 999px);
   }
@@ -151,7 +154,7 @@
   }
   /* The open one outlined in ink in the open card styles. */
   .page-rail-link.is-active {
-    background: var(--color-shell-fill, var(--color-bg-elevated));
+    background-color: var(--color-shell-fill, var(--color-bg-elevated));
     border-color: var(--color-shell-ink, var(--color-border-default));
   }
   .page-rail-name { overflow: visible; }

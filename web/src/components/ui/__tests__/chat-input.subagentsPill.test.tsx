@@ -7,13 +7,14 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRef } from 'react';
-import { fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputHandle, type ChatInputProps } from '../chat-input';
 import { useToolbarItems } from '../chat-input.toolbar';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../dropdown-menu';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
+import type { ComposerNotices } from '../chat-input.notices';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -26,6 +27,22 @@ const prefs = vi.hoisted(() => ({ isLoaded: true }));
 vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ preferences: null, isLoading: !prefs.isLoaded, isLoaded: prefs.isLoaded }),
 }));
+
+// jsdom lays nothing out, so nothing folds; a test that needs ⋯ says what folds.
+const folding = vi.hoisted(() => ({ folded: null as string[] | null }));
+vi.mock('../chat-input.useToolbarFold', async (importActual) => {
+  const actual = await importActual<typeof import('../chat-input.useToolbarFold')>();
+  return {
+    ...actual,
+    useToolbarFold: (args: Parameters<typeof actual.useToolbarFold>[0]) => {
+      const real = actual.useToolbarFold(args);
+      const folded = folding.folded;
+      if (!folded) return real;
+      const inline = new Set(args.items.filter((i) => i.visible && !folded.includes(i.id)).map((i) => i.id));
+      return { ...real, fold: { ...real.fold, inline, folded } };
+    },
+  };
+});
 
 vi.mock('../use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),
@@ -131,6 +148,50 @@ describe('ChatInput: the Subagents pill', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unread' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ subagentsAllowed: true });
+  });
+});
+
+describe('the subagents offer, with the toggle folded into ⋯', () => {
+  beforeEach(() => {
+    folding.folded = ['subagents', 'watch'];
+    sessionStorage.clear();
+  });
+  afterEach(() => {
+    folding.folded = null;
+  });
+
+  const offer: ComposerNotices = {
+    model: null,
+    summary: null,
+    subagents: {
+      key: 'subagents:thread-1:false', tone: 'offer', text: 'Make subagents off the default?',
+      content: null, onDismiss: () => {}, onExpire: () => {},
+    },
+  };
+  const settle = () => act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+
+  // Its toggle there keeps the menu open, and the offer is anchored to ⋯.
+  it('waits for the ⋯ menu to close rather than open over it', async () => {
+    const view = renderInput({ subagentsAllowed: true, onToggleSubagents: vi.fn() });
+    const more = screen.getByRole('button', { name: 'More tools' });
+    act(() => more.focus());
+    fireEvent.keyDown(more, { key: 'Enter' });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ChatInput onSend={vi.fn()} subagentsAllowed={false} onToggleSubagents={vi.fn()} notices={offer} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await settle();
+    expect(screen.queryByRole('dialog', { name: 'Make subagents off the default?' })).toBeNull();
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await settle();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Make subagents off the default?' })).toBeInTheDocument();
   });
 });
 

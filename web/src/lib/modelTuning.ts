@@ -34,15 +34,20 @@ export function effortLabelFor(t: (key: string) => string, level: string | null)
   return level && EFFORT_LABELS[level] ? t(EFFORT_LABELS[level]) : null;
 }
 
-/** The levels the composer's effort menu lists: those it has a word for. */
+/** The levels the composer's model picker lists: those it has a word for. */
 export function tuningMenuLevels(efforts: readonly string[]): string[] {
   return efforts.filter((level) => EFFORT_LABELS[level]);
 }
 
-/** Whether the composer shows its effort pill: a level to pick, or a Codex
- *  model's speed. The pill and the toolbar's room for it ask the same thing. */
-export function hasTuningMenu(efforts: readonly string[], isCodexModel: boolean): boolean {
-  return tuningMenuLevels(efforts).length > 0 || isCodexModel;
+/** A Codex model, the one kind with a speed to pick (its priority tier). */
+export function isCodexModel(meta: { sdk?: string } | null | undefined): boolean {
+  return meta?.sdk === 'codex';
+}
+
+/** Whether the composer's model picker has anything to tune on a model: a
+ *  level to pick, or a Codex model's speed. */
+export function modelHasTuning(meta: { reasoning_efforts?: string[]; sdk?: string } | null | undefined): boolean {
+  return tuningMenuLevels(meta?.reasoning_efforts ?? []).length > 0 || isCodexModel(meta);
 }
 
 /**

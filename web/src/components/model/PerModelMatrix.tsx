@@ -14,6 +14,7 @@ import {
   GUIDANCE_LEVELS,
   SPEED_LABELS,
   hasEffortOptions,
+  isCodexModel,
   resolveTuning,
 } from '@/lib/modelTuning';
 import type { GuidanceLevel } from '@/lib/modelTuning';
@@ -195,7 +196,7 @@ export function PerModelMatrix({
                 );
                 const storedEffort = profile.reasoning_effort ?? '';
                 const storedSpeed = profile.fast_mode ?? null;
-                const supportsSpeed = meta?.sdk === 'codex' || storedSpeed !== null;
+                const supportsSpeed = isCodexModel(meta) || storedSpeed !== null;
                 const storedNative = profile.native_compaction ?? null;
                 // A stored choice stays listed where the provider no longer
                 // offers it, so it can still be cleared.

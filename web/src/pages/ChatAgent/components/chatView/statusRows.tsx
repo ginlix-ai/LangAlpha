@@ -14,7 +14,7 @@ import type { RosterTask } from './delegatedWork';
 import type { RosterAnalyst } from './useAnalystRoster';
 
 /** A row in one of the tray's lists that opens what it names. */
-export const TRAY_ROW = 'flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left outline-hidden transition-colors hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover)';
+export const TRAY_ROW = 'flex w-full cursor-pointer items-center gap-2 rounded-md px-2 row-inset text-left outline-hidden transition-colors hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover)';
 
 /** True inside a tray chip's popover, where a row closes the list as it
  *  opens what it names. The Status panel draws the same rows with no list

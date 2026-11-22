@@ -10,6 +10,8 @@ type DefaultModelScopeChoiceProps = DefaultModelQuestion & {
   /** For a host that swaps the question in for the control that raised it,
    *  so keyboard focus is not left on the page body. */
   autoFocus?: boolean;
+  /** Drawn inside a surface of its own (a composer notice), so no box of its own. */
+  bare?: boolean;
 };
 
 function ScopeOption({ name, value, checked, label, disabled, autoFocus, onSelect }: {
@@ -51,6 +53,7 @@ export function DefaultModelScopeChoice({
   onCancel,
   className,
   autoFocus,
+  bare = false,
 }: DefaultModelScopeChoiceProps) {
   const { t } = useTranslation();
   const id = useId();
@@ -61,8 +64,8 @@ export function DefaultModelScopeChoice({
 
   return (
     <div
-      className={cn('flex flex-col gap-2 rounded-md px-3 py-2.5', className)}
-      style={{ backgroundColor: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)' }}
+      className={cn('flex flex-col gap-2', !bare && 'rounded-md px-3 py-2.5', className)}
+      style={bare ? undefined : { backgroundColor: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)' }}
     >
       <div id={`${id}-title`} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
         {t('settings.defaultModelChange.title', { model: named.text, context: named.context })}

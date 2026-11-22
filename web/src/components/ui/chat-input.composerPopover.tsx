@@ -9,11 +9,13 @@ import { cn } from '@/lib/utils';
 export const MENU_ROW = cn(
   // The list's p-1 plus px-2 puts each icon under the search field's, 12px in
   // from the panel edge.
-  'flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-[0.8125rem] text-(--color-text-primary) outline-hidden',
+  'flex cursor-default select-none items-center gap-2 rounded-sm px-2 row-inset text-[0.8125rem] text-(--color-text-primary) outline-hidden',
   // The tint every floating list marks its row with (dropdown-menu's
   // ITEM_HIGHLIGHT). The current row takes the check alone, never the tint, so
-  // the row under the pointer is the only one that is lit.
-  'data-focused:bg-accent/15 data-hovered:bg-accent/15',
+  // the row under the pointer is the only one that is lit. Focus lights a row
+  // only from the keyboard: a pressed row keeps focus, and lit by it, it would
+  // stay lit beside the hovered one after the pointer moved on.
+  'data-focus-visible:bg-accent/15 data-hovered:bg-accent/15',
   'data-focus-visible:outline-current',
 );
 
@@ -94,7 +96,8 @@ export function ComposerPopover({
       <Dialog
         data-composer-panel
         aria-label={label}
-        className="flex min-h-0 flex-col outline-hidden"
+        // Fills a panel given a height of its own.
+        className="flex min-h-0 flex-1 flex-col outline-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {children}

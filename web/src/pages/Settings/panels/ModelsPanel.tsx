@@ -355,7 +355,10 @@ export function ModelsPanel() {
                               key={m}
                               type="button"
                               onClick={() => (isStarred ? favorites.remove(m) : favorites.add(m))}
-                              className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs transition-colors ${isStarred ? 'bg-(--color-bg-tag)' : 'hover:bg-(--color-bg-elevated)'}`}
+                              className={cn(
+                                'w-full flex items-center justify-between px-2 row-inset rounded-md text-xs transition-colors',
+                                isStarred ? 'bg-(--color-bg-tag)' : 'hover:bg-(--color-bg-elevated)',
+                              )}
                               style={{ color: 'var(--color-text-primary)' }}
                             >
                               <span className="flex min-w-0 items-center gap-2">

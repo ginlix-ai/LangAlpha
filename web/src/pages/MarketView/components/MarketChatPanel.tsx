@@ -29,7 +29,8 @@ import { useComputerRoots } from '../../ChatAgent/hooks/useComputers';
 import { useThreadModel } from '../../ChatAgent/hooks/useThreadModel';
 import { useThreadSubagents } from '../../ChatAgent/hooks/useThreadSubagents';
 import { useThreadTuning } from '../../ChatAgent/hooks/useThreadTuning';
-import { ThreadNotices } from '../../ChatAgent/components/chatView/ThreadNotices';
+import { RetiredModelNotice } from '../../ChatAgent/components/chatView/RetiredModelNotice';
+import { useComposerNotices } from '../../ChatAgent/components/chatView/useComposerNotices';
 import { useNextSummary } from '../../ChatAgent/hooks/useNextSummaryHint';
 import { DispatchStatusProvider } from '../../ChatAgent/hooks/usePTCDispatchStatus';
 import { useStreamFollow } from '../../ChatAgent/components/chatView/transcriptFollow';
@@ -467,6 +468,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const follow = useStreamFollow(messagesContainer, transcript, { live: isLoading, loading: isLoadingHistory });
   // What the next send summarizes first, which every turn the reader starts carries.
   const { summary: summaryHint, starters: summarized } = useNextSummary(chat);
+  const notices = useComposerNotices({
+    threadId,
+    threadModel,
+    subagents: threadSubagents,
+    chat,
+    summary: summaryHint,
+    workspaceId: selectedWorkspaceId,
+    chiefOfStaff: scope === 'all',
+  });
   const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
     { ...chat, ...summarized },
     follow,
@@ -857,11 +867,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         || workspaceStarting
         || cliQueue
         || isCompacting
-        || threadModel.retired
-        || threadModel.lapsed
-        || threadModel.offer
-        || threadSubagents.offer !== null
-        || summaryHint.reason) && (
+        || threadModel.retired) && (
         <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {hasActiveSubagents && !isLoading && (
             <div style={bannerStyle('transparent')}>
@@ -894,7 +900,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
               )}
             </div>
           )}
-          <ThreadNotices model={threadModel} subagents={threadSubagents} summary={summaryHint} />
+          {/* Inset like the banners beside it. What else the thread says
+              about the next send is on the composer's controls. */}
+          {threadModel.retired && <RetiredModelNotice {...threadModel.retired} className="px-3" />}
         </div>
       )}
 
@@ -938,6 +946,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         tokenUsage={tokenUsage}
         tokenUsagePending={isLoadingHistory}
         threadId={threadId}
+        notices={notices}
       />
 
       <MarketDetailDialog payload={dialogPayload} onClose={handleCloseDialog} getToolCallProcess={getToolCallProcess} />

@@ -75,3 +75,38 @@ export function modelGroups({ models, payers, brandOf }: {
   const rank = (g: ModelGroup) => rankOf(g.connections.flatMap((c) => c.models), payers);
   return groups.sort((a, b) => rank(a) - rank(b));
 }
+
+/** The favorites one payer bills. */
+export interface FavoriteSection {
+  payer: Payer | undefined;
+  models: string[];
+}
+
+/**
+ * Favorites by who pays, in the order the brand tabs rank connections (the
+ * user's own plans and keys before the deployment's). Within a payer, each
+ * brand's models stay together, brands in the order the user first starred
+ * one and models in their saved order: the marks beside the names show the
+ * runs, so no brand needs a header of its own.
+ */
+export function favoriteSections(
+  favorites: readonly string[],
+  payers: Record<string, Payer>,
+  groups: readonly ModelGroup[],
+): FavoriteSection[] {
+  const brandOf = new Map<string, string>();
+  for (const g of groups) {
+    for (const c of g.connections) for (const m of c.models) if (!brandOf.has(m)) brandOf.set(m, g.id);
+  }
+  const byPayer = new Map<string, { payer: Payer | undefined; brands: Map<string, string[]> }>();
+  for (const m of favorites) {
+    const payer = payers[m];
+    const into = byPayer.get(payer ?? '') ?? { payer, brands: new Map() };
+    byPayer.set(payer ?? '', into);
+    const brand = brandOf.get(m) ?? '';
+    into.brands.set(brand, [...(into.brands.get(brand) ?? []), m]);
+  }
+  return [...byPayer.values()]
+    .sort((a, b) => payerRank(a.payer) - payerRank(b.payer))
+    .map(({ payer, brands }) => ({ payer, models: [...brands.values()].flat() }));
+}

@@ -3,7 +3,7 @@ import { useModels } from './useModels';
 import { usePreferences } from './usePreferences';
 import { getModelAccess, usePlatformModels } from './usePlatformModels';
 import { buildVisibleModels, augmentPlatformWithLocal, customPairKey, planKeyHolders } from './useFilteredModels';
-import type { BuildVisibleModelsResult, ModelMetadataEntry, ProviderRow } from './useFilteredModels';
+import type { BuildVisibleModelsResult, ModelMetadataEntry, ProviderRow, TaskCostBaseline } from './useFilteredModels';
 import { indexCatalog, ownProviderNames } from '@/lib/providerCatalog';
 import { useConfiguredProviders } from './useConfiguredProviders';
 import { useMissingModels } from './useProviderModels';
@@ -111,6 +111,8 @@ export interface UseAllModelsResult {
   compactionProfiles: CompactionProfileCatalog | null;
   /** Web-search provider catalog from the models API (name → tiers + depths). */
   searchProviders: SearchProviderCatalog | null;
+  /** What every `task_cost` figure is a multiple of; null without figures. */
+  taskCostBaseline: TaskCostBaseline | null;
   /** Raw models API response (for callers that need the full shape). */
   rawApiResponse: ModelsResponse | null;
   /** True while any upstream query is still loading. */
@@ -393,6 +395,7 @@ export function useAllModels(): UseAllModelsResult {
     cannotRun,
     compactionProfiles,
     searchProviders,
+    taskCostBaseline: modelsData?.task_cost_baseline ?? null,
     rawApiResponse: modelsData,
     isLoading: modelsLoading || prefsLoading || configuredLoading || platformLoading || listsLoading || claudeCode.isLoading,
     unread: (modelsError && !modelsData) || !!configuredUnread || claudeCode.unread,

@@ -7,7 +7,7 @@ import { useComputers } from '../../hooks/useComputers';
 import { RestoreOffer } from '../RestoreOffer';
 
 /**
- * The restore offer above the chat input, for a workspace on a machine the
+ * The restore offer in a chat, for a workspace on a machine the
  * user brought. A turn re-reads the workspace row once it has the machine, so
  * an offer the turn records shows then. Opening the chat lists the folder
  * first, which can record one too, after the row was read: so once that
