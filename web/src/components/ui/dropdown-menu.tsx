@@ -49,7 +49,7 @@ export const ITEM_HIGHLIGHT = "data-highlighted:bg-accent/15"
 
 // Every shape of item shares this box, so a checkbox row lines up with the
 // plain rows around it.
-export const ITEM_BOX = "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-1.5 text-sm transition-colors data-disabled:pointer-events-none data-disabled:opacity-50"
+export const ITEM_BOX = "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2.5 row-inset text-sm transition-colors data-disabled:pointer-events-none data-disabled:opacity-50"
 
 export const DESTRUCTIVE_ITEM = "text-destructive data-highlighted:bg-destructive/10 data-highlighted:text-destructive"
 
@@ -143,7 +143,7 @@ function DropdownMenuSubTrigger({
   return (
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
-        "flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-1.5 text-sm data-[state=open]:bg-accent/15",
+        "flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 row-inset text-sm data-[state=open]:bg-accent/15",
         ITEM_HIGHLIGHT,
         className
       )}

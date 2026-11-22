@@ -193,21 +193,8 @@ export function FallbackModelsPicker({
                       key={m}
                       type="button"
                       onClick={() => handleToggle(m)}
-                      className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-xs transition-colors"
-                      style={{
-                        color: isSelected
-                          ? "var(--color-accent-light)"
-                          : "var(--color-text-primary)",
-                        backgroundColor: isSelected
-                          ? "var(--color-accent-soft)"
-                          : "transparent",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-elevated)"
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isSelected) e.currentTarget.style.backgroundColor = "transparent"
-                      }}
+                      data-selected={isSelected || undefined}
+                      className="w-full flex items-center justify-between gap-2 px-2 row-inset rounded-md text-xs transition-colors text-(--color-text-primary) data-selected:text-(--color-accent-light) data-selected:bg-(--color-accent-soft) not-data-selected:hover:bg-(--color-bg-elevated)"
                     >
                       <span>{modelLabel(m, metadata)}</span>
                       <PayerBadge payer={payers?.[m]} className="ml-auto" />

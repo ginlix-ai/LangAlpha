@@ -783,6 +783,34 @@ html {
   }
 }
 
+/* What every list row that lights up wears. Two rows can be lit at once (the
+   chosen one and the one under the pointer or the keyboard, an open submenu's
+   row and its neighbour), and touching fills run together into one block. A
+   transparent 1px edge above and below, with the fill clipped inside it, keeps
+   two lit neighbours two shapes 2px apart. The edge takes a pixel of the row's
+   vertical padding, so the row keeps its height: give it the padding it had as
+   --row-py (row-inset is py-1.5's, row-inset-2 py-2's; a sheet sets the
+   property itself), and the row keeps it in rem as the app's text scale moves.
+   The clip is !important because it is the point of the class: a lit state
+   written with the `background` shorthand would otherwise reset it. A sheet
+   takes it with `@reference` to this file and `@apply row-inset`. */
+@property --row-py {
+  syntax: '*';
+  inherits: false;
+}
+@utility row-inset {
+  border-block: 1px solid transparent;
+  background-clip: padding-box !important;
+  padding-block: calc(var(--row-py, 0.375rem) - 1px);
+}
+/* Written out again: @apply row-inset here would match this rule too. */
+@utility row-inset-* {
+  --row-py: calc(var(--spacing) * --value(number));
+  border-block: 1px solid transparent;
+  background-clip: padding-box !important;
+  padding-block: calc(var(--row-py) - 1px);
+}
+
 /* Monaco's own scrollbar, inset through CodeEditor's options. Its arrows are
    there only to hold the track short of both ends. */
 .monaco-editor .scrollbar > .scra,

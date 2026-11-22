@@ -1,3 +1,5 @@
+@reference '../../../styles/tokens.css';
+
 .automation-time-input {
   font-size: 0.8125rem;
 }
@@ -12,10 +14,13 @@
   padding: 0 6px 6px;
 }
 
+/* The chosen slot and a hovered neighbour touch. */
 .automation-time-slot {
+  @apply row-inset;
+  --row-py: 5px;
   display: block;
   width: 100%;
-  padding: 5px 8px;
+  padding-inline: 8px;
   border-radius: 6px;
   text-align: left;
   font-size: 0.75rem;

@@ -1,4 +1,5 @@
 /* NavigationPanel Styles */
+@reference '../../../styles/tokens.css';
 
 /* --nav-panel-surface is what the panel sits on, read by the row actions'
    overlay; a host that lets its own ground show through (the app sidebar)
@@ -9,11 +10,15 @@
   border-right: 1px solid var(--color-border-muted);
 }
 
+/* The open thread, the hovered one and one with its menu open share a tint
+   and sit a collapsed 1px apart. */
 .nav-panel-row {
+  @apply row-inset;
+  --row-py: 4px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  padding-inline: 10px;
   cursor: pointer;
   margin: 1px 6px;
   transition: background-color var(--motion-quick) var(--ease-out);
@@ -69,7 +74,11 @@
   right: 0;
   top: 0;
   bottom: 0;
-  border-radius: 0 var(--nav-row-radius) var(--nav-row-radius) 0;
+  /* Inside the row's row-inset edge, where the fill's corner is 1px
+     shallower than it is wide. */
+  border-radius:
+    0 var(--nav-row-radius) var(--nav-row-radius) 0 /
+    0 calc(var(--nav-row-radius) - 1px) calc(var(--nav-row-radius) - 1px) 0;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -123,11 +132,14 @@
   border-left: 1px solid var(--color-border-muted);
 }
 
+/* The selected agent and the hovered one share a tint. */
 .nav-panel-agent-row {
+  @apply row-inset;
+  --row-py: 4px;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  padding-inline: 8px;
   cursor: pointer;
   border-radius: 4px;
   margin: 1px 0;
@@ -202,8 +214,8 @@
 
 /* ====== Mobile touch targets ====== */
 @media (max-width: 767px) {
-  .nav-panel-row { min-height: 44px; padding: 10px 16px; }
-  .nav-panel-agent-row { min-height: 44px; padding: 10px 16px; }
+  .nav-panel-row { min-height: 44px; --row-py: 10px; padding-inline: 16px; }
+  .nav-panel-agent-row { min-height: 44px; --row-py: 10px; padding-inline: 16px; }
 }
 
 /* A finger's worth of row wherever the tree shows under a touch, the app
