@@ -85,6 +85,18 @@ class ExecutionGrant:
 
 
 @dataclass(frozen=True)
+class Settled:
+    """What recording the vendor's answer produced, for the client and the model."""
+
+    #: The attempt's receipt. Opaque here; the client reads it.
+    receipt: dict[str, Any] | None = None
+    #: Read by the model after the vendor's own answer: the state the ledger
+    #: recorded, which the vendor spells its own way, and what will follow it
+    #: up. None adds nothing.
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class Refusal:
     """Why this call may not run, in words the model and the user both read."""
 
@@ -130,8 +142,8 @@ class OrderLedger(Protocol):
         """Take the one execution, or say what state was found instead."""
         ...
 
-    async def complete(self, attempt_id: str, result: ToolMessage) -> dict[str, Any] | None:
-        """Settle the attempt with the vendor's answer; returns the receipt."""
+    async def complete(self, attempt_id: str, result: ToolMessage) -> Settled:
+        """Settle the attempt with the vendor's answer."""
         ...
 
     async def refuse(self, attempt_id: str, reason: str) -> dict[str, Any] | None:
@@ -146,6 +158,17 @@ class OrderLedger(Protocol):
         """Refuse this call's attempt if it is still proposed: the thread went
         on without the call, so no answer to its card may place it."""
         ...
+
+
+def _with_note(result: ToolMessage, note: str | None) -> ToolMessage:
+    """Add the ledger's line after the vendor's answer, in the answer's own shape."""
+    if not note:
+        return result
+    if isinstance(result.content, str):
+        result.content = f"{result.content}\n\n{note}" if result.content else note
+    else:
+        result.content = [*result.content, {"type": "text", "text": note}]
+    return result
 
 
 def _order_of(stamp: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -452,5 +475,7 @@ class OrderGovernanceMiddleware(AgentMiddleware):
 
         if not isinstance(result, ToolMessage):
             return result
-        receipt = await self._ledger.complete(attempt_id, result)
-        return _with_receipt(_stamped(result, dict(stamp)), receipt)
+        settled = await self._ledger.complete(attempt_id, result)
+        return _with_receipt(
+            _stamped(_with_note(result, settled.note), dict(stamp)), settled.receipt
+        )

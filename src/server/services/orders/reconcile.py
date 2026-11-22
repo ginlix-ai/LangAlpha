@@ -33,14 +33,12 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from src.config.env import EGRESS_RELAY_SECRET
 from src.config.settings import get_order_reconcile_config
-from src.server.database.mcp_oauth import SERVABLE, get_connection
 from src.server.database.order_reconciliation import (
     Observation,
-    active_grant_for_connection,
     claimed_vendor_order_ids,
     fail_undispatched_attempts,
     lapse_unspent_approvals,
@@ -53,36 +51,29 @@ from src.server.database.order_reconciliation import (
     refuse_abandoned_proposals,
     unanswered_attempts,
 )
-from src.server.services.brokerage_capabilities import order_tool, vendor_for_url
+from src.server.services.brokerage_orders.models import CREATING_ACTIONS
 from src.server.services.brokerage_orders import (
     OPEN_STATUSES,
     AttemptStatus,
     BrokerOrder,
-    ListingIncomplete,
     MatchKey,
     OrderAdapter,
     StatusQuery,
     VendorOrder,
-    adapter_for,
     instrument_to_json,
 )
-from src.server.services.egress.direct_tools import relay_mcp_client
 from src.server.services.egress.execution_token import DEFAULT_TTL_SECONDS
-from src.server.services.egress.relay_jwt import CALLER_HOST, mint_relay_jwt
+from src.server.services.orders.status_read import (
+    READER_SWEEP,
+    Listing,
+    StatusReader,
+    Unreachable,
+    is_status_read,
+    status_reader,
+)
 from src.utils.concurrency import cancel_and_join
 
 logger = logging.getLogger(__name__)
-
-# The sandbox_id claim on this job's relay JWT. Audit-only at the relay, which
-# authorizes on the (user, workspace) pair, but the claim must be non-empty --
-# and in a relay log line this is what says the call came from the sweep.
-RECONCILE_SANDBOX_ID = "reconcile"
-
-# Pages one status read may turn before absence stops counting as evidence.
-# At a hundred rows a page this is two thousand orders of history, which is
-# more than the match window can hold; a list still going past it is read as
-# incomplete, and an attempt missing from it is left open rather than failed.
-MAX_LISTING_PAGES = 20
 
 STOP_GRACE = 30.0
 
@@ -95,18 +86,6 @@ PASS_JITTER = 0.2
 # skew; an identical order listed earlier than that was placed by something
 # else, most likely a person in the brokerage's own app.
 CLOCK_SKEW_SECONDS = 60.0
-
-
-@dataclass(frozen=True)
-class Listing:
-    """What one status read returned, and whether the vendor had more.
-
-    ``complete`` is what turns absence into evidence: an attempt missing from
-    a list the vendor cut short may be on the page not read.
-    """
-
-    orders: list[VendorOrder]
-    complete: bool
 
 
 @dataclass
@@ -143,22 +122,6 @@ def _order_of(row: dict[str, Any]) -> BrokerOrder | None:
             exc_info=True,
         )
         return None
-
-
-def _result_body(result: Any) -> Any:
-    """The vendor's payload out of an MCP call result, however the SDK wrapped it.
-
-    Text first: every brokerage answers with its own JSON as text, and the
-    structured field is what an SDK synthesizes when a server declares an
-    output schema. Reading the synthesized one first would hand the adapter a
-    re-wrapped shape instead of the envelope it parses.
-    """
-    blocks = getattr(result, "content", None) or []
-    text = "".join(str(getattr(block, "text", "") or "") for block in blocks).strip()
-    if text:
-        return text
-    structured = getattr(result, "structured_content", None)
-    return structured if structured is not None else ""
 
 
 # The instrument kind that names a vendor's own string and nothing a person
@@ -205,11 +168,22 @@ def _within(placed: datetime | None, executed: datetime | None, window: float) -
     return -CLOCK_SKEW_SECONDS <= offset <= window
 
 
+def _taken(claimed: Mapping[str, datetime | None], order_id: str, made_at: Any) -> bool:
+    """Whether another attempt holds ``order_id`` for one made at ``made_at``:
+    a placement's always, a watch's when it began before this attempt did,
+    since the order then existed before the attempt could have made it."""
+    if order_id not in claimed:
+        return False
+    since = claimed[order_id]
+    return since is None or not isinstance(made_at, datetime) or since <= made_at
+
+
 def _candidates(
     listed: list[VendorOrder],
     *,
     key: MatchKey | None,
-    claimed: set[str],
+    claimed: Mapping[str, datetime | None],
+    made_at: Any,
     executed_at: datetime | None,
     window: float,
 ) -> list[VendorOrder]:
@@ -226,7 +200,7 @@ def _candidates(
         order
         for order in listed
         if key.matches(order.match_key)
-        and order.vendor_order_id not in claimed
+        and not _taken(claimed, order.vendor_order_id, made_at)
         and _within(order.placed_at, executed_at, window)
     ]
 
@@ -253,6 +227,8 @@ def _rivals(
         and key.matches(adapter.match_key(_order_of(other)))
         and _within(found.placed_at, other.get("executed_at"), window)
     ]
+
+
 
 
 class OrderReconciler:
@@ -487,38 +463,26 @@ class OrderReconciler:
         report: PassReport,
     ) -> None:
         """Settle one user's attempts at one connected server."""
-        connection = await get_connection(user_id, server)
-        if connection is None or connection.status not in SERVABLE:
-            logger.debug(
-                "[OrderReconcile] %s/%s not reachable; %d attempt(s) left open",
-                user_id, server, len(rows),
-            )
-            report.skipped += len(rows)
-            return
-        vendor = vendor_for_url(connection.server_url)
-        adapter = adapter_for(vendor or "")
-        if adapter is None:
-            report.skipped += len(rows)
-            return
-        grant = await active_grant_for_connection(
-            user_id, str(connection.connection_id)
-        )
-        if grant is None:
-            logger.debug(
-                "[OrderReconcile] %s/%s has no active grant; %d attempt(s) left open",
-                user_id, server, len(rows),
-            )
+        reader = await status_reader(user_id, server, reader=READER_SWEEP)
+        if isinstance(reader, Unreachable):
+            if reader.reason != "unsupported":
+                logger.debug(
+                    "[OrderReconcile] %s/%s %s; %d attempt(s) left open",
+                    user_id, server,
+                    "has no active grant" if reader.reason == "no_grant"
+                    else "not reachable",
+                    len(rows),
+                )
             report.skipped += len(rows)
             return
 
+        vendor = reader.vendor
         orders = {row["attempt_id"]: _order_of(row) for row in rows}
-        queries = self._plan(rows, orders, adapter, vendor or "", report)
+        queries = self._plan(rows, orders, reader, report)
         if not queries:
             return
-        listings = await self._read(
-            grant, user_id, vendor or "", adapter, queries, report
-        )
-        claims: dict[str | None, set[str]] = {}
+        listings = await self._read(reader, queries, report)
+        claims: dict[str | None, dict[str, datetime | None]] = {}
         unanswered: dict[str | None, list[dict[str, Any]]] = {}
         for row in rows:
             query = queries.get(row["attempt_id"])
@@ -533,29 +497,28 @@ class OrderReconciler:
             account = row.get("account_ref")
             if account not in claims:
                 claims[account] = await claimed_vendor_order_ids(
-                    user_id, vendor or "", account
+                    user_id, vendor, account
                 )
                 unanswered[account] = await unanswered_attempts(
-                    user_id, vendor or "", account
+                    user_id, vendor, account
                 )
             await self._record(
                 row, orders[row["attempt_id"]], listing, claims[account],
-                unanswered[account], adapter, config, report,
+                unanswered[account], reader.adapter, config, report,
             )
 
     def _plan(
         self,
         rows: list[dict[str, Any]],
         orders: dict[str, BrokerOrder | None],
-        adapter: OrderAdapter,
-        vendor: str,
+        reader: StatusReader,
         report: PassReport,
     ) -> dict[str, StatusQuery]:
         """The read each attempt needs, dropping any that is not a read."""
         planned: dict[str, StatusQuery] = {}
         for row in rows:
             attempt_id = row["attempt_id"]
-            query = adapter.status_query(
+            query = reader.adapter.status_query(
                 orders[attempt_id],
                 vendor_order_id=row.get("vendor_order_id"),
                 route=row.get("route") or {},
@@ -563,45 +526,36 @@ class OrderReconciler:
             if query is None:
                 report.unresolved += 1
                 continue
-            if order_tool(vendor, query.tool) is not None:
+            if not is_status_read(reader.vendor, query):
                 # Unreachable unless an adapter names a mutating tool as its
-                # status read. Refused here rather than at the relay, because
-                # this job must not be the thing that discovers it.
+                # status read; the reader would refuse it, and the row is
+                # counted here so the pass reports it as an error, not a skip.
                 logger.error(
                     "[OrderReconcile] %s: refusing to call order tool %r as a "
                     "status read",
-                    vendor, query.tool,
+                    reader.vendor, query.tool,
                 )
-                report.errors[vendor] += 1
+                report.errors[reader.vendor] += 1
                 continue
             planned[attempt_id] = query
         return planned
 
     async def _read(
         self,
-        grant: dict[str, str],
-        user_id: str,
-        vendor: str,
-        adapter: OrderAdapter,
+        reader: StatusReader,
         queries: dict[str, StatusQuery],
         report: PassReport,
     ) -> dict[tuple, Listing]:
         """Run each distinct status read once, through the user's own grant."""
-        minted = mint_relay_jwt(
-            EGRESS_RELAY_SECRET,
-            user_id=user_id,
-            workspace_id=grant["workspace_id"],
-            sandbox_id=RECONCILE_SANDBOX_ID,
-            caller=CALLER_HOST,
-        )
+        vendor = reader.vendor
         distinct = {query.key(): query for query in queries.values()}
         listings: dict[tuple, Listing] = {}
-        client = relay_mcp_client(grant["grant_id"], token=minted.token)
+        client = reader.client()
         try:
             async with client:
                 for key, query in distinct.items():
                     try:
-                        listings[key] = await self._list(client, adapter, query)
+                        listings[key] = await reader.read(client, query)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
@@ -619,41 +573,12 @@ class OrderReconciler:
             )
         return listings
 
-    @staticmethod
-    async def _list(client: Any, adapter: OrderAdapter, query: StatusQuery) -> Listing:
-        """Every page the vendor offers, up to the bound, and whether that was all."""
-        orders: list[VendorOrder] = []
-        page: StatusQuery | None = query
-        for _ in range(MAX_LISTING_PAGES):
-            result = await client.call_tool(page.tool, dict(page.args))
-            body = _result_body(result)
-            orders.extend(adapter.parse_status(page, body))
-            try:
-                page = adapter.next_page(page, body)
-            except ListingIncomplete as e:
-                # The vendor stopped answering mid-list. What was read still
-                # settles an order found in it; absence from it settles nothing.
-                logger.warning(
-                    "[OrderReconcile] %s: %s; absence from this list is not "
-                    "evidence",
-                    query.tool, e,
-                )
-                return Listing(orders, complete=False)
-            if page is None:
-                return Listing(orders, complete=True)
-        logger.warning(
-            "[OrderReconcile] %s: %d pages read and the vendor still has more; "
-            "absence from this list is not evidence",
-            query.tool, MAX_LISTING_PAGES,
-        )
-        return Listing(orders, complete=False)
-
     async def _record(
         self,
         row: dict[str, Any],
         order: BrokerOrder | None,
         listing: Listing,
-        claimed: set[str],
+        claimed: dict[str, datetime | None],
         unanswered: list[dict[str, Any]],
         adapter: OrderAdapter,
         config: Any,
@@ -678,10 +603,11 @@ class OrderReconciler:
         if await record_observation(attempt_id, current, observation) is None:
             report.unresolved += 1
             return
-        if observation.vendor_order_id:
+        if observation.vendor_order_id and row.get("action") in CREATING_ACTIONS:
             # Claimed for the rest of this pass: a second identical attempt
-            # must not settle on the order this one just took.
-            claimed.add(observation.vendor_order_id)
+            # must not settle on the order this one just took. A watch's claim
+            # came from the ledger, timed by when it began.
+            claimed[observation.vendor_order_id] = None
         if observation.status == current:
             # The read named the state the row was already in: the fill grew or
             # the instrument got a name. That enriches the row without moving
@@ -699,7 +625,7 @@ class OrderReconciler:
         current: AttemptStatus,
         order: BrokerOrder | None,
         listing: Listing,
-        claimed: set[str],
+        claimed: dict[str, datetime | None],
         unanswered: list[dict[str, Any]],
         adapter: OrderAdapter,
         config: Any,
@@ -722,6 +648,7 @@ class OrderReconciler:
                 listed,
                 key=key,
                 claimed=claimed,
+                made_at=row.get("created_at"),
                 executed_at=row.get("executed_at"),
                 window=float(config.match_window_seconds),
             )

@@ -161,6 +161,20 @@ async def user_feature_enabled(user_id: str, key: str) -> bool:
     return (await effective_flags_for_user(user_id)).get(key, False)
 
 
+async def user_feature_enabled_or(user_id: str, key: str, *, on_error: bool) -> bool:
+    """:func:`user_feature_enabled` for a caller that has to act either way:
+    a failed read answers ``on_error``, which the caller picks by which
+    mistake costs less, running what the user turned off or skipping what
+    they left on."""
+    try:
+        return await user_feature_enabled(user_id, key)
+    except Exception:
+        logger.warning(
+            "[Features] %s read failed; taking it as %s", key, on_error, exc_info=True
+        )
+        return on_error
+
+
 async def feature_enabled_for_account(
     user_id: str, key: str, account: Account | None
 ) -> bool:

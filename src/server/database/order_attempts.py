@@ -23,6 +23,7 @@ from src.server.services.brokerage_capabilities import OrderAction
 from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
 from src.server.services.brokerage_orders.models import (
     CREATING_ACTIONS,
+    WAKEUP_ACTIONS,
     OPEN_STATUSES,
     TERMINAL_STATUSES,
 )
@@ -93,6 +94,7 @@ async def insert_attempt(
     approval_required: bool = False,
     status: AttemptStatus = AttemptStatus.PROPOSED,
     parent_attempt_id: str | None = None,
+    outcome: OrderOutcome | None = None,
 ) -> dict[str, Any]:
     """Write the attempt for one tool call, or return the one already there.
 
@@ -102,7 +104,13 @@ async def insert_attempt(
     back to ``proposed``. It leaves ``updated_at`` alone too, because that
     column is the reconciliation sweep's clock and a resume is not a state
     change.
+
+    ``outcome`` writes the row already answered, in its state with its id and
+    fills, for a row no call will ever answer; it overrides ``status``. With no
+    ``workspace_id`` the row takes its thread's.
     """
+    if outcome is not None:
+        status = outcome.status
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -111,10 +119,17 @@ async def insert_attempt(
                     user_id, workspace_id, thread_id, conversation_response_id,
                     turn_index, message_id, tool_call_id, server, vendor, tool,
                     action, mode, account_ref, args, args_sha256, order_json,
-                    approval_required, status, parent_attempt_id
+                    approval_required, status, parent_attempt_id,
+                    vendor_order_id, route, filled_qty, avg_fill_price
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s,
+                    COALESCE(%s::uuid, (
+                        SELECT workspace_id FROM conversation_threads
+                        WHERE conversation_thread_id = %s::uuid
+                    )),
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s
                 )
                 ON CONFLICT (user_id, message_id, tool_call_id)
                 DO UPDATE SET updated_at = order_attempts.updated_at
@@ -123,6 +138,7 @@ async def insert_attempt(
                 (
                     user_id,
                     workspace_id,
+                    thread_id,
                     thread_id,
                     conversation_response_id,
                     turn_index,
@@ -140,9 +156,54 @@ async def insert_attempt(
                     approval_required,
                     str(status),
                     parent_attempt_id,
+                    *(
+                        (
+                            strip_pg_nul_str(outcome.vendor_order_id),
+                            SafeJson(dict(outcome.route or {})),
+                            outcome.filled_qty,
+                            outcome.avg_fill_price,
+                        )
+                        if outcome is not None
+                        else (None, None, None, None)
+                    ),
                 ),
             )
             return row_as_json(await cur.fetchone())  # type: ignore[return-value]
+
+
+async def insert_watch(
+    *,
+    user_id: str,
+    thread_id: str,
+    server: str,
+    vendor: str,
+    tool: str,
+    account_ref: str,
+    order: dict[str, Any],
+    outcome: OrderOutcome,
+) -> dict[str, Any]:
+    """Record an order placed elsewhere that this thread watches, as its read
+    found it, or return the row already watching it.
+
+    Keyed by the order itself (thread, vendor, account and order id) rather
+    than by a call, since nothing was called: the same order watched twice in
+    one thread is one row. Written settled as far as the read goes, since
+    nothing will ever answer for it but the reconciler's next read.
+    """
+    return await insert_attempt(
+        user_id=user_id,
+        thread_id=thread_id,
+        message_id=f"{OrderAction.WATCH}:{thread_id}",
+        tool_call_id=f"{vendor}:{account_ref}:{outcome.vendor_order_id}",
+        server=server,
+        vendor=vendor,
+        tool=tool,
+        action=str(OrderAction.WATCH),
+        mode=order.get("mode"),
+        account_ref=account_ref,
+        order=order,
+        outcome=outcome,
+    )
 
 
 async def decide_attempt(
@@ -744,26 +805,40 @@ async def thread_awaits_order(thread_id: str) -> bool:
 
 
 async def find_open_thread_order(
-    thread_id: str, vendor_order_id: str
+    thread_id: str,
+    vendor_order_id: str,
+    *,
+    brokerage: str | None = None,
+    account_ref: str | None = None,
 ) -> dict[str, Any] | None:
-    """The open order this thread placed or staged under ``vendor_order_id``,
-    the latest if the id was used twice: what an order wakeup watches."""
+    """The open order this thread placed, staged or watches under
+    ``vendor_order_id``, the latest if the id was used twice: what an order
+    wakeup follows. With ``brokerage`` and ``account_ref``, only a row at that
+    connection (named or by vendor) and account, since an id is unique only
+    within its account. Without them, only an order this thread placed or
+    staged: a bare id names one, and a watch under the same id is another
+    account's order."""
+    actions = WAKEUP_ACTIONS if brokerage is not None else CREATING_ACTIONS
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
                 SELECT {_COLUMNS} FROM order_attempts
-                 WHERE thread_id = %s AND vendor_order_id = %s
-                   AND action = ANY(%s) AND status = ANY(%s)
+                 WHERE thread_id = %(thread)s AND vendor_order_id = %(order)s
+                   AND action = ANY(%(actions)s) AND status = ANY(%(open)s)
+                   AND (%(brokerage)s::text IS NULL OR %(brokerage)s IN (server, vendor))
+                   AND (%(account)s::text IS NULL OR btrim(account_ref) = %(account)s)
                  ORDER BY created_at DESC
                  LIMIT 1
                 """,
-                (
-                    thread_id,
-                    vendor_order_id,
-                    [str(a) for a in CREATING_ACTIONS],
-                    [str(s) for s in OPEN_STATUSES],
-                ),
+                {
+                    "thread": thread_id,
+                    "order": vendor_order_id,
+                    "actions": [str(a) for a in actions],
+                    "open": [str(s) for s in OPEN_STATUSES],
+                    "brokerage": brokerage,
+                    "account": account_ref,
+                },
             )
             return row_as_json(await cur.fetchone())
 

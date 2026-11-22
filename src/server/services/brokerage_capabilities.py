@@ -663,6 +663,10 @@ class OrderAction(StrEnum):
     UNSTAGE = "unstage"
     EXERCISE = "exercise"
     CANCEL_EXERCISE = "cancel_exercise"
+    #: Not a tool's: the ledger's record of an order placed elsewhere, such as
+    #: in the user's own account, which the agent asked to hear about. Nothing
+    #: is sent for it; the reconciler only reads it.
+    WATCH = "watch"
 
 
 class OrderMode(StrEnum):

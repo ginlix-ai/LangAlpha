@@ -98,12 +98,67 @@ TERMINAL_STATUSES: tuple[AttemptStatus, ...] = (
 # taken would hide the placement it points at from the attempt that made it.
 CREATING_ACTIONS: tuple[OrderAction, ...] = (OrderAction.PLACE, OrderAction.STAGE)
 
+# The rows an order wakeup can follow: an order this thread brought into
+# existence, or one placed elsewhere that it watches. A watch is left out of
+# CREATING_ACTIONS on purpose: it does not own the id, so it must not keep an
+# attempt that lost its answer from being matched to the order it made.
+WAKEUP_ACTIONS: tuple[OrderAction, ...] = (*CREATING_ACTIONS, OrderAction.WATCH)
+
 # The actions whose event no tool lists. Nothing could ever read one of these
 # back, so the attempt's own answer is the last word on it.
 UNLISTED_ACTIONS: tuple[OrderAction, ...] = (
     OrderAction.EXERCISE,
     OrderAction.CANCEL_EXERCISE,
 )
+
+# How an order stood when something reported on it, worded alike for every
+# brokerage. The order wakeup's fire writes the same mapping in SQL
+# (``fire_order_wakeups``), and a unit test holds the two together.
+OrderOutcomeKey = Literal[
+    "filled",
+    "partial",
+    "partial_cancelled",
+    "cancelled",
+    "rejected",
+    "failed",
+    "partial_expired",
+    "expired",
+    "confirmed",
+    "handed_off",
+]
+
+
+def partly_filled(filled_qty: Any) -> bool:
+    """Whether any of the order filled, as the ledger's quantity says."""
+    try:
+        return float(filled_qty or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def outcome_key(
+    status: Any, filled_qty: Any, *, unlisted: bool = False
+) -> OrderOutcomeKey:
+    """The outcome ``status`` and ``filled_qty`` read as.
+
+    An order still open reads as ``partial``, since one is reported only once
+    something filled. ``unlisted`` is a staged instruction that left the
+    vendor's list rather than being reported confirmed by it.
+    """
+    partly = partly_filled(filled_qty)
+    if status == AttemptStatus.FILLED:
+        return "filled"
+    if status == AttemptStatus.CANCELLED:
+        return "partial_cancelled" if partly else "cancelled"
+    if status == AttemptStatus.REJECTED_BY_VENDOR:
+        return "rejected"
+    if status == AttemptStatus.EXPIRED:
+        return "partial_expired" if partly else "expired"
+    if status == AttemptStatus.HANDED_OFF:
+        return "handed_off" if unlisted else "confirmed"
+    if status in TERMINAL_STATUSES:
+        return "failed"
+    return "partial"
 
 
 AssetClass = Literal[

@@ -92,6 +92,24 @@ FEATURES: dict[str, FeatureSpec] = {
             "every pending wakeup."
         ),
     ),
+    "order_wakeups": FeatureSpec(
+        key="order_wakeups",
+        label="Order wakeups",
+        description=(
+            "When the agent places an order that does not fill at once, it sets "
+            "a wakeup that brings it back to the thread when the order fills, "
+            "partly fills or ends unfilled. You can cancel any of them from the "
+            "chat tray."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_OUT,
+        tradeoffs=(
+            "Each fill or end starts a turn if the thread is idle. Turned off, "
+            "the agent hears how an order ends only if it sets a wakeup itself "
+            "or you ask."
+        ),
+        requires=("wakeups",),
+    ),
     "market_watch": FeatureSpec(
         key="market_watch",
         label="Market watch",

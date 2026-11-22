@@ -15,11 +15,14 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, Union, get_args
 
 from market_protocol import InstrumentRef
 
 from src.server.database.wakeups.contract import as_datetime, as_float
+from src.server.services.brokerage_capabilities import OrderAction
+from src.server.services.brokerage_orders import adapter_for
+from src.server.services.brokerage_orders.models import OrderOutcomeKey
 from src.server.services.brokerage_orders.view import order_price, order_view, plain
 from src.server.services.market_targets.listing import (
     PCT_FROM_TOOL,
@@ -30,7 +33,13 @@ from src.tools.market_data.display import price_text
 from src.tools.market_data.quote_format import current_price
 from src.tools.wakeups.clock import clock, when, zone_name, zone_of
 from src.tools.wakeups.describe import price_phrase, quoted_line, schedule_of, venue_zone
-from src.tools.wakeups.wording import BUILD_WAKE_LINES, WAKE_LABEL_PREFIX, WAKE_LINES
+from src.tools.wakeups.wording import (
+    BUILD_WAKE_LINES,
+    EDIT_SHOWS_AS_CANCEL,
+    WAKE_LABEL_PREFIX,
+    WAKE_LINES,
+    WATCHED_WAKE_LINES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +48,9 @@ _LOG = "[Wakeups]"
 # A lapse reminder reads better with the price, but it is worth more on time.
 _QUOTE_TIMEOUT = 5.0
 
-_OUTCOME_LINE = {
-    "filled": "order_filled",
-    "partial": "order_partial",
-    "partial_cancelled": "order_partial_cancelled",
-    "cancelled": "order_cancelled",
-    "rejected": "order_rejected",
-    "failed": "order_failed",
-    "partial_expired": "order_partial_expired",
-    "expired": "order_expired",
-    "confirmed": "order_confirmed",
-    "handed_off": "order_handed_off",
-}
+_OUTCOME_LINE = {outcome: f"order_{outcome}" for outcome in get_args(OrderOutcomeKey)}
+# The ends an edit at a brokerage that edits by cancel and re-place reads as.
+_CANCEL_OUTCOMES = frozenset({"cancelled", "partial_cancelled"})
 
 Quote = Union[float, Mapping[str, Any], None]
 
@@ -98,6 +98,10 @@ class OrderNotice:
     reason: Optional[str]
     #: The average fill as the line prints it, at the order's own places. Not sent.
     avg_fill: str
+    #: Placed elsewhere and only watched here, so not worded as the agent's own.
+    watched: bool = False
+    #: The brokerage, when its own edits read back as a cancel. Not sent.
+    edits_by_replace_at: Optional[str] = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -109,6 +113,7 @@ class OrderNotice:
             "avg_fill_price": self.avg_fill_price,
             "currency": self.currency,
             "reason": self.reason,
+            "watched": self.watched,
         }
 
 
@@ -202,6 +207,8 @@ def notice_payload(row: Mapping[str, Any], notice: str, seq: int) -> WakeNotice:
         # The brokerage's own words, of any length and content.
         reason = outcome.get("reason")
         avg_fill_price = as_float(outcome.get("avg_fill_price"))
+        attempt = row.get("attempt") or {}
+        adapter = adapter_for(str(attempt.get("vendor") or ""))
         order = OrderNotice(
             vendor_order_id=row.get("vendor_order_id"),
             summary=(view.summary_live or view.summary) if view else None,
@@ -212,6 +219,10 @@ def notice_payload(row: Mapping[str, Any], notice: str, seq: int) -> WakeNotice:
             currency=view.currency if view else None,
             reason=quoted_line(reason, _REASON_CHARS) or None if isinstance(reason, str) else None,
             avg_fill=order_price(view.order if view else None, avg_fill_price),
+            watched=attempt.get("action") == OrderAction.WATCH,
+            edits_by_replace_at=(
+                adapter.vendor if adapter is not None and adapter.edits_by_replace else None
+            ),
         )
     schedule = schedule_of(row)
     # The next check is past the slots skipped while this one waited, or it
@@ -319,7 +330,9 @@ def wake_line(
     # A fill says how much filled: an order for an amount of money has no
     # quantity of its own to show.
     qty = order.filled_qty if order.outcome == "filled" and order.filled_qty else order.qty
-    return prefix + templates[_OUTCOME_LINE.get(order.outcome or "", "order_filled")].format(
+    key = _OUTCOME_LINE.get(order.outcome or "", "order_filled")
+    line = (WATCHED_WAKE_LINES.get(key) if order.watched else None) or templates[key]
+    text = line.format(
         order=order.summary or f"order {order.vendor_order_id}",
         order_id=order.vendor_order_id,
         qty=plain(qty) if qty is not None else "?",
@@ -328,6 +341,9 @@ def wake_line(
         reason=order.reason or "no reason given",
         fire_time=clock(fired_at, zone, fired_at),
     )
+    if order.edits_by_replace_at and order.outcome in _CANCEL_OUTCOMES:
+        text += EDIT_SHOWS_AS_CANCEL.format(brokerage=order.edits_by_replace_at)
+    return prefix + text
 
 
 def quote_price(quote: Quote) -> Optional[float]:

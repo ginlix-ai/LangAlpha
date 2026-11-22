@@ -23,10 +23,10 @@ from src.server.database.wakeups.arm import WakeupSpec
 from src.server.models.automation import _refuse_misread_cron
 from src.tools.wakeups.clock import Zone, clock, user_zone_of, utc, zone_name
 from src.tools.wakeups.describe import quoted_line
-from src.tools.wakeups.models import LABEL_MAX, WakeupTrigger
+from src.tools.wakeups.models import LABEL_MAX, OrderTarget, WakeupTrigger
 from src.tools.wakeups.wording import BUILD_TOOL_RESULTS, TEMPLATES, TOOL_RESULTS
 
-MAX_PENDING = 10
+MAX_PENDING = 20
 MIN_LEAD = timedelta(minutes=1)
 HORIZON = timedelta(days=7)
 MIN_CRON_GAP = timedelta(minutes=5)
@@ -217,6 +217,18 @@ class OrderAsk:
     timezone: Optional[str]  # only when the entry named one
 
 
+@dataclass(frozen=True)
+class WatchAsk:
+    """An order entry naming where it was read, for an order placed elsewhere:
+    still owing the lookup, and a watch if this thread holds no such order."""
+
+    label: Optional[str]
+    order_id: str
+    timezone: Optional[str]  # only when the entry named one
+    brokerage: str
+    account: str
+
+
 def _error_lines(e: ValidationError) -> list[str]:
     lines = []
     for err in e.errors():
@@ -249,7 +261,7 @@ def _error_lines(e: ValidationError) -> list[str]:
 
 def check_trigger(
     raw: Any, now: datetime, user_tz: str
-) -> WakeupSpec | PriceAsk | OrderAsk:
+) -> WakeupSpec | PriceAsk | OrderAsk | WatchAsk:
     """One entry as the model wrote it: a timer's finished spec, or what a
     price or an order entry still has to look up. Raises `Refused`.
 
@@ -272,7 +284,9 @@ def check_trigger(
         raise
 
 
-def _check(raw: dict, now: datetime, user_tz: str) -> WakeupSpec | PriceAsk | OrderAsk:
+def _check(
+    raw: dict, now: datetime, user_tz: str
+) -> WakeupSpec | PriceAsk | OrderAsk | WatchAsk:
     """The first group of problems (kind, until, timezone) is reported
     together; after that, the first failure of the entry's own kind is."""
     try:
@@ -351,9 +365,18 @@ def _check(raw: dict, now: datetime, user_tz: str) -> WakeupSpec | PriceAsk | Or
             else None,
         )
 
+    order = t.order
+    if isinstance(order, OrderTarget):
+        return WatchAsk(
+            label=t.label,
+            order_id=order.id.strip(),
+            timezone=zone_name(zone) if t.timezone is not None else None,
+            brokerage=order.brokerage.strip(),
+            account=order.account.strip(),
+        )
     return OrderAsk(
         label=t.label,
-        order_id=t.order.strip(),
+        order_id=order.strip(),
         timezone=zone_name(zone) if t.timezone is not None else None,
     )
 
