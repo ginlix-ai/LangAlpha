@@ -5,6 +5,7 @@ import { readTypedTicker } from '@/lib/marketUtils';
 import { userLocalStorage } from '@/lib/userStorage';
 import type { FileLocation } from '../../utils/fileLocation';
 import { isValidUuid } from '../../utils/uuid';
+import { freshStrips, tabsStorageKey, threadTabsStorageKey } from './freshStrips';
 import { PREVIEW_PORT_MAX, PREVIEW_PORT_MIN, type ChartTabSpec, type PreviewSpec, type ToolTabSpec } from './types';
 
 /**
@@ -113,6 +114,11 @@ interface TabsState {
    * thread's tabs would be written over the incoming thread's saved strip.
    */
   key: string | null;
+  /**
+   * The fresh chat's strip (`freshStrips`) this thread's strip was taken
+   * from, dropped from memory once this one is saved under the thread.
+   */
+  handedFrom?: string;
   /** Kept for the life of the mount, never stored: a reload is a fresh start. */
   history?: Readonly<Record<string, TabHistory>>;
 }
@@ -193,19 +199,7 @@ const persistedStateSchema = z.object({
   active: z.catch(z.int(), 0),
 });
 
-/**
- * The workspace's strip: what the panel last showed there, in any thread. It is
- * the seed a thread with no strip of its own starts from, so a new conversation
- * about the same files opens on them rather than on nothing.
- */
-export function tabsStorageKey(workspaceId: string): string {
-  return `filePanel.tabs.${workspaceId}`;
-}
-
-/** A thread's own strip, which wins over the workspace seed once it exists. */
-export function threadTabsStorageKey(workspaceId: string, threadId: string): string {
-  return `filePanel.tabs.${workspaceId}.t.${threadId}`;
-}
+export { tabsStorageKey, threadTabsStorageKey };
 
 let nextId = 0;
 const newId = () => `t${++nextId}`;
@@ -283,23 +277,43 @@ function serialize({ tabs, activeId }: StripBody): string {
   return JSON.stringify({ tabs: named.map(toPersisted), active });
 }
 
-/** The seed is whatever strip was shown last, in whichever thread, so it is written with every strip. */
-function writeStrip(store: string, seedStore: string | null, json: string): void {
+/**
+ * Save a strip. One handed on from a chat's held strip leaves that copy in
+ * place, kept current, until its own reads back from storage, which refuses
+ * quietly: a reopen then still finds the latest strip.
+ */
+function saveStrip(store: string, strip: TabsState, fresh: boolean): void {
+  const json = serialize(strip);
+  const saved = writeStrip(store, json, fresh);
+  if (!strip.handedFrom) return;
+  // Once saved, the thread's copy is the strip, and a later refusal leaves it
+  // as any thread's is left.
+  if (saved) freshStrips.delete(strip.handedFrom);
+  else if (freshStrips.has(strip.handedFrom)) freshStrips.set(strip.handedFrom, json);
+}
+
+/** Whether the strip is now there to read back. */
+function writeStrip(store: string, json: string, fresh: boolean): boolean {
+  if (fresh) {
+    freshStrips.set(store, json);
+    return true;
+  }
   try {
     userLocalStorage.setItem(store, json);
-    if (seedStore && seedStore !== store) userLocalStorage.setItem(seedStore, json);
+    return userLocalStorage.getItem(store) === json;
   } catch { /* a full or blocked store is not worth failing a render over */ }
+  return false;
 }
 
 /**
  * The strip a key holds, or null when it holds nothing readable. A key that
  * parses to no tabs is a strip the reader emptied on purpose, and comes back
- * as the empty tab rather than as "absent", which would reseed it.
+ * as the empty tab rather than as "absent".
  */
-function readPersisted(key: string | null): StripBody | null {
+function readPersisted(key: string | null, fresh: boolean): StripBody | null {
   if (!key) return null;
   try {
-    const raw = userLocalStorage.getItem(key);
+    const raw = fresh ? freshStrips.get(key) : userLocalStorage.getItem(key);
     if (!raw) return null;
     const saved = persistedStateSchema.safeParse(JSON.parse(raw));
     if (!saved.success) return null;
@@ -456,7 +470,7 @@ function closeIn(state: TabsState, id: string): TabsState {
   const at = state.tabs.findIndex((t) => t.id === id);
   if (at < 0) return state;
   const tabs = state.tabs.filter((t) => t.id !== id);
-  if (!tabs.length) return { ...blankStrip(), key: state.key };
+  if (!tabs.length) return { ...blankStrip(), key: state.key, handedFrom: state.handedFrom };
   const activeId = id === state.activeId ? (tabs[at] ?? tabs[at - 1]).id : state.activeId;
   const { [id]: _closed, ...history } = state.history ?? {};
   return { ...state, tabs, activeId, history };
@@ -470,10 +484,12 @@ function closeIn(state: TabsState, id: string): TabsState {
  * request, not eight: the bodies live in the React Query cache, keyed by path,
  * and a tab is only a claim on one.
  *
- * A thread without a strip of its own inherits the workspace's: a new
- * conversation is usually about the files the last one left open. Until a
- * fresh chat has a thread id (its first message mints one) the strip is the
- * workspace's, and it carries over unchanged when the id arrives.
+ * A thread without a strip of its own starts empty. Inheriting the strip the
+ * workspace showed last put a file from an earlier conversation beside a new
+ * one about something else, which reads as the agent having opened it. A
+ * fresh chat keeps its strip in memory until its first message mints a thread
+ * id, and the strip carries over to that thread unchanged. Given `chat`, that
+ * strip is held under the chat, so it outlives this mount.
  *
  * `persist: false` keeps a strip in memory for the life of the mount: it reads
  * and writes nothing, including the last chart symbol. Its identity still
@@ -482,54 +498,69 @@ function closeIn(state: TabsState, id: string): TabsState {
  * second's id.
  *
  * `active: false` is a panel that is mounted but not on screen: it reads its
- * strip and keeps it, but writes nothing while hidden. The seed is the strip
- * shown last, and a hidden panel is not showing anything; a write from it
- * would put its tabs under the next conversation in place of the ones the
- * reader is looking at. It writes again once it is back on screen.
+ * strip and keeps it, but writes nothing while hidden. It writes again once it
+ * is back on screen.
  */
 export function useFileTabs(
   workspaceId: string,
   threadId?: string | null,
-  { persist = true, active: onScreen = true }: { persist?: boolean; active?: boolean } = {},
+  { persist = true, active: onScreen = true, chat }: { persist?: boolean; active?: boolean; chat?: string } = {},
 ) {
   // Which strip this is. No key for an adapter mount (a share has no workspace
   // of its own), so two shares cannot inherit each other's tab strip.
-  const seedKey = workspaceId ? tabsStorageKey(workspaceId) : null;
-  const key = workspaceId && threadId ? threadTabsStorageKey(workspaceId, threadId) : seedKey;
+  const freshKey = workspaceId ? tabsStorageKey(workspaceId, chat) : null;
+  const key = workspaceId && threadId ? threadTabsStorageKey(workspaceId, threadId) : freshKey;
 
-  // Where it is kept, which is nowhere unless it persists.
-  const seedStore = persist ? seedKey : null;
-  const store = persist ? key : null;
+  // Where it is kept: a thread's in storage, a fresh chat's in memory under
+  // the chat, and nowhere when it does not persist or has neither.
+  const fresh = !threadId;
+  const store = persist && (threadId || chat) ? key : null;
 
-  const [state, setState] = useState<TabsState>(() => ({
-    ...(readPersisted(store) ?? readPersisted(seedStore) ?? blankStrip()),
-    key,
-  }));
+  // A thread with nothing saved yet takes what its chat held before the
+  // thread existed: the panel may have been closed when the first message
+  // minted it, so no mount saw the switch below.
+  const held = (): TabsState | null => {
+    const strip = chat && store && !fresh ? readPersisted(freshKey, true) : null;
+    return strip && { ...strip, key, handedFrom: freshKey ?? undefined };
+  };
+  const [state, setState] = useState<TabsState>(() => {
+    const own = readPersisted(store, fresh);
+    return own ? { ...own, key } : held() ?? { ...blankStrip(), key };
+  });
 
   // A thread switch is a different strip, not a reordering of this one. A
-  // thread with nothing saved keeps what is on screen when the workspace is the
-  // same (that is the seed, and keeping it in memory keeps its locations too);
-  // a new workspace reads its own seed. Switched during render, not in an
-  // effect: the panel's target opens its file in a layout effect of the same
-  // update (a link to another workspace's file moves the panel and opens the
-  // file at once), and a switch landing after it would replace that tab with
-  // the new workspace's strip.
-  const [shown, setShown] = useState({ key, seedKey });
-  if (shown.key !== key) {
-    const sameWorkspace = shown.seedKey === seedKey;
-    setShown({ key, seedKey });
-    setState((prev) => ({
-      ...(readPersisted(store) ?? (sameWorkspace ? prev : (readPersisted(seedStore) ?? blankStrip()))),
-      key,
-    }));
+  // thread with nothing saved takes what its chat held, as above, or starts
+  // empty. The thread a fresh chat in this workspace just became keeps what is
+  // on screen instead (and its locations with it); the chat keys the panel by
+  // instance, so the mount lives through that change. Switched during render, not in an effect: the
+  // panel's target opens its file in a layout effect of the same update (a
+  // link to another workspace's file moves the panel and opens the file at
+  // once), and a switch landing after it would replace that tab with the new
+  // workspace's empty strip.
+  const [shownKey, setShownKey] = useState(key);
+  if (shownKey !== key) {
+    const minted = shownKey === freshKey;
+    setShownKey(key);
+    setState((prev) => {
+      const own = readPersisted(store, fresh);
+      if (own) return { ...own, key };
+      // The strip on screen is the chat's held one, with its live locations.
+      // Without a chat it was held by no one, so there is no copy to retire.
+      if (minted) return { ...prev, key, handedFrom: chat ? shownKey ?? undefined : undefined };
+      return held() ?? { ...blankStrip(), key };
+    });
   }
 
   // Written only once the strip on screen is the one this key names; the
   // render between a key change and the switch above still holds the old strip.
+  // A hidden panel saves one thing: a chat's held strip handed to the thread
+  // its first message minted after the reader moved on, since the chat can be
+  // dropped before it is shown again and the held copy goes with it.
   useEffect(() => {
-    if (!store || !onScreen || state.key !== key) return;
-    writeStrip(store, seedStore, serialize(state));
-  }, [state, key, store, seedStore, onScreen]);
+    const handing = !!state.handedFrom && freshStrips.has(state.handedFrom);
+    if (!store || (!onScreen && !handing) || state.key !== key) return;
+    saveStrip(store, state, fresh);
+  }, [state, key, store, onScreen, fresh]);
 
   /**
    * Close the last tab along with the panel. The emptied strip is written
@@ -538,11 +569,12 @@ export function useFileTabs(
    * because a host animating the panel out keeps this mount, and a reopen
    * inside that window gets it back.
    */
+  const { handedFrom } = state;
   const closeOut = useCallback(() => {
-    const blank = blankStrip();
+    const blank = { ...blankStrip(), handedFrom };
     setState((prev) => ({ ...blank, key: prev.key }));
-    if (store && onScreen) writeStrip(store, seedStore, serialize(blank));
-  }, [store, seedStore, onScreen]);
+    if (store && onScreen) saveStrip(store, { ...blank, key: store }, fresh);
+  }, [store, onScreen, fresh, handedFrom]);
 
   const activate = useCallback((id: string) => {
     setState((prev) => (prev.activeId === id ? prev : { ...prev, activeId: id }));
@@ -707,6 +739,8 @@ export function useFileTabs(
   }, [patchTab]);
 
   const closeTab = useCallback((id: string) => setState((prev) => closeIn(prev, id)), []);
+  /** Several at once, each closed as `closeTab` would, so the one left in front is the neighbour of the last to go. */
+  const closeTabs = useCallback((ids: readonly string[]) => setState((prev) => ids.reduce(closeIn, prev)), []);
 
   /** What a step from this tab would show, or null where it has none to take. */
   const historyTarget = useCallback((id: string, dir: HistoryDirection): TabBody | null => {
@@ -747,6 +781,7 @@ export function useFileTabs(
     openFile,
     pinTab,
     closeTab,
+    closeTabs,
     closeOut,
     newTab,
     showListing,
@@ -767,7 +802,7 @@ export function useFileTabs(
     forgetPaths,
   }), [
     state.tabs, activeTab, openPaths,
-    activate, openFile, pinTab, closeTab, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
+    activate, openFile, pinTab, closeTab, closeTabs, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
     openPreview, openChart, retargetChart, openTool, openSources, patchTab, clearLocation, historyTarget, stepHistory, forgetPaths,
   ]);
 }

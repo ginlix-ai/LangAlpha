@@ -3179,6 +3179,13 @@
     "metaPages_one": "1 page",
     "metaPages_other": "{{count}} pages",
     "newTab": "New tab",
+    "emptyTab": "New tab",
+    "tabMenu": {
+      "close": "Close",
+      "closeOthers": "Close others",
+      "closeToRight": "Close to the right",
+      "closeAll": "Close all"
+    },
     "back": "Back",
     "forward": "Forward",
     "noFilesYet": "No files yet",

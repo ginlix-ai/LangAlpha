@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
-import { tabsStorageKey } from '@/pages/ChatAgent/components/filePanel/useFileTabs';
+import { threadTabsStorageKey } from '@/pages/ChatAgent/components/filePanel/useFileTabs';
 import { URL_FRESH_MS } from '@/pages/ChatAgent/components/filePanel/usePreviews';
 
 vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
@@ -136,11 +136,11 @@ describe('FilePanel running apps', () => {
   it('re-mints the URL for a tab restored from storage, which stored none', async () => {
     // The entry is in the shape strips were written in before tabs shed the
     // file-only fields, so a strip saved then still comes back.
-    localStorage.setItem(tabsStorageKey('ws'), JSON.stringify({
+    localStorage.setItem(threadTabsStorageKey('ws', 't1'), JSON.stringify({
       tabs: [{ path: null, kind: 'preview', preview: false, port: 8050, title: 'Dashboard' }],
       active: 0,
     }));
-    renderWithProviders(panel());
+    renderWithProviders(panel({ threadId: 't1' }));
 
     await waitFor(() => expect(previewUrl()).toHaveBeenCalledWith('ws', 8050, undefined, false));
     expect(await screen.findByTitle('App on port 8050')).toBeTruthy();

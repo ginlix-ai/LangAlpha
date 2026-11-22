@@ -3212,6 +3212,13 @@
     "metaLines": "{{count}} 行",
     "metaPages": "{{count}} 页",
     "newTab": "新建标签页",
+    "emptyTab": "新标签页",
+    "tabMenu": {
+      "close": "关闭",
+      "closeOthers": "关闭其他",
+      "closeToRight": "关闭右侧",
+      "closeAll": "全部关闭"
+    },
     "back": "后退",
     "forward": "前进",
     "noFilesYet": "暂无文件",
