@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { isThreadRunning } from '@/lib/threadLifecycle/store';
-import ArchiveThreadConfirmDialog from './ArchiveThreadConfirmDialog';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { ArchiveThreadConfirmDialog } from './lazyDialogs';
 
 export interface ThreadArchiveConfirm {
   /**
@@ -45,11 +46,13 @@ export function useArchiveThreadConfirm(): ThreadArchiveConfirm {
   return {
     requestArchive,
     dialog: (
-      <ArchiveThreadConfirmDialog
-        open={!!pending}
-        onCancel={handleCancel}
-        onConfirm={handleConfirm}
-      />
+      <MountOnceOpen open={!!pending}>
+        <ArchiveThreadConfirmDialog
+          open={!!pending}
+          onCancel={handleCancel}
+          onConfirm={handleConfirm}
+        />
+      </MountOnceOpen>
     ),
   };
 }

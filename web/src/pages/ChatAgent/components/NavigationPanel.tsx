@@ -21,16 +21,20 @@ import { WorkspaceTreeRow, WorkspaceDragChip } from './NavigationRows';
 import type { ThreadsData } from './NavigationRows';
 import { useArchiveThreadConfirm } from './threadArchiveAction';
 import { useThreadDeleteConfirm } from './threadDeleteAction';
-import ShareThreadDialog, { type ShareThreadTarget } from './ShareThreadDialog';
+import type { ShareThreadTarget } from './ShareThreadDialog';
 import { NavTreeContext, useNavTreeKit, type DragGate } from './navTreeKit';
 import { isThreadRemoved } from '@/lib/deletedThreads';
 import { useAccount } from '@/hooks/useAccount';
 import type { SharedWorkspaceEntry } from '@/types/sharedWorkspaces';
 import type { SharedNavRow } from './sharedNavRows';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
 import './NavigationPanel.css';
 
 // Lazy: the tree is on every page, and the panel opens only from a shared row's menu.
 const MembersDialog = lazy(() => import('@/components/sharedWorkspaces/MembersDialog').then((m) => ({ default: m.MembersDialog })));
+// Lazy for the same reason: it opens only from a thread's menu, and its panel
+// brings the share-link and artifact code with it.
+const ShareThreadDialog = lazy(() => import('./ShareThreadDialog'));
 
 interface NavigationPanelProps {
   /** Whether this panel's host ChatView is the visible one. Up to 5 ChatViews
@@ -511,7 +515,9 @@ function NavigationPanel({
       {wsActions.dialogs}
       {archiveDialog}
       {deleteDialog}
-      <ShareThreadDialog target={shareTarget} onClose={() => setShareTarget(null)} />
+      <MountOnceOpen open={!!shareTarget}>
+        <ShareThreadDialog target={shareTarget} onClose={() => setShareTarget(null)} />
+      </MountOnceOpen>
       {peopleEntry && (
         <Suspense fallback={null}>
           <MembersDialog

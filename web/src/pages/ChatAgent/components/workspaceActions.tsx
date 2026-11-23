@@ -1,4 +1,4 @@
-import React, { Suspense, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
@@ -16,8 +16,9 @@ import { useComputers } from '../hooks/useComputers';
 import { liveComputers, takesWorkspaces } from '../utils/computerStatus';
 import { providerKeepsFilesOnRemove } from './providerUi';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
-import DeleteConfirmModal, { type OwnMachineFolder } from './DeleteConfirmModal';
-import DuplicateWorkspaceDialog from './DuplicateWorkspaceDialog';
+import type { OwnMachineFolder } from './DeleteConfirmModal';
+import { DeleteConfirmModal, DuplicateWorkspaceDialog } from './lazyDialogs';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
 import { WorkspaceMoveOutcomes } from './WorkspaceMoveOutcomes';
 
 // Lazy: the sidebar mounts these actions on every page, and the dialog brings
@@ -164,9 +165,6 @@ export function useWorkspaceActions({
   const [duplicateTarget, setDuplicateTarget] = useState<MenuWorkspace | null>(null);
   const [duplicateBusy, setDuplicateBusy] = useState(false);
   const [moveTarget, setMoveTarget] = useState<MenuWorkspace | null>(null);
-  // Latched once opened, so closing animates out rather than unmounting.
-  const [moveNeeded, setMoveNeeded] = useState(false);
-  if (moveTarget && !moveNeeded) setMoveNeeded(true);
   const [deleteTarget, setDeleteTarget] = useState<MenuWorkspace | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -230,31 +228,33 @@ export function useWorkspaceActions({
 
   const dialogs = (
     <>
-      <DuplicateWorkspaceDialog
-        target={duplicateTarget}
-        onClose={() => setDuplicateTarget(null)}
-        onConfirm={() => void handleDuplicateConfirm()}
-        busy={duplicateBusy}
-      />
-      {moveNeeded && (
-        <Suspense fallback={null}>
-          <MoveWorkspaceDialog target={moveTarget} onClose={() => setMoveTarget(null)} />
-        </Suspense>
-      )}
+      <MountOnceOpen open={!!duplicateTarget}>
+        <DuplicateWorkspaceDialog
+          target={duplicateTarget}
+          onClose={() => setDuplicateTarget(null)}
+          onConfirm={() => void handleDuplicateConfirm()}
+          busy={duplicateBusy}
+        />
+      </MountOnceOpen>
+      <MountOnceOpen open={!!moveTarget}>
+        <MoveWorkspaceDialog target={moveTarget} onClose={() => setMoveTarget(null)} />
+      </MountOnceOpen>
       {/* Every host carries it, so an ending is told wherever the user is;
           each one is handed out once however many are mounted. */}
       <WorkspaceMoveOutcomes />
-      <DeleteConfirmModal
-        isOpen={!!deleteTarget && !deleteWaiting}
-        workspaceName={deleteTarget?.name || ''}
-        onConfirm={() => void handleConfirmDelete()}
-        onCancel={() => { setDeleteTarget(null); setDeleteError(null); }}
-        isDeleting={deleteBusy}
-        error={deleteError}
-        ownMachine={deleteOwnMachine}
-        deleteFiles={deleteFiles}
-        onDeleteFilesChange={setDeleteFiles}
-      />
+      <MountOnceOpen open={!!deleteTarget}>
+        <DeleteConfirmModal
+          isOpen={!!deleteTarget && !deleteWaiting}
+          workspaceName={deleteTarget?.name || ''}
+          onConfirm={() => void handleConfirmDelete()}
+          onCancel={() => { setDeleteTarget(null); setDeleteError(null); }}
+          isDeleting={deleteBusy}
+          error={deleteError}
+          ownMachine={deleteOwnMachine}
+          deleteFiles={deleteFiles}
+          onDeleteFilesChange={setDeleteFiles}
+        />
+      </MountOnceOpen>
     </>
   );
 

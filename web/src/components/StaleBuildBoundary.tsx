@@ -62,8 +62,10 @@ function StaleBuildFallback({ variant }: { variant: 'app' | 'pane' }) {
 
 interface Props {
   children: React.ReactNode;
-  /** `app` fills the viewport, `pane` fills the routed content area. */
-  variant?: 'app' | 'pane';
+  /** `app` fills the viewport, `pane` fills the routed content area, and
+   *  `toast` leaves the spot empty for something opened on demand (a dialog),
+   *  letting the app's stale-build toast offer the reload instead. */
+  variant?: 'app' | 'pane' | 'toast';
 }
 
 interface State {
@@ -93,8 +95,9 @@ export class StaleBuildBoundary extends React.Component<Props, State> {
     // silent: this boundary is about to render the same message as a full-pane
     // card, and the toast would put a byte-identical second notice beside it.
     // The call still takes the once-only latch, so a later signal cannot stack
-    // a toast on top of the card.
-    if (isStaleBuildError(error)) reportStaleBuild('chunk', { silent: true });
+    // a toast on top of the card. A `toast` boundary renders no card, so the
+    // toast is the notice.
+    if (isStaleBuildError(error)) reportStaleBuild('chunk', { silent: this.props.variant !== 'toast' });
   }
 
   override render(): React.ReactNode {
@@ -109,7 +112,7 @@ export class StaleBuildBoundary extends React.Component<Props, State> {
       throw error;
     }
 
-    if (stale) return <StaleBuildFallback variant={this.props.variant ?? 'app'} />;
+    if (stale) return this.props.variant === 'toast' ? null : <StaleBuildFallback variant={this.props.variant ?? 'app'} />;
     return this.props.children;
   }
 }
