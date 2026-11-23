@@ -43,7 +43,7 @@ from src.server.services.activity import Action
 from src.server.services.computer_errors import ComputerRemovalRefused
 from src.server.services.policy import SHARED_WORKSPACES_CREATE
 from src.server.services.account import require_policy
-from src.server.services.shared_workspaces import share_out, teams
+from src.server.services.shared_workspaces import member_context, share_out, teams
 from src.server.services.shared_workspaces.access import (
     SharedAccess,
     acts_as_manager,
@@ -254,10 +254,11 @@ async def members_view(shared: SharedAccess) -> MembersView:
     """The member list a client shows, each with whether their access through
     the organization has ended (suspended or removed)."""
     rows = await db.list_members(shared.workspace_id)
-    active = await asyncio.gather(
-        *(account.active_in(row["user_id"], shared.org_id) for row in rows)
+    block, context, *active = await asyncio.gather(
+        shared_block(shared),
+        member_context.view_for(shared.caller, shared.row),
+        *(account.active_in(row["user_id"], shared.org_id) for row in rows),
     )
-    block = await shared_block(shared)
     return MembersView(
         workspace_id=shared.workspace_id,
         everyone=block.everyone,
@@ -265,6 +266,7 @@ async def members_view(shared: SharedAccess) -> MembersView:
         members=[Member(**row, active=a) for row, a in zip(rows, active)],
         you=You.model_validate(block, from_attributes=True),
         team=block.team,
+        member_context=context,
     )
 
 
@@ -406,21 +408,38 @@ async def _end_unreached(workspace_id: str) -> None:
         await end_access_of_unreached(row)
 
 
-async def set_share_out(shared: SharedAccess, value: share_out.ShareOut) -> None:
-    """Change who may share the workspace's work outside it (a manager's
-    act). Every open session of its members reads the workspace again; a
-    link already made opens to whom the new choice allows from its next
-    visit on."""
+async def update_settings(
+    shared: SharedAccess,
+    *,
+    sharing: Optional[share_out.ShareOut] = None,
+    member_context: Optional[bool] = None,
+) -> None:
+    """Change who may share the workspace's work outside it, and whether
+    members' own context reaches it where their organization grants it (a
+    manager's act). Every open session of its members reads the workspace
+    again; a link already made opens to whom the new choice allows from its
+    next visit on, and members' own context follows from each next turn."""
     workspace_id = shared.workspace_id
-    if shared.row.share_out == value:
+    if sharing is None and member_context is None:
         return
-    before = await db.set_share_out(workspace_id, value)
+    # Measured against the row as the update found it, not as this request
+    # first read it: another manager's save in between is what it changes.
+    before = await db.update_settings(
+        workspace_id, share_out=sharing, member_context=member_context
+    )
     if before is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    detail: dict[str, Any] = {}
+    if sharing is not None and sharing != before.share_out:
+        detail |= {"sharing": sharing, "was": before.share_out}
+    if member_context is not None and member_context != before.member_context:
+        detail |= {"member_context": member_context, "was_member_context": before.member_context}
+    if not detail:
+        return
     activity.record(
         shared.caller, Action.SHARED_WORKSPACE_SHARING_CHANGED,
         resource=("workspace", workspace_id), workspace_id=workspace_id,
-        detail={"sharing": value, "was": before},
+        detail=detail,
     )
     await publish_workspace_changed(shared.org_id, workspace_id, "updated")
 

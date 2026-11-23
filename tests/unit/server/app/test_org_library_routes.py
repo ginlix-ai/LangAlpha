@@ -75,7 +75,7 @@ def state(monkeypatch):
         public_links=True,
     )
 
-    async def read_standing(user_id):
+    async def read_standing(user_id, **_):
         if s.account is None:
             return Standing(None, None)
         org = PolicyLayer(

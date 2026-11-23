@@ -211,6 +211,8 @@ def _turn_patches(stack: ExitStack, seen: _Seen) -> dict:
     stack.enter_context(patch(f"{PTC}.build_ptc_graph_with_session", new=AsyncMock(return_value=MagicMock())))
     stack.enter_context(patch(f"{PTC}.BackgroundRegistryStore")).get_instance.return_value.get_or_create_registry = AsyncMock()
     stack.enter_context(patch("src.server.services.shared_workspaces.turn.get_user_profile_for_prompt", new=AsyncMock(return_value=None)))
+    stack.enter_context(patch(f"{PTC}.member_context_for_turn", new=AsyncMock(return_value=None)))
+    stack.enter_context(patch(f"{PTC}.replaced_turn_typed", new=AsyncMock(return_value=None)))
     stack.enter_context(patch("src.server.services.writer_guard.guard_enabled", return_value=False))
     stack.enter_context(patch("src.server.services.thread_control_stream.announce_run_started", new=AsyncMock()))
 

@@ -24,6 +24,7 @@ from ptc_agent.agent.middleware.runtime_context import (
 from ptc_agent.agent.middleware.runtime_context.harness_blocks import (
     harness_update_kind,
 )
+from ptc_agent.agent.middleware.runtime_context.profile import AnswerPreferences
 from ptc_agent.agent.prompts import guidance_template_vars, init_loader
 from ptc_agent.agent.prompts.loader import PromptLoader
 
@@ -99,6 +100,12 @@ ENVELOPE_CASES: dict[str, dict] = {
     },
     "envelope/baseline_scratchpad.md.j2": {
         "content": "/home/workspace/NVDA/.agents/scratchpad/a1b2c3d4/",
+    },
+    "envelope/member_context.md.j2": {
+        "name": "Ana",
+        "preferences": AnswerPreferences([("tone", "terse")], {"research_depth": "light"}),
+        "memory": "- [Code word](codeword.md)",
+        "folder": ".agents/members/1a2b3c/memory/",
     },
 }
 

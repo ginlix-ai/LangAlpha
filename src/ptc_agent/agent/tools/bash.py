@@ -73,6 +73,17 @@ _FILE_TOOLS_ONLY_ERROR = (
     "Write on the files in {dir}/. Bash can't see or change them."
 )
 
+#: A shared workspace member's memory, which Read and Glob alone reach and
+#: nothing writes.
+_MEMBER_MEMORY_ERROR = (
+    "ERROR: {dir}/ is reachable only through Read and Glob, and is read-only. Read "
+    "the file you need there; Bash can't see it."
+)
+
+#: The refusal of a command naming a folder only the file tools reach, where
+#: it is not ``_FILE_TOOLS_ONLY_ERROR``.
+_FILE_TOOLS_ONLY_ERRORS = {WorkspaceLayout.MEMBERS_DIR: _MEMBER_MEMORY_ERROR}
+
 
 _DEFAULT_TIMEOUT_S = command_handoff.HANDOFF_WAIT_S
 _MAX_TIMEOUT_S = 600
@@ -287,6 +298,7 @@ def create_execute_bash_tool(
             files_error=_FILES_ROUTE_ERROR,
             file_tools_only=file_tools_only,
             file_tools_error=_FILE_TOOLS_ONLY_ERROR,
+            file_tools_errors=_FILE_TOOLS_ONLY_ERRORS,
             blocked_event="Blocked bash command touching a store-backed path",
             command_length=len(command),
         )

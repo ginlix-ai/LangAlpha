@@ -2,7 +2,7 @@
 guard, and the call id its mount saves and paid relay calls are filed under."""
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import structlog
@@ -25,11 +25,14 @@ async def run_guarded(
     blocked_event: str,
     file_tools_only: tuple[str, ...] = (),
     file_tools_error: str = "",
+    file_tools_errors: Mapping[str, str] | None = None,
     **blocked_fields: Any,
 ) -> tuple[str, dict[str, Any]]:
     """Refuse ``text`` if it names a directory only the file tools reach,
     LangAlpha's config folder by the path of a custom config home, or a
     store-backed tree no mount serves, else run it through the mount.
+    ``file_tools_errors`` holds the refusal for a directory that has its own,
+    ``file_tools_error`` the one for every other.
 
     Every check reads the command's text, so a path built at runtime passes
     them. The first and last spare the agent a command that would find
@@ -37,10 +40,12 @@ async def run_guarded(
     the machine's Claude Code tokens, which the command could read as the
     same login, so its check is best effort against the agent only.
     """
-    only = next((d for d in file_tools_only if d in text), None)
+    # At a path boundary, so a sibling such as ``members-old`` runs.
+    only = next((d for d in file_tools_only if re.search(rf"{re.escape(d)}(?![\w.-])", text)), None)
     if only is not None:
         logger.info(blocked_event, tree=only, **blocked_fields)
-        return file_tools_error.format(dir=only), {"mcp_trace": []}
+        error = (file_tools_errors or {}).get(only, file_tools_error)
+        return error.format(dir=only), {"mcp_trace": []}
     folder = await backend.config_folder()
     if folder is not None and re.search(rf"{re.escape(folder)}(?![\w.-])", text, re.IGNORECASE):
         # Here, not at the top: the middleware package imports the tools.

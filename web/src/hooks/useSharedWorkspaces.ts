@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import {
-  addMember, createSharedWorkspace, getMembers, getTeam, listSharedWorkspaces, removeMember, setEveryone, setMemberRole, setShareOut, setTeam,
+  addMember, createSharedWorkspace, getMembers, getTeam, listSharedWorkspaces, removeMember, setEveryone, setMemberContext, setMemberRole, setShareOut, setTeam,
 } from '@/api/sharedWorkspaces';
 import type {
   MembersView, SharedMember, SharedRole, ShareOut, SharedWorkspaceCreate, SharedWorkspaceEntry, TeamPerson,
@@ -173,6 +173,7 @@ type MemberChange =
   | { kind: 'role'; userId: string; role: SharedRole }
   | { kind: 'everyone'; everyone: boolean }
   | { kind: 'sharing'; sharing: ShareOut }
+  | { kind: 'memberContext'; on: boolean }
   | { kind: 'team'; teamId: string | null }
   | { kind: 'remove'; userId: string };
 
@@ -188,6 +189,7 @@ export function useChangeMembers(workspaceId: string) {
         case 'role': return setMemberRole(workspaceId, change.userId, change.role);
         case 'everyone': return setEveryone(workspaceId, change.everyone);
         case 'sharing': return setShareOut(workspaceId, change.sharing);
+        case 'memberContext': return setMemberContext(workspaceId, change.on);
         case 'team': return setTeam(workspaceId, change.teamId);
         case 'remove': await removeMember(workspaceId, change.userId); return null;
       }

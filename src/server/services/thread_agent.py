@@ -19,6 +19,7 @@ from src.server.services.shared_workspaces.turn import TurnIdentity
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import Launcher
+    from ptc_agent.agent.middleware.member_context import MemberContext
     from ptc_agent.agent.roles import AgentRole
     from ptc_agent.config.agent import Admitted, AgentConfig
     from ptc_agent.core.claude_code_clis import CliQueue
@@ -117,6 +118,10 @@ class AgentInputs:
     #: The thread's own transcript, for the file tools of a turn in a thread
     #: its sender keeps private in a shared workspace (``ThreadHistory``).
     thread_history: ThreadHistory | None = None
+    #: In a shared workspace, the member whose own context the turn carries
+    #: (``shared_workspaces_member_context``); None for a call between
+    #: turns and for every other turn.
+    member_context: MemberContext | None = None
 
     @classmethod
     async def read(
@@ -129,6 +134,7 @@ class AgentInputs:
         role: AgentRole,
         user_profile: dict[str, Any] | None,
         acting_for: str | None = None,
+        member_context: MemberContext | None = None,
     ) -> AgentInputs:
         """``workspace_id`` is the one whose folder the turn runs in;
         ``acting_for`` the thread's, when that is another (Home's turn in its
@@ -169,6 +175,7 @@ class AgentInputs:
                 if identity.shared and thread_id
                 else None
             ),
+            member_context=member_context,
         )
 
     def build_kwargs(self) -> dict[str, Any]:
@@ -190,6 +197,7 @@ class AgentInputs:
             "role": self.role,
             "claude_code_launcher": self.claude_code_launcher,
             "thread_history": self.thread_history,
+            "member_context": self.member_context,
         }
 
     def claude_code_launcher(

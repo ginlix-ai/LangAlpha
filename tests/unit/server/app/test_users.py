@@ -1345,6 +1345,21 @@ async def test_unreachable_platform_stands_in_the_last_known_membership():
 
 
 @pytest.mark.asyncio
+async def test_an_answered_only_read_takes_no_stand_in():
+    """A grant that must be the auth service's word now reads an outage as
+    unknown, past the pause too, rather than as the last answer."""
+    for paused in (False, True):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        cache = _mock_cache(None, last_known=PRO, paused=paused)
+
+        with _platform(mock_client, cache):
+            from src.server.services.membership import read_membership
+
+            assert await read_membership("user-123", recheck=True, answered_only=True) is None
+
+
+@pytest.mark.asyncio
 async def test_a_paused_user_is_not_asked_again():
     """A down or hanging platform is asked once per user per pause, not on
     every request, and the pause does not change what the user is told."""

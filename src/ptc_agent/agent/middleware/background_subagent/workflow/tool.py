@@ -60,10 +60,13 @@ logger = structlog.get_logger(__name__)
 # Derived from the canonical path vocabulary rather than re-spelled here: a
 # script under one of these lives in the store or in agent infrastructure, not
 # on the workspace filesystem the backend reads from.
+# A shared workspace member's memory is among them: the store serves it to
+# Read alone, which keeps what it returns out of the thread.
 _UNREADABLE_SCRIPT_PREFIXES: tuple[str, ...] = (
     f"{MEMORY_USER_DIR}/",
     f"{WorkspaceLayout.MEMORY_DIR}/",
     f"{MEMO_USER_DIR}/",
+    f"{WorkspaceLayout.MEMBERS_DIR}/",
 )
 
 

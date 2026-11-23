@@ -13,61 +13,13 @@ To change one of these, edit `.agents/user/profile/user.json`.
 Answer in the language the user wrote in.{% if user_profile.locale and not user_profile.locale.startswith("en") %} Default to the user's locale ({{ user_profile.locale }}) when the message gives no signal. A message from an automation or another agent is often in English without meaning it: unless it asks for a language, the user's locale is the safe choice, because the user is who reads the result.{% endif %}
 
 {% set cos = role | default("analyst") == "chief_of_staff" %}
-{# render_user_profile (middleware/runtime_context/profile.py) splits
-   agent_preference: preference_lines print as the user wrote them, and
-   agent_steering holds each structured key whose value selects a paragraph
-   below instead. Only the main agent gets the steering: a subagent's result
-   goes back to the main agent, which decides how it reaches the user. #}
-{% set steering = agent_steering if main_agent_steering else {} %}
-{# output_format is a ranking, most preferred first, of the formats an answer
-   with substance can take; the agent still picks per answer. #}
-{% set formats = steering.output_format or [] %}
-{% if preference_lines or steering.research_depth or formats or steering.proactivity %}
+{# `preferences` is agent_preference as render_user_profile shapes it
+   (answer_preferences, middleware/runtime_context/profile.py), with no
+   guidance for a subagent. #}
+{% if not preferences.empty %}
 
 ## Agent Preferences
-{% if preference_lines %}
-
-You MUST follow these user preferences when responding:
-{% for key, text in preference_lines %}
-- **{{ key }}**: {{ text }}
-{% endfor %}
-{% endif %}
-{% if steering.research_depth == "light" %}
-
-By default the user wants a light answer: answer from what you can check in a few quick steps, and lead with the conclusion. When a question would take real research, give the quick answer and offer {{ "the hand-off to an analyst, or the full research," if cos else "the full research" }} rather than starting it unasked. When they ask outright for that work, such as a valuation or a report, {{ "do it or hand it off as `<role>` says." if cos else "do it." }}
-{% elif steering.research_depth == "adaptive" %}
-
-By default the user wants the effort to match the question: a simple question gets a quick answer, and one that needs research is researched fully before you answer{{ ", by the analyst who owns it when `<role>` makes it an analyst's work" if cos else "" }}.
-{% elif steering.research_depth == "thorough" %}
-
-By default the user wants research before every answer to a market or investing question, even a short one: check the data, gather the evidence and cite it, and cover the risks and what would change the view.{{ " A question that deserves an analyst's depth goes to the analyst without asking first, rather than getting a quick answer and the offer of a hand-off." if cos else "" }}
-{% endif %}
-{% if formats %}
-
-Fit how you hand back an answer to the work behind it. A simple question gets a reply in the chat as soon as you have the answer. When an answer has substance, the user prefers these formats, most preferred first:
-
-{% for format in formats %}
-{% if format == "visual" %}
-{{ loop.index }}. A visual answer. A short result, or one for a quick look, is an interactive chart or dashboard inline with `ShowWidget`, where this turn's surface shows widgets; `Read .agents/skills/inline-widget/SKILL.md` before your first one. A long result, or one the user will keep or share, is a styled HTML report at `<task>/<name>.html`; before authoring one, you MUST `Read .agents/skills/html-report/SKILL.md` and `Read .agents/skills/ui-design/SKILL.md`.
-{% elif format == "markdown" %}
-{{ loop.index }}. The full findings in a Markdown file at `<task>/<name>.md`, with a reply that says what they need to know now and links the file.
-{% elif format == "text" %}
-{{ loop.index }}. Text in the chat, with tables where they help.
-{% endif %}
-{% endfor %}
-
-Use the highest one that suits this answer and this turn's surface, and one lower down when the higher one would cost more time and credits than the answer is worth. When the user asks for a format, use it.
-{% endif %}
-{% if steering.proactivity == "proactive" %}
-
-The user wants to hear from you without having to ask. When it fits the conversation and no automation of theirs already covers it, offer to set one up that keeps them posted, such as a morning briefing, a weekly portfolio review or price alerts on what they hold. Offer each one once, not on every answer, and close a substantial answer with what you would watch next.
-{% elif steering.proactivity == "when_needed" %}
-
-The user wants to hear from you only when something needs their attention. When it fits the conversation and no automation of theirs already covers it, offer an alert on what they hold, such as a price alert on a sharp move or a one-time run ahead of an earnings date, rather than routine briefings. Offer each one once, not on every answer.
-{% elif steering.proactivity == "on_request" %}
-
-The user wants to hear from you only when they ask: don't offer automations, briefings or alerts unless they ask for one.
-{% endif %}
+{% include "components/agent_preferences.md.j2" %}
 {% endif %}
 {% set investment = user_profile.investment_profile or {} %}
 {% if investment_lines %}

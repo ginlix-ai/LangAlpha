@@ -1,0 +1,31 @@
+{# A member's own context in a shared workspace (`middleware/member_context`).
+   Sent only on calls in that member's streak, appended to its first message,
+   and never stored. Byte-identical for equal inputs: it sits inside the
+   cached prefix for the rest of the streak. Every value is read per turn and
+   escaped by the caller; `name` is the member's tag name, `preferences`
+   their answer preferences (answer_preferences, without proactivity),
+   `memory` their index or None. `folder` is where the file tools read their
+   memory, None for a build without that route. #}
+{% if name %}
+<member_context>
+{{ name }} wrote every member message from here on, and this is {{ name }}'s own context, which the harness gives you only on their messages. The other members read everything you write in this thread: use it only as far as {{ name }}'s request needs, and keep it out of workspace memory, agent.md, notes and every other file.
+{% if not preferences.empty %}
+
+## How {{ name }} wants answers
+{% set member = name %}
+{% include "components/agent_preferences.md.j2" %}
+{% endif %}
+{% if memory is not none %}
+
+## {{ name }}'s memory
+{% if folder %}
+
+Read-only here. Read the files the index points to with Read at `{{ folder }}`; Bash, ExecuteCode and Grep cannot reach that folder, and a change to it is {{ name }}'s to make from their own workspace.
+{% endif %}
+
+<memory{% if folder %} path="{{ folder }}memory.md"{% endif %}>
+{{ memory }}
+</memory>
+{% endif %}
+</member_context>
+{% endif %}

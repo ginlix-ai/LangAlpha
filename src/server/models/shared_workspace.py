@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from src.server.database.shared_workspaces import Role, ShareOut
 from src.server.models.workspace import WorkspaceResponse
@@ -108,6 +108,20 @@ class You(BaseModel):
     listed: bool = True
 
 
+class MemberContextView(BaseModel):
+    """Whether a member's own answer preferences and personal memory reach
+    the agent on their messages here: only while both are true."""
+
+    #: The caller's organization grants it, and this deployment lets it
+    #: (the ``shared_workspaces_member_context`` feature).
+    organization: bool
+    #: The workspace's managers have not turned it off here.
+    workspace: bool
+    #: This deployment offers it, so a manager may keep it out whatever
+    #: their own organization's grant: a member may hold one of their own.
+    offered: bool
+
+
 class MembersView(BaseModel):
     workspace_id: str
     everyone: bool
@@ -118,6 +132,7 @@ class MembersView(BaseModel):
     #: The team it names (``SharedBlock.team``); its people come from
     #: ``GET .../team``.
     team: Optional[TeamRef] = None
+    member_context: MemberContextView
 
 
 class TeamPerson(BaseModel):
@@ -158,15 +173,22 @@ class SharingUpdate(BaseModel):
     #: unchanged. Naming one closes it to everyone; opening it to everyone
     #: clears it.
     team_id: Optional[str] = Field(None, min_length=1, max_length=TEAM_ID_MAX)
+    #: False keeps members' own context out of this workspace; true follows
+    #: the organization's grant.
+    member_context: Optional[StrictBool] = None
 
     @property
     def changes_team(self) -> bool:
         return "team_id" in self.model_fields_set
 
+    @property
+    def changes_settings(self) -> bool:
+        return self.sharing is not None or self.member_context is not None
+
     @model_validator(mode="after")
     def _something(self) -> "SharingUpdate":
-        if self.everyone is None and self.sharing is None and not self.changes_team:
-            raise ValueError("send everyone, sharing or team_id")
+        if self.everyone is None and not (self.changes_settings or self.changes_team):
+            raise ValueError("send everyone, sharing, team_id or member_context")
         if self.everyone and self.team_id is not None:
             raise ValueError("a workspace open to everyone names no team")
         return self

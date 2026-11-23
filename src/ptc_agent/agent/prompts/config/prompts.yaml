@@ -270,3 +270,15 @@ envelope:
       absolute with a trailing slash; empty renders nothing.
       Byte-deterministic.
     kwargs: [content]
+
+  member_context:
+    template: envelope/member_context.md.j2
+    description: >-
+      A shared workspace member's own context, <member_context>: their answer
+      preferences (components/agent_preferences.md.j2 with member) and their
+      memory index, appended to the first message of their streak and never
+      stored. name is their tag name, preferences their answer_preferences
+      without proactivity, memory their index or None, folder where the file
+      tools read their memory or None. Every value arrives escaped.
+      Byte-deterministic.
+    kwargs: [name, preferences, memory, folder]

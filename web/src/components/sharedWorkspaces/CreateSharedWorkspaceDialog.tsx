@@ -7,7 +7,6 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
-import { ToggleSwitch } from '@/components/ui/switch';
 import { useAccount } from '@/hooks/useAccount';
 import { useCreateSharedWorkspace } from '@/hooks/useSharedWorkspaces';
 import { parseEmails } from '@/lib/emailList';
@@ -15,6 +14,7 @@ import { sharedRefusal, type SharedRefusal } from '@/lib/sharedWorkspaceRefusal'
 import { clampWorkspaceName } from '@/pages/ChatAgent/utils/workspaceName';
 import type { SharedWorkspaceEntry } from '@/types/sharedWorkspaces';
 import { SharedRefusalRow } from './SharedRefusalRow';
+import { SwitchRow } from './SwitchRow';
 
 interface Props {
   open: boolean;
@@ -101,20 +101,13 @@ export function CreateSharedWorkspaceDialog({ open, onClose, onCreated }: Props)
               className="min-h-[64px]"
             />
           </div>
-          <div className="flex items-start justify-between gap-3">
-            <label htmlFor={ids.everyone} className="flex flex-col gap-0.5 text-sm">
-              <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
-                {t('sharedWorkspace.everyone', { organization: org })}
-              </span>
-              <span style={{ color: 'var(--color-text-secondary)' }}>{t('sharedWorkspace.create.everyoneBody')}</span>
-            </label>
-            <ToggleSwitch
-              id={ids.everyone}
-              checked={everyone}
-              onChange={() => { setEveryone((v) => !v); setTeamId(''); }}
-              className="mt-0.5"
-            />
-          </div>
+          <SwitchRow
+            id={ids.everyone}
+            label={t('sharedWorkspace.everyone', { organization: org })}
+            description={t('sharedWorkspace.create.everyoneBody')}
+            checked={everyone}
+            onChange={() => { setEveryone((v) => !v); setTeamId(''); }}
+          />
           {teams.length > 0 && !everyone && (
             <div className="flex flex-col gap-1.5">
               <label htmlFor={ids.team} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>

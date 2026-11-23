@@ -98,7 +98,7 @@ async def test_it_stands_in_during_an_outage_like_the_organization():
     cache = _Cache()
     with _deployment(cache, _Auth(SUSPENDED), door=True):
         await account.account_for("u")
-    cache.store.pop("platform_membership:v4:u")  # the 5-minute entry lapsed
+    cache.store.pop("platform_membership:v5:u")  # the 5-minute entry lapsed
     with _deployment(cache, _Auth(httpx.ConnectError("down")), door=True):
         assert (await account.account_for("u")).suspended
 

@@ -5,6 +5,8 @@ import { Input } from '@/components/ui/input';
 import { isImeComposing } from '@/lib/ime';
 import { Select } from '@/components/ui/select';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useFeatureEnabled } from '@/hooks/useFeatures';
+import { ownContextPatch, readOwnContext } from '@/lib/ownContext';
 import { readSubagentsDefault, subagentsDefaultPatch } from '@/lib/subagentsDefault';
 import { searchDepthPatch } from '@/lib/searchPreferences';
 import { OUTPUT_FORMATS, readOutputFormats } from '@/lib/outputFormat';
@@ -67,6 +69,8 @@ export function AgentPanel() {
   const proactivity = isOneOf(PROACTIVITY, agentPreference.proactivity) ? agentPreference.proactivity : '';
   const instructions = instructionsOf(agentPreference);
   const subagentsDefault = readSubagentsDefault(prefsData);
+  const memberContextOn = useFeatureEnabled('shared_workspaces_member_context');
+  const ownContext = readOwnContext(prefsData);
   const search = useSearchPreference();
   const { tierAllows } = search;
   const providerCopy = copy(SETTINGS.searchProvider);
@@ -128,6 +132,13 @@ export function AgentPanel() {
           checked={subagentsDefault}
           onChange={() => { void write(subagentsDefaultPatch(!subagentsDefault)); }}
         />
+        {memberContextOn && (
+          <ToggleRow
+            {...copy(SETTINGS.ownContext)}
+            checked={ownContext}
+            onChange={() => { void write(ownContextPatch(!ownContext)); }}
+          />
+        )}
       </SettingsGroup>
 
       {instructions.length > 0 && (

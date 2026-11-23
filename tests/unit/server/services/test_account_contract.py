@@ -158,6 +158,40 @@ READABLE = {
         "team": ["id", "name", "role"],
         "team_roles": ["admin", "member"],
     },
+    # Members' own context in shared workspaces, an organization's grant.
+    5: {
+        "blocks": ["connectors", "features", "groups", "org", "policy", "teams"],
+        "org": ["id", "name", "suspended"],
+        "org_required": ["id", "name"],
+        "group": ["id", "level"],
+        "group_levels": ["manage", "read", "write"],
+        "policy": {
+            "models": "object",
+            "models.allowed": "list[Annotated[str, Strict(strict=True)]] | None",
+            "org_library": "object",
+            "org_library.publish": "bool Strict(strict=True)",
+            "own_machines": "bool Strict(strict=True)",
+            "own_model_access": "object",
+            "own_model_access.api_keys": "bool Strict(strict=True)",
+            "own_model_access.subscriptions": "bool Strict(strict=True)",
+            "public_links": "bool Strict(strict=True)",
+            "shared_workspaces": "object",
+            "shared_workspaces.create": "bool Strict(strict=True)",
+            "trading": "bool Strict(strict=True)",
+            "user_connectors": "bool Strict(strict=True)",
+        },
+        "connector_fields": [
+            "auth", "description", "id", "instruction", "name", "revision", "url",
+        ],
+        "connector_required": ["auth", "id", "name", "revision", "url"],
+        "connector_auths": ["member", "shared"],
+        "features": [
+            "org_connectors", "org_library", "shared_workspaces",
+            "shared_workspaces_member_context", "teams",
+        ],
+        "team": ["id", "name", "role"],
+        "team_roles": ["admin", "member"],
+    },
 }
 
 
@@ -197,6 +231,12 @@ def _required(cls) -> list[str]:
     )
 
 
+def _requires_teams(key: str) -> bool:
+    """``teams`` itself, or a feature that requires it directly or through
+    another: an organization can grant each of them."""
+    return key == "teams" or any(_requires_teams(p) for p in FEATURES[key].requires)
+
+
 def _readable_now() -> dict:
     return {
         "blocks": sorted(MEMBERSHIP_ACCOUNT_KEYS),
@@ -210,11 +250,7 @@ def _readable_now() -> dict:
         "connector_auths": sorted(_CONNECTOR_AUTHS),
         "team": sorted(_TEAM_KEYS),
         "team_roles": sorted(_TEAM_ROLES),
-        "features": sorted(
-            key
-            for key, spec in FEATURES.items()
-            if key == "teams" or "teams" in spec.requires
-        ),
+        "features": sorted(key for key in FEATURES if _requires_teams(key)),
     }
 
 
@@ -375,18 +411,18 @@ async def test_an_open_door_declares_the_contract_and_keys_by_it():
         answer = await membership.read_membership("u")
     assert answer["org"] == ORG["org"]
     [request] = auth.requests
-    assert request["headers"] == {**BASE_HEADERS, "X-Account-Contract": "4"}
+    assert request["headers"] == {**BASE_HEADERS, "X-Account-Contract": "5"}
     assert cache.calls == [
         ("mget", [
-            "platform_membership:v4:u",
-            "platform_membership:last_known:v4:u",
+            "platform_membership:v5:u",
+            "platform_membership:last_known:v5:u",
             "platform_membership:unreachable:u",
             "platform_membership:epoch:u",
             "platform_membership:suspended:u",
         ]),
         ("set_many_fenced", [
-            ("platform_membership:v4:u", 300),
-            ("platform_membership:last_known:v4:u", 30 * 24 * 3600),
+            ("platform_membership:v5:u", 300),
+            ("platform_membership:last_known:v5:u", 30 * 24 * 3600),
         ], ("platform_membership:epoch:u", 0, EPOCH_TTL),
             ("platform_membership:suspended:u",)),
     ]
@@ -411,7 +447,7 @@ async def test_an_open_door_pauses_on_the_shared_key_fenced():
         # Fetched with the door shut: no blocks, which would read as no org.
         "platform_membership:{kind}u",
         # Fetched for another version, with a rule this build may not know.
-        "platform_membership:{kind}v5:u",
+        "platform_membership:{kind}v6:u",
     ],
 )
 async def test_an_entry_fetched_under_another_contract_is_never_read(key):
@@ -489,7 +525,7 @@ async def test_a_notice_drops_this_builds_entry():
         ("bump", "platform_membership:epoch:u", EPOCH_TTL),
         # A door-shut worker sharing the cache reads no epoch, so its entry
         # goes in the same command.
-        ("delete", "platform_membership:v4:u", "platform_membership:u"),
+        ("delete", "platform_membership:v5:u", "platform_membership:u"),
         ("delete", "platform_membership:unreachable:u"),
     ]
 
@@ -512,7 +548,7 @@ async def test_an_open_door_refresh_drops_a_shut_door_workers_entry_too():
     cache, auth = _Cache(), _Auth(httpx.ConnectError("down"))
     with _deployment(cache, auth, door=True):
         await membership.read_membership("u", refresh=True)
-    assert ("delete", "platform_membership:v4:u", "platform_membership:u") in cache.calls
+    assert ("delete", "platform_membership:v5:u", "platform_membership:u") in cache.calls
 
 
 # --- the plan standing in across a switch -------------------------------------
@@ -535,6 +571,7 @@ async def test_turning_teams_on_keeps_the_plan_through_an_outage(paused):
         }
         assert await account.account_for("u") is None
     assert ("mget", [
+        "platform_membership:last_known:v4:u",
         "platform_membership:last_known:v3:u",
         "platform_membership:last_known:v2:u",
         "platform_membership:last_known:v1:u",
@@ -571,7 +608,7 @@ async def test_no_earlier_record_is_read_unless_needed():
     answered = _Cache(earlier)
     with _deployment(answered, _Auth({"valid": True, "access_tier": 2, **ORG}), door=True):
         await membership.read_membership("u")
-    kept = _Cache({**earlier, "platform_membership:last_known:v4:u": {**PLAN, **ORG}})
+    kept = _Cache({**earlier, "platform_membership:last_known:v5:u": {**PLAN, **ORG}})
     with _deployment(kept, _Auth(httpx.ConnectError("down")), door=True):
         assert (await membership.read_membership("u"))["org"] == ORG["org"]
     for cache in (answered, kept):

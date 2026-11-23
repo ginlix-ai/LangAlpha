@@ -159,8 +159,9 @@ must render the same at both levels.
   would become prompt text about itself. The keys of
   `STRUCTURED_PREFERENCES["agent_preference"]`
   (`src/server/models/profile_vocabulary.py`) are the knobs that may:
-  `render_user_profile` hands the template each one whose value is in its
-  vocabulary as `agent_steering`, which selects the main agent's paragraphs
+  `answer_preferences` (`middleware/runtime_context/profile.py`) hands the
+  template each one whose value is in its vocabulary as `preferences.steering`,
+  which selects the main agent's paragraphs
   (the `output_format` ranking one ordered list of formats),
   and prints the rest. A subagent gets none of the paragraphs, and
   `research_depth` is worded for the role, because the Chief of Staff's

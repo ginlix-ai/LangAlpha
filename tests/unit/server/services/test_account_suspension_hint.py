@@ -225,7 +225,7 @@ async def test_a_restore_notice_racing_a_slow_fetch_keeps_the_hint_cleared():
         assert (await fetch).suspended  # the caller still gets its answer
     # Its write, the hint with it, was refused: the restore is newer.
     assert HINT not in cache.store
-    assert "platform_membership:v4:u" not in cache.store
+    assert "platform_membership:v5:u" not in cache.store
 
 
 async def test_a_suspending_notice_racing_a_slow_fetch_keeps_the_hint():

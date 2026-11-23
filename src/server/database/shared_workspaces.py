@@ -1,8 +1,9 @@
 """Shared workspaces and their members (migration 141).
 
 ``shared_workspaces`` names a shared workspace's holder (the ``users`` row
-that owns its workspace and computer), its organization and the one team it
-may name (migration 147); ``shared_workspace_members`` lists its people. Every
+that owns its workspace and computer), its organization, the one team it
+may name (migration 147) and whether members' own context reaches it
+(migration 149); ``shared_workspace_members`` lists its people. Every
 read here is keyed by a workspace or a holder, so a personal workspace never
 reaches one.
 
@@ -63,12 +64,15 @@ class SharedRow:
     share_out: ShareOut
     #: The team it names, as the auth service ids it; None for none.
     team_id: Optional[str] = None
+    #: Members' own context follows the organization's grant here; false
+    #: when its managers turned it off for it (migration 149).
+    member_context: bool = True
 
 
 #: :class:`SharedRow`'s columns, in its order.
 SHARED_COLS = """
     s.workspace_id::text AS workspace_id, s.holder_id, s.org_id, s.everyone,
-    s.created_by, s.share_out, s.team_id
+    s.created_by, s.share_out, s.team_id, s.member_context
 """
 
 
@@ -138,20 +142,36 @@ async def shared_of_holder(holder_id: str) -> Optional[SharedRow]:
     return await _one("WHERE s.holder_id = %s", holder_id)
 
 
-async def set_share_out(workspace_id: str, share_out: ShareOut) -> Optional[ShareOut]:
-    """The value before the change, or None for no such workspace."""
+async def update_settings(
+    workspace_id: str,
+    *,
+    share_out: Optional[ShareOut] = None,
+    member_context: Optional[bool] = None,
+) -> Optional[SharedRow]:
+    """Set each setting given, leaving the others; the row before the change,
+    or None for no such workspace.
+
+    The prior row is read under the row lock, so a manager's concurrent change
+    to another setting is kept rather than restored from a stale snapshot."""
     async with get_db_connection() as conn, conn.cursor(row_factory=tuple_row) as cur:
         await cur.execute(
-            """
-            UPDATE shared_workspaces s SET share_out = %s
-              FROM shared_workspaces old
-             WHERE s.workspace_id = %s AND old.workspace_id = s.workspace_id
-            RETURNING old.share_out
+            f"""
+            WITH s AS (
+                SELECT * FROM shared_workspaces
+                 WHERE workspace_id = %s
+                   FOR UPDATE
+            )
+            UPDATE shared_workspaces w
+               SET share_out = COALESCE(%s, w.share_out),
+                   member_context = COALESCE(%s, w.member_context)
+              FROM s
+             WHERE w.workspace_id = s.workspace_id
+            RETURNING {SHARED_COLS}
             """,
-            (share_out, workspace_id),
+            (workspace_id, share_out, member_context),
         )
         row = await cur.fetchone()
-    return row[0] if row else None
+    return SharedRow(*row) if row else None
 
 
 async def get_member_role(workspace_id: str, user_id: str) -> Optional[Role]:

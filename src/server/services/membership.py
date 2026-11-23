@@ -281,6 +281,7 @@ async def read_membership(
     refresh: bool = False,
     recheck: bool = False,
     unknown_on_cache_error: bool = False,
+    answered_only: bool = False,
 ) -> Optional[dict]:
     """:func:`_read_platform_membership`, once per request where the request
     shares its read (``share_membership_read``); a ``refresh`` or ``recheck``
@@ -291,7 +292,9 @@ async def read_membership(
     unknown instead, for a check that never asked before (whether the account
     is suspended, on every request): a Redis outage must not send each of
     those to the auth service. That unknown is not shared, so a later read in
-    the request still asks."""
+    the request still asks. ``answered_only`` reads as unknown what the last
+    answer on record would stand in for while the auth service cannot be
+    asked, for a grant that must be its word now; nor is that read shared."""
     refuse_holder(user_id, "read_membership")
     shared = _shared_read(user_id)
     if (
@@ -303,7 +306,11 @@ async def read_membership(
         return shared.value
     try:
         value = await _read_platform_membership(
-            user_id, refresh=refresh, recheck=recheck, strict=unknown_on_cache_error
+            user_id,
+            refresh=refresh,
+            recheck=recheck,
+            strict=unknown_on_cache_error,
+            answered_only=answered_only,
         )
     except _CacheUnreadable:
         logger.warning(
@@ -311,7 +318,7 @@ async def read_membership(
             user_id,
         )
         return None
-    if shared is not None and shared.open:
+    if shared is not None and shared.open and not answered_only:
         shared.value, shared.read_at = value, time.monotonic()
     return value
 
@@ -344,7 +351,12 @@ async def _coalesced(
 
 
 async def _read_platform_membership(
-    user_id: str, *, refresh: bool = False, recheck: bool = False, strict: bool = False
+    user_id: str,
+    *,
+    refresh: bool = False,
+    recheck: bool = False,
+    strict: bool = False,
+    answered_only: bool = False,
 ) -> Optional[dict]:
     """The user's platform membership: ``{"access_tier", "plan_display_name"}``,
     plus, with the ``teams`` door open, whichever of
@@ -396,6 +408,8 @@ async def _read_platform_membership(
     last_known = _standing_in(last_known, epoch)
 
     async def standing_in() -> Optional[dict]:
+        if answered_only:
+            return None
         if last_known is not None or not fenced:
             value = last_known
         else:

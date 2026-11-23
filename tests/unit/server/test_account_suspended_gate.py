@@ -501,8 +501,8 @@ async def _call(path):
 @pytest.mark.asyncio
 async def test_with_teams_on_a_request_pays_one_cached_read_at_most():
     keys = [
-        "platform_membership:v4:u",
-        "platform_membership:last_known:v4:u",
+        "platform_membership:v5:u",
+        "platform_membership:last_known:v5:u",
         "platform_membership:unreachable:u",
         "platform_membership:epoch:u",
         "platform_membership:suspended:u",

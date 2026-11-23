@@ -48,6 +48,12 @@ export async function setShareOut(workspaceId: string, sharing: ShareOut): Promi
   return data;
 }
 
+/** `false` keeps members' own context out of this workspace; `true` follows the organization's grant. */
+export async function setMemberContext(workspaceId: string, on: boolean): Promise<MembersView> {
+  const { data } = await api.patch<MembersView>(members(workspaceId), { member_context: on });
+  return data;
+}
+
 export async function setMemberRole(workspaceId: string, userId: string, role: SharedRole): Promise<MembersView> {
   const { data } = await api.patch<MembersView>(`${members(workspaceId)}/${encodeURIComponent(userId)}`, { role });
   return data;

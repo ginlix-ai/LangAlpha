@@ -198,14 +198,19 @@ class Member:
     policy: Policy
 
 
-async def org_member(user_id: str, feature: str | None = None) -> Member | None:
+async def org_member(
+    user_id: str, feature: str | None = None, *, recheck: bool = False
+) -> Member | None:
     """The user as an active member of an organization that allows ``teams``,
     with ``feature`` on for them when one is named. None for an account in no
     organization, a suspended one, the feature off, and with the door shut,
-    which reads nothing. Raises the 503 while the account cannot be read."""
+    which reads nothing. Raises the 503 while the account cannot be read.
+    ``recheck`` asks the auth service past the cached entry, for a grant
+    about to be acted on (``read_standing``), and counts only its answer: the
+    last one on record standing in for it raises the 503 too."""
     if not membership.teams_door_open():
         return None
-    standing = await accounts.read_standing(user_id)
+    standing = await accounts.read_standing(user_id, recheck=recheck, answered_only=recheck)
     account = standing.account
     if account is None:
         raise accounts.AccountUnknown()

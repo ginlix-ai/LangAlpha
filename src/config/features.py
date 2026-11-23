@@ -465,6 +465,21 @@ FEATURES: dict[str, FeatureSpec] = {
         gate=FeatureGate.GRANT,
         requires=("teams",),
     ),
+    # On wherever shared workspaces are, and then only for a member whose
+    # organization grants it through its ``features`` block; a workspace's
+    # managers can still keep it out of theirs (``SharedRow.member_context``).
+    "shared_workspaces_member_context": FeatureSpec(
+        key="shared_workspaces_member_context",
+        label="Your own context in shared workspaces",
+        description=(
+            "On your own messages in a shared workspace, the agent follows your "
+            "answer preferences and can read your personal memory, without "
+            "changing it."
+        ),
+        enabled=True,
+        gate=FeatureGate.GRANT,
+        requires=("shared_workspaces",),
+    ),
 }
 
 

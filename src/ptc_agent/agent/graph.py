@@ -268,6 +268,7 @@ async def build_ptc_graph_with_session(
     reached_computers: set[str] | None = None,
     claude_code_launcher: Any | None = None,
     thread_history: Any | None = None,
+    member_context: Any | None = None,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path).
 
@@ -296,7 +297,8 @@ async def build_ptc_graph_with_session(
     turn ran calls on, for the turn's end to back up. ``claude_code_launcher``
     says where a Claude Code turn's CLI runs (``PTCAgent.create_agent``), and
     ``thread_history`` serves the thread's own transcript to the file tools
-    (``PTCAgent.create_agent``).
+    and ``member_context`` names the member whose own context a shared
+    workspace's turn carries (``PTCAgent.create_agent``).
     """
     mcp_registry = (
         tool_view.mcp_registry if tool_view is not None else session.mcp_registry
@@ -382,6 +384,7 @@ async def build_ptc_graph_with_session(
         computers=computers,
         claude_code_launcher=claude_code_launcher,
         thread_history=thread_history,
+        member_context=member_context,
     )
 
     logger.debug(

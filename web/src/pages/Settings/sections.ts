@@ -89,6 +89,8 @@ export interface SettingEntry {
   desktopOnly?: boolean;
   /** Drawn only in the Models section's advanced view, which opening it turns on. */
   advanced?: boolean;
+  /** Drawn only while this feature flag is on, so only found then. */
+  feature?: string;
   /** Other names the search finds this row by, though the row does not show
    *  them: rows drawn only some of the time beside it, so a search never opens
    *  on a row that is not there, or the name of the group the row sits in. */
@@ -142,6 +144,7 @@ export const SETTINGS = {
   researchDepth: { section: 'agent', anchor: 'research-depth', labelKey: 'settings.researchDepth', descKey: 'settings.researchDepthDesc' },
   reachingOut: { section: 'agent', anchor: 'reaching-out', labelKey: 'settings.reachingOut', descKey: 'settings.reachingOutDesc' },
   subagents: { section: 'agent', anchor: 'subagents', labelKey: 'settings.subagentsDefault', descKey: 'settings.subagentsDefaultDesc' },
+  ownContext: { section: 'agent', anchor: 'own-context', labelKey: 'settings.ownContext', descKey: 'settings.ownContextDesc', feature: 'shared_workspaces_member_context' },
   approveHandoffs: { section: 'agent', anchor: 'approve-handoffs', labelKey: 'settings.autoApproveHandoffs', descKey: 'settings.autoApproveHandoffsDesc' },
   approveWorkspaces: { section: 'agent', anchor: 'approve-workspaces', labelKey: 'settings.autoApproveWorkspaceCreation', descKey: 'settings.autoApproveWorkspaceCreationDesc' },
   searchProvider: { section: 'agent', anchor: 'search-provider', labelKey: 'settings.searchProvider', descKey: 'settings.searchProviderDesc', alsoKeys: ['settings.searchDepth'] },
@@ -189,8 +192,16 @@ export function settingAt(hash: string): SettingEntry | undefined {
 }
 
 /** Every setting the search can find on this surface. */
-export function searchableSettings(desktop: boolean): SettingEntry[] {
-  return ENTRIES.filter((entry) => (desktop || !entry.desktopOnly) && sectionShown(entry.section));
+export function searchableSettings(
+  desktop: boolean,
+  featureOn: (key: string) => boolean = () => true,
+): SettingEntry[] {
+  return ENTRIES.filter(
+    (entry) =>
+      (desktop || !entry.desktopOnly) &&
+      (!entry.feature || featureOn(entry.feature)) &&
+      sectionShown(entry.section),
+  );
 }
 
 /**
