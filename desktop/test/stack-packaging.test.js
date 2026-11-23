@@ -154,7 +154,10 @@ describe('packaging the backend', () => {
     fs.mkdirSync(packed, { recursive: true })
     fs.mkdirSync(path.join(contents, 'MacOS'))
     fs.writeFileSync(path.join(packed, 'run.py'), 'print(1)\n')
+    fs.writeFileSync(path.join(contents, 'Info.plist'), '<dict>\n\t<key>CFBundleExecutable</key>\n\t<string>LangAlpha</string>\n</dict>\n')
     fs.writeFileSync(path.join(contents, 'MacOS', 'LangAlpha'), thinArm)
+    // The remote control helper beside it is universal by design.
+    fs.writeFileSync(path.join(contents, 'MacOS', 'langalpha-helper'), universal)
     assert.equal(verifyPackedTrees([packed], tree, { platform: 'darwin', arch: 'arm64' }), 1)
     fs.writeFileSync(path.join(contents, 'MacOS', 'LangAlpha'), universal)
     assert.throws(() => verifyPackedTrees([packed], tree, { platform: 'darwin', arch: 'arm64' }), /the app around .* is not arm64/)

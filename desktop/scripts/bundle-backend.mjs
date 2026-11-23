@@ -717,9 +717,21 @@ export function bundleConfigEdits({ tree, hostArch, feed, platform = process.pla
  * installs fine and fails on first launch. Throws on the first problem and
  * returns the file count.
  */
-/** The native executables of the app that holds a packed tree: `Contents/MacOS`, or an unpacked Linux app's top level. */
+/**
+ * The executables of the app that holds a packed tree which must match its
+ * architecture: on macOS the one `Info.plist` launches, on Linux the native files
+ * at an unpacked app's top level. Beside the Mac one, the remote control helper
+ * is universal on purpose and runs on either architecture whatever the backend is.
+ */
 function appExecutables(packedTree, platform) {
-  const top = platform === 'darwin' ? path.join(packedTree, '..', '..', 'MacOS') : path.join(packedTree, '..', '..')
+  if (platform === 'darwin') {
+    const contents = path.join(packedTree, '..', '..')
+    const plist = existsSync(path.join(contents, 'Info.plist')) ? readFileSync(path.join(contents, 'Info.plist'), 'utf8') : ''
+    const name = /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]
+    if (!name) throw new Error(`the app around ${packedTree} names no executable in its Info.plist`)
+    return [path.join(contents, 'MacOS', name)]
+  }
+  const top = path.join(packedTree, '..', '..')
   if (!existsSync(top)) return []
   return readdirSync(top)
     .map((entry) => path.join(top, entry))
