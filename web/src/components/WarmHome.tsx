@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { homeWorkspaceQuery } from '@/hooks/useHomeWorkspace';
 import { useLatestRef } from '@/hooks/useLatestRef';
+import { useOnboardingRoute } from '@/hooks/useOnboardingRoute';
 import { readSetupStatusForWarm } from '@/hooks/useServerSetup';
 import { setupSkipped } from '@/hooks/useSetupGate';
 import { warmWorkspace } from '@/pages/ChatAgent/utils/warmWorkspace';
@@ -39,12 +40,13 @@ const POWER_CONTROL = '[data-computer-power]';
  * to the step (the gate routes only setup in progress), so its first chat would
  * make that computer all the same, and it warms as it would anywhere.
  */
-export function WarmHome({ setupRunning }: {
-  /** The account's setup still runs on its answers (`OnboardingRoute`). */
-  setupRunning: boolean;
-}): null {
+export function WarmHome(): null {
   const queryClient = useQueryClient();
-  const setupRunningRef = useLatestRef(setupRunning);
+  // The live route, not the shell's: the shell renders on a remembered "done"
+  // while the live one is read, and that can be stale with setup owed again.
+  // Until the live read lands, a warm asks the server as setup would.
+  const route = useOnboardingRoute().kind;
+  const setupRunningRef = useLatestRef(route === 'answers' || route === 'loading');
 
   useEffect(() => {
     // Bumped by a power control and by cleanup, which drops a Home lookup

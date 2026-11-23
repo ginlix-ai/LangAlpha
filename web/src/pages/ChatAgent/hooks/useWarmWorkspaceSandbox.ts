@@ -26,6 +26,7 @@ import { useEffect, useState } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
+import { useOnboardingRoute } from '@/hooks/useOnboardingRoute';
 import { useWorkspace } from '@/hooks/useWorkspace';
 
 import { streamWorkspaceEvents } from '../utils/api';
@@ -43,11 +44,16 @@ export function useWarmWorkspaceSandbox(workspaceId: string | null): WarmingStat
   // keeps a cold entry into Home from warming it as a plain workspace first,
   // then again as Home with a second events stream.
   const rowRead = useWorkspace(workspaceId).data !== undefined;
+  // The shell renders this page on a remembered "done" while the live
+  // onboarding route is read, and that can be stale with setup owed again,
+  // which a start here would race. Opening the page starts nothing until the
+  // live route lands; the shell sends the visit to setup if it says so.
+  const onboarded = useOnboardingRoute().kind !== 'loading';
 
   useEffect(() => {
-    if (!workspaceId || !rowRead) return;
+    if (!workspaceId || !rowRead || !onboarded) return;
     void warmWorkspace(workspaceId, queryClient, 'workspace_open');
-  }, [workspaceId, queryClient, rowRead]);
+  }, [workspaceId, queryClient, rowRead, onboarded]);
 
   useEffect(() => {
     if (!workspaceId || !rowRead) return;

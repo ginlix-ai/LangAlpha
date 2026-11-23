@@ -13,6 +13,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { useUser } from '@/hooks/useUser';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { useOnboardingProgress } from '@/hooks/useOnboardingProgress';
+import { useOnboardingRoute } from '@/hooks/useOnboardingRoute';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { INTEGRATIONS_URL } from '@/config/supportLinks';
 import { isDesktopShell } from '@/lib/desktop';
@@ -108,8 +109,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const {
     prefs,
-    isLoading,
-    isLoaded,
+    isLoading: prefsLoading,
+    isLoaded: prefsLoaded,
     markPageIntroSeen,
     markTaskDone,
     dismissGettingStarted,
@@ -121,6 +122,14 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     pinChatAppsPrompt,
     resetAll,
   } = useOnboardingPrefs();
+  // The shell renders on the onboarding route this browser remembers while the
+  // live one is read (useShellOnboardingRoute), and a remembered "done" can be
+  // stale: an account reset elsewhere. Nothing here may record a first run or
+  // open the welcome flow on it, so the provider waits for the live read as it
+  // waits for its prefs.
+  const routeLoading = useOnboardingRoute().kind === 'loading';
+  const isLoading = prefsLoading || routeLoading;
+  const isLoaded = prefsLoaded && !routeLoading;
 
   // Synchronous, read once the user resolves: anti-flash suppression source
   // for page intros. The mirror is keyed per user, so the read waits for the

@@ -37,6 +37,7 @@ vi.mock('../useOnboardingPrefs', () => ({
 // A returning user with a saved investing profile, unless a test says otherwise.
 let mockUser: Record<string, unknown> | null = { user_id: 'u1', onboarding_completed: true };
 vi.mock('@/hooks/useUser', () => ({ useUser: () => ({ user: mockUser }) }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: 'done' }) }));
 
 let mockSnoozed = false;
 vi.mock('@/pages/Dashboard/hooks/useOnboarding', () => ({

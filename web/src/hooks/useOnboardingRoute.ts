@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { isPlatformMode } from '@/config/hostMode';
 import { modelPrefs } from '@/lib/modelPreferences';
 import { readOtherPreference } from '@/lib/otherPreference';
+import { userLocalStorage, useStorageUser } from '@/lib/userStorage';
 import { migrateOnboardingPrefs } from '@/pages/Onboarding/onboardingPrefsSchema';
 import { useComputers } from '@/pages/ChatAgent/hooks/useComputers';
 import { recentThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
@@ -41,6 +42,30 @@ export function useOnboardingRoute(): OnboardingRoute {
   if (route.kind === 'loading') return decided?.by === by ? decided.route : route;
   if (decided?.by !== by || JSON.stringify(decided.route) !== JSON.stringify(route)) setDecided({ by, route });
   return route;
+}
+
+const DONE_KEY = 'la_onboarding_done';
+const DONE: OnboardingRoute = { kind: 'done' };
+
+/**
+ * The route the app shell renders on. The reads that decide it are a full
+ * round trip, and the shell holds every page and its requests behind them, so
+ * an account whose onboarding was done on its last visit in this browser
+ * renders the app while they run again. Should they now decide otherwise (a
+ * provider removed, a reset in another tab), the shell sends the visit there
+ * as it would have. The setup pages and the onboarding provider read
+ * `useOnboardingRoute`, never this: they act on the decision itself.
+ */
+export function useShellOnboardingRoute(): OnboardingRoute {
+  const route = useOnboardingRoute();
+  const storageUser = useStorageUser();
+  const remembered = useMemo(() => !!storageUser && userLocalStorage.getItem(DONE_KEY) === '1', [storageUser]);
+  useEffect(() => {
+    if (!storageUser || route.kind === 'loading') return;
+    if (route.kind === 'done') userLocalStorage.setItem(DONE_KEY, '1');
+    else userLocalStorage.removeItem(DONE_KEY);
+  }, [route.kind, storageUser]);
+  return route.kind === 'loading' && remembered ? DONE : route;
 }
 
 function useReadOnboardingRoute(): OnboardingRoute {
