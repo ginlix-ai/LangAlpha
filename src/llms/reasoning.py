@@ -26,9 +26,36 @@ ReasoningLevel = Literal["none", "minimal", "low", "medium", "high", "xhigh", "m
 
 REASONING_LEVELS: tuple[ReasoningLevel, ...] = get_args(ReasoningLevel)
 
+#: The levels the agent may name for a subagent or an analyst. ``none`` and
+#: ``minimal`` are left out: they turn reasoning off or nearly, which no
+#: delegated task wants, and naming them would only widen the choice the
+#: model weighs on every call.
+DelegatedEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
+DELEGATED_LEVELS: tuple[DelegatedEffort, ...] = get_args(DelegatedEffort)
+
 #: Levels that mean "do not think". Every binary surface keys off this rather
 #: than off ``low``, which is a real thinking level everywhere that grades.
 OFF_LEVELS = frozenset({"none"})
+
+
+def effort_shortfall(model: str, asked: str, runs_at: str | None) -> str | None:
+    """What the agent is told when ``model`` runs at a level other than the
+    ``asked`` one (``clamp_reasoning_effort``'s step down), None when it runs
+    at it, so a level the model lacks is never reported as the one that ran."""
+    if runs_at == asked:
+        return None
+    if runs_at is None:
+        return f"{model} takes no effort setting, so it runs at its own."
+    below = (
+        runs_at in REASONING_LEVELS
+        and asked in REASONING_LEVELS
+        and REASONING_LEVELS.index(runs_at) < REASONING_LEVELS.index(asked)
+    )
+    where = "the next level down" if below else "its lowest level"
+    if runs_at in OFF_LEVELS:
+        return f"{model} has no {asked} effort, so it runs with reasoning off, {where}."
+    return f"{model} has no {asked} effort, so it runs at {runs_at}, {where}."
 
 #: Paths a ``write`` may target: graded dials that take a level name verbatim.
 #: Closed on purpose. A dotted string makes a typo look structurally valid, and

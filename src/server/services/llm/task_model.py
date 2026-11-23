@@ -19,7 +19,7 @@ from fastapi import HTTPException
 
 from ptc_agent.agent.subagents.merge import turn_roster
 from ptc_agent.agent.subagents.definition import SubagentDefinition
-from ptc_agent.config.agent import AgentConfig, Admitted, TaskModel, TaskModelRefused
+from ptc_agent.config.agent import AgentConfig, Admitted, TaskAsk, TaskModel, TaskModelRefused
 from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import LLM as LLMFactory, stamp_call_metadata
 from src.llms.model_identity import catalog_model
@@ -90,7 +90,8 @@ _SIGN_IN_AGAIN = frozenset({"oauth_reauth_required", "oauth_required"})
 
 class TaskModelGate:
     """The models this turn's Tasks name, each resolved once per subagent
-    type, since a subagent's own set effort applies whatever model serves it.
+    type and named effort, since a subagent's own set effort applies whatever
+    model serves it unless the Task names another.
 
     ``model_pref`` is the plan-gated view the turn resolved its own model
     from, and ``plan_exempt`` the deployment's own models a primary turn runs
@@ -127,18 +128,19 @@ class TaskModelGate:
         self._claude_code: Admitted | str | None = (
             config.claude_code_admitted if config.claude_code else config.claude_code_pins
         )
-        self._resolved: dict[tuple[str, str], TaskModel] = {}
+        self._resolved: dict[tuple[str, str, str | None], TaskModel] = {}
 
     async def resolve(
-        self, name: str, subagent_type: str, *, keep: bool = False
+        self, ask: TaskAsk, subagent_type: str
     ) -> TaskModel | TaskModelRefused | None:
-        name = name.strip()
-        if not keep and name == self._own_model(subagent_type):
+        own = self._own_model(subagent_type)
+        name = own if ask.model is None else ask.model.strip()
+        if name == own and ask.effort is None:
             return None
-        key = (subagent_type, name)
+        key = (subagent_type, name, ask.effort)
         if key in self._resolved:
             return self._resolved[key]
-        picked = await self._resolve(name, subagent_type)
+        picked = await self._resolve(name, subagent_type, ask.effort, own=name == own)
         if isinstance(picked, TaskModel):
             self._resolved[key] = picked
         return picked
@@ -155,7 +157,12 @@ class TaskModelGate:
     def _definition(self, subagent_type: str) -> SubagentDefinition | None:
         return turn_roster(self._config.subagents).definitions.get(subagent_type)
 
-    async def _resolve(self, name: str, subagent_type: str) -> TaskModel | TaskModelRefused:
+    async def _resolve(
+        self, name: str, subagent_type: str, effort: str | None, *, own: bool
+    ) -> TaskModel | TaskModelRefused:
+        """``own``: the subagent's own model, here only for a named effort.
+        The turn already admitted it, a deployment's pin past the user's
+        plan included (``plan_gated``), so the plan is not read again."""
         user_id, model_pref = self._user_id, self._model_pref
         source, entry = await user_models.classify_model(user_id, name, _pref_cache=model_pref)
         if (
@@ -179,7 +186,7 @@ class TaskModelGate:
                 return _no_claude_code(name, where)
             claude_code = where
 
-        if name not in self._plan_exempt:
+        if not own and name not in self._plan_exempt:
             covered = await plan_covers(
                 user_id, name, model_pref=model_pref, permits=self._permits,
                 is_byok=self._is_byok, byok_cache=self._byok_cache,
@@ -197,7 +204,8 @@ class TaskModelGate:
                 user_id, name, is_byok=self._is_byok, cache_key=self._thread_id,
                 allow_platform_fallback=platform_ok,
                 reasoning_effort=(
-                    (definition.reasoning_effort if definition is not None else None)
+                    effort
+                    or (definition.reasoning_effort if definition is not None else None)
                     or resolve_tuning(model_pref, name).reasoning_effort
                 ),
                 _pref_cache=model_pref, _byok_cache=self._byok_cache,
@@ -233,6 +241,7 @@ class TaskModelGate:
             guidance=guidance,
             model=card_model(model_pref, catalog_model(resolved.client) or name, self._turn_model),
             claude_code=claude_code,
+            effort=effort,
         )
 
     async def _claude_code_where(self) -> Admitted | str:

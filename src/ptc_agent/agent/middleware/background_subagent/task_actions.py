@@ -39,7 +39,9 @@ from ptc_agent.agent.middleware.background_subagent.spawn import (
     spawn_task_writer,
     stopped_launch_artifact,
 )
-from ptc_agent.config.agent import TaskModel, TaskModelRefused
+from ptc_agent.config.agent import TaskAsk, TaskModel, TaskModelRefused
+from src.llms.model_identity import client_effort
+from src.llms.reasoning import DELEGATED_LEVELS, effort_shortfall
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.middleware import (
@@ -90,7 +92,11 @@ async def handle_task_action(
     if model is not None and not isinstance(model, str):
         # Malformed: the Task tool's own schema refuses it in place.
         return await handler(request)
-    model = model.strip() or None if model else None
+    effort = args.get("effort")
+    if effort is not None and effort not in DELEGATED_LEVELS:
+        # Malformed: the Task tool's own schema refuses it in place.
+        return await handler(request)
+    ask = TaskAsk(model.strip() or None if model else None, effort)
 
     # Extract parent_thread_id for hydration fallback
     parent_thread_id = (
@@ -112,9 +118,12 @@ async def handle_task_action(
     ) or runtime_config.get("run_id")
 
     if action == "update":
-        if model:
+        if ask:
             return ToolMessage(
-                content="Error: model applies to init and resume; a running task keeps its model.",
+                content=(
+                    "Error: model and effort apply to init and resume; a running "
+                    "task keeps both."
+                ),
                 tool_call_id=tool_call_id,
                 name="Task",
                 status="error",
@@ -139,7 +148,7 @@ async def handle_task_action(
             description=description,
             prompt=prompt,
             args=args,
-            model=model,
+            ask=ask,
             parent_thread_id=parent_thread_id,
             tool_call_id=tool_call_id,
             current_run_id=current_run_id,
@@ -157,52 +166,47 @@ async def handle_task_action(
         subagent_type=subagent_type,
         description=description,
         prompt=prompt,
-        model=model,
+        ask=ask,
         tool_call_id=tool_call_id,
         current_run_id=current_run_id,
     )
 
 
 async def _resolve_model(
-    mw: "BackgroundSubagentMiddleware", name: str, subagent_type: str, *, keep: bool = False
+    mw: "BackgroundSubagentMiddleware", ask: TaskAsk, subagent_type: str
 ) -> TaskModel | TaskModelRefused | None:
-    """The model ``name`` for one task of ``subagent_type``, gated as the
-    turn's own model was; None where it is that subagent's own, unless
-    ``keep`` (``TaskModelResolver.resolve``)."""
+    """What ``ask`` runs one task of ``subagent_type`` on, gated as the
+    turn's own model was (``TaskModelResolver.resolve``)."""
     if mw.task_models is None:
         return TaskModelRefused(
-            "Error: a task cannot be given a model of its own here. Leave model out.",
-            "a task cannot be given a model of its own here",
+            "Error: a task cannot be given a model or effort of its own here. "
+            "Leave model and effort out.",
+            "a task cannot be given a model or effort of its own here",
         )
     try:
-        return await mw.task_models.resolve(name, subagent_type, keep=keep)
+        return await mw.task_models.resolve(ask, subagent_type)
     except Exception:
-        logger.warning("task model resolution failed", model=name, exc_info=True)
+        logger.warning(
+            "task model resolution failed", model=ask.model, effort=ask.effort, exc_info=True
+        )
         return TaskModelRefused(
-            f"Error: {name} could not be checked just now. Try again, or leave model out.",
+            f"Error: {ask.model or 'its model'} could not be checked just now. Try "
+            "again, or leave model and effort out.",
             "it could not be checked just now",
         )
 
 
-async def _last_model(mw: "BackgroundSubagentMiddleware", task: BackgroundTask) -> str | None:
-    """The model a resume that names none runs the task on: the one its last
-    run was admitted on, read off the ledger, since another worker may have
-    resumed it on another model since. A failed read raises: the subagent's
-    own model in its place would be recorded on the new run, and every later
-    resume would follow it."""
+async def _last_ask(mw: "BackgroundSubagentMiddleware", task: BackgroundTask) -> TaskAsk:
+    """What a resume naming nothing runs the task on: what its last run was
+    asked for, read off the ledger, since another worker may have resumed it
+    on something else since; with no ledger, the one this process kept. A
+    failed read raises: the subagent's own in its place would be recorded on
+    the new run, and every later resume would follow it."""
     ledger = mw.registry.run_ledger
     if ledger is None:
-        return None
+        return task.ask or TaskAsk()
     row = await ledger.get_latest_run(task.task_id)
-    return ((row or {}).get("replay_facts") or {}).get("model_override") or None
-
-
-def _named_own(model: str | None, override: TaskModel | None) -> str | None:
-    """The model a Task named when it is its subagent's own (``_resolve_model``
-    resolved it to None), which the run records all the same."""
-    if override is not None:
-        return None
-    return (model or "").strip() or None
+    return TaskAsk.from_facts((row or {}).get("replay_facts") or {})
 
 
 def _refusal(content: str, tool_call_id: str) -> ToolMessage:
@@ -457,13 +461,13 @@ async def _handle_resume(
     parent_thread_id: str,
     tool_call_id: str,
     current_run_id: str | None,
-    model: str | None = None,
+    ask: TaskAsk,
 ) -> ToolMessage:
     """RESUME: reset a completed task and respawn it in the background.
 
-    The run goes on the model ``model`` names, else the one the task last
-    ran on, resolved again here: a model the user could run then may be off
-    their plan or out of keys now.
+    The run goes on what ``ask`` names, else what the task last ran on,
+    resolved again here: a model the user could run then may be off their
+    plan or out of keys now.
     """
     resolved = await mw._resolve_or_error(
         target_task_id,
@@ -577,7 +581,7 @@ async def _handle_resume(
         # Before the fence, so a refused model holds nothing once the claim
         # drops on the way out.
         try:
-            named = model or await _last_model(mw, task)
+            runs = ask if ask.complete else ask.over(await _last_ask(mw, task))
         except Exception:
             logger.warning("latest run read failed", task_id=task.task_id, exc_info=True)
             return _refusal(
@@ -585,19 +589,15 @@ async def _handle_resume(
                 "just now. Try again.",
                 tool_call_id,
             )
-        # Carried over, the model stays recorded even while it is the
-        # subagent's own: that follows the chat's model, which may change.
-        override = (
-            await _resolve_model(mw, named, task.subagent_type, keep=model is None)
-            if named
-            else None
-        )
+        override = await _resolve_model(mw, runs, task.subagent_type) if runs else None
         if isinstance(override, TaskModelRefused):
+            # A model carried over is one the agent never named on this call.
+            carried = runs.model if ask.model is None else None
             return _refusal(
                 override.message
-                if model
+                if carried is None
                 else (
-                    f"Error: {task.display_id} ran on {named}, which is not available now "
+                    f"Error: {task.display_id} ran on {carried}, which is not available now "
                     f"({override.reason}). Resume it with model set to another from "
                     "`la models list`."
                 ),
@@ -642,7 +642,7 @@ async def _handle_resume(
         # rejected resume must leave them intact.
         resume_run_id = current_run_id or mw.registry.current_run_id
         task.runs_on = override
-        task.named_own = _named_own(model, override)
+        task.ask = runs
         try:
             admitted = await mw.admit_task_run(
                 task,
@@ -755,7 +755,16 @@ async def _handle_resume(
 
 
 def _model_line(override: TaskModel | None) -> str:
-    return f"- Model: {override.display_name}\n" if override is not None else ""
+    """The reply's model line, with the level the run sends when its Task
+    named one and a note where that is not the level named."""
+    if override is None:
+        return ""
+    if override.effort is None:
+        return f"- Model: {override.display_name}\n"
+    runs_at = client_effort(override.client)
+    line = f"- Model: {override.display_name}" + (f", effort {runs_at}\n" if runs_at else "\n")
+    note = effort_shortfall(override.display_name, override.effort, runs_at)
+    return line + (f"- Note: {note}\n" if note else "")
 
 
 def _model_artifact(override: TaskModel | None) -> dict[str, str]:
@@ -772,14 +781,14 @@ async def _handle_init(
     prompt: str,
     tool_call_id: str,
     current_run_id: str | None,
-    model: str | None = None,
+    ask: TaskAsk,
 ) -> ToolMessage:
     """INIT (default): register, admit, and spawn a new background task."""
     if subagent_type is None:
         subagent_type = "general-purpose"
 
     # Before the task exists, so a refused model leaves nothing registered.
-    override = await _resolve_model(mw, model, subagent_type) if model else None
+    override = await _resolve_model(mw, ask, subagent_type) if ask else None
     if isinstance(override, TaskModelRefused):
         return _refusal(override.message, tool_call_id)
 
@@ -835,11 +844,12 @@ async def _handle_init(
         display_id=task.display_id,
         subagent_type=subagent_type,
         description=description[:100],
-        model_override=override.name if override is not None else None,
+        model_override=ask.model,
+        effort_override=ask.effort,
     )
 
     task.runs_on = override
-    task.named_own = _named_own(model, override)
+    task.ask = ask
     try:
         admitted = await mw.admit_task_run(
             task,

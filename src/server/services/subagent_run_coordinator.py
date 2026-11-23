@@ -103,6 +103,7 @@ class SubagentRunCoordinator:
         cli_computer: Optional[str] = None,
         spending_run_id: Optional[str] = None,
         model_override: Optional[str] = None,
+        effort_override: Optional[str] = None,
     ) -> str:
         """Bear the run row (in_progress) and open its v2 stream; returns the
         new task_run_id. ``model`` is the model the run will use, given only
@@ -110,7 +111,8 @@ class SubagentRunCoordinator:
         it, so a live card and a replayed one agree. ``model_override`` is
         the catalog name its Task named in place of its subagent's own, which
         the row keeps for a resume that names none, the subagent's own
-        model included, so the resume stays on it once that moves. A run on Claude Code
+        model included, so the resume stays on it once that moves;
+        ``effort_override``, the level it named, is kept likewise. A run on Claude Code
         (``claude_code``) is refused once the computer that runs its CLI runs
         as many as it may (``hosted.cli_cap``): the own computer
         ``cli_computer`` where one runs it for a workspace on another, which
@@ -176,6 +178,7 @@ class SubagentRunCoordinator:
                 cli_computer=cli_computer if claude_code else None,
                 spending_run_id=spending_run_id,
                 model_override=model_override,
+                effort_override=effort_override,
             )
         except sr_db.ClaudeCodeCapError as e:
             from src.server.services.claude_code.hosted import cli_cap_refusal

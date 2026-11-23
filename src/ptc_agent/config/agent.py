@@ -372,6 +372,43 @@ class Admitted(NamedTuple):
 
 
 @dataclass(frozen=True)
+class TaskAsk:
+    """What one Task named for its run: a model and an effort, each None
+    where it named none.
+
+    The run's ledger row keeps it (``facts``) and a resume naming neither
+    carries it over (``from_facts``), so a task stays on what it was asked
+    to run on and never on what that happened to resolve to: a Task naming
+    only an effort leaves its subagent's model free to follow the chat's.
+    """
+
+    model: str | None = None
+    effort: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.model is not None or self.effort is not None
+
+    @property
+    def complete(self) -> bool:
+        return self.model is not None and self.effort is not None
+
+    def over(self, earlier: "TaskAsk") -> "TaskAsk":
+        """This ask, with ``earlier``'s for what it leaves out."""
+        return TaskAsk(self.model or earlier.model, self.effort or earlier.effort)
+
+    def facts(self) -> dict[str, str]:
+        """The run ledger's ``start_task_run`` keyword facts."""
+        return {
+            **({"model_override": self.model} if self.model else {}),
+            **({"effort_override": self.effort} if self.effort else {}),
+        }
+
+    @classmethod
+    def from_facts(cls, facts: dict[str, Any]) -> "TaskAsk":
+        return cls(facts.get("model_override") or None, facts.get("effort_override") or None)
+
+
+@dataclass(frozen=True)
 class RunOn:
     """What one subagent run is admitted on: its subagent type's, or the
     model its Task named (``TaskModel.run_on``).
@@ -379,14 +416,14 @@ class RunOn:
     ``model`` is what the run's card shows, None on its launcher's model.
     ``claude_code`` is where admission placed its CLI, set only for a run on
     a Claude Code row, and ``claude_code_model`` the model that CLI runs.
-    ``model_override`` is the catalog name a Task named, which the run's row
-    keeps for a resume that names none.
+    ``ask`` is what the Task named, which the run's row keeps for a resume
+    that names none.
     """
 
     model: SubagentModel | None = None
     claude_code: Admitted | None = None
     claude_code_model: str | None = None
-    model_override: str | None = None
+    ask: TaskAsk = TaskAsk()
 
     def admission_kwargs(self) -> dict[str, Any]:
         """The run ledger's ``start_task_run`` facts."""
@@ -397,7 +434,7 @@ class RunOn:
             "stored_token": bool(admitted is not None and admitted.saved),
             "claude_code_model": self.claude_code_model,
             "cli_computer": admitted.cli_computer if admitted is not None else None,
-            **({"model_override": self.model_override} if self.model_override else {}),
+            **self.ask.facts(),
         }
 
 
@@ -406,10 +443,11 @@ class TaskModel:
     """The model one Task runs on in place of its subagent's own, resolved
     and gated as a turn's own model is.
 
-    ``name`` is the catalog name, which the run's ledger row keeps so a
-    resume can run the task on it again. ``model`` is what the run's card
-    shows, None where it is the turn's own model. ``claude_code`` is what
-    admission let the run's CLI run on, set only for a Claude Code row.
+    ``name`` is the catalog name and ``effort`` the level the client was
+    asked for, which it may send stepped down (``client_effort``). ``model``
+    is what the run's card shows, None where it is the turn's own model.
+    ``claude_code`` is what admission let the run's CLI run on, set only for
+    a Claude Code row.
     """
 
     name: str
@@ -418,6 +456,7 @@ class TaskModel:
     guidance: str
     model: SubagentModel | None = None
     claude_code: Admitted | None = None
+    effort: str | None = None
 
     @property
     def on_claude_code(self) -> bool:
@@ -429,7 +468,6 @@ class TaskModel:
             model=self.model,
             claude_code=self.claude_code,
             claude_code_model=self.client.model if self.on_claude_code else None,
-            model_override=self.name,
         )
 
 
@@ -447,12 +485,11 @@ class TaskModelResolver(Protocol):
     """The models one turn's Tasks name, gated as the turn's own model was."""
 
     async def resolve(
-        self, name: str, subagent_type: str, *, keep: bool = False
+        self, ask: TaskAsk, subagent_type: str
     ) -> "TaskModel | TaskModelRefused | None":
-        """``name`` for a task of ``subagent_type``, or why it cannot run
-        there; None where it is that subagent's own model, unless ``keep``:
-        a model a resume carries over stays the task's even while it is the
-        subagent's own, which follows the chat's model."""
+        """What ``ask`` runs a task of ``subagent_type`` on (no model named:
+        the subagent's own), or why it cannot run there; None where that is
+        the subagent's own model at its own effort."""
         ...
 
 
