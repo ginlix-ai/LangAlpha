@@ -34,6 +34,7 @@ from ptc_agent.config.core import (
     DockerConfig,
     ResourceTier,
 )
+from ptc_agent.core.sandbox.providers import _docker_image as docker_image
 from ptc_agent.core.sandbox.providers import docker as docker_provider
 from ptc_agent.core.sandbox.providers._tiers import parse_memory
 from ptc_agent.core.sandbox.providers.docker import (
@@ -644,7 +645,7 @@ class TestDockerProvider:
         # containers.get returns a DockerContainer for reconnecting
         client.containers.get = AsyncMock(return_value=mock_container)
 
-        # images.inspect (for _ensure_image)
+        # images.inspect (for ensure_image)
         client.images.inspect = AsyncMock()
 
         client.close = AsyncMock()
@@ -683,7 +684,7 @@ class TestDockerProvider:
 
         mock_client.images.build = build_iter
 
-        await provider._ensure_image(mock_client)
+        await docker_image.ensure_image(mock_client, provider._config.image)
 
         assert "fileobj" in build_kwargs
         with tarfile.open(fileobj=build_kwargs["fileobj"], mode="r") as tar:
@@ -694,6 +695,144 @@ class TestDockerProvider:
         assert build_kwargs["encoding"] == "identity"
         assert "path" not in build_kwargs
         assert "dockerfile" not in build_kwargs
+
+    @pytest.fixture
+    def registry_provider(self, provider):
+        provider._config.image = "ghcr.io/example/sandbox:latest"
+        return provider
+
+    @staticmethod
+    def _pull(mock_client, *lines, raises=None):
+        calls = []
+
+        async def pull(image, **kwargs):
+            calls.append((image, kwargs))
+            for line in lines:
+                yield line
+            if raises is not None:
+                raise raises
+
+        mock_client.images.pull = pull
+        mock_client.images.inspect = AsyncMock(side_effect=Exception("missing image"))
+        return calls
+
+    @staticmethod
+    def _build(mock_client):
+        built = []
+
+        async def build(**kwargs):
+            built.append(kwargs["tag"])
+            yield {"stream": "ok"}
+
+        mock_client.images.build = build
+        return built
+
+    @pytest.mark.asyncio
+    async def test_an_image_on_a_registry_is_pulled_and_not_built(
+        self, registry_provider, mock_client, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "Dockerfile.sandbox").write_text("FROM scratch\n")
+        calls = self._pull(mock_client, {"status": "Pulling"})
+        built = self._build(mock_client)
+
+        await docker_image.ensure_image(mock_client, registry_provider._config.image)
+
+        assert [image for image, _ in calls] == ["ghcr.io/example/sandbox:latest"]
+        assert calls[0][1]["tag"] is None
+        assert built == []
+
+    @pytest.mark.asyncio
+    async def test_a_present_image_is_not_pulled(self, registry_provider, mock_client):
+        calls = self._pull(mock_client)
+        mock_client.images.inspect = AsyncMock()
+        await docker_image.ensure_image(mock_client, registry_provider._config.image)
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_plain_local_tag_is_built_and_never_pulled(
+        self, provider, mock_client, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "Dockerfile.sandbox").write_text("FROM scratch\n")
+        calls = self._pull(mock_client)
+        built = self._build(mock_client)
+        await docker_image.ensure_image(mock_client, provider._config.image)
+        assert calls == []
+        assert built == ["test-sandbox:latest"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pull",
+        [
+            {"lines": [{"error": "denied: not allowed"}]},
+            {"raises": RuntimeError("denied: not allowed")},
+        ],
+    )
+    async def test_a_failed_pull_falls_back_to_the_build(
+        self, registry_provider, mock_client, tmp_path, monkeypatch, pull
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "Dockerfile.sandbox").write_text("FROM scratch\n")
+        self._pull(mock_client, *pull.get("lines", ()), raises=pull.get("raises"))
+        built = self._build(mock_client)
+        await docker_image.ensure_image(mock_client, registry_provider._config.image)
+        assert built == ["ghcr.io/example/sandbox:latest"]
+
+    @pytest.mark.asyncio
+    async def test_with_nothing_to_build_from_the_error_says_what_the_pull_said(
+        self, registry_provider, mock_client, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(docker_image.os.path, "isfile", lambda _path: False)
+        self._pull(mock_client, {"error": "denied: not allowed"})
+        with pytest.raises(RuntimeError) as failure:
+            await docker_image.ensure_image(mock_client, registry_provider._config.image)
+        message = str(failure.value)
+        assert "ghcr.io/example/sandbox:latest" in message
+        assert "denied: not allowed" in message
+        assert "Dockerfile.sandbox not found" in message
+
+    @pytest.mark.asyncio
+    async def test_a_pull_that_stalls_is_bounded(
+        self, registry_provider, mock_client, monkeypatch
+    ):
+        monkeypatch.setattr(docker_image, "IMAGE_PULL_TIMEOUT_S", 0.01)
+
+        async def pull(image, **kwargs):
+            await asyncio.sleep(30)
+            yield {"status": "never"}
+
+        mock_client.images.pull = pull
+        assert "no result within" in await docker_image.pull_image(
+            mock_client, registry_provider._config.image
+        )
+
+    @pytest.mark.parametrize(
+        ("image", "named", "versioned"),
+        [
+            ("langalpha-sandbox:latest", False, True),
+            ("langalpha-sandbox", False, False),
+            ("someone/sandbox:1", False, True),
+            ("ghcr.io/example/sandbox:latest", True, True),
+            ("ghcr.io/example/sandbox", True, False),
+            ("registry.local:5000/sandbox", True, False),
+            ("localhost/sandbox", True, False),
+            ("ghcr.io/example/sandbox@sha256:abc", True, True),
+        ],
+    )
+    def test_what_names_a_registry_and_a_version(self, image, named, versioned):
+        assert docker_image.names_a_registry(image) is named
+        assert docker_image.names_a_version(image) is versioned
+
+    @pytest.mark.asyncio
+    async def test_a_repository_with_no_tag_pulls_one_and_not_all(
+        self, registry_provider, mock_client, tmp_path
+    ):
+        registry_provider._config.image = "ghcr.io/example/sandbox"
+        calls = self._pull(mock_client)
+        await docker_image.ensure_image(mock_client, registry_provider._config.image)
+        assert calls[0][1]["tag"] == "latest"
 
     @pytest.mark.asyncio
     async def test_create_starts_container(self, provider, mock_client):

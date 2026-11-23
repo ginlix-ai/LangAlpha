@@ -1,4 +1,4 @@
-.PHONY: help config up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-bridge test-market-protocol test-chartkit test-edgar-engine test-all lint data-probe setup-db migrate
+.PHONY: help config _ensure-env up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-bridge test-market-protocol test-chartkit test-edgar-engine test-all lint data-probe setup-db migrate
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -8,16 +8,20 @@ config: ## Interactive setup wizard (LLM, data, sandbox, web search/fetch)
 # ---------------------------------------------------------------------------
 # Docker Compose (full-stack)
 # ---------------------------------------------------------------------------
-up: _sandbox-prepare ## Start full stack (PROVIDER=docker|daytona|e2b)
-	SANDBOX_PROVIDER=$(PROVIDER) docker compose up --build
+up: _ensure-env _sandbox-prepare ## Start full stack; finish setup in the app (PROVIDER=docker|daytona|e2b overrides it)
+	$(if $(PROVIDER),SANDBOX_PROVIDER=$(PROVIDER)) docker compose up --build
 
-down: ## Stop all Docker Compose services
+down: _ensure-env ## Stop all Docker Compose services
 	docker compose down
 
 clean: down ## Stop everything and remove stale sandbox containers
 	@echo "Removing stale sandbox containers..."
 	@docker rm -f $$(docker ps -aq --filter "name=langalpha-sandbox") 2>/dev/null || true
 	@echo "Clean."
+
+# docker-compose.yml reads .env, so a fresh checkout needs one before anything runs.
+_ensure-env:
+	@bash scripts/ensure_env.sh
 
 # Build sandbox image only when provider needs it (docker)
 _sandbox-prepare:
@@ -40,7 +44,7 @@ install: ## Install all dependencies (backend + frontend + the CLI computers get
 	cd web && pnpm install
 	cd cli && pnpm install --frozen-lockfile && pnpm build
 
-dev: ## Start backend with hot-reload (requires DB + Redis running)
+dev: _ensure-env ## Start backend with hot-reload (requires DB + Redis running)
 	uv run python server.py --reload
 
 dev-web: ## Start frontend dev server
@@ -96,8 +100,8 @@ data-probe: ## Probe provider entitlements and write data_routing.yaml (ARGS="--
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
-setup-db: ## Start PostgreSQL + Redis in Docker and initialize tables
+setup-db: _ensure-env ## Start PostgreSQL + Redis in Docker and initialize tables
 	./scripts/start_db.sh
 
-migrate: ## Run database migrations
+migrate: _ensure-env ## Run database migrations
 	uv run alembic upgrade head

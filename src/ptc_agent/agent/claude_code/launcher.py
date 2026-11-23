@@ -25,6 +25,7 @@ login is neither read nor written.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import hmac
@@ -57,6 +58,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     logger,
 )
 
+from ptc_agent.agent.claude_code import cli_install
 from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.core.claude_code_managed import local_managed
@@ -331,7 +333,8 @@ class ScopedEnvTransport(SubprocessCLITransport):
 
         The environment is ``cli_env`` on ``base_env``, not ``os.environ``. The version
         probe is skipped: it would run the CLI with the worker's whole
-        environment, and the CLI is the one the pinned SDK bundles. The child
+        environment, and the CLI is the pinned SDK's own version
+        (``cli_install.worker_cli``). The child
         starts in its own session, so a terminal's Ctrl-C or a job-control
         signal to the worker's process group never stops a CLI mid-turn; the
         run's close ends it. The credential reaches it through an inherited
@@ -435,7 +438,8 @@ class LocalLauncher:
     endpoint and its dummy credential. A worker an organization's managed
     Claude Code settings are installed on runs none (``local_managed``).
     ``plan`` is given only where the setup token it signs in with is the
-    one the user saved.
+    one the user saved. The CLI is ``cli_path``, else ``worker_cli``'s,
+    resolved as the run is readied so a first run waits for its download.
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
@@ -444,6 +448,7 @@ class LocalLauncher:
     saved: TokenStore | None = None
     plan: PlanLog | None = None
     _used: Credential | None = field(default=None, init=False, repr=False)
+    _cli: str | None = field(default=None, init=False, repr=False)
 
     @property
     def signed_in(self) -> SignedIn | None:
@@ -458,6 +463,14 @@ class LocalLauncher:
             await self.plan.took(self._used.secret)
         if sources := await local_managed():
             raise ClaudeTurnFailed("policy_blocked", f"the worker holds managed Claude Code settings {list(sources)}")
+        if self._cli is None:
+            try:
+                # Shielded, so a check cut off by its time limit leaves the download going.
+                self._cli = self.cli_path or await asyncio.shield(cli_install.fetch_worker_cli())
+            except cli_install.CliUnsupported as e:
+                raise ClaudeTurnFailed("computer_unsupported", str(e)) from e
+            except cli_install.CliInstallError as e:
+                raise ClaudeTurnFailed("startup_failed", str(e)) from e
 
     async def prepare(
         self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
@@ -505,7 +518,7 @@ class LocalLauncher:
         return {**{k: os.environ[k] for k in _INHERITED if k in os.environ}, **self.env}
 
     def transport(self, options: ClaudeAgentOptions) -> Transport:
-        options = replace(options, cli_path=self.cli_path or options.cli_path)
+        options = replace(options, cli_path=self._cli or self.cli_path or options.cli_path)
         return ScopedEnvTransport(options=options, base_env=self._base_env(), credential=self._used)
 
 

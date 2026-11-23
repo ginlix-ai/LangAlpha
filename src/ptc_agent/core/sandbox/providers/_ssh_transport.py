@@ -29,15 +29,19 @@ from typing import Any, Generic, Literal, NamedTuple, TypeVar
 import asyncssh
 import structlog
 
+from ptc_agent.core.sandbox.providers._script_run import (
+    GROUP_WAIT_S,
+    ScriptResult,
+    ScriptRun,
+    finish_framed,
+)
 from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     BOOT,
-    FRAME_BEGIN,
-    FRAME_PGID,
-    FRAME_STOPPED,
     HELLO,
+    OUTPUT_CAP,
     TERM_GRACE_S,
-    kill_group_script,
+    FramedResult,
 )
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 
@@ -65,21 +69,9 @@ _HELPER_COMMAND_SLOTS = 3 * _HELPER_CLI_SLOTS
 # first is passed over and replaced: sshd holds sessions of it that we no
 # longer count.
 REFUSALS_REPLACED = 2
-# Kept from a command's output, so one runaway command cannot take the
-# server's memory. Past it the rest is read and dropped, so the command is
-# never blocked writing.
-OUTPUT_CAP = 32 * 1024 * 1024
-_READ_CHUNK = 64 * 1024
 # What an upload reads of its local file at a time, off the event loop; the
 # SFTP channel writes each in parallel requests.
 _UPLOAD_CHUNK = 4 * 1024 * 1024
-# How often a running script is checked for having exited, and how long its
-# output may then go quiet before the call returns without the rest.
-_EXIT_POLL_S = 0.1
-_AFTER_EXIT_QUIET_S = 1.0
-# How long a command ended as it began may take to report its group, which
-# can already be running when the end comes.
-_GROUP_WAIT_S = 2.0
 # Opening the SFTP channel, so a machine whose sftp-server hangs (a home on
 # a stalled NFS mount, say) fails file calls rather than holding them.
 _SFTP_OPEN_S = 30
@@ -95,113 +87,50 @@ TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
-@dataclass
-class ScriptResult:
-    """What a script run on the machine produced."""
-
-    exit_code: int | None  # None when the channel closed without one
-    stdout: bytes
-    stderr: bytes
-    stdout_bytes: int = 0  # all of it, including what OUTPUT_CAP dropped
-
-
-class _Drain:
-    """Reads one stream to its end, keeping up to *cap* bytes of it."""
-
-    def __init__(self, stream: Any, cap: int) -> None:
-        self.buf = bytearray()
-        self.total = 0
-        self.task = asyncio.ensure_future(self._read(stream, cap))
-
-    async def _read(self, stream: Any, cap: int) -> None:
-        while True:
-            chunk = await stream.read(_READ_CHUNK)
-            if not chunk:
-                return
-            self.total += len(chunk)
-            room = cap - len(self.buf)
-            if room > 0:
-                self.buf += chunk[:room]
-
-
-class _Run:
-    """One script on one channel, readable while it runs, and the connection
-    it runs on (``link``), which may be another of the login's than the one
-    it was started from."""
+class _Run(ScriptRun):
+    """One script on one channel, and the connection it runs on (``link``),
+    which may be another of the login's than the one it was started from."""
 
     def __init__(self, process: Any, cap: int, link: Link) -> None:
+        super().__init__(process.stdout, process.stderr, cap)
         self.process = process
         self.link = link
-        self._out = _Drain(process.stdout, cap)
-        self._err = _Drain(process.stderr, 1 << 20)
 
     @property
-    def stdout(self) -> bytes:
-        return bytes(self._out.buf)
-
-    @property
-    def stderr(self) -> bytes:
-        return bytes(self._err.buf)
-
-    @property
-    def stdout_bytes(self) -> int:
-        return self._out.total
-
-    @property
-    def stderr_ended(self) -> bool:
-        return self._err.task.done()
+    def exit_code(self) -> int | None:
+        return self.process.exit_status if self.process.exit_signal is None else None
 
     def _exited(self) -> bool:
+        # sshd holds a channel open while anything still has its output open,
+        # so the exit status says the script ended, not the channel's close.
         return (
             self.process.exit_status is not None or self.process.exit_signal is not None
         )
 
-    async def finish(self) -> ScriptResult:
-        """Wait for the script, and for its output once it has exited.
+    async def _closed(self) -> None:
+        await self.process.wait_closed()
 
-        sshd holds a channel open while anything still has its output open,
-        so ``cmd &`` would hold the call until the background job ends. Once
-        the script has exited, output is awaited only while it keeps coming.
-
-        Cut short, it leaves the output read until the caller abandons the
-        run: the group's id may still be on its way, and the last of what
-        the group wrote before it was ended.
-        """
-        tasks = (self._out.task, self._err.task)
-        while pending := {t for t in tasks if not t.done()}:
-            if not self._exited():
-                await asyncio.wait(pending, timeout=_EXIT_POLL_S)
-                continue
-            seen = self._out.total + self._err.total
-            await asyncio.wait(pending, timeout=_AFTER_EXIT_QUIET_S)
-            if (
-                any(not t.done() for t in tasks)
-                and self._out.total + self._err.total == seen
-            ):
-                self.abandon()
-                break
-        else:
-            for task in tasks:
-                task.result()
-            await self.process.wait_closed()
-        return ScriptResult(
-            exit_code=self.process.exit_status
-            if self.process.exit_signal is None
-            else None,
-            stdout=self.stdout,
-            stderr=self.stderr,
-            stdout_bytes=self._out.total,
-        )
-
-    def abandon(self) -> None:
-        for drain in (self._out, self._err):
-            if drain.task.done():
-                if not drain.task.cancelled():
-                    drain.task.exception()  # read, so it is never logged as lost
-            else:
-                drain.task.cancel()
+    def _close(self) -> None:
         with contextlib.suppress(Exception):
             self.process.close()
+
+    def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        return self.link.spawn(coro)
+
+    def _log_fields(self) -> dict[str, Any]:
+        return {"target": self.link.target.label}
+
+    async def _kill_group(self, script: str, *, root: bool) -> bool:
+        """Over another channel, in the kill slot kept for it."""
+        if not self.link.usable:
+            return False
+        await self.link.run(script, timeout=TERM_GRACE_S + 15, root=root, kill=True)
+        return True
+
+    async def _settle(self) -> None:
+        with contextlib.suppress(TimeoutError, *TRANSPORT_ERRORS):
+            async with asyncio.timeout(GROUP_WAIT_S):
+                await asyncio.shield(self.process.wait_closed())
 
 
 @dataclass
@@ -861,66 +790,6 @@ class Machine(Generic[L]):
 # -- Framed commands ----------------------------------------------------------
 
 
-@dataclass
-class FramedResult:
-    """A framed command's outcome as the runtime reports it."""
-
-    stdout: bytes
-    stderr: bytes  # the command's own, when not merged
-    exit_code: int | None
-    pgid: int | None  # the command's group, reported before it ran
-    stopped: bool  # refused: the computer is marked stopped
-    timed_out: bool = False
-    framing_error: str = ""  # why the command did not start, as far as known
-    stdout_bytes: int = 0
-
-    @property
-    def started(self) -> bool:
-        """The group began, so the command ran."""
-        return self.pgid is not None
-
-    @classmethod
-    def parse(
-        cls,
-        stdout: bytes,
-        stderr: bytes,
-        *,
-        exit_code: int | None,
-        timed_out: bool = False,
-        stdout_bytes: int = 0,
-    ) -> FramedResult:
-        """Read what a framed script wrote, its markers taken out.
-
-        Anything before a marker came from the login shell's startup files, not
-        from the command, and is dropped from the command's output.
-        """
-        begin = stdout.find(FRAME_BEGIN, 0, 1 << 16)
-        if begin >= 0:
-            stdout = stdout[begin + len(FRAME_BEGIN) :]
-        pgid: int | None = None
-        stopped = False
-        marker = stderr.find(FRAME_PGID)
-        if marker >= 0:
-            end = stderr.find(b"\n", marker)
-            end = len(stderr) if end < 0 else end
-            value = stderr[marker + len(FRAME_PGID) : end]
-            pgid = int(value) if value.isdigit() else None
-            noise, stderr = stderr[:marker], stderr[end + 1 :]
-        else:
-            stopped = FRAME_STOPPED in stderr
-            noise, stderr = stderr, b""
-        return cls(
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            pgid=pgid,
-            stopped=stopped,
-            timed_out=timed_out,
-            framing_error=noise.decode(errors="replace").strip(),
-            stdout_bytes=stdout_bytes,
-        )
-
-
 class ScriptLost(ConnectionError):
     """The connection dropped while a command may have been running; ``link``
     is the one it ran on."""
@@ -964,80 +833,15 @@ async def run_framed(
                 ),
             )
         try:
-            async with asyncio.timeout(timeout):
-                result = await run.finish()
-        except TimeoutError:
-            # Shielded: a cancel that comes during the kill must not stop it.
-            await asyncio.shield(
-                run.link.spawn(_end_group(run.link, run, computer_dir, root=root))
-            )
-            return FramedResult.parse(
-                run.stdout,
-                run.stderr,
-                exit_code=None,
-                timed_out=True,
-                stdout_bytes=run.stdout_bytes,
+            return await finish_framed(
+                run,
+                computer_dir=computer_dir,
+                timeout=timeout,
+                root=root,
+                lost=TRANSPORT_ERRORS,
             )
         except TRANSPORT_ERRORS as e:
-            run.abandon()
             raise ScriptLost(str(e) or type(e).__name__, run.link) from e
-        except BaseException:
-            # The caller gave up, or reading failed; what it started on the
-            # machine must not keep running unowned.
-            run.link.spawn(_end_group(run.link, run, computer_dir, root=root))
-            raise
-    return FramedResult.parse(
-        result.stdout,
-        result.stderr,
-        exit_code=result.exit_code,
-        stdout_bytes=result.stdout_bytes,
-    )
-
-
-async def _end_group(link: Link, run: _Run, computer_dir: str, *, root: bool) -> None:
-    """Kill a framed command's group over another channel, then close its own."""
-    pgid: int | None = None
-    try:
-        pgid = await _reported_group(run)
-        if pgid is not None and link.usable:
-            await link.run(
-                kill_group_script(computer_dir, pgid, root=root),
-                timeout=TERM_GRACE_S + 15,
-                root=root,
-                kill=True,
-            )
-            # The group is gone, so its channel closes on its own; give the
-            # last of its output a moment to arrive.
-            with contextlib.suppress(TimeoutError, *TRANSPORT_ERRORS):
-                async with asyncio.timeout(2):
-                    await asyncio.shield(run.process.wait_closed())
-    except Exception as e:
-        logger.warning(
-            "Could not end a command's process group",
-            target=link.target.label,
-            pgid=pgid,
-            error=str(e) or type(e).__name__,
-        )
-    finally:
-        run.abandon()
-
-
-async def _reported_group(run: _Run) -> int | None:
-    """The group the script reported, waited for a moment if it has not yet.
-
-    A command ended just as it began can be running on the machine while its
-    group's id is still on the way. Only a whole line counts: a cut-off id
-    would name some other group.
-    """
-    deadline = time.monotonic() + _GROUP_WAIT_S
-    while True:
-        stderr = run.stderr
-        marker = stderr.find(FRAME_PGID)
-        if marker >= 0 and stderr.find(b"\n", marker) >= 0:
-            return FramedResult.parse(b"", stderr, exit_code=None).pgid
-        if run.stderr_ended or time.monotonic() >= deadline:
-            return None
-        await asyncio.sleep(_EXIT_POLL_S)
 
 
 # -- Files ----------------------------------------------------------------------

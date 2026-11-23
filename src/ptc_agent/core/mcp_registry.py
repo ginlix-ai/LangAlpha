@@ -9,6 +9,7 @@ documented import surface.
 import asyncio
 import os
 import random
+import sys
 from types import TracebackType
 from typing import Any
 
@@ -40,10 +41,30 @@ __all__ = [
     "build_composite_registry",
     "classify_startup_failure",
     "clear_global_registry",
+    "follow_config",
     "get_global_registry",
     "reconnect_builtin_remote",
     "set_global_registry",
 ]
+
+
+def _stdio_launch(command: str, args: list[str]) -> tuple[str, list[str]]:
+    """How this process starts a stdio server, which may not be how it was declared.
+
+    The built-ins declare ``uv run python <file>`` for a project checkout, where
+    uv finds the project's environment. A backend running from a prebuilt tree has
+    its dependencies in its own interpreter and no project for uv to find, so
+    ``LANGALPHA_STDIO_OWN_PYTHON`` runs them on that interpreter directly. ``-B``
+    because the subprocess env is filtered and such a tree may be read-only. Only
+    this spawn changes: sandboxes still get the declared command.
+    """
+    if (
+        os.environ.get("LANGALPHA_STDIO_OWN_PYTHON") == "1"
+        and command == "uv"
+        and list(args[:2]) == ["run", "python"]
+    ):
+        return sys.executable, ["-B", *args[2:]]
+    return command, args
 
 
 class MCPServerConnector:
@@ -322,9 +343,10 @@ class MCPServerConnector:
                 # Stdio transport (default) - use command-based connection
                 if not self.config.command:
                     raise ValueError("Command is required for stdio transport")
+                command, args = _stdio_launch(self.config.command, self.config.args)
                 server_params = StdioServerParameters(
-                    command=self.config.command,
-                    args=self.config.args,
+                    command=command,
+                    args=args,
                     env=self._prepare_env(),
                 )
 
@@ -920,3 +942,45 @@ async def _reconnect_one(config: MCPServerConfig) -> None:
             still_failed=sorted(successor.failed_builtin_remote),
         )
         return
+
+
+async def follow_config(config: CoreConfig) -> None:
+    """Publish a successor of the global registry for *config*'s servers.
+
+    For keys saved after boot, which turn servers on or off: one newly on is
+    connected and frozen as at boot, one now off is dropped, and the rest keep
+    their snapshots. Without it a server the boot turned off for a missing key
+    stays missing from every session until a restart. One that fails to connect
+    is left out rather than recorded as failed, since no heal runs for it and the
+    health check would fail until a restart. It is tried again by the next save
+    that changes a key, since a save that changes nothing rebuilds nothing.
+    """
+    current = get_global_registry()
+    if current is None:
+        return
+    enabled = [s for s in config.mcp.servers if s.enabled]
+    on = {s.name for s in enabled}
+    known = set(current.connectors) | set(current.failed_builtin_remote)
+    added = [s for s in enabled if s.name not in known]
+    if not added and known <= on:
+        return
+    fresh = MCPRegistry(config.model_copy(update={"mcp": config.mcp.model_copy(update={"servers": added})}))
+    if added:
+        await fresh.connect_all()
+        await fresh.freeze()
+    # Re-read after the awaits: a heal may have published a successor meanwhile.
+    current = get_global_registry() or current
+    connectors = {**current.connectors, **fresh.connectors}
+    successor = MCPRegistry(config)
+    successor.connectors = {s.name: connectors[s.name] for s in enabled if s.name in connectors}
+    successor.failed_builtin_remote = {
+        k: v for k, v in current.failed_builtin_remote.items() if k in on
+    }
+    successor._frozen = True
+    set_global_registry(successor)
+    logger.info(
+        "MCP servers follow the saved keys",
+        added=sorted(fresh.connectors),
+        failed=sorted({s.name for s in added} - set(fresh.connectors)),
+        dropped=sorted(known - on),
+    )

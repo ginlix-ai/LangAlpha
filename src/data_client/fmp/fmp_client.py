@@ -135,6 +135,8 @@ class FMPClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: OrderedDict[str, Any] = OrderedDict()
         self._cache_timestamps: Dict[str, datetime] = {}
+        self._in_flight = 0
+        self._retired = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -149,6 +151,14 @@ class FMPClient:
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    async def retire(self) -> None:
+        """Close once no request runs on this client, now or later: a caller
+        still holding it reopens the connection pool, and its last request
+        closes it again."""
+        self._retired = True
+        if not self._in_flight:
+            await self.close()
 
     async def __aenter__(self):
         return self
@@ -186,6 +196,17 @@ class FMPClient:
             return self._cache[cache_key]
 
         url = self._build_url(endpoint, version)
+        self._in_flight += 1
+        try:
+            return await self._request(url, params, cache_key, use_cache)
+        finally:
+            self._in_flight -= 1
+            if self._retired and not self._in_flight:
+                await self.close()
+
+    async def _request(
+        self, url: str, params: Dict[str, Any], cache_key: str, use_cache: bool
+    ) -> Union[Dict, List]:
         client = await self._get_client()
 
         try:

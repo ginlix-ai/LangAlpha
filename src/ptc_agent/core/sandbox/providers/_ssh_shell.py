@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 from ptc_agent.core.paths import (
     EXEC_SCRIPT_PREFIX,
@@ -37,6 +38,11 @@ FRAME_STOPPED = FRAME_MARK + b"stopped"
 
 # After a TERM, how long a group has to exit before it gets a KILL.
 TERM_GRACE_S = 3
+
+# Kept from a command's output, so one runaway command cannot take the
+# server's memory. Past it the rest is read and dropped, so the command is
+# never blocked writing.
+OUTPUT_CAP = 32 * 1024 * 1024
 
 # The last field is where the machine sees the connection come from, the
 # address sshd matched the key's from= against.
@@ -549,6 +555,102 @@ def framed_script(
         'exit "$__la_rc"',
     ]
     return "\n".join(lines) + "\n"
+
+
+@dataclass
+class FramedResult:
+    """A framed command's outcome as the runtime reports it."""
+
+    stdout: bytes
+    stderr: bytes  # the command's own, when not merged
+    exit_code: int | None
+    pgid: int | None  # the command's group, reported before it ran
+    stopped: bool  # refused: the computer is marked stopped
+    timed_out: bool = False
+    framing_error: str = ""  # why the command did not start, as far as known
+    stdout_bytes: int = 0
+
+    @property
+    def started(self) -> bool:
+        """The group began, so the command ran."""
+        return self.pgid is not None
+
+    @classmethod
+    def parse(
+        cls,
+        stdout: bytes,
+        stderr: bytes,
+        *,
+        exit_code: int | None,
+        timed_out: bool = False,
+        stdout_bytes: int = 0,
+    ) -> FramedResult:
+        """Read what a framed script wrote, its markers taken out.
+
+        Anything before a marker came from the login shell's startup files, not
+        from the command, and is dropped from the command's output.
+        """
+        begin = stdout.find(FRAME_BEGIN, 0, 1 << 16)
+        if begin >= 0:
+            stdout = stdout[begin + len(FRAME_BEGIN) :]
+        pgid: int | None = None
+        stopped = False
+        marker = stderr.find(FRAME_PGID)
+        if marker >= 0:
+            end = stderr.find(b"\n", marker)
+            end = len(stderr) if end < 0 else end
+            value = stderr[marker + len(FRAME_PGID) : end]
+            pgid = int(value) if value.isdigit() else None
+            noise, stderr = stderr[:marker], stderr[end + 1 :]
+        else:
+            stopped = FRAME_STOPPED in stderr
+            noise, stderr = stderr, b""
+        return cls(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            pgid=pgid,
+            stopped=stopped,
+            timed_out=timed_out,
+            framing_error=noise.decode(errors="replace").strip(),
+            stdout_bytes=stdout_bytes,
+        )
+
+    def text(self) -> str:
+        """The command's output, saying so when ``OUTPUT_CAP`` cut it."""
+        text = self.stdout.decode(errors="replace")
+        if self.stdout_bytes > OUTPUT_CAP:
+            text += (
+                f"\n[output truncated: kept the first {OUTPUT_CAP // (1024 * 1024)} MiB "
+                f"of {self.stdout_bytes} bytes]"
+            )
+        return text
+
+    def outcome(self, *, timeout: float, what: str) -> tuple[str, str, int]:
+        """The stdout, stderr and exit code ``exec`` reports for a run that
+        found the computer running."""
+        stdout = self.text()
+        stderr = self.stderr.decode(errors="replace")
+        if self.timed_out and self.started:
+            return (
+                stdout,
+                f"{stderr}timeout: the {what} ran past {timeout}s and was stopped",
+                -1,
+            )
+        if self.timed_out:
+            # The script went out but never reached the command.
+            return (
+                stdout,
+                f"timeout: the {what} did not start within {timeout}s",
+                -1,
+            )
+        if not self.started:
+            return (
+                stdout,
+                self.framing_error or f"the {what} could not be started",
+                self.exit_code or -1,
+            )
+        return stdout, stderr, -1 if self.exit_code is None else self.exit_code
 
 
 def kill_group_script(computer_dir: str, pgid: int, *, root: bool) -> str:

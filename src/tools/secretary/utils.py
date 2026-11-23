@@ -1,8 +1,11 @@
 """Where the user's computers and workspaces are, as an agent is told."""
 
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from ptc_agent.core.sandbox.providers import MACHINE_KINDS
 
 
 def spoken_computer_name(name: str | None) -> str:
@@ -34,7 +37,7 @@ def computer_state(
     """
     if status == "error":
         return "failed"
-    if kind != "ssh" and status in ("stopped", "stopping"):
+    if kind not in MACHINE_KINDS and status in ("stopped", "stopping"):
         return "stopped"
     return ""
 
@@ -46,9 +49,12 @@ def computer_machine(
 
     "" for a computer this deployment hosts. Otherwise the machine is the
     user's ("own"), and the one they work on ("personal") when the desktop
-    app's helper paired it; "_mac" follows when it runs macOS. A computer
-    added before its system was kept reads as not a Mac.
+    app's helper paired it, or when the server itself runs on it; "_mac"
+    follows when it runs macOS. A computer added before its system was kept
+    reads as not a Mac.
     """
+    if kind == "local":
+        return "personal_mac" if sys.platform == "darwin" else "personal"
     if kind != "ssh":
         return ""
     config = provider_config or {}

@@ -14,6 +14,8 @@ import { setupStartTarget } from './answers/gate';
 import { StepLoadFailed, StepLoading } from './answers/parts';
 import type { SetupStep } from './answers/setupSteps';
 import { useSetupFacts } from './answers/useSetupFacts';
+import { useSetupStatus } from '@/hooks/useServerSetup';
+import { mustChooseComputer } from './utils/sandboxChoice';
 
 import { isPlatformMode } from '@/config/hostMode';
 import { ONBOARDING_USE_URL } from '@/config/supportLinks';
@@ -27,6 +29,7 @@ const ModelPickStep = React.lazy(() => import('./steps/ModelPickStep'));
 const DefaultsStep = React.lazy(() => import('./steps/DefaultsStep'));
 const DoneStep = React.lazy(() => import('./steps/DoneStep'));
 const UseStep = React.lazy(() => import('./steps/UseStep'));
+const ServerStep = React.lazy(() => import('./steps/ServerStep'));
 const ComputerStep = React.lazy(() => import('./steps/ComputerStep'));
 const SshStep = React.lazy(() => import('./steps/SshStep'));
 const ModelStep = React.lazy(() => import('./steps/ModelStep'));
@@ -73,6 +76,7 @@ const PAGES: readonly SetupPage[] = [
   { path: 'defaults', element: <DefaultsStep />, rail: 'provider', place: { index: 4, dot: 2, securityNote: false } },
   { path: 'ready', element: <DoneStep />, rail: 'provider', place: { index: 5, dot: 3, securityNote: false } },
   { path: 'use', element: <UseStep />, rail: 'answers', step: 'use' },
+  { path: 'server', element: <ServerStep />, rail: 'answers', step: 'server' },
   { path: 'computer', element: <ComputerStep />, rail: 'answers', step: 'computer' },
   { path: 'ssh', element: <SshStep />, rail: 'answers', step: 'computer' },
   { path: 'mac', element: <MacHandoffStep />, rail: 'answers', step: 'computer' },
@@ -111,12 +115,15 @@ export default function SetupWizard() {
   const { user } = useUser();
   const hasPlatformAccess = (user?.access_tier ?? -1) >= 0;
   const canExit = hasProvider || hasPlatformAccess || !isPlatformMode;
+  // Leaving with nothing chosen and nothing to fall back to would make Home's
+  // computer where it cannot run, so a server in that state is set up first.
+  const deployment = useSetupStatus();
   // Captured on entry, in the initializer so the first render already knows
   // whether to show the exit. Writing the same target twice is harmless.
   const [hasReturn, setHasReturn] = useState(() => captureSetupReturn(location.search) !== null);
   // A page that sent the user here has somewhere to go back to, so the exit
   // shows even before they have any model access.
-  const showExit = canExit || hasReturn;
+  const showExit = (canExit || hasReturn) && !mustChooseComputer(deployment.data);
   const { rail, factsFailed, retryFacts } = useSetupFacts();
   // A connect page the answers' model step sent the user to.
   const answering = (location.state as { answering?: boolean } | null)?.answering === true;

@@ -3,6 +3,9 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { homeWorkspaceQuery } from '@/hooks/useHomeWorkspace';
+import { useLatestRef } from '@/hooks/useLatestRef';
+import { readSetupStatusForWarm } from '@/hooks/useServerSetup';
+import { setupSkipped } from '@/hooks/useSetupGate';
 import { warmWorkspace } from '@/pages/ChatAgent/utils/warmWorkspace';
 
 /** How long after a warm the next interaction warms again. A computer the
@@ -30,10 +33,18 @@ const POWER_CONTROL = '[data-computer-power]';
  * left open or only glanced at starts nothing; neither does the click that
  * brings a background window forward on macOS, which never reaches the page.
  * The start puts Home on the computer as a turn would, creating one for a user
- * who has none.
+ * who has none, which ends a self-hosted server's own setup step. So while the
+ * account's setup still runs on its answers, which go through that step, it
+ * waits to hear the step is not still owed. An account past setup is never sent
+ * to the step (the gate routes only setup in progress), so its first chat would
+ * make that computer all the same, and it warms as it would anywhere.
  */
-export function WarmHome(): null {
+export function WarmHome({ setupRunning }: {
+  /** The account's setup still runs on its answers (`OnboardingRoute`). */
+  setupRunning: boolean;
+}): null {
   const queryClient = useQueryClient();
+  const setupRunningRef = useLatestRef(setupRunning);
 
   useEffect(() => {
     // Bumped by a power control and by cleanup, which drops a Home lookup
@@ -52,14 +63,23 @@ export function WarmHome(): null {
       // while it would still be loading counts. Best effort, like the warm: a
       // send still starts the computer and shows what failed.
       const current = generation;
-      void queryClient.ensureQueryData(homeWorkspaceQuery(queryClient)).then(
-        (home) => (current === generation ? warmWorkspace(home.workspace_id, queryClient, 'input') : undefined),
-        // A lookup that failed started nothing, so the next interaction
-        // retries, unless a power control has since begun its own wait.
-        () => {
-          if (current === generation) warmedAt = -Infinity;
-        },
-      );
+      const status = setupRunningRef.current ? readSetupStatusForWarm(queryClient) : Promise.resolve(null);
+      void status.then((setup) => {
+        if (current !== generation) return undefined;
+        // The gate is taking this account to the step. Exit setup means go on anyway.
+        if (setup?.needs_setup && !setupSkipped()) {
+          warmedAt = -Infinity;
+          return undefined;
+        }
+        return queryClient.ensureQueryData(homeWorkspaceQuery(queryClient)).then(
+          (home) => (current === generation ? warmWorkspace(home.workspace_id, queryClient, 'input') : undefined),
+          // A lookup that failed started nothing, so the next interaction
+          // retries, unless a power control has since begun its own wait.
+          () => {
+            if (current === generation) warmedAt = -Infinity;
+          },
+        );
+      });
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (!MODIFIER_KEYS.has(event.key)) warm(event);
@@ -73,7 +93,7 @@ export function WarmHome(): null {
       window.removeEventListener('pointerdown', warm, options);
       window.removeEventListener('keydown', onKeyDown, options);
     };
-  }, [queryClient]);
+  }, [queryClient, setupRunningRef]);
 
   return null;
 }

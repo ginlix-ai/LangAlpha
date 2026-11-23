@@ -126,6 +126,14 @@ async def get_live_computer_kinds(*, conn=None) -> Dict[str, int]:
         return {str(r["kind"]): int(r["computers"]) for r in await cur.fetchall()}
 
 
+async def any_computer_exists(*, conn=None) -> bool:
+    """Whether this deployment ever had a computer, deleted ones included."""
+    async with _computer_cursor(conn) as cur:
+        await cur.execute("SELECT EXISTS (SELECT 1 FROM computers) AS found")
+        row = await cur.fetchone()
+        return bool(row and row["found"])
+
+
 def bind_provider_ref_statement(
     *,
     authority: str,

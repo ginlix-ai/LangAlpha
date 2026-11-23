@@ -19,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
 from src.observability.private_errors import failure
+from src.server.auth import owner_requests
 from src.server.auth.jwt_bearer import _decode_token
 
 # Type variable for generic return type preservation
@@ -162,6 +163,7 @@ async def get_user_id_any_state(
         return user_id
 
     if HOST_MODE == "oss":
+        owner_requests.refuse_unless_owner(request.scope)
         note_caller(request, LOCAL_DEV_USER_ID, "session")
         return LOCAL_DEV_USER_ID
 
@@ -231,7 +233,7 @@ async def get_optional_user_id(
     """
     matched, user_id = _service_token_user_id(request)
     if not matched:
-        if HOST_MODE == "oss":
+        if HOST_MODE == "oss" and owner_requests.is_owner(request.scope):
             user_id = LOCAL_DEV_USER_ID
         elif credentials is None:
             return None

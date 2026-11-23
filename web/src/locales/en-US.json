@@ -522,7 +522,15 @@
       "agent": "Agent",
       "labs": "Labs"
     },
+    "server": {
+      "location": "Where the agent runs",
+      "locationDesc": "A change applies to new computers. Computers you already have stay where they are.",
+      "marketDataDesc": "Yahoo Finance needs no key. A key adds more data.",
+      "webSearchDesc": "The agent searches with the provider you pick here.",
+      "keysReach": "A saved key applies on this server right away, while Docker and cloud computers you already have keep the keys they were created with, and a computer on this machine picks up a change at its next start."
+    },
     "section": {
+      "server": "Server",
       "account": "Profile",
       "preferences": "Investing profile",
       "plan": "Plan & usage",
@@ -539,6 +547,7 @@
       "experiments": "Experiments"
     },
     "definition": {
+      "server": "Where the agent runs and the vendor keys this server holds.",
       "account": "Your name, photo and sign-in.",
       "preferences": "What you told the agent about how you invest, so its research fits you.",
       "plan": "Your plan, your credits and billing, managed in your LangAlpha account.",
@@ -1635,6 +1644,8 @@
       "dockerDesc": "Runs on this machine",
       "sshDesc": "Any Linux server or Mac",
       "sshLabel": "Your machine (SSH)",
+      "localLabel": "This computer",
+      "localDesc": "The agent runs on this machine as you, with no isolation",
       "capReached": "Limit reached"
     },
     "largerSlot": {
@@ -4665,6 +4676,75 @@
     }
   },
   "setup": {
+    "computer": {
+      "title": "Where should your agent run?",
+      "localTitle": "This computer",
+      "localDesc": "No Docker or cloud account needed. The agent runs as you on this machine and can read and change your files.",
+      "localWarning": "Not isolated: anything the agent runs has the same access you do.",
+      "installTitle": "What to install",
+      "installHelp": "Installed on this machine the first time the agent starts here.",
+      "groupSize": "{{download}} download, {{disk}} on disk",
+      "installTotal": "With these: {{download}} to download, {{disk}} on disk.",
+      "required": "Required",
+      "groupCore": "Core",
+      "groupCoreDesc": "Python and the data libraries the agent always needs.",
+      "groupBrowsing": "Browsing",
+      "groupBrowsingDesc": "Reading web pages, scraping and video transcripts.",
+      "groupDocuments": "Documents",
+      "groupDocumentsDesc": "Reading and writing Word, PowerPoint, Excel and PDF files.",
+      "groupChromium": "Chromium",
+      "groupChromiumDesc": "A browser of the agent's own. Without it, the agent uses Chrome, Chromium, Edge or Brave if this machine has one.",
+      "dockerTitle": "Docker",
+      "dockerDesc": "Isolated in a container on this machine.",
+      "dockerFound": "Docker is running.",
+      "dockerMissing": "Docker isn't answering on this machine. Install it or start it, then check again.",
+      "dockerStillDown": "Docker still isn't answering. Install it or start it, then check again.",
+      "dockerCheck": "Check again",
+      "dockerInstall": "Install Docker",
+      "dockerNotOffered": "Not offered here: a container on this system can't reach the app's server. Pick another option.",
+      "cloudTitle": "Cloud VM",
+      "cloudDesc": "Isolated on Daytona or E2B, with your own key. Your files live with that vendor.",
+      "cloudReach": "Without a public address for this server, the file mount, connectors and the la CLI don't work.",
+      "cloudVendor": "Cloud vendor",
+      "cloudKey": "{{vendor}} API key",
+      "cloudKeyMissing": "Add a {{vendor}} API key to run there, or pick another option.",
+      "environment": "Set on the server: {{provider}}. Change it there."
+    },
+    "services": {
+      "marketData": "Market data",
+      "optional": "Optional",
+      "yahooTitle": "Yahoo Finance",
+      "yahooDesc": "Works with no key: prices, fundamentals, analyst data and screening.",
+      "fmpDesc": "Optional. Adds fundamentals and macro data. Has a free tier.",
+      "webSearch": "Web search",
+      "searchProvider": "Provider",
+      "searchNone": "Skip for now",
+      "searchProviderHasKey": "{{provider}} (key added)",
+      "searchKey": "{{provider}} API key",
+      "searchOff": "Web search stays off until a key is added.",
+      "fetchToggle": "Page reading",
+      "fetchDesc": "The built-in reader needs no key. Firecrawl can read pages in its place and adds site crawling."
+    },
+    "key": {
+      "getKey": "Get a key",
+      "testRefused": "The key was refused.",
+      "testPlan": "The key's plan has run out or does not include this.",
+      "testRateLimited": "Rate limited, so the key could not be checked yet.",
+      "testTimeout": "No answer within 10 seconds.",
+      "testUnreachable": "The vendor could not be reached.",
+      "testUnusable": "This is not a usable key.",
+      "testNone": "This key has no test.",
+      "testStatus": "The vendor answered with status {{status}}.",
+      "environment": "Set on the server, so it is read-only here.",
+      "replace": "Replace",
+      "remove": "Remove"
+    },
+    "errors": {
+      "noEncryptionKey": "Saving needs BYOK_ENCRYPTION_KEY set on the server.",
+      "saveFailed": "Could not save. Try again.",
+      "statusFailed": "Could not read this server's setup.",
+      "tryAgain": "Try again"
+    },
     "capabilities": "Capabilities",
     "brandedHeader": "Configure your LLM providers",
     "securityNote": "Your API keys are encrypted and never shared",
@@ -4818,10 +4898,12 @@
         "serverModels": "This server's models",
         "cloud": "Cloud computer",
         "serverComputer": "This server's computer",
+        "thisComputer": "This computer",
         "own_computer": "Your computer"
       },
       "rail": {
         "use": "Your use",
+        "server": "Server",
         "computer": "Computer",
         "model": "Model",
         "default": "Default"
@@ -4834,11 +4916,17 @@
         "claudeCodeDesc": "Pro or Max. Claude Code runs on your plan, with LangAlpha's tools.",
         "subscription": "Another subscription or an API key",
         "subscriptionDesc": "ChatGPT, Grok, a coding plan, or a key from any provider.",
+        "anyKey": "+ any API key",
         "serverModels": "Models this server provides",
         "serverModelsDesc": "The models your administrator set up.",
         "whereLabel": "Where should your tasks run?",
         "serverComputer": "On a computer this server runs",
         "serverComputerDesc": "Keeps working when your computer is off.",
+        "thisComputer": "On this computer",
+        "thisComputerDesc": "Runs while this computer is awake and LangAlpha is open.",
+        "hostedPitch": "Need it working while your computer is off? LangAlpha.ai runs it in the cloud, with nothing to set up.",
+        "hostedApp": "Get the LangAlpha.ai app",
+        "hostedCompare": "Hosted or self-hosted?",
         "homeStays": "Home stays on this Mac. Move it in Settings.",
         "own": "On your own computer",
         "ownDesc": "Your Mac, or any Mac or Linux computer over SSH.",
@@ -5000,6 +5088,11 @@
       "note": "Either way, the browser tab and this app show the same progress.",
       "inBrowser": "I'll finish in the browser",
       "here": "Continue here"
+    },
+    "server": {
+      "title": "Set up this server",
+      "helper": "Where it runs agent code, and the services its tools use. You answer this once for everyone on this server, and can change it later in Settings.",
+      "helperKeys": "The services its tools use. You answer this once for everyone on this server, and can change it later in Settings."
     }
   },
   "marketView": {

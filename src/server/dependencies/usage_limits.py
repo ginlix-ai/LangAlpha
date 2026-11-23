@@ -827,12 +827,12 @@ async def get_provider_allowances(
     machine its owner brings is False while the policy keeps work off one,
     or cannot be read, since the gate refuses both.
     """
-    from ptc_agent.core.sandbox.providers import OWN_MACHINE_KINDS
+    from ptc_agent.core.sandbox.providers import BROUGHT_KINDS
     from src.server.services.policy import OWN_MACHINES
     from src.server.services.account import policy_for
 
     own_refused = False
-    if any(k in OWN_MACHINE_KINDS for k in kinds):
+    if any(k in BROUGHT_KINDS for k in kinds):
         policy = await policy_for(user_id)
         own_refused = policy is None or not policy.allows(OWN_MACHINES)
     scopes = (
@@ -842,7 +842,7 @@ async def get_provider_allowances(
     )
 
     def allowed(kind: str) -> Optional[bool]:
-        if own_refused and kind in OWN_MACHINE_KINDS:
+        if own_refused and kind in BROUGHT_KINDS:
             return False
         if kind == default_kind:
             return True

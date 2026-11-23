@@ -593,9 +593,9 @@ describe('what a finished load is allowed to conclude', () => {
 
 describe('adopting a server', () => {
   test('a scheme that is not a browser scheme is refused', () => {
-    const { main, store } = loadShell({ edition: 'oss' })
+    const { backend, store } = loadShell({ edition: 'oss' })
     for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x', 'not a url']) {
-      assert.equal(main.adoptServer(bad).ok, false, bad)
+      assert.equal(backend.useServer(bad).ok, false, bad)
     }
     // `new URL('file:///x').origin` is the STRING "null", which is truthy: it
     // stores fine, `entryUrl` then reads the picker as answered, and
@@ -605,9 +605,9 @@ describe('adopting a server', () => {
   })
 
   test('an address carrying credentials is refused, not silently stripped', () => {
-    const { main, store } = loadShell({ edition: 'oss' })
+    const { backend, store } = loadShell({ edition: 'oss' })
     for (const bad of ['http://deploy:hunter2@a.example:8080', 'http://token@a.example:8080']) {
-      const result = main.adoptServer(bad)
+      const result = backend.useServer(bad)
       assert.equal(result.ok, false, bad)
       // The path guard cannot catch these: the pathname of `https://u:p@host`
       // is '/'. And `parsed.origin` drops the userinfo, so accepting would store
@@ -619,8 +619,8 @@ describe('adopting a server', () => {
   })
 
   test('pointing somewhere new forgets what the last server declared', () => {
-    const { main, store } = loadShell({ edition: 'oss' })
-    assert.equal(main.adoptServer('http://a.example:8080').ok, true)
+    const { backend, store } = loadShell({ edition: 'oss' })
+    assert.equal(backend.useServer('http://a.example:8080').ok, true)
     // What a modern server that ships the declaration would have taught it.
     store.set('appChrome', true)
     store.set('platformChrome', true)
@@ -629,16 +629,16 @@ describe('adopting a server', () => {
     // deliberately not recorded as a "no" — so without the reset the stale
     // `true` survived and the next launch opened frameless against a page that
     // reserves nothing: window buttons over its header, and nothing draggable.
-    assert.equal(main.adoptServer('http://b.example:8080').ok, true)
+    assert.equal(backend.useServer('http://b.example:8080').ok, true)
     assert.equal(store.get('appChrome'), false)
     assert.equal(store.get('platformChrome'), false)
   })
 
   test('re-adopting the same server keeps what it already taught', () => {
-    const { main, store } = loadShell({ edition: 'oss' })
-    main.adoptServer('http://a.example:8080')
+    const { backend, store } = loadShell({ edition: 'oss' })
+    backend.useServer('http://a.example:8080')
     store.set('appChrome', true)
-    main.adoptServer('http://a.example:8080/')
+    backend.useServer('http://a.example:8080/')
     assert.equal(store.get('appChrome'), true, 'the same origin re-learned nothing')
   })
 })
@@ -2604,5 +2604,40 @@ describe('the committed package is unsigned and un-notarized', () => {
     assert.ok(build.includes("'notarytool', 'submit'"), 'disk images are never submitted')
     assert.ok(build.includes("'stapler', 'staple'"), 'disk images are never stapled')
     assert.ok(build.includes("context:primary-signature"), 'the DMG is assessed with the wrong Gatekeeper context')
+  })
+})
+
+describe('the server address the setup page connects to', () => {
+  const { probeWebApp } = require('../src/probe')
+
+  function answering(contentType) {
+    const real = electronStub.net.request
+    electronStub.net.request = () => {
+      const emitter = new EventEmitter()
+      emitter.end = () => setImmediate(() => emitter.emit('response', {
+        statusCode: 404, headers: { 'content-type': [contentType] }, resume() {},
+      }))
+      emitter.abort = () => {}
+      return emitter
+    }
+    return () => { electronStub.net.request = real }
+  }
+
+  test('an API that answers in JSON is refused, with the address to use instead', async () => {
+    const restore = answering('application/json')
+    try {
+      const result = await probeWebApp('http://localhost:8000')
+      assert.equal(result.ok, false)
+      assert.match(result.error, /not a web page.*http:\/\/localhost:5173/)
+    } finally { restore() }
+  })
+
+  test('any page is accepted, whatever its status', async () => {
+    const restore = answering('text/html; charset=utf-8')
+    try {
+      const result = await probeWebApp('http://localhost:5173')
+      assert.equal(result.ok, true)
+      assert.equal(result.status, 404)
+    } finally { restore() }
   })
 })

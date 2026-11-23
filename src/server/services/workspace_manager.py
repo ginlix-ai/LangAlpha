@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, NamedTuple, Optional
 
-from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS, is_own_machine
+from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS, is_machine_kind
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from ptc_agent.core.session import Session
 
@@ -850,12 +850,13 @@ class WorkspaceManager(ComputerManager):
         times. Activity is the computer's own stamp, which any project's turn
         refreshes.
 
-        A machine of the user's own is never stopped here (``is_own_machine``):
-        only this worker's session for a quiet one goes. The stop exists to
-        end what a sandbox costs while nobody uses it; the user's own machine
-        costs the deployment nothing running, and a stop ends the user's own
-        work there, such as a command left running that nobody has checked on
-        in an hour, so only its owner stops it.
+        A whole machine, one the user brings or the server's own, is never
+        stopped here (``is_machine_kind``): only this worker's session for a
+        quiet one goes. The stop exists to end what a sandbox costs while
+        nobody uses it; such a machine costs the deployment nothing running,
+        and a stop ends the user's own work there, such as a command left
+        running that nobody has checked on in an hour, so only its owner
+        stops it.
 
         Returns:
             Number of computers stopped.
@@ -890,7 +891,7 @@ class WorkspaceManager(ComputerManager):
 
             try:
                 window = self._idle_window(computer)
-                own = is_own_machine(computer["kind"])
+                own = is_machine_kind(computer["kind"])
             except ValueError as e:
                 # Settings the stop could not build a provider from either.
                 self._note_idle_reap_failure(computer_id, e)
@@ -986,7 +987,7 @@ class WorkspaceManager(ComputerManager):
         machines once it has reconciled them, since it clears the flag of one
         whose owner lost the entitlement before it reaps; a machine whose
         settings no provider can be built from is never stopped either, nor
-        one of the user's own (``is_own_machine``).
+        a whole machine (``is_machine_kind``).
         """
         try:
             if spared_by_idle_sweep(computer):

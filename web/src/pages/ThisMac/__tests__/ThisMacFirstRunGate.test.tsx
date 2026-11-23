@@ -59,6 +59,12 @@ vi.mock('@/pages/ChatAgent/utils/api/workspaces', async (importOriginal) => ({
   getHomeWorkspace: api.getHomeWorkspace,
 }));
 
+// A self-hosted server already set up, so the warm goes ahead.
+vi.mock('@/hooks/useServerSetup', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readSetupStatusForWarm: async () => ({ needs_setup: false }),
+}));
+
 const warm = vi.hoisted(() => ({ warmWorkspace: vi.fn(async () => {}) }));
 vi.mock('@/pages/ChatAgent/utils/warmWorkspace', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -118,7 +124,7 @@ function macRow(filesBackup: boolean): Partial<Computer> {
 function draw() {
   return renderWithProviders(
     <ThisMacFirstRunGate>
-      <WarmHome />
+      <WarmHome setupRunning />
       <div data-testid="app" />
     </ThisMacFirstRunGate>,
   );

@@ -18,6 +18,8 @@ const { COMMANDS } = require('./commands')
 function buildMenu({
   isSaas,
   onChangeServer,
+  hasBundledStack = false,
+  onRevealStackLogs = null,
   onOpenAccount,
   onCheckForUpdates,
   onReload,
@@ -70,10 +72,12 @@ function buildMenu({
   const settingsItem = command('Settings…', 'open-settings', 'CmdOrCtrl+,')
   const updatesItem = { label: 'Check for Updates…', click: (_item, win) => onCheckForUpdates(win) }
   // The picker is the OSS edition's only server setting, and a user who moved
-  // their stack has no other way back to a working window.
+  // their stack has no other way back to a working window. A build that carries
+  // its own stack switches between that and a server here too.
   const accountItem = isSaas
     ? { label: 'Account…', click: onOpenAccount }
-    : { label: 'Change Server…', click: onChangeServer }
+    : { label: hasBundledStack ? 'Run on This Computer or a Server…' : 'Change Server…', click: onChangeServer }
+  const stackLogsItems = onRevealStackLogs ? [{ label: 'Reveal Logs', click: () => onRevealStackLogs() }] : []
 
   const appMenu = {
     label: app.name,
@@ -84,6 +88,7 @@ function buildMenu({
       updatesItem,
       { type: 'separator' },
       accountItem,
+      ...stackLogsItems,
       ...remoteItems,
       { type: 'separator' },
       { role: 'services' },
@@ -109,6 +114,7 @@ function buildMenu({
         settingsItem,
         updatesItem,
         accountItem,
+        ...stackLogsItems,
         { type: 'separator' },
         { role: 'quit' },
       ]),

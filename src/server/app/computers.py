@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from ptc_agent.core.sandbox.providers import provider_class
+from ptc_agent.core.sandbox.providers.local import NoFreeRootFolder
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     SSHConnectError,
     SSHFolderMarked,
@@ -250,6 +251,8 @@ async def _computer_action_errors(action: str, computer_id: str, *, spec: bool =
         raise HTTPException(status_code=409, detail=detail) from None
     except (ProviderNotOffered, UnknownResourceTier) as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except NoFreeRootFolder as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BackupIncomplete as e:

@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { helperProblem, macHelperConfigLines } from './helper-bundle.mjs'
+import { helperExtraFiles, helperProblem } from './helper-bundle.mjs'
 import { HELPER_BINARY, launchAgentPlist } from './launch-agent.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -65,9 +65,10 @@ const args = [...passthrough, '--publish', 'never']
 // Both edits rewrite the committed config rather than passing `-c.…` overrides:
 // the CLI form does not override an explicit `null`, and it fails by producing a
 // wrong-but-successful build instead of erroring.
+// A marker with the `g` flag replaces every line it matches.
 let config = readFileSync(BASE, 'utf8')
 const replace = (marker, replacement, what) => {
-  if (!marker.test(config)) {
+  if (config.search(marker) === -1) {
     console.error(`[build] electron-builder.yml no longer has the \`${what}\` line to replace`)
     process.exit(1)
   }
@@ -231,6 +232,10 @@ if (!outputDir.includes(edition)) {
 const dist = path.resolve(root, outputDir)
 console.log(`[build] output: ${path.relative(root, dist)}`)
 
+// What goes under `mac:`, gathered from the helper and the bundled backend and
+// rendered once below, so no addition depends on another having gone first.
+let helperLines = []
+
 // Remote control of this Mac. The helper is a Rust binary built outside this
 // directory, by helper/scripts/build-macos.sh, and a mac build without it is
 // still a whole app: one that reports remote control as unsupported. So its
@@ -258,11 +263,49 @@ if (process.platform === 'darwin') {
     const plist = path.join(dist, 'launch-agent', `${helperLabel}.plist`)
     mkdirSync(path.dirname(plist), { recursive: true })
     writeFileSync(plist, launchAgentPlist({ label: helperLabel, productName: identity.productName }))
-    const signer = path.join(here, 'sign-mac.mjs')
-    replace(/^mac:\r?$/m, () => macHelperConfigLines({ label: helperLabel, source, plist, signer }).join('\n'), 'mac:')
+    helperLines = helperExtraFiles({ label: helperLabel, source, plist })
     console.log(`[build] remote control: ${path.relative(root, source)} as ${helperLabel}`)
   }
 }
+
+// The self-hosted edition carries its own stack, so it can run with no server.
+// The hosted edition's package must not grow by a byte for that, down to the
+// supervisor's source, which only the self-hosted edition's code path requires.
+if (edition !== 'oss') {
+  replace(/^ {2}- src\/\*\*\/\*\r?$/m, () => '  - src/**/*\n  - "!src/stack/**"', 'src files')
+}
+
+// DESKTOP_BUNDLE_BACKEND=0 keeps the thin build, which only ever talks to a server.
+// `--dir` skips it too unless asked for with =1, since that is the fast packaging
+// check, and this adds minutes and over a gigabyte to it. Windows has no bundle yet.
+const bundleSwitch = env('DESKTOP_BUNDLE_BACKEND')
+const bundling = edition === 'oss' && process.platform !== 'win32'
+  && bundleSwitch !== '0' && (bundleSwitch === '1' || !passthrough.includes('--dir'))
+let bundledTree = null
+let bundleMac = []
+if (bundling) {
+  const { bundleBackend, bundleConfigEdits } = await import('./bundle-backend.mjs')
+  const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  bundledTree = await bundleBackend().catch((err) => {
+    console.error(`[build] bundling the backend failed: ${err.message}`)
+    process.exit(1)
+  })
+  const { edits, mac } = bundleConfigEdits({ tree: bundledTree, hostArch, feed })
+  for (const { marker, replacement, what } of edits) replace(marker, () => replacement, what)
+  bundleMac = mac
+  console.log(`[build] bundled backend: ${path.relative(root, bundledTree)} (${hostArch})`)
+}
+
+// scripts/sign-mac.mjs signs what electron-builder's own signer would get wrong:
+// the helper, with none of the JIT entitlements, and the bundled tree, where it
+// would sign every binary file rather than only the Mach-O ones.
+const ownSigner = process.platform === 'darwin' && (helperLines.length > 0 || bundling)
+const macLines = [
+  ...bundleMac,
+  ...(ownSigner ? [`  sign: ${JSON.stringify(path.join(here, 'sign-mac.mjs'))}`] : []),
+  ...helperLines,
+]
+if (macLines.length > 0) replace(/^mac:\r?$/m, () => ['mac:', ...macLines].join('\n'), 'mac:')
 
 writeFileSync(RESOLVED, config)
 args.push('--config', path.basename(RESOLVED))
@@ -298,6 +341,25 @@ if (result.error) {
 }
 if (result.status !== 0) process.exit(result.status ?? 1)
 
+// What came out, checked rather than what went in (verifyPackedTrees).
+if (bundledTree) {
+  const { verifyPackedTrees } = await import('./bundle-backend.mjs')
+  const packed = process.platform === 'darwin'
+    ? findApps(dist).map((app) => path.join(app, 'Contents', 'Resources', 'backend'))
+    : readdirSync(dist).filter((d) => d.endsWith('-unpacked')).map((d) => path.join(dist, d, 'resources', 'backend'))
+  let files
+  try {
+    files = verifyPackedTrees(packed, bundledTree, { name: (dir) => path.relative(root, dir) })
+  } catch (err) {
+    console.error(`[build] ${err.message}`)
+    process.exit(1)
+  }
+  for (const dir of packed) console.log(`[build] bundled backend verified: ${path.relative(root, dir)} (${files} files, ${process.arch})`)
+  for (const artifact of readdirSync(dist).filter((f) => /\.(dmg|zip|AppImage|deb)$/.test(f))) {
+    console.log(`[build] ${artifact}: ${Math.round(lstatSync(path.join(dist, artifact)).size / 1e6)} MB`)
+  }
+}
+
 // Same shape as the manifest guard: a certificate that produced an unsigned
 // artifact is a green build that Squirrel.Mac will refuse to install from, and
 // the only place it shows is one line of electron-builder's own log.
@@ -307,7 +369,7 @@ if (signing && process.platform === 'darwin') {
     console.error('[build] signing was requested but no .app was produced')
     process.exit(1)
   }
-  // Every bundle, not just the first: a release builds both architectures and an
+  // Every bundle, not just the first: a thin build holds both architectures, and an
   // unsigned one among them is a build that half the users cannot update from.
   for (const app of apps) {
     const rel = path.relative(root, app)

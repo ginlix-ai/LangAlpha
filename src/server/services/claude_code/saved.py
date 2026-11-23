@@ -323,12 +323,32 @@ class SavedHome:
         self.sign_in = PendingSignIn(f"claude_code:sign_in:{user_id}")
         self.who = f"user_id={user_id}"
 
+    def warm(self) -> None:
+        """Start fetching the backend's CLI as the user starts a sign-in."""
+        from ptc_agent.agent.claude_code.cli_install import fetch_worker_cli
+
+        fetch_worker_cli()
+
     async def ready(self, *, install: bool = True) -> None:
         """Refuse a sign-in or a paste, before its code is spent or its token
         checked, where an organization's policy is installed on the backend's
-        machine; a removal goes on."""
-        if install and await local_managed():
+        machine, then wait for the backend's CLI, so a first check is never
+        timed against its download; a removal goes on."""
+        if not install:
+            return
+        if await local_managed():
             raise OAuthRefusal(400, "policy_blocked", POLICY_BLOCKED, retryable=False)
+        from ptc_agent.agent.claude_code import cli_install
+
+        try:
+            await asyncio.shield(cli_install.fetch_worker_cli())
+        except cli_install.CliUnsupported as e:
+            raise OAuthRefusal(400, "backend_unsupported", str(e), retryable=False) from None
+        except cli_install.CliInstallError as e:
+            logger.warning(f"[claude_code] the backend's CLI could not be fetched: {e}")
+            raise OAuthRefusal(
+                503, "cli_unavailable", "Claude Code could not be set up on this computer. Try again.", retryable=True,
+            ) from None
 
     @asynccontextmanager
     async def placed(self, token: str, *, held: Held, retryable: bool) -> AsyncIterator[LocalLauncher]:

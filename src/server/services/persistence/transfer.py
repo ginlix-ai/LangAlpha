@@ -41,6 +41,7 @@ from ptc_agent.core.sandbox._shared import (
     TRANSFER_RUNTIME_SANDBOX_NAME,
 )
 from ptc_agent.core.sandbox.wsfiles_transfer_runtime import RESULT_MARKER
+from ptc_agent.core.sandbox.providers import MACHINE_KINDS
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.database.blob_keys import INLINE_MAX_BYTES, RELAY_MAX_BYTES
@@ -252,9 +253,9 @@ def transfer_mode(sandbox: Any) -> str:
 def sandbox_pulls_from_store(sandbox: Any) -> bool:
     """Whether the sandbox can fetch an object the browser put in the store.
 
-    The direct transfer mode says it reaches the store; a machine its owner
-    brought does not take a file that way whatever the mode, so an upload
-    for it keeps the one-request path.
+    The direct transfer mode says it reaches the store; a whole machine (one
+    the user brings, or the server's own) does not take a file that way
+    whatever the mode, so an upload for it keeps the one-request path.
     """
     return kind_pulls_from_store(_provider(sandbox))
 
@@ -262,7 +263,7 @@ def sandbox_pulls_from_store(sandbox: Any) -> bool:
 def kind_pulls_from_store(kind: str | None) -> bool:
     """:func:`sandbox_pulls_from_store` for a computer of provider ``kind``,
     before any sandbox of it is open."""
-    return get_blob_transfer_mode(kind) == "direct" and kind != "ssh"
+    return get_blob_transfer_mode(kind) == "direct" and kind not in MACHINE_KINDS
 
 
 def scan_cap_bytes(sandbox: Any, *, blobs_on: bool) -> int | None:

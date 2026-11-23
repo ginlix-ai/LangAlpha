@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from ptc_agent.config.core import (
         FilesystemConfig,
+        KindsInReach,
         LoggingConfig,
         MCPConfig,
         SandboxConfig,
@@ -100,7 +103,46 @@ FILESYSTEM_REQUIRED_FIELDS: list[str] = []  # all fields derive from working_dir
 # Factory functions for creating config objects from dictionaries
 
 
-def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
+def configured_provider(config_data: dict[str, Any]) -> str | None:
+    """The provider the config file names, or None to read it from the keys.
+
+    Settings under ``sandbox.daytona`` choose nothing: the default config ships
+    them for whoever picks Daytona. Only ``sandbox.provider``, or the legacy
+    top-level ``daytona:`` section, names a provider.
+    """
+    if "sandbox" in config_data:
+        return (config_data["sandbox"] or {}).get("provider") or None
+    return "daytona" if "daytona" in config_data else None
+
+
+def resolve_sandbox_provider(
+    config_data: dict[str, Any],
+    *,
+    autodetect: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """``SANDBOX_PROVIDER``, else the config file's choice, else what is left.
+
+    What is left is the API keys only with ``autodetect``, which an open-source
+    server passes. A hosted one that names nothing runs Daytona, so a blank key
+    is refused at validation rather than quietly moving every new computer onto
+    another provider. ``environ`` reads another environment than the process's.
+    """
+    from ptc_agent.config.core import detect_provider_kind
+
+    environ = os.environ if environ is None else environ
+    chosen = environ.get("SANDBOX_PROVIDER", "") or configured_provider(config_data)
+    if chosen:
+        return chosen
+    return detect_provider_kind(environ=environ) if autodetect else "daytona"
+
+
+def create_sandbox_config(
+    config_data: dict[str, Any],
+    *,
+    autodetect: bool = True,
+    in_reach: KindsInReach | None = None,
+) -> SandboxConfig:
     """Create SandboxConfig from top-level config data.
 
     Supports both new "sandbox:" key and legacy "daytona:" key for backward compat.
@@ -108,27 +150,24 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
 
     Args:
         config_data: Top-level parsed config dictionary (entire agent_config.yaml)
+        autodetect: Read the provider from the keys when nothing names one.
+        in_reach: A self-hosted owner's choice in the app, which offers every
+            kind that can run now beside the configured list.
 
     Returns:
         Configured SandboxConfig object
     """
-    import os
-
     from ptc_agent.config.core import (
         DaytonaConfig,
         DockerConfig,
         E2BConfig,
+        LocalConfig,
         SandboxConfig,
         SSHConfig,
-        detect_provider_kind,
     )
-
-    provider_explicit = False  # True when config file sets the provider
 
     if "sandbox" in config_data:
         sandbox_data = config_data["sandbox"]
-        provider_explicit = "provider" in sandbox_data or "daytona" in sandbox_data
-        provider = sandbox_data.get("provider", "daytona")
         # Without a section, the credentials still come from the environment:
         # a deployment on another provider keeps serving its Daytona computers.
         daytona_cfg = DaytonaConfig.from_section(
@@ -141,16 +180,16 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             else DockerConfig()
         )
         ssh_cfg = SSHConfig.from_section(sandbox_data.get("ssh"))
+        local_cfg = LocalConfig(**(sandbox_data.get("local") or {}))
         platform_secrets = sandbox_data.get("platform_secrets") or []
         offered_providers = sandbox_data.get("offered_providers") or []
     elif "daytona" in config_data:
         # Backward compat: top-level "daytona:" key — implicitly daytona provider
-        provider_explicit = True
-        provider = "daytona"
         daytona_cfg = DaytonaConfig.from_section(config_data["daytona"] or {})
         e2b_cfg = E2BConfig.from_section(None)
         docker_cfg = DockerConfig()
         ssh_cfg = SSHConfig()
+        local_cfg = LocalConfig()
         platform_secrets = []
         offered_providers = []
     else:
@@ -159,22 +198,19 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             "in agent_config.yaml"
         )
 
-    # SANDBOX_PROVIDER env var always wins.
-    # Auto-detect from the API keys only when no explicit provider was
-    # configured.
-    env_provider = os.getenv("SANDBOX_PROVIDER", "")
-    if env_provider:
-        provider = env_provider
-    elif not provider_explicit:
-        provider = detect_provider_kind()
+    if in_reach is not None:
+        offered_providers = _offered_in_reach(
+            offered_providers, in_reach, platform_secrets=bool(platform_secrets)
+        )
 
     sandbox_config = SandboxConfig(
-        provider=provider,
+        provider=resolve_sandbox_provider(config_data, autodetect=autodetect),
         offered_providers=offered_providers,
         daytona=daytona_cfg,
         e2b=e2b_cfg,
         docker=docker_cfg,
         ssh=ssh_cfg,
+        local=local_cfg,
         platform_secrets=platform_secrets,
     )
 
@@ -194,6 +230,39 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
         ]
 
     return sandbox_config
+
+
+def _offered_in_reach(
+    declared: list[str], in_reach: KindsInReach, *, platform_secrets: bool
+) -> list[str]:
+    """The configured list with what the owner's choice brings in. A catalog of
+    platform Secrets keeps every kind that cannot hold them off it."""
+    offered = list(dict.fromkeys((*declared, *in_reach.offered())))
+    if not platform_secrets:
+        return offered
+    from ptc_agent.core.sandbox.platform_secrets import (
+        provider_kind_supports_platform_secrets,
+    )
+
+    return [kind for kind in offered if provider_kind_supports_platform_secrets(kind)]
+
+
+def default_search_api(config_data: Mapping[str, Any], *, autodetect: bool = True) -> str:
+    """The configured search engine, or with ``autodetect`` the first one with a
+    key when it has none, so a key saved in a self-hosted server's setup step is
+    the search that runs."""
+    from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
+
+    named = str(config_data.get("search_api") or "tavily")
+    if not autodetect:
+        return named
+    engines = providers_with_capability(CAPABILITY_SEARCH)
+    if named not in engines or os.environ.get(engines[named].env_key or ""):
+        return named
+    return next(
+        (name for name, spec in engines.items() if os.environ.get(spec.env_key or "")),
+        named,
+    )
 
 
 def create_mcp_config(data: dict[str, Any]) -> MCPConfig:

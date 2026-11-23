@@ -75,7 +75,8 @@ async function probe(rawUrl) {
     request.on('response', (res) => {
       // Nothing here reads the body, and an undrained response holds the socket.
       res.resume()
-      settle({ ok: true, status: res.statusCode, origin })
+      const type = [].concat(res.headers['content-type'] || [])[0] || ''
+      settle({ ok: true, status: res.statusCode, origin, contentType: type })
     })
 
     request.on('error', (err) => {
@@ -86,4 +87,23 @@ async function probe(rawUrl) {
   })
 }
 
-module.exports = { probe }
+/**
+ * The probe, for an address the app is about to show as its whole window.
+ *
+ * Still not a check that the page is LangAlpha's. A reply in JSON is never a
+ * page at all, and the address that gives one is nearly always the API port of
+ * a stack whose web app is served elsewhere: connected, the window would show
+ * nothing but `{"detail":"Not Found"}`.
+ */
+async function probeWebApp(rawUrl) {
+  const result = await probe(rawUrl)
+  if (result.ok && /[/+]json\b/i.test(result.contentType || '')) {
+    return {
+      ok: false,
+      error: 'That address serves data, not a web page, so it is likely LangAlpha\u2019s API rather than its web app. Use the address you open in a browser, such as http://localhost:5173.',
+    }
+  }
+  return result
+}
+
+module.exports = { probe, probeWebApp }

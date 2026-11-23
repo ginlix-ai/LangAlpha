@@ -50,7 +50,7 @@ import {
 import { useProviderGate } from '../hooks/useProviderGate';
 import { RadioCardGroup, type RadioCardOption } from './radioCardGroup';
 import { MachinePreview } from './machineArt/MachinePreview';
-import { hostedPreview, ownPreview } from './machineArt/machine';
+import { hostedPreview, localPreview, ownPreview } from './machineArt/machine';
 import {
   TIER_ORDER,
   TierRadioGroup,
@@ -175,6 +175,9 @@ function CreateComputerDialog({
 
   const source = sourceOf(picked, providers, thisMacCard, gate);
   const hosted = typeof source === 'object' ? source.hosted : null;
+  // A provider whose computer is a whole machine (the server's own), sized by
+  // itself: no tiers to offer, and drawn as that machine.
+  const hostedMachine = hosted !== null && !providerManagesSpec(hosted);
   // A size the picked provider does not run falls back the same way.
   const offer = offeredTiers(providers.find((p) => p.kind === hosted));
   const tier: ResourceTier =
@@ -236,7 +239,9 @@ function CreateComputerDialog({
       ? ssh.create && ownMachineCreate(ssh.create, { name: trimmedName })
       : {
         ...(trimmedName ? { name: trimmedName } : {}),
-        ...(automaticSelected ? {} : { resource_tier: tier }),
+        // Sent rather than left to the server's same default: a size sent
+        // marks the computer as sized by its owner (`sized_by_owner`).
+        ...(hostedMachine ? { resource_tier: 'standard' } : automaticSelected ? {} : { resource_tier: tier }),
         ...(choosesProvider && hosted ? { kind: hosted } : {}),
       };
   // Every provider on offer locked leaves nothing to create on. The cap locks
@@ -307,7 +312,9 @@ function CreateComputerDialog({
           machine={
             own
               ? ownPreview(t, own.ready, source === 'thisMac')
-              : hostedPreview(t, hosted ?? providers[0]?.kind ?? null, offer, tier)
+              : hostedMachine
+                ? localPreview(t, hosted, clientOs() === 'mac')
+                : hostedPreview(t, hosted ?? providers[0]?.kind ?? null, offer, tier)
           }
         />
         <div className="flex flex-col gap-1.5">
@@ -391,7 +398,7 @@ function CreateComputerDialog({
           <RemoteControlSetup state={mac} account={thisMac.status?.account ?? ''} busy={busy} />
         ) : source === 'ssh' ? (
           <SshSetup state={ssh} busy={busy} />
-        ) : (
+        ) : hostedMachine ? null : (
           // Before the list answers whether the size may be left to the plan,
           // a click on the size shown is a pick too, though the radio already
           // checked changes nothing: the answer must not take it back.

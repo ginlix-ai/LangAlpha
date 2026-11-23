@@ -104,7 +104,7 @@ async def test_an_env_file_past_its_cap_reads_as_none():
 
 @pytest.mark.asyncio
 async def test_a_listing_without_end_is_cut_off(monkeypatch):
-    monkeypatch.setattr(ssh_runtime, "_LIST_MAX_ENTRIES", 5)
+    monkeypatch.setattr(ssh_runtime, "LIST_MAX_ENTRIES", 5)
     runtime, _ = _runtime(_SFTP(claims=0))
 
     entries = await runtime.list_files("/home/u")

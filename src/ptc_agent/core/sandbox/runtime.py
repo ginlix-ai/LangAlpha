@@ -4,7 +4,7 @@ import asyncio
 import base64
 import shlex
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -635,6 +635,9 @@ class SandboxProvider(ABC):
     # Whether its sandboxes run off this host, where only a publicly routable
     # address reaches the server.
     runs_remote: ClassVar[bool] = True
+    # Whether its sandboxes see this host's loopback under another name, so a
+    # loopback relay base must be rewritten for them to dial it.
+    reaches_host_through_alias: ClassVar[bool] = False
     # False for a backend that caps how long a sandbox runs, so a computer on it
     # cannot be kept always-on.
     holds_always_on: ClassVar[bool] = True
@@ -689,6 +692,16 @@ class SandboxProvider(ABC):
         """Whether a sandbox built from *settings* measures its own disk, rather
         than its host's."""
         return True
+
+    @classmethod
+    async def default_root_dir(
+        cls, taken: Callable[[], Awaitable[Collection[str]]]
+    ) -> str | None:
+        """The folder a new computer here works in unless told otherwise, on a
+        machine whose paths are not the deployment's configured root; None
+        where they are. *taken* reads the roots of its owner's other computers
+        of this kind, for a kind that needs them."""
+        return None
 
     @classmethod
     def trusted_host(cls, sandbox: Any) -> bool:

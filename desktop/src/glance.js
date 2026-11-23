@@ -187,6 +187,7 @@ function createGlance({ traits, settings, commands, lifecycle, store, host, time
     toggle,
     onMainLoadedApp,
     reload: menubar.reload,
+    reloadIfFailed: menubar.reloadIfFailed,
     registerIpc,
     watchPower,
     isMaterial: (w) => menubar.isMaterial(w),

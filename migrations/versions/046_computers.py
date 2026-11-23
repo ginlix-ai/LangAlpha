@@ -95,9 +95,10 @@ def _backfill_kind() -> str:
         else:
             kind = "daytona" if os.getenv("DAYTONA_API_KEY") else "docker"
     kind = os.path.expandvars(kind)
-    # E2B postdates this migration, so no row it backfills can live there; a
-    # deployment that has since moved to it backfills by the old detection.
-    if kind == "e2b":
+    # E2B and local postdate this migration, so no row it backfills can live
+    # there; a deployment that has since moved to one backfills by the old
+    # detection.
+    if kind in ("e2b", "local"):
         kind = "daytona" if os.getenv("DAYTONA_API_KEY") else "docker"
     if kind not in _KNOWN_KINDS:
         raise ValueError("Unknown sandbox provider; configure SANDBOX_PROVIDER before migration")

@@ -174,17 +174,20 @@ When you connect one, you choose what it may do, from read-only to paper trading
 
 **Hosted (beta).** Sign up at [LangAlpha.ai](https://langalpha.ai) to start free or trial with one of our plans. Market data, cloud sandboxes, brokerage connections and channels are set up for you. Plans and features may change during the beta.
 
-**Self-host.** All you need is Docker:
+**Self-host with the desktop app.** Install the [open-source desktop app](https://github.com/ginlix-ai/langalpha/releases) for macOS or Linux and choose **Run on this computer**. It carries its own server and database, so there is nothing else to run. On Windows, the app connects to a server you run.
+
+**Self-host from source.** To change the code or run it on a server, all you need is Docker:
 
 ```bash
 git clone https://github.com/ginlix-ai/langalpha.git && cd langalpha
-make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
 Open [http://localhost:5173](http://localhost:5173). The API listens on port 8000, with interactive docs at `/docs`. For a step by step walkthrough, see the [self-hosting quickstart](https://docs.langalpha.ai/get-started/self-hosting-quickstart/).
 
 **Read the docs.** [What is LangAlpha](https://docs.langalpha.ai/get-started/what-is-langalpha/) tours the product, and the [CLI reference](https://docs.langalpha.ai/cli/overview/) covers `langalpha` (`la` for short) for terminals and scripts.
+
+Either way, the first run asks where your agent runs, what to install and which keys to add: your model provider, and optionally market data and web search. You can change all of it later in **Settings**. `make config` remains for configuring from a terminal.
 
 **How self-host differs.** Agents, workspaces, automations, skills and governed orders run the same. The rest differs:
 

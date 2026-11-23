@@ -41,7 +41,7 @@ from typing import (
 )
 
 from ptc_agent.core.sandbox import jobs
-from ptc_agent.core.sandbox.providers import is_own_machine
+from ptc_agent.core.sandbox.providers import is_machine_kind
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxGoneError, SandboxRuntime
 
 from src.server.database.runs import command_runs as cr_db
@@ -85,7 +85,7 @@ def computer_reach(computer: Optional[Mapping[str, Any]]) -> Reach:
         return "between"
     if status == ComputerStatus.STOPPED and computer.get("provider_ref"):
         try:
-            if is_own_machine(computer.get("kind")):
+            if is_machine_kind(computer.get("kind")):
                 return "own_stopped"
         except ValueError:
             pass  # no provider knows its kind, so none could still run its jobs

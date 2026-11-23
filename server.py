@@ -97,7 +97,11 @@ if __name__ == "__main__":
             workers=args.workers,
             log_level=args.log_level,
             timeout_keep_alive=300,  # 5 minutes - for long-running workflows
-            timeout_graceful_shutdown=60,  # 60 seconds for graceful shutdown
+            # How long open streams may hold shutdown. The lifespan's shutdown
+            # runs only after, so whoever kills this process must wait longer.
+            timeout_graceful_shutdown=int(
+                os.environ.get("LANGALPHA_GRACEFUL_SHUTDOWN_SECONDS", "60")
+            ),
         )
     except Exception as e:
         logger.error(f"Failed to start server: {str(e)}")

@@ -36,6 +36,7 @@ from ptc_agent.config.agent import (
 )
 from ptc_agent.config.core import (
     CoreConfig,
+    KindsInReach,
     create_default_security_config,
 )
 from ptc_agent.config.utils import (
@@ -44,6 +45,7 @@ from ptc_agent.config.utils import (
     create_logging_config,
     create_mcp_config,
     create_sandbox_config,
+    default_search_api,
     load_dotenv_async,
     validate_required_sections,
 )
@@ -116,6 +118,8 @@ async def load_from_files(
     search_paths: bool = True,
     context: ConfigContext = ConfigContext.SDK,
     auto_generate: bool = False,
+    autodetect: bool = True,
+    in_reach: KindsInReach | None = None,
 ) -> AgentConfig:
     """Load AgentConfig from config files (agent_config.yaml, .env).
 
@@ -135,6 +139,9 @@ async def load_from_files(
         search_paths: If True, search multiple paths for config files
         context: Loading context (SDK or CLI)
         auto_generate: If True, generate config at ~/.ptc-agent/ when not found
+        autodetect: Fill what the config leaves open (the sandbox provider,
+            a search engine without a key) from the keys present
+        in_reach: A self-hosted owner's sandbox choice made in the app
 
     Returns:
         Configured AgentConfig instance
@@ -152,7 +159,7 @@ async def load_from_files(
         auto_generate=auto_generate,
     )
 
-    config = load_from_dict(config_data)
+    config = load_from_dict(config_data, autodetect=autodetect, in_reach=in_reach)
     config.config_file_dir = config_file.parent if config_file else None
     return config
 
@@ -221,6 +228,9 @@ async def load_core_from_files(
 
 def load_from_dict(
     config_data: dict[str, Any],
+    *,
+    autodetect: bool = True,
+    in_reach: KindsInReach | None = None,
 ) -> AgentConfig:
     """Create AgentConfig from a dictionary (e.g., parsed YAML).
 
@@ -279,7 +289,9 @@ def load_from_dict(
         )
 
     # Load configurations using shared factory functions
-    sandbox_config = create_sandbox_config(config_data)
+    sandbox_config = create_sandbox_config(
+        config_data, autodetect=autodetect, in_reach=in_reach
+    )
     security_config = create_default_security_config()
     mcp_config = create_mcp_config(config_data["mcp"])
     logging_config = create_logging_config(config_data["logging"])
@@ -350,7 +362,7 @@ def load_from_dict(
     compaction_config = CompactionConfig(**compaction_data) if compaction_data else CompactionConfig()
 
     # Search API provider + default depth level
-    search_api = config_data.get("search_api", "tavily")
+    search_api = default_search_api(config_data, autodetect=autodetect)
     search_depth = config_data.get("search_depth", "standard")
 
     # Create config object
@@ -394,7 +406,8 @@ llm:
 # Sandbox
 # -------
 sandbox:
-  provider: "daytona"  # daytona, e2b or docker; SANDBOX_PROVIDER overrides it
+  # daytona, e2b or docker; unset it detects from the keys, SANDBOX_PROVIDER overrides it
+  # provider: "daytona"
   daytona:
     base_url: "https://app.daytona.io/api"
     # api_key: set DAYTONA_API_KEY in environment or .env file

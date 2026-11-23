@@ -3086,6 +3086,37 @@ class TestBareMachine(_Base):
         assert backup.await_args_list[0].kwargs["expected_sandbox_id"] == "sandbox-abc"
 
     @pytest.mark.asyncio
+    @patch(f"{_MACHINE_BACKUP}.get_live_workspace_ids_for_computer")
+    @patch(f"{_LIFECYCLE}.LocalRunExecutor")
+    @patch(f"{_MACHINES}.update_computer_status")
+    @patch(f"{_MACHINES}.get_computer")
+    @patch(f"{_LIFECYCLE}.get_computer")
+    async def test_a_stop_without_backup_mirrors_nothing(
+        self,
+        mock_lifecycle_get,
+        mock_machines_get,
+        mock_status,
+        mock_executor,
+        mock_live,
+    ):
+        manager = _make_manager()
+        computer = _make_computer(status="running", provider_ref="sandbox-abc")
+        mock_lifecycle_get.return_value = computer
+        mock_machines_get.return_value = computer
+        mock_status.return_value = {**computer, "status": "stopping"}
+        mock_executor.get_instance.return_value = MagicMock(
+            has_active_tasks_for_computer=AsyncMock(return_value=False)
+        )
+        mock_live.return_value = ["ws-1"]
+        backup = AsyncMock()
+        manager.backup_project_files = backup
+        manager._detached_sandbox_teardown = AsyncMock()
+
+        await manager._stop_machine("comp-1", back_up=False)
+
+        backup.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_stop_addresses_the_machine_itself(self):
         manager = _make_manager()
         row = _make_computer(status="stopped")
@@ -3093,7 +3124,7 @@ class TestBareMachine(_Base):
 
         assert await manager.stop_computer("comp-1") is row
 
-        manager._stop_machine.assert_awaited_once_with("comp-1")
+        manager._stop_machine.assert_awaited_once_with("comp-1", back_up=True)
 
     @pytest.mark.asyncio
     async def test_the_session_route_skips_the_per_folder_restore(self):

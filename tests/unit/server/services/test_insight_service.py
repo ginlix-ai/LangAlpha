@@ -783,6 +783,45 @@ class TestGenerateInsight:
     def teardown_method(self):
         InsightService._instance = None
 
+    @pytest.fixture(autouse=True)
+    def a_key_serves(self):
+        with patch(
+            "src.server.services.insight_service._no_key_serves",
+            new=AsyncMock(return_value=False),
+        ) as asked:
+            yield asked
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_no_key_skips_before_claiming_a_row(self, mock_db, mock_research, a_key_serves):
+        """Self-hosted with no model connected yet is no failure: nothing is
+        claimed, nothing runs, and the next job asks again."""
+        a_key_serves.return_value = True
+        mock_db.claim_system_insight = AsyncMock()
+
+        await InsightService()._generate_insight(
+            "market_update", datetime(2025, 3, 15, 14, 0, tzinfo=ET)
+        )
+
+        mock_db.claim_system_insight.assert_not_called()
+        mock_research.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_a_hosted_deployment_is_never_asked(self, mock_db, mock_research, a_key_serves):
+        """A hosted brief runs on the deployment's own keys, as it always has."""
+        mock_db.claim_system_insight = AsyncMock(return_value=SystemInsightClaim(row=None))
+
+        with patch("src.config.settings.HOST_MODE", "platform"):
+            await InsightService()._generate_insight(
+                "market_update", datetime(2025, 3, 15, 14, 0, tzinfo=ET)
+            )
+
+        a_key_serves.assert_not_called()
+        mock_db.claim_system_insight.assert_called_once()
+
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     @patch("src.server.services.insight_service.insight_db")
@@ -899,6 +938,48 @@ class TestGenerateInsight:
 
         mock_db.complete_market_insight.assert_not_called()
         assert "Timeout" in mock_db.fail_market_insight.call_args[0][1]
+
+
+class TestNoKeyServes:
+    """A saved Background model with no key skips the brief only when the
+    deployment's, which ``_research`` falls back to, has none either."""
+
+    async def _ask(self, deployment_paid: bool) -> bool:
+        from types import SimpleNamespace
+
+        from src.server.services.insight_service import _no_key_serves
+        from src.server.services.llm.payers import ModelPayer
+
+        rows = [
+            ModelPayer(name="saved-model", provider="p", custom=True, payer=None, needs="key"),
+            ModelPayer(
+                name="deployment-model",
+                provider="p",
+                custom=False,
+                payer="server_key" if deployment_paid else None,
+            ),
+        ]
+        llm = SimpleNamespace(name="main-model", background="deployment-model")
+        with (
+            patch(
+                "src.server.services.llm.user_models.get_model_preference",
+                AsyncMock(return_value={"preferred_background_model": "saved-model"}),
+            ),
+            patch("src.server.services.llm.config.deployment_llm", return_value=llm),
+            patch(
+                "src.server.services.llm.payers.model_payers",
+                AsyncMock(return_value=rows),
+            ),
+        ):
+            return await _no_key_serves("user-1")
+
+    @pytest.mark.asyncio
+    async def test_the_deployment_model_serves_the_brief(self):
+        assert await self._ask(deployment_paid=True) is False
+
+    @pytest.mark.asyncio
+    async def test_nothing_serves_it(self):
+        assert await self._ask(deployment_paid=False) is True
 
 
 # ---------------------------------------------------------------------------

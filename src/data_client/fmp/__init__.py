@@ -14,6 +14,7 @@ __all__ = [
     "get_fmp_client",
     "close_fmp_client",
     "fmp_lifespan",
+    "replace_fmp_client",
 ]
 
 # Async singleton for FMPClient
@@ -50,6 +51,16 @@ async def close_fmp_client() -> None:
         if _fmp_client is not None:
             await _fmp_client.close()
             _fmp_client = None
+
+
+async def replace_fmp_client() -> None:
+    """For a changed key: the next caller gets a client built with the new one,
+    and the old one closes once the requests running on it finish."""
+    global _fmp_client
+    async with _client_lock:
+        old, _fmp_client = _fmp_client, None
+    if old is not None:
+        await old.retire()
 
 
 @asynccontextmanager

@@ -1,10 +1,15 @@
 # langalpha desktop
 
-Electron shell around the hosted web app. It is a **remote-URL wrapper**: the package
-contains Electron, `src/`, two local pages and an entry URL, and nothing else. No web
-bundle ships with it, so a web deploy never needs a desktop release. The two local
-pages are the ones that have to work when the network does not: the OSS server picker
-and the outage screen.
+Electron shell around the web app. The hosted edition is a **remote-URL wrapper**: the
+package contains Electron, `src/`, two local pages and an entry URL, and nothing else. No
+web bundle ships with it, so a web deploy never needs a desktop release. The two local
+pages are the ones that have to work when the network does not: the first-run page and
+the outage screen.
+
+The OSS edition on macOS and Linux also **carries and runs its own stack**: Python and
+the backend, the web app, Postgres and Valkey, so someone can install it and have it
+work with no server to run. That is [its own section](#the-bundled-stack-oss-macos-and-linux).
+An OSS install can still point at a server instead.
 
 > Single source of truth for AI coding agents in `desktop/`. Edit here.
 
@@ -38,6 +43,12 @@ is the desktop app shipping its own bundle: engine and payload recouple, the arg
 above loses most of its force, and ~90 MB of package and the idle memory become the
 whole story.
 
+The OSS edition now does ship a bundle, on macOS and Linux, and the argument stands for
+now because the same source still has to be a remote-URL wrapper for the hosted edition,
+and an OSS install can point at a server whose web build is any age. Beside a stack of
+over a gigabyte, Electron's ~90 MB is also no longer what decides the package's size.
+The day the hosted edition ships a bundle too is the day to run the comparison again.
+
 ## Commands
 
 ```bash
@@ -45,7 +56,8 @@ pnpm start                       # run the shell from source (oss defaults → l
 pnpm test                        # node:test; pure logic only, no Electron runtime needed
 pnpm run preview                 # the shell against a web build that has not deployed yet
 pnpm run build                   # unpacked build into dist/<edition>/, fastest way to check packaging
-pnpm run dist                    # real installers (dmg + zip on macOS)
+pnpm run dist                    # real installers; on oss this bundles the stack (see below)
+DESKTOP_BUNDLE_BACKEND=0 pnpm run dist   # the thin OSS build, which only talks to a server
 
 DESKTOP_EDITION=saas \
 DESKTOP_APP_ORIGIN=https://…  \
@@ -103,7 +115,8 @@ Minimum supported macOS is **12**, raised by Electron 38.
 
 | | `oss` | `saas` |
 |---|---|---|
-| Entry on first run | the server picker | hosted sign-in, then wherever the platform sends them |
+| Entry on first run | run on this computer, or connect to a server | hosted sign-in, then wherever the platform sends them |
+| Stack in the package | macOS and Linux | none |
 | Platform console | does not exist | shares the app window (see below) |
 | Config | `config/default.json` (committed) | `config/build.json` (gitignored) |
 | App name | `LangAlpha OSS` | `LangAlpha` |
@@ -172,6 +185,8 @@ edition's output directory and refuses a parent holding several.
 |---|---|
 | `src/index.js` | the packaged entry: turns a require-time crash into a dialog instead of a silent death |
 | `src/main.js` | windows, IPC, and carrying out what `policy` decided; wires the menu bar modules below to the windows it owns |
+| `src/backend.js` | OSS: which backend this install uses, a server the user named or the bundled stack, and the app's origin under it. `origins` and `policy` ask it; nothing else reads `serverUrl` |
+| `src/setupWindow.js` | OSS: the window for `setup/` and its channels (`server:*`, `stack:*`), answered for that window only, and the stack's start shown in it |
 | `src/pageFacts.js` | what a window tells its page about itself (`shell:window-facts`), and what a finished load tells the shell: the window-chrome declaration and reaching the app |
 | `src/policy.js` | what the shell decides: entry URL, where a navigation belongs. **Pure** — it may not write the store or open anything |
 | `src/origins.js` | what counts as ours: **by origin, never by path** |
@@ -200,8 +215,9 @@ edition's output directory and refuses a parent holding several.
 | `src/outage.js` | what replaces a blank window when the network does not answer |
 | `src/updater.js` | auto-update, gated on a feed actually existing |
 | `src/probe.js` | "is anything answering", shared by the picker and the outage page |
-| `src/store.js` | a small JSON file: `serverUrl`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
-| `setup/` | the OSS server picker, in its own window with its own preload |
+| `src/store.js` | a small JSON file: `serverUrl` (the user's own server, never the stack's origin), `stackMode`, `stackPort`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
+| `src/stack/` | the bundled stack's supervisor: `plan.js` decides, **pure**, like `policy`; `children.js` runs a process with its guard; `logs.js` rotates; `dataFolder.js` keeps the data folder, its snapshot and its restore; `supervisor.js` is the service table, the order and the restarts, with no Electron in it; `index.js` binds it to this install. Left out of the hosted package |
+| `setup/` | the OSS first-run page: the choice, the server form, the stack's progress and its failure, in its own window with its own preload |
 | `outage/` | the outage page, a local file so it renders when nothing else can |
 | `test/` | `node:test` over the pure logic, with an `electron` module stub |
 
@@ -427,7 +443,7 @@ its login item.
 - **Packaging.** `scripts/build.mjs` adds the binary at `Contents/MacOS/langalpha-helper`
   and a plist generated per edition (`scripts/launch-agent.mjs`) at
   `Contents/Library/LaunchAgents/<label>.plist`, on mac builds only, through the
-  `mac:` block `scripts/helper-bundle.mjs` writes. With no helper
+  `extraFiles` lines `scripts/helper-bundle.mjs` writes under `mac:`. With no helper
   built the app still packages and reports remote control as unsupported;
   `DESKTOP_REQUIRE_HELPER=1` makes that an error instead. The plist makes the job
   `Interactive`, as macOS does its own sshd: with no type launchd throttles the CPU
@@ -439,7 +455,8 @@ its login item.
   because electron-builder signs every nested Mach-O with `entitlementsInherit`, the
   JIT pair Electron's helpers need, and the helper takes logins from the network and
   runs no JIT, so it gets an empty set (`resources/entitlements.helper.plist`).
-  `build.mjs` sets it as the signer only on a build that carries the helper.
+  `build.mjs` sets it as the signer on a build that carries the helper or a bundled
+  backend, and renders everything under `mac:` once, from both.
 - **Enable** checks the URL's shape (https, or http on loopback, and exactly the
   pairing script path), then asks in a native dialog naming the host and the macOS
   account, Cancel the default. A saas build first refuses any server but its
@@ -567,8 +584,10 @@ It commits to nothing else: a page's `beforeunload` can still cancel the quit (t
 holds one over unsaved edits), which reaches the shell as `will-prevent-unload` on a user
 window, and the shell then drops the flag and makes the menu bar window again. The icon,
 the shortcut, the sign-in callback server and the update timer go only in `will-quit`,
-once the quit is certain, each registered with `onWillQuit`. The menu bar page itself can
-never hold a quit up.
+once the quit is certain, each registered with `onWillQuit`. What must finish before the
+process goes registers with `onDrain`, which holds `will-quit` until it settles and then
+quits again; the bundled stack's stop is the one. The menu bar page itself can never hold
+a quit up.
 
 **The panel** is 380 wide and as tall as its page (`enablePreferredSizeMode`,
 `preferred-size-changed`), from 260 up to the screen's height less a margin, re-anchored
@@ -605,6 +624,149 @@ The tray icons are committed under `resources/` (`tray*.png`, `trayTemplate*.png
 because the shell loads them at runtime; `pnpm run tray-icons` regenerates them from the
 logo, and `electron-builder.yml` packs only those from that directory.
 
+## The bundled stack (OSS, macOS and Linux)
+
+**What it is.** `scripts/bundle-backend.mjs` builds a tree that `scripts/build.mjs` adds
+as `extraResources`, at `Resources/backend/`:
+
+| | |
+|---|---|
+| `python/` | python-build-standalone through `uv python install`, relocatable, with the locked dependencies installed into the prefix from `uv export --frozen --no-dev`. Not a venv: those record the absolute path they were made at |
+| `app/` | the backend's source and everything it reads from its tree, from `git ls-files`, so an overlay or a `.env` cannot come along |
+| `web/` | `web/` built with `VITE_HOST_MODE=oss` and no API base, served by the backend itself through `LANGALPHA_WEB_DIST`, so API and app are one origin |
+| `pg/` | Postgres 18 from zonky's embedded-postgres-binaries on Maven Central, pinned by SHA-256. Its macOS archives are EnterpriseDB's own signed builds, thinned here to one architecture |
+| `valkey/` | built from the pinned source tag, since the project publishes no macOS binaries |
+
+Bytecode is compiled into the tree with `--invalidation-mode unchecked-hash`. A tree in a
+signed bundle or an AppImage mount cannot be written, so a stale timestamped `.pyc` would
+be recompiled on every launch by the server and by each MCP subprocess.
+
+**One architecture per build.** The tree is native code for the machine that built it, so
+a bundled build rewrites the targets to that one architecture and the workflow runs on a
+runner of each. `build.mjs` then checks what actually reached the package
+(`verifyPackedTrees`): the file count, and the architecture of every Mach-O and ELF in it,
+read from their headers. It also drops the zip on a build with no feed, because only the
+updater reads it; the config edits a tree needs are `bundleConfigEdits`.
+
+**Native files are read in one place**, `scripts/native-files.mjs`: `readNative` parses a
+file's headers once into `{ format, slices: [{ cpu, filetype, minOS }] }`, and `walkFiles`
+lists a tree without following symlinks. The architecture and macOS checks, the thinning of
+Postgres and the signing plan are each a filter over that.
+
+**Windows has no bundle**, and neither does `DESKTOP_BUNDLE_BACKEND=0` or an ordinary
+`pnpm run build` (`=1` forces one for that). A build with no tree shows the server form
+alone, the way it always has.
+
+**The order** is `prepare`, `init` on a first run, `database`, `cache`, `migrate`, `server`,
+each named on the first-run page while it runs and in the failure if it fails, with the
+tail of its log, **Reveal Logs** and **Try Again**. Logs are in `userData/logs`, rotated at
+10 MB, three old files each. Data is in `userData/stack`. A login launch starts the stack
+with no window, which a failure still opens, and the menu bar page loads only once the
+stack is up.
+
+- **The environment is built, never inherited** (`plan.backendEnv`). A shell's exported
+  keys would otherwise reach a backend whose only keys are the ones saved in setup.
+  `PYTHON_DOTENV_DISABLED` is set because `load_dotenv` walks up from the source file, and an
+  app sitting in a project folder would pick up that project's `.env`.
+- **The backend's port stays the same across launches** (`stackPort`). Postgres and Valkey
+  take a new free port each launch, loopback only, but this one is the app's origin, and a
+  browser keys everything it stores by origin.
+- **The encryption key is generated once** into a 0600 file and never replaced, with a
+  damaged file reported rather than regenerated: a new key would make every saved provider
+  key unreadable.
+- **Migrations run on every launch.** Some of them commit outside the run's transaction
+  (`autocommit_block`), so a failure partway cannot roll back. When a tree's migrations
+  differ from the last set that ran (`migrationsDigest`), the data folder is copied first,
+  by clone where the filesystem can, and a failure puts it back and says so. A launch that
+  finds that copy still there knows an upgrade was cut off and restores it before anything
+  else.
+- **Data a newer release migrated is refused** before any migration runs, with nothing
+  changed: the database's `alembic_version` names a revision this tree's migrations do not
+  have (`REVISION_CHECK` in `stack/plan.js`). Otherwise an older app opened on that data
+  fails partway through `alembic upgrade` with "Can't locate revision". Checked only when the
+  migrations changed since the last run, or for a database the app does not manage.
+- **Another Postgres major's data folder is refused**, off `PG_VERSION`, before anything
+  touches it. There is no upgrade path yet: moving the bundle to a new major needs one, and
+  until it has one such a build cannot open an existing install's data.
+- **`postmaster.pid`**: Postgres cleans up after itself only while the pid in the file is
+  dead, and after a reboot that number can belong to anything. A process counts as ours
+  only if it is a postgres on this very data folder, and anything else clears the file. A
+  Homebrew postgres on the same machine is never signalled.
+
+**No orphans, however the app goes.** Postgres and Valkey read nothing from stdin and macOS
+has no parent-death signal, so each child gets a guard (`children.js`), a small shell on a
+pipe only the app holds. When the pipe closes the app is gone, and the guard signals the
+child, then kills it at its deadline. That covers a `kill -9` and a crash. A quit, an update's
+included, closes the windows through their pages' unload guards and then waits at
+`will-quit` (`lifecycle.onDrain`) for the server, Valkey, and Postgres with its fast shutdown,
+in that order, since the server writes its running turns' resume records on the way down.
+Restart Now on Linux stops the stack before it installs (`updater.restartToInstall`), because
+electron-updater replaces and starts the AppImage there before the app quits; Squirrel.Mac
+replaces the bundle only once the process has gone, so the drain covers it.
+
+Choosing the stack is stored as `stackMode: 'bundled'` and takes effect once it is up, so a
+switch from a server leaves the app on that server through the start and after a failure.
+Its origin is never written to `serverUrl`; builds that did are cleared of it on launch.
+
+**Only the app is the owner.** The bundled server takes a request with no token for its one
+user only when it carries the launch's secret, which `stack/owner.js` adds to every session's
+requests to that exact origin through `webRequest.onBeforeSendHeaders`, so a container on the
+Mac, which can reach the server and name any Host, is refused. A session holds one such
+listener and a second replaces the first, which would leave the app refused: add any other
+request header in that listener.
+
+**Staying up.** A child that dies is restarted on a widening delay and on the same port,
+since the others hold connections to it, and after five deaths in two minutes the first-run
+page says which one it was. On wake, a server that stopped answering is restarted.
+
+**Built-in MCP servers.** They declare `uv run python plugins/...` for a checkout, and this
+tree has no uv and no project for it to find. `LANGALPHA_STDIO_OWN_PYTHON` makes the backend
+run those on its own interpreter (`_stdio_launch` in `mcp_registry.py`), for this spawn only.
+No uv ships, because nothing on this side needs one: third-party `uvx` and `npx` servers run
+on the computer, where each provider supplies those tools, including the `local` one.
+
+**Signing** (`scripts/sign-mac.mjs`). electron-builder's signer would sign every file it
+calls binary, which in this tree is every `.pyc` and font, so the tree is excluded from its
+walk and only Mach-O files, found by their headers (`readNative`), are signed here with hardened runtime and
+a timestamp. Python's executables get `resources/entitlements.python.plist`, the JIT pair
+wasmtime and ffi closures need. Postgres and Valkey get the empty
+`entitlements.native.plist`. Nothing gets `disable-library-validation`: every library is
+signed with the app's identity.
+
+**Minimum macOS** is `MACOS_MIN` in `scripts/bundle-backend.mjs`, 13.5: Postgres asks for
+13.0 and the Node inside Playwright's wheel for 13.5. Left to defaults, a compiler targets
+the macOS it runs on and uv picks the newest wheel that macOS takes, so a tree built on a
+current Mac refuses every older one, and nothing about that shows on the machine that built
+it. So Valkey is compiled with `MACOSX_DEPLOYMENT_TARGET`, wheels are chosen with
+`--python-platform`, the app declares it as `LSMinimumSystemVersion`, and `checkTreeMacOS`
+fails the build on any Mach-O in the tree that asks for more.
+
+**The release launch check** (`src/stack/smoke.js`). With `LANGALPHA_DESKTOP_SMOKE=1` the
+packaged app opens no window: it starts the bundled stack as a first launch does, asks for
+the setup status and the web app, stops, and exits 0 or 1. It is the only test that runs
+what the tree carries, so the release workflow runs it on every package it builds, through
+`scripts/smoke-packaged.sh [profile-dir]`: that finds the app for the platform, gives it a
+`--user-data-dir` of its own, and skips with exit 0 a package that carries no stack
+(Windows, a thin build). A build with no stack exits 2 in this mode rather than open the
+server picker and wait.
+
+**Linux.** Everything is read-only in an AppImage's mount and its path changes each launch,
+so nothing persists a path into the tree and data stays in userData. Valkey links against
+the build machine's glibc, which is why the workflow builds on the older `ubuntu-22.04`.
+Postgres refuses to run as root, which reaches the user as that step's failure.
+
+**Running one from a checkout:**
+
+```bash
+node scripts/bundle-backend.mjs --out /some/dir/backend
+LANGALPHA_DESKTOP_BACKEND_TREE=/some/dir/backend pnpm exec electron . --user-data-dir=/some/dir/profile
+```
+
+Keep the tree outside a checkout that has a `.env` above it, and use a profile of its own.
+Three more overrides are for testing: `LANGALPHA_DESKTOP_PG_URL` uses a Postgres you already
+run, `LANGALPHA_DESKTOP_PG_PREFIX` with `LANGALPHA_DESKTOP_PG_MAJOR` takes the binaries from
+elsewhere, and `LANGALPHA_DESKTOP_VALKEY_BIN` does the same for Valkey.
+
 ## Updates
 
 A build learns where to look in one of two ways, and needs exactly one:
@@ -632,6 +794,9 @@ all three platforms on a guard demanding a filename the build had no reason to w
 Distribution has two halves: the GitHub release is where a person downloads the
 app, and the feed host is the only thing an installed app reads. Publishing one
 without the other is a silent no-op.
+
+A bundled OSS build updates like any other, through `DESKTOP_UPDATE_FEED`, with the zip
+at about the size of the installer and migrations run by the launch that follows.
 
 The workflow in this repository builds the OSS edition unsigned and with no feed.
 That is what makes it useful to a fork: it takes no credentials and needs no
@@ -735,7 +900,8 @@ like.
 
 macOS is built and verified end to end, including the outage page and the update
 path. Windows and Linux targets are declared in `electron-builder.yml` and run in
-CI, but are not signed and have not been exercised by hand.
+CI, but are not signed and have not been exercised by hand. The bundled stack's own
+status: its signed and notarized form, Intel Macs and Linux have not yet been run.
 
 The menu bar, notifications and menu commands are written Mac first; their Windows and
 Linux halves follow the table above and are covered by the suite's pure parts (panel

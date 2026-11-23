@@ -1,5 +1,5 @@
 # Development docker-compose — full-stack local setup
-# Usage: cp .env.example .env && <fill in API keys> && docker compose up
+# Usage: make up (creates .env on a fresh checkout), then finish setup in the app
 #
 # By default, starts PostgreSQL and Redis in Docker (COMPOSE_PROFILES=infra in .env).
 # To use an external database/Redis, remove COMPOSE_PROFILES from .env and set
@@ -86,6 +86,8 @@ services:
     env_file: .env
     environment:
       BYOK_ENCRYPTION_KEY: ${BYOK_ENCRYPTION_KEY:-langalpha-local-dev-encryption-key}
+      # `make up PROVIDER=...` sets this in the shell, which env_file never reads.
+      SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-}
       # Default to Docker service names for inter-container networking.
       # Override in .env to connect to external services or for host dev.
       DB_HOST: ${DB_HOST:-postgres}

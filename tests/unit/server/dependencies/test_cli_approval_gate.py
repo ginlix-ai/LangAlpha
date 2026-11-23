@@ -761,9 +761,12 @@ async def test_an_automation_the_user_does_not_have_is_left_to_the_route(built, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("kind", "told"), [("ssh", True), ("daytona", False)])
-async def test_a_computer_remove_names_its_workspaces_and_only_an_ssh_machines_files(
-    built, rows, kind, told
+@pytest.mark.parametrize(
+    ("kind", "key_told", "files_told"),
+    [("ssh", True, True), ("local", False, True), ("daytona", False, False)],
+)
+async def test_a_computer_remove_names_its_workspaces_and_only_a_whole_machines_files(
+    built, rows, kind, key_told, files_told
 ):
     computer = {"computer_id": OTHER_COMPUTER, "name": "Laptop", "kind": kind}
 
@@ -778,8 +781,8 @@ async def test_a_computer_remove_names_its_workspaces_and_only_an_ssh_machines_f
     )
 
     assert built[0].details == {
-        "remove_key": told,
-        "delete_files": told,
+        "remove_key": key_told,
+        "delete_files": files_told,
         "delete_workspaces": [OTHER_WORKSPACE],
         "delete_workspace_names": ["Scratch"],
     }

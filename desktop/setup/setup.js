@@ -75,13 +75,101 @@ input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') connectButton.click()
 })
 
-window.langalphaSetup.current().then((stored) => {
-  input.value = stored || ''
-}).catch(() => {
-  // Not having a previous address to prefill is a worse page, not a broken one.
-}).finally(() => {
-  // Outside the success path on purpose: an empty field the user can type into
-  // beats a focused field that never arrives.
-  input.focus()
-  input.select()
+function focusAddress() {
+  window.langalphaSetup.current().then((stored) => {
+    input.value = stored || ''
+  }).catch(() => {
+    // Not having a previous address to prefill is a worse page, not a broken one.
+  }).finally(() => {
+    // Outside the success path on purpose: an empty field the user can type into
+    // beats a focused field that never arrives.
+    input.focus()
+    input.select()
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The stages. A build with no bundled stack only ever shows the connect form, and
+// shows it as it always has.
+// ---------------------------------------------------------------------------
+
+const stages = ['choose', 'server', 'progress']
+const stepsList = document.getElementById('steps')
+const failureBox = document.getElementById('failure')
+const backButton = document.getElementById('back')
+
+function showStage(name) {
+  for (const stage of stages) document.getElementById(stage).hidden = stage !== name
+  if (name === 'server') focusAddress()
+}
+
+// Which stage a status asks for. A build with no stack only ever has the form.
+function stageFor(status) {
+  if (!status || !status.available) return 'server'
+  const state = status.view && status.view.state
+  return state === 'starting' || state === 'failed' ? 'progress' : 'choose'
+}
+
+function renderProgress(view) {
+  stepsList.replaceChildren(...view.steps.map((step) => {
+    const item = document.createElement('li')
+    item.textContent = step.label
+    item.dataset.status = step.status
+    return item
+  }))
+  const failed = view.state === 'failed' && view.failure
+  failureBox.hidden = !failed
+  document.getElementById('progress-title').textContent = failed ? 'LangAlpha could not start' : 'Starting LangAlpha'
+  document.getElementById('progress-lede').hidden = Boolean(failed)
+  if (!failed) return
+  // The step list above already marks which one it was.
+  document.getElementById('failure-message').textContent = view.failure.message
+  document.getElementById('failure-note').textContent = view.failure.dataNote || ''
+  const tail = document.getElementById('failure-tail')
+  tail.textContent = view.failure.tail || ''
+  tail.scrollTop = tail.scrollHeight
+}
+
+function render(status) {
+  const stage = stageFor(status)
+  if (stage === 'progress') renderProgress(status.view)
+  showStage(stage)
+}
+
+function useStack() {
+  showStage('progress')
+  failureBox.hidden = true
+  window.langalphaSetup.useStack().catch((err) => {
+    document.getElementById('failure-message').textContent = err && err.message ? err.message : 'Could not start.'
+    failureBox.hidden = false
+  })
+}
+
+document.getElementById('use-stack').addEventListener('click', useStack)
+document.getElementById('retry').addEventListener('click', useStack)
+document.getElementById('reveal').addEventListener('click', () => window.langalphaSetup.revealLogs())
+const copyPrompt = document.getElementById('copy-prompt')
+let copiedTimer = null
+copyPrompt.addEventListener('click', async () => {
+  const done = await window.langalphaSetup.copyHelpPrompt().catch(() => false)
+  copyPrompt.textContent = done ? 'Copied' : 'Could not copy'
+  clearTimeout(copiedTimer)
+  copiedTimer = setTimeout(() => { copyPrompt.textContent = 'Copy Prompt' }, 2000)
 })
+for (const button of [document.getElementById('use-server'), document.getElementById('failed-server')]) {
+  button.addEventListener('click', () => {
+    backButton.hidden = false
+    showStage('server')
+  })
+}
+backButton.addEventListener('click', () => showStage('choose'))
+
+// A change moves the page into progress only. One that ends it (ready, stopped)
+// is followed by this window closing, or by the user's own next step, and taking
+// them back to the choice would pull the form out from under their typing.
+window.langalphaSetup.onStackChange((view) => {
+  const status = { available: true, view }
+  if (stageFor(status) === 'progress') render(status)
+})
+
+window.langalphaSetup.stackStatus().then(render).catch(() => render(null))

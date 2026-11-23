@@ -74,6 +74,10 @@ class TokenHome[Status: BaseModel](Protocol):
     place_s: int
     remove_s: int
 
+    def warm(self) -> None:
+        """Start, without waiting, anything a sign-in's check will need, as
+        the user starts the sign-in."""
+
     async def ready(self, *, install: bool = True) -> None:
         """Anything the change needs before its hold: reaching a machine, and
         with ``install`` its CLI."""
@@ -248,6 +252,7 @@ async def start_sign_in(home: TokenHome[BaseModel]) -> dict:
     """Start a sign-in as ``claude setup-token`` does; the page Claude shows
     after it gives the code ``finish_sign_in`` takes."""
     started = await home.sign_in.start(claude_oauth.authorize_setup_token)
+    home.warm()
     logger.info(f"[claude_code] sign-in started for {home.who}")
     return started
 

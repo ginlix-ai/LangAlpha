@@ -78,6 +78,14 @@ _NO_BROWSER_DETAIL = (
     "user first"
 )
 
+# A computer on the user's own machine may leave these packages out at setup,
+# which reads as this on whichever import the fetch reaches first.
+_NOT_INSTALLED = ("scrapling", "playwright", "patchright")
+_NOT_INSTALLED_DETAIL = (
+    "this computer was set up without web browsing, so scraping is unavailable "
+    "here; use web_fetch instead. The user can turn web browsing on in Settings"
+)
+
 # Per interpreter, not per call — and not process-wide across executions. A
 # semaphore built inside the handler would bound only its own batch, but each
 # execute_code spawns a fresh interpreter with its own server process, so K
@@ -249,6 +257,10 @@ async def _scrape_one(
             return _error(
                 "fetch_failed", f"timed out after {fetch_bound_s:.0f}s", url=url
             )
+        except ModuleNotFoundError as e:
+            if (e.name or "").partition(".")[0] in _NOT_INSTALLED:
+                return _error("fetch_failed", _NOT_INSTALLED_DETAIL, url=url)
+            return _error("fetch_failed", f"{type(e).__name__}: {e}", url=url)
         except Exception as e:  # noqa: BLE001 - per-URL failures become error dicts
             if _NO_BROWSER in str(e):
                 return _error("fetch_failed", _NO_BROWSER_DETAIL, url=url)

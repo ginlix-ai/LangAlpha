@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from ptc_agent.core.sandbox.providers import (
+    MACHINE_KINDS,
     PROVIDER_KINDS,
     builds_computers,
     provider_class,
@@ -179,6 +180,12 @@ class MachineLifecycleMixin:
             settings = self._provider_settings(kind, provider_config)
             if resource_tier is not None and resource_tier not in settings.resource_tiers:
                 raise UnknownResourceTier("Unknown resource tier")
+
+        async def roots_of_kind() -> list[str]:
+            computers = await get_computers_for_user(user_id)
+            return [str(c.get("root_dir")) for c in computers if c.get("kind") == kind]
+
+        root_dir = root_dir or await provider_class(kind).default_root_dir(roots_of_kind)
 
         async def insert(chosen: str) -> Dict[str, Any]:
             return await create_computer(
@@ -1025,14 +1032,14 @@ class MachineLifecycleMixin:
             )
 
     def _read_machine_facts_soon(self, computer_id: str, kind: str, runtime: Any) -> None:
-        """Read what a machine the user brings says of itself (its system and
-        hardware) and keep it for its details. Off the start's path, since only
+        """Read what a whole machine (``MACHINE_KINDS``) says of itself (its
+        system and hardware) and keep it for its details. Off the start's path, since only
         the Computers dialog reads it; a failure keeps the last reading."""
         from ptc_agent.core.sandbox.providers.ssh import MACHINE_FACTS_SCRIPT, read_machine
         from src.server.database.computer import record_machine_facts
-        from src.server.services.ssh_computers import SSH_KIND, machine_config
+        from src.server.services.ssh_computers import machine_config
 
-        if kind != SSH_KIND:
+        if kind not in MACHINE_KINDS:
             return
 
         async def read() -> None:
@@ -1262,8 +1269,10 @@ class MachineLifecycleMixin:
             return computer
         return await get_computer(computer_id)
 
-    async def stop_computer(self, computer_id: str) -> Optional[Dict[str, Any]]:
-        return await self._stop_machine(computer_id)
+    async def stop_computer(
+        self, computer_id: str, *, back_up: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        return await self._stop_machine(computer_id, back_up=back_up)
 
     async def archive_computer(self, computer_id: str) -> Optional[Dict[str, Any]]:
         return await self._archive_machine(computer_id)

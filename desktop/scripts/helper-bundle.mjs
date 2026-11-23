@@ -1,14 +1,14 @@
 /**
  * Remote control's helper in a mac bundle: whether a build can carry it, and
- * the `mac:` block that puts it there.
+ * the `mac:` lines that put it there.
  *
  * Into `Contents/` through `mac.extraFiles`, where SMAppService looks for an
  * agent's plist (`Library/LaunchAgents`) and where `BundleProgram` resolves the
  * binary from. electron-builder signs every Mach-O it finds in the bundle with
  * the app's identity, the helper included, which is what lets macOS tie the
  * login item to this app. It would also give the helper the JIT entitlements
- * Electron's own helpers carry, which scripts/sign-mac.mjs, set as the signer
- * in the same block, takes back off.
+ * Electron's own helpers carry, which scripts/sign-mac.mjs, which build.mjs sets
+ * as the signer on a build that carries the helper, takes back off.
  */
 import { spawnSync } from 'node:child_process'
 import { accessSync, constants, existsSync } from 'node:fs'
@@ -40,13 +40,19 @@ export function helperProblem(file) {
 
 /**
  * The `mac:` line with the helper's signer and files under it, as lines of
- * electron-builder.yml. Every path is quoted: they are absolute, and unquoted,
- * a ` #` anywhere in the checkout's path would start a YAML comment.
+ * electron-builder.yml.
  */
 export function macHelperConfigLines({ label, source, plist, signer }) {
+  return ['mac:', `  sign: ${JSON.stringify(signer)}`, ...helperExtraFiles({ label, source, plist })]
+}
+
+/**
+ * The helper's `extraFiles` lines under `mac:`. Every path is quoted: they are
+ * absolute, and unquoted, a ` #` anywhere in the checkout's path would start a
+ * YAML comment.
+ */
+export function helperExtraFiles({ label, source, plist }) {
   return [
-    'mac:',
-    `  sign: ${JSON.stringify(signer)}`,
     '  extraFiles:',
     `    - from: ${JSON.stringify(source)}`,
     `      to: ${JSON.stringify(`MacOS/${HELPER_BINARY}`)}`,

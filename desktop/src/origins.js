@@ -1,7 +1,7 @@
 'use strict'
 
 const config = require('./config')
-const store = require('./store')
+const backend = require('./backend')
 
 /**
  * Which origins are "ours".
@@ -13,20 +13,9 @@ const store = require('./store')
  * console at the system browser. Origin is the only thing true in both layouts.
  */
 
-/** The langalpha SPA. In the OSS edition the user's stored server wins. */
+/** The langalpha SPA: in the OSS edition, wherever this install's backend is. */
 function appOrigin() {
-  if (!config.isSaas) {
-    const stored = store.get('serverUrl')
-    if (stored) {
-      try {
-        return new URL(stored).origin
-      } catch {
-        // Unparseable stored value: fall through to the compiled default rather
-        // than throw, and let the picker correct it.
-      }
-    }
-  }
-  return config.appOrigin
+  return (!config.isSaas && backend.origin()) || config.appOrigin
 }
 
 /** The account console, or null in the OSS edition, which ships without one. */

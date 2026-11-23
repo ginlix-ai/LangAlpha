@@ -14,6 +14,11 @@ const electron = require('electron')
 // file edits) can still cancel. Everything that tears down registers with
 // `onWillQuit`, which runs only once the quit is certain: an app that kept
 // running without its icon, update checks or sign-in callback is a broken one.
+//
+// What has to finish before the process goes (the bundled stack's shutdown)
+// registers with `onDrain`. It runs at `will-quit` too, after every window has
+// closed the ordinary way, so a page's unload guard has had its say: the exit is
+// held until it settles, then the quit is asked for again.
 
 /**
  * `userWindowOpen()` says whether any of the user's windows is still open.
@@ -27,6 +32,10 @@ function createLifecycle({
 }) {
   let quitting = false
   const teardown = []
+  const drains = []
+  let tornDown = false
+  let draining = null
+  let drained = false
 
   function markQuitting() {
     quitting = true
@@ -64,6 +73,29 @@ function createLifecycle({
     teardown.push(fn)
   }
 
+  /** `fn` runs once the quit is certain and answers a promise the exit waits for, or null. */
+  function onDrain(fn) {
+    drains.push(fn)
+  }
+
+  function willQuit(event) {
+    if (!tornDown) {
+      tornDown = true
+      for (const fn of teardown) fn()
+    }
+    if (drained) return
+    if (!draining) {
+      const pending = drains.map((fn) => fn()).filter(Boolean)
+      if (pending.length === 0) return
+      // `will-quit` held is a quit Electron gives up on, so this one asks again.
+      draining = Promise.allSettled(pending).then(() => {
+        drained = true
+        app.quit()
+      })
+    }
+    event.preventDefault()
+  }
+
   function install() {
     app.on('before-quit', markQuitting)
     if (traits.updateClosesWindowsFirst) {
@@ -78,12 +110,19 @@ function createLifecycle({
     app.on('window-all-closed', () => {
       if (traits.lastWindowClosed !== 'stay') app.quit()
     })
-    app.on('will-quit', () => {
-      for (const fn of teardown) fn()
-    })
+    app.on('will-quit', willQuit)
   }
 
-  return { isQuitting: () => quitting, watchQuitCancel, afterUserWindowClosed, onWillQuit, install }
+  return {
+    isQuitting: () => quitting,
+    // Past `will-quit`: nothing may open a window, though a drain still holds the process.
+    isExiting: () => tornDown,
+    watchQuitCancel,
+    afterUserWindowClosed,
+    onWillQuit,
+    onDrain,
+    install,
+  }
 }
 
 module.exports = { createLifecycle }

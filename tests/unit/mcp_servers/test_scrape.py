@@ -150,6 +150,20 @@ async def test_a_user_machine_with_no_browser_is_reworded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_computer_set_up_without_browsing_says_so(monkeypatch):
+    """Skipped at setup, the packages are missing however the fetch reaches them."""
+
+    async def missing(*args, **kwargs):
+        raise ModuleNotFoundError("No module named 'scrapling'", name="scrapling")
+
+    monkeypatch.setattr(srv, "fetch_fast", missing)
+    result = await srv._scrape_one("https://example.com", "fast", "text", 5, False)
+
+    assert result["error"] == "fetch_failed"
+    assert result["detail"] == srv._NOT_INSTALLED_DETAIL
+
+
+@pytest.mark.asyncio
 async def test_playwrights_missing_browser_is_passed_on_as_given(monkeypatch):
     """A hosted sandbox can say this too, where the reworded cause, about the
     user's own computer, would be wrong."""

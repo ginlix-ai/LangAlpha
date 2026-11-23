@@ -1,0 +1,4486 @@
+{
+ "darwin-arm64.oss.thin.no-helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ]
+ ],
+ "darwin-arm64.oss.thin.no-helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.no-helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.no-helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.no-helper.notarize.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ]
+ ],
+ "darwin-arm64.oss.thin.no-helper.notarize.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.notarize.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ]
+ ],
+ "darwin-arm64.oss.thin.helper.notarize.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.oss.thin.no-helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ]
+ ],
+ "linux-x64.oss.thin.no-helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.oss.thin.no-helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "linux-x64.oss.thin.no-helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.notarize.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.no-helper.notarize.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.notarize.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-arm64.oss.bundle.helper.notarize.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-arm64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [arm64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.oss.bundle.no-helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/linux-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ]
+ ],
+ "linux-x64.oss.bundle.no-helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/linux-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.oss.bundle.no-helper.sign.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/linux-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "linux-x64.oss.bundle.no-helper.sign.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/linux-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.none.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.none.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.sign.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.sign.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.notarize.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ]
+ ],
+ "darwin-arm64.saas.thin.no-helper.notarize.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.none.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.none.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.sign.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.sign.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.notarize.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ]
+ ],
+ "darwin-arm64.saas.thin.helper.notarize.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/saas/launch-agent/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.helper.plist\""
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   114,
+   "+",
+   "  notarize: true"
+  ],
+  [
+   114,
+   "-",
+   "  notarize: false"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.saas.thin.no-helper.none.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ]
+ ],
+ "linux-x64.saas.thin.no-helper.none.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "linux-x64.saas.thin.no-helper.sign.no-feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ]
+ ],
+ "linux-x64.saas.thin.no-helper.sign.feed": [
+  [
+   13,
+   "+",
+   "appId: ai.langalpha.desktop"
+  ],
+  [
+   13,
+   "+",
+   "productName: LangAlpha"
+  ],
+  [
+   13,
+   "-",
+   "appId: ai.langalpha.desktop.oss"
+  ],
+  [
+   14,
+   "-",
+   "productName: LangAlpha OSS"
+  ],
+  [
+   28,
+   "+",
+   "  name: langalpha-desktop"
+  ],
+  [
+   28,
+   "-",
+   "  name: langalpha-desktop-oss"
+  ],
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/saas"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   65,
+   "+",
+   "  - \"!src/stack/**\""
+  ],
+  [
+   77,
+   "+",
+   "  - name: LangAlpha"
+  ],
+  [
+   77,
+   "-",
+   "  - name: LangAlpha OSS"
+  ],
+  [
+   79,
+   "+",
+   "      - langalpha"
+  ],
+  [
+   79,
+   "-",
+   "      - langalpha-oss"
+  ],
+  [
+   104,
+   "+",
+   "  # identity resolved from CSC_LINK by scripts/build.mjs"
+  ],
+  [
+   104,
+   "-",
+   "  identity: null"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-x64.oss.bundle.no-helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-x64.oss.bundle.no-helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ],
+ "darwin-x64.oss.bundle.helper.none.no-feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   93,
+   "-",
+   "    - target: zip     # electron-updater reads zip on macOS, not dmg"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ]
+ ],
+ "darwin-x64.oss.bundle.helper.none.feed": [
+  [
+   44,
+   "+",
+   "artifactName: LangAlpha-oss-${version}-${arch}.${ext}"
+  ],
+  [
+   44,
+   "-",
+   "artifactName: LangAlpha${EDITION_TAG}-${version}-${arch}.${ext}"
+  ],
+  [
+   56,
+   "+",
+   "  output: dist/oss"
+  ],
+  [
+   56,
+   "-",
+   "  output: dist/${EDITION}"
+  ],
+  [
+   63,
+   "+",
+   "extraResources:"
+  ],
+  [
+   63,
+   "+",
+   "  - from: \"/ROOT/desktop/dist/backend/darwin-x64\""
+  ],
+  [
+   63,
+   "+",
+   "    to: backend"
+  ],
+  [
+   63,
+   "+",
+   "    filter: [\"**/*\"]"
+  ],
+  [
+   89,
+   "+",
+   "  minimumSystemVersion: \"13.5\""
+  ],
+  [
+   89,
+   "+",
+   "  sign: \"/ROOT/desktop/scripts/sign-mac.mjs\""
+  ],
+  [
+   89,
+   "+",
+   "  extraFiles:"
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/helper/target/universal-apple-darwin/release/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"MacOS/langalpha-helper\""
+  ],
+  [
+   89,
+   "+",
+   "    - from: \"/ROOT/desktop/dist/oss/launch-agent/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   89,
+   "+",
+   "      to: \"Library/LaunchAgents/ai.langalpha.desktop.oss.helper.plist\""
+  ],
+  [
+   92,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   92,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   94,
+   "+",
+   "      arch: [x64]"
+  ],
+  [
+   94,
+   "-",
+   "      arch: [arm64, x64]"
+  ],
+  [
+   117,
+   "+",
+   "  format: ULFO"
+  ],
+  [
+   158,
+   "+",
+   "publish:"
+  ],
+  [
+   158,
+   "+",
+   "  provider: generic"
+  ],
+  [
+   158,
+   "+",
+   "  url: \"https://updates.example.com/desktop\""
+  ],
+  [
+   158,
+   "-",
+   "publish: null"
+  ]
+ ]
+}

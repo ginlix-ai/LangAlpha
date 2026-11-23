@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
-<title>Connect to your LangAlpha server</title>
+<title>LangAlpha</title>
 <style>
   /* Standalone on purpose: this page has to render before any server is known,
      so it cannot pull a stylesheet or a font from one. */
@@ -59,7 +59,62 @@
   .status[data-tone="good"] { color: var(--good); }
   .hint { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
           font-size: 12px; color: var(--muted); }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); background: var(--field); color: var(--fg);
+    white-space: nowrap;
+  }
+  .stage[hidden] { display: none; }
+  .choice {
+    display: block; width: 100%; text-align: left; padding: 13px 14px; margin-bottom: 10px;
+    border-radius: 9px; border: 1px solid var(--line); background: var(--field); color: var(--fg);
+    font: inherit; cursor: pointer;
+  }
+  .choice:hover { border-color: var(--muted); }
+  .choice:focus-visible { outline: 2px solid var(--muted); outline-offset: 1px; }
+  .choice strong { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+  .choice span { display: block; font-size: 12.5px; color: var(--muted); }
+  button.link {
+    flex: none; display: inline; padding: 0; background: none; border: none; color: var(--muted);
+    font-size: 12.5px; font-weight: 400; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  }
+  button.link:hover { color: var(--fg); }
+  .back { margin-bottom: 14px; }
+  .steps { list-style: none; margin: 0 0 14px; padding: 0; font-size: 13px; }
+  .steps li { display: flex; gap: 9px; align-items: center; padding: 4px 0; color: var(--muted); }
+  .steps li::before {
+    content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--line);
+  }
+  .steps li[data-status="running"] { color: var(--fg); }
+  .steps li[data-status="running"]::before { border-color: var(--fg); animation: pulse 1.2s ease-in-out infinite; }
+  .steps li[data-status="done"]::before { background: var(--good); border-color: var(--good); }
+  .steps li[data-status="failed"] { color: var(--bad); }
+  .steps li[data-status="failed"]::before { background: var(--bad); border-color: var(--bad); }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  @media (prefers-reduced-motion: reduce) { .steps li[data-status="running"]::before { animation: none; } }
+  /* Starting is a wait, not a form, and its lines are far shorter than the
+     column, so it is centred in the window: the mark, the title, and the steps
+     as one block whose dots still line up. A failure's details read as text. */
+  main:has(#progress:not([hidden])) .mark { margin: 0 auto 16px; }
+  /* Dead centre reads as low, so the short list sits a little above it. Not
+     once it fails: the details fill the window and would lose their top. */
+  main:has(#progress:not([hidden])):has(#failure[hidden]) { margin-bottom: 12vh; }
+  #progress { text-align: center; }
+  #progress .lede { margin-bottom: 22px; }
+  #progress .steps { display: inline-flex; flex-direction: column; margin: 0; text-align: left; }
+  #progress #failure { margin-top: 20px; text-align: left; }
+  .failure { font-size: 12.5px; margin: 0 0 8px; }
+  .failure .note { color: var(--muted); }
+  pre.tail {
+    margin: 10px 0 0; padding: 9px 10px; max-height: 130px; overflow: auto; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--field); color: var(--muted);
+    font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word;
+  }
+  /* A way out for someone with a coding agent at hand: the logs and the source
+     are all it needs, and a pasted prompt is quicker than describing both. */
+  .ask { display: flex; gap: 12px; align-items: center; margin-top: 14px; font-size: 12px; color: var(--muted); }
+  .ask p { margin: 0; }
+  .ask button { flex: none; padding: 6px 11px; font-size: 12px; min-width: 96px; }
 </style>
 </head>
 <body>
@@ -69,10 +124,25 @@
     <path d="M35.282 47L35.6587 50.0175C35.7338 50.6188 35.2611 51.1482 34.6551 51.1413L25.1712 51.034C24.5829 51.0273 24.1274 50.5167 24.1878 49.9315L25.1428 40.668C25.2309 39.8127 24.2701 39.2523 23.5691 39.7501L15.853 45.2293C15.3591 45.58 14.6693 45.4146 14.3882 44.8781L9.68991 35.911C9.41644 35.389 9.65127 34.745 10.1965 34.5215L18.1128 31.2775C18.9026 30.9539 18.9499 29.8532 18.1909 29.4629L17.5 29.1076L10.2106 25.3592C9.70888 25.1012 9.51977 24.4795 9.79284 23.9858L14.7222 15.0745C15.0166 14.5423 15.714 14.3939 16.1995 14.7603L18.5 16.4959" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
   </svg>
 
-  <h1>Connect to your server</h1>
-  <p class="lede">This build talks to a LangAlpha stack you run yourself. Point it at the address where the web app is served.</p>
+  <section class="stage" id="choose" hidden>
+    <h1>Where should LangAlpha run?</h1>
+    <p class="lede">You can change this later from the app menu.</p>
+    <button class="choice" id="use-stack" type="button">
+      <strong>Run on this computer</strong>
+      <span>The app runs all of LangAlpha itself: web app, server and database. Takes a moment the first time.</span>
+    </button>
+    <button class="choice" id="use-server" type="button">
+      <strong>Connect to your own server</strong>
+      <span>Open a LangAlpha you already run, on this computer or another. The app shows the web app it serves.</span>
+    </button>
+  </section>
 
-  <label for="url">Server address</label>
+  <section class="stage" id="server">
+    <button class="link back" id="back" type="button" hidden>Back</button>
+  <h1>Connect to your server</h1>
+  <p class="lede">The app opens the web app your server serves, and works through the server behind it. Use the address you would open in a browser.</p>
+
+  <label for="url">Web app address</label>
   <input id="url" type="url" spellcheck="false" autocomplete="off" placeholder="http://localhost:5173">
 
   <div class="row">
@@ -82,7 +152,28 @@
 
   <p class="status" id="status" role="status" aria-live="polite"></p>
 
-  <p class="hint">Started with <code>make up</code>? The default is right. Behind the dev proxy it is <code>http://localhost</code>.</p>
+  <p class="hint">Started it with the <code>make up</code> command? The default is right. Behind the dev proxy, use <code>http://localhost</code>.</p>
+  </section>
+
+  <section class="stage" id="progress" hidden>
+    <h1 id="progress-title">Starting LangAlpha</h1>
+    <p class="lede" id="progress-lede">Everything runs on this computer.</p>
+    <ul class="steps" id="steps"></ul>
+    <div id="failure" hidden>
+      <p class="failure" id="failure-message" role="alert"></p>
+      <p class="failure note" id="failure-note"></p>
+      <div class="row">
+        <button id="reveal" class="secondary" type="button">Reveal Logs</button>
+        <button id="retry" type="button">Try Again</button>
+      </div>
+      <pre class="tail" id="failure-tail" tabindex="0"></pre>
+      <div class="ask">
+        <p>Using Claude Code or another coding agent? Give it a prompt that points it at these logs and the LangAlpha source.</p>
+        <button id="copy-prompt" class="secondary" type="button" aria-live="polite">Copy Prompt</button>
+      </div>
+      <p class="hint"><button class="link" id="failed-server" type="button">Connect to your own server instead</button></p>
+    </div>
+  </section>
 </main>
 <script src="./setup.js"></script>
 </body>

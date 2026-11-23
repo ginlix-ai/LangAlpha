@@ -22,7 +22,21 @@ import { useComputers } from '@/pages/ChatAgent/hooks/useComputers';
 import type { Computer } from '@/types/api';
 import { useOnboardingProgress } from '@/hooks/useOnboardingProgress';
 import { isPlatformMode } from '@/config/hostMode';
-import { nextSetupPath, nextSetupStep, readAnswers, setupRail, type SetupFacts } from './setupSteps';
+import type { SetupStatus } from '@/api/setup';
+import { useSetupStatus } from '@/hooks/useServerSetup';
+import { nextSetupPath, nextSetupStep, readAnswers, setupRail, type ServerStepState, type SetupFacts } from './setupSteps';
+
+/**
+ * The server's own step, from its setup status: owed while it says the step is,
+ * and still on the rail once answered. A server set up before the step, or one
+ * whose status could not be read, has none, so a read that failed holds no
+ * account on a step it may never pass. A hosted build reads no status, so has none.
+ */
+export function serverStepState(status: SetupStatus | undefined): ServerStepState {
+  if (!status) return null;
+  if (status.needs_setup) return 'owed';
+  return status.completed ? 'done' : null;
+}
 
 /** A machine the user brought (SSH, this Mac through Remote control) that is
  *  still there to run tasks. */
@@ -39,6 +53,8 @@ export function useSetupFacts({ refetchInterval = false }: { refetchInterval?: n
   const running = !!answers && !progress?.setup_completed_at;
   const ownAnswer = answers?.runsOn === 'own_computer';
   const computers = useComputers({ enabled: running });
+  const deployment = useSetupStatus({ enabled: running });
+  const server = serverStepState(deployment.data);
   const listed = computers.data?.computers ?? [];
   const own = listed.filter(isOwnComputer);
   const home = homeMachine(listed);
@@ -92,7 +108,7 @@ export function useSetupFacts({ refetchInterval = false }: { refetchInterval?: n
       : allows(policy, RULE.ownApiKeys) && (!isPlatformMode || byokEnabled)));
 
   const isLoading = progressLoading || (running && (
-    computers.isLoading || providersLoading || (claudeCodeAnswer && (ccComputers.isLoading || ccStatus.isLoading || (savedTarget && custody.isLoading)))
+    deployment.isLoading || computers.isLoading || providersLoading || (claudeCodeAnswer && (ccComputers.isLoading || ccStatus.isLoading || (savedTarget && custody.isLoading)))
   ));
   // A fact whose read failed is unknown, not false: setup resumes on no step
   // until it is read (`factsFailed`), rather than on one it may be past. The
@@ -106,6 +122,7 @@ export function useSetupFacts({ refetchInterval = false }: { refetchInterval?: n
 
   const facts: SetupFacts | null = answers && {
     answers,
+    server,
     ownComputer: own.length > 0,
     homeOnCloud: listed.some((c) => c.is_primary && c.status !== 'deleted' && !providerIsOwnMachine(c.kind)),
     claudeCodeToken,
@@ -127,7 +144,7 @@ export function useSetupFacts({ refetchInterval = false }: { refetchInterval?: n
     isLoading,
     ownComputers: own,
     tokenTarget,
-    rail: answers ? setupRail(answers) : [],
+    rail: answers ? setupRail(answers, server) : [],
     next,
     /** Where setup goes from here, /welcome once it is done; null while unknown. */
     nextPath: next ? nextSetupPath(next) : null,

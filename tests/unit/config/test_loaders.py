@@ -497,7 +497,8 @@ class TestGenerateConfigTemplate:
         data = yaml.safe_load(content)
         # Template should have required sections
         assert "llm" in data
-        assert data["sandbox"]["provider"] == "daytona"
+        assert "daytona" in data["sandbox"]
+        assert "provider" not in data["sandbox"]  # detected from the keys
         assert "mcp" in data
         assert "logging" in data
         assert "filesystem" in data

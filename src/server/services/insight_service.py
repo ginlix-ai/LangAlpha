@@ -206,6 +206,48 @@ async def _llm_extract_fallback(raw_text: str, user_id: str | None) -> dict:
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
+async def _no_key_serves(user_id: str) -> bool:
+    """Whether a scheduled brief on this user's credentials has nothing to run on.
+
+    A self-hosted deployment sits like this from first boot until its user
+    connects a model. That is no failure, so a job finding it skips before
+    claiming a row, and asks again at the next job, which sees a key added since.
+    Answered from the models' payers, building no client: a client built without
+    a key is what logs the failure this is here to avoid.
+    """
+    from src.server.services.llm import user_models
+    from src.server.services.llm.config import (
+        deployment_llm,
+        saved_default_model,
+        slot_model,
+    )
+    from src.server.services.llm.payers import model_payers
+
+    llm = deployment_llm()
+    deployment_model = slot_model(llm, "background") if llm else None
+    try:
+        saved = saved_default_model(await user_models.get_model_preference(user_id), "background")
+        model = saved or deployment_model
+        if not model:
+            return True
+        payers = {r.name: r for r in await model_payers(user_id)}
+    except Exception as exc:
+        # Asking must not be what stops a brief: the run reports its own failure.
+        logger.warning(f"[MARKET_INSIGHT] Could not read the model's payer: {exc}")
+        return False
+
+    def unpaid(name: str) -> bool:
+        # A name the list leaves out is for the run itself to refuse.
+        row = payers.get(name)
+        return row is not None and (row.payer is None or row.signed_in is False)
+
+    if not unpaid(model):
+        return False
+    # ``_research`` falls back to the deployment's model when the saved one
+    # cannot resolve, so the brief has nothing only if that has nothing too.
+    return not deployment_model or unpaid(deployment_model)
+
+
 async def _research(
     prompt: str,
     user_id: str | None = None,
@@ -727,6 +769,15 @@ class InsightService:
     ) -> None:
         """Generate a single market insight, unless another worker has the slot
         or a recent insight of this type already covers it."""
+        # When auth is off (local dev / self-hosted), use the local dev user's
+        # credentials so insights work without a system API key.
+        from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
+        system_user_id = None if HOST_MODE == "platform" else LOCAL_DEV_USER_ID
+
+        if system_user_id and await _no_key_serves(system_user_id):
+            logger.info(f"[MARKET_INSIGHT] Skipping {job_type}: no model has a key yet")
+            return
+
         instruction = _build_instruction(job_type, now_et)
         claim = await self._claim(job_type, instruction)
         if claim.holder_in_flight:
@@ -741,11 +792,6 @@ class InsightService:
 
         logger.info(f"[MARKET_INSIGHT] Starting {job_type}: id={insight_id}")
         start_time = time.monotonic()
-
-        # When auth is off (local dev / self-hosted), use the local dev user's
-        # credentials so insights work without a system API key.
-        from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
-        system_user_id = None if HOST_MODE == "platform" else LOCAL_DEV_USER_ID
 
         async def research_and_extract() -> dict:
             raw_text = await _research(
