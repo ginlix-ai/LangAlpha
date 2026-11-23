@@ -93,6 +93,10 @@ export async function initI18n(resources?: Resource): Promise<void> {
       load: 'currentOnly',
       interpolation: { escapeValue: false },
       maxRetries: 0,
+      // The default reads ten namespaces at a time, and the chat page alone
+      // loads twelve, so the rest waited a round trip behind the first ten.
+      // Each read is a module import the browser runs in parallel anyway.
+      maxParallelReads: Object.keys(NAMESPACES).length,
       // Stated rather than left to the defaults: with neither set, i18next
       // guesses whether a key "looks like natural language" before it splits
       // off a namespace, and a deferred key must always split.
