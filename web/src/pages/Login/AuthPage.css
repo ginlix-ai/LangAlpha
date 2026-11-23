@@ -1,0 +1,237 @@
+/*
+ * The auth pages' shared base: the page, the centered card over the edge
+ * grain, its status, error and inbox views, and the submit button with the
+ * page's focus treatment. AuthConfirm, the email-link landing, is the one auth
+ * page in the entry chunk (see App.tsx), so it takes only this sheet; the
+ * sign-in form, the password fields and the split market layout stay in
+ * LoginPage.css with the lazy pages that draw them.
+ */
+
+.login-page {
+  /* The only accent on the auth side: the ember the chart ball burns with.
+     Single source of truth — MarketScanlines and EdgeGrain read this variable
+     at runtime (via derivePalette in loginPaper), so the canvases and the CSS
+     never drift. */
+  --login-ember: rgb(233, 149, 74);
+  /* Opaque composition: the muted/loss tokens are translucent, so compose each
+     over the page color — the dune's stray dots (see EdgeGrain) never print
+     through a field, button, or error box. Referenced by the input, buttons,
+     and error box below. */
+  --login-opaque-muted:
+    linear-gradient(var(--color-border-muted), var(--color-border-muted)),
+    var(--color-bg-page);
+  --login-opaque-loss:
+    linear-gradient(var(--color-loss-soft), var(--color-loss-soft)),
+    var(--color-bg-page);
+
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow: hidden;
+  /* The grain prints onto this, not onto whatever the host app's body paints. */
+  background-color: var(--color-bg-page);
+  /* Pinned here so the login renders the same face in every host app —
+     without it, text inherits whatever body font the app's tokens set. */
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
+}
+
+[data-theme='light'] .login-page {
+  --login-ember: rgb(208, 125, 51);
+}
+
+.login-page__card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 22rem;
+  padding: 2.25rem 2rem;
+  border-radius: 1rem;
+  border: 1px solid transparent;
+  background-color: transparent;
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 0 20px rgba(255, 255, 255, 0.04),
+    0 0 40px rgba(255, 255, 255, 0.02),
+    0 4px 24px rgba(0, 0, 0, 0.15);
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
+}
+.login-page__error {
+  padding: 0.75rem 1rem;
+  border-radius: 0.625rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  background: var(--login-opaque-loss);
+  border: 1px solid var(--color-border-loss);
+  color: var(--color-loss);
+}
+
+/* Ink on paper, like the chart: the button prints in the page's ink and only
+   takes color — the ember — when it's about to act. */
+.login-page__submit {
+  width: 100%;
+  padding: 0.75rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  border-radius: 0.625rem;
+  border: 1px solid var(--color-text-primary);
+  background: var(--color-text-primary);
+  color: var(--color-bg-page);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), transform var(--motion-quick) var(--ease-out);
+}
+
+/* Ember on hover, but only for pointers that can hover: on touch screens
+   :hover sticks after a tap, leaving the button orange at rest. */
+@media (hover: hover) {
+  .login-page__submit:hover:not(:disabled) {
+    background: var(--login-ember);
+    border-color: var(--login-ember);
+    transform: translateY(-1px);
+  }
+}
+
+.login-page__submit:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login-page__submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+/* No ring on this surface's buttons and links. Keyboard focus prints ember
+   instead -- the color this page already reserves for a control that is about
+   to act. Clearing the outline is not optional here: without it the app-wide
+   baseline ring paints in a color this page uses nowhere. Nor is replacing it,
+   since suppressing both would leave the sign-in page with nothing for a
+   keyboard to follow.
+
+   Ember separates from the resting greys by hue more than by luminance, so it
+   carries under 3:1 and a red-green deficiency can flatten it. Every control
+   therefore gets a second signal that still reads with the hue taken out: a
+   heavy underline by default, a fill where there was none on the primary
+   buttons, a doubled edge on the secondary ones, a tinted pad behind the icon
+   toggle.
+
+   The quiet treatment is the default rather than a list of the controls that
+   want it, so a control added later is wrong-looking at worst instead of
+   silently unfocusable. Hover stays ink, so the two states still read apart.
+   Field focus is separate; its halo lives with the input rules above. */
+.login-page button:focus-visible,
+.login-page a:focus-visible {
+  outline: none;
+  color: var(--login-ember);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.login-page__submit:focus-visible:not(:disabled) {
+  background: var(--login-ember);
+  border-color: var(--login-ember);
+  color: var(--color-bg-page);
+  text-decoration: none;
+}
+
+/* Forced colors takes all of the above apart. Backgrounds and borders are
+   re-painted from the OS palette, so the ember fill and the ember edge stop
+   distinguishing a focused button from a resting one, and box-shadow is
+   dropped outright, which is the doubled edge and the field halo. The
+   underline survives -- but the boxed controls are exactly the ones that turn
+   it off. What else survives is the outline this page went out of its way to
+   clear, so put that back for this mode, with no color of its own so the
+   system supplies its focus color, and ungated by device: someone who asked
+   the OS for maximum contrast is the last person to leave without an
+   indicator on a click. */
+@media (forced-colors: active) {
+  .login-page button:focus-visible,
+  .login-page a:focus-visible {
+    outline: 2px solid;
+    outline-offset: 2px;
+  }
+}
+
+.login-page__back {
+  align-self: center;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.login-page__back:hover {
+  color: var(--color-text-primary);
+}
+
+.login-page__inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-page__inbox-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--color-text-primary);
+  opacity: 0.9;
+}
+
+.login-page__inbox-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+}
+
+.login-page__inbox-body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.login-page__inbox-body strong {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.login-page__status {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-page__status-text {
+  margin: 0;
+  font-size: 0.875rem;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+/* The page's only background texture: a static dot field condensing toward
+   the frame's right border, thinning right to left (see EdgeGrain). Sits
+   above the wash, below both panes - opaque form surfaces stop it. Behind a
+   centered card it condenses toward both side edges instead. */
+.login-page__edge-grain {
+  position: absolute;
+  inset: 0;
+  /* Explicit size: a canvas is a replaced element, so opposing insets alone
+     leave it at its intrinsic 300x150. */
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+}

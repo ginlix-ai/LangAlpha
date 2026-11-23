@@ -14,6 +14,7 @@ import AccountRecoveryHint from './AccountRecoveryHint';
 import EmailOnlyView from './EmailOnlyView';
 import MarketScanlines from './MarketScanlines';
 import EdgeGrain from './EdgeGrain';
+import './AuthPage.css';
 import './LoginPage.css';
 
 interface LogoIconProps {
