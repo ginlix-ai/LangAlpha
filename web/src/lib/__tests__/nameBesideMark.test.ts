@@ -1,7 +1,7 @@
 /** Where room is short, a model's name beside its maker's mark drops the
  *  brand word the mark already shows. */
 import { describe, it, expect } from 'vitest';
-import { nameBesideMark } from '../brandArt';
+import { nameBesideMark } from '../providerArt';
 
 describe('nameBesideMark', () => {
   it('drops the brand word its mark stands for, keeping it for a screen reader', () => {

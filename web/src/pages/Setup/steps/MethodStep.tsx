@@ -15,7 +15,7 @@ import { useUser } from '@/hooks/useUser';
 import { getCurrentUser } from '@/pages/Dashboard/utils/api';
 import { RemoveAccessDialog } from '@/components/modelAccess/RemoveAccessDialog';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { SUBSCRIPTIONS } from '@/api/oauth';
 import type { AccessType } from '@/components/model/types';
 import type { AccountPolicy } from '@/types/api';

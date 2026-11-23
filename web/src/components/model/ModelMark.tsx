@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { llmProviderArt, nameBesideMark } from '@/lib/brandArt';
+import { llmProviderArt, nameBesideMark } from '@/lib/providerArt';
 import { cn } from '@/lib/utils';
 
 /**

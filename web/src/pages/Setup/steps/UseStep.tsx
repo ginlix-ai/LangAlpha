@@ -11,7 +11,7 @@ import { useProviderGate } from '@/pages/ChatAgent/hooks/useProviderGate';
 import { isProviderLocked } from '@/pages/ChatAgent/components/providerUi';
 import { useUser } from '@/hooks/useUser';
 import { CLAUDE_CODE } from '@/lib/claudeCode';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
 import { cn } from '@/lib/utils';
 import { SetupFooter } from '../SetupFooter';
