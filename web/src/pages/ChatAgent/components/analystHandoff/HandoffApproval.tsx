@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Check, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { effortLabelFor } from '@/lib/effortLabels';
 import { cn } from '@/lib/utils';
 import { AUTO_APPROVE, useApproveAlways } from '@/hooks/useAutoApprove';
 import { useModelName } from '@/hooks/useModelName';
@@ -38,6 +39,12 @@ export function HandoffApproval({ proposal, onApprove, onReject }: HandoffApprov
   const modelName = useModelName();
 
   const brief = plainBrief(proposal.question);
+  // What the turn is asked to run on, so a costly level is seen before it is approved.
+  const effort = effortLabelFor(t, proposal.effort ?? null);
+  const runsOn = [
+    proposal.model ? t('chat.ptcCard.onModel', { model: modelName(proposal.model) }) : null,
+    effort ? t('chat.ptcCard.atEffort', { effort }) : null,
+  ].filter(Boolean);
   const clampRef = useRef<HTMLParagraphElement>(null);
   const [clamped, setClamped] = useState(false);
   // Measured on the clamped line itself, as it rewraps with the column. While
@@ -77,10 +84,8 @@ export function HandoffApproval({ proposal, onApprove, onReject }: HandoffApprov
               )}
             </span>
           </p>
-          {proposal.model && (
-            <p className="text-xs text-(--color-text-secondary)">
-              {t('chat.ptcCard.onModel', { model: modelName(proposal.model) })}
-            </p>
+          {runsOn.length > 0 && (
+            <p className="text-xs text-(--color-text-secondary)">{runsOn.join(' · ')}</p>
           )}
           {expanded ? (
             <div id={briefId} className="mt-0.5 text-(--color-text-secondary)">

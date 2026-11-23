@@ -1329,6 +1329,7 @@
       "handOffTo": "Hand off to the analyst <ws>in {{name}}</ws>",
       "handOffToAnalyst": "Hand off to the analyst",
       "onModel": "On {{model}}",
+      "atEffort": "{{effort}} effort",
       "waitingForYou": "Waiting for you",
       "briefMore": "Read the whole brief",
       "briefLess": "Show less",

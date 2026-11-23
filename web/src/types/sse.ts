@@ -486,6 +486,8 @@ export interface ActionRequest {
   report_back?: boolean;
   /** ptc_agent: the model the hand-off names, or null for the thread's own. */
   model?: string | null;
+  /** ptc_agent: the effort the hand-off names, or null for the thread's own. */
+  effort?: string | null;
   tool_call_id?: string;
   /**
    * The order attempt this request answers for. Its presence is what makes a
