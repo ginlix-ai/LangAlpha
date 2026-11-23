@@ -22,6 +22,7 @@ export * from './api/workspaces';
 export * from './api/computers';
 export * from './api/threads';
 export * from './api/messages';
+export * from './api/workflowStatus';
 export * from './api/files';
 export * from './api/readFrom';
 export * from './api/sandbox';

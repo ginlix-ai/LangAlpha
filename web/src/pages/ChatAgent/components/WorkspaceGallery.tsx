@@ -32,12 +32,11 @@ import { Kicker } from './workspaceGallery/Kicker';
 import {
   ALL_COMPUTERS,
   ComputerControl,
-  GALLERY_SORTS,
   GalleryToolbar,
   type ComputerControlProps,
-  type GallerySort,
 } from './workspaceGallery/GalleryToolbar';
 import { ChiefOfStaffCard } from './workspaceGallery/ChiefOfStaffCard';
+import { GALLERY_SORT_KEY, readGallerySort, type GallerySort } from './workspaceGallery/gallerySort';
 import { CardGrid } from './workspaceGallery/CardGrid';
 import { GALLERY_COLUMN, GALLERY_FRAME, GALLERY_GRID, GALLERY_PAGE } from './workspaceGallery/layout';
 import { useGalleryReorder } from './workspaceGallery/useGalleryReorder';
@@ -48,22 +47,10 @@ import type { WorkspaceRecord } from './workspaceGallery/types';
 import './workspaceGallery/WorkspaceCard.css';
 import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
 
-/**
- * The order the user last picked, a per-browser convenience. Nothing stored,
- * or a value this build does not know, reads as Recent; blocked storage just
- * forgets on reload.
- */
-const SORT_KEY = 'workspaceGallery.sort';
-
 /** Placeholder cards while the list is read, before this device has seen it:
  *  two rows at a laptop's width. After that, as many as it last held. */
 const SKELETON_CARDS = 6;
 const MAX_SKELETON_CARDS = 12;
-
-const readSort = (): GallerySort => {
-  const stored = safeLocalStorage.getItem(SORT_KEY);
-  return GALLERY_SORTS.find((sort) => sort === stored) ?? 'activity';
-};
 
 /**
  * WorkspaceGallery Component
@@ -88,7 +75,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   // Most recent first until the user picks another order, and then theirs on
   // every visit: each card says when it was last used, the time Recent sorts
   // on. Custom is the order the cards are dragged into.
-  const [sortBy, setSortBy] = useState<GallerySort>(readSort);
+  const [sortBy, setSortBy] = useState<GallerySort>(readGallerySort);
   // Rename is the gallery's own dialog (the tree renames inline); duplicate,
   // move and delete come from useWorkspaceActions below. Spec is the machine's
   // and lives in the Computers dialog.
@@ -159,7 +146,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   /** Switch the order and remember it for the next visit. */
   const pickSort = (sort: GallerySort) => {
     setSortBy(sort);
-    safeLocalStorage.setItem(SORT_KEY, sort);
+    safeLocalStorage.setItem(GALLERY_SORT_KEY, sort);
   };
 
   /**

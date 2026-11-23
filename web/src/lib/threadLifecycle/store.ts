@@ -573,7 +573,12 @@ export function isThreadRunning(threadId: string): boolean {
 /** The newest run the user feed has reported for the thread, this tab's own
  *  stream aside: how a view learns that a run started somewhere else. */
 export function useThreadFeedRunId(threadId: string): string | null {
-  return useSyncExternalStore(subscribe, () => state.threads.get(threadId)?.feed?.runId ?? null);
+  return useSyncExternalStore(subscribe, () => threadFeedObservation(threadId)?.runId ?? null);
+}
+
+/** What the user feed last reported for the thread, this tab's own stream aside. */
+export function threadFeedObservation(threadId: string): LifecycleObservation | undefined {
+  return state.threads.get(threadId)?.feed;
 }
 
 /** True while the thread's latest run is interrupted (waiting for input). */

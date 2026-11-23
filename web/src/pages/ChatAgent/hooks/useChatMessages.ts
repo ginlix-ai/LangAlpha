@@ -16,6 +16,7 @@ import { getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
+import { readWorkflowStatus } from '../utils/primedStatus';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
 import { ThreadMuxSlot } from '../session/stream/threadStreamMux';
 import type { NextSummary, WorkflowStatusResponse } from '../utils/api';
@@ -1369,7 +1370,9 @@ export function useChatMessages(
       // Snapshot moment = the client's knowledge horizon: everything below
       // (active_tasks above all) reflects the world at this instant, and the
       // mux attach may lag it by the whole history load.
-      const snapshotAtMs = Date.now();
+      // A cold open of this thread asked for its status at boot, and that read
+      // is the snapshot as of when it was sent (primedStatus).
+      const loadStartedAt = Date.now();
       const onlineEpochAtStart = onlineRetryEpochRef.current;
       // The composer is open while this load reads the status and after its
       // replay, and a turn sent then owns the transcript: this load's snapshot
@@ -1383,9 +1386,9 @@ export function useChatMessages(
         else setReloadTrigger((n) => n + 1);
         return true;
       };
-      const status: WorkflowStatusResponse = await getWorkflowStatus(threadId).catch((statusErr: unknown) => {
+      const { status, sentAt: snapshotAtMs } = await readWorkflowStatus(threadId, getWorkflowStatus).catch((statusErr: unknown) => {
         console.log('[Reconnect] Could not check workflow status:', (statusErr as Error).message);
-        return { can_reconnect: false, status: 'error' } as WorkflowStatusResponse;
+        return { status: { can_reconnect: false, status: 'error' } as WorkflowStatusResponse, sentAt: loadStartedAt };
       });
 
       if (cancelled || turnTookOver()) return;

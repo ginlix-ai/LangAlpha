@@ -3,8 +3,9 @@ import { queryKeys } from '../lib/queryKeys';
 import type { Workspace } from '@/types/api';
 import { getWorkspaces } from '../pages/ChatAgent/utils/api';
 
-// Apart from useWorkspaces.ts because the entry imports that module, and only
-// lazy pages list every workspace: code here would ride every first paint.
+// The entry reads `allWorkspacesQuery` to start the gallery's read at boot
+// (routePrefetch), so this module rides every first paint: keep it to the
+// query and its hook.
 
 // The list endpoint's cap on one page.
 const WORKSPACE_PAGE_SIZE = 100;
