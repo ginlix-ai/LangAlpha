@@ -169,6 +169,100 @@ class TestItemIds:
         assert out is msgs
 
 
+class TestProviderTools:
+    """A tool the provider ran itself, as the GLM Coding Plan's web reader does.
+
+    Replayed to DeepSeek after a model switch, its ``mcp_tool_use`` block was a
+    422 (unknown variant), and Claude and OpenAI-format servers refuse it too.
+    """
+
+    CALL = {
+        "type": "mcp_tool_use",
+        "id": "call_web",
+        "name": "webReader",
+        "server_name": "web_reader",
+        "input": {"url": "https://example.com/share"},
+        "text": None,
+    }
+    RESULT = {
+        "type": "mcp_tool_result",
+        "tool_use_id": "call_web",
+        "is_error": False,
+        "text": None,
+        "content": [{"type": "text", "text": "the shared page"}],
+    }
+
+    def glm_reply(self):
+        # The reply went on after its server's tool returned, so our call sits
+        # before more text.
+        return ai(
+            [{"type": "thinking", "thinking": ""}, self.CALL, TOOL_USE, self.RESULT, TEXT],
+            origin="z-ai-cn-coding",
+            tool_calls=[TOOL_CALL],
+        )
+
+    def test_crossing_lineages_they_become_text_and_our_calls_go_last(self):
+        msgs = [HumanMessage("q"), self.glm_reply(), ToolMessage(content="42", tool_call_id="tu_1")]
+        out, stats = _sanitize(msgs, "deepseek")
+        assert types_of(out[1]) == ["text", "text", "tool_use"]
+        inlined = out[1].content[0]["text"]
+        assert inlined.startswith('webReader, a tool only the earlier model had, returned for {"url": "https://example.com/share"}:')
+        assert inlined.endswith("the shared page")
+        assert out[1].tool_calls == msgs[1].tool_calls
+        assert stats.msgs_tools_inlined == 1
+
+    def test_a_streamed_call_keeps_its_arguments(self):
+        streamed = {**self.CALL, "input": {}, "partial_json": '{"url": "https://example.com/share"}'}
+        msgs = [ai([streamed, self.RESULT], origin="z-ai-cn-coding")]
+        out, _ = _sanitize(msgs, "deepseek")
+        assert 'for {"url": "https://example.com/share"}:' in out[0].content[0]["text"]
+
+    def test_own_lineage_keeps_them(self):
+        msgs = [HumanMessage("q"), self.glm_reply()]
+        out, _ = _sanitize(msgs, "z-ai-cn-coding")
+        assert out is msgs
+
+    def test_a_failed_call_says_so(self):
+        msgs = [ai([self.CALL, {**self.RESULT, "is_error": True}], origin="z-ai-cn-coding")]
+        out, _ = _sanitize(msgs, "anthropic")
+        assert "webReader, a tool only the earlier model had, failed for" in out[0].content[0]["text"]
+
+    def test_nested_results_keep_their_text(self):
+        # Anthropic's shapes: a fetched page sits in a document's source, and
+        # code answers with its output, its files only as ids.
+        fetch_call = {"type": "server_tool_use", "id": "f", "name": "web_fetch", "input": {"url": "u"}}
+        fetched = {
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "f",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "u",
+                "content": {"type": "document", "source": {"type": "text", "data": "the page"}},
+            },
+        }
+        ran = {
+            "type": "code_execution_tool_result",
+            "tool_use_id": "c",
+            "content": {
+                "type": "code_execution_result",
+                "stdout": "printed",
+                "stderr": "",
+                "return_code": 0,
+                "content": [{"type": "code_execution_output", "file_id": "file_1"}],
+            },
+        }
+        msgs = [ai([fetch_call, fetched, ran], origin="anthropic")]
+        out, _ = _sanitize(msgs, "deepseek")
+        assert [b["text"].rsplit("\n\n", 1)[-1] for b in out[0].content] == ["the page", "printed"]
+
+    def test_a_call_that_returned_no_text_leaves_nothing(self):
+        empty = {**self.RESULT, "content": [{"type": "web_search_result", "encrypted_content": "x"}]}
+        msgs = [HumanMessage("q"), ai([self.CALL, empty], origin="z-ai-cn-coding")]
+        out, stats = _sanitize(msgs, "deepseek")
+        assert len(out) == 1
+        assert stats.msgs_removed == 1
+
+
 class TestUnfinishedReply:
     """A reply cut off mid-stream names items its own server never stored.
 
