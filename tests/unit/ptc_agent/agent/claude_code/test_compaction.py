@@ -299,3 +299,25 @@ async def test_the_transcripts_save_counts_against_the_compactions_budget(monkey
     assert time.monotonic() - started < 1.15
     written = await compaction.compact(None, {}, None, plan=None, thread_key="t", identity="u", records={}, transcript_note=slow("the note", 0.2))
     assert written[0]["note"] == "the note"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_threads_briefs_name_its_members(monkeypatch):
+    """A brief is rendered again on a later launch from the rules alone, so
+    the rules carry whether the thread is shared, as the summarizer does."""
+    seen: dict[str, bool] = {}
+
+    async def spy(kind):
+        async def render(*args, shared=False, **kwargs):
+            seen[kind] = shared
+        return render
+
+    monkeypatch.setattr(compaction.brief, "thread_brief", await spy("thread"))
+    monkeypatch.setattr(compaction.brief, "digest_brief", await spy("digest"))
+    rules = CompactionRules(0, shared=True)
+    state = {"messages": []}
+
+    await rules.thread_brief("t-1", state, 10_000)
+    await rules.digest_brief("t-1", state)
+
+    assert seen == {"thread": True, "digest": True}

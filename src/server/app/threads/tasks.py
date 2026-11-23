@@ -152,8 +152,13 @@ async def send_subagent_message(
     """Send a message/instruction to a running background subagent. In a
     shared workspace, only the member whose turn launched it instructs it."""
     access = await thread_access(thread_id, x_user_id)
+    written_by = None
     if access.is_shared:
         await refuse_others_task(thread_id, task_id, x_user_id)
+        from src.server.services.shared_workspaces.turn import member_sender
+
+        # Named on the task's run as on the thread, so it reads as theirs.
+        written_by = await member_sender(x_user_id)
     from src.server.handlers.chat import steer_subagent
 
     return await steer_subagent(
@@ -162,4 +167,5 @@ async def send_subagent_message(
         content=request.content,
         user_id=x_user_id,
         input_id=request.input_id,
+        written_by=written_by,
     )

@@ -117,6 +117,7 @@ from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.middleware.stream_heartbeat import stream_heartbeat
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
+from ptc_agent.agent.transcript.sender import name_senders
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
@@ -764,7 +765,7 @@ class ClaudeTurn:
             content=reentry_trigger(senders), name="orchestrator", additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE}
         )
         sent = ensure_message_ids([trigger, message])
-        prompt = _followed_by(state, sent)
+        prompt = _followed_by(state, sent, shared=self.spec.shared)
         if await self._held_back(state, prompt):
             await run.close()
             self._run, self._sent_before = None, run.queries
@@ -780,7 +781,7 @@ class ClaudeTurn:
         launching for."""
         if not await self._room(run):
             return None
-        prompt = _followed_by(state, added)
+        prompt = _followed_by(state, added, shared=self.spec.shared)
         return None if await self._held_back(state, prompt) else prompt
 
     @staticmethod
@@ -884,7 +885,7 @@ class ClaudeTurn:
             return []
         if another_model_replied_last(messages):
             return []
-        asked = turn_prompt(state, baseline=self._baseline_due(state)[1])
+        asked = turn_prompt(state, baseline=self._baseline_due(state)[1], shared=self.spec.shared)
         plan = self.compaction.repin_plan(records, self.current_pin(), time.time(), pending=prompt_tokens(asked))
         if plan is None:
             return []
@@ -1038,7 +1039,7 @@ class ClaudeTurn:
         turn's prompt."""
         records = state.get("claude_session") or {}
         key, block = self._baseline_due(state)
-        prompt = turn_prompt(state, baseline=block)
+        prompt = turn_prompt(state, baseline=block, shared=self.spec.shared)
         self._session = records.get("session_id")
         pin, kept = self._launch_pin(state, moves=prompt is not None)
         self._moving = bool(kept) and not same_pin(kept, pin)
@@ -1127,7 +1128,7 @@ _Update = dict[str, Any] | Command
 Baseline = Callable[[Any], tuple[str, str]]
 
 
-def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Prompt | None:
+def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None, shared: bool = False) -> Prompt | None:
     """The messages the turn added since Claude last spoke, as one user message.
 
     A single plain message goes as the string it is. Otherwise the message is
@@ -1175,7 +1176,10 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
             "nothing_to_resume",
             f"a Claude Code run resumes from a user message or after its tool results, not after a {type(last).__name__}",
         )
-    carried = compose_request(added, "reminder").messages if added else []
+    # Named outside the carrier, as the API path's naming step does: only a
+    # shared workspace's member messages carry a writer, and only there is a
+    # message with none escaped, so elsewhere every message passes as it is.
+    carried = compose_request(name_senders(added, shared=shared), "reminder").messages if added else []
     if baseline is None and brief is None and len(carried) == 1 and isinstance(carried[0].content, str):
         return carried[0].content
     blocks: list[dict[str, Any]] = [
@@ -1187,10 +1191,10 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
     return blocks
 
 
-def _followed_by(state: ClaudeCodeState, added: Sequence[BaseMessage]) -> Prompt:
+def _followed_by(state: ClaudeCodeState, added: Sequence[BaseMessage], *, shared: bool) -> Prompt:
     """The turn's next query: ``added``, as ``turn_prompt`` hands Claude what
     came since it last spoke."""
-    prompt = turn_prompt({**state, "messages": [*state["messages"], *added]})
+    prompt = turn_prompt({**state, "messages": [*state["messages"], *added]}, shared=shared)
     assert prompt is not None, "a prompt holds the messages added"
     return prompt
 

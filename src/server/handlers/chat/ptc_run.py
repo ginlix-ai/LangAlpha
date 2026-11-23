@@ -83,6 +83,7 @@ from ptc_agent.agent.graph import build_ptc_graph_with_session
 from src.server.services.home_placement import HomeTurnStart
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
+from ptc_agent.agent.transcript.sender import escape_unrecorded
 
 from .request_prep import (
     DISPATCH_STARTED_MARKER,
@@ -298,6 +299,7 @@ async def astream_ptc_workflow(
                 status_code=503,
                 detail="PTC Agent not initialized. Check server startup logs.",
             )
+        identity.refuse_other_roles(request)
 
         # =====================================================================
         # Admission gate
@@ -370,6 +372,9 @@ async def astream_ptc_workflow(
                 if dispatched or request.steer_only
                 else await ThreadMutationRunner.get_instance().holding_verb(thread_id)
             )
+            # Who wrote this send, fixed now: the turn it opens and the steer
+            # it may become both name them by it.
+            written_by = await identity.message_sender(request)
             # Admit a fresh turn, steer the running one, or 409 — see
             # ``wait_or_steer``; who may steer at all is ``steer_allowed``.
             admit = partial(
@@ -391,6 +396,7 @@ async def astream_ptc_workflow(
                 ),
                 artifact_comments=request.artifact_comments,
                 shared=identity.shared,
+                written_by=written_by,
                 checked_computer_id=request.checked_computer_id,
                 on_model=(request.llm_model or None) if dispatched else None,
             )
@@ -912,7 +918,9 @@ async def astream_ptc_workflow(
             # Structured HITL resume payload.
             # Pydantic validates this into HITLResponse models, but LangChain's
             # HumanInTheLoopMiddleware expects plain dicts (subscriptable).
-            resume_payload = serialize_hitl_response_map(request.hitl_response)
+            resume_payload = serialize_hitl_response_map(
+                request.hitl_response, escape=escape_unrecorded if identity.shared else None
+            )
             input_state = Command(
                 resume=resume_payload,
                 # None for a resume that was not credit-paused, which is what
@@ -968,6 +976,9 @@ async def astream_ptc_workflow(
                 build_chart_selection_reminder(chart_selections),
             ],
         )
+
+        if inline_target is not None and written_by is not None:
+            written_by.stamp(inline_target)
 
         # =====================================================================
         # Save user request to system thread directory (non-critical)

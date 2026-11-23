@@ -38,7 +38,19 @@ from ptc_agent.agent.middleware.background_subagent.context import (
     current_steer_resume,
 )
 from ptc_agent.agent.middleware.background_subagent.utils import config_own_run_id
-from ptc_agent.agent.transcript.steer_text import STEERS_AT, sender_runs, steer_text
+from ptc_agent.agent.transcript.sender import (
+    HARNESS_NAMED_KEY,
+    MEMBER_SENDER_KEY,
+    MemberSender,
+    escape_unrecorded,
+)
+from ptc_agent.agent.transcript.steer_text import (
+    STEERS_AT,
+    SteerSender,
+    sender_runs,
+    sent_by,
+    steer_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +96,9 @@ class SteeredReport:
     timestamp: float | None = None
     created_at: Any = None
     user_id: str | None = None
+    #: In a shared workspace, the member who wrote a steer, as of sending,
+    #: tagged as their messages are (``transcript/sender.py``); None elsewhere.
+    member: MemberSender | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +116,7 @@ class TaskResume:
         """What the resumed run reads: each sender's messages in the blocks a
         running task reads them in, so who sent each one is not lost."""
         return steer_text(
-            sender_runs((e.get("sender") or "user", e.get("content") or "") for e in self.entries)
+            sender_runs(sent_by(self.entries))
         )
 
     @property
@@ -557,6 +572,8 @@ def _steer_entry(steer: SteeredReport) -> dict[str, Any]:
         entry["platform"] = steer.platform
     if steer.sender and steer.sender != "user":
         entry["sender"] = steer.sender
+    if steer.member is not None:
+        entry[MEMBER_SENDER_KEY] = steer.member.to_record()
     if steer.request_key:
         entry["request_key"] = steer.request_key
     origin = _delivered_origin(steer.origin)
@@ -587,15 +604,28 @@ def _steering_message(
         if t.kind not in ("report", "steer"):
             groups.setdefault(t.kind, []).append(t)
     steers = [t for t in taken if t.kind == "steer"]
-    said = "\n\n".join(report.content for report in reports)
+    # A member's steer names them with the harness's tag, so the message is
+    # passed over by the naming step's escape (``HARNESS_NAMED_KEY``): all
+    # else in it, which no member is recorded as writing, is escaped here.
+    named = any(s.member is not None for s in steers)
+    plain = escape_unrecorded if named else (lambda text: text)
+    said = plain("\n\n".join(report.content for report in reports))
     if groups and render_group is None:
         raise ValueError(f"no block to read {', '.join(groups)} reports in")
     blocks = [
-        render_group(kind, [g.content for g in group])
+        plain(render_group(kind, [g.content for g in group]))
         for kind, group in groups.items()
     ]
     sent = (
-        steer_text(sender_runs((s.sender or "user", s.content) for s in steers))
+        steer_text(
+            sender_runs(
+                (
+                    SteerSender(s.sender or "user", s.member),
+                    s.content if s.member is not None else plain(s.content),
+                )
+                for s in steers
+            )
+        )
         if steers
         else ""
     )
@@ -619,6 +649,9 @@ def _steering_message(
         STEERS_AT: len(content) - len(sent),
         _HELD_JOBS: _HeldJobs(run_id=run_id, job_ids=[t.job_id for t in taken]),
     }
+    if named:
+        # Its tags are the harness's, each member's words escaped under them.
+        additional_kwargs[HARNESS_NAMED_KEY] = True
     # A fresh id per injection: the reducer replaces a message whose id it
     # already holds.
     message = HumanMessage(

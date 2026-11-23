@@ -21,6 +21,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
 from src.server.database.runs.outbox import MAX_RESUME_REFUSALS
 
 if TYPE_CHECKING:
@@ -64,11 +65,12 @@ def task_steer_payload(
     input_id: str,
     user_id: str | None = None,
     workspace_id: str | None = None,
+    written_by: MemberSender | None = None,
 ) -> dict[str, Any]:
     # Half a surrogate pair gets through the request's JSON parser but cannot
     # be stored as JSONB or encoded for the wire.
     content = content.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
-    return {
+    payload = {
         "target": "task",
         "sender": sender,
         "content": content,
@@ -79,6 +81,10 @@ def task_steer_payload(
         "task_run_id": task_run_id,
         "input_id": input_id,
     }
+    if written_by is not None:
+        # The member who wrote it, as the task's run tags it (``take_task``).
+        payload[MEMBER_SENDER_KEY] = written_by.to_record()
+    return payload
 
 
 async def admit_task_message(
@@ -91,6 +97,7 @@ async def admit_task_message(
     user_id: str | None = None,
     input_id: str | None = None,
     workspace_id: str | None = None,
+    written_by: MemberSender | None = None,
 ) -> dict[str, Any]:
     """Accept a message into ``task_run_id``, the task's live run.
 
@@ -122,6 +129,7 @@ async def admit_task_message(
             input_id=input_id,
             user_id=user_id,
             workspace_id=workspace_id,
+            written_by=written_by,
         ),
         idempotency_key=task_steer_key(thread_id, task_id, input_id),
     )
@@ -325,6 +333,8 @@ def _entry(payload: dict) -> dict[str, Any]:
     entry = {"input_id": payload.get("input_id"), "content": payload.get("content") or ""}
     if payload.get("sender"):
         entry["sender"] = payload["sender"]
+    if (member := MemberSender.of(payload)) is not None:
+        entry[MEMBER_SENDER_KEY] = member.to_record()
     return entry
 
 

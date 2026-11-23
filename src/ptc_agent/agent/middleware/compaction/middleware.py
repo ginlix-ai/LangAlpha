@@ -154,6 +154,7 @@ from ptc_agent.agent.middleware.reasoning_compat import ORIGIN_KEY
 from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.tools.plan import PLAN_STATE_KEY
 from ptc_agent.agent.transcript.classify import human_kind, is_summary_message
+from ptc_agent.agent.transcript.sender import MemberSender, named, unnamed
 from ptc_agent.agent.transcript.identity import DIGEST_VERSION
 from ptc_agent.agent.transcript.pointer import (
     aexport_transcript,
@@ -201,10 +202,12 @@ def _log_rebuild_after(fitted: Fitted, rebuild: str | None, waits: str) -> None:
         _log_rebuild("deferred", waits)
 
 
-def _user_texts(messages: Sequence[AnyMessage]) -> list[str]:
+def _user_texts(messages: Sequence[AnyMessage], *, shared: bool = False) -> list[str]:
     """What the user wrote in ``messages``, oldest first, with what an
     earlier OpenAI summary among them kept: the messages Codex keeps beside
-    its item, none of the rows the runtime stamps."""
+    its item, none of the rows the runtime stamps. In a shared thread each
+    is kept as calls send it, its member's tag on it, since the item is
+    replayed as it is and never named again."""
     texts: list[str] = []
     for message in messages:
         if not isinstance(message, HumanMessage):
@@ -212,7 +215,8 @@ def _user_texts(messages: Sequence[AnyMessage]) -> list[str]:
         if is_summary_message(message):
             texts.extend(kept_user_texts(message))
         elif human_kind(message) in ("plain", "steering"):
-            texts.append(message.text)
+            shown = named(message) if not shared or MemberSender.of(message) else unnamed(message)
+            texts.append(shown.text)
     return texts
 
 
@@ -335,6 +339,7 @@ class CompactionMiddleware(AgentMiddleware):
         receives: Callable[[Any], Callable[[Any], bool]] | None = None,
         page_tokens: Callable[[Any], int | None] | None = None,
         large_results_dir: str = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
+        shared: bool = False,
     ) -> CompactionMiddleware | None:
         """The middleware ``config.compaction`` describes, or None when it is off.
 
@@ -346,7 +351,7 @@ class CompactionMiddleware(AgentMiddleware):
         if not settings.enabled:
             return None
         return cls(
-            Summarizer.for_agent(config),
+            Summarizer.for_agent(config, shared=shared),
             token_threshold=settings.token_threshold,
             keep_tokens=settings.keep_tokens,
             claude_keep_tokens=settings.claude_keep_tokens,
@@ -538,6 +543,7 @@ class CompactionMiddleware(AgentMiddleware):
                 notes=self._notes_dir is not None,
                 scope=scope,
                 carried=carried,
+                shared=self._summarizer.shared,
             )
         elif kind is None and self._writes_own(request):
             own = functools.partial(
@@ -673,7 +679,10 @@ class CompactionMiddleware(AgentMiddleware):
             thread_id,
             agent,
         )
-        own = functools.partial(self._provider_summary, request, handler, notes=self._notes_dir is not None)
+        own = functools.partial(
+            self._provider_summary, request, handler,
+            notes=self._notes_dir is not None, shared=self._summarizer.shared,
+        )
         compaction = await self._compact(request, view, cut, self._transcript_target(), own, own_only=True)
         if plan.cut:
             _log_rebuild("yes", plan.reason)
@@ -820,6 +829,7 @@ class CompactionMiddleware(AgentMiddleware):
         notes: bool,
         scope: CacheScope | None = None,
         carried: bool = False,
+        shared: bool = False,
     ) -> NativeAnswer:
         """The agent's provider compacting ``to_summarize`` itself, with the
         summary prompt in place of its own where it takes one (Claude), the
@@ -845,7 +855,7 @@ class CompactionMiddleware(AgentMiddleware):
             )
         message = _last_ai(response)
         _log_usage("provider summary", message)
-        answer = native_answer(message, _user_texts(to_summarize))
+        answer = native_answer(message, _user_texts(to_summarize, shared=shared))
         if message is None or answer is None:
             stop = (message.response_metadata or {}).get("stop_reason") if message else None
             raise ValueError(f"no compaction (stop reason {stop})")

@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
 from src.server.models.chat import ShownSend
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
@@ -89,6 +90,7 @@ def steer_payload(
     origin: dict | None = None,
     artifact_comments: ShownSend | None = None,
     member: str | None = None,
+    written_by: MemberSender | None = None,
     checked_computer_id: str | None = None,
     llm_model: str | None = None,
 ) -> dict[str, Any]:
@@ -98,7 +100,10 @@ def steer_payload(
     comments, kept with it whichever turn reads it. ``member`` is the sender
     of a steer in a shared workspace's thread: only a turn of theirs takes it
     in (``outbox._TAKEABLE_STEER_SQL``), so a message one member queued never
-    becomes another member's words. ``checked_computer_id`` goes with it too,
+    becomes another member's words. ``written_by`` is that member as the
+    model reads them, fixed when they sent it (``TurnIdentity.message_sender``),
+    so the turn that takes the steer tags it as their messages are.
+    ``checked_computer_id`` goes with it too,
     so a steer no turn read starts its own turn held to the computer its send
     was checked on. ``llm_model`` is the model a hand-off named: only a run on
     it reads the steer, and one no run read starts its own turn on it.
@@ -122,6 +127,8 @@ def steer_payload(
         payload["artifact_comments"] = artifact_comments.model_dump(mode="json")
     if member is not None:
         payload[MEMBER_KEY] = member
+    if written_by is not None:
+        payload[MEMBER_SENDER_KEY] = written_by.to_record()
     if checked_computer_id is not None:
         payload["checked_computer_id"] = checked_computer_id
     if llm_model:
@@ -157,6 +164,7 @@ async def steer_subagent(
     content: str,
     user_id: str,
     input_id: str | None = None,
+    written_by: MemberSender | None = None,
 ) -> dict:
     """Send the user's message into a running background task.
 
@@ -173,6 +181,8 @@ async def steer_subagent(
         user_id: User identifier
         input_id: The caller's id for this message, carried on the delivery
             or return that settles it; generated when not given
+        written_by: The member who wrote it, in a shared workspace, named
+            on the task's run as their messages are
 
     Returns:
         Dict with success status and queue position
@@ -195,6 +205,7 @@ async def steer_subagent(
                 sender="user",
                 user_id=user_id,
                 input_id=input_id,
+                written_by=written_by,
             )
             if result["state"] != "duplicate":
                 result = None
@@ -223,6 +234,7 @@ async def steer_subagent(
                 sender="user",
                 user_id=user_id,
                 input_id=input_id,
+                written_by=written_by,
             )
             if result["state"] == "not_running":
                 raise HTTPException(

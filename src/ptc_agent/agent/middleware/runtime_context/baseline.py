@@ -244,6 +244,11 @@ class BaselineContextMiddleware(AgentMiddleware):
             without being told to write it, and its scratchpad has no notes.
             One instance serves every run of its definition in a parent turn,
             each with its own epoch in that run's checkpoint.
+        shared: A shared workspace's baseline, built with no profile and no
+            zone: its identity block states nothing of one person and says
+            instead that each member message names its writer. Fixed for the
+            workspace's life, as its owner is, so the block holds still
+            within an epoch.
     """
 
     def __init__(
@@ -266,9 +271,11 @@ class BaselineContextMiddleware(AgentMiddleware):
         role: AgentRole = "analyst",
         switches: ProfileSwitches = ProfileSwitches(),
         subagent: bool = False,
+        shared: bool = False,
     ) -> None:
         super().__init__()
         self._subagent = subagent
+        self._shared = shared
         self._session = session
         self._role = role
         self._files_mounted = files_mounted
@@ -632,6 +639,7 @@ class BaselineContextMiddleware(AgentMiddleware):
         parts[SECTION_IDENTITY] = render_template(
             "envelope/baseline_identity.md.j2",
             guidance=guidance,
+            shared=self._shared,
             **identity.to_state(),
         )
 
@@ -695,6 +703,12 @@ class BaselineContextMiddleware(AgentMiddleware):
         this turn's snapshot, and one that froze no ``channels`` or
         ``wakeups`` to this build's.
         """
+        if self._shared:
+            # Built with no profile; a thread that froze its first sender's
+            # before shared baselines left it out carries that one forward
+            # (``profile_available`` is false here), and it is not the
+            # thread's either.
+            return ""
         snapshot = frozen if frozen is not None else self._profile_snapshot()
         if channels is None:
             channels = self._switches.channels

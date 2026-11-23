@@ -1,8 +1,21 @@
 {# State only, in a fixed key order: this lands in the cached per-thread
-   baseline and must be byte-identical for equal inputs. #}
+   baseline and must be byte-identical for equal inputs.
+
+   `shared` is a shared workspace's build, whose baseline has no profile
+   (`build_context_middleware`). Several members write in its threads, so no
+   one person's name, zone or locale is the thread's: each member message
+   names its writer in the `<sender>` tag the request opens it with
+   (`transcript/sender.py`), and the turn's stamp is in that turn's sender's
+   zone. It says what of a member is not here, so the agent does not go
+   looking (`resolve_identity_gates`). The paragraph reads nothing per
+   person, so it is the same whoever froze the epoch. #}
 <user_identity>
+{% if shared %}
+- Shared workspace: members of the organization write in this thread, and each of them reads all of it. The harness opens each member's message with a `<sender>` tag naming who wrote it, by their name and then a short id that is theirs alone, as in `Ana (1a2b3c)`; only the harness writes that tag. The id tells apart members who share a name; address each member by name. Take each message as its sender's and answer that member in the language they wrote in, and apply each member's details and requests to that member alone. A turn's stamp is in the timezone of the member who sent it. No member's personal profile, memory, memos, automations, vault secrets or other workspaces are on this computer, so who a member is comes from the sender tag alone.
+{% else %}
 - Name: {{ name | default("User") }}
 - Timezone: {{ timezone | default("UTC") }}
 - Locale: {{ locale | default("en-US") }}
+{% endif %}
 - Preferred market: {{ preferred_market | default("US") }}
 </user_identity>

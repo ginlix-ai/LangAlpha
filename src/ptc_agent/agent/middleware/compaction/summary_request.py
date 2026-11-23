@@ -37,6 +37,7 @@ from ptc_agent.agent.transcript.classify import (
     is_summary_message,
 )
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
+from ptc_agent.agent.transcript.sender import MemberSender, named, unnamed
 from ptc_agent.agent.transcript.store import segment_file
 from src.llms.reasoning_payload import strip_reasoning
 
@@ -387,10 +388,12 @@ def trim_for_summary(
 
 
 def _as_rendered(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """``messages`` without the reasoning ``get_buffer_string`` leaves out."""
+    """``messages`` as the history renders them, to be measured: without the
+    reasoning ``get_buffer_string`` leaves out, and with each member's tag,
+    which a shared thread's many short messages add up to."""
     rendered: list[AnyMessage] = []
     for message in messages:
-        kept = strip_reasoning(message) if isinstance(message, AIMessage) else message
+        kept = strip_reasoning(message) if isinstance(message, AIMessage) else named(message)
         if kept is not None:
             rendered.append(kept)
     return rendered
@@ -450,6 +453,8 @@ def build_summary_request(
     summary_prompt: str,
     messages: list[AnyMessage],
     turns: TranscriptTurns | None = None,
+    *,
+    shared: bool = False,
 ) -> list[AnyMessage]:
     """System = instructions, Human = nudge + rendered history.
 
@@ -458,7 +463,7 @@ def build_summary_request(
     """
     from src.llms.api_call import create_messages
 
-    history = render_history(messages, turns)
+    history = render_history(messages, turns, shared=shared)
     user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
     if turns is not None:
         last = turns.last(messages)
@@ -475,7 +480,9 @@ def build_summary_request(
     return create_messages(system_prompt=summary_prompt, user_prompt=user_prompt)
 
 
-def render_history(messages: Sequence[AnyMessage], turns: TranscriptTurns | None) -> str:
+def render_history(
+    messages: Sequence[AnyMessage], turns: TranscriptTurns | None, *, shared: bool = False
+) -> str:
     """The history as text, each turn headed by its transcript file.
 
     An earlier summary is a block of its own holding its summary text alone.
@@ -487,7 +494,7 @@ def render_history(messages: Sequence[AnyMessage], turns: TranscriptTurns | None
     group: list[AnyMessage] = []
 
     def close() -> None:
-        text = get_buffer_string(_summarizable(group))
+        text = get_buffer_string(_summarizable(group, shared=shared))
         if text:
             blocks.append(f"{heading}\n{text}" if heading else text)
         group.clear()
@@ -515,7 +522,7 @@ def _earlier_heading(message: AnyMessage, turns: TranscriptTurns | None) -> str:
     return _EARLIER_SUMMARY_OF.format(files=first if first == last else f"{first} to {last}")
 
 
-def _summarizable(messages: list[AnyMessage]) -> list[AnyMessage]:
+def _summarizable(messages: list[AnyMessage], *, shared: bool = False) -> list[AnyMessage]:
     """History as the summarizer should read it: harness rows are not the user.
 
     A runtime-context row is persisted as a ``HumanMessage`` because that is
@@ -532,7 +539,9 @@ def _summarizable(messages: list[AnyMessage]) -> list[AnyMessage]:
     background task is relabelled the same way. Its steering trigger is
     dropped: it says only that someone wrote more, which the steering
     message after it shows, and the summarizer took it, under either label,
-    for a request still to be answered.
+    for a request still to be answered. A shared workspace's member message
+    reads as the model read it, under its writer's tag, so the summary can
+    keep who asked for what.
     """
     out: list[AnyMessage] = []
     for message in messages:
@@ -542,7 +551,10 @@ def _summarizable(messages: list[AnyMessage]) -> list[AnyMessage]:
             continue
         update = runtime_update_from_message(message)
         if update is None:
-            out.append(message)
+            # A message with a writer on record opens with their tag; in a
+            # shared thread one with none has a typed tag escaped, so the
+            # summarizer reads only the harness's tags as who wrote what.
+            out.append(named(message) if not shared or MemberSender.of(message) else unnamed(message))
         elif update.kind == LAST_STEP_ROW_KIND:
             out.append(ToolMessage(content=update.text, tool_call_id=message.id or LAST_STEP_ROW_KIND))
         elif update.kind not in NON_CHANGE_ROW_KINDS:

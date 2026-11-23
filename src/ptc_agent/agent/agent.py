@@ -110,6 +110,7 @@ from ptc_agent.agent.middleware.runtime_context import (
 )
 from ptc_agent.agent.middleware.runtime_context.epoch import Workspace
 from ptc_agent.agent.middleware.runtime_context.profile import ProfileSwitches
+from ptc_agent.agent.middleware.sender_naming import SenderNamingMiddleware
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
@@ -211,6 +212,8 @@ class PTCAgent:
         thread_id: str | None = None,
         memory_enabled: bool = True,
         memo_enabled: bool = True,
+        user_memory_enabled: bool = True,
+        user_data_enabled: bool = True,
         plan_enabled: bool = False,
         crawl_enabled: bool = False,
         scratchpad_enabled: bool = False,
@@ -237,7 +240,9 @@ class PTCAgent:
         tools read past threads with no mount, which follows the computer's
         kind, so it does not move between them either. ``claude_code`` asks
         for one question per call, since a Claude Code turn holds one call for
-        the user at a time.
+        the user at a time. ``user_memory_enabled`` and ``user_data_enabled``
+        are ``IdentityGates.prompt_vars``: a shared workspace's prompt points
+        at no memory tier or data of one member's, since none is there.
         """
         loader = get_loader()
         return loader.get_system_prompt(
@@ -254,6 +259,8 @@ class PTCAgent:
             thread_id=thread_id or "",
             memory_enabled=memory_enabled,
             memo_enabled=memo_enabled,
+            user_memory_enabled=user_memory_enabled,
+            user_data_enabled=user_data_enabled,
             market_watch_enabled=self.config.feature_enabled("market_watch"),
             plan_enabled=plan_enabled,
             crawl_enabled=crawl_enabled,
@@ -812,6 +819,8 @@ class PTCAgent:
                 skill_registry=subagent_skill_registry,
                 scratchpad=scratchpad.folder if scratchpad is not None else None,
                 model=turn.label,
+                prompt_vars=gates.prompt_vars(),
+                shared=not own_data,
             )
             subagents = create_subagents(turn_roster(self.config.subagents), compiler, role)
             subagents.extend(additional_subagents or [])
@@ -939,6 +948,7 @@ class PTCAgent:
             thread_id=short_thread_id,
             memory_enabled=gates.memory,
             memo_enabled=gates.memo,
+            **gates.prompt_vars(),
             plan_enabled=plan_on,
             crawl_enabled=bool(crawl_tools),
             scratchpad_enabled=scratchpad is not None,
@@ -996,6 +1006,7 @@ class PTCAgent:
             receives=multimodal_strip.receives,
             page_tokens=multimodal_strip.pdf_page_tokens,
             large_results_dir=eviction_dir,
+            shared=not own_data,
         )
         # The main agent is asked to update its scratchpad notes before each
         # summary, and its summaries name them; a subagent's do not. Without
@@ -1140,6 +1151,8 @@ class PTCAgent:
             },
             user_data_counts=user_data_counts,
             role=role,
+            # A build without the sender's own data is a shared workspace's.
+            shared=not own_data,
         )
         if main_compaction is not None:
             main_compaction = main_compaction.with_baseline(context.baseline.sent_sections)
@@ -1184,8 +1197,10 @@ class PTCAgent:
                     middleware=[*subagent_middleware, *own],
                     baseline=baseline.frozen_block if baseline is not None else None,
                     steering=TaskSteering(subagent_steering),
+                    shared=not own_data,
                     compaction=CompactionRules.of_subagent(self.config.compaction, backend=backend,
-                                                          workspace_id=folder_workspace_id),
+                                                          workspace_id=folder_workspace_id,
+                                                          shared=not own_data),
                 )
 
             return build
@@ -1381,6 +1396,10 @@ class PTCAgent:
                     if self.config.feature_enabled("market_watch")
                     else []
                 ),
+                # A shared workspace's member messages open with their
+                # writer's tag, outside the carrier so the request it
+                # composes is named. Only there: no other message has one.
+                SenderNamingMiddleware() if not own_data else None,
                 context.tail,
                 SystemPinMiddleware(),
                 ReasoningCompatibilityMiddleware(),
@@ -1432,12 +1451,13 @@ class PTCAgent:
                 # (``claude_code/agent_plan.py``).
                 entry=(skill_loader_middleware, context.turn, context.baseline, plan_state),
                 plan=AgentPlan(plan_close_out) if plan_on else None,
+                shared=not own_data,
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,
                 steering=steering,
                 alert_senders=alert_senders,
                 compaction=CompactionRules.of(self.config.compaction, turn_context, backend=backend,
-                                              workspace_id=folder_workspace_id),
+                                              workspace_id=folder_workspace_id, shared=not own_data),
             )
 
         return BackgroundSubagentOrchestrator(

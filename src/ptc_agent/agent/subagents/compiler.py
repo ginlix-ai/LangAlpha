@@ -9,7 +9,7 @@ The compiler handles:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -141,8 +141,13 @@ class SubagentCompiler:
         search_tool: Callable[..., Any] | None = None,
         sandbox_tools: Callable[[frozenset[str]], list[Any]] | None = None,
         context: SubagentContext | None = None,
+        prompt_vars: Mapping[str, bool] | None = None,
     ) -> None:
         self._sandbox = sandbox
+        # What the prompts may point at of the person's own
+        # (``IdentityGates.prompt_vars``); a bare build leaves the templates'
+        # defaults, which point at all of it.
+        self._prompt_vars = dict(prompt_vars or {})
         # What each subagent's runtime-context baseline is built from. Without
         # it (bare and test construction) a subagent gets no baseline, and its
         # prompt says nothing that would point at one.
@@ -293,6 +298,7 @@ class SubagentCompiler:
                 self._config is not None and self._config.feature_enabled("market_watch")
             ),
         )
+        template_kwargs.update(self._prompt_vars)
         # Resolve the turn's own folder so workspace_paths renders it
         if self._sandbox is not None and hasattr(self._sandbox, "config"):
             template_kwargs.update(

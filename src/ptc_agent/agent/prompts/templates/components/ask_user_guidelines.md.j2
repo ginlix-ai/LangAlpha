@@ -8,5 +8,7 @@
 {% else %}
 - Repeatedly in quick succession — batch related questions when possible
 {% endif %}
+{% if user_data_enabled | default(true) %}
 
 **A `proactive_questions` preference in the user's profile overrides all of the above.** It is free text describing how eagerly they want to be asked; follow what it says.
+{% endif %}

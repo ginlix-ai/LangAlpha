@@ -64,6 +64,8 @@ class ThreadAgent:
     claude_code: bool = False
     #: The account its calls' usage row names (``TurnIdentity.recorded_as``).
     recorded_as: str | None = None
+    #: A shared workspace's thread (``TurnIdentity.shared``).
+    shared: bool = False
 
     async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
@@ -283,6 +285,7 @@ async def _thread_agent(
         project=inputs.project,
         claude_code=isinstance(getattr(effective_config, "llm_client", None), ClaudeCodeTarget),
         recorded_as=identity.recorded_as,
+        shared=identity.shared,
     )
 
 
@@ -498,6 +501,7 @@ async def _summarize(agent: ThreadAgent, config):
         config,
         thread_id=agent.thread_id,
         backend=agent.backend,
+        shared=agent.shared,
         # The folder a transcript pointer is read from.
         workspace_id=agent.project.workspace_id if agent.project else agent.workspace_id,
         notes_dir=scratchpad.notes_dir if scratchpad is not None else None,

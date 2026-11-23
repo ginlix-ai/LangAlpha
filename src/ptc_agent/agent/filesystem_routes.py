@@ -92,6 +92,14 @@ class IdentityGates:
     def memory(self) -> bool:
         return self.user_memory or self.workspace_memory
 
+    def prompt_vars(self) -> dict[str, bool]:
+        """What a prompt may point at of the person's own, beside memory and
+        memos: their memory tier, and the data of theirs a computer of theirs
+        holds (profile and automation files, vault secrets, other
+        workspaces). A shared workspace has neither, so its prompts, the
+        main agent's and its subagents', leave both out."""
+        return {"user_memory_enabled": self.user_memory, "user_data_enabled": self.user_data}
+
 
 def resolve_identity_gates(
     *,

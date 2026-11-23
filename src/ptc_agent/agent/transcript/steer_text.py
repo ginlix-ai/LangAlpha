@@ -10,13 +10,14 @@ someone had written it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage
 
 from ptc_agent.agent.transcript.classify import STEERING_MARKERS
+from ptc_agent.agent.transcript.sender import MemberSender, escape_unrecorded
 
 #: Who sent a steer, named mid-sentence.
 SENDER_NAMES = {
@@ -45,11 +46,50 @@ def sender_name(sender: str | None) -> str:
     return SENDER_NAMES.get(sender) or f"the {sender.replace('_', ' ')}"
 
 
-def sender_runs(sent: Iterable[tuple[str, str]]) -> list[tuple[str, list[str]]]:
+def named_sender(kind: str, member: MemberSender | None) -> str:
+    """Who sent a steer, named mid-sentence: a member by their tag, and an
+    agent sending for a member as theirs, so a reader learns both who it acts
+    for and who wrote the words."""
+    if member is None:
+        return sender_name(kind)
+    if kind in _ON_USERS_BEHALF:
+        return f"{member.tag}'s {sender_name(kind).removeprefix('the ')}"
+    return member.tag
+
+
+@dataclass(frozen=True, slots=True)
+class SteerSender:
+    """Who sent a run of steers: a sender kind (``user``, ``chief_of_staff``),
+    and in a shared workspace the member who wrote it, tagged as their
+    messages are (``sender.py``)."""
+
+    kind: str = "user"
+    member: MemberSender | None = None
+
+
+def sent_by(entries: Iterable[Mapping[str, Any]]) -> list[tuple[SteerSender, str]]:
+    """Each delivered steer entry with its sender. Where any of them names a
+    member, the harness's tag opens their words, so an entry no member is
+    recorded as writing has a tag in it escaped: it cannot speak as one."""
+    entries = list(entries)
+    named = any(MemberSender.of(entry) is not None for entry in entries)
+    sent = []
+    for entry in entries:
+        member = MemberSender.of(entry)
+        text = entry.get("content") or ""
+        if named and member is None:
+            text = escape_unrecorded(text)
+        sent.append((SteerSender(entry.get("sender") or "user", member), text))
+    return sent
+
+
+def sender_runs(
+    sent: Iterable[tuple[SteerSender, str]],
+) -> list[tuple[SteerSender, list[str]]]:
     """``(sender, content)`` in the order sent, one sender's consecutive
     messages joined into one run. Never grouped across the whole take: a later
     message may take back an earlier one from another sender."""
-    runs: list[tuple[str, list[str]]] = []
+    runs: list[tuple[SteerSender, list[str]]] = []
     for sender, content in sent:
         if runs and runs[-1][0] == sender:
             runs[-1][1].append(content)
@@ -58,7 +98,7 @@ def sender_runs(sent: Iterable[tuple[str, str]]) -> list[tuple[str, list[str]]]:
     return runs
 
 
-def steer_text(groups: Sequence[tuple[str, Sequence[str]]]) -> str:
+def steer_text(groups: Sequence[tuple[SteerSender, Sequence[str]]]) -> str:
     """The steers as the model reads them: a block per run of one sender's
     messages (``sender_runs``), in the order given, then one ask to answer
     them all."""
@@ -68,11 +108,18 @@ def steer_text(groups: Sequence[tuple[str, Sequence[str]]]) -> str:
     return "\n\n".join([*blocks, f"Address the {noun} above as you continue this turn."])
 
 
-def sender_block(sender: str, contents: Sequence[str]) -> str:
-    """One run of a sender's messages, in the line naming who sent them."""
-    name = sender_name(sender)
+def sender_block(sender: SteerSender, contents: Sequence[str]) -> str:
+    """One run of a sender's messages, in the line naming who sent them. A
+    member's opens with the tag naming them, and a tag they typed is escaped
+    in their words, as in a message of theirs that opens a turn. An agent
+    sending for a member is named as theirs (``named_sender``)."""
+    name = named_sender(sender.kind, sender.member)
+    behalf = ""
+    if sender.kind in _ON_USERS_BEHALF:
+        behalf = " on their behalf" if sender.member is not None else " on the user's behalf"
+    if sender.member is not None:
+        contents = [sender.member.words(content) for content in contents]
     what = "a new message" if len(contents) == 1 else "new messages"
-    behalf = " on the user's behalf" if sender in _ON_USERS_BEHALF else ""
     if len(contents) == 1:
         body = contents[0]
     else:
@@ -86,6 +133,12 @@ class SentSteer:
 
     sender: str
     text: str
+    #: The member who wrote it, for a steer in a shared workspace.
+    member: MemberSender | None = None
+
+    @property
+    def steer_sender(self) -> SteerSender:
+        return SteerSender(self.sender, self.member)
 
 
 def sent_steers(message: HumanMessage) -> list[SentSteer]:
@@ -98,14 +151,14 @@ def sent_steers(message: HumanMessage) -> list[SentSteer]:
         entries = payload.get("entries")
         if isinstance(entries, list):
             return [
-                SentSteer(entry.get("sender") or "user", entry["content"])
+                SentSteer(entry.get("sender") or "user", entry["content"], MemberSender.of(entry))
                 for entry in entries
                 if isinstance(entry, dict) and entry.get("content")
             ]
         messages = payload.get("messages")
         if isinstance(messages, list):
             return [
-                SentSteer(_entry_sender(entry), entry["content"])
+                SentSteer(_entry_sender(entry), entry["content"], MemberSender.of(entry))
                 for entry in messages
                 # A report's entry carries no text: what it reports is model-facing.
                 if isinstance(entry, dict)

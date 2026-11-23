@@ -143,7 +143,7 @@ def claude_code_graph(
     checkpointer: Any, launcher: Callable[[CliQueue], Launcher], entry: Sequence[Any] = (),
     compaction: CompactionRules, middleware: Sequence[Any] = (), baseline: Baseline | None = None,
     steering: SteeringMiddleware | TaskSteering | None = None, alert_senders: frozenset[str] = frozenset(),
-    plan: AgentPlan | None = None,
+    plan: AgentPlan | None = None, shared: bool = False,
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
@@ -176,6 +176,7 @@ def claude_code_graph(
         effort=target.effort,
         waits=waits_for_user(orders),
         ends_turn=_ends_turn,
+        shared=shared,
     )
     def turn(**run: str) -> ClaudeTurn:
         waits = CliWaits()

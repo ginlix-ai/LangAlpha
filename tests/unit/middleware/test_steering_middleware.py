@@ -591,13 +591,14 @@ async def test_a_resume_with_no_run_to_hand_to_confirms_as_before():
 def test_sender_runs_keep_the_order_sent():
     """The task's steers render through the same runs: a user's correction
     after the main agent's follow-up stays after it."""
-    from ptc_agent.agent.transcript.steer_text import sender_runs
+    from ptc_agent.agent.transcript.steer_text import SteerSender, sender_runs
 
-    sent = [("user", "stop"), ("user", "wait"), ("agent", "continue"), ("user", "no")]
+    user, agent = SteerSender("user"), SteerSender("agent")
+    sent = [(user, "stop"), (user, "wait"), (agent, "continue"), (user, "no")]
     assert sender_runs(sent) == [
-        ("user", ["stop", "wait"]),
-        ("agent", ["continue"]),
-        ("user", ["no"]),
+        (user, ["stop", "wait"]),
+        (agent, ["continue"]),
+        (user, ["no"]),
     ]
 
 

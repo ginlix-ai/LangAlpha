@@ -96,6 +96,9 @@ class RuntimeSpec:
     waits: Waits = _never
     #: The results that end the turn (a quiet wake turn's), after which the CLI stops.
     ends_turn: Callable[[ToolMessage], bool] = _never
+    #: A shared workspace's turn, whose unrecorded user messages are escaped
+    #: as the API path's naming step escapes them (``name_senders``).
+    shared: bool = False
 
     @property
     def catalog_model(self) -> str:
@@ -424,7 +427,7 @@ async def launch(
     )
     client: ClaudeSDKClient | None = None
     try:
-        after_tool = AfterTool(results, send=lambda text: client.query(text), plan=plan)
+        after_tool = AfterTool(results, send=lambda text: client.query(text), plan=plan, shared=spec.shared)
         options = options_for(
             spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store, session_id=session_id,
             prepared=prepared, after_tool=after_tool, before_tool=before_tool, compact_at=compact_at,

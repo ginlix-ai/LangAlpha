@@ -16,6 +16,22 @@ from typing import Any, Literal, Optional, get_args
 # A report-back posts as ``system``; a wake as its hook's type.
 NOTIFICATION_QUERY_TYPES = frozenset({"system", "market_target", "wakeup"})
 
+
+
+def posted_by_server(query_type: Optional[str], platform: Optional[str]) -> bool:
+    """Whether the server posted the turn itself, to report finished
+    background work, a market target's notice or a wakeup that fired.
+
+    A report-back arrives as a system query with no surface of its own, and a
+    wake as a ``market_target`` or ``wakeup`` query. Nobody sent any of them,
+    so it speaks where the thread's last turn did rather than naming a surface,
+    and no member of a shared workspace wrote its message. ``query_type`` is
+    stripped from every request that is not the server's own
+    (``threads/messaging.py``), so a client cannot claim one.
+    """
+    return query_type in NOTIFICATION_QUERY_TYPES and not platform
+
+
 # The one wake turn that may end without a reply.
 WAKE_QUERY_TYPE = "wakeup"
 
