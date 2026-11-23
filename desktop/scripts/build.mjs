@@ -16,6 +16,7 @@
  *     quiet way to ship a build that can never update itself.
  */
 import { spawn, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -333,7 +334,22 @@ if (!feed) {
   }
 }
 
-const result = spawnSync(bin, args, { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' })
+// Only where graceful-fs is installed, which a real build always has; a copy of
+// these scripts run without dependencies, as the config test does, goes without.
+// Quoted, since NODE_OPTIONS splits on spaces and a checkout path may hold one.
+let preload = ''
+try {
+  createRequire(path.join(root, 'package.json')).resolve('graceful-fs')
+  preload = `--require ${JSON.stringify(path.join(root, 'scripts', 'graceful-fs-preload.cjs'))}`
+} catch {
+  console.log('[build] graceful-fs is not installed; electron-builder runs with the plain open-file limit')
+}
+const result = spawnSync(bin, args, {
+  cwd: root,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+  env: { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, preload].filter(Boolean).join(' ') },
+})
 rmSync(RESOLVED, { force: true })
 if (result.error) {
   console.error(`[build] could not run ${bin}: ${result.error.message}`)
