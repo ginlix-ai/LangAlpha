@@ -19,8 +19,8 @@ describe('DateTimePicker across a New York clock change', () => {
     vi.setSystemTime(new Date(now));
     const onChange = vi.fn();
     render(<DateTimePicker value="" onChange={onChange} timeZone="America/New_York" />);
-    fireEvent.click(screen.getByRole('button', { name: i18n.t('automation.pickMoment') }));
-    const time = screen.getByRole('textbox', { name: i18n.t('automation.time') });
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('automation:pickMoment') }));
+    const time = screen.getByRole('textbox', { name: i18n.t('automation:time') });
     fireEvent.change(time, { target: { value: typed } });
     fireEvent.keyDown(time, { key: 'Enter' });
     expect(onChange).toHaveBeenLastCalledWith(expected);

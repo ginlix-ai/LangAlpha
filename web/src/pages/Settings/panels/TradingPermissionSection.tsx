@@ -31,7 +31,7 @@ export function TradingPermissionSection() {
       <div className="mx-0.5">
         <div className="flex items-baseline justify-between gap-3">
           <h2 id={headingId} className="settings-group-title open-style:label-voice">
-            {t('settings.tradingPermission.title')}
+            {t('settings:tradingPermission.title')}
           </h2>
           {pendingLevel && (
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -40,7 +40,7 @@ export function TradingPermissionSection() {
           )}
         </div>
         <p id={descId} className="settings-group-desc">
-          {t('settings.tradingPermission.desc')}
+          {t('settings:tradingPermission.desc')}
         </p>
       </div>
 
@@ -48,7 +48,7 @@ export function TradingPermissionSection() {
           lost keeps the old level on screen, and the save may have landed. */}
       {permission.isError && (
         <div className="flex items-center gap-2 text-xs">
-          <span style={{ color: 'var(--color-loss)' }}>{t('settings.tradingPermission.loadFailed')}</span>
+          <span style={{ color: 'var(--color-loss)' }}>{t('settings:tradingPermission.loadFailed')}</span>
           <button
             type="button"
             onClick={() => void permission.refetch()}

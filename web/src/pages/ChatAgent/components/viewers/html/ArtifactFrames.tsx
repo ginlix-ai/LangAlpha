@@ -60,7 +60,7 @@ export function ServeFailed({ onRetry }: { onRetry: () => void }): React.ReactEl
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-sm" role="alert">
       <span className="flex items-center gap-2" style={{ color: 'var(--color-text-secondary)' }}>
         <AlertCircle className="h-4 w-4 shrink-0" style={{ color: 'var(--color-icon-danger)' }} />
-        {t('filePanel.htmlPreviewFailed')}
+        {t('filePanel:htmlPreviewFailed')}
       </span>
       <Button variant="outline" size="sm" onClick={onRetry}>
         {t('common.retry')}
@@ -114,7 +114,7 @@ export function ArtifactFrames({
     // A failed renewal leaves the frame on the grant it has, as the live view does.
     if ((versionGrant.error && !versionGrant.data) || view.versionView.failed) {
       versionNotice = (
-        <VersionNotice title={t('pageViewer.failed')} hint={t('pageViewer.failedHint')}>
+        <VersionNotice title={t('pageViewer:failed')} hint={t('pageViewer:failedHint')}>
           <Button variant="outline" size="sm" onClick={() => { void versionGrant.refetch(); view.versionView.retry(); }}>
             {t('common.retry')}
           </Button>
@@ -122,7 +122,7 @@ export function ArtifactFrames({
       );
     } else if (view.versionView.missing) {
       versionNotice = (
-        <VersionNotice title={t('pageViewer.versionNotFound', { seq: version })} hint={t('artifact.versionNotFoundHint')}>
+        <VersionNotice title={t('pageViewer:versionNotFound', { seq: version })} hint={t('artifact.versionNotFoundHint')}>
           <Button variant="outline" size="sm" onClick={() => view.versionView.pick(null)}>{t('artifact.showLive')}</Button>
         </VersionNotice>
       );

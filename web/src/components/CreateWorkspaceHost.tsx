@@ -2,8 +2,11 @@ import { Suspense, createContext, lazy, useCallback, useContext, useState, type 
 import { useNavigate } from 'react-router';
 import { useCreateWorkspace } from '@/pages/ChatAgent/hooks/useCreateWorkspace';
 import type { Workspace } from '@/types/api';
+import { withCopy } from '@/i18n';
 
-const CreateWorkspaceModal = lazy(() => import('@/pages/ChatAgent/components/CreateWorkspaceModal'));
+const CreateWorkspaceModal = lazy(withCopy(() => import('@/pages/ChatAgent/components/CreateWorkspaceModal'), [
+  'filePanel',
+]));
 
 const OpenCreateWorkspace = createContext<(() => void) | null>(null);
 

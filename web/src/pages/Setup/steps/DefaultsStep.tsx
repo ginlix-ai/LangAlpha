@@ -133,7 +133,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
       navigate('/setup/ready');
     } catch (e: unknown) {
       const detail = apiErrorDetail(e);
-      setError(typeof detail === 'string' ? detail : (e instanceof Error && e.message) || t('setup.errorSavePrefs'));
+      setError(typeof detail === 'string' ? detail : (e instanceof Error && e.message) || t('setup:errorSavePrefs'));
     } finally {
       setSaving(false);
     }
@@ -157,7 +157,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
 
   return (
     <div>
-      <WizardStepHeader titleId={headingId} title={t('setup.chooseYourModels')} helper={copy.chooseDesc} />
+      <WizardStepHeader titleId={headingId} title={t('setup:chooseYourModels')} helper={copy.chooseDesc} />
       <div className="flex flex-col gap-4 sm:gap-6">
       {/* Model access reminder: a neutral panel with the accent on its icon
           alone; amber annotates, it does not wash or ring (DESIGN.md, accent
@@ -171,7 +171,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
           className="text-xs leading-relaxed"
           style={{ color: 'var(--color-text-secondary)' }}
         >
-          {t('setup.modelAccessReminder')}
+          {t('setup:modelAccessReminder')}
         </p>
       </div>
 
@@ -202,7 +202,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
           <ChevronRight
             className={cn('h-3 w-3 transition-transform', advancedOpen && 'rotate-90')}
           />
-          {t('settings.modelTuning.advanced')}
+          {t('settings:modelTuning.advanced')}
         </button>
 
         <AnimatePresence initial={false}>
@@ -217,8 +217,8 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
             >
               <div className="flex flex-col pt-4" style={{ gap: '24px' }}>
                 <ModelSelector
-                  label={t('settings.modelTuning.fetchModel')}
-                  description={t('settings.modelTuning.fetchModelDesc')}
+                  label={t('settings:modelTuning.fetchModel')}
+                  description={t('settings:modelTuning.fetchModelDesc')}
                   value={advancedModels.fetchModel}
                   onChange={(v) => handleAdvancedChange({ fetchModel: v })}
                   models={slotModels}
@@ -227,8 +227,8 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
                   metadata={metadata}
                 />
                 <ModelSelector
-                  label={t('settings.modelTuning.compactionModel')}
-                  description={t('settings.modelTuning.compactionModelDesc')}
+                  label={t('settings:modelTuning.compactionModel')}
+                  description={t('settings:modelTuning.compactionModelDesc')}
                   value={advancedModels.compactionModel}
                   onChange={(v) => handleAdvancedChange({ compactionModel: v })}
                   models={slotModels}
@@ -252,7 +252,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
       {/* A read that failed: nothing is filled, and nothing can be saved over it. */}
       {prefsFailed && (
         <p role="alert" className="text-sm" style={{ color: 'var(--color-loss)' }}>
-          {t('settings.failedToLoadModels')}
+          {t('settings:failedToLoadModels')}
         </p>
       )}
 
@@ -265,9 +265,9 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
       </div>
 
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: handleBack }}
+        back={{ label: t('setup:back'), onClick: handleBack }}
         primary={{
-          label: saving ? t('setup.saving') : t('setup.continue'),
+          label: saving ? t('setup:saving') : t('setup:continue'),
           onClick: handleNext,
           disabled: !canContinue,
           busy: saving,

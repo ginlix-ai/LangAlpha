@@ -73,7 +73,7 @@ export default function ManageView({
   const formPane = form && (
     <div className="automation-form-pane">
       <h2 className="title-font automation-form-title">
-        {t(form.props.original ? 'automation.editAutomation' : 'automation.newAutomation')}
+        {t(form.props.original ? 'automation:editAutomation' : 'automation:newAutomation')}
       </h2>
       {/* Another automation's form dissolves over this one in a single grid
           cell, so the pane is never an empty frame between the two. */}
@@ -94,7 +94,7 @@ export default function ManageView({
       onDelete={onDelete}
     />
   ) : selection.kind === 'missing' ? (
-    <p className="automations-quiet-note">{t(selection.runId ? 'automation.runLinkNotFound' : 'automation.notFound')}</p>
+    <p className="automations-quiet-note">{t(selection.runId ? 'automation:runLinkNotFound' : 'automation:notFound')}</p>
   ) : null;
 
   // What the pane holds. On a phone the list's scroller is the pane and only

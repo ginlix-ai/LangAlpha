@@ -26,7 +26,7 @@ function SymbolInfoSettings({ config, onChange, onClose }: WidgetSettingsProps<S
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.symbolInfo.symbol')}
+        label={t('dashboard:widgets.symbolInfo.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -39,8 +39,8 @@ function SymbolInfoSettings({ config, onChange, onClose }: WidgetSettingsProps<S
 
 registerWidget<SymbolInfoConfig>({
   type: 'tv.symbol-info',
-  titleKey: 'dashboard.widgets.symbolInfo.title',
-  descriptionKey: 'dashboard.widgets.symbolInfo.description',
+  titleKey: 'dashboard:widgets.symbolInfo.title',
+  descriptionKey: 'dashboard:widgets.symbolInfo.description',
   category: 'markets',
   icon: Info,
   component: SymbolInfoWidget,

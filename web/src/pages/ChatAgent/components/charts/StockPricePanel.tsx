@@ -152,7 +152,7 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
   }, [prices, chartBars, daily, ct]);
 
   if (!chartBars.length) {
-    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact.noPriceData')}</div>;
+    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact:noPriceData')}</div>;
   }
 
   // The card's line and dates, a size up: the last daily close and the
@@ -166,14 +166,14 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
     <>
       <TermPanelHead title={symbol ?? ''} symbol={symbol} aside={<MarketLink symbol={symbol} />} />
       <TermCard
-        title={t('toolArtifact.price')}
+        title={t('toolArtifact:price')}
         sub={INTERVAL_LABEL[interval] ?? interval}
         meta={firstDay && lastDay ? formatCalendarDayRange(firstDay, lastDay, locale) : undefined}
       >
         <div className="term-line" style={{ marginBottom: 10 }}>
           {lastClose != null && <span className="term-big term-hero">{formatMoney(lastClose, currency, locale, { upTo: places })}</span>}
           <TermChange value={prices.changePct} />
-          {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact.period')}</span>}
+          {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact:period')}</span>}
           {/* The chart below may be drawn from another publisher than the daily close. */}
           {prices.chartFreshness && (
             <FreshnessBadge freshness={prices.chartFreshness} source={prices.chartSource} chartSymbol={symbol ?? ''} />
@@ -210,10 +210,10 @@ function StockStats({ prices }: { prices: StockPrices }): React.ReactElement | n
   const money = (n: number) => formatMoney(n, prices.currency, locale, { upTo: prices.places });
 
   const pairs = [
-    high != null && [t('toolArtifact.periodHigh'), money(high)] as const,
-    low != null && [t('toolArtifact.periodLow'), money(low)] as const,
-    avgVolume != null && [t('toolArtifact.avgVolume'), compactNumberFixed2(avgVolume, locale)] as const,
-    volatility != null && [t('toolArtifact.volatility'), `${volatility.toFixed(2)}%`] as const,
+    high != null && [t('toolArtifact:periodHigh'), money(high)] as const,
+    low != null && [t('toolArtifact:periodLow'), money(low)] as const,
+    avgVolume != null && [t('toolArtifact:avgVolume'), compactNumberFixed2(avgVolume, locale)] as const,
+    volatility != null && [t('toolArtifact:volatility'), `${volatility.toFixed(2)}%`] as const,
     ma20 != null && ['MA20', money(ma20)] as const,
     ma50 != null && ['MA50', money(ma50)] as const,
   ].filter((p) => !!p);

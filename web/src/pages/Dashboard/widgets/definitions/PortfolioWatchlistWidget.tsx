@@ -75,7 +75,7 @@ function PortfolioWatchlistWidget({
         return {
           widget_type: 'personal.portfolioWatchlist',
           widget_id: instance.id,
-          label: `${t('dashboard.widgets.portfolioWatchlist.headerWatchlist')} · ${rows.length}`,
+          label: `${t('dashboard:widgets.portfolioWatchlist.headerWatchlist')} · ${rows.length}`,
           description: rows.length ? `${rows.length} symbol${rows.length === 1 ? '' : 's'}` : 'empty',
           captured_at: new Date().toISOString(),
           text,
@@ -96,7 +96,7 @@ function PortfolioWatchlistWidget({
       return {
         widget_type: 'personal.portfolioWatchlist',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.portfolioWatchlist.headerHoldings')} · ${rows.length}`,
+        label: `${t('dashboard:widgets.portfolioWatchlist.headerHoldings')} · ${rows.length}`,
         description: rows.length ? `${rows.length} holding${rows.length === 1 ? '' : 's'}` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -122,7 +122,7 @@ function PortfolioWatchlistWidget({
             (row.quoteAvailable !== false && row.changePercent !== undefined
               ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%`
               : ''),
-          description: t('dashboard.widgets.portfolioWatchlist.headerWatchlist'),
+          description: t('dashboard:widgets.portfolioWatchlist.headerWatchlist'),
           captured_at: new Date().toISOString(),
           text,
           data: { row: quote, tab: 'watchlist' },
@@ -144,7 +144,7 @@ function PortfolioWatchlistWidget({
           (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
-        description: t('dashboard.widgets.portfolioWatchlist.headerHoldings'),
+        description: t('dashboard:widgets.portfolioWatchlist.headerHoldings'),
         captured_at: new Date().toISOString(),
         text,
         data: { row: portfolioRowData(row), tab: 'portfolio' },
@@ -182,8 +182,8 @@ function PortfolioWatchlistWidget({
     activeTab === 'watchlist' ? watchlist.rows.length : portfolio.rows.length;
 
   const tabs: { key: PWTabKey; label: string }[] = [
-    { key: 'watchlist', label: t('dashboard.widgets.portfolioWatchlist.headerWatchlist') },
-    { key: 'portfolio', label: t('dashboard.widgets.portfolioWatchlist.headerHoldings') },
+    { key: 'watchlist', label: t('dashboard:widgets.portfolioWatchlist.headerWatchlist') },
+    { key: 'portfolio', label: t('dashboard:widgets.portfolioWatchlist.headerHoldings') },
   ];
 
   return (
@@ -243,7 +243,7 @@ function PortfolioWatchlistWidget({
                   </AnimatePresence>
                 )}
               </WatchlistTable>
-              <HoldingsAddButton label={t('dashboard.widgets.portfolioWatchlist.addSymbol')} onClick={watchlistHandlers.onAdd} />
+              <HoldingsAddButton label={t('dashboard:widgets.portfolioWatchlist.addSymbol')} onClick={watchlistHandlers.onAdd} />
             </div>
           ) : (
             <div>
@@ -278,7 +278,7 @@ function PortfolioWatchlistWidget({
                   </AnimatePresence>
                 )}
               </PortfolioTable>
-              <HoldingsAddButton label={t('dashboard.widgets.portfolioWatchlist.addTransaction')} onClick={portfolioHandlers.onAdd} />
+              <HoldingsAddButton label={t('dashboard:widgets.portfolioWatchlist.addTransaction')} onClick={portfolioHandlers.onAdd} />
             </div>
           )}
         </SwapCell>
@@ -289,9 +289,9 @@ function PortfolioWatchlistWidget({
 
 registerWidget<PortfolioWatchlistConfig>({
   type: 'personal.portfolioWatchlist',
-  titleKey: 'dashboard.widgets.portfolioWatchlist.title',
-  cardTitleKey: 'dashboard.widgets.portfolioWatchlist.cardTitle',
-  descriptionKey: 'dashboard.widgets.portfolioWatchlist.description',
+  titleKey: 'dashboard:widgets.portfolioWatchlist.title',
+  cardTitleKey: 'dashboard:widgets.portfolioWatchlist.cardTitle',
+  descriptionKey: 'dashboard:widgets.portfolioWatchlist.description',
   category: 'personal',
   icon: Wallet,
   component: PortfolioWatchlistWidget,

@@ -55,9 +55,9 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
   const sections = skillSections(skills ?? [], pluginData?.plugins);
   const workspaceSkills = sections.workspace;
   const inheritedGroups = [
-    { key: 'yours', title: t('plugins.skillsPage.addedByYou'), rows: sections.own },
+    { key: 'yours', title: t('plugins:skillsPage.addedByYou'), rows: sections.own },
     ...sections.plugins.map((group) => ({ key: `plugin:${group.name}`, title: group.name, rows: group.rows })),
-    { key: 'builtIn', title: t('plugins.skillsPage.builtIn'), rows: sections.builtIn },
+    { key: 'builtIn', title: t('plugins:skillsPage.builtIn'), rows: sections.builtIn },
   ].filter((group) => group.rows.length > 0);
 
   function openSkill(skill: SkillInfo) {
@@ -81,7 +81,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.skills.toggleFailed'),
+        title: t('plugins:skills.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
     } finally {
@@ -98,7 +98,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
       // The strip stays up on failure, to retry or cancel.
       toast({
         variant: 'destructive',
-        title: t('plugins.skills.deleteFailed'),
+        title: t('plugins:skills.deleteFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -106,7 +106,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
 
   if (error) {
     return (
-      <LoadFailed what={t('plugins.loadFailed.skills')} error={error} onRetry={() => void refetch()} />
+      <LoadFailed what={t('plugins:loadFailed.skills')} error={error} onRetry={() => void refetch()} />
     );
   }
   if (isLoading) return <ListSkeleton />;
@@ -115,16 +115,16 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
-          <SectionHeader>{t('plugins.skills.workspaceSection')}</SectionHeader>
+          <SectionHeader>{t('plugins:skills.workspaceSection')}</SectionHeader>
           <HeaderButton variant="primary" icon={Upload} onClick={() => setUploadOpen(true)}>
-            {t('plugins.skills.upload')}
+            {t('plugins:skills.upload')}
           </HeaderButton>
         </div>
         <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.skills.workspaceHint')}
+          {t('plugins:skills.workspaceHint')}
         </p>
         {workspaceSkills.length === 0 ? (
-          <ListEmpty>{t('plugins.skills.workspaceEmpty')}</ListEmpty>
+          <ListEmpty>{t('plugins:skills.workspaceEmpty')}</ListEmpty>
         ) : (
           <AnimatePresence initial={false}>
             {workspaceSkills.map((skill) => (
@@ -144,11 +144,11 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
             inherited rows, out of sight of the click that asked for it. */}
         {deletingName && (
           <ConfirmStrip
-            message={t('plugins.skills.removeHereConfirm', { skill: deletingName })}
+            message={t('plugins:skills.removeHereConfirm', { skill: deletingName })}
             confirmLabel={
-              deleteMutation.isPending ? t('common.loading') : t('plugins.skillsPage.removeYes')
+              deleteMutation.isPending ? t('common.loading') : t('plugins:skillsPage.removeYes')
             }
-            cancelLabel={t('plugins.skills.deleteConfirmNo')}
+            cancelLabel={t('plugins:skills.deleteConfirmNo')}
             pending={deleteMutation.isPending}
             onConfirm={confirmDelete}
             onCancel={() => setDeletingName(null)}
@@ -158,9 +158,9 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
 
       {inheritedGroups.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <SectionHeader>{t('plugins.skills.inheritedSection')}</SectionHeader>
+          <SectionHeader>{t('plugins:skills.inheritedSection')}</SectionHeader>
           <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('plugins.skills.inheritedHint')}
+            {t('plugins:skills.inheritedHint')}
           </p>
           {inheritedGroups.map((group) => (
             <section key={group.key} className="flex flex-col mt-1.5">

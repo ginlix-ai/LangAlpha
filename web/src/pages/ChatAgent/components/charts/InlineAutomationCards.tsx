@@ -19,12 +19,12 @@ const STATUS_TONE: Record<string, TermTone> = {
 };
 
 const STATUS_LABEL_KEYS: Record<string, string> = {
-  active: 'toolArtifact.automationStatus.active',
-  paused: 'toolArtifact.automationStatus.paused',
-  failed: 'toolArtifact.automationStatus.failed',
-  completed: 'toolArtifact.automationStatus.completed',
-  disabled: 'toolArtifact.automationStatus.disabled',
-  executing: 'toolArtifact.automationStatus.executing',
+  active: 'toolArtifact:automationStatus.active',
+  paused: 'toolArtifact:automationStatus.paused',
+  failed: 'toolArtifact:automationStatus.failed',
+  completed: 'toolArtifact:automationStatus.completed',
+  disabled: 'toolArtifact:automationStatus.disabled',
+  executing: 'toolArtifact:automationStatus.executing',
 };
 
 const statusTone = (status: string): TermTone => STATUS_TONE[status] ?? 'faint';
@@ -70,12 +70,12 @@ function ListCard({
   const locale = useLocale();
   const now = useNow();
   return (
-    <TermCard title={t('toolArtifact.automations')} meta={t('toolArtifact.nTotalItems', { count: total })} onClick={onClick}>
+    <TermCard title={t('toolArtifact:automations')} meta={t('toolArtifact:nTotalItems', { count: total })} onClick={onClick}>
       <TermTable
         rows={automations}
         limit={MAX_INLINE}
         total={total}
-        more={(n) => t('toolArtifact.nMoreAutomations', { count: n })}
+        more={(n) => t('toolArtifact:nMoreAutomations', { count: n })}
         rowKey={(a, i) => a.id || i}
         columns={[
           { key: 'state', cell: (a) => <span className="term-dot" data-size="row" data-tone={statusTone(a.status)} aria-hidden="true" /> },
@@ -134,7 +134,7 @@ function OneCard({
       sub={narrow ? undefined : triggerKind(automation, t)}
       meta={
         created
-          ? <TermStatus tone="profit">{t('toolArtifact.automationStatus.created')}</TermStatus>
+          ? <TermStatus tone="profit">{t('toolArtifact:automationStatus.created')}</TermStatus>
           : <AutomationStatus status={automation.status} />
       }
       onClick={onClick}
@@ -142,10 +142,10 @@ function OneCard({
       <TermKV
         cols={narrow ? 1 : 2}
         pairs={[
-          [t('toolArtifact.schedule'), scheduleLabel(automation, t, locale, now)],
-          !!nextRunAt && [t('toolArtifact.nextRun'), relativeTime(nextRunAt, locale, now)],
-          !created && !!lastRunAt && [t('toolArtifact.lastRun'), relativeTime(lastRunAt, locale, now)],
-          executions > 0 && [t('toolArtifact.executions'), t('toolArtifact.nTotal', { count: executions })],
+          [t('toolArtifact:schedule'), scheduleLabel(automation, t, locale, now)],
+          !!nextRunAt && [t('toolArtifact:nextRun'), relativeTime(nextRunAt, locale, now)],
+          !created && !!lastRunAt && [t('toolArtifact:lastRun'), relativeTime(lastRunAt, locale, now)],
+          executions > 0 && [t('toolArtifact:executions'), t('toolArtifact:nTotal', { count: executions })],
         ]}
       />
     </TermCard>

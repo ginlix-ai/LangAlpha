@@ -105,7 +105,7 @@ export function OrgConnectorsSection() {
                 ? t('organization.connectors.yourSignIn')
                 : null;
           const tools = c.discovery === 'ok' && (c.tool_count ?? 0) > 0
-            ? t('mcp.row.toolCount', { count: c.tool_count })
+            ? t('mcp:row.toolCount', { count: c.tool_count })
             : null;
           const line = state.kind === 'sign_in' ? t('organization.connectors.signInLine', { name: c.name })
             : state.kind === 'sign_in_again' ? t('organization.connectors.signInStopped')
@@ -126,7 +126,7 @@ export function OrgConnectorsSection() {
           );
           // The member's one verb on a connector they signed in to.
           const menu = c.auth === 'member' && c.connection_status !== null ? (
-            <CellMenu label={t('mcp.row.actionsAria', { name: c.name })}>
+            <CellMenu label={t('mcp:row.actionsAria', { name: c.name })}>
               <DropdownMenuItem disabled={busy === c.id} onSelect={() => void signOut(c)}>
                 <LogOut className="h-4 w-4" aria-hidden />
                 {t('organization.connectors.signOut')}

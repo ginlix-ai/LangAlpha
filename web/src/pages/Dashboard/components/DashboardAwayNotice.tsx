@@ -28,7 +28,7 @@ interface DashboardAwayNoticeProps {
  */
 export function DashboardAwayNotice({ dashboard, away, busy, onOpen, onRemove }: DashboardAwayNoticeProps): React.ReactElement {
   const { t } = useTranslation();
-  const name = dashboard.title || t('customDashboard.untitled');
+  const name = dashboard.title || t('customDashboard:untitled');
   const page = dashboard.kind === 'page';
 
   let title: string;
@@ -38,25 +38,25 @@ export function DashboardAwayNotice({ dashboard, away, busy, onOpen, onRemove }:
   switch (away.kind) {
     case 'waiting':
       title = away.ready
-        ? t('customDashboard.away.ready', { name })
-        : t(page ? 'customDashboard.away.waitingPage' : 'customDashboard.away.waiting', { name });
-      action = t('customDashboard.away.open', { name });
+        ? t('customDashboard:away.ready', { name })
+        : t(page ? 'customDashboard:away.waitingPage' : 'customDashboard:away.waiting', { name });
+      action = t('customDashboard:away.open', { name });
       break;
     case 'gone':
-      title = t('customDashboard.away.gone', { name });
-      detail = t(page ? 'customDashboard.away.goneDetailPage' : 'customDashboard.away.goneDetail');
-      action = t('customDashboard.away.remove');
+      title = t('customDashboard:away.gone', { name });
+      detail = t(page ? 'customDashboard:away.goneDetailPage' : 'customDashboard:away.goneDetail');
+      action = t('customDashboard:away.remove');
       act = onRemove;
       break;
     case 'noVersion':
-      title = t('customDashboard.away.failed', { name });
-      detail = t('customDashboard.away.noVersion');
-      action = t('customDashboard.away.keepNow');
+      title = t('customDashboard:away.failed', { name });
+      detail = t('customDashboard:away.noVersion');
+      action = t('customDashboard:away.keepNow');
       break;
     case 'failed':
-      title = t('customDashboard.away.failed', { name });
-      detail = away.detail ?? t(page ? 'customDashboard.away.failedDetailPage' : 'customDashboard.away.failedDetail');
-      action = t('customDashboard.away.retry');
+      title = t('customDashboard:away.failed', { name });
+      detail = away.detail ?? t(page ? 'customDashboard:away.failedDetailPage' : 'customDashboard:away.failedDetail');
+      action = t('customDashboard:away.retry');
       break;
   }
 

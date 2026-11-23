@@ -96,7 +96,7 @@ export function readConnectOutcome(params: URLSearchParams): ConnectOutcome | nu
     kind: 'failed',
     server: serverName(params.get('server')),
     plugin,
-    reasonKey: `plugins.oauth.callbackError.${known ? reason : 'unknown'}`,
+    reasonKey: `plugins:oauth.callbackError.${known ? reason : 'unknown'}`,
     detail: reason === 'install_failed' ? plainDetail(params.get('mcp_detail')) : null,
   };
 }
@@ -116,7 +116,7 @@ export function signInFailureParts(
   detail?: string | null,
 ): [reason: string, detail: string | null] {
   return [
-    t(reasonKey ?? 'plugins.oauth.callbackError.unknown'),
-    detail ? t('plugins.oauth.callbackDetail', { detail }) : null,
+    t(reasonKey ?? 'plugins:oauth.callbackError.unknown'),
+    detail ? t('plugins:oauth.callbackDetail', { detail }) : null,
   ];
 }

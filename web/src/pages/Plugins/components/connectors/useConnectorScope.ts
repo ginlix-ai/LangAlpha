@@ -27,7 +27,7 @@ export function useConnectorScope(name: string | null) {
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.servers.toggleFailed'),
+        title: t('plugins:servers.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
     } finally {

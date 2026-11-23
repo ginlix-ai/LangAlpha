@@ -78,7 +78,7 @@ function LayerRow({ layer }: { layer: PublishedLayer }): React.ReactElement {
             className="shrink-0 text-[0.6875rem] text-[var(--color-text-tertiary)]"
             style={{ fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums' }}
           >
-            {t('marketView.layers.asOf', { date: asOf })}
+            {t('marketView:layers.asOf', { date: asOf })}
           </span>
         )}
       </div>
@@ -188,7 +188,7 @@ export function InlineChartLayerCard({ card }: { card: ChartLayersCard }): React
           <span className="font-semibold">{symbol}</span>
           <span className="text-[var(--color-text-tertiary)]">{` · ${interval} · `}</span>
           <span className="text-[var(--color-text-secondary)]">
-            {t('marketView.layers.count', { count: layers.length })}
+            {t('marketView:layers.count', { count: layers.length })}
           </span>
         </span>
         <button

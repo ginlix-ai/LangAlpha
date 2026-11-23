@@ -379,7 +379,7 @@ export function useMcpOauthActions({
       request.onRefused(err);
       return;
     }
-    toast({ variant: 'destructive', title: t('plugins.oauth.connectFailed'), description });
+    toast({ variant: 'destructive', title: t('plugins:oauth.connectFailed'), description });
   }
 
   /**
@@ -411,12 +411,12 @@ export function useMcpOauthActions({
    */
   function offerSignIn(request: ConnectRequest) {
     toast({
-      title: t('plugins.oauth.signInNeededTitle'),
-      description: t('plugins.oauth.signInToEnable', { server: request.name }),
+      title: t('plugins:oauth.signInNeededTitle'),
+      description: t('plugins:oauth.signInToEnable', { server: request.name }),
       action: createElement(
         ToastAction,
-        { altText: t('plugins.oauth.signIn'), onClick: () => connect(request) },
-        t('plugins.oauth.signIn'),
+        { altText: t('plugins:oauth.signIn'), onClick: () => connect(request) },
+        t('plugins:oauth.signIn'),
       ),
     });
   }
@@ -520,8 +520,8 @@ export function useMcpOauthActions({
         onHandedOff?.();
         if (pending) {
           toast({
-            title: t('plugins.oauth.continueInBrowserTitle'),
-            description: t('plugins.oauth.continueInBrowserDesc', { server: label }),
+            title: t('plugins:oauth.continueInBrowserTitle'),
+            description: t('plugins:oauth.continueInBrowserDesc', { server: label }),
           });
         }
         return;
@@ -550,7 +550,7 @@ export function useMcpOauthActions({
         // to format -- and the four reasons have four different remedies,
         // which is the whole point of carrying the reason instead of a string.
         err instanceof LoopbackRequiredError
-          ? t(`plugins.oauth.loopback.${err.reason}`)
+          ? t(`plugins:oauth.loopback.${err.reason}`)
           : // A reconnect's 409 is the row having moved off the address this
             // page drew it at, so what the user was asked about and what would
             // have been connected are two different servers. Said in our own
@@ -558,7 +558,7 @@ export function useMcpOauthActions({
             // what to do. A pending start's 409 is its own sentence (a taken
             // name, a cap), which the API's words already say.
             apiErrorStatus(err) === 409 && !pending
-            ? t('plugins.oauth.serverMoved')
+            ? t('plugins:oauth.serverMoved')
             : formatApiErrorDetail(err),
       );
     }
@@ -568,13 +568,13 @@ export function useMcpOauthActions({
     try {
       await disconnectMutation.mutateAsync(name);
       toast({
-        title: t('plugins.oauth.disconnectedTitle'),
-        description: t('plugins.oauth.disconnectedDesc', { server: name }),
+        title: t('plugins:oauth.disconnectedTitle'),
+        description: t('plugins:oauth.disconnectedDesc', { server: name }),
       });
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.oauth.disconnectFailed'),
+        title: t('plugins:oauth.disconnectFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -586,8 +586,8 @@ export function useMcpOauthActions({
       const result = await refreshMutation.mutateAsync(name);
       if (result.status === 'ok' && !result.error) {
         toast({
-          title: t('plugins.oauth.refreshedTitle'),
-          description: t('plugins.oauth.refreshedDesc', {
+          title: t('plugins:oauth.refreshedTitle'),
+          description: t('plugins:oauth.refreshedDesc', {
             server: name,
             count: result.tool_count,
           }),
@@ -600,8 +600,8 @@ export function useMcpOauthActions({
         // stays out of the copy: it can be a raw connection error against a
         // user-chosen address, i.e. an internal-reachability oracle.
         toast({
-          title: t('plugins.oauth.refreshFailedStaleTitle'),
-          description: t('plugins.oauth.refreshFailedStaleDesc', {
+          title: t('plugins:oauth.refreshFailedStaleTitle'),
+          description: t('plugins:oauth.refreshFailedStaleDesc', {
             server: name,
             count: result.tool_count,
           }),
@@ -609,14 +609,14 @@ export function useMcpOauthActions({
       } else {
         toast({
           variant: 'destructive',
-          title: t('plugins.oauth.refreshFailed'),
+          title: t('plugins:oauth.refreshFailed'),
           description: result.error || result.status,
         });
       }
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.oauth.refreshFailed'),
+        title: t('plugins:oauth.refreshFailed'),
         description: formatApiErrorDetail(err),
       });
     } finally {

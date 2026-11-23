@@ -47,9 +47,9 @@ export function BrowserAddressField({
         type="text"
         inputMode="url"
         className="browser-address font-mono"
-        aria-label={t('filePanel.browser.address', 'Address')}
-        title={holding ? pageUrl || undefined : t('filePanel.browser.addressLocked', 'Take control to enter an address')}
-        placeholder={holding ? t('filePanel.browser.addressPlaceholder', 'Enter an address') : ''}
+        aria-label={t('filePanel:browser.address', 'Address')}
+        title={holding ? pageUrl || undefined : t('filePanel:browser.addressLocked', 'Take control to enter an address')}
+        placeholder={holding ? t('filePanel:browser.addressPlaceholder', 'Enter an address') : ''}
         readOnly={!editable}
         // The drawn address shows through while nobody is typing.
         data-drawn={drawn ? '' : undefined}

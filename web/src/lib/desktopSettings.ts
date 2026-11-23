@@ -84,7 +84,7 @@ export function withItem<T extends MenubarItem>(items: readonly T[], item: T, ma
 
 /** The name a Settings chip shows: the portfolio, an index's long name (else its caret spelling), or the ticker. */
 export function itemLabel(item: MenubarItem, t: (key: string) => string): string {
-  if (!('symbol' in item)) return t('settings.desktop.itemPortfolio');
+  if (!('symbol' in item)) return t('settings:desktop.itemPortfolio');
   if (item.kind === 'index') return indexName(item.symbol, 'long', t) ?? `^${item.symbol}`;
   return item.symbol;
 }

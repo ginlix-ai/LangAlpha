@@ -99,11 +99,11 @@ export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirec
       .then((result: { deleted?: string[]; errors?: unknown[] }) => {
         if (result.deleted?.length) onDeleted?.(result.deleted);
         if (result.errors?.length && result.errors.length > 0) {
-          setDeleteError(t('filePanel.deletePartialFail', { count: result.errors.length }));
+          setDeleteError(t('filePanel:deletePartialFail', { count: result.errors.length }));
         }
       })
       .catch((err: unknown) => {
-        setDeleteError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.deleteFailed'));
+        setDeleteError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel:deleteFailed'));
       })
       .finally(() => {
         setDeleteLoading(false);

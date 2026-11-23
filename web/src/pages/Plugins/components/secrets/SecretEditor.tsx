@@ -123,7 +123,7 @@ function DescriptionField({
       rows={1}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={t('vault.descriptionPlaceholder')}
+      placeholder={t('vault:descriptionPlaceholder')}
       className={`${inputClass} block resize-none overflow-y-auto leading-snug`}
       style={{ ...inputStyle, maxHeight: DESCRIPTION_MAX_PX }}
       maxLength={256}
@@ -251,10 +251,10 @@ export function SecretAddForm({
           <Info className="vault-cap-icon" aria-hidden />
           <span>
             {said.kind === 'readd' ? (
-              t('vault.deletedElsewhere')
+              t('vault:deletedElsewhere')
             ) : (
               <Trans
-                i18nKey="vault.notStored"
+                i18nKey="vault:notStored"
                 values={{ name: said.name }}
                 components={{ name: <code className="vault-inline-name" /> }}
               />
@@ -265,7 +265,7 @@ export function SecretAddForm({
       {blueprint && (
         <div className="flex items-center justify-between gap-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
           <span className="min-w-0">
-            {t('vault.settingUp')}{' '}
+            {t('vault:settingUp')}{' '}
             <span style={{ color: 'var(--color-text-primary)' }}>{blueprint.label}</span>
           </span>
           {blueprint.docs_url && (
@@ -276,12 +276,12 @@ export function SecretAddForm({
               className="inline-flex items-center gap-1 shrink-0 hover:underline"
               style={{ color: 'var(--color-text-secondary)' }}
             >
-              {t('vault.docs')} <ExternalLink className="h-3 w-3" />
+              {t('vault:docs')} <ExternalLink className="h-3 w-3" />
             </a>
           )}
         </div>
       )}
-      <Field label={t('vault.fields.name')} htmlFor={nameId}>
+      <Field label={t('vault:fields.name')} htmlFor={nameId}>
         <input
           id={nameId}
           ref={nameRef}
@@ -298,20 +298,20 @@ export function SecretAddForm({
           aria-describedby={nameNoteId}
         />
         <div id={nameNoteId} className="flex flex-col gap-1 empty:hidden">
-          {nameUnusable && <FieldNote tone="error">{t('vault.nameInvalid')}</FieldNote>}
+          {nameUnusable && <FieldNote tone="error">{t('vault:nameInvalid')}</FieldNote>}
           {nameRewritten && !taken && (
             <FieldNote>
-              {t('vault.savedAs')}{' '}
+              {t('vault:savedAs')}{' '}
               <code className="vault-inline-name">{savedName}</code>
             </FieldNote>
           )}
           {taken ? (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <FieldNote tone="error">
-                <code className="vault-inline-name">{taken}</code> {t('vault.nameTaken')}
+                <code className="vault-inline-name">{taken}</code> {t('vault:nameTaken')}
               </FieldNote>
               <HeaderButton variant="secondary" onClick={() => onEditExisting(taken)}>
-                {t('vault.editInstead', { name: taken })}
+                {t('vault:editInstead', { name: taken })}
               </HeaderButton>
             </div>
           ) : (
@@ -319,13 +319,13 @@ export function SecretAddForm({
           )}
         </div>
       </Field>
-      <Field label={t('vault.fields.value')} htmlFor={valueId}>
+      <Field label={t('vault:fields.value')} htmlFor={valueId}>
         <SecretValueInput
           id={valueId}
           ref={valueRef}
           value={draft.value}
           visible={draft.valueVisible}
-          placeholder={t('vault.valuePlaceholder')}
+          placeholder={t('vault:valuePlaceholder')}
           className={`${inputClass} pr-9`}
           style={inputStyle}
           maxLength={MAX_SECRET_VALUE_LENGTH}
@@ -338,13 +338,13 @@ export function SecretAddForm({
           blueprint &&
           valueHintFailing && (
             <FieldNote>
-              {t('vault.valueHintInvalid', { label: blueprint.label })}{' '}
-              {blueprint.docs_url ? t('vault.valueHintDocs') : t('vault.valueHintStillSave')}
+              {t('vault:valueHintInvalid', { label: blueprint.label })}{' '}
+              {blueprint.docs_url ? t('vault:valueHintDocs') : t('vault:valueHintStillSave')}
             </FieldNote>
           )
         )}
       </Field>
-      <Field label={t('vault.fields.description')} htmlFor={descriptionId}>
+      <Field label={t('vault:fields.description')} htmlFor={descriptionId}>
         <DescriptionField
           id={descriptionId}
           value={draft.description}
@@ -404,22 +404,22 @@ export function SecretEditForm({
   // whether the run already in progress will see it. It will not until the
   // next message, which is when every workspace re-reads its keys.
   const reach = readersSentence(readers ?? [], {
-    none: 'vault.reach.workspaces',
-    one: 'vault.reach.oneConnector',
-    many: 'vault.reach.connectors',
+    none: 'vault:reach.workspaces',
+    one: 'vault:reach.oneConnector',
+    many: 'vault:reach.connectors',
   });
   return (
     <FormShell accented landing={landing} onEscape={saving ? undefined : onCancel}>
       <div className="text-sm font-mono font-medium break-all" style={{ color: 'var(--color-text-primary)' }}>
         {name}
       </div>
-      <Field label={t('vault.fields.newValue')} htmlFor={valueId}>
+      <Field label={t('vault:fields.newValue')} htmlFor={valueId}>
         <SecretValueInput
           id={valueId}
           ref={focusRef}
           value={draft.value}
           visible={draft.valueVisible}
-          placeholder={t('vault.editValuePlaceholder')}
+          placeholder={t('vault:editValuePlaceholder')}
           className={`${inputClass} pr-9`}
           style={inputStyle}
           maxLength={MAX_SECRET_VALUE_LENGTH}
@@ -428,7 +428,7 @@ export function SecretEditForm({
         />
         {error?.field === 'value' ? <FieldError error={error} /> : <FieldNote>{t(reach.key, reach.values)}</FieldNote>}
       </Field>
-      <Field label={t('vault.fields.description')} htmlFor={descriptionId}>
+      <Field label={t('vault:fields.description')} htmlFor={descriptionId}>
         <DescriptionField
           id={descriptionId}
           value={draft.description}

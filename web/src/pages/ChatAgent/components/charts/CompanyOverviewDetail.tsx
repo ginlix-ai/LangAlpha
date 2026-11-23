@@ -75,7 +75,7 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
       {/* The card this panel opened from, a size up. */}
       {quote && (
         <TermCard
-          title={t('toolArtifact.quote')}
+          title={t('toolArtifact:quote')}
           meta={status ? <TermTag>{marketStatusLabel(t, status)}</TermTag> : undefined}
         >
           <OverviewQuote overview={data} />
@@ -83,21 +83,21 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
       )}
 
       {(hasFloat || hasSI || hasSV) && (
-        <TermCard title={t('toolArtifact.shareStructure', 'Share Structure')}>
+        <TermCard title={t('toolArtifact:shareStructure', 'Share Structure')}>
           <TermKV
             cols={2}
             pairs={[
-              hasFloat && [t('toolArtifact.float', 'Float'), compactNumberFixed2(floatObj!.free_float!, locale)],
+              hasFloat && [t('toolArtifact:float', 'Float'), compactNumberFixed2(floatObj!.free_float!, locale)],
               hasFloat && floatObj!.free_float_percent != null &&
-                [t('toolArtifact.floatPct', 'Float %'), `${floatObj!.free_float_percent.toFixed(1)}%`],
+                [t('toolArtifact:floatPct', 'Float %'), `${floatObj!.free_float_percent.toFixed(1)}%`],
               hasSI && [
-                `${t('toolArtifact.shortInterest', 'Short Interest')}${latestSI!.settlement_date ? ` (${latestSI!.settlement_date})` : ''}`,
+                `${t('toolArtifact:shortInterest', 'Short Interest')}${latestSI!.settlement_date ? ` (${latestSI!.settlement_date})` : ''}`,
                 grouped(latestSI!.short_interest!, locale),
               ],
-              siPctOfFloat != null && [t('toolArtifact.shortPctFloat', 'SI % of Float'), `${siPctOfFloat.toFixed(2)}%`],
-              latestSI?.days_to_cover != null && [t('toolArtifact.daysToCover', 'Days to Cover'), latestSI.days_to_cover.toFixed(2)],
+              siPctOfFloat != null && [t('toolArtifact:shortPctFloat', 'SI % of Float'), `${siPctOfFloat.toFixed(2)}%`],
+              latestSI?.days_to_cover != null && [t('toolArtifact:daysToCover', 'Days to Cover'), latestSI.days_to_cover.toFixed(2)],
               hasSV && [
-                `${t('toolArtifact.shortVolRatio', 'Short Vol Ratio')}${shortVolumeObj!.date ? ` (${shortVolumeObj!.date})` : ''}`,
+                `${t('toolArtifact:shortVolRatio', 'Short Vol Ratio')}${shortVolumeObj!.date ? ` (${shortVolumeObj!.date})` : ''}`,
                 `${shortVolumeObj!.short_volume_ratio!.toFixed(1)}%`,
               ],
             ]}
@@ -107,7 +107,7 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
 
       {/* A period's move drawn as the cards draw a sector's. */}
       {performanceRows.length > 0 && (
-        <TermCard title={t('toolArtifact.pricePerformance')}>
+        <TermCard title={t('toolArtifact:pricePerformance')}>
           <TermBars rows={performanceRows} />
         </TermCard>
       )}
@@ -162,18 +162,18 @@ function RatingsBars({ ratings }: { ratings: Record<string, unknown> }): React.R
   const consensus = ratings.consensus as string | undefined;
   return (
     <TermCard
-      title={t('toolArtifact.analystRatings')}
+      title={t('toolArtifact:analystRatings')}
       meta={
         <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '1.25ch' }}>
           {consensus && <TermTag>{consensus}</TermTag>}
-          <span>{t('toolArtifact.nRatings', { count: total })}</span>
+          <span>{t('toolArtifact:nRatings', { count: total })}</span>
         </span>
       }
     >
       <div className="term-hbars">
         {rows.map((r) => (
           <React.Fragment key={r.key}>
-            <span className="term-hbars-label">{t(`toolArtifact.ratings.${r.key}`)}</span>
+            <span className="term-hbars-label">{t(`toolArtifact:ratings.${r.key}`)}</span>
             <span className="term-hbars-track">
               <span
                 className="term-hbar"

@@ -74,8 +74,8 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
       {selections.map((s) => {
         const Icon = s.selectionType === 'region' ? SquareDashedMousePointer : Ruler;
         const title = s.selectionType === 'region'
-          ? t('marketView.selection.cardRegionTitle')
-          : t('marketView.selection.cardPriceTitle');
+          ? t('marketView:selection.cardRegionTitle')
+          : t('marketView:selection.cardPriceTitle');
         // en-US on purpose: the bounds mirror the context text the agent receives.
         const bounds = selectionPriceBounds(s, 'en-US');
         // Prefer the user's note as the snippet; fall back to the bounds.
@@ -85,7 +85,7 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
             key={`${s.selectionType}-${s.symbol}-${s.timeframe}-${s.priceLow}-${s.priceHigh}-${s.timeStart ?? ''}`}
             type="button"
             onClick={() => setPreviewed(s)}
-            title={t('marketView.selection.cardOpenPreview')}
+            title={t('marketView:selection.cardOpenPreview')}
             className="flex items-center gap-2.5 text-left transition-colors hover:brightness-105"
             style={{
               width: 280,

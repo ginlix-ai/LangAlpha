@@ -250,10 +250,10 @@ export function ShareDialog({
           className="truncate pr-[12px] text-[8px] font-semibold leading-none"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {tr('publish.title', { file: 'capex-tracker.html' })}
+          {tr('publish:title', { file: 'capex-tracker.html' })}
         </span>
         <span className={cn(xs, 'leading-[1.35]')} style={{ color: 'var(--color-text-secondary)' }}>
-          {tr('publish.description')}
+          {tr('publish:description')}
         </span>
         <div className="flex flex-col gap-[8px] pt-[1px]">
           {/* the link, and its copy button */}
@@ -265,7 +265,7 @@ export function ShareDialog({
               ) : (
                 <Copy className="h-[7px] w-[7px]" />
               )}
-              {done ? tr('publish.copied') : tr('publish.copy')}
+              {done ? tr('publish:copied') : tr('publish:copy')}
             </OutlineButton>
           </div>
           {/* where it stands, and keep updated */}
@@ -291,14 +291,14 @@ export function ShareDialog({
                     className={cn(sm, 'font-medium')}
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {shared ? tr('publish.publishedAt', { seq: 1 }) : tr('publish.private')}
+                    {shared ? tr('publish:publishedAt', { seq: 1 }) : tr('publish:private')}
                   </span>
                   <span className={xs} style={{ color: 'var(--color-text-tertiary)' }}>
-                    {shared ? tr('publish.sharedHint') : tr('publish.privateHint')}
+                    {shared ? tr('publish:sharedHint') : tr('publish:privateHint')}
                   </span>
                 </span>
               </span>
-              {shared && <OutlineButton>{tr('publish.unshare')}</OutlineButton>}
+              {shared && <OutlineButton>{tr('publish:unshare')}</OutlineButton>}
             </div>
             <div
               className="flex items-center justify-between gap-[6px] px-[6px] py-[5px]"
@@ -306,10 +306,10 @@ export function ShareDialog({
             >
               <span className="flex min-w-0 flex-col gap-[2.5px]">
                 <span className={sm} style={{ color: 'var(--color-text-primary)' }}>
-                  {tr('publish.keepUpdated')}
+                  {tr('publish:keepUpdated')}
                 </span>
                 <span className={xs} style={{ color: 'var(--color-text-tertiary)' }}>
-                  {tr('publish.keepUpdatedHint')}
+                  {tr('publish:keepUpdatedHint')}
                 </span>
               </span>
               <Switch on={false} offFill="var(--color-bg-elevated)" />
@@ -322,8 +322,8 @@ export function ShareDialog({
               style={{ color: 'var(--color-text-secondary)' }}
             >
               {ready
-                ? tr('publish.filesPublish', { count: COVERED.length })
-                : tr('publish.listing')}
+                ? tr('publish:filesPublish', { count: COVERED.length })
+                : tr('publish:listing')}
             </span>
             <div
               className="flex flex-col divide-y overflow-hidden rounded-[4px] border"
@@ -370,7 +370,7 @@ export function ShareDialog({
               className={cn(xs, 'font-medium')}
               style={{ color: 'var(--color-text-secondary)' }}
             >
-              {tr('publish.label')}
+              {tr('publish:label')}
             </span>
             <span
               className={cn('flex h-[16px] items-center rounded-[3px] border px-[6px]', xs)}
@@ -380,7 +380,7 @@ export function ShareDialog({
                 color: 'var(--color-text-tertiary)',
               }}
             >
-              {tr('publish.labelPlaceholder')}
+              {tr('publish:labelPlaceholder')}
             </span>
           </div>
           {/* the footer: the visitor's view once published, then close and publish */}
@@ -391,7 +391,7 @@ export function ShareDialog({
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 <ExternalLink className="h-[7px] w-[7px]" />
-                {tr('publish.viewAsVisitor')}
+                {tr('publish:viewAsVisitor')}
               </span>
             ) : (
               <span />
@@ -408,7 +408,7 @@ export function ShareDialog({
                   color: 'var(--color-text-on-accent)',
                 }}
               >
-                {tr('publish.publish')}
+                {tr('publish:publish')}
               </span>
             </span>
           </div>
@@ -444,7 +444,7 @@ export function SharedFileBar({ name }: { name: string }) {
       </span>
       <OutlineButton style={{ height: 16, paddingInline: 5 }}>
         <FileDown className="h-[7px] w-[7px]" />
-        {tr('filePanel.saveAsPdf')}
+        {tr('filePanel:saveAsPdf')}
       </OutlineButton>
     </div>
   );

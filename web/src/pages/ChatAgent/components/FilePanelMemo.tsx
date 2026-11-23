@@ -260,10 +260,10 @@ export function MemoStaleBanner({
   const { t } = useTranslation();
   const tone = status === 'stale' ? 'stale' : status === 'fresh' ? 'fresh' : 'neutral';
   const message =
-    status === 'fresh' ? t('filePanel.memoBanner.fresh')
-    : status === 'stale' ? t('filePanel.memoBanner.stale')
-    : status === 'checking' ? t('filePanel.memoBanner.checking')
-    : t('filePanel.memoBanner.unknown');
+    status === 'fresh' ? t('filePanel:memoBanner.fresh')
+    : status === 'stale' ? t('filePanel:memoBanner.stale')
+    : status === 'checking' ? t('filePanel:memoBanner.checking')
+    : t('filePanel:memoBanner.unknown');
   return (
     <div className={`file-panel-memo-banner file-panel-memo-banner-${tone}`}>
       <ScrollText className="h-4 w-4 shrink-0" />
@@ -276,7 +276,7 @@ export function MemoStaleBanner({
             onClick={onViewDiff}
             disabled={syncing}
           >
-            {t('filePanel.memoBanner.viewDiff')}
+            {t('filePanel:memoBanner.viewDiff')}
           </button>
         )}
         {status === 'stale' && onSync && (
@@ -291,7 +291,7 @@ export function MemoStaleBanner({
                 <Loader size={12} className="text-current" />
               </span>
             )}
-            {syncing ? t('filePanel.memoBanner.syncing') : t('filePanel.memoBanner.sync')}
+            {syncing ? t('filePanel:memoBanner.syncing') : t('filePanel:memoBanner.sync')}
           </button>
         )}
         {onSwitchToMemoTab && (
@@ -398,10 +398,10 @@ export function MemoDiffModal({
           style={{ borderColor: 'var(--color-border-muted)' }}
         >
           <DialogTitle className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-            {t('filePanel.memoBanner.diffTitle', { name: fileName })}
+            {t('filePanel:memoBanner.diffTitle', { name: fileName })}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            {t('filePanel.memoBanner.diffSubtitle')}
+            {t('filePanel:memoBanner.diffSubtitle')}
           </DialogDescription>
         </div>
         <div
@@ -418,10 +418,10 @@ export function MemoDiffModal({
           >
             <ScrollText className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
             <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
-              {t('filePanel.memoBanner.diffLeftLabel')}
+              {t('filePanel:memoBanner.diffLeftLabel')}
             </span>
             <span className="text-xs truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('filePanel.memoBanner.diffLeftHint')}
+              {t('filePanel:memoBanner.diffLeftHint')}
             </span>
           </div>
           <div
@@ -430,10 +430,10 @@ export function MemoDiffModal({
           >
             <HardDrive className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
             <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
-              {t('filePanel.memoBanner.diffRightLabel')}
+              {t('filePanel:memoBanner.diffRightLabel')}
             </span>
             <span className="text-xs truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('filePanel.memoBanner.diffRightHint')}
+              {t('filePanel:memoBanner.diffRightHint')}
             </span>
           </div>
         </div>

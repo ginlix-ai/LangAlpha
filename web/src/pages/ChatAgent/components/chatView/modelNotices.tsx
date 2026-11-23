@@ -95,7 +95,7 @@ export function SubagentsOfferNotice({ allowed }: { allowed: boolean }): React.R
   // puts it back, and the offer with it.
   const accept = () => {
     updatePreferences.mutateAsync(subagentsDefaultPatch(allowed)).catch(() => {
-      toast({ variant: 'destructive', title: t('common.error'), description: t('settings.failedToSaveSettings') });
+      toast({ variant: 'destructive', title: t('common.error'), description: t('settings:failedToSaveSettings') });
     });
   };
   return (

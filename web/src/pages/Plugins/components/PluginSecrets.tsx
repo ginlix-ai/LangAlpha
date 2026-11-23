@@ -50,7 +50,7 @@ export function PluginSecrets() {
     );
 
   return (
-    <AccountsLayout lead={t('plugins.secrets.scopeHint')} aside={<VaultUsageNote />}>
+    <AccountsLayout lead={t('plugins:secrets.scopeHint')} aside={<VaultUsageNote />}>
       {/* Nothing in the list is true without it: read as empty, a failed list
           said "0 / 0" and no keys stored to a user who has some, and a link
           opened the add form for a stored key, spent before a Retry could
@@ -69,7 +69,7 @@ export function PluginSecrets() {
           onReveal={revealUserVaultSecret}
         />
       ) : loadError ? (
-        <LoadFailed what={t('plugins.loadFailed.secrets')} error={loadError} onRetry={() => void refetch()} />
+        <LoadFailed what={t('plugins:loadFailed.secrets')} error={loadError} onRetry={() => void refetch()} />
       ) : (
         <ListSkeleton rows={2} />
       )}

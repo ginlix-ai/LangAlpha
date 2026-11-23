@@ -3,7 +3,7 @@ import { usePlugins } from '@/hooks/usePlugins';
 import { useSkills } from '@/hooks/useSkills';
 import { useSubagents } from '@/hooks/useSubagents';
 import { useUserVaultSecrets } from '@/hooks/useUserVault';
-import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/oauthState';
 import type { CatalogServer, PluginInfo, SubagentsResponse } from '@/pages/ChatAgent/utils/api';
 import { connectorState, failureBucket, type PluginProblem } from '../../utils/connectorState';
 import { hasLifecycle } from '../../utils/pluginSurface';

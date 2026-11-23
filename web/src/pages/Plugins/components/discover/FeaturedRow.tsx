@@ -63,20 +63,20 @@ export function FeaturedRow({
               <span className="surface-cell-name">{featured.name}</span>
             </button>
             {featured.publisher?.official && <OfficialMark size={14} />}
-            <span className="discover-feature-kick">{t('plugins.discoverPage.featured')}</span>
+            <span className="discover-feature-kick">{t('plugins:discoverPage.featured')}</span>
           </div>
           {featured.description && <div className="discover-feature-desc">{featured.description}</div>}
           <div className="discover-meta">
             {featured.publisher && (
               <span className="discover-by">
-                {t('plugins.discoverPage.by', { publisher: featured.publisher.name })}
+                {t('plugins:discoverPage.by', { publisher: featured.publisher.name })}
               </span>
             )}
             {requires && !requires.nothing && (
               <>
                 {featured.publisher && <span className="discover-sep" aria-hidden>·</span>}
                 <span className="discover-by">
-                  {t('plugins.discoverPage.requires', { what: requires.text })}
+                  {t('plugins:discoverPage.requires', { what: requires.text })}
                 </span>
               </>
             )}
@@ -89,7 +89,7 @@ export function FeaturedRow({
       {mine.length > 0 && (
         <aside className="discover-mine">
           <div className="discover-mine-label">
-            {t('plugins.discoverPage.installedFromCatalog')}
+            {t('plugins:discoverPage.installedFromCatalog')}
             <span className="surface-count">{mine.length}</span>
           </div>
           <div className="discover-mine-stack">
@@ -100,9 +100,9 @@ export function FeaturedRow({
             ))}
           </div>
           <div className="discover-mine-names">
-            {named.join(t('plugins.discover.listSeparator'))}
+            {named.join(t('plugins:discover.listSeparator'))}
             {rest > 0 && (
-              <span className="is-faint"> {t('plugins.discoverPage.andMore', { count: rest })}</span>
+              <span className="is-faint"> {t('plugins:discoverPage.andMore', { count: rest })}</span>
             )}
           </div>
           {needing.length > 0 && (
@@ -114,11 +114,11 @@ export function FeaturedRow({
             >
               <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
               {needing.length === 1
-                ? t('plugins.discoverPage.mineAttentionOne', { name: needing[0].name })
-                : t('plugins.discoverPage.mineAttention', { count: needing.length })}
+                ? t('plugins:discoverPage.mineAttentionOne', { name: needing[0].name })
+                : t('plugins:discoverPage.mineAttention', { count: needing.length })}
             </button>
           )}
-          <SectionLink onClick={onManage}>{t('plugins.discoverPage.manageInYours')}</SectionLink>
+          <SectionLink onClick={onManage}>{t('plugins:discoverPage.manageInYours')}</SectionLink>
         </aside>
       )}
     </div>

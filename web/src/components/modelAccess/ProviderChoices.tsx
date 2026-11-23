@@ -1,6 +1,6 @@
 import { ChevronRight } from 'lucide-react';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { cn } from '@/lib/utils';
 import { StatusLabel, type RowStatus } from './parts';
 

@@ -20,10 +20,10 @@ interface DeliveryStatusUi {
  * it. Failure is the danger token, not `--color-loss`, which is market P&L.
  */
 const DELIVERY_STATUS_UI: Record<DeliveryStatus, DeliveryStatusUi> = {
-  sent: { labelKey: 'toolArtifact.messageDelivery.status.sent', tone: 'success' },
-  partial: { labelKey: 'toolArtifact.messageDelivery.status.partial', tone: 'warning' },
-  failed: { labelKey: 'toolArtifact.messageDelivery.status.failed', tone: 'danger' },
-  unknown: { labelKey: 'toolArtifact.messageDelivery.status.unknown', tone: 'warning' },
+  sent: { labelKey: 'toolArtifact:messageDelivery.status.sent', tone: 'success' },
+  partial: { labelKey: 'toolArtifact:messageDelivery.status.partial', tone: 'warning' },
+  failed: { labelKey: 'toolArtifact:messageDelivery.status.failed', tone: 'danger' },
+  unknown: { labelKey: 'toolArtifact:messageDelivery.status.unknown', tone: 'warning' },
 };
 
 /** The verdict as a word in brackets in its colour, `[PARTLY SENT]`, for the
@@ -41,10 +41,10 @@ export function DeliveryStatusWord({ status }: { status: DeliveryStatus }): Reac
 /** A file that did not go is flagged; one that went as a link says so, since
  *  the recipient gets a download rather than the file. */
 const FILE_STATUS_KEY: Record<Exclude<DeliveryFileStatus, null>, string> = {
-  sent: 'toolArtifact.messageDelivery.file.sent',
-  linked: 'toolArtifact.messageDelivery.file.linked',
-  failed: 'toolArtifact.messageDelivery.file.failed',
-  not_sent: 'toolArtifact.messageDelivery.file.notSent',
+  sent: 'toolArtifact:messageDelivery.file.sent',
+  linked: 'toolArtifact:messageDelivery.file.linked',
+  failed: 'toolArtifact:messageDelivery.file.failed',
+  not_sent: 'toolArtifact:messageDelivery.file.notSent',
 };
 
 /** One file's outcome as a bracket word, `[FAILED]`, quieter than the send's

@@ -20,10 +20,11 @@ import type { ViewerCommentsTarget } from '../viewers/comments/ViewerComments';
 import { MarkdownFile } from '../viewers/comments/markdown/MarkdownFile';
 import { CodeFile } from '../viewers/comments/code/CodeFile';
 import { ImageFile } from '../viewers/comments/region/ImageFile';
+import { withCopy } from '@/i18n';
 
 const PdfViewer = React.lazy(() => import('../viewers/PdfViewer'));
 const CsvViewer = React.lazy(() => import('../viewers/CsvViewer'));
-const HtmlViewer = React.lazy(() => import('../viewers/HtmlViewer'));
+const HtmlViewer = React.lazy(withCopy(() => import('../viewers/HtmlViewer'), ['marketView']));
 const CodeEditor = React.lazy(() => import('../viewers/CodeEditor'));
 
 const ExcelViewer = React.lazy(() => import('../viewers/ExcelViewer'));
@@ -244,7 +245,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
       ) : viewer === 'code' && body?.content != null ? (
         <CodeFile content={body.content} language={EXT_TO_LANG[ext] || 'text'} lineRange={lineRange} comments={comments} />
       ) : (
-        <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.emptyFile')}</p>
+        <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:emptyFile')}</p>
       )}
     </div>
   );

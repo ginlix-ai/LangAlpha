@@ -57,9 +57,9 @@ export function OverviewQuote({ overview }: { overview: CompanyOverviewArtifact 
   const money = (n: number): string => formatMoney(n, q.currency, locale, { upTo: q.places });
   const ranges = [
     quote.dayLow != null && quote.dayHigh != null &&
-      ({ label: t('toolArtifact.termRange.day'), low: quote.dayLow, high: quote.dayHigh }),
+      ({ label: t('toolArtifact:termRange.day'), low: quote.dayLow, high: quote.dayHigh }),
     quote.yearLow != null && quote.yearHigh != null &&
-      ({ label: t('toolArtifact.termRange.week52'), low: quote.yearLow, high: quote.yearHigh }),
+      ({ label: t('toolArtifact:termRange.week52'), low: quote.yearLow, high: quote.yearHigh }),
   ].filter((r) => !!r);
 
   return (
@@ -88,9 +88,9 @@ export function OverviewQuote({ overview }: { overview: CompanyOverviewArtifact 
         extAt="end"
         stats={[
           quote.marketCap != null &&
-            ([t('toolArtifact.marketCap'), formatMoney(quote.marketCap, q.currency, locale, { compact: true })] as const),
-          quote.pe != null && ([t('toolArtifact.peRatio'), fixed2(quote.pe, locale)] as const),
-          quote.eps != null && ([t('toolArtifact.eps'), formatMoney(quote.eps, q.currency, locale)] as const),
+            ([t('toolArtifact:marketCap'), formatMoney(quote.marketCap, q.currency, locale, { compact: true })] as const),
+          quote.pe != null && ([t('toolArtifact:peRatio'), fixed2(quote.pe, locale)] as const),
+          quote.eps != null && ([t('toolArtifact:eps'), formatMoney(quote.eps, q.currency, locale)] as const),
         ]}
       />
       {ranges.length > 0 && (

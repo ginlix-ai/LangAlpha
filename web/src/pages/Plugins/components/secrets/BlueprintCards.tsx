@@ -31,9 +31,9 @@ export function BlueprintCards({ blueprints, atCap, onSelect }: BlueprintCardsPr
     // The reason the cells are held is said in the header, in words, rather
     // than in a hover tooltip on each button that a touch screen never shows.
     <SurfaceSection
-      title={t('vault.recommended')}
+      title={t('vault:recommended')}
       count={blueprints.length}
-      note={atCap ? t('vault.atCapSetUp') : undefined}
+      note={atCap ? t('vault:atCapSetUp') : undefined}
     >
       <SurfaceGrid>
         {blueprints.map((bp) => (
@@ -61,7 +61,7 @@ export function BlueprintCards({ blueprints, atCap, onSelect }: BlueprintCardsPr
                 disabled={atCap}
                 onClick={() => onSelect(bp)}
               >
-                {t('vault.setUp')}
+                {t('vault:setUp')}
               </CellAction>
             }
           />

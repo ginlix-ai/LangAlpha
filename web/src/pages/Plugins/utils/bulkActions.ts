@@ -76,13 +76,13 @@ export function buildBulkActions<T, R = unknown>(
   const actions: BulkAction[] = [
     {
       id: 'enable',
-      label: t('plugins.bulk.enable', { count: enableTargets.length }),
+      label: t('plugins:bulk.enable', { count: enableTargets.length }),
       disabled: enableTargets.length === 0,
       run: () => surface.run(enableTargets, { verb: 'enable', noun: spec.noun, signIn: spec.signIn }),
     },
     {
       id: 'disable',
-      label: t('plugins.bulk.disable', { count: disableTargets.length }),
+      label: t('plugins:bulk.disable', { count: disableTargets.length }),
       disabled: disableTargets.length === 0,
       run: () => surface.run(disableTargets, { verb: 'disable', noun: spec.noun }),
     },
@@ -106,7 +106,7 @@ export function buildBulkActions<T, R = unknown>(
   const kept = selected.length - removable.length;
   const notes = [
     kept > 0 ? t(spec.keptKey, { count: kept }) : null,
-    held.length > 0 ? t('plugins.bulk.heldByPlugin', { count: held.length }) : null,
+    held.length > 0 ? t('plugins:bulk.heldByPlugin', { count: held.length }) : null,
   ].filter(Boolean);
   return {
     actions,

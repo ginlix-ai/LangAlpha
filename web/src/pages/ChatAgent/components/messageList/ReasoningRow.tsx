@@ -25,8 +25,8 @@ function useThinkingClock(startedAt: number | undefined, active: boolean, t: (k:
   if (!active) return null;
   // `now` is state, so for up to one tick after mount it can predate `startedAt`.
   const raw = startedAt
-    ? t('toolArtifact.thinkingFor', { duration: formatThoughtFor(Math.max(0, now - startedAt), t) })
-    : t('toolArtifact.reasoningPending');
+    ? t('toolArtifact:thinkingFor', { duration: formatThoughtFor(Math.max(0, now - startedAt), t) })
+    : t('toolArtifact:reasoningPending');
   return capitalizeFirst(raw);
 }
 
@@ -107,9 +107,9 @@ export const ReasoningRow = memo(function ReasoningRow({ item, defaultExpanded =
   const clock = useThinkingClock(item.reasoningStartedAt, isStreaming && !effectiveTitle, t);
   const elapsed = item.reasoningElapsedMs;
   const durationTitle = !effectiveTitle && !isStreaming && typeof elapsed === 'number'
-    ? capitalizeFirst(t('toolArtifact.thoughtFor', { duration: formatThoughtFor(elapsed, t) }))
+    ? capitalizeFirst(t('toolArtifact:thoughtFor', { duration: formatThoughtFor(elapsed, t) }))
     : '';
-  const title = effectiveTitle || clock || durationTitle || t('toolArtifact.reasoning');
+  const title = effectiveTitle || clock || durationTitle || t('toolArtifact:reasoning');
   const titleKey = clock ? 'thinking' : title;
   // The label crossfades in place, keyed on its text, so a new phase reads as
   // arriving rather than the old words silently changing. The shimmer is an

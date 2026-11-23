@@ -55,8 +55,8 @@ export function LeaveForSignIn({
   const site = siteOf(request);
   const desktop = isDesktopShell();
   const approve = site
-    ? t(desktop ? 'plugins.signin.leave.approveOnDesktop' : 'plugins.signin.leave.approveOn', { site })
-    : t(desktop ? 'plugins.signin.leave.approveDesktop' : 'plugins.signin.leave.approve');
+    ? t(desktop ? 'plugins:signin.leave.approveOnDesktop' : 'plugins:signin.leave.approveOn', { site })
+    : t(desktop ? 'plugins:signin.leave.approveDesktop' : 'plugins:signin.leave.approve');
   // What waits on the sign-in, which is what the user is told nothing happens to.
   const what = pendingIntent(request.pending?.kind);
 
@@ -85,10 +85,10 @@ export function LeaveForSignIn({
         }}
       >
         {pending
-          ? t('plugins.signin.leave.opening')
+          ? t('plugins:signin.leave.opening')
           : site
-            ? t('plugins.signin.leave.continueTo', { site })
-            : t('plugins.signin.leave.continue')}
+            ? t('plugins:signin.leave.continueTo', { site })
+            : t('plugins:signin.leave.continue')}
       </button>
     </div>
   );
@@ -96,7 +96,7 @@ export function LeaveForSignIn({
   return (
     <ModalShell
       labelId={titleId}
-      title={t('plugins.signin.leave.title', { label })}
+      title={t('plugins:signin.leave.title', { label })}
       onClose={onCancel}
       dismissable={!pending}
       width="narrow"
@@ -108,10 +108,10 @@ export function LeaveForSignIn({
       <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
         {/* Joined by the catalog rather than here: English puts a space
             between sentences and Chinese does not. */}
-        {t('plugins.signin.leave.body', {
-          needs: t('plugins.signin.leave.needs', { label }),
+        {t('plugins:signin.leave.body', {
+          needs: t('plugins:signin.leave.needs', { label }),
           approve,
-          until: t(`plugins.signin.leave.until.${what}`),
+          until: t(`plugins:signin.leave.until.${what}`),
         })}
       </p>
     </ModalShell>

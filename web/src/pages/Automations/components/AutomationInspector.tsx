@@ -134,16 +134,16 @@ export default function AutomationInspector({
           disabled={busy || runBusy || !canRun}
           onClick={() => trigger.mutate(a.automation_id)}
         >
-          {t('automation.runNow')}
+          {t('automation:runNow')}
         </HeaderButton>
         {canPause && (
           <HeaderButton variant="secondary" icon={Pause} disabled={busy} onClick={() => pause.mutate(a.automation_id)}>
-            {t('automation.pause')}
+            {t('automation:pause')}
           </HeaderButton>
         )}
         {canResume && (
           <HeaderButton variant="secondary" icon={Play} disabled={busy} onClick={() => resume.mutate(a.automation_id)}>
-            {t('automation.resume')}
+            {t('automation:resume')}
           </HeaderButton>
         )}
         {/* Only while the newest run, the one dismissed, is the one shown:
@@ -154,14 +154,14 @@ export default function AutomationInspector({
             variant="secondary"
             icon={EyeOff}
             disabled={busy}
-            title={t('automation.dismissHint')}
+            title={t('automation:dismissHint')}
             onClick={() => dismiss.mutate({ automationId: a.automation_id, executionId: last.automation_execution_id })}
           >
-            {t('automation.dismiss')}
+            {t('automation:dismiss')}
           </HeaderButton>
         )}
         <HeaderButton variant="secondary" icon={Pencil} onClick={() => onEdit(a)}>
-          {t('automation.edit')}
+          {t('automation:edit')}
         </HeaderButton>
         <HeaderButton variant="ghost" icon={Trash2} className="ml-auto hover:text-(color:--color-icon-danger)" onClick={() => onDelete(a)}>
           {t('common.delete')}
@@ -169,8 +169,8 @@ export default function AutomationInspector({
       </div>
 
       <section ref={reportRef} className="automation-inspector-section">
-        <h3 className="automations-kicker">{t(isLatest ? 'automation.latestRun' : 'automation.selectedRun')}</h3>
-        {runMissing && <p className="automations-quiet-note automation-run-missing">{t('automation.runNotFound')}</p>}
+        <h3 className="automations-kicker">{t(isLatest ? 'automation:latestRun' : 'automation:selectedRun')}</h3>
+        {runMissing && <p className="automations-quiet-note automation-run-missing">{t('automation:runNotFound')}</p>}
         {placing ? (
           <ListSkeleton rows={2} />
         ) : shownRun ? (
@@ -184,21 +184,21 @@ export default function AutomationInspector({
             onSkip={() => skip.mutate({ automationId: a.automation_id, executionId: shownRun.automation_execution_id })}
           />
         ) : (
-          <p className="automations-quiet-note">{t('automation.noRunsForThis')}</p>
+          <p className="automations-quiet-note">{t('automation:noRunsForThis')}</p>
         )}
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker">{t('automation.instruction')}</h3>
+        <h3 className="automations-kicker">{t('automation:instruction')}</h3>
         <Instruction text={a.instruction} />
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker">{t('automation.runHistory')}</h3>
+        <h3 className="automations-kicker">{t('automation:runHistory')}</h3>
         {loading ? (
           <ListSkeleton rows={2} />
         ) : executions.length === 0 ? (
-          <p className="automations-quiet-note">{t('automation.noRunsForThis')}</p>
+          <p className="automations-quiet-note">{t('automation:noRunsForThis')}</p>
         ) : (
           <RunHistory
             executions={executions}
@@ -211,27 +211,27 @@ export default function AutomationInspector({
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker">{t('automation.details')}</h3>
+        <h3 className="automations-kicker">{t('automation:details')}</h3>
         <dl className="automation-details">
-          <dt>{t('automation.detailModel')}</dt>
-          <dd>{a.llm_model ? modelName(a.llm_model) : t('automation.defaultModel')}</dd>
-          <dt>{t('automation.threadStrategy')}</dt>
-          <dd>{t(a.thread_strategy === 'continue' ? 'automation.continueExisting' : 'automation.newThreadEachRun')}</dd>
+          <dt>{t('automation:detailModel')}</dt>
+          <dd>{a.llm_model ? modelName(a.llm_model) : t('automation:defaultModel')}</dd>
+          <dt>{t('automation:threadStrategy')}</dt>
+          <dd>{t(a.thread_strategy === 'continue' ? 'automation:continueExisting' : 'automation:newThreadEachRun')}</dd>
           {workspaceName && (
             <>
-              <dt>{t('automation.detailWorkspace')}</dt>
+              <dt>{t('automation:detailWorkspace')}</dt>
               <dd>{workspaceName}</dd>
             </>
           )}
           {deliveryMethods.length > 0 && (
             <>
-              <dt>{t('automation.delivery')}</dt>
+              <dt>{t('automation:delivery')}</dt>
               <dd>{deliveryMethods.map((m) => deliveryEntryName(m, t, delivery.options, names)).join(', ')}</dd>
             </>
           )}
-          <dt>{t('automation.detailFailures')}</dt>
-          <dd>{t('automation.failuresOf', { count: a.failure_count, max: a.max_failures })}</dd>
-          <dt>{t('automation.detailCreated')}</dt>
+          <dt>{t('automation:detailFailures')}</dt>
+          <dd>{t('automation:failuresOf', { count: a.failure_count, max: a.max_failures })}</dd>
+          <dt>{t('automation:detailCreated')}</dt>
           <dd>{formatDateTimeShort(a.created_at, locale)}</dd>
         </dl>
       </section>
@@ -249,7 +249,7 @@ function Instruction({ text }: { text: string }) {
       <div className={cn('automation-instruction', folded && 'is-folded')}>{text}</div>
       {long && (
         <button type="button" className="automation-link mt-2" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-          {t(open ? 'automation.showLess' : 'automation.showAll')}
+          {t(open ? 'automation:showLess' : 'automation:showAll')}
         </button>
       )}
     </>
@@ -316,11 +316,11 @@ function RunHistory({
       <table className="automation-history">
         <thead>
           <tr>
-            <th>{t('automation.colResult')}</th>
-            <th>{t('automation.colStarted')}</th>
-            <th>{t('automation.colTook')}</th>
-            <th>{t('automation.delivery')}</th>
-            <th aria-label={t('automation.openThread')} />
+            <th>{t('automation:colResult')}</th>
+            <th>{t('automation:colStarted')}</th>
+            <th>{t('automation:colTook')}</th>
+            <th>{t('automation:delivery')}</th>
+            <th aria-label={t('automation:openThread')} />
           </tr>
         </thead>
         <tbody>
@@ -333,7 +333,7 @@ function RunHistory({
               ...(ui.danger && e.error_message ? [e.error_message] : []),
               ...attempts.flatMap((d) =>
                 !d.success && d.error
-                  ? [t('automation.deliveryNamedProblem', { name: deliveryAttemptName(d, t, names), message: d.error })]
+                  ? [t('automation:deliveryNamedProblem', { name: deliveryAttemptName(d, t, names), message: d.error })]
                   : [],
               ),
             ];
@@ -363,7 +363,7 @@ function RunHistory({
                     {attempts.map((d, i) => (
                       <span key={`${d.method}|${d.address ?? ''}|${i}`} className="automation-history-attempt">
                         {!d.success && (
-                          <AlertCircle className="h-3 w-3 shrink-0" style={{ color: 'var(--color-icon-danger)' }} aria-label={t('automation.runFailed')} />
+                          <AlertCircle className="h-3 w-3 shrink-0" style={{ color: 'var(--color-icon-danger)' }} aria-label={t('automation:runFailed')} />
                         )}
                         {/* Where it landed and how; an older run says only which app. */}
                         {isLegacyAttempt(d) ? deliveryMethodName(d.method, t) : deliveryAttemptLabel(d, t, names)}
@@ -373,7 +373,7 @@ function RunHistory({
                   <td className="text-right">
                     {e.conversation_thread_id && (
                       <button type="button" className="automation-link" onClick={() => onOpen(e.conversation_thread_id)}>
-                        {t('automation.open')}
+                        {t('automation:open')}
                         <ArrowUpRight className="h-3 w-3" />
                       </button>
                     )}

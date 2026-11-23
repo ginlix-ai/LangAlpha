@@ -46,7 +46,7 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
       <div className="term-line term-plot-lead">
         {sent.lastClose != null && <span className="term-big">{money(sent.lastClose)}</span>}
         <TermChange value={prices.changePct} />
-        {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact.period')}</span>}
+        {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact:period')}</span>}
         {/* Publisher and lag of the plotted series live behind this tag. */}
         {prices.freshness && <FreshnessBadge freshness={prices.freshness} source={prices.source} chartSymbol={symbol ?? ''} />}
       </div>
@@ -62,9 +62,9 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
       <div className="term-plot-foot">
         <TermStats
           stats={[
-            prices.high != null && [t('toolArtifact.high'), money(prices.high)],
-            prices.low != null && [t('toolArtifact.low'), money(prices.low)],
-            prices.avgVolume != null && [t('toolArtifact.vol'), compactNumber(prices.avgVolume, locale)],
+            prices.high != null && [t('toolArtifact:high'), money(prices.high)],
+            prices.low != null && [t('toolArtifact:low'), money(prices.low)],
+            prices.avgVolume != null && [t('toolArtifact:vol'), compactNumber(prices.avgVolume, locale)],
           ]}
         />
       </div>

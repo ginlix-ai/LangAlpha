@@ -103,7 +103,7 @@ function InsightBody({
   const { t } = useTranslation();
   const locale = useLocale();
   const closeButton = onClose ? (
-    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard.newsDetail.close')}>
+    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard:newsDetail.close')}>
       <X size={16} />
     </button>
   ) : null;
@@ -121,7 +121,7 @@ function InsightBody({
     return (
       <div className="dash-window-state">
         {closeButton}
-        <p>{t('dashboard.insightDetail.notFound')}</p>
+        <p>{t('dashboard:insightDetail.notFound')}</p>
       </div>
     );
   }
@@ -137,7 +137,7 @@ function InsightBody({
     <TermPanelContext value={true}>
       <div className="dash-window-top">
         <div className="term-line dash-window-meta">
-          <TermTag tone="neutral">{t('dashboard.insightDetail.eyebrow')}</TermTag>
+          <TermTag tone="neutral">{t('dashboard:insightDetail.eyebrow')}</TermTag>
           {detail.model && <span className="term-t3">{detail.model}</span>}
           {detail.completed_at && <span className="term-t3">{formatDate(detail.completed_at, locale)}</span>}
           <span className="term-push dash-window-acts">
@@ -146,10 +146,10 @@ function InsightBody({
                 type="button"
                 className="term-chip dash-window-chip"
                 onClick={onAttach}
-                aria-label={t('dashboard.newsDetail.addToChat')}
-                title={t('dashboard.widgets.frame.addToContextTitle')}
+                aria-label={t('dashboard:newsDetail.addToChat')}
+                title={t('dashboard:widgets.frame.addToContextTitle')}
               >
-                {t('dashboard.newsDetail.addToChat')}
+                {t('dashboard:newsDetail.addToChat')}
               </button>
             )}
             {closeButton}
@@ -161,12 +161,12 @@ function InsightBody({
       <div className={hasSide ? 'dash-window-grid' : 'dash-window-grid dash-window-grid--one'}>
         <div className="dash-window-col">
           {detail.summary && (
-            <TermCard title={t('dashboard.newsDetail.summary')} meta={t('dashboard.newsDetail.summaryMeta')}>
+            <TermCard title={t('dashboard:newsDetail.summary')} meta={t('dashboard:newsDetail.summaryMeta')}>
               <p className="dash-window-prose">{detail.summary}</p>
             </TermCard>
           )}
           {content.length > 0 && (
-            <TermCard title={t('dashboard.insightDetail.stories')} meta={content.length}>
+            <TermCard title={t('dashboard:insightDetail.stories')} meta={content.length}>
               <ol className="dash-window-stories">
                 {content.map((item, i) => {
                   const url = item.url && /^https?:/i.test(item.url) ? item.url : undefined;
@@ -188,7 +188,7 @@ function InsightBody({
         {hasSide && (
           <aside className="dash-window-col">
             {topics.length > 0 && (
-              <TermCard title={t('dashboard.newsDetail.topics')}>
+              <TermCard title={t('dashboard:newsDetail.topics')}>
                 <div className="dash-window-tags">
                   {topics.map((topic) => (
                     <span key={topic.text} className="term-tag dash-window-topic">
@@ -200,7 +200,7 @@ function InsightBody({
               </TermCard>
             )}
             {sources.length > 0 && (
-              <TermCard title={t('dashboard.insightDetail.sources')} meta={sources.length}>
+              <TermCard title={t('dashboard:insightDetail.sources')} meta={sources.length}>
                 <ul className="dash-window-sources">
                   {shownSources.map((source, i) => (
                     <li key={i}>
@@ -219,8 +219,8 @@ function InsightBody({
                     onClick={() => setSourcesOpen(!sourcesOpen)}
                   >
                     {sourcesOpen
-                      ? t('dashboard.insightDetail.fewerSources')
-                      : t('dashboard.insightDetail.allSources', { count: sources.length })}
+                      ? t('dashboard:insightDetail.fewerSources')
+                      : t('dashboard:insightDetail.allSources', { count: sources.length })}
                   </button>
                 )}
               </TermCard>
@@ -254,8 +254,8 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
     });
     ContextBus.attach(snapshot);
     toast({
-      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
-      description: t('dashboard.insightDetail.attachedBrief', { title: detail.headline || '' }),
+      title: t('dashboard:widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      description: t('dashboard:insightDetail.attachedBrief', { title: detail.headline || '' }),
     });
   };
   const canAttach = !!detail && !!marketInsightId;
@@ -332,7 +332,7 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
           className="fixed inset-0 z-1010 flex items-center justify-center p-8"
           style={{ backgroundColor: 'var(--color-bg-overlay, rgba(0,0,0,0.6))', backdropFilter: 'blur(4px)' }}
         >
-          <DashWindowDialog label={detail?.headline || t('dashboard.insightDetail.eyebrow')} onClose={onClose}>
+          <DashWindowDialog label={detail?.headline || t('dashboard:insightDetail.eyebrow')} onClose={onClose}>
             {body}
           </DashWindowDialog>
         </motion.div>

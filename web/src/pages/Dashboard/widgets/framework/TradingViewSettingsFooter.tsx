@@ -16,7 +16,7 @@ export function TradingViewSettingsFooter() {
       }}
     >
       <span>
-        {t('dashboard.widgets.tvFooter.providedBy')}
+        {t('dashboard:widgets.tvFooter.providedBy')}
         <a
           className="tv-attribution"
           href="https://www.tradingview.com/"
@@ -24,7 +24,7 @@ export function TradingViewSettingsFooter() {
           rel="noopener noreferrer"
           style={{ display: 'inline', padding: 0 }}
         >
-          {t('dashboard.widgets.tvFooter.tradingView')}
+          {t('dashboard:widgets.tvFooter.tradingView')}
         </a>
         .
       </span>
@@ -35,7 +35,7 @@ export function TradingViewSettingsFooter() {
         href="/legal"
         target="_blank"
         rel="noopener noreferrer"
-        title={t('dashboard.widgets.tvFooter.legal')}
+        title={t('dashboard:widgets.tvFooter.legal')}
         style={{ color: 'var(--color-text-tertiary)', display: 'inline-flex' }}
       >
         <HelpCircle size={12} />

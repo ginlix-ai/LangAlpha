@@ -86,7 +86,7 @@ export function SecretListItem({
           <div className="vault-confirm">
             <ConfirmStrip
               message={<DeleteConsequence name={secret.name} readers={readers} />}
-              confirmLabel={confirming.saving ? t('vault.deleting') : t('vault.delete')}
+              confirmLabel={confirming.saving ? t('vault:deleting') : t('vault:delete')}
               cancelLabel={t('common.cancel')}
               pending={confirming.saving}
               onConfirm={onDelete}
@@ -109,11 +109,11 @@ export function SecretListItem({
 function DeleteConsequence({ name, readers }: { name: string; readers: readonly string[] | undefined }) {
   const { key, values } = readers
     ? readersSentence(readers, {
-        none: 'vault.deleteConfirm.none',
-        one: 'vault.deleteConfirm.one',
-        many: 'vault.deleteConfirm.many',
+        none: 'vault:deleteConfirm.none',
+        one: 'vault:deleteConfirm.one',
+        many: 'vault:deleteConfirm.many',
       })
-    : { key: 'vault.deleteConfirm.unknown', values: {} };
+    : { key: 'vault:deleteConfirm.unknown', values: {} };
   return (
     <Trans i18nKey={key} values={{ ...values, name }} components={{ code: <code className="vault-inline-name" /> }} />
   );

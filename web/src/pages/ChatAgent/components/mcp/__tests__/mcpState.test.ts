@@ -1,17 +1,15 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import {
-  canDisconnectOauth,
   deriveLifecycle,
-  isOauthBroken,
   needsDiscoveryProbe,
-  needsOauthConnect,
   PROBE_KICK_WINDOW_MS,
   probeRowState,
   probeStillLanding,
   showsWorkspaceDetail,
   type McpLifecycleInput,
 } from '../mcpState';
+import { canDisconnectOauth, isOauthBroken, needsOauthConnect } from '../oauthState';
 import type {
   EffectiveServer,
   McpOauthStatus,
@@ -187,7 +185,7 @@ describe('deriveLifecycle — progress track', () => {
     expect(deriveLifecycle({ ...BASE, checking: true })).toMatchObject({
       kind: 'progress',
       phase: 'verifying',
-      labelKey: 'mcp.lifecycle.verifying',
+      labelKey: 'mcp:lifecycle.verifying',
       verifyState: 'active',
       readyState: 'todo',
     });
@@ -200,7 +198,7 @@ describe('deriveLifecycle — progress track', () => {
   it('pending while a warm is in flight is Starting, not a dead Waiting', () => {
     expect(deriveLifecycle({ ...BASE, sandboxRunning: false, sandboxWarming: true })).toMatchObject({
       phase: 'starting',
-      labelKey: 'mcp.lifecycle.starting',
+      labelKey: 'mcp:lifecycle.starting',
       verifyState: 'active',
     });
   });
@@ -208,7 +206,7 @@ describe('deriveLifecycle — progress track', () => {
   it('pending on a stopped, non-warming sandbox is Waiting', () => {
     expect(deriveLifecycle({ ...BASE, sandboxRunning: false })).toMatchObject({
       phase: 'waiting',
-      labelKey: 'mcp.lifecycle.waiting',
+      labelKey: 'mcp:lifecycle.waiting',
       verifyState: 'todo',
       readyState: 'todo',
     });
@@ -217,7 +215,7 @@ describe('deriveLifecycle — progress track', () => {
   it('verified but not applied is Applying, with the verify node done', () => {
     expect(deriveLifecycle({ ...BASE, status: 'connected' })).toMatchObject({
       phase: 'applying',
-      labelKey: 'mcp.lifecycle.applying',
+      labelKey: 'mcp:lifecycle.applying',
       verifyState: 'done',
       readyState: 'active',
     });
@@ -226,7 +224,7 @@ describe('deriveLifecycle — progress track', () => {
   it('verified on a stopped sandbox promises the apply on start instead', () => {
     expect(deriveLifecycle({ ...BASE, status: 'connected', sandboxRunning: false })).toMatchObject({
       phase: 'applying',
-      labelKey: 'mcp.lifecycle.appliesOnStart',
+      labelKey: 'mcp:lifecycle.appliesOnStart',
     });
   });
 
@@ -291,7 +289,7 @@ describe('deriveLifecycle — the two branches removed as unreachable', () => {
 
   it('never emits the "Ready" label — a fully-ready row is the connected pill', () => {
     const offenders = everyView().filter(
-      ({ view }) => view.kind === 'progress' && view.labelKey === 'mcp.lifecycle.ready',
+      ({ view }) => view.kind === 'progress' && view.labelKey === 'mcp:lifecycle.ready',
     );
     expect(offenders).toEqual([]);
   });
@@ -311,7 +309,7 @@ describe('deriveLifecycle — the two branches removed as unreachable', () => {
     expect(deriveLifecycle({ ...BASE, status: 'disabled', enabled: true })).toMatchObject({
       kind: 'progress',
       phase: 'waiting',
-      labelKey: 'mcp.lifecycle.waiting',
+      labelKey: 'mcp:lifecycle.waiting',
       readyState: 'todo',
     });
   });
@@ -320,10 +318,10 @@ describe('deriveLifecycle — the two branches removed as unreachable', () => {
     // The old code derived them separately; the only input where they diverged
     // was the unreachable 'disabled'-while-enabled residual.
     const byPhase: Record<string, string[]> = {
-      verifying: ['mcp.lifecycle.verifying'],
-      starting: ['mcp.lifecycle.starting'],
-      applying: ['mcp.lifecycle.applying', 'mcp.lifecycle.appliesOnStart'],
-      waiting: ['mcp.lifecycle.waiting'],
+      verifying: ['mcp:lifecycle.verifying'],
+      starting: ['mcp:lifecycle.starting'],
+      applying: ['mcp:lifecycle.applying', 'mcp:lifecycle.appliesOnStart'],
+      waiting: ['mcp:lifecycle.waiting'],
     };
     for (const { view } of everyView()) {
       if (view.kind !== 'progress') continue;
@@ -353,7 +351,7 @@ describe('probeRowState', () => {
   it('carries a note for the OAuth verdict, for the rows Connect cannot speak for', () => {
     // Connect is offered on http only, and an sse server that answers 401 still
     // wants one: that row used to render nothing at all.
-    expect(probeRowState('oauth')?.noteKey).toBe('mcp.probe.rowOauth');
+    expect(probeRowState('oauth')?.noteKey).toBe('mcp:probe.rowOauth');
   });
 
   it('settles nothing from a check that never reached the server', () => {

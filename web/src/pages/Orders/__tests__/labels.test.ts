@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, lookup, zhCN } from '@/test/catalogs';
 import { ORDER_MODE_KEY } from '@/components/orders/mode';
 import {
   ORDER_STATUS_KEY,
@@ -25,22 +24,10 @@ import { ORDER_STATUSES } from '@/pages/ChatAgent/utils/api';
  * Most of these maps come from the shared order module rather than from the
  * page: the order's own words are the chat card's too, the status words are
  * the chat receipt's and the mode words are the Plugins badge's, on purpose.
- * The locale sweep only reads bare keys under `orders.`, so nothing else would
+ * The locale sweep only reads bare keys under `orders:`, so nothing else would
  * notice if one of the others were renamed under us, and a missing key renders
  * as the key itself on a row about an order somebody placed.
  */
-
-function lookup(catalog: unknown, key: string): unknown {
-  return key
-    .split('.')
-    .reduce<unknown>(
-      (cur, part) =>
-        cur && typeof cur === 'object'
-          ? (cur as Record<string, unknown>)[part]
-          : undefined,
-      catalog,
-    );
-}
 
 const MAPS: Record<string, Record<string, string>> = {
   status: ORDER_STATUS_KEY,
@@ -97,7 +84,7 @@ describe('order label keys', () => {
 describe('what a staged order is called', () => {
   it('names the broker to confirm in', () => {
     expect(orderStatusLabel('submitted', 'staged', 'Interactive Brokers')).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.submittedStaged',
+      key: 'toolArtifact:directTool.orderStatus.submittedStaged',
       params: { vendor: 'Interactive Brokers' },
     });
   });
@@ -107,66 +94,66 @@ describe('what a staged order is called', () => {
   it('drops the broker rather than the meaning', () => {
     for (const label of [undefined, null, '', '   ']) {
       expect(orderStatusLabel('submitted', 'staged', label)).toEqual({
-        key: 'toolArtifact.directTool.orderStatus.submittedStagedUnnamed',
+        key: 'toolArtifact:directTool.orderStatus.submittedStagedUnnamed',
       });
     }
   });
 
   it('names the broker a handed-off instruction left, or drops it', () => {
     expect(orderStatusLabel('handed_off', 'staged', 'Interactive Brokers')).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.handedOffStaged',
+      key: 'toolArtifact:directTool.orderStatus.handedOffStaged',
       params: { vendor: 'Interactive Brokers' },
     });
     expect(orderStatusLabel('handed_off', 'staged', null)).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.handedOffStagedUnnamed',
+      key: 'toolArtifact:directTool.orderStatus.handedOffStagedUnnamed',
     });
   });
 
   it('says a handed-off instruction was confirmed only when the broker said so', () => {
     expect(orderStatusLabel('handed_off', 'staged', 'Webull', true)).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.handedOffConfirmedStaged',
+      key: 'toolArtifact:directTool.orderStatus.handedOffConfirmedStaged',
       params: { vendor: 'Webull' },
     });
     expect(orderStatusLabel('handed_off', 'staged', null, true)).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.handedOffConfirmedStagedUnnamed',
+      key: 'toolArtifact:directTool.orderStatus.handedOffConfirmedStagedUnnamed',
     });
     expect(orderStatusShortLabel('handed_off', 'staged', true)).toBe(
-      'toolArtifact.directTool.orderStatusShort.handedOffConfirmed',
+      'toolArtifact:directTool.orderStatusShort.handedOffConfirmed',
     );
     // A broker that only stopped listing it keeps the sentence that admits it.
     expect(orderStatusLabel('handed_off', 'staged', 'Webull', false).key).toBe(
-      'toolArtifact.directTool.orderStatus.handedOffStaged',
+      'toolArtifact:directTool.orderStatus.handedOffStaged',
     );
     // Naming the end changes no other state.
     expect(orderStatusLabel('submitted', 'staged', 'Webull', true).key).toBe(
-      'toolArtifact.directTool.orderStatus.submittedStaged',
+      'toolArtifact:directTool.orderStatus.submittedStaged',
     );
   });
 
   it('says a live order the user approved at the broker was confirmed there', () => {
     expect(orderStatusLabel('handed_off', 'live', 'Robinhood', true)).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.handedOffConfirmedStaged',
+      key: 'toolArtifact:directTool.orderStatus.handedOffConfirmedStaged',
       params: { vendor: 'Robinhood' },
     });
     expect(orderStatusShortLabel('handed_off', 'live', true)).toBe(
-      'toolArtifact.directTool.orderStatusShort.handedOffConfirmed',
+      'toolArtifact:directTool.orderStatusShort.handedOffConfirmed',
     );
   });
 
   // Nobody cancelled it, so it must never read as cancelled.
   it('says an expired instruction expired before it was confirmed', () => {
     expect(orderStatusLabel('expired', 'staged', 'Webull')).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.expiredStaged',
+      key: 'toolArtifact:directTool.orderStatus.expiredStaged',
       params: { vendor: 'Webull' },
     });
     expect(orderStatusLabel('expired', 'staged', null)).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.expiredStagedUnnamed',
+      key: 'toolArtifact:directTool.orderStatus.expiredStagedUnnamed',
     });
     expect(orderStatusLabel('expired', 'live', 'Webull')).toEqual({
-      key: 'toolArtifact.directTool.orderStatus.expired',
+      key: 'toolArtifact:directTool.orderStatus.expired',
     });
     expect(orderStatusShortLabel('expired', 'staged')).toBe(
-      'toolArtifact.directTool.orderStatusShort.expired',
+      'toolArtifact:directTool.orderStatusShort.expired',
     );
   });
 
@@ -179,10 +166,10 @@ describe('what a staged order is called', () => {
 
   it('shortens to "Staged" on a row, and only there', () => {
     expect(orderStatusShortLabel('submitted', 'staged')).toBe(
-      'toolArtifact.directTool.orderStatusShort.submittedStaged',
+      'toolArtifact:directTool.orderStatusShort.submittedStaged',
     );
     expect(orderStatusShortLabel('submitted', 'paper')).toBe(
-      'toolArtifact.directTool.orderStatusShort.submitted',
+      'toolArtifact:directTool.orderStatusShort.submitted',
     );
   });
 

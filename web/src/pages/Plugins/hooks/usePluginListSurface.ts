@@ -17,7 +17,7 @@ import {
   type BulkTarget,
 } from '../components/useBulkSelection';
 import { useJustAdded, type JustAddedKind } from './useJustAdded';
-import { useOnceTrue } from './useOnceTrue';
+import { useOnceTrue } from '@/hooks/useOnceTrue';
 
 /**
  * The list model every Plugins tab reads: the header's search (`?q=`), the

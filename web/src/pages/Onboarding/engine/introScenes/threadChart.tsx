@@ -173,7 +173,7 @@ function LegendLead() {
         className="inline-block h-[3px] w-[3px] rounded-full align-middle"
         style={{ background: 'var(--color-profit)' }}
       />{' '}
-      <span className="text-[5px]">{t('marketView.quote.live')}</span>
+      <span className="text-[5px]">{t('marketView:quote.live')}</span>
     </span>
   );
 }
@@ -185,14 +185,14 @@ function LegendStats() {
   const q = NVDA_QUOTE;
   const pct = ((NVDA_LAST - q.prev) / q.prev) * 100;
   const stats: [string, string, string?][] = [
-    [t('marketView.quote.open'), fixed2(q.open, locale)],
-    [t('marketView.quote.high'), fixed2(q.high, locale)],
-    [t('marketView.quote.low'), fixed2(q.low, locale)],
-    [t('marketView.quote.close'), fixed2(NVDA_LAST, locale)],
-    [t('marketView.quote.volume'), q.vol],
-    [t('marketView.quote.prevClose'), fixed2(q.prev, locale)],
-    [t('marketView.quote.range52w'), `${fixed2(q.lo52, locale)}–${fixed2(q.hi52, locale)}`],
-    [t('marketView.quote.change'), `${signedFixed2(pct, locale)}%`, signColor(pct)],
+    [t('marketView:quote.open'), fixed2(q.open, locale)],
+    [t('marketView:quote.high'), fixed2(q.high, locale)],
+    [t('marketView:quote.low'), fixed2(q.low, locale)],
+    [t('marketView:quote.close'), fixed2(NVDA_LAST, locale)],
+    [t('marketView:quote.volume'), q.vol],
+    [t('marketView:quote.prevClose'), fixed2(q.prev, locale)],
+    [t('marketView:quote.range52w'), `${fixed2(q.lo52, locale)}–${fixed2(q.hi52, locale)}`],
+    [t('marketView:quote.change'), `${signedFixed2(pct, locale)}%`, signColor(pct)],
   ];
   return (
     <div
@@ -307,7 +307,7 @@ function LayerCard() {
             <span className="font-semibold">NVDA</span>
             <span style={{ color: 'var(--color-text-tertiary)' }}>{' · 1D · '}</span>
             <span style={{ color: 'var(--color-text-secondary)' }}>
-              {t('marketView.layers.count', { count: 1 })}
+              {t('marketView:layers.count', { count: 1 })}
             </span>
           </span>
           <span
@@ -330,7 +330,7 @@ function LayerCard() {
               className="shrink-0 font-mono text-[5px] tabular-nums"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('marketView.layers.asOf', { date: formatLayerAsOf(AS_OF, locale) })}
+              {t('marketView:layers.asOf', { date: formatLayerAsOf(AS_OF, locale) })}
             </span>
           </span>
           <span

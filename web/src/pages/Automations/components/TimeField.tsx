@@ -45,7 +45,7 @@ export function TimeSlotList({ value, min, onPick, className }: TimeSlotListProp
     <div
       ref={ref}
       role="listbox"
-      aria-label={t('automation.time')}
+      aria-label={t('automation:time')}
       className={cn('automation-time-list automations-scroller', className)}
       onScroll={revealScroll}
     >

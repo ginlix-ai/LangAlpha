@@ -105,7 +105,7 @@ function StockTop() {
               className="h-[3px] w-[3px] rounded-full"
               style={{ background: 'var(--color-profit)' }}
             />
-            {t('marketView.quote.live')}
+            {t('marketView:quote.live')}
           </span>
         </div>
         <span
@@ -116,7 +116,7 @@ function StockTop() {
           }}
         >
           <Info className="h-[5px] w-[5px]" />
-          {t('marketView.companyOverview')}
+          {t('marketView:companyOverview')}
         </span>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-[2px] leading-none tabular-nums">
@@ -158,7 +158,7 @@ function ChatHeader({ width, title }: { width: number; title?: string }) {
           className="truncate text-[7px] font-medium"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {title ?? t('marketView.chatHistory.newChat')}
+          {title ?? t('marketView:chatHistory.newChat')}
         </span>
         <ChevronDown
           className="h-[6px] w-[6px] shrink-0"
@@ -177,7 +177,7 @@ function ChatHeader({ width, title }: { width: number; title?: string }) {
           }}
         >
           <MessageSquare className="h-[6px] w-[6px]" />
-          {t('marketView.chatPanel.openInChat')}
+          {t('marketView:chatPanel.openInChat')}
         </span>
       )}
     </div>
@@ -194,19 +194,19 @@ function Metrics() {
   const last = NVDA_LAST;
   const pct = ((last - q.prev) / q.prev) * 100;
   const cells: [string, string, string?][] = [
-    [t('marketView.header.prevClose'), fixed2(q.prev, locale)],
-    [t('marketView.header.open'), fixed2(q.open, locale)],
-    [t('marketView.header.low'), fixed2(Math.min(q.low, last), locale)],
-    [t('marketView.header.high'), fixed2(Math.max(q.high, last), locale)],
-    [t('marketView.header.high52w'), fixed2(q.hi52, locale)],
-    [t('marketView.header.low52w'), fixed2(q.lo52, locale)],
-    [t('marketView.header.avgVolume3m'), q.avgVol],
-    [t('marketView.header.volume'), q.vol],
+    [t('marketView:header.prevClose'), fixed2(q.prev, locale)],
+    [t('marketView:header.open'), fixed2(q.open, locale)],
+    [t('marketView:header.low'), fixed2(Math.min(q.low, last), locale)],
+    [t('marketView:header.high'), fixed2(Math.max(q.high, last), locale)],
+    [t('marketView:header.high52w'), fixed2(q.hi52, locale)],
+    [t('marketView:header.low52w'), fixed2(q.lo52, locale)],
+    [t('marketView:header.avgVolume3m'), q.avgVol],
+    [t('marketView:header.volume'), q.vol],
     [
-      t('marketView.header.dayRange'),
+      t('marketView:header.dayRange'),
       `${fixed2(Math.min(q.low, last), locale)} – ${fixed2(Math.max(q.high, last), locale)}`,
     ],
-    [t('marketView.header.changePct'), `${signedFixed2(pct, locale)}%`, signColor(pct)],
+    [t('marketView:header.changePct'), `${signedFixed2(pct, locale)}%`, signColor(pct)],
   ];
   return (
     <div
@@ -264,7 +264,7 @@ function ChartTools({ armed = false }: { armed?: boolean }) {
         <Segmented
           active={0}
           className="w-[48px]"
-          items={[t('marketView.chart.light'), t('marketView.chart.advanced')]}
+          items={[t('marketView:chart.light'), t('marketView:chart.advanced')]}
         />
       </span>
     </div>
@@ -322,7 +322,7 @@ function EmptyChat() {
       <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-1 text-center">
         <Mark />
         <span className="text-[6px] leading-[1.4]" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('marketView.chatPanel.startConversation')}
+          {t('marketView:chatPanel.startConversation')}
         </span>
       </div>
       <div className="flex flex-col gap-1 pb-1">
@@ -336,7 +336,7 @@ function EmptyChat() {
               color: 'var(--color-text-primary)',
             }}
           >
-            {t(`marketView.quickQuery.${q}`, { symbol: NVDA_QUOTE.sym })}
+            {t(`marketView:quickQuery.${q}`, { symbol: NVDA_QUOTE.sym })}
           </span>
         ))}
         <span
@@ -380,7 +380,7 @@ function ChatPanel({
       {transcript ? <Transcript className="px-[2px] pt-2">{transcript}</Transcript> : <EmptyChat />}
       {chip && <div className="flex px-[2px] pb-[4px]">{chip}</div>}
       <InputDock
-        placeholder={t('marketView.chatPanel.defaultPlaceholder')}
+        placeholder={t('marketView:chatPanel.defaultPlaceholder')}
         ready={ready}
         sendAt={sendAt}
       />

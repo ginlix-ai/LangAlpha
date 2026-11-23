@@ -92,7 +92,7 @@ describe('getCompletedRowTitle — memo write/edit verbs', () => {
       { args: { file_path: '.agents/user/memo/x.md' } },
       tIdentity,
     );
-    expect(title).toBe('toolArtifact.completed.wroteMemo');
+    expect(title).toBe('toolArtifact:completed.wroteMemo');
   });
 
   it('returns the updatedMemo i18n key for Edit on a memo path', () => {
@@ -101,7 +101,7 @@ describe('getCompletedRowTitle — memo write/edit verbs', () => {
       { args: { file_path: '.agents/user/memo/x.md' } },
       tIdentity,
     );
-    expect(title).toBe('toolArtifact.completed.updatedMemo');
+    expect(title).toBe('toolArtifact:completed.updatedMemo');
   });
 
   it('still returns the readMemo key for Read on a memo path', () => {
@@ -110,7 +110,7 @@ describe('getCompletedRowTitle — memo write/edit verbs', () => {
       { args: { file_path: '.agents/user/memo/x.md' } },
       tIdentity,
     );
-    expect(title).toBe('toolArtifact.completed.readMemo');
+    expect(title).toBe('toolArtifact:completed.readMemo');
   });
 });
 
@@ -121,7 +121,7 @@ describe('getInProgressText — memo write/edit progress phrases', () => {
       { args: { file_path: '.agents/user/memo/notes.md' } },
       tIdentity,
     );
-    expect(out).toBe('toolArtifact.inProgress.writingMemoSlug');
+    expect(out).toBe('toolArtifact:inProgress.writingMemoSlug');
   });
 
   it('emits updatingMemoSlug for Edit on a memo path', () => {
@@ -130,7 +130,7 @@ describe('getInProgressText — memo write/edit progress phrases', () => {
       { args: { file_path: '.agents/user/memo/notes.md' } },
       tIdentity,
     );
-    expect(out).toBe('toolArtifact.inProgress.updatingMemoSlug');
+    expect(out).toBe('toolArtifact:inProgress.updatingMemoSlug');
   });
 });
 
@@ -183,10 +183,10 @@ describe('chart annotation — symbol + interval headline', () => {
 
   it('labels the row "Annotate Chart" / "Manage Annotations"', () => {
     expect(getCompletedRowTitle('draw_chart_annotation', { args: { symbol: 'NVDA' } }, tIdentity)).toBe(
-      'toolArtifact.tool.annotateChart',
+      'toolArtifact:tool.annotateChart',
     );
     expect(getCompletedRowTitle('manage_chart_annotations', { args: { symbol: 'NVDA' } }, tIdentity)).toBe(
-      'toolArtifact.tool.manageAnnotations',
+      'toolArtifact:tool.manageAnnotations',
     );
   });
 });
@@ -199,27 +199,27 @@ describe('user-data — entity-aware labels for portfolio/watchlist/preference',
 
     it(`returns "read_${entity}" completed-row title for Read on ${entity}.json`, () => {
       const title = getCompletedRowTitle('Read', { args: { file_path: filePath } }, tIdentity);
-      expect(title).toBe(`toolArtifact.completed.read_${entity}`);
+      expect(title).toBe(`toolArtifact:completed.read_${entity}`);
     });
 
     it(`returns "updated_${entity}" completed-row title for Write on ${entity}.json`, () => {
       const title = getCompletedRowTitle('Write', { args: { file_path: filePath } }, tIdentity);
-      expect(title).toBe(`toolArtifact.completed.updated_${entity}`);
+      expect(title).toBe(`toolArtifact:completed.updated_${entity}`);
     });
 
     it(`returns "updated_${entity}" completed-row title for Edit on ${entity}.json`, () => {
       const title = getCompletedRowTitle('Edit', { args: { file_path: filePath } }, tIdentity);
-      expect(title).toBe(`toolArtifact.completed.updated_${entity}`);
+      expect(title).toBe(`toolArtifact:completed.updated_${entity}`);
     });
 
     it(`emits "reading_${entity}" in-progress phrase for Read on ${entity}.json`, () => {
       const out = getInProgressText('Read', { args: { file_path: filePath } }, tIdentity);
-      expect(out).toBe(`toolArtifact.inProgress.reading_${entity}`);
+      expect(out).toBe(`toolArtifact:inProgress.reading_${entity}`);
     });
 
     it(`emits "updating_${entity}" in-progress phrase for Write on ${entity}.json`, () => {
       const out = getInProgressText('Write', { args: { file_path: filePath } }, tIdentity);
-      expect(out).toBe(`toolArtifact.inProgress.updating_${entity}`);
+      expect(out).toBe(`toolArtifact:inProgress.updating_${entity}`);
     });
 
     it(`uses the User icon for ${entity}.json`, () => {
@@ -233,14 +233,14 @@ describe('automations: entity-aware labels for an automation file', () => {
   const call = { args: { file_path: '.agents/user/automations/morning-brief.json' } };
 
   it('titles a completed Read "read_automations" and a Write or Edit "updated_automations"', () => {
-    expect(getCompletedRowTitle('Read', call, tIdentity)).toBe('toolArtifact.completed.read_automations');
-    expect(getCompletedRowTitle('Write', call, tIdentity)).toBe('toolArtifact.completed.updated_automations');
-    expect(getCompletedRowTitle('Edit', call, tIdentity)).toBe('toolArtifact.completed.updated_automations');
+    expect(getCompletedRowTitle('Read', call, tIdentity)).toBe('toolArtifact:completed.read_automations');
+    expect(getCompletedRowTitle('Write', call, tIdentity)).toBe('toolArtifact:completed.updated_automations');
+    expect(getCompletedRowTitle('Edit', call, tIdentity)).toBe('toolArtifact:completed.updated_automations');
   });
 
   it('emits "reading_automations" / "updating_automations" in-progress phrases', () => {
-    expect(getInProgressText('Read', call, tIdentity)).toBe('toolArtifact.inProgress.reading_automations');
-    expect(getInProgressText('Edit', call, tIdentity)).toBe('toolArtifact.inProgress.updating_automations');
+    expect(getInProgressText('Read', call, tIdentity)).toBe('toolArtifact:inProgress.reading_automations');
+    expect(getInProgressText('Edit', call, tIdentity)).toBe('toolArtifact:inProgress.updating_automations');
   });
 
   it('names the automation file in the summary pill, since the title does not', () => {
@@ -274,8 +274,8 @@ describe('messaging tools: a named step, not a bare wrench', () => {
   });
 
   it('names both tools, translated and not', () => {
-    expect(getDisplayName('send_message', tIdentity)).toBe('toolArtifact.tool.sendMessage');
-    expect(getDisplayName('list_message_targets', tIdentity)).toBe('toolArtifact.tool.messageTargets');
+    expect(getDisplayName('send_message', tIdentity)).toBe('toolArtifact:tool.sendMessage');
+    expect(getDisplayName('list_message_targets', tIdentity)).toBe('toolArtifact:tool.messageTargets');
     expect(getDisplayName('send_message')).toBe('Send Message');
     expect(getCompletedRowTitle('list_message_targets', { args: {} })).toBe('Message Targets');
   });
@@ -296,9 +296,9 @@ describe('messaging tools: a named step, not a bare wrench', () => {
   it('says where a send is going while it runs', () => {
     expect(getInProgressText('send_message', send({ target: 'discord:G/C' }))).toBe('sending to Discord...');
     expect(getInProgressText('send_message', send({}))).toBe('sending message...');
-    expect(getInProgressText('send_message', send({ target: 'slack:T/C' }), tIdentity)).toBe('toolArtifact.inProgress.sendingTo');
+    expect(getInProgressText('send_message', send({ target: 'slack:T/C' }), tIdentity)).toBe('toolArtifact:inProgress.sendingTo');
     expect(getInProgressText('list_message_targets', { args: {} })).toBe('listing message targets...');
-    expect(getInProgressText('list_message_targets', { args: {} }, tIdentity)).toBe('toolArtifact.inProgress.listingMessageTargets');
+    expect(getInProgressText('list_message_targets', { args: {} }, tIdentity)).toBe('toolArtifact:inProgress.listingMessageTargets');
   });
 
   it('says what is being prepared before the call is written', () => {

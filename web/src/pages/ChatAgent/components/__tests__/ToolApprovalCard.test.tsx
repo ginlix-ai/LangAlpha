@@ -45,7 +45,7 @@ const pending: ToolApprovalState = {
 describe('ToolApprovalCard', () => {
   it('shows the vendor, the tool and the arguments, with the account masked', () => {
     renderWithProviders(<ToolApprovalCard data={pending} onApprove={() => {}} onReject={() => {}} />);
-    expect(screen.getByText('toolArtifact.directTool.approvalTitle')).toBeInTheDocument();
+    expect(screen.getByText('toolArtifact:directTool.approvalTitle')).toBeInTheDocument();
     expect(screen.getByText('moomoo · Trading order place')).toBeInTheDocument();
     expect(screen.queryByText('12345678')).toBeNull();
     expect(screen.getByText('••••5678')).toBeInTheDocument();
@@ -55,21 +55,21 @@ describe('ToolApprovalCard', () => {
   it('approves with a bare decision', () => {
     const onApprove = vi.fn();
     renderWithProviders(<ToolApprovalCard data={pending} onApprove={onApprove} onReject={() => {}} />);
-    fireEvent.click(screen.getByText('toolArtifact.directTool.approve'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.approve'));
     expect(onApprove).toHaveBeenCalledTimes(1);
   });
 
   it('rejects with the typed reason, or none', () => {
     const onReject = vi.fn();
     const { unmount } = renderWithProviders(<ToolApprovalCard data={pending} onApprove={() => {}} onReject={onReject} />);
-    fireEvent.change(screen.getByLabelText('toolArtifact.directTool.reasonPlaceholder'), { target: { value: 'wrong account' } });
-    fireEvent.click(screen.getByText('toolArtifact.directTool.reject'));
+    fireEvent.change(screen.getByLabelText('toolArtifact:directTool.reasonPlaceholder'), { target: { value: 'wrong account' } });
+    fireEvent.click(screen.getByText('toolArtifact:directTool.reject'));
     expect(onReject).toHaveBeenCalledWith('wrong account');
     unmount();
 
     const bare = vi.fn();
     renderWithProviders(<ToolApprovalCard data={pending} onApprove={() => {}} onReject={bare} />);
-    fireEvent.click(screen.getByText('toolArtifact.directTool.reject'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.reject'));
     expect(bare).toHaveBeenCalledWith(undefined);
   });
 
@@ -79,19 +79,19 @@ describe('ToolApprovalCard', () => {
     // otherwise show live Approve/Reject on an interrupt nothing is waiting on,
     // and ask a question over a spinner that is waiting for nothing.
     renderWithProviders(<ToolApprovalCard data={pending} />);
-    expect(screen.getByText('toolArtifact.directTool.unansweredTitle')).toBeInTheDocument();
-    expect(screen.queryByText('toolArtifact.directTool.approvalTitle')).not.toBeInTheDocument();
-    expect(screen.queryByText('toolArtifact.directTool.approve')).not.toBeInTheDocument();
-    expect(screen.queryByText('toolArtifact.directTool.reject')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('toolArtifact.directTool.reasonPlaceholder')).not.toBeInTheDocument();
+    expect(screen.getByText('toolArtifact:directTool.unansweredTitle')).toBeInTheDocument();
+    expect(screen.queryByText('toolArtifact:directTool.approvalTitle')).not.toBeInTheDocument();
+    expect(screen.queryByText('toolArtifact:directTool.approve')).not.toBeInTheDocument();
+    expect(screen.queryByText('toolArtifact:directTool.reject')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('toolArtifact:directTool.reasonPlaceholder')).not.toBeInTheDocument();
   });
 
   it('renders a settled card as a status row that opens to the arguments', () => {
     renderWithProviders(<ToolApprovalCard data={{ ...pending, status: 'rejected', reason: 'wrong account' }} />);
-    expect(screen.getByText('toolArtifact.directTool.rejectedAction')).toBeInTheDocument();
+    expect(screen.getByText('toolArtifact:directTool.rejectedAction')).toBeInTheDocument();
     expect(screen.getByText('wrong account')).toBeInTheDocument();
     expect(screen.queryByText('code')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('toolArtifact.directTool.rejectedAction'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.rejectedAction'));
     expect(screen.getByText('code')).toBeInTheDocument();
   });
 

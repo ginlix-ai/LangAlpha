@@ -110,7 +110,7 @@ function Form({ status, layout, choosesComputer = true, footer }: Omit<ServerSet
           <SettingsCardBody id={SETTINGS.webSearchKeys.anchor}>
             {search}
             <div className="mt-4">{pageReading}</div>
-            <p className="mt-4 text-xs leading-snug text-(--color-text-tertiary)">{t('settings.server.keysReach')}</p>
+            <p className="mt-4 text-xs leading-snug text-(--color-text-tertiary)">{t('settings:server.keysReach')}</p>
             {saveKeys}
           </SettingsCardBody>
         </SettingsGroup>
@@ -128,14 +128,14 @@ function Form({ status, layout, choosesComputer = true, footer }: Omit<ServerSet
   return (
     <>
       {choosesComputer && (
-        <WizardSection className="mt-0" title={t('setup.computer.title')} titleId={computerId}>
+        <WizardSection className="mt-0" title={t('setup:computer.title')} titleId={computerId}>
           {computer}
         </WizardSection>
       )}
-      <WizardSection className={choosesComputer ? undefined : 'mt-0'} title={t('setup.services.marketData')} titleId={marketId}>
+      <WizardSection className={choosesComputer ? undefined : 'mt-0'} title={t('setup:services.marketData')} titleId={marketId}>
         <div className={STEP_BOX}>{market}</div>
       </WizardSection>
-      <WizardSection title={t('setup.services.webSearch')} titleId={searchId} hint={t('setup.services.optional')}>
+      <WizardSection title={t('setup:services.webSearch')} titleId={searchId} hint={t('setup:services.optional')}>
         <div className={STEP_BOX}>{search}</div>
         <div className="mt-4">{pageReading}</div>
       </WizardSection>

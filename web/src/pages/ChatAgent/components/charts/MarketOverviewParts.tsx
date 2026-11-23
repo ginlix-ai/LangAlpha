@@ -19,11 +19,11 @@ export function SectorPerformanceChart({ data }: PanelProps): React.ReactElement
   const { t } = useTranslation();
   const rows = sectorRows(data);
   return rows.length ? (
-    <TermCard title={t('toolArtifact.sectorPerformance')}>
+    <TermCard title={t('toolArtifact:sectorPerformance')}>
       <TermBars rows={rows} />
     </TermCard>
   ) : (
-    <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact.noSectorData')}</div>
+    <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact:noSectorData')}</div>
   );
 }
 
@@ -37,7 +37,7 @@ export function MarketIndicesChart({ data }: PanelProps): React.ReactElement {
   // Held across renders, so each index's chart is not drawn again.
   const rows = useMemo(() => indexRows(data), [data]);
   if (!rows.length) {
-    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact.noIndexData')}</div>;
+    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact:noIndexData')}</div>;
   }
 
   const { common } = commonFreshness(rows);
@@ -45,7 +45,7 @@ export function MarketIndicesChart({ data }: PanelProps): React.ReactElement {
   return (
     <>
       <TermCard
-        title={t('toolArtifact.marketIndices')}
+        title={t('toolArtifact:marketIndices')}
         meta={common ? <FreshnessBadge tier={common.tier} freshness={common.freshness} source={common.source} /> : undefined}
       >
         <IndexTable rows={rows} />
@@ -65,7 +65,7 @@ export function MarketIndicesChart({ data }: PanelProps): React.ReactElement {
                 stats={[
                   ma20 != null && ['MA20', grouped2(ma20, locale)],
                   ma50 != null && ['MA50', grouped2(ma50, locale)],
-                  volatility != null && [t('toolArtifact.volatility'), `${volatility.toFixed(2)}%`],
+                  volatility != null && [t('toolArtifact:volatility'), `${volatility.toFixed(2)}%`],
                 ]}
               />
               <span style={{ marginLeft: 'auto' }}>

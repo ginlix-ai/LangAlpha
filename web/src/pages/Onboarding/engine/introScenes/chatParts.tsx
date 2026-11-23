@@ -229,7 +229,7 @@ export function DeliveryPill({ app, files }: { app: string; files: number }) {
         style={{ background: 'var(--color-success-soft)', color: 'var(--color-success)' }}
       >
         <CheckCircle2 className="h-[7px] w-[7px]" />
-        {t('toolArtifact.messageDelivery.status.sent')}
+        {t('toolArtifact:messageDelivery.status.sent')}
       </span>
     </span>
   );

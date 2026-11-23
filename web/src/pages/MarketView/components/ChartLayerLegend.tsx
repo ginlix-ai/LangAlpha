@@ -127,7 +127,7 @@ function LayerDetail({ entry, actions }: { entry: ChartLayerEntry; actions: Laye
           {layer.layer.title}
         </span>
         <span className="text-[0.6875rem] text-[var(--color-text-tertiary)]" style={MONO}>
-          {layer.symbol} · {interval}{asOf && ` · ${t('marketView.layers.asOf', { date: asOf })}`}
+          {layer.symbol} · {interval}{asOf && ` · ${t('marketView:layers.asOf', { date: asOf })}`}
         </span>
       </div>
       {layer.layer.summary && <Summary text={layer.layer.summary} />}
@@ -136,21 +136,21 @@ function LayerDetail({ entry, actions }: { entry: ChartLayerEntry; actions: Laye
           the spacer. Remove has 8px of padding to its right and room to its left. */}
       <div className="-mx-1 flex items-center gap-0.5">
         <ActionButton
-          label={hidden ? t('marketView.layers.show') : t('marketView.layers.hide')}
+          label={hidden ? t('marketView:layers.show') : t('marketView:layers.hide')}
           onClick={() => actions.toggleHidden(entry)}
           className="[--tap-target-w:36px] [--tap-target-x:-3px]"
         >
           {hidden ? <Eye size={14} /> : <EyeOff size={14} />}
         </ActionButton>
         <ActionButton
-          label={t('marketView.layers.ask')}
+          label={t('marketView:layers.ask')}
           onClick={() => actions.ask(entry)}
           className="[--tap-target-x:7px]"
         >
           <MessageSquare size={14} />
         </ActionButton>
         <span className="flex-1" />
-        <ActionButton label={t('marketView.layers.remove')} onClick={() => actions.remove(entry)} danger>
+        <ActionButton label={t('marketView:layers.remove')} onClick={() => actions.remove(entry)} danger>
           <Trash2 size={14} />
         </ActionButton>
       </div>
@@ -180,7 +180,7 @@ function ListRow({ entry, actions }: { entry: ChartLayerEntry; actions: LayerAct
         <Dot layer={layer.layer} hidden={hidden} />
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-primary)]">{layer.layer.title}</span>
         {hidden && (
-          <span className="shrink-0 text-[0.6875rem] text-[var(--color-text-tertiary)]">{t('marketView.layers.hidden')}</span>
+          <span className="shrink-0 text-[0.6875rem] text-[var(--color-text-tertiary)]">{t('marketView:layers.hidden')}</span>
         )}
         {asOf && <span className="shrink-0 text-[0.6875rem] text-[var(--color-text-tertiary)]" style={MONO}>{asOf}</span>}
         <ChevronDown size={12} className={cn('shrink-0 text-[var(--color-text-tertiary)] transition-transform', open && 'rotate-180')} />
@@ -291,7 +291,7 @@ export function ChartLayerLegend({ chartKey, className }: ChartLayerLegendProps)
   const rows = useChartLayerRows(chartKey);
   const hidden = useHiddenLayers(chartKey);
   const entries: ChartLayerEntry[] = rows.map((layer) => ({ layer, hidden: hidden.has(layer.layer_id) }));
-  const removeLayer = useRemoveChartLayer(() => toast({ variant: 'destructive', title: t('marketView.layers.removeFailed') }));
+  const removeLayer = useRemoveChartLayer(() => toast({ variant: 'destructive', title: t('marketView:layers.removeFailed') }));
 
   const actions: LayerActions = {
     toggleHidden: (entry) => {
@@ -305,7 +305,7 @@ export function ChartLayerLegend({ chartKey, className }: ChartLayerLegendProps)
         layerTitle: layer.layer.title,
         summary: layer.layer.summary,
       });
-      if (!handled) toast({ title: t('marketView.layers.askUnavailable') });
+      if (!handled) toast({ title: t('marketView:layers.askUnavailable') });
     },
     remove: (entry) => removeLayer.mutate(entry.layer),
   };
@@ -316,7 +316,7 @@ export function ChartLayerLegend({ chartKey, className }: ChartLayerLegendProps)
   return (
     <div
       role="group"
-      aria-label={t('marketView.layers.legendLabel')}
+      aria-label={t('marketView:layers.legendLabel')}
       className={cn('pointer-events-none flex flex-col items-start gap-1', className)}
     >
       {folded ? (
@@ -326,7 +326,7 @@ export function ChartLayerLegend({ chartKey, className }: ChartLayerLegendProps)
           chipContent={(
             <>
               <Layers size={12} aria-hidden="true" className="shrink-0" />
-              {t('marketView.layers.count', { count: entries.length })}
+              {t('marketView:layers.count', { count: entries.length })}
             </>
           )}
         >

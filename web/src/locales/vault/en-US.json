@@ -1,0 +1,83 @@
+{
+  "addSecret": "Add key",
+  "valuePlaceholder": "Paste the key",
+  "editValuePlaceholder": "Leave empty to keep this key",
+  "descriptionPlaceholder": "Description (optional)",
+  "edit": "Edit",
+  "delete": "Delete",
+  "deleting": "Deleting…",
+  "hideValue": "Hide value",
+  "revealValue": "Reveal value",
+  "nameInvalid": "Use letters, digits and underscores, starting with a letter or underscore.",
+  "recommended": "Keys your connectors ask for",
+  "setUp": "Set up",
+  "settingUp": "Setting up",
+  "docs": "Docs",
+  "atCapHint": "Secrets holds {{max}} of {{max}}. Delete a key you no longer use.",
+  "valueHintInvalid": "This doesn't match the usual format for {{label}}.",
+  "valueHintDocs": "Check it against the docs above, or save it anyway.",
+  "valueHintStillSave": "You can still save it.",
+  "usage": {
+    "title": "Reading a key",
+    "lead": "Code in any workspace reads a key by its name."
+  },
+  "security": {
+    "title": "Security",
+    "encrypted": "Keys are encrypted at rest with AES (pgcrypto) and never stored in plaintext.",
+    "agent": "The Agent can't read a key's value directly; it can only call <code>{{call}}</code> inside sandboxed code.",
+    "leakScan": "Everything the Agent's tools return is scanned for leaks, and a key's value found there is redacted before it reaches the model.",
+    "store": "Code validation blocks direct file access to stored keys; only the <code>{{module}}</code> API is allowed."
+  },
+  "fields": {
+    "name": "Name",
+    "value": "Value",
+    "newValue": "New value",
+    "description": "Description"
+  },
+  "atCapSetUp": "Delete a stored key to set one of these up.",
+  "savedAs": "Will be saved as",
+  "nameTaken": "is already stored.",
+  "editInstead": "Edit {{name}} instead",
+  "readers": {
+    "none": "No connector reads it",
+    "one": "Used by <connector>{{connector}}</connector>",
+    "many_one": "Used by {{count}} connector",
+    "many_other": "Used by {{count}} connectors"
+  },
+  "deleteConfirm": {
+    "many_one": "Delete <code>{{name}}</code>? {{count}} connector stops working until a key is added.",
+    "many_other": "Delete <code>{{name}}</code>? {{count}} connectors stop working until a key is added.",
+    "one": "Delete <code>{{name}}</code>? {{connector}} stops working until a key is added.",
+    "none": "Delete <code>{{name}}</code>? No connector reads it, but code in a workspace that asks for it gets nothing.",
+    "unknown": "Delete <code>{{name}}</code>? Anything that reads it stops working until a key is added."
+  },
+  "reach": {
+    "workspaces": "Code in every workspace gets the new value by its next message.",
+    "oneConnector": "{{connector}} and code in every workspace get the new value by the next message.",
+    "connectors_one": "The {{count}} connector that reads it and code in every workspace get the new value by the next message.",
+    "connectors_other": "The {{count}} connectors that read it and code in every workspace get the new value by the next message."
+  },
+  "cap": {
+    "unread_one": "{{count}} key isn't read by any connector.",
+    "unread_other": "{{count}} keys aren't read by any connector.",
+    "showUnread_one": "Show it",
+    "showUnread_other": "Show them"
+  },
+  "filter": {
+    "placeholder": "Filter keys",
+    "unread": "Not read by a connector",
+    "empty": "No keys match \"{{query}}\".",
+    "emptyUnread": "Every key is read by a connector.",
+    "clear": "Clear filter"
+  },
+  "errors": {
+    "notSaved": "Not saved: {{reason}}",
+    "notSavedRetry": "Not saved. Try again.",
+    "notDeleted": "Not deleted: {{reason}}",
+    "notDeletedRetry": "Not deleted. Try again.",
+    "notRevealed": "Couldn't show the value: {{reason}}",
+    "notRevealedRetry": "Couldn't show the value. Try again."
+  },
+  "deletedElsewhere": "This key was deleted elsewhere. Saving adds it again.",
+  "notStored": "No key named <name>{{name}}</name> is stored. Saving adds it."
+}

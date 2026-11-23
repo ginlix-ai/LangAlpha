@@ -35,14 +35,14 @@ export function CommentDestination({ choices, selected, onPick, onBindBeside }: 
 
   return (
     <div className="flex min-w-0 items-center gap-1 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-      <span className="shrink-0">{t('pageViewer.comments.to')}</span>
+      <span className="shrink-0">{t('pageViewer:comments.to')}</span>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             className="page-comment-to inline-flex min-w-0 items-center gap-0.5 rounded-sm px-1 py-0.5"
             disabled={!more}
-            aria-label={t('pageViewer.comments.toLabel', { thread: current.label })}
+            aria-label={t('pageViewer:comments.toLabel', { thread: current.label })}
           >
             <span className="truncate font-medium" style={{ color: 'var(--color-text-secondary)' }}>{current.label}</span>
             {more && <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />}
@@ -62,7 +62,7 @@ export function CommentDestination({ choices, selected, onPick, onBindBeside }: 
                 <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                 {choice.isDefault && (
                   <span className="shrink-0 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t('pageViewer.comments.defaultTag')}
+                    {t('pageViewer:comments.defaultTag')}
                   </span>
                 )}
               </DropdownMenuRadioItem>
@@ -73,7 +73,7 @@ export function CommentDestination({ choices, selected, onPick, onBindBeside }: 
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onBindBeside}>
                 <Pin className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                {t('pageViewer.comments.bindHere')}
+                {t('pageViewer:comments.bindHere')}
               </DropdownMenuItem>
             </>
           )}

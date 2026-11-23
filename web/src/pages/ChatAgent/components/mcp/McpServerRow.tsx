@@ -19,7 +19,8 @@ import {
   TagBadge,
 } from '@/components/mcp/McpPrimitives';
 import { PluginOriginBadge } from '@/pages/Plugins/components/PluginBadges';
-import { isHostDiscovered, isOauthBroken, showsWorkspaceDetail } from './mcpState';
+import { isHostDiscovered, showsWorkspaceDetail } from './mcpState';
+import { isOauthBroken } from './oauthState';
 import type { EffectiveServer } from '../../utils/api';
 
 /**
@@ -110,11 +111,11 @@ function McpServerRowImpl({
       main={
         <>
           <ServerNameLine name={server.name}>
-            <TagBadge title={isAccount ? t('mcp.row.accountHint') : undefined}>
-              {isBuiltin ? t('mcp.row.builtin') : t('mcp.row.account')}
+            <TagBadge title={isAccount ? t('mcp:row.accountHint') : undefined}>
+              {isBuiltin ? t('mcp:row.builtin') : t('mcp:row.account')}
             </TagBadge>
             <PluginOriginBadge plugin={server.plugin_name} />
-            {lockedByUserTier && <TagBadge soft>{t('mcp.row.userDisabled')}</TagBadge>}
+            {lockedByUserTier && <TagBadge soft>{t('mcp:row.userDisabled')}</TagBadge>}
           </ServerNameLine>
 
           {/* Lifecycle (verify + apply) + tool count */}
@@ -131,7 +132,7 @@ function McpServerRowImpl({
             />
             {showsDetail && server.status === 'connected' && server.tool_count > 0 && (
               <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('mcp.row.toolCount', { count: server.tool_count })}
+                {t('mcp:row.toolCount', { count: server.tool_count })}
               </span>
             )}
           </div>
@@ -158,7 +159,7 @@ function McpServerRowImpl({
                 }}
               >
                 <Blocks className="h-3 w-3" />
-                {t('mcp.row.reconnectInPlugins')}
+                {t('mcp:row.reconnectInPlugins')}
               </button>
             </div>
           )}
@@ -179,7 +180,7 @@ function McpServerRowImpl({
                   }}
                 >
                   <KeyRound className="h-3 w-3" />
-                  {t('mcp.row.setupSecret', { name })}
+                  {t('mcp:row.setupSecret', { name })}
                 </button>
               ))}
             </div>
@@ -197,18 +198,18 @@ function McpServerRowImpl({
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <KebabTrigger aria-label={t('mcp.row.actionsAria', { name: server.name })} />
+              <KebabTrigger aria-label={t('mcp:row.actionsAria', { name: server.name })} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {isAccount && onManageInPlugins && (
                 <DropdownMenuItem onSelect={onManageInPlugins}>
                   <Blocks className="h-3.5 w-3.5 mr-2" />
-                  {t('mcp.row.manageInPlugins')}
+                  {t('mcp:row.manageInPlugins')}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem disabled={!server.editable} onSelect={() => onEdit(server)}>
                 <Pencil className="h-3.5 w-3.5 mr-2" />
-                {t('mcp.row.edit')}
+                {t('mcp:row.edit')}
               </DropdownMenuItem>
               {/* OAuth rows are discovered host-side — the backend 409s an
                   in-sandbox probe, so don't offer one. */}
@@ -217,7 +218,7 @@ function McpServerRowImpl({
                 onSelect={() => onDiscover(server)}
               >
                 <Zap className="h-3.5 w-3.5 mr-2" />
-                {t('mcp.row.testConnection')}
+                {t('mcp:row.testConnection')}
               </DropdownMenuItem>
               {isAccount && (
                 <>
@@ -226,7 +227,7 @@ function McpServerRowImpl({
                     className="font-normal max-w-[16rem] whitespace-normal"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
-                    {t('mcp.row.removeHint')}
+                    {t('mcp:row.removeHint')}
                   </DropdownMenuLabel>
                 </>
               )}

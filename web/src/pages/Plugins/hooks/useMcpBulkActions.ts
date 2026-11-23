@@ -91,12 +91,12 @@ export function useMcpBulkActions({
       // their plugin: bulk delete covers only the user's own catalog rows.
       remove: {
         verb: 'remove',
-        labelKey: 'plugins.bulk.remove',
-        confirmKey: 'plugins.bulk.confirmRemoveConnectors',
+        labelKey: 'plugins:bulk.remove',
+        confirmKey: 'plugins:bulk.confirmRemoveConnectors',
         eligible: (row) => row.tier === 'catalog' && !isPluginOwned(row.server),
         run: (row) => deleteMcpCatalogServer(row.server.name),
       },
-      keptKey: 'plugins.bulk.keptBundled',
+      keptKey: 'plugins:bulk.keptBundled',
       signIn,
     }),
     scope,

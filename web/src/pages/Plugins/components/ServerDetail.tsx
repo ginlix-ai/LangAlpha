@@ -201,7 +201,7 @@ export function ServerDetail({
         onClick={onEdit}
       >
         <Pencil className="h-3.5 w-3.5" />
-        {t('plugins.connectorsPage.edit')}
+        {t('plugins:connectorsPage.edit')}
       </button>
     );
   const callout = pickCallout(state, keyFix, origin === 'brokerage' && !catalog);
@@ -220,9 +220,9 @@ export function ServerDetail({
   const toggleHint = enabled
     ? undefined
     : block === 'connect'
-      ? t('plugins.connectorsPage.toggleNeedsConnect')
+      ? t('plugins:connectorsPage.toggleNeedsConnect')
       : block === 'failing'
-        ? t('plugins.connectorsPage.toggleNeedsFix')
+        ? t('plugins:connectorsPage.toggleNeedsFix')
         : undefined;
 
   const hasScope = !!builtin || !!catalog;
@@ -237,18 +237,18 @@ export function ServerDetail({
     </button>
   );
   const metaParts: ReactNode[] = [];
-  if (builtin) metaParts.push(t('plugins.connectorsPage.builtIn'));
+  if (builtin) metaParts.push(t('plugins:connectorsPage.builtIn'));
   if (plugin && origin !== 'brokerage') {
     metaParts.push(
       <>
-        {t('plugins.connectorsPage.partOf')}
+        {t('plugins:connectorsPage.partOf')}
         {pluginLink}
       </>,
     );
   } else if (origin === 'user') {
-    metaParts.push(t('plugins.connectorsPage.addedByYou'));
+    metaParts.push(t('plugins:connectorsPage.addedByYou'));
   }
-  if (origin === 'brokerage' && !catalog) metaParts.push(t('plugins.brokerages.notAdded'));
+  if (origin === 'brokerage' && !catalog) metaParts.push(t('plugins:brokerages.notAdded'));
   if (oauthLabel) metaParts.push(t(oauthLabel));
 
   return (
@@ -267,7 +267,7 @@ export function ServerDetail({
       aside={
         <>
           {hasScope && (
-            <DetailAsideBlock title={t('plugins.connectorsPage.availability')}>
+            <DetailAsideBlock title={t('plugins:connectorsPage.availability')}>
               <ScopeControl
                 workspaces={workspaces}
                 scopeWorkspaceId={null}
@@ -282,10 +282,10 @@ export function ServerDetail({
               {catalog ? (
                 <>
                   <div className="connector-switch-row">
-                    <span>{t('plugins.connectorsPage.newWorkspaces')}</span>
+                    <span>{t('plugins:connectorsPage.newWorkspaces')}</span>
                     <EnabledToggle
                       enabled={catalog.enabled_in_new_workspaces !== false}
-                      name={t('plugins.connectorsPage.newWorkspaces')}
+                      name={t('plugins:connectorsPage.newWorkspaces')}
                       disabled={scope.busy}
                       onToggle={() =>
                         scope.setNewWorkspacesOn(catalog.enabled_in_new_workspaces === false)
@@ -293,20 +293,20 @@ export function ServerDetail({
                     />
                   </div>
                   {block && (
-                    <p className="connector-aside-note">{t('plugins.connectorsPage.takesEffect')}</p>
+                    <p className="connector-aside-note">{t('plugins:connectorsPage.takesEffect')}</p>
                   )}
                 </>
               ) : (
-                <p className="connector-aside-note">{t('plugins.connectorsPage.builtinScopeNote')}</p>
+                <p className="connector-aside-note">{t('plugins:connectorsPage.builtinScopeNote')}</p>
               )}
             </DetailAsideBlock>
           )}
           {vendor && origin === 'brokerage' && (
-            <DetailAsideBlock title={t('plugins.brokerages.detail.broker')}>
+            <DetailAsideBlock title={t('plugins:brokerages.detail.broker')}>
               <BrokerFacts vendor={vendor} rowUrl={catalog?.url} />
             </DetailAsideBlock>
           )}
-          <DetailAsideBlock title={t('plugins.connectorsPage.details')}>
+          <DetailAsideBlock title={t('plugins:connectorsPage.details')}>
             <ServerFacts
               catalog={catalog}
               transport={transport}
@@ -355,7 +355,7 @@ export function ServerDetail({
               // switch is the first thing tried.
               <span className="flex flex-col items-end gap-1.5">
                 <span className={held ? 'connector-onoff open-style:control-voice is-blocked' : 'connector-onoff open-style:control-voice'}>
-                  {enabled ? t('plugins.surface.on') : t('plugins.surface.off')}
+                  {enabled ? t('plugins:surface.on') : t('plugins:surface.off')}
                   <EnabledToggle
                     enabled={enabled}
                     name={name}
@@ -411,7 +411,7 @@ export function ServerDetail({
       />
 
       {catalog?.instruction && (
-        <DetailSection title={t('plugins.connectorsPage.howAgentUses')}>
+        <DetailSection title={t('plugins:connectorsPage.howAgentUses')}>
           <p className="connector-prose">{catalog.instruction}</p>
         </DetailSection>
       )}

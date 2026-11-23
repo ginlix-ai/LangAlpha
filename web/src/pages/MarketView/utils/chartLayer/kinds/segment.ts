@@ -14,7 +14,7 @@ export interface SegmentScene extends SceneBase {
 }
 
 export const segment: DrawingKind<SegmentDrawing, SegmentScene> = {
-  nameKey: 'marketView.layerExplain.types.segment',
+  nameKey: 'marketView:layerExplain.types.segment',
   times: (d) => [d.p1.time, d.p2.time],
   anchors: (d) => [d.p1, d.p2],
   resolve(d, { base, P }) {

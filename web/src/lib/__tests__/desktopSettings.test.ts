@@ -61,7 +61,7 @@ describe('itemLabel', () => {
   const t = (key: string) => `t:${key}`;
 
   it('names the portfolio and the known indices, and spells the rest', () => {
-    expect(itemLabel(PORTFOLIO_ITEM, t)).toBe('t:settings.desktop.itemPortfolio');
+    expect(itemLabel(PORTFOLIO_ITEM, t)).toBe('t:settings:desktop.itemPortfolio');
     expect(itemLabel({ symbol: 'GSPC', kind: 'index' }, t)).toBe('t:marketIndex.GSPC.long');
     expect(itemLabel({ symbol: 'N225', kind: 'index' }, t)).toBe('^N225');
     expect(itemLabel(nvda, t)).toBe('NVDA');

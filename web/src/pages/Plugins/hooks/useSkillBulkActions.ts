@@ -87,15 +87,15 @@ export function useSkillBulkActions(
       // with its plugin, and a built-in one is switched off instead.
       remove: {
         verb: 'remove',
-        labelKey: 'plugins.bulk.remove',
-        confirmKey: 'plugins.bulk.confirmRemoveSkills',
+        labelKey: 'plugins:bulk.remove',
+        confirmKey: 'plugins:bulk.confirmRemoveSkills',
         eligible: (s) => s.deletable,
         run: (s) => {
           const workspaceId = workspaceOf(s);
           return workspaceId ? deleteWorkspaceSkill(workspaceId, s.name) : deleteSkill(s.name);
         },
       },
-      keptKey: 'plugins.bulk.keptBundled',
+      keptKey: 'plugins:bulk.keptBundled',
     }),
     scope,
   };

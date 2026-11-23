@@ -21,7 +21,7 @@ export interface Palette {
 }
 
 // Ember fallback if --login-ember can't be read: the dark-theme value, which
-// is the canvases' historical hardcoded ember and matches LoginPage.css.
+// is the canvases' historical hardcoded ember and matches AuthPage.css.
 const EMBER_FALLBACK: [number, number, number] = [255, 168, 92];
 
 // The login root the palette is read against: the .login-page ancestor, or the

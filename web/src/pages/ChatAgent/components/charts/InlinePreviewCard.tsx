@@ -71,7 +71,7 @@ export function InlinePreviewCard({ artifact, onClick }: InlineCardProps): React
     { enabled: menuOpen },
   );
   const { copy } = useCopyShareLink();
-  const title = text(artifact.title) || (port ? t('filePanel.previewFrameTitle', { port }) : t('filePanel.previewTab'));
+  const title = text(artifact.title) || (port ? t('filePanel:previewFrameTitle', { port }) : t('filePanel:previewTab'));
   const { threadId } = useParams();
   const { pinned, pinIt } = usePinAppAsDashboard(link, title, path, { workspaceId, threadId });
 
@@ -179,15 +179,15 @@ export function InlinePreviewCard({ artifact, onClick }: InlineCardProps): React
               onSelect={() => link && window.open(shareLinkHref(link.code, path ?? '/'), '_blank', 'noopener,noreferrer')}
             >
               <ExternalLink className="h-3.5 w-3.5" />
-              {t('filePanel.openInBrowser')}
+              {t('filePanel:openInBrowser')}
             </DropdownMenuItem>
             <DropdownMenuItem disabled={!link} onSelect={() => void copyLink()}>
               <Link2 className="h-3.5 w-3.5" />
-              {t('filePanel.copyPrivateLink')}
+              {t('filePanel:copyPrivateLink')}
             </DropdownMenuItem>
             <DropdownMenuItem disabled={!link || pinned} onSelect={pinIt}>
               <House className="h-3.5 w-3.5" />
-              {pinned ? t('customDashboard.isDashboard') : t('customDashboard.setAsDashboard')}
+              {pinned ? t('customDashboard:isDashboard') : t('customDashboard:setAsDashboard')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

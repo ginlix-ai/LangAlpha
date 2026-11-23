@@ -23,7 +23,7 @@ export function PdfComments({ scroller, content, pdf, target }: {
       content={content}
       strategy={strategy}
       target={target}
-      modeHint={t('pageViewer.comments.modeHintPdf')}
+      modeHint={t('pageViewer:comments.modeHintPdf')}
       pictures={pictures}
       // The words or the box a comment is on stay in view.
       keepSpotClear

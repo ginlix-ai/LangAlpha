@@ -36,7 +36,7 @@ export const FRESHNESS_TONE: Record<FreshnessState, FreshnessTone> = {
 };
 
 export interface FreshnessSpec {
-  /** i18n key under `marketView.header.*`. */
+  /** i18n key under `marketView:header.*`. */
   key: string;
   /** Interpolation for the minute-count labels; absent for fixed copy. */
   minutes?: number;
@@ -68,27 +68,27 @@ export function resolveFreshnessBadge({ tier, freshness }: FreshnessFields): Fre
   const current =
     (freshness?.measured && freshness.label === 'live') ||
     (!freshness?.measured && (tier === 'realtime' || tier === 'delayed_15m' || freshness?.label === 'delayed'));
-  if (current && freshness?.closed) return { key: 'marketView.header.statusLastClose', state: 'eod' };
+  if (current && freshness?.closed) return { key: 'marketView:header.statusLastClose', state: 'eod' };
   if (freshness?.measured && freshness.label === 'live') {
-    return { key: 'marketView.header.statusRealtime', state: 'live' };
+    return { key: 'marketView:header.statusRealtime', state: 'live' };
   }
-  if (tier === 'eod') return { key: 'marketView.header.statusLastClose', state: 'eod' };
-  if (freshness?.label === 'stale') return { key: 'marketView.header.statusStale', state: 'stale' };
+  if (tier === 'eod') return { key: 'marketView:header.statusLastClose', state: 'eod' };
+  if (freshness?.label === 'stale') return { key: 'marketView:header.statusStale', state: 'stale' };
   if (freshness?.measured && freshness.label === 'delayed') {
     // A daily series one session behind is yesterday's close, which is what a
     // daily publisher shows all session long: "Last close", not "1440 min".
-    if (isDailyInterval(freshness.interval)) return { key: 'marketView.header.statusLastClose', state: 'eod' };
-    return { key: 'marketView.header.statusDelayedMin', minutes: lagMinutes(freshness.lag_s), state: 'delayed' };
+    if (isDailyInterval(freshness.interval)) return { key: 'marketView:header.statusLastClose', state: 'eod' };
+    return { key: 'marketView:header.statusDelayedMin', minutes: lagMinutes(freshness.lag_s), state: 'delayed' };
   }
   if (freshness?.measured && freshness.label === 'incomplete') {
-    return { key: 'marketView.header.statusIncomplete', state: 'incomplete' };
+    return { key: 'marketView:header.statusIncomplete', state: 'incomplete' };
   }
   // A declared delay the measurement could not see (bars wider than the delay).
   if (freshness && !freshness.measured && freshness.label === 'delayed') {
-    return { key: 'marketView.header.statusDelayed15m', state: 'delayed' };
+    return { key: 'marketView:header.statusDelayed15m', state: 'delayed' };
   }
-  if (tier === 'realtime') return { key: 'marketView.header.statusRealtime', state: 'live' };
-  if (tier === 'delayed_15m') return { key: 'marketView.header.statusDelayed15m', state: 'delayed' };
+  if (tier === 'realtime') return { key: 'marketView:header.statusRealtime', state: 'live' };
+  if (tier === 'delayed_15m') return { key: 'marketView:header.statusDelayed15m', state: 'delayed' };
   return null;
 }
 
@@ -100,11 +100,11 @@ export function resolveFreshnessBadge({ tier, freshness }: FreshnessFields): Fre
 export function resolveChartFreshness(freshness: Freshness | null | undefined): FreshnessSpec | null {
   const spec = resolveFreshnessBadge({ freshness });
   if (!spec) return null;
-  if (spec.state === 'live') return { ...spec, key: 'marketView.header.chartLive' };
+  if (spec.state === 'live') return { ...spec, key: 'marketView:header.chartLive' };
   if (spec.state === 'incomplete') {
-    return { ...spec, key: 'marketView.header.chartShortOfClose', minutes: lagMinutes(freshness?.lag_s) };
+    return { ...spec, key: 'marketView:header.chartShortOfClose', minutes: lagMinutes(freshness?.lag_s) };
   }
-  if (spec.key === 'marketView.header.statusDelayedMin') return { ...spec, key: 'marketView.header.chartDelayedMin' };
+  if (spec.key === 'marketView:header.statusDelayedMin') return { ...spec, key: 'marketView:header.chartDelayedMin' };
   return spec;
 }
 
@@ -200,7 +200,7 @@ export function chartFreshnessParts(
   return {
     source: providerLabel(freshness?.source, t),
     state: freshnessSpecText(t, resolveChartFreshness(freshness)),
-    lastBar: bar ? t('marketView.header.chartLastBar', { time: bar }) : null,
+    lastBar: bar ? t('marketView:header.chartLastBar', { time: bar }) : null,
   };
 }
 

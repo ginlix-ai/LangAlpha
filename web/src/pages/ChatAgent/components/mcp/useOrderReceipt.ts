@@ -34,14 +34,14 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
  */
 
 const FILL_LABEL = {
-  filled: 'toolArtifact.directTool.orderOutcome.filled',
-  avgFillPrice: 'toolArtifact.directTool.orderOutcome.avgFillPrice',
-  fees: 'toolArtifact.directTool.orderOutcome.fees',
+  filled: 'toolArtifact:directTool.orderOutcome.filled',
+  avgFillPrice: 'toolArtifact:directTool.orderOutcome.avgFillPrice',
+  fees: 'toolArtifact:directTool.orderOutcome.fees',
   /** The label a fill sentence keeps when values are hidden and the sentence,
    *  which is all figures, goes. */
-  fill: 'toolArtifact.directTool.orderOutcome.fill',
-  filledOf: 'toolArtifact.directTool.orderOutcome.filledOf',
-  filledAt: 'toolArtifact.directTool.orderOutcome.filledAt',
+  fill: 'toolArtifact:directTool.orderOutcome.fill',
+  filledOf: 'toolArtifact:directTool.orderOutcome.filledOf',
+  filledAt: 'toolArtifact:directTool.orderOutcome.filledAt',
 };
 
 /** Every locale key this card can ask for through a map. The status verdicts

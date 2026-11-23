@@ -55,18 +55,18 @@ describe('computerAway', () => {
 
   it('words a refused change for the machine, and blames the service for its own gateway', () => {
     const away = refused(503, { 'x-computer-unreachable': 'not_connected' });
-    expect(awayRetryMessage(away, t, sshMac)).toBe('filePanel.away.retryMac');
-    expect(awayRetryMessage(away, t, linux)).toBe('filePanel.away.retryNamed:lab-box');
-    expect(awayRetryMessage(away, t, awayMachineOf(null))).toBe('filePanel.away.retry');
+    expect(awayRetryMessage(away, t, sshMac)).toBe('filePanel:away.retryMac');
+    expect(awayRetryMessage(away, t, linux)).toBe('filePanel:away.retryNamed:lab-box');
+    expect(awayRetryMessage(away, t, awayMachineOf(null))).toBe('filePanel:away.retry');
     expect(awayRetryMessage(refused(503, { 'x-computer-unreachable': 'gateway_unreachable' }), t, sshMac))
-      .toBe('filePanel.away.retryService');
+      .toBe('filePanel:away.retryService');
     expect(awayRetryMessage(refused(500), t, sshMac)).toBeNull();
   });
 
   it('says the files shown are the backup', () => {
-    expect(backupShownText(t, 'not_connected', sshMac)).toBe('filePanel.away.backupMac');
-    expect(backupShownText(t, 'timeout', linux)).toBe('filePanel.away.backupNamed:lab-box');
-    expect(backupShownText(t, 'gateway_unreachable', linux)).toBe('filePanel.away.backupService');
+    expect(backupShownText(t, 'not_connected', sshMac)).toBe('filePanel:away.backupMac');
+    expect(backupShownText(t, 'timeout', linux)).toBe('filePanel:away.backupNamed:lab-box');
+    expect(backupShownText(t, 'gateway_unreachable', linux)).toBe('filePanel:away.backupService');
   });
 
   it('tells a turn how to bring its machine back', () => {

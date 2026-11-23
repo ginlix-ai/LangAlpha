@@ -48,9 +48,9 @@ export function PluginCard({
     return (
       <div className="pp-confirm">
         <ConfirmStrip
-          message={t('plugins.pluginsPage.uninstallAsk', { plugin: plugin.name })}
-          confirmLabel={life.uninstalling ? t('common.loading') : t('plugins.card.uninstallConfirmYes')}
-          cancelLabel={t('plugins.card.uninstallConfirmNo')}
+          message={t('plugins:pluginsPage.uninstallAsk', { plugin: plugin.name })}
+          confirmLabel={life.uninstalling ? t('common.loading') : t('plugins:card.uninstallConfirmYes')}
+          cancelLabel={t('plugins:card.uninstallConfirmNo')}
           pending={life.uninstalling}
           onConfirm={() => void life.uninstall()}
           onCancel={life.cancelUninstall}
@@ -75,13 +75,13 @@ export function PluginCard({
         }
         icon={<KeyRound className="h-3.5 w-3.5" aria-hidden />}
       >
-        {fix.kind === 'addKey' ? t('plugins.surface.addKey') : t('plugins.surface.replaceKey')}
+        {fix.kind === 'addKey' ? t('plugins:surface.addKey') : t('plugins:surface.replaceKey')}
       </CellAction>
     );
   } else if (fix?.kind === 'signIn' && onConnect) {
     trailing = (
       <CellAction onClick={onConnect} disabled={connecting}>
-        {t('plugins.oauth.connect')}
+        {t('plugins:oauth.connect')}
       </CellAction>
     );
   } else if (fix?.kind === 'open') {
@@ -102,31 +102,31 @@ export function PluginCard({
         onOpen={onOpen}
         trailing={trailing}
         menu={
-          <CellMenu label={t('mcp.row.actionsAria', { name: plugin.name })}>
+          <CellMenu label={t('mcp:row.actionsAria', { name: plugin.name })}>
             <DropdownMenuItem onSelect={() => void life.toggle()} disabled={life.toggling}>
               <Power className="h-3.5 w-3.5" />
-              {plugin.enabled ? t('plugins.pluginsPage.switchOff') : t('plugins.pluginsPage.switchOn')}
+              {plugin.enabled ? t('plugins:pluginsPage.switchOff') : t('plugins:pluginsPage.switchOn')}
             </DropdownMenuItem>
             {installed ? (
               <>
                 <DropdownMenuItem onSelect={life.update} disabled={life.busy}>
                   <RefreshCw className="h-3.5 w-3.5" />
-                  {t('plugins.card.update')}
+                  {t('plugins:card.update')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void life.exportPackage()} disabled={life.exporting}>
                   <Download className="h-3.5 w-3.5" />
-                  {t('plugins.card.export')}
+                  {t('plugins:card.export')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onSelect={life.requestUninstall}>
                   <Trash2 className="h-3.5 w-3.5" />
-                  {t('plugins.pluginsPage.uninstall')}
+                  {t('plugins:pluginsPage.uninstall')}
                 </DropdownMenuItem>
               </>
             ) : (
               <>
                 <DropdownMenuSeparator />
-                <p className="pp-menu-note">{t('plugins.pluginsPage.builtinNote')}</p>
+                <p className="pp-menu-note">{t('plugins:pluginsPage.builtinNote')}</p>
               </>
             )}
           </CellMenu>

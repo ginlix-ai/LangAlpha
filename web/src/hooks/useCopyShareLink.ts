@@ -30,7 +30,7 @@ export function useCopyShareLink(): {
       await copyText(shareLinkHref(code, path));
     } catch (err) {
       console.error('[useCopyShareLink] Copy failed:', err);
-      toast({ description: t('filePanel.shareLinkFailed'), variant: 'destructive' });
+      toast({ description: t('filePanel:shareLinkFailed'), variant: 'destructive' });
       return false;
     }
     setCopiedCode(code);

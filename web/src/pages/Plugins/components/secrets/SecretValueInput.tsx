@@ -27,8 +27,8 @@ export function SecretValueInput({
 }) {
   const { t } = useTranslation();
   const label = visible
-    ? (labels?.hide ?? t('vault.hideValue'))
-    : (labels?.show ?? t('vault.revealValue'));
+    ? (labels?.hide ?? t('vault:hideValue'))
+    : (labels?.show ?? t('vault:revealValue'));
   return (
     <div className={cn('relative', wrapperClassName)}>
       <input

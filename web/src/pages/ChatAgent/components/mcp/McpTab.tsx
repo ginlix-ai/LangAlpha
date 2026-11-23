@@ -94,7 +94,7 @@ export function McpTab({ workspaceId }: McpTabProps) {
       update: updateMutation.mutateAsync,
       toggle: toggleMutation.mutateAsync,
       onSaveWarnings: (warnings) =>
-        toast({ title: t('mcp.tab.savedWithWarnings'), description: warnings.join('\n') }),
+        toast({ title: t('mcp:tab.savedWithWarnings'), description: warnings.join('\n') }),
       // No Open here: the new row lands in this same list, in view.
       onCreated: ({ name, toolCount }) => toastConnectorAdded({ name, toolCount, t }),
       // A sign-in lands as the same save would have: an add switched on here
@@ -226,39 +226,39 @@ export function McpTab({ workspaceId }: McpTabProps) {
       <div className="flex flex-col gap-3">
           <ListToolbar
             icon={Server}
-            title={t('mcp.list.title')}
+            title={t('mcp:list.title')}
             count={servers.length}
             cap={cap}
             onImport={openImport}
             onAdd={openAdd}
           >
-            <HeaderButton variant="ghost" icon={Blocks} onClick={handleManageInPlugins} title={t('mcp.tab.pluginsHint')}>
-              {t('mcp.tab.plugins')}
+            <HeaderButton variant="ghost" icon={Blocks} onClick={handleManageInPlugins} title={t('mcp:tab.pluginsHint')}>
+              {t('mcp:tab.plugins')}
             </HeaderButton>
           </ListToolbar>
 
           <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('mcp.tab.accountHint')}
+            {t('mcp:tab.accountHint')}
           </p>
 
           {!sandboxRunning && sandboxWarming && (
             <div className="text-[0.6875rem] p-2 rounded" style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-tertiary)' }}>
-              {t('mcp.tab.startingWorkspace')}
+              {t('mcp:tab.startingWorkspace')}
             </div>
           )}
 
           {!sandboxRunning && !sandboxWarming && (
             <div className="text-[0.6875rem] p-2 rounded" style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-tertiary)' }}>
-              {t('mcp.tab.workspaceStopped')}
+              {t('mcp:tab.workspaceStopped')}
             </div>
           )}
 
           {error ? (
-            <LoadFailed what={t('plugins.loadFailed.mcp')} error={error} onRetry={() => void refetch()} />
+            <LoadFailed what={t('plugins:loadFailed.mcp')} error={error} onRetry={() => void refetch()} />
           ) : isLoading ? (
             <ListSkeleton />
           ) : servers.length === 0 ? (
-            <ListEmpty>{t('mcp.list.empty')}</ListEmpty>
+            <ListEmpty>{t('mcp:list.empty')}</ListEmpty>
           ) : (
             <div className="flex flex-col [&>*+*]:mt-1.5">
               <AnimatePresence initial={false}>
@@ -290,8 +290,8 @@ export function McpTab({ workspaceId }: McpTabProps) {
             allowDiscover={!!modal.initial && sandboxRunning}
             onDiscover={modal.initial ? handleDiscoverFromModal : undefined}
             onProbe={probeMcpServer}
-            note={modal.initial ? undefined : t('mcp.tab.addNote')}
-            editLabels={{ title: t('mcp.tab.editTitle'), save: t('mcp.tab.editSave') }}
+            note={modal.initial ? undefined : t('mcp:tab.addNote')}
+            editLabels={{ title: t('mcp:tab.editTitle'), save: t('mcp:tab.editSave') }}
             saving={addMutation.isPending || updateMutation.isPending}
           />
         )}

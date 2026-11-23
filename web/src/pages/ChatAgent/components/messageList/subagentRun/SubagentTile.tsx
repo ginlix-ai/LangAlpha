@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useModelName } from '@/hooks/useModelName';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import type { SubagentModel } from '../../../session/subagents/taskRuns';
 import { SubagentGlyph } from '../../mcp/subagentGlyph';
 import { RunAvatar } from '../runCard';

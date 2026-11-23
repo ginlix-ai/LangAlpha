@@ -17,23 +17,23 @@ const ALL: readonly Section[] = [...CUSTOMIZE, ...ACCOUNTS];
 
 // Bare literals (not a template) so the locale parity test sees every label.
 export const SECTION_LABEL_KEYS: Record<Section, string> = {
-  plugins: 'plugins.shell.section.plugins',
-  mcp: 'plugins.shell.section.mcp',
-  skills: 'plugins.shell.section.skills',
-  subagents: 'plugins.shell.section.subagents',
-  brokerages: 'plugins.shell.section.brokerages',
-  secrets: 'plugins.shell.section.secrets',
+  plugins: 'plugins:shell.section.plugins',
+  mcp: 'plugins:shell.section.mcp',
+  skills: 'plugins:shell.section.skills',
+  subagents: 'plugins:shell.section.subagents',
+  brokerages: 'plugins:shell.section.brokerages',
+  secrets: 'plugins:shell.section.secrets',
 };
 
 // What each section holds, in a line under its title: a first visit cannot
 // tell a plugin from a connector from a skill by their names alone.
 export const SECTION_DEFINITION_KEYS: Record<Section, string> = {
-  plugins: 'plugins.shell.definition.plugins',
-  mcp: 'plugins.shell.definition.mcp',
-  skills: 'plugins.shell.definition.skills',
-  subagents: 'plugins.shell.definition.subagents',
-  brokerages: 'plugins.shell.definition.brokerages',
-  secrets: 'plugins.shell.definition.secrets',
+  plugins: 'plugins:shell.definition.plugins',
+  mcp: 'plugins:shell.definition.mcp',
+  skills: 'plugins:shell.definition.skills',
+  subagents: 'plugins:shell.definition.subagents',
+  brokerages: 'plugins:shell.definition.brokerages',
+  secrets: 'plugins:shell.definition.secrets',
 };
 
 export const SECTION_ICONS: Record<Section, ComponentType<{ className?: string }>> = {
@@ -66,24 +66,24 @@ export interface AddRoute {
 }
 
 export const ADD_ROUTES: Record<AddSection, AddRoute[]> = {
-  plugins: [{ intent: 'plugin', key: 'plugins.addMenu.installPlugin' }],
+  plugins: [{ intent: 'plugin', key: 'plugins:addMenu.installPlugin' }],
   mcp: [
-    { intent: 'server', key: 'plugins.addMenu.addServer' },
-    { intent: 'import', key: 'plugins.addMenu.importServers' },
+    { intent: 'server', key: 'plugins:addMenu.addServer' },
+    { intent: 'import', key: 'plugins:addMenu.importServers' },
   ],
-  skills: [{ intent: 'skill', key: 'plugins.addMenu.uploadSkill' }],
+  skills: [{ intent: 'skill', key: 'plugins:addMenu.uploadSkill' }],
   subagents: [
     {
       intent: 'subagent',
-      key: 'plugins.addMenu.newSubagent',
-      hintKey: 'plugins.addMenu.newSubagentHint',
+      key: 'plugins:addMenu.newSubagent',
+      hintKey: 'plugins:addMenu.newSubagentHint',
       icon: FilePlus,
     },
     {
       intent: 'subagent-chat',
       icon: MessageSquarePlus,
-      key: 'plugins.addMenu.createWithAgent',
-      hintKey: 'plugins.addMenu.createWithAgentHint',
+      key: 'plugins:addMenu.createWithAgent',
+      hintKey: 'plugins:addMenu.createWithAgentHint',
     },
   ],
 };

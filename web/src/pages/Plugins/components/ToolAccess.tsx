@@ -41,18 +41,18 @@ const ORDER_MODE_LADDER: readonly McpOrderMode[] = ['live', 'paper', 'staged'];
  */
 const ORDER_COPY = {
   live: {
-    label: 'plugins.detail.orderApprovalLive',
-    desc: 'plugins.detail.orderApprovalLiveDesc',
-    locked: 'plugins.detail.orderApprovalLiveLockedDesc',
+    label: 'plugins:detail.orderApprovalLive',
+    desc: 'plugins:detail.orderApprovalLiveDesc',
+    locked: 'plugins:detail.orderApprovalLiveLockedDesc',
   },
   paper: {
-    label: 'plugins.detail.orderApprovalPaper',
-    desc: 'plugins.detail.orderApprovalPaperDesc',
+    label: 'plugins:detail.orderApprovalPaper',
+    desc: 'plugins:detail.orderApprovalPaperDesc',
   },
   staged: {
-    label: 'plugins.detail.orderApprovalStaged',
-    desc: 'plugins.detail.orderApprovalStagedDesc',
-    locked: 'plugins.detail.orderApprovalStagedLockedDesc',
+    label: 'plugins:detail.orderApprovalStaged',
+    desc: 'plugins:detail.orderApprovalStagedDesc',
+    locked: 'plugins:detail.orderApprovalStagedLockedDesc',
   },
 } as const satisfies Record<McpOrderMode, { label: string; desc: string; locked?: string }>;
 
@@ -98,8 +98,8 @@ export function ToolAccessSwitches({
   return (
     <ul className="flex flex-col gap-3">
       <SwitchRow
-        label={t('plugins.detail.groupDefaults')}
-        desc={t('plugins.detail.groupDefaultsDesc')}
+        label={t('plugins:detail.groupDefaults')}
+        desc={t('plugins:detail.groupDefaultsDesc')}
         enabled={groupDefaults}
         disabled={busy}
         onToggle={() => onPatch({ binding_preset: groupDefaults ? 'ptc_only' : null })}
@@ -226,33 +226,33 @@ export function ToolBindingControl({
         {tool.approval && (
           <span
             className="text-[0.625rem]"
-            title={t('plugins.detail.asksFirstTitle')}
+            title={t('plugins:detail.asksFirstTitle')}
             style={{ color: 'var(--color-text-quaternary)' }}
           >
-            {t('plugins.detail.asksFirst')}
+            {t('plugins:detail.asksFirst')}
           </span>
         )}
         {overridden && (
           <>
             <span className="text-[0.625rem]" style={{ color: 'var(--color-text-quaternary)' }}>
-              {t('plugins.detail.bindingCustom')}
+              {t('plugins:detail.bindingCustom')}
             </span>
             <button
               type="button"
               disabled={busy}
               onClick={reset}
-              aria-label={t('plugins.detail.bindingResetAria', { name: tool.name })}
+              aria-label={t('plugins:detail.bindingResetAria', { name: tool.name })}
               className="text-[0.625rem] hover:underline underline-offset-2 disabled:opacity-50"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('plugins.detail.bindingReset')}
+              {t('plugins:detail.bindingReset')}
             </button>
           </>
         )}
         <SegmentedControl
           size="compact"
           value={value}
-          label={t('plugins.detail.bindingAria', { name: tool.name })}
+          label={t('plugins:detail.bindingAria', { name: tool.name })}
           disabled={busy}
           options={bindingOptions(t, (b) => permitsBinding(tool, b))}
           onChange={write}
@@ -266,7 +266,7 @@ export function ToolBindingControl({
           className="text-[0.625rem] text-right w-0 min-w-full"
           style={{ color: 'var(--color-text-quaternary)' }}
         >
-          {t('plugins.detail.bindingPinned')}
+          {t('plugins:detail.bindingPinned')}
         </span>
       )}
       {error && (

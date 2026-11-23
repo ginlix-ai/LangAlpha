@@ -117,7 +117,7 @@ function AddWatchlistItemDialog({
     const priceBelowNum = priceBelow.trim() ? parseFloat(priceBelow) : null;
 
     if (priceAboveNum != null && priceBelowNum != null && priceAboveNum <= priceBelowNum) {
-      alert(t('dashboard.addWatchlistDialog.alertPriceAboveBelow'));
+      alert(t('dashboard:addWatchlistDialog.alertPriceAboveBelow'));
       return;
     }
 
@@ -152,7 +152,7 @@ function AddWatchlistItemDialog({
   ) : currentPrice !== null ? (
     <span className="term-code term-strong">{formatMoney(currentPrice, cur, locale)}</span>
   ) : (
-    <span className="term-t3">{t('dashboard.addWatchlistDialog.priceNA')}</span>
+    <span className="term-t3">{t('dashboard:addWatchlistDialog.priceNA')}</span>
   );
 
   return (
@@ -162,7 +162,7 @@ function AddWatchlistItemDialog({
           <>
             <DialogHeader className="text-left">
               <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                {t('dashboard.addWatchlistDialog.titleSearch')}
+                {t('dashboard:addWatchlistDialog.titleSearch')}
               </DialogTitle>
             </DialogHeader>
             <SymbolSearchCard
@@ -172,10 +172,10 @@ function AddWatchlistItemDialog({
               loading={searchLoading}
               onSelect={handleStockSelect}
               copy={{
-                searching: t('dashboard.addWatchlistDialog.searching'),
-                noResults: t('dashboard.addWatchlistDialog.noResults'),
-                searchHint: t('dashboard.addWatchlistDialog.searchHint'),
-                searchPlaceholder: t('dashboard.addWatchlistDialog.searchPlaceholder'),
+                searching: t('dashboard:addWatchlistDialog.searching'),
+                noResults: t('dashboard:addWatchlistDialog.noResults'),
+                searchHint: t('dashboard:addWatchlistDialog.searchHint'),
+                searchPlaceholder: t('dashboard:addWatchlistDialog.searchPlaceholder'),
               }}
             />
           </>
@@ -190,12 +190,12 @@ function AddWatchlistItemDialog({
                   style={{ color: 'var(--color-text-secondary)' }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                  aria-label={t('dashboard.addWatchlistDialog.back')}
+                  aria-label={t('dashboard:addWatchlistDialog.back')}
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </button>
                 <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                  {t('dashboard.addWatchlistDialog.titleDetails')}
+                  {t('dashboard:addWatchlistDialog.titleDetails')}
                 </DialogTitle>
               </div>
             </DialogHeader>
@@ -204,12 +204,12 @@ function AddWatchlistItemDialog({
                 <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} symbol={selectedStock.symbol} sub={exchange}>
                   <div>
                     {selectedStock.name && <div className="term-word dash-form-name">{selectedStock.name}</div>}
-                    <TermKV cols={1} pairs={[[t('dashboard.addWatchlistDialog.currentPrice'), priceCell]]} />
+                    <TermKV cols={1} pairs={[[t('dashboard:addWatchlistDialog.currentPrice'), priceCell]]} />
                   </div>
                   <label className="block">
-                    <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.notesLabel')}</span>
+                    <span className="term-label dash-form-label">{t('dashboard:addWatchlistDialog.notesLabel')}</span>
                     <Input
-                      placeholder={t('dashboard.addWatchlistDialog.notesPlaceholder')}
+                      placeholder={t('dashboard:addWatchlistDialog.notesPlaceholder')}
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       className="dash-form-input border"
@@ -217,10 +217,10 @@ function AddWatchlistItemDialog({
                   </label>
                 </FormCard>
 
-                <FormCard title={t('dashboard.addWatchlistDialog.priceAlertsLabel')}>
+                <FormCard title={t('dashboard:addWatchlistDialog.priceAlertsLabel')}>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
-                      <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.priceAboveLabel')}</span>
+                      <span className="term-label dash-form-label">{t('dashboard:addWatchlistDialog.priceAboveLabel')}</span>
                       <Input
                         type="number"
                         step="0.01"
@@ -231,7 +231,7 @@ function AddWatchlistItemDialog({
                       />
                     </label>
                     <label className="block">
-                      <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.priceBelowLabel')}</span>
+                      <span className="term-label dash-form-label">{t('dashboard:addWatchlistDialog.priceBelowLabel')}</span>
                       <Input
                         type="number"
                         step="0.01"
@@ -251,7 +251,7 @@ function AddWatchlistItemDialog({
                   className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
                   style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
-                  {t('dashboard.addWatchlistDialog.addButton')}
+                  {t('dashboard:addWatchlistDialog.addButton')}
                 </button>
               </div>
             )}

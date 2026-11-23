@@ -576,7 +576,7 @@ describe('elements', () => {
     const trend = els.get('test|drawing|0')!;
     expect(trend.ref).toMatchObject({ layerId: 'test', layerTitle: 'Test layer', kind: 'drawing', type: 'segment', label: 'Trend' });
     expect(trend.ref.anchors).toHaveLength(2);
-    expect(els.get('test|drawing|2')!).toMatchObject({ label: null, typeKey: 'marketView.layerExplain.types.vline' });
+    expect(els.get('test|drawing|2')!).toMatchObject({ label: null, typeKey: 'marketView:layerExplain.types.vline' });
   });
 
   it('prices a time-only anchor at the bar close, or drops it', () => {

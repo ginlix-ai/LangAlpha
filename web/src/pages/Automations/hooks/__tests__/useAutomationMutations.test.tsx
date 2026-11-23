@@ -59,7 +59,7 @@ describe('useAutomationMutations', () => {
     });
 
     expect(api.triggerAutomation).toHaveBeenCalledWith('auto-1');
-    expect(toast).toHaveBeenCalledWith({ description: i18n.t('automation.runStarted') });
+    expect(toast).toHaveBeenCalledWith({ description: i18n.t('automation:runStarted') });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.automations.all });
   });
 

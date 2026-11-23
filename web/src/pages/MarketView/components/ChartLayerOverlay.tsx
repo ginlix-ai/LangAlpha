@@ -335,7 +335,7 @@ export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
       element: { ...info.ref, anchors: cleanAnchors(info.ref.anchors, closeAt) },
     });
     if (!handled) {
-      toast({ title: t('marketView.layers.askUnavailable') });
+      toast({ title: t('marketView:layers.askUnavailable') });
       return;
     }
     setAsked(true);
@@ -372,7 +372,7 @@ export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
                 type="button"
                 {...buttonSlot('ghost')}
                 className="chart-layer-card-close tap-target"
-                aria-label={t('marketView.layerExplain.close')}
+                aria-label={t('marketView:layerExplain.close')}
                 onClick={() => setPin(null)}
               >
                 <X size={13} />
@@ -391,11 +391,11 @@ export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
                 disabled={asked}
               >
                 {asked ? <Check size={13} /> : <MessageSquarePlus size={13} />}
-                {asked ? t('marketView.layerExplain.asked') : t('marketView.layerExplain.ask')}
+                {asked ? t('marketView:layerExplain.asked') : t('marketView:layerExplain.ask')}
               </button>
             </div>
           ) : (
-            <div className="chart-layer-card-hint">{t('marketView.layerExplain.pinHint')}</div>
+            <div className="chart-layer-card-hint">{t('marketView:layerExplain.pinHint')}</div>
           )}
         </div>
       )}

@@ -29,13 +29,13 @@ describe('panelLiveness', () => {
     expect(panelLiveness([row()], NOW)?.dot).toBe('realtime');
     expect(panelLiveness([row({ isIndex: true, fields: lastClose })], NOW)).toMatchObject({
       dot: 'closed',
-      row: { spec: { key: 'marketView.header.statusLastClose' } },
+      row: { spec: { key: 'marketView:header.statusLastClose' } },
     });
   });
 
   it('lets one stale row name the whole panel', () => {
     const state = panelLiveness([row({ streaming: true }), row({ key: 'MSFT', fields: stale })], NOW);
-    expect(state).toMatchObject({ dot: 'warning', row: { spec: { key: 'marketView.header.statusStale' } } });
+    expect(state).toMatchObject({ dot: 'warning', row: { spec: { key: 'marketView:header.statusStale' } } });
   });
 
   it('calls a figure not refreshed past the limit overdue, ahead of a stale label', () => {

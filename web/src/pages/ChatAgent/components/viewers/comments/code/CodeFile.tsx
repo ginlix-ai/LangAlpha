@@ -66,7 +66,7 @@ export function CodeFile({ content, language, lineRange, comments }: {
           content={root}
           strategy={strategy}
           target={comments}
-          modeHint={t('pageViewer.comments.modeHintCode')}
+          modeHint={t('pageViewer:comments.modeHintCode')}
         />
       )}
     </>

@@ -210,7 +210,7 @@ export function PickOverlays({
           >
             <button type="button" className="page-comments-select-action tap-target" onClick={() => onComment(selection)}>
               <MessageSquarePlus className="h-3.5 w-3.5" />
-              {t('pageViewer.comments.comment')}
+              {t('pageViewer:comments.comment')}
             </button>
             {onAsk && (
               <button type="button" className="page-comments-select-action tap-target" onClick={() => onAsk(selection)}>

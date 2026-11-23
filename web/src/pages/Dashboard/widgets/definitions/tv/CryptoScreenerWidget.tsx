@@ -38,26 +38,26 @@ function CryptoScreenerSettings({ config, onChange, onClose }: WidgetSettingsPro
   return (
     <div className="space-y-4">
       <EnumField
-        label={t('dashboard.widgets.cryptoScreener.columns')}
+        label={t('dashboard:widgets.cryptoScreener.columns')}
         value={config.defaultColumn ?? 'overview'}
         onChange={(v) => onChange({ defaultColumn: v })}
         options={[
-          { value: 'overview', label: t('dashboard.widgets.cryptoScreener.columns_overview') },
-          { value: 'performance', label: t('dashboard.widgets.cryptoScreener.columns_performance') },
-          { value: 'oscillators', label: t('dashboard.widgets.cryptoScreener.columns_oscillators') },
-          { value: 'moving_averages', label: t('dashboard.widgets.cryptoScreener.columns_movingAverages') },
+          { value: 'overview', label: t('dashboard:widgets.cryptoScreener.columns_overview') },
+          { value: 'performance', label: t('dashboard:widgets.cryptoScreener.columns_performance') },
+          { value: 'oscillators', label: t('dashboard:widgets.cryptoScreener.columns_oscillators') },
+          { value: 'moving_averages', label: t('dashboard:widgets.cryptoScreener.columns_movingAverages') },
         ]}
       />
       <EnumField
-        label={t('dashboard.widgets.cryptoScreener.screen')}
+        label={t('dashboard:widgets.cryptoScreener.screen')}
         value={config.defaultScreen ?? 'general'}
         onChange={(v) => onChange({ defaultScreen: v })}
         options={[
-          { value: 'general', label: t('dashboard.widgets.cryptoScreener.screen_general') },
-          { value: 'most_capitalized', label: t('dashboard.widgets.cryptoScreener.screen_mostCap') },
-          { value: 'top_gainers', label: t('dashboard.widgets.cryptoScreener.screen_topGainers') },
-          { value: 'top_losers', label: t('dashboard.widgets.cryptoScreener.screen_topLosers') },
-          { value: 'most_active', label: t('dashboard.widgets.cryptoScreener.screen_active') },
+          { value: 'general', label: t('dashboard:widgets.cryptoScreener.screen_general') },
+          { value: 'most_capitalized', label: t('dashboard:widgets.cryptoScreener.screen_mostCap') },
+          { value: 'top_gainers', label: t('dashboard:widgets.cryptoScreener.screen_topGainers') },
+          { value: 'top_losers', label: t('dashboard:widgets.cryptoScreener.screen_topLosers') },
+          { value: 'most_active', label: t('dashboard:widgets.cryptoScreener.screen_active') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -68,8 +68,8 @@ function CryptoScreenerSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<CryptoScreenerConfig>({
   type: 'tv.crypto-screener',
-  titleKey: 'dashboard.widgets.cryptoScreener.title',
-  descriptionKey: 'dashboard.widgets.cryptoScreener.description',
+  titleKey: 'dashboard:widgets.cryptoScreener.title',
+  descriptionKey: 'dashboard:widgets.cryptoScreener.description',
   category: 'markets',
   icon: Bitcoin,
   component: CryptoScreenerWidget,

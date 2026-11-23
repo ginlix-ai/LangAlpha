@@ -3,8 +3,7 @@ import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
 import { httpCatalogServer } from '@/test/factories';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, zhCN } from '@/test/catalogs';
 import type {
   CatalogServer,
   McpOrderMode,

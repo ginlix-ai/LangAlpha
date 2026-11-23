@@ -41,8 +41,8 @@ export function DashboardSwitcher({ dashboards, onReselect }: DashboardSwitcherP
   const navigate = useNavigate();
   const agent = useDashboardAgent();
   const { list, current, select, remove } = dashboards;
-  const nameOf = (title: string) => title || t('customDashboard.untitled');
-  const label = current ? nameOf(current.title) : t('customDashboard.builtIn');
+  const nameOf = (title: string) => title || t('customDashboard:untitled');
+  const label = current ? nameOf(current.title) : t('customDashboard:builtIn');
 
   // The ask rides the route, so the menu stays open across the switch from
   // one header to the other; closing it clears the ask, so a reload does not
@@ -69,8 +69,8 @@ export function DashboardSwitcher({ dashboards, onReselect }: DashboardSwitcherP
           type="button"
           className="tap-target flex h-9 min-w-0 items-center gap-1.5 rounded-md px-2 text-sm transition-colors hover:bg-(--color-bg-hover)"
           style={{ color: 'var(--color-text-secondary)' }}
-          aria-label={t('customDashboard.switchLabel', { name: label })}
-          title={t('customDashboard.switchLabel', { name: label })}
+          aria-label={t('customDashboard:switchLabel', { name: label })}
+          title={t('customDashboard:switchLabel', { name: label })}
         >
           <DashboardIcon dashboard={current} size={16} className="shrink-0" />
           <span className="hidden max-w-[14rem] truncate sm:inline">{label}</span>
@@ -82,7 +82,7 @@ export function DashboardSwitcher({ dashboards, onReselect }: DashboardSwitcherP
           <DropdownMenuRadioItem value={BUILT_IN}>
             {mark(!current)}
             <DashboardIcon dashboard={null} className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{t('customDashboard.builtIn')}</span>
+            <span className="truncate">{t('customDashboard:builtIn')}</span>
           </DropdownMenuRadioItem>
           {list.map((dashboard) => {
             const name = nameOf(dashboard.title);
@@ -99,8 +99,8 @@ export function DashboardSwitcher({ dashboards, onReselect }: DashboardSwitcherP
                   onSelect={() => remove(dashboard.code)}
                   className="tap-target w-auto shrink-0 px-1.5"
                   style={{ color: 'var(--color-text-tertiary)' }}
-                  aria-label={t('customDashboard.remove', { name })}
-                  title={t('customDashboard.remove', { name })}
+                  aria-label={t('customDashboard:remove', { name })}
+                  title={t('customDashboard:remove', { name })}
                 >
                   <X className="h-3.5 w-3.5" aria-hidden />
                 </DropdownMenuItem>
@@ -111,12 +111,12 @@ export function DashboardSwitcher({ dashboards, onReselect }: DashboardSwitcherP
         <DropdownMenuSeparator />
         {list.length === 0 && (
           <p className="px-2.5 pt-1 pb-1.5 text-xs leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('customDashboard.emptyHint')}
+            {t('customDashboard:emptyHint')}
           </p>
         )}
         <DropdownMenuItem onSelect={agent.build}>
           <Sparkles className="h-3.5 w-3.5 shrink-0" />
-          {t('customDashboard.build')}
+          {t('customDashboard:build')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

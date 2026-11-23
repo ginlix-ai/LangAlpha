@@ -47,7 +47,7 @@ interface Draft {
  *  picks a message's wording for a pair. */
 export function namePhrase(t: TFunction, names: string[]): { text: string; context: 'pair' | undefined } {
   return names.length > 1
-    ? { text: t('settings.defaultModelChange.modelPair', { first: names[0], second: names[1] }), context: 'pair' }
+    ? { text: t('settings:defaultModelChange.modelPair', { first: names[0], second: names[1] }), context: 'pair' }
     : { text: names[0] ?? '', context: undefined };
 }
 
@@ -114,7 +114,7 @@ export function useDefaultModelChange(label: (model: string) => string) {
     try {
       result = await mutateAsync({ ...splitPreferenceWrite(patch), apply_default_to: applyTo });
     } catch {
-      toast({ description: t('settings.defaultModelChange.failed'), variant: 'destructive' });
+      toast({ description: t('settings:defaultModelChange.failed'), variant: 'destructive' });
       return;
     }
     // A pick made while this write was in flight joined the draft as a new
@@ -127,16 +127,16 @@ export function useDefaultModelChange(label: (model: string) => string) {
     const previous = namePhrase(t, names.previous);
     toast({
       description: applyTo === 'new_threads'
-        ? t('settings.defaultModelChange.appliedNew', { model: model.text, context: model.context })
+        ? t('settings:defaultModelChange.appliedNew', { model: model.text, context: model.context })
         : moved !== undefined && moved > 0
-          ? t('settings.defaultModelChange.appliedExisting', { model: model.text, count: moved, context: model.context })
+          ? t('settings:defaultModelChange.appliedExisting', { model: model.text, count: moved, context: model.context })
           : moved === 0 && names.previous.length > 0
-            ? t('settings.defaultModelChange.appliedExistingNone', {
+            ? t('settings:defaultModelChange.appliedExistingNone', {
               model: model.text,
               previous: previous.text,
               context: model.context,
             })
-            : t('settings.defaultModelChange.applied', { model: model.text, context: model.context }),
+            : t('settings:defaultModelChange.applied', { model: model.text, context: model.context }),
     });
   }, [mutateAsync, label, t]);
 

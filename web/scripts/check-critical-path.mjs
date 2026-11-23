@@ -36,7 +36,7 @@ const EXPECTED = ['index', 'rolldown-runtime', 'vendor-react']
 // deliberately thin, so routine growth shows up here instead of being quietly
 // absorbed. Raise it only for a measured cause, and put that cause in the commit
 // message that raises it; the line's history is the record of why it moved.
-const MAX_EAGER_KB = 543
+const MAX_EAGER_KB = 439
 
 const outDir = process.argv[2] || 'dist'
 const indexPath = join(outDir, 'index.html')
@@ -169,6 +169,9 @@ const zlib = `zlib ${process.versions.zlib}`
 // alongside the entry. The largest counts, since that is what some visitor
 // pays. A build without the preload fails here rather than reading light while
 // every visitor waits on a request that only starts once the entry has run.
+// The namespace folders (locales/<ns>/) are not counted: they load with the
+// lazy chunks that read them, after first paint, and the copyNamespaces build
+// plugin fails a bundle whose entry reads one.
 const catalogs = [...html.matchAll(CATALOG_URL)]
   .map(([, locale, file]) => ({ locale, bytes: gz(file) }))
 

@@ -96,10 +96,10 @@ function AutomationRow({
       dense
       icon={Clock}
       running={{
-        label: t(`toolArtifact.inProgress.${write ? 'updating' : 'reading'}_automations`),
+        label: t(`toolArtifact:inProgress.${write ? 'updating' : 'reading'}_automations`),
       }}
       settled={{
-        label: t(`toolArtifact.completed.${write ? 'updated' : 'read'}_automations`),
+        label: t(`toolArtifact:completed.${write ? 'updated' : 'read'}_automations`),
         pill: file,
       }}
       at={at}
@@ -137,7 +137,7 @@ function AutomationAsk() {
             <ToolRow
               dense
               icon={Globe}
-              settled={{ label: t('toolArtifact.tool.webSearch'), pill: 'AVGO earnings date' }}
+              settled={{ label: t('toolArtifact:tool.webSearch'), pill: 'AVGO earnings date' }}
             />
             <Reply text="**Thursday, Dec 10**, after the close." at={PAST} />
             <UserBubble at={PAST} wrap>

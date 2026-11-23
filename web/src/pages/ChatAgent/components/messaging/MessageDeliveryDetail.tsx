@@ -26,7 +26,7 @@ export function MessageDeliveryDetail({ delivery, onOpenFile }: {
 }): React.ReactElement {
   const { t } = useTranslation();
   const app = messagingAppName(delivery.platform);
-  const label = app ?? t('toolArtifact.messageDelivery.message');
+  const label = app ?? t('toolArtifact:messageDelivery.message');
   // A DM address ("telegram", "telegram:@me", "slack:T0123") only repeats the app's name above it.
   const address = delivery.address && !isDmAddress(delivery.address) ? delivery.address : null;
   const total = delivery.files.length;
@@ -46,13 +46,13 @@ export function MessageDeliveryDetail({ delivery, onOpenFile }: {
                 {/* Matched against the app's own ids, so it keeps its case. */}
                 {address && <span className="term-delivery-address" title={address}>{address}</span>}
                 {address && delivery.current && <span aria-hidden="true"> · </span>}
-                {delivery.current && <span>{t('toolArtifact.messageDelivery.thisConversation')}</span>}
+                {delivery.current && <span>{t('toolArtifact:messageDelivery.thisConversation')}</span>}
               </>
             ) : undefined
           }
           aside={
             <>
-              {delivery.duplicate && <TermTag>{t('toolArtifact.messageDelivery.sentEarlier')}</TermTag>}
+              {delivery.duplicate && <TermTag>{t('toolArtifact:messageDelivery.sentEarlier')}</TermTag>}
               <DeliveryStatusWord status={delivery.status} />
             </>
           }
@@ -61,7 +61,7 @@ export function MessageDeliveryDetail({ delivery, onOpenFile }: {
       </div>
 
       {delivery.text.trim() && (
-        <TermCard title={t('toolArtifact.messageDelivery.message')}>
+        <TermCard title={t('toolArtifact:messageDelivery.message')}>
           <div className="term-prose min-w-0">
             <Markdown variant="panel" content={delivery.text} className="text-sm" />
           </div>
@@ -70,7 +70,7 @@ export function MessageDeliveryDetail({ delivery, onOpenFile }: {
 
       {total > 0 && (
         <TermCard
-          title={t('toolArtifact.messageDelivery.files')}
+          title={t('toolArtifact:messageDelivery.files')}
           meta={
             <span className="term-delivery-count">
               <Paperclip className="term-delivery-clip" aria-hidden="true" />

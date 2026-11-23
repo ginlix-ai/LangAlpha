@@ -70,7 +70,7 @@ function geom(p: Painter, d: ProfileScene) {
 }
 
 export const profile: DrawingKind<ProfileDrawing, ProfileScene> = {
-  nameKey: 'marketView.layerExplain.types.profile',
+  nameKey: 'marketView:layerExplain.types.profile',
   times: (d) => [d.from, d.to],
   anchors: (d) => [
     { time: d.from, price: d.poc ?? NaN },

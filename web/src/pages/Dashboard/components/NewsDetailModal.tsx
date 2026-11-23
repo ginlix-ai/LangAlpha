@@ -160,7 +160,7 @@ function NewsBody({
   const locale = useLocale();
   const safeArticleUrl = safeHttpUrl(article?.article_url);
   const closeButton = onClose ? (
-    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard.newsDetail.close')}>
+    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard:newsDetail.close')}>
       <X size={16} />
     </button>
   ) : null;
@@ -178,7 +178,7 @@ function NewsBody({
     return (
       <div className="dash-window-state">
         {closeButton}
-        <p>{fetchFailed ? t('dashboard.newsDetail.notAvailable') : t('dashboard.newsDetail.notFound')}</p>
+        <p>{fetchFailed ? t('dashboard:newsDetail.notAvailable') : t('dashboard:newsDetail.notFound')}</p>
       </div>
     );
   }
@@ -201,10 +201,10 @@ function NewsBody({
                 type="button"
                 className="term-chip dash-window-chip"
                 onClick={onAttach}
-                aria-label={t('dashboard.newsDetail.addToChat')}
-                title={t('dashboard.widgets.frame.addToContextTitle')}
+                aria-label={t('dashboard:newsDetail.addToChat')}
+                title={t('dashboard:widgets.frame.addToContextTitle')}
               >
-                {t('dashboard.newsDetail.addToChat')}
+                {t('dashboard:newsDetail.addToChat')}
               </button>
             )}
             {safeArticleUrl && (
@@ -213,9 +213,9 @@ function NewsBody({
                 href={safeArticleUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                aria-label={t('dashboard.newsDetail.source')}
+                aria-label={t('dashboard:newsDetail.source')}
               >
-                <span>{t('dashboard.newsDetail.source')}</span>
+                <span>{t('dashboard:newsDetail.source')}</span>
                 <span aria-hidden="true">↗</span>
               </a>
             )}
@@ -228,15 +228,15 @@ function NewsBody({
       <div className={hasSide ? 'dash-window-grid' : 'dash-window-grid dash-window-grid--one'}>
         <div className="dash-window-col">
           {article.description && (
-            <TermCard title={t('dashboard.newsDetail.summary')} meta={t('dashboard.newsDetail.summaryMeta')}>
+            <TermCard title={t('dashboard:newsDetail.summary')} meta={t('dashboard:newsDetail.summaryMeta')}>
               <p className="dash-window-prose">{article.description}</p>
             </TermCard>
           )}
           {impact.length > 0 && (
             <TermCard
-              title={t('dashboard.newsDetail.tickerImpact')}
-              meta={aiScored ? t('dashboard.newsDetail.tickerImpactMeta') : impact.length}
-              metaTitle={aiScored ? t('dashboard.newsDetail.tickerImpactNote') : undefined}
+              title={t('dashboard:newsDetail.tickerImpact')}
+              meta={aiScored ? t('dashboard:newsDetail.tickerImpactMeta') : impact.length}
+              metaTitle={aiScored ? t('dashboard:newsDetail.tickerImpactNote') : undefined}
             >
               <table className="term-table dash-window-impact">
                 <tbody>
@@ -248,10 +248,10 @@ function NewsBody({
                       <td>
                         {row.sentiment ? (
                           <TermStatus tone={sentimentTone(row.sentiment)}>
-                            {t(`dashboard.newsDetail.sentiment.${sentimentTone(row.sentiment)}`)}
+                            {t(`dashboard:newsDetail.sentiment.${sentimentTone(row.sentiment)}`)}
                           </TermStatus>
                         ) : (
-                          <span className="term-t3">{t('dashboard.newsDetail.unscored')}</span>
+                          <span className="term-t3">{t('dashboard:newsDetail.unscored')}</span>
                         )}
                       </td>
                       <td className="term-fill term-prose">{row.note}</td>
@@ -266,7 +266,7 @@ function NewsBody({
           <aside className="dash-window-col">
             {image && <NewsThumb key={image} src={image} />}
             {keywords.length > 0 && (
-              <TermCard title={t('dashboard.newsDetail.topics')}>
+              <TermCard title={t('dashboard:newsDetail.topics')}>
                 <div className="dash-window-tags">
                   {keywords.map((kw, i) => <TermTag key={i}>{kw}</TermTag>)}
                 </div>
@@ -296,8 +296,8 @@ function NewsDetailModal({ newsId, onClose, fallback }: NewsDetailModalProps) {
     if (!article || !newsId) return;
     attachArticleToContext(article, newsId);
     toast({
-      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
-      description: t('dashboard.newsDetail.attachedNews', { title: article.title || '' }),
+      title: t('dashboard:widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      description: t('dashboard:newsDetail.attachedNews', { title: article.title || '' }),
     });
   };
   const canAttach = !!article && !!newsId;
@@ -395,7 +395,7 @@ function NewsDetailModal({ newsId, onClose, fallback }: NewsDetailModalProps) {
           className="fixed inset-0 z-1010 flex items-center justify-center p-8"
           style={{ backgroundColor: 'var(--color-bg-overlay, rgba(0,0,0,0.6))', backdropFilter: 'blur(4px)' }}
         >
-          <DashWindowDialog label={article?.title || t('dashboard.newsDetail.title')} onClose={onClose}>
+          <DashWindowDialog label={article?.title || t('dashboard:newsDetail.title')} onClose={onClose}>
             {body}
           </DashWindowDialog>
         </motion.div>

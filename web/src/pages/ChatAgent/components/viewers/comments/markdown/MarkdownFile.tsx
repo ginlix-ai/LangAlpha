@@ -46,7 +46,7 @@ export function MarkdownFile({ content, comments, onOpenFile, onAnchorLink }: {
           content={root}
           strategy={strategy}
           target={comments}
-          modeHint={t('pageViewer.comments.modeHintMarkdown')}
+          modeHint={t('pageViewer:comments.modeHintMarkdown')}
           title={markdownTitle}
         />
       )}

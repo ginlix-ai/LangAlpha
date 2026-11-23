@@ -5,20 +5,20 @@ import type { PriceTriggerConfig } from '@/types/automation';
 // ── The terms a price trigger is set in ────────────────────
 
 export const PRICE_CONDITION_TYPES = [
-  { value: 'price_above', labelKey: 'automation.priceConditionAbove' },
-  { value: 'price_below', labelKey: 'automation.priceConditionBelow' },
-  { value: 'pct_change_above', labelKey: 'automation.pctChangeAbove' },
-  { value: 'pct_change_below', labelKey: 'automation.pctChangeBelow' },
+  { value: 'price_above', labelKey: 'automation:priceConditionAbove' },
+  { value: 'price_below', labelKey: 'automation:priceConditionBelow' },
+  { value: 'pct_change_above', labelKey: 'automation:pctChangeAbove' },
+  { value: 'pct_change_below', labelKey: 'automation:pctChangeBelow' },
 ] as const;
 
 export const PRICE_REFERENCE_OPTIONS = [
-  { value: 'previous_close', labelKey: 'automation.refPreviousClose' },
-  { value: 'day_open', labelKey: 'automation.refDayOpen' },
+  { value: 'previous_close', labelKey: 'automation:refPreviousClose' },
+  { value: 'day_open', labelKey: 'automation:refDayOpen' },
 ] as const;
 
 export const RETRIGGER_MODES = [
-  { value: 'one_shot', labelKey: 'automation.retriggerOneShot' },
-  { value: 'recurring', labelKey: 'automation.retriggerRecurring' },
+  { value: 'one_shot', labelKey: 'automation:retriggerOneShot' },
+  { value: 'recurring', labelKey: 'automation:retriggerRecurring' },
 ] as const;
 
 /** The shortest cooldown the server takes, in minutes: four hours. */
@@ -40,34 +40,34 @@ export function isPriceTriggerConfig(v: unknown): v is PriceTriggerConfig {
 }
 
 export function formatPriceTrigger(triggerConfig: PriceTriggerConfig | null | undefined, t: TFunction): string {
-  if (!triggerConfig || !isPriceTriggerConfig(triggerConfig)) return t('automation.price.alert');
+  if (!triggerConfig || !isPriceTriggerConfig(triggerConfig)) return t('automation:price.alert');
   const symbol = triggerConfig.symbol || '???';
   const condition = triggerConfig.conditions?.[0];
-  if (!condition) return t('automation.price.symbolAlert', { symbol });
+  if (!condition) return t('automation:price.symbolAlert', { symbol });
   const value = Number(condition.value).toFixed(2);
   switch (condition.type) {
     case 'price_above':
-      return t('automation.price.above', { symbol, price: `$${value}` });
+      return t('automation:price.above', { symbol, price: `$${value}` });
     case 'price_below':
-      return t('automation.price.below', { symbol, price: `$${value}` });
+      return t('automation:price.below', { symbol, price: `$${value}` });
     case 'pct_change_above':
     case 'pct_change_below':
-      return t(condition.reference === 'day_open' ? 'automation.price.moveFromOpen' : 'automation.price.moveFromClose', {
+      return t(condition.reference === 'day_open' ? 'automation:price.moveFromOpen' : 'automation:price.moveFromClose', {
         symbol,
         arrow: condition.type === 'pct_change_above' ? '\u2191' : '\u2193',
         pct: value,
       });
     default:
-      return t('automation.price.symbolAlert', { symbol });
+      return t('automation:price.symbolAlert', { symbol });
   }
 }
 
 export function formatRetriggerMode(triggerConfig: PriceTriggerConfig | null | undefined, t: TFunction): string {
   const retrigger = triggerConfig?.retrigger;
-  if (retrigger?.mode !== 'recurring') return t('automation.retriggerOneShot');
-  if (!retrigger.cooldown_seconds) return t('automation.price.recurringDaily');
+  if (retrigger?.mode !== 'recurring') return t('automation:retriggerOneShot');
+  if (!retrigger.cooldown_seconds) return t('automation:price.recurringDaily');
   const hours = Math.round(retrigger.cooldown_seconds / 3600);
-  return hours > 0 ? t('automation.price.recurringEvery', { hours }) : t('automation.retriggerRecurring');
+  return hours > 0 ? t('automation:price.recurringEvery', { hours }) : t('automation:retriggerRecurring');
 }
 
 // ── Live distance to the trigger ───────────────────────────
@@ -192,9 +192,9 @@ export function meterReading(
 /** The words for how far a watched value still has to go. */
 export function distanceLabel(reading: MeterReading | null, t: TFunction, locale: string): string {
   if (!reading) return '';
-  if (reading.remaining <= 0) return t('automation.conditionMet');
+  if (reading.remaining <= 0) return t('automation:conditionMet');
   if (reading.unit === 'price' && reading.remainingPct != null) {
-    return t('automation.awayPct', { value: fixed2(reading.remainingPct, locale) });
+    return t('automation:awayPct', { value: fixed2(reading.remainingPct, locale) });
   }
-  return t('automation.awayPts', { value: fixed2(reading.remaining, locale) });
+  return t('automation:awayPts', { value: fixed2(reading.remaining, locale) });
 }

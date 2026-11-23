@@ -114,8 +114,8 @@ export function useDownloadState(key: string | null): DownloadState {
 
 /** The label a Download control shows for ``state``. */
 export function downloadLabel(state: DownloadState, idle: string, t: TFunction): string {
-  if (state === 'preparing') return t('filePanel.preparing');
-  if (state === 'started') return t('filePanel.downloadStarted');
+  if (state === 'preparing') return t('filePanel:preparing');
+  if (state === 'started') return t('filePanel:downloadStarted');
   return idle;
 }
 
@@ -145,8 +145,8 @@ export function withDownloadNotice(
     let slow = false;
     const render = () => {
       const text = fraction !== null
-        ? i18n.t('filePanel.downloadingProgress', { name: fileName, percent: Math.round(fraction * 100) })
-        : i18n.t(slow ? 'filePanel.preparingDownloadSlow' : 'filePanel.preparingDownload', { name: fileName });
+        ? i18n.t('filePanel:downloadingProgress', { name: fileName, percent: Math.round(fraction * 100) })
+        : i18n.t(slow ? 'filePanel:preparingDownloadSlow' : 'filePanel:preparingDownload', { name: fileName });
       return <DownloadProgress text={text} fraction={fraction} />;
     };
     const shownTimer = setTimeout(() => {
@@ -189,8 +189,8 @@ export function withDownloadNotice(
     // file on the machine, which the browser's own cue would never say.
     const away = from ? backupCode(from) : null;
     const text = away
-      ? i18n.t(away === SERVICE_CODE ? 'filePanel.away.downloadedBackupService' : 'filePanel.away.downloadedBackup', { name: fileName })
-      : i18n.t('filePanel.downloadStartedNotice', { name: fileName });
+      ? i18n.t(away === SERVICE_CODE ? 'filePanel:away.downloadedBackupService' : 'filePanel:away.downloadedBackup', { name: fileName })
+      : i18n.t('filePanel:downloadStartedNotice', { name: fileName });
     const lasts = away ? AWAY_NOTICE_MS : STARTED_NOTICE_MS;
     const done = <DownloadStarted text={text} />;
     const shown = notice.current;

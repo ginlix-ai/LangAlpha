@@ -94,10 +94,10 @@ export function CatalogDetail({
       <>
         <span className="discover-installed">
           <Check className="h-3.5 w-3.5" aria-hidden />
-          {t('plugins.discover.installed')}
+          {t('plugins:discover.installed')}
         </span>
         {entry.plugin && (
-          <HeaderButton onClick={openPlugin}>{t('plugins.discoverPage.openPlugin')}</HeaderButton>
+          <HeaderButton onClick={openPlugin}>{t('plugins:discoverPage.openPlugin')}</HeaderButton>
         )}
       </>
     ) : (
@@ -107,11 +107,11 @@ export function CatalogDetail({
   const meta = (
     <MetaLine
       parts={[
-        entry.publisher ? t('plugins.discoverPage.by', { publisher: entry.publisher.name }) : null,
+        entry.publisher ? t('plugins:discoverPage.by', { publisher: entry.publisher.name }) : null,
         entry.publisher?.official ? (
           <span key="official" className="discover-head-badge">
             <OfficialMark size={13} />
-            {t('plugins.discoverPage.officialPublisher')}
+            {t('plugins:discoverPage.officialPublisher')}
           </span>
         ) : null,
         t(CATEGORY_KEYS[category]),
@@ -128,21 +128,21 @@ export function CatalogDetail({
 
   const aside = (
     <>
-      <DetailAsideBlock title={t('plugins.discoverPage.details')}>
+      <DetailAsideBlock title={t('plugins:discoverPage.details')}>
         <DetailFacts
           items={[
-            [t('plugins.discoverPage.factPublisher'), entry.publisher?.name ?? null],
-            [t('plugins.discoverPage.factCategory'), t(CATEGORY_KEYS[category])],
-            [t('plugins.discoverPage.factAccess'), access ? t(access) : null],
-            [t('plugins.discoverPage.factMarkets'), markets || null],
-            [t('plugins.discoverPage.factLicense'), entry.license],
-            [t('plugins.discoverPage.factHomepage'), homepage ? <OutLink key="homepage" href={homepage} /> : null],
-            [t('plugins.discoverPage.factSource'), source ? <OutLink key="source" href={source} /> : null],
+            [t('plugins:discoverPage.factPublisher'), entry.publisher?.name ?? null],
+            [t('plugins:discoverPage.factCategory'), t(CATEGORY_KEYS[category])],
+            [t('plugins:discoverPage.factAccess'), access ? t(access) : null],
+            [t('plugins:discoverPage.factMarkets'), markets || null],
+            [t('plugins:discoverPage.factLicense'), entry.license],
+            [t('plugins:discoverPage.factHomepage'), homepage ? <OutLink key="homepage" href={homepage} /> : null],
+            [t('plugins:discoverPage.factSource'), source ? <OutLink key="source" href={source} /> : null],
           ]}
         />
       </DetailAsideBlock>
       {covers.length > 0 && (
-        <DetailAsideBlock title={t('plugins.discoverPage.covers')}>
+        <DetailAsideBlock title={t('plugins:discoverPage.covers')}>
           <div className="discover-tags">
             {covers.map((c) => (
               <span key={c} className="surface-tag open-style:control-voice" data-bracket="tag">{c}</span>
@@ -155,7 +155,7 @@ export function CatalogDetail({
 
   // The way back is Discover, not the section's own list.
   return (
-    <DetailTrailStep label={t('plugins.discoverPage.discover')} onClick={onClose}>
+    <DetailTrailStep label={t('plugins:discoverPage.discover')} onClick={onClose}>
       <DetailPage
         labelId={labelId}
         onClose={onClose}
@@ -176,7 +176,7 @@ export function CatalogDetail({
         {/* Why the last install did not happen, under the Install it retries. */}
         <InstallNotice install={install} entry={entry} />
         <div className="discover-pair">
-          <DetailSection title={t('plugins.discoverPage.adds')}>
+          <DetailSection title={t('plugins:discoverPage.adds')}>
             {(connector || !partsKnown) && (
               <div className="surface-grid is-one discover-static">
                 {connector ? (
@@ -185,19 +185,19 @@ export function CatalogDetail({
                     name={entry.name}
                     meta={
                       connectorNames.length > 1
-                        ? t('plugins.pluginsPage.connectorCount', { count: connectorNames.length })
-                        : t('plugins.discoverPage.kindConnector')
+                        ? t('plugins:pluginsPage.connectorCount', { count: connectorNames.length })
+                        : t('plugins:discoverPage.kindConnector')
                     }
                     line={kinds.length > 0 ? kinds.join(' · ') : markets || entry.description}
                   />
                 ) : (
                   <SurfaceCell
                     name={entry.name}
-                    meta={t('plugins.discoverPage.kindSkills')}
+                    meta={t('plugins:discoverPage.kindSkills')}
                     line={t(
                       installed
-                        ? 'plugins.discoverPage.skillsOnPlugin'
-                        : 'plugins.discoverPage.skillsAfterInstall',
+                        ? 'plugins:discoverPage.skillsOnPlugin'
+                        : 'plugins:discoverPage.skillsAfterInstall',
                     )}
                   />
                 )}
@@ -208,7 +208,7 @@ export function CatalogDetail({
               <p className="discover-note">
                 {installed ? (
                   <Trans
-                    i18nKey="plugins.discoverPage.toolsOnPlugin"
+                    i18nKey="plugins:discoverPage.toolsOnPlugin"
                     // Not `link`: the parser reads that as the void HTML
                     // element and drops the words it wraps.
                     components={{
@@ -222,26 +222,26 @@ export function CatalogDetail({
                     }}
                   />
                 ) : entry.auth === 'oauth' ? (
-                  t('plugins.discoverPage.toolsAfterSignIn')
+                  t('plugins:discoverPage.toolsAfterSignIn')
                 ) : (
-                  t('plugins.discoverPage.toolsAfterInstall')
+                  t('plugins:discoverPage.toolsAfterInstall')
                 )}
               </p>
             )}
             {skillNames.length > 0 && (
               <PartNames
-                label={t('plugins.card.skillCount', { count: skillNames.length })}
+                label={t('plugins:card.skillCount', { count: skillNames.length })}
                 names={skillNames}
               />
             )}
           </DetailSection>
-          <DetailSection title={t('plugins.discoverPage.needs')}>
+          <DetailSection title={t('plugins:discoverPage.needs')}>
             <Needs entry={entry} vendor={vendor} installed={installed} />
           </DetailSection>
         </div>
         {related.length > 0 && (
           <DetailSection
-            title={connector ? t('plugins.discoverPage.moreVendors') : t('plugins.discoverPage.moreCollections')}
+            title={connector ? t('plugins:discoverPage.moreVendors') : t('plugins:discoverPage.moreCollections')}
           >
             <SurfaceGrid className="is-wide">
               {related.map((other) => (
@@ -283,10 +283,10 @@ function Needs({
   // A skills-only package asks for its key but has no connector to check it on.
   const checked = entry.contents ? entry.contents.connectors.length > 0 : true;
   const keyBody = installed
-    ? 'plugins.discoverPage.needKeyInstalled'
+    ? 'plugins:discoverPage.needKeyInstalled'
     : checked
-      ? 'plugins.discoverPage.needKeyBody'
-      : 'plugins.discoverPage.needKeyPlain';
+      ? 'plugins:discoverPage.needKeyBody'
+      : 'plugins:discoverPage.needKeyPlain';
   const rows: { key: string; icon: React.ReactNode; title: string; body: string }[] = [];
   const icon = (Icon: typeof KeyRound) => <Icon className="h-4 w-4" aria-hidden />;
   let proseShown = false;
@@ -301,10 +301,10 @@ function Needs({
       title: prose,
       body: t(
         installed
-          ? 'plugins.discoverPage.needKeyNamedInstalled'
+          ? 'plugins:discoverPage.needKeyNamedInstalled'
           : checked
-            ? 'plugins.discoverPage.needKeyNamed'
-            : 'plugins.discoverPage.needKeyNamedPlain',
+            ? 'plugins:discoverPage.needKeyNamed'
+            : 'plugins:discoverPage.needKeyNamedPlain',
         { key: keys[0].label },
       ),
     });
@@ -322,8 +322,8 @@ function Needs({
     rows.push({
       key: 'key',
       icon: icon(KeyRound),
-      title: prose ?? t('plugins.discoverPage.needKey'),
-      body: t(installed ? 'plugins.discoverPage.needKeyInstalled' : 'plugins.discoverPage.needKeyBody'),
+      title: prose ?? t('plugins:discoverPage.needKey'),
+      body: t(installed ? 'plugins:discoverPage.needKeyInstalled' : 'plugins:discoverPage.needKeyBody'),
     });
   }
   if (prose && !proseShown) {
@@ -331,16 +331,16 @@ function Needs({
       key: 'requires',
       icon: icon(CreditCard),
       title: prose,
-      body: t('plugins.discoverPage.needRequiredBody'),
+      body: t('plugins:discoverPage.needRequiredBody'),
     });
   }
   if (entry.auth === 'oauth') {
     rows.push({
       key: 'sign-in',
       icon: icon(LogIn),
-      title: t('plugins.discoverPage.needSignIn', { vendor }),
+      title: t('plugins:discoverPage.needSignIn', { vendor }),
       body: t(
-        installed ? 'plugins.discoverPage.needSignInInstalled' : 'plugins.discoverPage.needSignInBody',
+        installed ? 'plugins:discoverPage.needSignInInstalled' : 'plugins:discoverPage.needSignInBody',
         { vendor },
       ),
     });
@@ -349,11 +349,11 @@ function Needs({
     rows.push({
       key: 'nothing',
       icon: icon(Sparkles),
-      title: t('plugins.discoverPage.needNothing'),
+      title: t('plugins:discoverPage.needNothing'),
       body:
         requires?.nothing && requires.note
           ? requires.note
-          : t(installed ? 'plugins.discoverPage.needNothingInstalled' : 'plugins.discoverPage.needNothingBody'),
+          : t(installed ? 'plugins:discoverPage.needNothingInstalled' : 'plugins:discoverPage.needNothingBody'),
     });
   }
 

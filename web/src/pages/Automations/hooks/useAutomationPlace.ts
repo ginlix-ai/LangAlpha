@@ -23,7 +23,7 @@ export function useAutomationPlace(): AutomationPlace {
     runsInHome: inHome,
     label: (row, workspaceName) => {
       if (inHome(row)) return t('agents.chiefOfStaff');
-      return workspaceName ? t('agents.inWorkspace', { workspace: workspaceName }) : t('automation.detailWorkspace');
+      return workspaceName ? t('agents.inWorkspace', { workspace: workspaceName }) : t('automation:detailWorkspace');
     },
   };
 }

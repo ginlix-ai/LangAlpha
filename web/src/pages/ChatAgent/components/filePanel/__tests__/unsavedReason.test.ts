@@ -18,7 +18,7 @@ describe('unsavedReasonLabel', () => {
   });
 
   it('uses the plain reason when there is no size to show', () => {
-    expect(unsavedReasonLabel(t, { reason: 'too_large', size: null }, 'en-US')).toBe(i18n.t('filePanel.unsavedReason.too_large'));
+    expect(unsavedReasonLabel(t, { reason: 'too_large', size: null }, 'en-US')).toBe(i18n.t('computer.unsavedReason.too_large'));
     expect(unsavedReasonLabel(t, { reason: 'changed' }, 'en-US')).toBe('Changed while saving. The next backup retries.');
   });
 });

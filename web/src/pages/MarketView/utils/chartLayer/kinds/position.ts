@@ -65,7 +65,7 @@ function geom(p: Painter, d: PositionScene) {
 }
 
 export const position: DrawingKind<PositionDrawing, PositionScene> = {
-  nameKey: 'marketView.layerExplain.types.position',
+  nameKey: 'marketView:layerExplain.types.position',
   times: (d) => [d.entry.time, d.until],
   barsAfter: (d) => (d.until ? null : { time: d.entry.time, bars: DEFAULT_POSITION_BARS }),
   anchors: (d) => [d.entry],

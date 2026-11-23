@@ -96,7 +96,7 @@ export default function AutomationInlineForm({
       try {
         workspaceId = await resolveChatWorkspace(queryClient, 'all');
       } catch (err) {
-        toast({ variant: 'destructive', description: mutationErrorMessage(err, t('automation.actionFailed')) });
+        toast({ variant: 'destructive', description: mutationErrorMessage(err, t('automation:actionFailed')) });
         return;
       } finally {
         setPlacing(false);
@@ -124,7 +124,7 @@ export default function AutomationInlineForm({
               id={ids.name}
               value={form.name}
               onChange={(e) => patch('name', e.target.value)}
-              placeholder={t('automation.namePlaceholder')}
+              placeholder={t('automation:namePlaceholder')}
               maxLength={NAME_MAX}
               required
             />
@@ -137,12 +137,12 @@ export default function AutomationInlineForm({
             onZone={(tz) => setForm((f) => withZone(f, tz))}
           />
 
-          <FormRow label={t('automation.instruction')} htmlFor={ids.instruction}>
+          <FormRow label={t('automation:instruction')} htmlFor={ids.instruction}>
             <Textarea
               id={ids.instruction}
               value={form.instruction}
               onChange={(e) => patch('instruction', e.target.value)}
-              placeholder={t('automation.instructionPlaceholder')}
+              placeholder={t('automation:instructionPlaceholder')}
               required
               rows={5}
             />
@@ -165,7 +165,7 @@ export default function AutomationInlineForm({
             className="hover:opacity-90"
             style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
-            {loading || placing ? t('common.saving') : isEdit ? t('automation.saveChanges') : t('common.create')}
+            {loading || placing ? t('common.saving') : isEdit ? t('automation:saveChanges') : t('common.create')}
           </Button>
           <Button type="button" variant="ghost" onClick={onCancel}>
             {t('common.cancel')}

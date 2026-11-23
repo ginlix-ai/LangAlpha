@@ -13,7 +13,7 @@ export function WorkspacesLoadNote() {
   if (!loadFailed) return null;
   return (
     <div className="plugins-load-note">
-      <RetryNote text={t('plugins.scope.workspacesLoadFailed')} onRetry={retry} />
+      <RetryNote text={t('plugins:scope.workspacesLoadFailed')} onRetry={retry} />
     </div>
   );
 }

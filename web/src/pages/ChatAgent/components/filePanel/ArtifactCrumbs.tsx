@@ -94,13 +94,13 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
       <ArtifactVersionPicker view={view} variant="chip" />
       {refused ? (
         // The list goes through the dialog: it may still be past the caps.
-        <CrumbStatus key="refused" tone="warning" words={t('artifact.legacyRefused')} label={t('publish.legacyRefused')}>
+        <CrumbStatus key="refused" tone="warning" words={t('artifact.legacyRefused')} label={t('publish:legacyRefused')}>
           <button type="button" className="file-panel-artifact-update" onClick={onReview}>
             {t('artifact.update')}
           </button>
         </CrumbStatus>
       ) : changed && (
-        <CrumbStatus key="changed" words={t('artifact.changedSince')} label={t('publish.changedSince', { seq: sharedSeq(artifact) })}>
+        <CrumbStatus key="changed" words={t('artifact.changedSince')} label={t('publish:changedSince', { seq: sharedSeq(artifact) })}>
           <button
             type="button"
             className="file-panel-artifact-update"

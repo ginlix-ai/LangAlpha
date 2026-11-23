@@ -108,11 +108,11 @@ export function SubagentNew({
   const nameError = !trimmed
     ? null
     : !NAME_PATTERN.test(trimmed)
-      ? t('plugins.subagents.nameInvalid')
+      ? t('plugins:subagents.nameInvalid')
       : RESERVED_NAMES.has(trimmed)
-        ? t('plugins.subagents.nameReserved', { name: trimmed })
+        ? t('plugins:subagents.nameReserved', { name: trimmed })
         : data.subagents.some((s) => s.name === trimmed)
-          ? t('plugins.subagents.nameTaken', { name: trimmed })
+          ? t('plugins:subagents.nameTaken', { name: trimmed })
           : null;
   const serverError = (field: string) => errors.find((e) => e.field === field)?.message ?? null;
 
@@ -131,10 +131,10 @@ export function SubagentNew({
   const note =
     failure ??
     (full
-      ? t('plugins.subagents.atLimit', { count: maxCustom })
+      ? t('plugins:subagents.atLimit', { count: maxCustom })
       : source && !source.enabled
-        ? t('plugins.subagents.copyStartsOff', { name: source.name })
-        : t('plugins.subagents.availableNextTurn'));
+        ? t('plugins:subagents.copyStartsOff', { name: source.name })
+        : t('plugins:subagents.availableNextTurn'));
 
   function submit() {
     setFailure(null);
@@ -146,7 +146,7 @@ export function SubagentNew({
           // Someone (the agent, another tab) took the name since the list was
           // read; the re-read list then says so under the field as well.
           if (isSubagentVersionConflict(err)) {
-            setErrors([{ field: 'name', message: t('plugins.subagents.nameTaken', { name: trimmed }) }]);
+            setErrors([{ field: 'name', message: t('plugins:subagents.nameTaken', { name: trimmed }) }]);
             return;
           }
           // A field this form has no place for still gets said, by the button.
@@ -165,19 +165,19 @@ export function SubagentNew({
       <DetailPage
         labelId={labelId}
         onClose={onClose}
-        crumb={t('plugins.subagents.newTitle')}
+        crumb={t('plugins:subagents.newTitle')}
         header={
           <DetailHeader
-            name={trimmed && !nameError ? trimmed : t('plugins.subagents.newTitle')}
+            name={trimmed && !nameError ? trimmed : t('plugins:subagents.newTitle')}
             labelId={labelId}
             kind="subagent"
-            description={t('plugins.subagents.newLead')}
+            description={t('plugins:subagents.newLead')}
           />
         }
         lead={
           <section>
-            <h3 className="sa-start-title">{t('plugins.subagents.startFrom')}</h3>
-            <div className="sa-start" role="radiogroup" aria-label={t('plugins.subagents.startFrom')}>
+            <h3 className="sa-start-title">{t('plugins:subagents.startFrom')}</h3>
+            <div className="sa-start" role="radiogroup" aria-label={t('plugins:subagents.startFrom')}>
               <StartCard
                 checked={from === null}
                 onPick={() => pick(null)}
@@ -186,8 +186,8 @@ export function SubagentNew({
                     <Plus />
                   </span>
                 }
-                name={t('plugins.subagents.blank')}
-                line={t('plugins.subagents.blankLine')}
+                name={t('plugins:subagents.blank')}
+                line={t('plugins:subagents.blankLine')}
               />
               {sources.map((s) => (
                 <StartCard
@@ -199,7 +199,7 @@ export function SubagentNew({
                   meta={startMeta(t, s, models, locale)}
                   line={
                     s.source === 'plugin'
-                      ? t('plugins.subagents.fromPluginLine', { plugin: s.plugin.display_name, description: s.description })
+                      ? t('plugins:subagents.fromPluginLine', { plugin: s.plugin.display_name, description: s.description })
                       : s.description
                   }
                 />
@@ -211,13 +211,13 @@ export function SubagentNew({
         }
         aside={
           <DetailAsideBlock
-            title={source ? t('plugins.subagents.copiedFrom', { name: source.name }) : t('plugins.subagents.startsWith')}
+            title={source ? t('plugins:subagents.copiedFrom', { name: source.name }) : t('plugins:subagents.startsWith')}
           >
             <CopyFacts source={source} models={models} />
             <p className="sa-hint">
               {source && (source.edited || isCustom(source))
-                ? t('plugins.subagents.copyIncludesEdits', { name: source.name })
-                : t('plugins.subagents.copyChangeLater')}
+                ? t('plugins:subagents.copyIncludesEdits', { name: source.name })
+                : t('plugins:subagents.copyChangeLater')}
             </p>
           </DetailAsideBlock>
         }
@@ -225,14 +225,14 @@ export function SubagentNew({
         <div className="sa-fields">
           <div>
             <div className="sa-field-head">
-              <label htmlFor={nameId}>{t('plugins.subagents.name')}</label>
-              <span className="sa-field-aside">{t('plugins.subagents.nameHint')}</span>
+              <label htmlFor={nameId}>{t('plugins:subagents.name')}</label>
+              <span className="sa-field-aside">{t('plugins:subagents.nameHint')}</span>
             </div>
             <input
               id={nameId}
               className="sa-input is-name"
               value={name}
-              placeholder={t('plugins.subagents.namePlaceholder')}
+              placeholder={t('plugins:subagents.namePlaceholder')}
               autoComplete="off"
               spellCheck={false}
               maxLength={48}
@@ -251,7 +251,7 @@ export function SubagentNew({
             over={descOver}
             sameAs={source && draft.description.trim() === source.description.trim() ? source.name : null}
             error={serverError('description')}
-            placeholder={t('plugins.subagents.whenToUsePlaceholder')}
+            placeholder={t('plugins:subagents.whenToUsePlaceholder')}
           />
           <InstructionsField
             value={draft.instructions}
@@ -260,21 +260,21 @@ export function SubagentNew({
             aside={
               <>
                 {source && draft.instructions === source.instructions
-                  ? t('plugins.subagents.copiedMarkdown', { name: source.name })
-                  : t('plugins.subagents.markdown')}
+                  ? t('plugins:subagents.copiedMarkdown', { name: source.name })
+                  : t('plugins:subagents.markdown')}
                 {instrOver &&
-                  `${t('plugins.subagents.sep')}${t('plugins.subagents.sizeOf', {
+                  `${t('plugins:subagents.sep')}${t('plugins:subagents.sizeOf', {
                     used: formatBytes(instrUsed, locale),
                     max: formatBytes(instrMax, locale),
                   })}`}
               </>
             }
             error={serverError('instructions')}
-            placeholder={t('plugins.subagents.instructionsPlaceholder')}
+            placeholder={t('plugins:subagents.instructionsPlaceholder')}
           />
           <div className="sa-savebar">
             <PageButton variant="primary" onClick={submit} disabled={!ready}>
-              {create.isPending ? t('common.loading') : t('plugins.subagents.create')}
+              {create.isPending ? t('common.loading') : t('plugins:subagents.create')}
             </PageButton>
             <span className={failure || full ? 'sa-savebar-note is-warn' : 'sa-savebar-note'}>{note}</span>
           </div>
@@ -345,22 +345,22 @@ function CopyFacts({
     <div className="sa-facts">
       <DetailFacts
         items={[
-          [t('plugins.subagents.model'), pinned ? modelName(pinned, models.metadata) : t('plugins.subagents.threadsModel')],
-          [t('plugins.subagents.effort'), effort],
-          [t('plugins.subagents.tools'), toolsSummary(t, source ? source.tools : BLANK_TOOLS, locale)],
+          [t('plugins:subagents.model'), pinned ? modelName(pinned, models.metadata) : t('plugins:subagents.threadsModel')],
+          [t('plugins:subagents.effort'), effort],
+          [t('plugins:subagents.tools'), toolsSummary(t, source ? source.tools : BLANK_TOOLS, locale)],
           // A blank one gets every connector and connected brokerages, as
           // every subagent of the user's own starts.
           [
-            t('plugins.subagents.connectors'),
-            !source || source.connectors ? t('plugins.subagents.connectorsAll') : t('plugins.subagents.connectorsNone'),
+            t('plugins:subagents.connectors'),
+            !source || source.connectors ? t('plugins:subagents.connectorsAll') : t('plugins:subagents.connectorsNone'),
           ],
           [
-            t('plugins.subagents.brokerages'),
+            t('plugins:subagents.brokerages'),
             !source || source.brokerages !== 'off' ? brokerageText(t, 'on') : null,
           ],
           // A blank one reads memory, as every subagent of the user's own starts.
-          [t('plugins.subagents.memory'), memoryText(t, source ? source.memory : true)],
-          [t('plugins.subagents.availableTo'), audienceFacts(t, audiences)],
+          [t('plugins:subagents.memory'), memoryText(t, source ? source.memory : true)],
+          [t('plugins:subagents.availableTo'), audienceFacts(t, audiences)],
         ]}
       />
     </div>

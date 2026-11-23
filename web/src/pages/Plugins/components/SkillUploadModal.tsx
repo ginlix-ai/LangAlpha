@@ -116,17 +116,17 @@ export function SkillUploadModal({
   const unchecked = !skills && skillsFailed;
   const canUpload =
     ready && !reading && !uploading && (skills !== undefined || unchecked) && clash?.kind !== 'builtIn';
-  const example = `---\nname: earnings-recap\ndescription: ${t('plugins.skillUpload.exampleDescription')}\n---`;
+  const example = `---\nname: earnings-recap\ndescription: ${t('plugins:skillUpload.exampleDescription')}\n---`;
 
   let notice: string | null = null;
   if (unchecked && ready) {
     notice = name
-      ? t('plugins.skillUpload.replaceUnknown', { name })
-      : t('plugins.skillUpload.replaceUnknownUnnamed');
+      ? t('plugins:skillUpload.replaceUnknown', { name })
+      : t('plugins:skillUpload.replaceUnknownUnnamed');
   } else if (clash?.kind === 'plugin') {
     notice = clash.skill.plugin_name
-      ? t('plugins.skillUpload.replacePlugin', { name: clash.skill.name, plugin: clash.skill.plugin_name })
-      : t('plugins.skillUpload.replacePluginUnnamed', { name: clash.skill.name });
+      ? t('plugins:skillUpload.replacePlugin', { name: clash.skill.name, plugin: clash.skill.plugin_name })
+      : t('plugins:skillUpload.replacePluginUnnamed', { name: clash.skill.name });
   } else if (clash?.kind === 'own') {
     const { name: own, enabled, updated_at: updatedAt } = clash.skill;
     const at = updatedAt ? new Date(updatedAt) : null;
@@ -134,12 +134,12 @@ export function SkillUploadModal({
       const format = at.getFullYear() === new Date(now).getFullYear() ? shortMonthDay : mediumDate;
       const date = format(at, locale);
       notice = enabled
-        ? t('plugins.skillUpload.replaceOwn', { name: own, date })
-        : t('plugins.skillUpload.replaceOwnOff', { name: own, date });
+        ? t('plugins:skillUpload.replaceOwn', { name: own, date })
+        : t('plugins:skillUpload.replaceOwnOff', { name: own, date });
     } else {
       notice = enabled
-        ? t('plugins.skillUpload.replaceOwnUndated', { name: own })
-        : t('plugins.skillUpload.replaceOwnUndatedOff', { name: own });
+        ? t('plugins:skillUpload.replaceOwnUndated', { name: own })
+        : t('plugins:skillUpload.replaceOwnUndatedOff', { name: own });
     }
   }
 
@@ -203,11 +203,11 @@ export function SkillUploadModal({
 
   function announce(added: string, replaced: boolean) {
     const detail = detailHref({ kind: 'skill', name: added, workspaceId });
-    const open = t('plugins.skillUpload.open');
+    const open = t('plugins:skillUpload.open');
     toast({
       title: replaced
-        ? t('plugins.skillUpload.replaced', { name: added })
-        : t('plugins.skillUpload.added', { name: added }),
+        ? t('plugins:skillUpload.replaced', { name: added })
+        : t('plugins:skillUpload.added', { name: added }),
       // A confirmation with a shortcut, not a question: it leaves on its own.
       duration: 6000,
       action: (
@@ -257,7 +257,7 @@ export function SkillUploadModal({
   const meta = picked
     ? [
         picked.name && picked.name !== picked.label ? picked.name : null,
-        picked.fileCount !== null ? t('plugins.skillUpload.files', { count: picked.fileCount }) : null,
+        picked.fileCount !== null ? t('plugins:skillUpload.files', { count: picked.fileCount }) : null,
         formatBytes(picked.upload.size, locale),
       ]
         .filter(Boolean)
@@ -291,11 +291,11 @@ export function SkillUploadModal({
         {uploading && <Loader size={12} className="text-current" />}
         {uploading
           ? replacing
-            ? t('plugins.skillUpload.replacing', { percent: progress })
-            : t('plugins.skillUpload.uploading', { percent: progress })
+            ? t('plugins:skillUpload.replacing', { percent: progress })
+            : t('plugins:skillUpload.uploading', { percent: progress })
           : replacing
-            ? t('plugins.skillUpload.replace')
-            : t('plugins.skillUpload.upload')}
+            ? t('plugins:skillUpload.replace')
+            : t('plugins:skillUpload.upload')}
       </button>
     </div>
   );
@@ -303,14 +303,14 @@ export function SkillUploadModal({
   return (
     <ModalShell
       labelId={titleId}
-      title={t('plugins.skillUpload.title')}
+      title={t('plugins:skillUpload.title')}
       subtitle={
         limits
-          ? t(isMobile ? 'plugins.skillUpload.hintTouch' : 'plugins.skillUpload.hint', {
+          ? t(isMobile ? 'plugins:skillUpload.hintTouch' : 'plugins:skillUpload.hint', {
               // Kept on one line: "2" at a line's end and "MB" on the next reads as two things.
               size: formatBytes(skillZipCap(limits), locale).replace(' ', ' '),
             })
-          : t(isMobile ? 'plugins.skillUpload.hintTouchUnsized' : 'plugins.skillUpload.hintUnsized')
+          : t(isMobile ? 'plugins:skillUpload.hintTouchUnsized' : 'plugins:skillUpload.hintUnsized')
       }
       onClose={onClose}
       closeDisabled={uploading}
@@ -352,13 +352,13 @@ export function SkillUploadModal({
           {reading ? (
             <>
               <Loader size={14} className="text-current" />
-              <span className="text-xs">{t('plugins.skillUpload.reading')}</span>
+              <span className="text-xs">{t('plugins:skillUpload.reading')}</span>
             </>
           ) : picked ? (
             <>
               <PickedIcon className="h-5 w-5" />
               <span className="text-xs max-w-full truncate" style={{ color: 'var(--color-text-primary)' }}>
-                {picked.label ?? picked.name ?? t('plugins.skillUpload.droppedItems')}
+                {picked.label ?? picked.name ?? t('plugins:skillUpload.droppedItems')}
               </span>
               <span className="text-[0.6875rem] max-w-full truncate">{meta}</span>
             </>
@@ -366,10 +366,10 @@ export function SkillUploadModal({
             <>
               <Upload className="h-5 w-5" />
               <span className="text-xs">
-                {isMobile ? t('plugins.skillUpload.zoneTouch') : t('plugins.skillUpload.zone')}
+                {isMobile ? t('plugins:skillUpload.zoneTouch') : t('plugins:skillUpload.zone')}
               </span>
               {!isMobile && (
-                <span className="text-[0.6875rem]">{t('plugins.skillUpload.zoneClick')}</span>
+                <span className="text-[0.6875rem]">{t('plugins:skillUpload.zoneClick')}</span>
               )}
             </>
           )}
@@ -377,7 +377,7 @@ export function SkillUploadModal({
       ) : (
         <div className="flex flex-col gap-1.5">
           <label htmlFor={pasteId} className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            {t('plugins.skillUpload.pasteLabel')}
+            {t('plugins:skillUpload.pasteLabel')}
           </label>
           <textarea
             id={pasteId}
@@ -386,7 +386,7 @@ export function SkillUploadModal({
               setText(e.target.value);
               setProblem(null);
             }}
-            placeholder={`${example}\n\n${t('plugins.skillUpload.pasteBody')}`}
+            placeholder={`${example}\n\n${t('plugins:skillUpload.pasteBody')}`}
             rows={10}
             spellCheck={false}
             disabled={uploading}
@@ -437,7 +437,7 @@ export function SkillUploadModal({
                 onClick={() => folderRef.current?.click()}
               >
                 <FolderOpen className="h-3.5 w-3.5" />
-                {t('plugins.skillUpload.chooseFolder')}
+                {t('plugins:skillUpload.chooseFolder')}
               </button>
             )}
             <button
@@ -450,7 +450,7 @@ export function SkillUploadModal({
               }}
             >
               <ClipboardPaste className="h-3.5 w-3.5" />
-              {t('plugins.skillUpload.paste')}
+              {t('plugins:skillUpload.paste')}
             </button>
           </>
         ) : (
@@ -464,7 +464,7 @@ export function SkillUploadModal({
             }}
           >
             <Upload className="h-3.5 w-3.5" />
-            {t('plugins.skillUpload.backToFiles')}
+            {t('plugins:skillUpload.backToFiles')}
           </button>
         )}
       </div>

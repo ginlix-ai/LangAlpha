@@ -77,7 +77,7 @@ export function SelectionToolbar<A extends TextAnchor>({
       {onComment && (
         <button type="button" className="selection-quote-action tap-target" onClick={onComment}>
           <MessageSquarePlus className="h-4 w-4" />
-          {t('pageViewer.comments.comment')}
+          {t('pageViewer:comments.comment')}
         </button>
       )}
       {asks ? (

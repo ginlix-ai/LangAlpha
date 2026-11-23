@@ -30,12 +30,12 @@ export function DocumentErrorFallback({ onRetry, onDownload, downloadState = 'id
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12">
       <AlertTriangle className="h-6 w-6" style={{ color: 'var(--color-text-tertiary)' }} />
-      <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.error.previewFailed')}</p>
+      <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:error.previewFailed')}</p>
       {(onRetry || onDownload) && (
         <div className="flex gap-2">
           {onRetry && (
             <button className="text-xs px-3 py-1.5 rounded" style={BUTTON_STYLE} onClick={onRetry}>
-              {t('filePanel.error.retry')}
+              {t('filePanel:error.retry')}
             </button>
           )}
           {onDownload && (
@@ -45,7 +45,7 @@ export function DocumentErrorFallback({ onRetry, onDownload, downloadState = 'id
               onClick={onDownload}
               disabled={downloadState !== 'idle'}
             >
-              {downloadLabel(downloadState, t('filePanel.error.download'), t)}
+              {downloadLabel(downloadState, t('filePanel:error.download'), t)}
             </button>
           )}
         </div>

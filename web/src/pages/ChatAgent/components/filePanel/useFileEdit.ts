@@ -216,8 +216,8 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         // and edit block.
         const code = data.from.unreachable;
         const description = code
-          ? describeAway(code) ?? t('filePanel.loadEditFailed')
-          : t('filePanel.error.sandboxUnavailableHint');
+          ? describeAway(code) ?? t('filePanel:loadEditFailed')
+          : t('filePanel:error.sandboxUnavailableHint');
         toast({ description, variant: 'destructive' });
         if (code) invalidate(selectedFile);
         return;
@@ -225,12 +225,12 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       // A save naming no version goes unchecked, so the edit waits for a read
       // that has one.
       if (data.rewriting) {
-        toast({ description: t('filePanel.fileChangingTryAgain'), variant: 'destructive' });
+        toast({ description: t('filePanel:fileChangingTryAgain'), variant: 'destructive' });
         return;
       }
       const fullContent = data.content || '';
       if (fullContent.length > 500 * 1024) {
-        setSaveError(t('filePanel.fileTooLarge'));
+        setSaveError(t('filePanel:fileTooLarge'));
         return;
       }
       // Hashed before anything is set, so a file switched away from meanwhile
@@ -251,7 +251,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       // The read that failed is for a file the panel has already left, so its
       // error would otherwise appear under the name now on screen.
       if (selectedFileRef.current !== selectedFile) return;
-      setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.loadEditFailed'));
+      setSaveError(e?.response?.data?.detail || e?.message || t('filePanel:loadEditFailed'));
     }
   }, [selectedFile, workspaceId, readFileFullFn, setFileContent, describeAway, invalidate, t]);
 
@@ -307,7 +307,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         // unsaved changes" believing the save had landed and lose the edit with
         // nothing on screen to say otherwise, so the toast names the file.
         toast({
-          description: t('filePanel.saveFailedFile', { name: file.split('/').pop() }),
+          description: t('filePanel:saveFailedFile', { name: file.split('/').pop() }),
           variant: 'destructive',
         });
         return;
@@ -315,10 +315,10 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (apiErrorCoded(err, 'file_changed')) {
         // The draft stays, so nothing typed is lost; Cancel and Edit again
         // read the file as it now is.
-        setSaveError(t('filePanel.fileChangedSinceEdit'));
+        setSaveError(t('filePanel:fileChangedSinceEdit'));
         return;
       }
-      setSaveError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel.saveFailed'));
+      setSaveError(describeAway(err) ?? apiErrorReason(err) ?? t('filePanel:saveFailed'));
     } finally {
       release();
       // A save that is no longer the current one must not report the panel idle:
@@ -340,7 +340,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       return;
     }
     ask(
-      { title: t('filePanel.saveTitle'), message: t('filePanel.confirmSave'), confirmLabel: t('common.save') },
+      { title: t('filePanel:saveTitle'), message: t('filePanel:confirmSave'), confirmLabel: t('common.save') },
       () => { void save(tabId, selectedFile, draft, base); },
     );
   }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, blockedReason, base, t]);
@@ -361,7 +361,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     }
     const file = selectedFile;
     ask(
-      { title: t('filePanel.discardTitle'), message: t('filePanel.discardChanges'), confirmLabel: t('filePanel.discard') },
+      { title: t('filePanel:discardTitle'), message: t('filePanel:discardChanges'), confirmLabel: t('filePanel:discard') },
       // The editor state is the tab in front's, so a panel that has moved on
       // since the question would discard a draft nobody asked about.
       () => { if (selectedFileRef.current === file) discardEdit(); },

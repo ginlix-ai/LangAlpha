@@ -110,7 +110,7 @@ describe('a link to one run', () => {
     renderAt('/automations?id=auto-1&run=exec-old');
 
     expect(await screen.findByText(OLDER.excerpt!)).toBeInTheDocument();
-    expect(screen.getByText(label('automation.selectedRun'))).toBeInTheDocument();
+    expect(screen.getByText(label('automation:selectedRun'))).toBeInTheDocument();
     expect(screen.queryByText(NEWEST.excerpt!)).not.toBeInTheDocument();
   });
 
@@ -118,20 +118,20 @@ describe('a link to one run', () => {
     renderAt('/automations?run=exec-new');
 
     expect(await screen.findByText(NEWEST.excerpt!)).toBeInTheDocument();
-    expect(screen.getByText(label('automation.latestRun'))).toBeInTheDocument();
+    expect(screen.getByText(label('automation:latestRun'))).toBeInTheDocument();
   });
 
   it('shows the newest, and says so, for a run past the history', async () => {
     renderAt('/automations?id=auto-1&run=exec-gone');
 
-    expect(await screen.findByText(label('automation.runNotFound'))).toBeInTheDocument();
+    expect(await screen.findByText(label('automation:runNotFound'))).toBeInTheDocument();
     expect(screen.getByText(NEWEST.excerpt!)).toBeInTheDocument();
   });
 
   it('says a run it cannot place is not in the list', async () => {
     renderAt('/automations?run=exec-unknown');
 
-    expect(await screen.findByText(label('automation.runLinkNotFound'))).toBeInTheDocument();
+    expect(await screen.findByText(label('automation:runLinkNotFound'))).toBeInTheDocument();
   });
 
   it('puts a run opened from the history into the link', async () => {
@@ -151,7 +151,7 @@ describe('a link to one run', () => {
     const failed: AutomationExecution = { ...NEWEST, status: 'failed', error_message: 'The model call failed.', excerpt: null };
     renderAt('/automations?id=auto-1', failed);
     const inspector = (await screen.findByRole('heading', { level: 2, name: AUTOMATION.name })).closest('article')!;
-    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation.dismiss') });
+    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation:dismiss') });
     await waitFor(() => expect(dismiss()).toBeInTheDocument());
 
     const table = await within(inspector).findByRole('table');
@@ -169,7 +169,7 @@ describe('a link to one run', () => {
     fireEvent.click(within(entry).getByRole('button', { name: AUTOMATION.name }));
 
     await waitFor(() => expect(params()).toMatchObject({ view: 'manage', id: 'auto-1', run: 'exec-old' }));
-    expect(await screen.findByText(label('automation.selectedRun'))).toBeInTheDocument();
+    expect(await screen.findByText(label('automation:selectedRun'))).toBeInTheDocument();
   });
 });
 
@@ -202,7 +202,7 @@ describe('the automation standing in with no choice made', () => {
 
     // Both need attention, and the newer failure is first.
     const inspector = (await screen.findByRole('heading', { level: 2, name: morning.name })).closest('article')!;
-    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation.dismiss') });
+    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation:dismiss') });
     fireEvent.click(await waitFor(() => dismiss()!));
 
     // Out of Needs attention the other one is first, and the pane stays put
@@ -218,10 +218,10 @@ describe('the automation standing in with no choice made', () => {
     renderWithProviders(<Automations />, { route: '/automations?view=feed' });
 
     // Set the first failure aside from the feed, then open the pane.
-    fireEvent.click((await screen.findAllByRole('button', { name: label('automation.dismiss') }))[0]);
+    fireEvent.click((await screen.findAllByRole('button', { name: label('automation:dismiss') }))[0]);
     await waitFor(() => expect(api.dismissRun).toHaveBeenCalledWith('auto-1', 'exec-a'));
-    await waitFor(() => expect(screen.getAllByRole('button', { name: label('automation.dismiss') })).toHaveLength(1));
-    fireEvent.click(screen.getByRole('button', { name: label('automation.viewManage') }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: label('automation:dismiss') })).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: label('automation:viewManage') }));
 
     expect(await screen.findByRole('heading', { level: 2, name: closing.name })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 2, name: morning.name })).not.toBeInTheDocument();

@@ -8,10 +8,13 @@ import { ISOLATED_PAGE_SANDBOX, SERVED_HTML_SANDBOX } from '../ChatAgent/compone
 import { buildServeUrl, versionPrefix } from '../ChatAgent/components/viewers/html/wsfilesUrl';
 import { ShareTopBar, ShareTopBarAction } from './ShareTopBar';
 import { downloadServedFile, type SharedPublicFileMetadata } from './api';
+import { withCopy } from '@/i18n';
 import './SharePage.css';
 
 // A visitor to an HTML version never loads the file viewers.
-const FileBody = React.lazy(() => import('./SharedFileView').then((m) => ({ default: m.FileBody })));
+const FileBody = React.lazy(withCopy(() => import('./SharedFileView').then((m) => ({ default: m.FileBody })), [
+  'pageViewer', 'toolArtifact',
+]));
 
 interface SharedPageViewProps {
   code: string;
@@ -72,7 +75,7 @@ export default function SharedPageView({ code, metadata, onStale }: SharedPageVi
     downloadServedFile(buildServeUrl(prefix, path), name)
       .catch((err: unknown) => {
         console.error('[SharedPageView] Download failed:', err);
-        toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+        toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
         // Most likely the version ended under the reader.
         onStale();
       })
@@ -85,7 +88,7 @@ export default function SharedPageView({ code, metadata, onStale }: SharedPageVi
         name={label}
         actions={isHtml
           ? undefined
-          : <ShareTopBarAction icon={Download} label={t('filePanel.download')} onClick={download} disabled={busy} />}
+          : <ShareTopBarAction icon={Download} label={t('filePanel:download')} onClick={download} disabled={busy} />}
       />
       <div className="share-content">
         {isHtml

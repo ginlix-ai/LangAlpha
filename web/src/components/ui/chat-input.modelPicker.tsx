@@ -11,7 +11,7 @@ import { SearchField } from './aria-search-field';
 import { ComposerPopover, MENU_ROW, usePickToDraft } from './chat-input.composerPopover';
 import { getModelDisplayName } from './chat-input.helpers';
 import { cn } from '@/lib/utils';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { isClaudeCodeModel } from '@/lib/claudeCode';
 import { CheckNowFor } from '@/components/modelAccess/PlanCheck';
 import { PickerPlanMeter, type PickerMeter } from '@/components/modelAccess/PlanUsage';

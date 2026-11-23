@@ -6,19 +6,19 @@ import type { DiscoverCategory } from '../../utils/marketplace';
 
 // Explicit maps so the i18n parity test sees each key as a literal.
 export const CATEGORY_KEYS: Record<DiscoverCategory, string> = {
-  data: 'plugins.discoverPage.categories.data',
-  research: 'plugins.discoverPage.categories.research',
-  modeling: 'plugins.discoverPage.categories.modeling',
-  reporting: 'plugins.discoverPage.categories.reporting',
-  quant: 'plugins.discoverPage.categories.quant',
-  trading: 'plugins.discoverPage.categories.trading',
-  other: 'plugins.discoverPage.categories.other',
+  data: 'plugins:discoverPage.categories.data',
+  research: 'plugins:discoverPage.categories.research',
+  modeling: 'plugins:discoverPage.categories.modeling',
+  reporting: 'plugins:discoverPage.categories.reporting',
+  quant: 'plugins:discoverPage.categories.quant',
+  trading: 'plugins:discoverPage.categories.trading',
+  other: 'plugins:discoverPage.categories.other',
 };
 
 export const ACCESS_KEYS: Record<NonNullable<MarketplaceEntry['auth']>, string> = {
-  oauth: 'plugins.discoverPage.access.oauth',
-  'api-key': 'plugins.discoverPage.access.apiKey',
-  none: 'plugins.discoverPage.access.none',
+  oauth: 'plugins:discoverPage.access.oauth',
+  'api-key': 'plugins:discoverPage.access.apiKey',
+  none: 'plugins:discoverPage.access.none',
 };
 
 /** How an entry signs in, as a locale key; null for a skill collection. */

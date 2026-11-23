@@ -9,7 +9,7 @@
  */
 import type { SubagentTaskRecord } from '@/types/chat';
 import { CREDIT_STOP_ERROR_TYPE } from '@/types/sse';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { formatClock, formatTook, type TFn } from '@/lib/elapsed';
 import type { SubagentTelemetry } from '../../../session/subagents/resolveSubagentTelemetry';
 import type { SubagentModel } from '../../../session/subagents/taskRuns';

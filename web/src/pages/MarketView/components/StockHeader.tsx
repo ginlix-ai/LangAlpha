@@ -99,7 +99,7 @@ const StockHeader = ({ symbol, quote: q, onToggleOverview, onOpenWatchlist, wsSt
           <div className="stock-header-actions">
             <HeaderPill onClick={onToggleOverview}>
               <Info size={13} />
-              {t('marketView.companyOverview')}
+              {t('marketView:companyOverview')}
             </HeaderPill>
           </div>
         </div>
@@ -138,13 +138,13 @@ const StockHeader = ({ symbol, quote: q, onToggleOverview, onOpenWatchlist, wsSt
           onClick={() => setMetricsCollapsed(c => !c)}
           aria-expanded={!metricsCollapsed}
         >
-          <span>{metricsCollapsed ? t('marketView.header.showMetrics') : t('marketView.header.hideMetrics')}</span>
+          <span>{metricsCollapsed ? t('marketView:header.showMetrics') : t('marketView:header.hideMetrics')}</span>
           <ChevronDown size={14} className={`stock-metrics-toggle-icon${metricsCollapsed ? '' : ' stock-metrics-toggle-icon--open'}`} />
         </button>
         {onOpenWatchlist && (
           <button className="stock-metrics-watchlist-pill tap-target" onClick={onOpenWatchlist}>
             <List size={13} />
-            {t('marketView.header.watchlist')}
+            {t('marketView:header.watchlist')}
           </button>
         )}
       </div>
@@ -153,51 +153,51 @@ const StockHeader = ({ symbol, quote: q, onToggleOverview, onOpenWatchlist, wsSt
       >
         <div className="stock-metrics rule-t">
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.prevClose')}</span>
+            <span className="metric-label">{t('marketView:header.prevClose')}</span>
             <span className="metric-value">{fmt(previousClose)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.open')}
-              <span className="metrics-discrepancy-hint" title={t('marketView.header.openHint')}>!</span>
+            <span className="metric-label">{t('marketView:header.open')}
+              <span className="metrics-discrepancy-hint" title={t('marketView:header.openHint')}>!</span>
             </span>
             <span className="metric-value">{fmt(open)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.low')}</span>
+            <span className="metric-label">{t('marketView:header.low')}</span>
             <span className="metric-value">{fmt(low)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.high')}</span>
+            <span className="metric-label">{t('marketView:header.high')}</span>
             <span className="metric-value">{fmt(high)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.high52w')}</span>
+            <span className="metric-label">{t('marketView:header.high52w')}</span>
             <span className="metric-value">{fmt(fiftyTwoWeekHigh)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.low52w')}</span>
+            <span className="metric-label">{t('marketView:header.low52w')}</span>
             <span className="metric-value">{fmt(fiftyTwoWeekLow)}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.avgVolume3m')}</span>
+            <span className="metric-label">{t('marketView:header.avgVolume3m')}</span>
             <span className="metric-value">
               {averageVolume != null ? compactNumberFixed2(averageVolume, locale) : DASH}
             </span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{volumeIsAverage ? t('marketView.header.avgVolume3m') : t('marketView.header.volume')}</span>
+            <span className="metric-label">{volumeIsAverage ? t('marketView:header.avgVolume3m') : t('marketView:header.volume')}</span>
             <span className="metric-value">
               {shownVolume != null ? compactNumberFixed2(shownVolume, locale) : DASH}
             </span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{t('marketView.header.dayRange')}</span>
+            <span className="metric-label">{t('marketView:header.dayRange')}</span>
             <span className="metric-value">
               {hasDayRange ? `${fmt(low)} – ${fmt(high)}` : DASH}
             </span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">{ext ? t('marketView.header.changePctExt') : t('marketView.header.changePct')}</span>
+            <span className="metric-label">{ext ? t('marketView:header.changePctExt') : t('marketView:header.changePct')}</span>
             <span className={`metric-value ${(changePercent ?? 0) < 0 ? 'negative' : 'positive'}`}>
               {changePercent != null ? `${signedFixed2(changePercent, locale)}%` : DASH}
             </span>

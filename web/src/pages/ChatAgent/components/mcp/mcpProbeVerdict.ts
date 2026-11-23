@@ -27,33 +27,33 @@ interface VerdictUi {
 }
 
 const VERDICT_UI: Record<ProbeVerdict, VerdictUi> = {
-  ok: { Icon: CheckCircle2, tone: 'good', messageKey: 'mcp.probe.authNone', detail: 'tools' },
+  ok: { Icon: CheckCircle2, tone: 'good', messageKey: 'mcp:probe.authNone', detail: 'tools' },
   ok_authed: {
     Icon: ShieldCheck,
     tone: 'good',
-    messageKey: 'mcp.probe.authCredential',
+    messageKey: 'mcp:probe.authCredential',
     detail: 'tools',
   },
   needs_credential: {
     Icon: KeyRound,
     tone: 'attention',
-    messageKey: 'mcp.probe.authCredentialMissing',
+    messageKey: 'mcp:probe.authCredentialMissing',
     detail: 'none',
   },
   credential_rejected: {
     Icon: KeyRound,
     tone: 'bad',
-    messageKey: 'mcp.probe.credentialRejected',
+    messageKey: 'mcp:probe.credentialRejected',
     detail: 'wire',
   },
-  oauth: { Icon: ShieldCheck, tone: 'attention', messageKey: 'mcp.probe.authOauth', detail: 'none' },
+  oauth: { Icon: ShieldCheck, tone: 'attention', messageKey: 'mcp:probe.authOauth', detail: 'none' },
   missing_secrets: {
     Icon: KeyRound,
     tone: 'attention',
-    messageKey: 'mcp.probe.missingSecrets',
+    messageKey: 'mcp:probe.missingSecrets',
     detail: 'none',
   },
-  unreachable: { Icon: AlertCircle, tone: 'bad', messageKey: 'mcp.probe.failed', detail: 'wire' },
+  unreachable: { Icon: AlertCircle, tone: 'bad', messageKey: 'mcp:probe.failed', detail: 'wire' },
 };
 
 /** What a verdict settles, for the surfaces that act on it rather than say it. */
@@ -124,15 +124,15 @@ const REFUSED = /connection refused|could not connect/i;
 export function unreachableKey(result: Pick<McpProbeResult, 'error' | 'http_status'>): string {
   const error = result.error ?? '';
   const status = result.http_status;
-  if (/refused the handshake/i.test(error)) return 'mcp.probe.failedHandshake';
-  if (status === 429) return 'mcp.probe.failedRateLimited';
-  if (status != null && status >= 500) return 'mcp.probe.failedServerError';
-  if (status != null) return 'mcp.probe.failedNotEndpoint';
-  if (DNS_FAILED.test(error)) return 'mcp.probe.failedDns';
-  if (TIMED_OUT.test(error)) return 'mcp.probe.failedTimeout';
-  if (PRIVATE_ADDRESS.test(error)) return 'mcp.probe.failedBlocked';
-  if (REFUSED.test(error)) return 'mcp.probe.failedRefused';
-  return 'mcp.probe.failed';
+  if (/refused the handshake/i.test(error)) return 'mcp:probe.failedHandshake';
+  if (status === 429) return 'mcp:probe.failedRateLimited';
+  if (status != null && status >= 500) return 'mcp:probe.failedServerError';
+  if (status != null) return 'mcp:probe.failedNotEndpoint';
+  if (DNS_FAILED.test(error)) return 'mcp:probe.failedDns';
+  if (TIMED_OUT.test(error)) return 'mcp:probe.failedTimeout';
+  if (PRIVATE_ADDRESS.test(error)) return 'mcp:probe.failedBlocked';
+  if (REFUSED.test(error)) return 'mcp:probe.failedRefused';
+  return 'mcp:probe.failed';
 }
 
 /** The sentence a verdict leads with. */
@@ -163,8 +163,8 @@ export function verdictWire(result: McpProbeResult): string {
  *  host's own account of a dial that never got an answer. */
 export function verdictWireLabelKey(result: McpProbeResult): string {
   return result.http_status != null || result.verdict === 'credential_rejected'
-    ? 'mcp.probe.serverSaid'
-    : 'mcp.probe.wireDetail';
+    ? 'mcp:probe.serverSaid'
+    : 'mcp:probe.wireDetail';
 }
 
 /**
@@ -180,7 +180,7 @@ export function verdictDetail(
     const tools = result.tools ?? [];
     const info = result.server_info;
     return [
-      tools.length === 0 ? t('mcp.probe.okNoTools') : t('mcp.probe.ok', { count: tools.length }),
+      tools.length === 0 ? t('mcp:probe.okNoTools') : t('mcp:probe.ok', { count: tools.length }),
       info?.name ? [info.name, info.version].filter(Boolean).join(' ') : '',
     ]
       .filter(Boolean)

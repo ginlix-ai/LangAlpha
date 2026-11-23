@@ -113,11 +113,11 @@ describe('FeedRail attention row', () => {
     const { row, buttons, links } = renderRow(failing({ reason: 'usage_limit', message }));
 
     expect(within(row).getByText(message)).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation:pause'), label('automation:dismiss'), label('automation:openThread')]);
     expect(links.map((l) => l.textContent)).toEqual([label('chat.errorLinkManagePlan'), label('chat.errorLinkViewUsage')]);
     for (const link of links) expect(link).toHaveAttribute('target', '_blank');
 
-    fireEvent.click(within(row).getByRole('button', { name: label('automation.pause') }));
+    fireEvent.click(within(row).getByRole('button', { name: label('automation:pause') }));
     await waitFor(() => expect(api.pauseAutomation).toHaveBeenCalledWith('auto-1'));
     // A write in flight holds every button, so the next click waits for it.
     await waitFor(() => expect(within(row).getByRole('button', { name: label('common.retry') })).toBeEnabled());
@@ -128,8 +128,8 @@ describe('FeedRail attention row', () => {
   it('names the limit when the service left no message', () => {
     const { row, buttons, links } = renderRow(failing({ reason: 'usage_limit' }));
 
-    expect(within(row).getByText(label('automation.stateUsageLimit'))).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
+    expect(within(row).getByText(label('automation:stateUsageLimit'))).toBeInTheDocument();
+    expect(buttons).toEqual([label('common.retry'), label('automation:pause'), label('automation:dismiss'), label('automation:openThread')]);
     expect(links).toHaveLength(2);
   });
 
@@ -138,21 +138,21 @@ describe('FeedRail attention row', () => {
       failing({ status: 'disabled', disable: 'provider_auth', reason: 'provider_auth', message: '401 Unauthorized' }),
     );
 
-    expect(within(row).getByText(label('automation.keyRejectedReason'))).toBeInTheDocument();
-    expect(buttons).toEqual([label('automation.resume'), label('automation.dismiss'), label('automation.openThread')]);
+    expect(within(row).getByText(label('automation:keyRejectedReason'))).toBeInTheDocument();
+    expect(buttons).toEqual([label('automation:resume'), label('automation:dismiss'), label('automation:openThread')]);
     expect(links.map((l) => [l.textContent, l.getAttribute('href')])).toEqual([
       [label('chat.modelSelector.manageModels'), '/settings?tab=model'],
     ]);
 
-    fireEvent.click(within(row).getByRole('button', { name: label('automation.resume') }));
+    fireEvent.click(within(row).getByRole('button', { name: label('automation:resume') }));
     await waitFor(() => expect(api.resumeAutomation).toHaveBeenCalledWith('auto-1'));
   });
 
   it('counts the failures that switched it off', () => {
     const { row, buttons, links } = renderRow(failing({ status: 'disabled', disable: 'max_failures', failures: 3 }));
 
-    expect(within(row).getByText(label('automation.disabledAfter', { count: 3 }))).toBeInTheDocument();
-    expect(buttons).toEqual([label('automation.resume'), label('automation.dismiss'), label('automation.openThread')]);
+    expect(within(row).getByText(label('automation:disabledAfter', { count: 3 }))).toBeInTheDocument();
+    expect(buttons).toEqual([label('automation:resume'), label('automation:dismiss'), label('automation:openThread')]);
     expect(links).toHaveLength(0);
   });
 
@@ -160,16 +160,16 @@ describe('FeedRail attention row', () => {
     const a = failing({ reason: 'usage_limit', message: 'Out of credits.' });
     const { buttons } = renderRow({ ...a, last_execution: { ...a.last_execution!, conversation_thread_id: null } });
 
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation:pause'), label('automation:dismiss')]);
   });
 
   it('offers another try or a pause for any other failure', () => {
     const { row, buttons, links } = renderRow(failing({ message: 'Tool call failed' }));
 
     expect(
-      within(row).getByText(label('automation.lastRunFailedAgo', { when: relativeTime(COMPLETED_AT, 'en-US', Date.now()) })),
+      within(row).getByText(label('automation:lastRunFailedAgo', { when: relativeTime(COMPLETED_AT, 'en-US', Date.now()) })),
     ).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation:pause'), label('automation:dismiss'), label('automation:openThread')]);
     expect(links).toHaveLength(0);
   });
 
@@ -177,7 +177,7 @@ describe('FeedRail attention row', () => {
     const a = failing({ status: 'disabled', disable: 'max_failures', failures: 3 });
     const { row } = renderRow({ ...a, last_execution: { ...a.last_execution!, automation_execution_id: 'exec-9' } });
 
-    fireEvent.click(within(row).getByRole('button', { name: label('automation.dismiss') }));
+    fireEvent.click(within(row).getByRole('button', { name: label('automation:dismiss') }));
     await waitFor(() => expect(api.dismissRun).toHaveBeenCalledWith('auto-1', 'exec-9'));
     expect(api.resumeAutomation).not.toHaveBeenCalled();
   });

@@ -135,26 +135,26 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               <span className="file-panel-tree-count">{selection.selectedPaths.size}</span>
               <button data-bracket="chip" className="file-panel-chip open-style:control-voice" onClick={selection.toggleSelectAll}>
                 {selection.selectedPaths.size === filter.filteredSortedFiles.length
-                  ? t('filePanel.deselectAll')
-                  : t('filePanel.selectAllVisible')}
+                  ? t('filePanel:deselectAll')
+                  : t('filePanel:selectAllVisible')}
               </button>
               <span className="file-panel-crumb-spacer" />
               {selection.deleteConfirm ? (
                 <button onClick={selection.handleDelete} className="file-panel-delete-confirm-btn" disabled={selection.deleteLoading}>
-                  {t('filePanel.deleteConfirm', { count: selection.selectedPaths.size })}
+                  {t('filePanel:deleteConfirm', { count: selection.selectedPaths.size })}
                 </button>
               ) : (
                 <button
                   onClick={selection.handleDelete}
                   className="file-panel-icon-btn"
-                  title={t('filePanel.deleteSelected')}
+                  title={t('filePanel:deleteSelected')}
                   disabled={selection.selectedPaths.size === 0 || selection.deleteLoading}
                   style={selection.selectedPaths.size > 0 ? { color: 'var(--color-icon-danger)' } : undefined}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               )}
-              <button onClick={selection.exitSelectMode} className="file-panel-icon-btn" title={t('filePanel.cancelSelection')}>
+              <button onClick={selection.exitSelectMode} className="file-panel-icon-btn" title={t('filePanel:cancelSelection')}>
                 <X className="h-4 w-4" />
               </button>
             </>
@@ -165,7 +165,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                   <button
                     onClick={enterSelectMode}
                     className="file-panel-icon-btn"
-                    title={t('filePanel.selectFiles')}
+                    title={t('filePanel:selectFiles')}
                     disabled={filter.listedFiles.length === 0}
                   >
                     <CheckSquare className="h-4 w-4" />
@@ -174,8 +174,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                     <button
                       onClick={props.onCancelUpload}
                       className="file-panel-icon-btn"
-                      title={t('filePanel.cancelUpload')}
-                      aria-label={t('filePanel.cancelUpload')}
+                      title={t('filePanel:cancelUpload')}
+                      aria-label={t('filePanel:cancelUpload')}
                     >
                       <X className="h-4 w-4" />
                     </button>
@@ -183,18 +183,18 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                     <button
                       onClick={props.onUpload}
                       className="file-panel-icon-btn"
-                      title={t('filePanel.uploadFile')}
+                      title={t('filePanel:uploadFile')}
                       disabled={props.uploadDisabled}
                     >
                       <Upload className="h-4 w-4" />
                     </button>
                   )}
                   {backup.canBackUp && (
-                    <button onClick={backup.handleBackup} className="file-panel-icon-btn" title={t('filePanel.backupFiles')} disabled={backup.backingUp}>
+                    <button onClick={backup.handleBackup} className="file-panel-icon-btn" title={t('filePanel:backupFiles')} disabled={backup.backingUp}>
                       <HardDrive className={`h-4 w-4 ${backup.backingUp ? 'animate-pulse' : ''}`} />
                     </button>
                   )}
-                  <button onClick={props.onRefreshFiles} className="file-panel-icon-btn" title={t('filePanel.refresh')}>
+                  <button onClick={props.onRefreshFiles} className="file-panel-icon-btn" title={t('filePanel:refresh')}>
                     {props.filesLoading ? <Loader size={16} className="text-current" /> : <RefreshCw className="h-4 w-4" />}
                   </button>
                 </>
@@ -213,8 +213,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               >
                 <button
                   className="file-panel-icon-btn"
-                  title={t('filePanel.sortFiles')}
-                  aria-label={t('filePanel.sortFiles')}
+                  title={t('filePanel:sortFiles')}
+                  aria-label={t('filePanel:sortFiles')}
                   aria-haspopup="menu"
                   aria-expanded={filter.showSortMenu}
                   onClick={toggleSortMenu}
@@ -222,7 +222,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                   <ArrowUpDown className="h-4 w-4" />
                 </button>
                 {filter.showSortMenu && (
-                  <div className="file-panel-sort-menu" role="menu" aria-label={t('filePanel.sortFiles')}>
+                  <div className="file-panel-sort-menu" role="menu" aria-label={t('filePanel:sortFiles')}>
                     {SORT_OPTIONS.map((opt) => (
                       <button
                         key={opt.value}
@@ -244,9 +244,9 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                   data-bracket="chip"
                   className={`file-panel-chip open-style:control-voice ${props.showSystemFiles ? 'active' : ''}`}
                   onClick={props.onToggleSystemFiles}
-                  title={t('filePanel.systemDirsHint')}
+                  title={t('filePanel:systemDirsHint')}
                 >
-                  {t('filePanel.systemDirs')}
+                  {t('filePanel:systemDirs')}
                 </button>
               )}
               {props.onOpenSettings && (
@@ -277,8 +277,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               value={filter.searchQuery}
               onChange={(e) => filter.search(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Escape' && filter.searchQuery) { e.stopPropagation(); filter.clearSearch(); } }}
-              placeholder={t('filePanel.searchFiles')}
-              aria-label={t('filePanel.searchFiles')}
+              placeholder={t('filePanel:searchFiles')}
+              aria-label={t('filePanel:searchFiles')}
               className="flex-1 min-w-0 text-base sm:text-xs bg-transparent border-none"
               style={{ color: 'var(--color-text-primary)' }}
             />
@@ -287,8 +287,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                 type="button"
                 onClick={filter.clearSearch}
                 className="file-panel-icon-btn"
-                title={t('filePanel.clearSearch')}
-                aria-label={t('filePanel.clearSearch')}
+                title={t('filePanel:clearSearch')}
+                aria-label={t('filePanel:clearSearch')}
                 style={{ margin: '-0.25rem' }}
               >
                 <X className="h-3 w-3" />
@@ -298,10 +298,10 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
           {filter.missedRef && (
             <p className="mt-1.5 text-xs break-all" style={{ color: 'var(--color-text-secondary)' }}>
               {filter.extraMatches.length > 1
-                ? t('filePanel.refAmbiguous', { path: filter.missedRef })
+                ? t('filePanel:refAmbiguous', { path: filter.missedRef })
                 : props.filesRestoreIncomplete
-                  ? t('filePanel.restoreIncomplete')
-                  : t('filePanel.refNotFound', { path: filter.missedRef })}
+                  ? t('filePanel:restoreIncomplete')
+                  : t('filePanel:refNotFound', { path: filter.missedRef })}
             </p>
           )}
         </div>
@@ -310,21 +310,21 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             carries the same sentence when that is what landed here. */}
         {!selection.selectMode && !filter.missedRef && props.filesRestoreIncomplete && (
           <p className="px-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            {t('filePanel.restoreIncomplete')}
+            {t('filePanel:restoreIncomplete')}
           </p>
         )}
 
         {/* In place of the back-up-now button, which the tree no longer offers. */}
         {!props.readOnly && !selection.selectMode && backup.backupOff && (
           <p className="px-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('filePanel.backupOff', 'File backup is off for this computer.')}
+            {t('filePanel:backupOff', 'File backup is off for this computer.')}
           </p>
         )}
 
         {props.scopeDir != null && (
           <div className="file-panel-tree-scope">
             <span className="truncate">{props.scopeDir ? `${props.scopeDir}/` : '/'}</span>
-            <button type="button" onClick={props.onClearScope} className="file-panel-icon-btn" title={t('filePanel.backToAllFiles')}>
+            <button type="button" onClick={props.onClearScope} className="file-panel-icon-btn" title={t('filePanel:backToAllFiles')}>
               <X className="h-3 w-3" />
             </button>
           </div>
@@ -333,7 +333,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
         {filter.availableTypes.length > 1 && !selection.selectMode && (
           <div className="file-panel-tree-chips">
             <button data-bracket="chip" className={`file-panel-chip open-style:control-voice ${filter.filterType === 'All' ? 'active' : ''}`} onClick={() => filter.setFilterType('All')}>
-              {t('filePanel.filterAll')}
+              {t('filePanel:filterAll')}
             </button>
             {filter.availableTypes.map((type) => (
               <button
@@ -372,7 +372,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             <div className="file-panel-preview-group-header">
               <LayoutDashboard className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="text-xs font-medium truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('filePanel.runningApps')}
+                {t('filePanel:runningApps')}
               </span>
               <span className="text-xs" style={{ color: 'var(--color-icon-muted)' }}>{props.previews.length}</span>
             </div>
@@ -391,7 +391,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
                 {/* Amber only while the URL is being minted — the one moment
                     this row is saying something the reader is waiting on. */}
                 {app.loading && (
-                  <Loader size={12} label={t('filePanel.startingServer')} style={{ color: 'var(--color-accent-primary)' }} />
+                  <Loader size={12} label={t('filePanel:startingServer')} style={{ color: 'var(--color-accent-primary)' }} />
                 )}
                 <span className="file-panel-port-chip">:{app.port}</span>
               </button>
@@ -421,10 +421,10 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
           ) : props.filesError ? (
             <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{props.filesError}</p>
           ) : filter.listedFiles.length === 0 && !trimmed ? (
-            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.noFilesYet')}</p>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:noFilesYet')}</p>
           ) : showList && filter.filteredSortedFiles.length === 0 ? (
             <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {trimmed ? t('filePanel.noSearchMatches') : t('filePanel.noTypeMatches', { type: filter.filterType.toLowerCase() })}
+              {trimmed ? t('filePanel:noSearchMatches') : t('filePanel:noTypeMatches', { type: filter.filterType.toLowerCase() })}
             </p>
           ) : (
             filter.fileTree.map((node) => (

@@ -121,7 +121,7 @@ function ComponentRow({
             className="ml-auto shrink-0 text-[0.6875rem]"
             style={{ color: failed ? 'var(--color-loss)' : 'var(--color-text-tertiary)' }}
           >
-            {t(`plugins.install.${status}`)}
+            {t(`plugins:install.${status}`)}
           </span>
         )}
       </div>
@@ -179,16 +179,16 @@ function packagedAs(
   const carried = components.filter((c) => c.status !== 'deleted');
   const skills = carried.filter((c) => c.kind === 'skill').length;
   const subagents = carried.filter((c) => c.kind === 'subagent').length;
-  if (subagents === 0) return t('plugins.install.packagedAs', { count: skills, plugin });
-  if (skills === 0) return t('plugins.install.packagedAsSubagents', { count: subagents, plugin });
+  if (subagents === 0) return t('plugins:install.packagedAs', { count: skills, plugin });
+  if (skills === 0) return t('plugins:install.packagedAsSubagents', { count: subagents, plugin });
   const parts = formatList(
     [
-      t('plugins.install.skillCount', { count: skills }),
-      t('plugins.install.subagentCount', { count: subagents }),
+      t('plugins:install.skillCount', { count: skills }),
+      t('plugins:install.subagentCount', { count: subagents }),
     ],
     locale,
   );
-  return t('plugins.install.packagedAsBoth', { parts, plugin });
+  return t('plugins:install.packagedAsBoth', { parts, plugin });
 }
 
 export function PluginReportStep({
@@ -226,17 +226,17 @@ export function PluginReportStep({
   const skillCount = inPlace.filter((c) => c.kind === 'skill').length;
   const subagentCount = inPlace.filter((c) => c.kind === 'subagent').length;
   const parts = [
-    connectorCount > 0 ? t('plugins.install.connectorCount', { count: connectorCount }) : null,
-    skillCount > 0 ? t('plugins.install.skillCount', { count: skillCount }) : null,
-    subagentCount > 0 ? t('plugins.install.subagentCount', { count: subagentCount }) : null,
+    connectorCount > 0 ? t('plugins:install.connectorCount', { count: connectorCount }) : null,
+    skillCount > 0 ? t('plugins:install.skillCount', { count: skillCount }) : null,
+    subagentCount > 0 ? t('plugins:install.subagentCount', { count: subagentCount }) : null,
   ].filter((part): part is string => part !== null);
   const lead =
     parts.length > 0
-      ? t(update ? 'plugins.install.leadUpdated' : 'plugins.install.leadInstalled', {
+      ? t(update ? 'plugins:install.leadUpdated' : 'plugins:install.leadInstalled', {
           plugin,
           parts: formatList(parts, locale),
         })
-      : t(update ? 'plugins.install.leadUpdatedNothing' : 'plugins.install.leadInstalledNothing', {
+      : t(update ? 'plugins:install.leadUpdatedNothing' : 'plugins:install.leadInstalledNothing', {
           plugin,
         });
 
@@ -285,7 +285,7 @@ export function PluginReportStep({
     <div className="flex flex-col gap-4">
       {empty ? (
         <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.install.reportNoChanges')}
+          {t('plugins:install.reportNoChanges')}
         </p>
       ) : (
         <div className="flex flex-col gap-1">
@@ -314,7 +314,7 @@ export function PluginReportStep({
               />
               <span className="min-w-0 truncate">
                 <Trans
-                  i18nKey="plugins.install.savedKey"
+                  i18nKey="plugins:install.savedKey"
                   values={{ name }}
                   components={{ name: <span className="font-mono" /> }}
                 />
@@ -325,10 +325,10 @@ export function PluginReportStep({
               <Link
                 to={secretEditHref(name)}
                 onClick={onLeave}
-                aria-label={t('plugins.install.manageKeyLabel', { name })}
+                aria-label={t('plugins:install.manageKeyLabel', { name })}
                 className="shrink-0 underline underline-offset-2 transition-colors hover:text-(--color-text-primary)"
               >
-                {t('plugins.install.manageKey')}
+                {t('plugins:install.manageKey')}
               </Link>
             </li>
           ))}
@@ -351,22 +351,22 @@ export function PluginReportStep({
       )}
 
       {connectorRows.length > 0 && (
-        <Group title={t('plugins.install.groupConnectors')}>{componentList(connectorRows)}</Group>
+        <Group title={t('plugins:install.groupConnectors')}>{componentList(connectorRows)}</Group>
       )}
       {skillRows.length > 0 && (
-        <Group title={t('plugins.install.groupSkills')}>{componentList(skillRows)}</Group>
+        <Group title={t('plugins:install.groupSkills')}>{componentList(skillRows)}</Group>
       )}
       {subagentRows.length > 0 && (
-        <Group title={t('plugins.install.groupSubagents')}>{componentList(subagentRows)}</Group>
+        <Group title={t('plugins:install.groupSubagents')}>{componentList(subagentRows)}</Group>
       )}
 
       {upgradable.length > 0 && (
-        <Group title={t('plugins.install.reportUpgradable')}>
+        <Group title={t('plugins:install.reportUpgradable')}>
           <p
             className="text-[0.6875rem] py-1"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('plugins.install.sseUpgradeHint')}
+            {t('plugins:install.sseUpgradeHint')}
           </p>
           {upgradable.map((c) => (
             <label
@@ -408,14 +408,14 @@ export function PluginReportStep({
                 }}
               >
                 {upgrading && <Loader size={12} className="text-current" />}
-                {t('plugins.install.sseUpgradeConfirm')}
+                {t('plugins:install.sseUpgradeConfirm')}
               </button>
             </div>
           )}
           {upgradeError && (
             <p className="text-[0.6875rem] pb-1.5" style={{ color: 'var(--color-loss)' }}>
-              {t('plugins.install.sseUpgradeFailed')}
-              {t('mcp.check.separator')}
+              {t('plugins:install.sseUpgradeFailed')}
+              {t('mcp:check.separator')}
               {upgradeError}
             </p>
           )}
@@ -429,7 +429,7 @@ export function PluginReportStep({
             style={{ color: 'var(--color-text-tertiary)' }}
           >
             <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
-            {t('plugins.install.authorDetails')}
+            {t('plugins:install.authorDetails')}
           </summary>
           <div className="flex flex-col pt-1 pl-[1.125rem]">
             {forAuthors.map((d, i) => (
@@ -446,7 +446,7 @@ export function PluginReportStep({
             ))}
             {report.dropped_files.length > 0 && (
               <p className="text-[0.6875rem] py-1" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('plugins.install.droppedFiles', {
+                {t('plugins:install.droppedFiles', {
                   files: report.dropped_files.join(', '),
                 })}
               </p>

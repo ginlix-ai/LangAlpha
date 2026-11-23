@@ -64,13 +64,13 @@ export interface McpImportModalProps {
 
 // Explicit map so the i18n parity test sees each key as a literal.
 const STATUS_KEYS: Record<McpImportResultRow['status'], string> = {
-  created: 'mcp.import.status.created',
-  exists: 'mcp.import.status.exists',
-  skipped: 'mcp.import.status.skipped',
-  invalid: 'mcp.import.status.invalid',
-  error: 'mcp.import.status.error',
-  check_failed: 'mcp.import.status.check_failed',
-  sign_in_required: 'mcp.import.status.sign_in_required',
+  created: 'mcp:import.status.created',
+  exists: 'mcp:import.status.exists',
+  skipped: 'mcp:import.status.skipped',
+  invalid: 'mcp:import.status.invalid',
+  error: 'mcp:import.status.error',
+  check_failed: 'mcp:import.status.check_failed',
+  sign_in_required: 'mcp:import.status.sign_in_required',
 };
 
 /**
@@ -110,7 +110,7 @@ function notAddedBecause(row: McpImportResultRow, t: TFunction): Refusal | null 
     };
     return { message: why, failures: [failure], diagnostics: [] };
   }
-  return refusalSaying(t('plugins.signin.joined', { first: t('mcp.modal.importNotAdded'), second: why }));
+  return refusalSaying(t('plugins:signin.joined', { first: t('mcp:modal.importNotAdded'), second: why }));
 }
 
 // What the add form can do something about. An entry that already exists, or
@@ -170,7 +170,7 @@ export function McpImportModal({
     try {
       payload = JSON.parse(text.trim());
     } catch {
-      setError(t('mcp.import.notJson'));
+      setError(t('mcp:import.notJson'));
       return;
     }
     setError(null);
@@ -200,10 +200,10 @@ export function McpImportModal({
 
   const primaryLabel =
     step === 'paste' && placeholders.length > 0
-      ? t('mcp.import.next')
+      ? t('mcp:import.next')
       : parseableCount > 0
-        ? t('mcp.import.importCount', { count: parseableCount })
-        : t('mcp.import.import');
+        ? t('mcp:import.importCount', { count: parseableCount })
+        : t('mcp:import.import');
 
   const footer = (
     <div className="flex items-center justify-end gap-2">
@@ -215,7 +215,7 @@ export function McpImportModal({
           className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none mr-auto"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('mcp.import.back')}
+          {t('mcp:import.back')}
         </button>
       )}
       <button
@@ -225,7 +225,7 @@ export function McpImportModal({
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
-        {result ? t('mcp.import.done') : t('mcp.import.cancel')}
+        {result ? t('mcp:import.done') : t('mcp:import.cancel')}
       </button>
       {!result && (
         <button
@@ -246,8 +246,8 @@ export function McpImportModal({
   return (
     <ModalShell
       labelId={titleId}
-      title={step === 'credentials' && !result ? t('mcp.import.credentialsTitle') : t('mcp.import.title')}
-      subtitle={step === 'credentials' && !result ? undefined : t('mcp.import.hint')}
+      title={step === 'credentials' && !result ? t('mcp:import.credentialsTitle') : t('mcp:import.title')}
+      subtitle={step === 'credentials' && !result ? undefined : t('mcp:import.hint')}
       onClose={onClose}
       closeDisabled={importing}
       footer={footer}
@@ -268,9 +268,9 @@ export function McpImportModal({
                 <div className="text-[0.6875rem]" style={{ color: preview.error ? 'var(--color-loss)' : 'var(--color-text-tertiary)' }}>
                   {preview.error
                     ? preview.error
-                    : t('mcp.import.found', { count: preview.servers.length }) +
+                    : t('mcp:import.found', { count: preview.servers.length }) +
                       (parseableCount !== preview.servers.length
-                        ? ' ' + t('mcp.import.unparseable', { count: preview.servers.length - parseableCount })
+                        ? ' ' + t('mcp:import.unparseable', { count: preview.servers.length - parseableCount })
                         : '')}
                 </div>
               )}
@@ -334,7 +334,7 @@ function CredentialsStep({
             autoComplete="off"
             value={values[p.id] ?? ''}
             onChange={(e) => onChange({ ...values, [p.id]: e.target.value })}
-            placeholder={t('mcp.import.credentialPlaceholder')}
+            placeholder={t('mcp:import.credentialPlaceholder')}
             aria-label={placeholderLabel(p)}
             className="w-full px-3 py-2 text-sm rounded-md bg-transparent font-mono"
             style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
@@ -342,7 +342,7 @@ function CredentialsStep({
         </div>
       ))}
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('mcp.import.fillAllHint')}
+        {t('mcp:import.fillAllHint')}
       </p>
     </div>
   );
@@ -397,7 +397,7 @@ function ImportResultView({
         ) : (
           <AlertTriangle className="h-4 w-4" style={{ color: 'var(--color-warning)' }} />
         )}
-        {t('mcp.import.imported', { created: result.created, total: result.results.length })}
+        {t('mcp:import.imported', { created: result.created, total: result.results.length })}
       </div>
 
       {result.secrets_created.length > 0 && (
@@ -407,7 +407,7 @@ function ImportResultView({
         >
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
-            {t('mcp.import.secretsSaved', { count: result.secrets_created.length })}{' '}
+            {t('mcp:import.secretsSaved', { count: result.secrets_created.length })}{' '}
             <span className="font-mono">{result.secrets_created.join(', ')}</span>
           </span>
         </div>
@@ -415,7 +415,7 @@ function ImportResultView({
 
       {onEnable && created.length > 0 && (
         <div className="flex items-center justify-between gap-2 text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-          <span>{t('mcp.import.enableHint')}</span>
+          <span>{t('mcp:import.enableHint')}</span>
           {pending.length > 1 && (
             <McpQuietButton
               onClick={() => void enableAll()}
@@ -423,7 +423,7 @@ function ImportResultView({
               icon={<Power className="h-3 w-3" />}
               data-testid="mcp-import-enable-all"
             >
-              {t('mcp.import.enableAll')}
+              {t('mcp:import.enableAll')}
             </McpQuietButton>
           )}
         </div>
@@ -455,7 +455,7 @@ function ImportResultView({
                   </span>
                   {r.renamed && (
                     <span className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                      {t('mcp.import.from', { name: r.original_name })}
+                      {t('mcp:import.from', { name: r.original_name })}
                     </span>
                   )}
                 </div>
@@ -464,7 +464,7 @@ function ImportResultView({
                     className="text-[0.625rem]"
                     style={{ color: ok(r.status) ? 'var(--color-profit)' : 'var(--color-warning)' }}
                   >
-                    {t(STATUS_KEYS[r.status] ?? 'mcp.import.status.error')}
+                    {t(STATUS_KEYS[r.status] ?? 'mcp:import.status.error')}
                   </span>
                   {onSignIn && r.status === 'sign_in_required' && (
                     <McpQuietButton
@@ -479,7 +479,7 @@ function ImportResultView({
                       }
                       data-testid={`mcp-import-signin-${r.name}`}
                     >
-                      {t('mcp.import.signIn')}
+                      {t('mcp:import.signIn')}
                     </McpQuietButton>
                   )}
                   {onFix && FIXABLE.has(r.status) && (
@@ -488,13 +488,13 @@ function ImportResultView({
                       icon={<Wrench className="h-3 w-3" />}
                       data-testid={`mcp-import-fix-${r.name}`}
                     >
-                      {t('mcp.import.fix')}
+                      {t('mcp:import.fix')}
                     </McpQuietButton>
                   )}
                   {onEnable && ok(r.status) && (
                     state === 'on' ? (
                       <span className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                        {t('mcp.import.enabled')}
+                        {t('mcp:import.enabled')}
                       </span>
                     ) : (
                       <McpQuietButton
@@ -505,7 +505,7 @@ function ImportResultView({
                         }
                         data-testid={`mcp-import-enable-${r.name}`}
                       >
-                        {t('mcp.import.enable')}
+                        {t('mcp:import.enable')}
                       </McpQuietButton>
                     )
                   )}

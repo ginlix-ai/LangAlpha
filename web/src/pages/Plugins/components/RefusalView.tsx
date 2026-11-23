@@ -38,7 +38,7 @@ export function DiagnosticLine({
             rel="noreferrer"
             className="underline underline-offset-2"
           >
-            {t('plugins.install.specRef')}
+            {t('plugins:install.specRef')}
           </a>
         </>
       )}
@@ -52,7 +52,7 @@ export function FailureLine({ failure }: { failure: McpCheckFailure }) {
   return (
     <>
       <span className="font-mono">{failure.server}</span>
-      {t('mcp.check.separator')}
+      {t('mcp:check.separator')}
       {failure.reason}
     </>
   );
@@ -69,7 +69,7 @@ export function FailureLine({ failure }: { failure: McpCheckFailure }) {
 export function RefusalView({
   refusal,
   limit,
-  lead = 'mcp.check.failedLead',
+  lead = 'mcp:check.failedLead',
 }: {
   refusal: Refusal;
   limit?: number;

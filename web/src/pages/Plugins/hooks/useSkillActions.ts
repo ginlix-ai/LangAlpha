@@ -61,7 +61,7 @@ export function useSkillActions() {
         await toggleMutation.mutateAsync({ name: skill.name, enabled });
       }
     } catch (err) {
-      failed('plugins.skills.toggleFailed', err);
+      failed('plugins:skills.toggleFailed', err);
     } finally {
       setTogglingName(null);
     }
@@ -80,7 +80,7 @@ export function useSkillActions() {
         enabled: !disabled,
       });
     } catch (err) {
-      failed('plugins.skills.toggleFailed', err);
+      failed('plugins:skills.toggleFailed', err);
     } finally {
       setTogglingName(null);
     }
@@ -95,7 +95,7 @@ export function useSkillActions() {
         workspaceId: skill.workspace_id ?? null,
       });
     } catch (err) {
-      failed('plugins.skills.commandFailed', err);
+      failed('plugins:skills.commandFailed', err);
     } finally {
       setTogglingName(null);
     }
@@ -110,7 +110,7 @@ export function useSkillActions() {
         toWorkspaceId,
       });
     } catch (err) {
-      failed('plugins.scope.moveFailed', err);
+      failed('plugins:scope.moveFailed', err);
     } finally {
       setMovingName(null);
     }
@@ -130,7 +130,7 @@ export function useSkillActions() {
       setDeleting(null);
     } catch (err) {
       // The strip stays up on failure, to retry or cancel.
-      failed('plugins.skills.deleteFailed', err);
+      failed('plugins:skills.deleteFailed', err);
     }
   }
 

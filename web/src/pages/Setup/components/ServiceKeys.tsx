@@ -25,15 +25,15 @@ export function MarketDataKeys({ status, draft }: Props) {
       <div className="flex items-start gap-2.5">
         <CircleCheck aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-(--color-success)" />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-(--color-text-primary)">{t('setup.services.yahooTitle')}</p>
-          <p className="mt-0.5 text-xs leading-snug text-(--color-text-tertiary)">{t('setup.services.yahooDesc')}</p>
+          <p className="text-sm font-medium text-(--color-text-primary)">{t('setup:services.yahooTitle')}</p>
+          <p className="mt-0.5 text-xs leading-snug text-(--color-text-tertiary)">{t('setup:services.yahooDesc')}</p>
         </div>
       </div>
       {keysIn(status, 'data').map((key) => (
         <KeyField
           key={keyFieldKey(key)}
           setupKey={key}
-          description={t('setup.services.fmpDesc')}
+          description={t('setup:services.fmpDesc')}
           draft={draft.drafts[key.name] ?? ''}
           onDraft={(value) => draft.setDraft(key.name, value)}
         />
@@ -60,13 +60,13 @@ export function WebSearchKeys({ status, draft }: Props) {
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1.5">
         <label htmlFor={selectId} className="text-sm font-medium text-(--color-text-primary)">
-          {t('setup.services.searchProvider')}
+          {t('setup:services.searchProvider')}
         </label>
         <SearchProviderSelect
           id={selectId}
-          defaultLabel={t('setup.services.searchNone')}
+          defaultLabel={t('setup:services.searchNone')}
           optionLabel={(id, name) => hasKey(keys.find((key) => key.provider === id))
-            ? t('setup.services.searchProviderHasKey', { provider: name })
+            ? t('setup:services.searchProviderHasKey', { provider: name })
             : name}
         />
       </div>
@@ -74,13 +74,13 @@ export function WebSearchKeys({ status, draft }: Props) {
         <KeyField
           key={keyFieldKey(chosen)}
           setupKey={chosen}
-          label={t('setup.services.searchKey', { provider: chosenName })}
+          label={t('setup:services.searchKey', { provider: chosenName })}
           draft={draft.drafts[chosen.name] ?? ''}
           onDraft={(value) => draft.setDraft(chosen.name, value)}
         />
       )}
       {!typed && !keys.some(hasKey) && (
-        <p className="text-xs leading-snug text-(--color-text-tertiary)">{t('setup.services.searchOff')}</p>
+        <p className="text-xs leading-snug text-(--color-text-tertiary)">{t('setup:services.searchOff')}</p>
       )}
     </div>
   );
@@ -102,12 +102,12 @@ export function PageReadingKeys({ status, draft }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1.5 text-sm text-(--color-text-secondary) hover:text-(--color-text-primary)"
       >
-        {t('setup.services.fetchToggle')}
+        {t('setup:services.fetchToggle')}
         <ChevronDown aria-hidden="true" className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
       </button>
       <Disclosure open={open} id={panelId}>
         <div className="flex flex-col gap-3 pt-3">
-          <p className="text-xs leading-snug text-(--color-text-tertiary)">{t('setup.services.fetchDesc')}</p>
+          <p className="text-xs leading-snug text-(--color-text-tertiary)">{t('setup:services.fetchDesc')}</p>
           {keys.map((key) => (
             <KeyField
               key={keyFieldKey(key)}

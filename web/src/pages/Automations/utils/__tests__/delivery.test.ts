@@ -14,21 +14,21 @@ import {
 } from '../delivery';
 
 const LABELS: Record<string, string> = {
-  'automation.deliverToSlack': 'Slack',
-  'automation.deliverToDiscord': 'Discord',
-  'automation.deliveryDefaultBusy': 'Busy',
-  'automation.deliveryDefaultUnavailable': 'Unavailable',
-  'automation.deliveryDefaultFailed': 'Failed',
+  'automation:deliverToSlack': 'Slack',
+  'automation:deliverToDiscord': 'Discord',
+  'automation:deliveryDefaultBusy': 'Busy',
+  'automation:deliveryDefaultUnavailable': 'Unavailable',
+  'automation:deliveryDefaultFailed': 'Failed',
 };
 
 type Opts = { app?: string; name?: string; method?: string };
 const TEMPLATES: Record<string, (o: Opts) => string> = {
-  'automation.deliverToDm': (o) => `${o.app} DM`,
-  'automation.deliverAppLandsIn': (o) => `${o.app} (${o.name})`,
-  'automation.deliveredVia': (o) => `sent to ${o.method}`,
-  'automation.deliveredFallbackVia': (o) => `final answer posted to ${o.method}`,
-  'automation.deliveredNoticeVia': (o) => `notice sent to ${o.method}`,
-  'automation.deliveryFailedVia': (o) => `${o.method} delivery failed`,
+  'automation:deliverToDm': (o) => `${o.app} DM`,
+  'automation:deliverAppLandsIn': (o) => `${o.app} (${o.name})`,
+  'automation:deliveredVia': (o) => `sent to ${o.method}`,
+  'automation:deliveredFallbackVia': (o) => `final answer posted to ${o.method}`,
+  'automation:deliveredNoticeVia': (o) => `notice sent to ${o.method}`,
+  'automation:deliveryFailedVia': (o) => `${o.method} delivery failed`,
 };
 
 const t = ((key: string, opts: Opts = {}) => TEMPLATES[key]?.(opts) ?? LABELS[key] ?? key) as unknown as TFunction;

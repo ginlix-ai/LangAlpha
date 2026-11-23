@@ -93,7 +93,7 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
     const active = activeSymbol != null && sameListing(row.symbol, activeSymbol);
     const isFresh = fresh != null && sameListing(row.symbol, fresh);
     // An extended figure keeps the official close one hover away.
-    const title = row.ext ? t('marketView.quoteList.closeTip', { price: price(row.close.price, row.places), pct: pct(row.close.pct) }) : undefined;
+    const title = row.ext ? t('marketView:quoteList.closeTip', { price: price(row.close.price, row.places), pct: pct(row.close.pct) }) : undefined;
     return (
       <li
         key={row.id}
@@ -116,8 +116,8 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
           type="button"
           className="quote-list-remove"
           onClick={() => remove(row)}
-          title={t('marketView.sidebar.remove')}
-          aria-label={`${t('marketView.sidebar.remove')} ${row.symbol}`}
+          title={t('marketView:sidebar.remove')}
+          aria-label={`${t('marketView:sidebar.remove')} ${row.symbol}`}
         >
           <X size={12} />
         </button>
@@ -138,15 +138,15 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
   );
 
   const addLabel = adding
-    ? t('marketView.quoteList.add.close')
-    : isWatchlist ? t('marketView.sidebar.addToWatchlist') : t('marketView.sidebar.addHolding');
+    ? t('marketView:quoteList.add.close')
+    : isWatchlist ? t('marketView:sidebar.addToWatchlist') : t('marketView:sidebar.addHolding');
 
   return (
     <div className={cn('quote-list', !isWatchlist && 'quote-list--holdings')}>
       <div className="quote-list-head">
         <div className="quote-list-tabs">
-          {tabButton('watchlist', t('marketView.header.watchlist'), q.counts.watchlist)}
-          {tabButton('holdings', t('marketView.quoteList.holdings'), q.counts.holdings)}
+          {tabButton('watchlist', t('marketView:header.watchlist'), q.counts.watchlist)}
+          {tabButton('holdings', t('marketView:quoteList.holdings'), q.counts.holdings)}
         </div>
         <span className="quote-list-spacer" />
         <button
@@ -186,10 +186,10 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
               <span className={cn('quote-list-session', `quote-list-session--${q.session}`)}>
                 {q.session === 'pre' && <Sunrise size={12} aria-hidden="true" />}
                 {q.session === 'post' && <Sunset size={12} aria-hidden="true" />}
-                {t(`marketView.quoteList.session.${q.session}`)}
+                {t(`marketView:quoteList.session.${q.session}`)}
               </span>
             )}
-            {q.live && <span className="quote-list-live" title={t('marketView.sidebar.livePrices')} />}
+            {q.live && <span className="quote-list-live" title={t('marketView:sidebar.livePrices')} />}
           </div>
           {!isWatchlist && q.summaries.length > 0 && (
             <div className="quote-list-summary">
@@ -198,7 +198,7 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
                   <span className="quote-list-num">{money(s.totalValue, s.currency)}</span>
                   {s.totalCost > 0 && (
                     <>
-                      <span className="quote-list-summary-label">{t('marketView.quoteList.col.pl')}</span>
+                      <span className="quote-list-summary-label">{t('marketView:quoteList.col.pl')}</span>
                       <span className={cn('quote-list-num', tone(s.totalPlPct))}>{pct(s.totalPlPct)}</span>
                     </>
                   )}
@@ -219,8 +219,8 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
                   onClick={() => q.toggleSort(c.key)}
                   // The rows are whole-row pick buttons, not table cells, so the
                   // sort is said in the heading's name rather than aria-sort.
-                  aria-label={sorted ? `${label}, ${t(`marketView.quoteList.sorted.${sorted}`)}` : label}
-                  title={t('marketView.quoteList.sortBy', { column: label })}
+                  aria-label={sorted ? `${label}, ${t(`marketView:quoteList.sorted.${sorted}`)}` : label}
+                  title={t('marketView:quoteList.sortBy', { column: label })}
                 >
                   {label}
                   {sorted === 'asc' && <ArrowUp size={10} aria-hidden="true" />}
@@ -241,7 +241,7 @@ export function QuoteList({ activeSymbol, onPick }: QuoteListProps): React.React
               ))
             ) : q.rows.length === 0 ? (
               <p className="quote-list-empty">
-                {isWatchlist ? t('marketView.sidebar.emptyWatchlist') : t('marketView.sidebar.emptyPortfolio')}
+                {isWatchlist ? t('marketView:sidebar.emptyWatchlist') : t('marketView:sidebar.emptyPortfolio')}
               </p>
             ) : (
               <ul className="quote-list-rows">{q.rows.map(renderRow)}</ul>

@@ -18,12 +18,12 @@ describe('AnswersStrip', () => {
   it('names this computer in the desktop app', () => {
     h.desktopApp = true;
     render(<AnswersStrip answers={{ models: 'subscription_or_key', runsOn: 'cloud' }} />);
-    expect(screen.getByText('setup.answers.tag.thisComputer')).toBeTruthy();
+    expect(screen.getByText('setup:answers.tag.thisComputer')).toBeTruthy();
   });
 
   it('names the server computer on a self-hosted server', () => {
     h.desktopApp = false;
     render(<AnswersStrip answers={{ models: 'subscription_or_key', runsOn: 'cloud' }} />);
-    expect(screen.getByText('setup.answers.tag.serverComputer')).toBeTruthy();
+    expect(screen.getByText('setup:answers.tag.serverComputer')).toBeTruthy();
   });
 });

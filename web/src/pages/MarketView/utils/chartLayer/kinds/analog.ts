@@ -36,7 +36,7 @@ const SOURCE_STRIP = 2;
  * never read as real bars, with the stretch they copy shaded on the history.
  */
 export const analog: DrawingKind<AnalogDrawing, AnalogScene> = {
-  nameKey: 'marketView.layerExplain.types.analog',
+  nameKey: 'marketView:layerExplain.types.analog',
   times: (d) => [d.source_start, d.origin.time, ...d.bars.map((b) => b.time)],
   // Framed on the replay, not its source: a stretch from two years back would
   // otherwise squash today's candles into a sliver. The source is shaded where

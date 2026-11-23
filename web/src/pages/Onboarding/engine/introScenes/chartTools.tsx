@@ -121,7 +121,7 @@ export function CommentBox({
             color: text == null ? 'var(--color-text-tertiary)' : 'var(--color-text-primary)',
           }}
         >
-          {text ?? t('marketView.selection.commentPlaceholder')}
+          {text ?? t('marketView:selection.commentPlaceholder')}
         </span>
         <span
           className="flex h-3 w-3 shrink-0 items-center justify-center rounded-full transition-transform duration-press"
@@ -190,7 +190,7 @@ export function SelectionChip({ note, at }: { note: string; at: number }) {
         }}
       >
         <span className="min-w-0 truncate">
-          {t('marketView.selection.chipRegion', { symbol: 'NVDA', timeframe: '1day' })} · "{note}"
+          {t('marketView:selection.chipRegion', { symbol: 'NVDA', timeframe: '1day' })} · "{note}"
         </span>
         <X className="h-[6px] w-[6px] shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
       </span>
@@ -219,7 +219,7 @@ export function SelectionCard({ at, note }: { at: number; note: string }) {
             className="truncate text-[6px] font-semibold"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {t('marketView.selection.cardRegionTitle')}
+            {t('marketView:selection.cardRegionTitle')}
             <span className="font-normal" style={{ color: 'var(--color-text-tertiary)' }}>
               {' · '}NVDA 1day
             </span>
@@ -275,7 +275,7 @@ export function PublishRow({ at, done }: { at: number; done: number }) {
       at={at}
       done={done}
       running={{ label: `${PUBLISH}...` }}
-      settled={{ label: t('toolArtifact.tool.executeCode'), pill: PUBLISH }}
+      settled={{ label: t('toolArtifact:tool.executeCode'), pill: PUBLISH }}
     />
   );
 }
@@ -371,7 +371,7 @@ export function Intervals() {
         '1m',
         '1D',
         <span key="more" className="flex items-center gap-[1px] font-sans">
-          {t('marketView.chart.more')}
+          {t('marketView:chart.more')}
           <ChevronDown className="h-[5px] w-[5px]" />
         </span>,
       ]}

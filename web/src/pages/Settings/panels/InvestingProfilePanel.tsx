@@ -53,8 +53,8 @@ export function InvestingProfilePanel() {
 
   const preferences = clearedFrom === prefsData ? null : (prefsData as Preferences | null);
   const prefSections = [
-    { label: t('settings.riskTolerance'), entries: renderableEntries(preferences?.risk_preference) },
-    { label: t('settings.investmentStyle'), entries: renderableEntries(preferences?.investment_preference) },
+    { label: t('settings:riskTolerance'), entries: renderableEntries(preferences?.risk_preference) },
+    { label: t('settings:investmentStyle'), entries: renderableEntries(preferences?.investment_preference) },
   ].filter((section) => section.entries.length > 0);
 
   const handleResetConfirm = async () => {
@@ -71,7 +71,7 @@ export function InvestingProfilePanel() {
       // so gated surfaces (Watch pill, Experiments toggles) update at once.
       queryClient.invalidateQueries({ queryKey: queryKeys.features.all });
     } catch {
-      setError(t('settings.failedToResetPreferences'));
+      setError(t('settings:failedToResetPreferences'));
     }
     setShowResetConfirm(false);
     setIsResetting(false);
@@ -86,7 +86,7 @@ export function InvestingProfilePanel() {
           none it is the empty state itself, below. */}
       {welcomeOffer && hasAnswers && (
         <SettingsGroup>
-          <SettingRow label={t('settings.completeProfile')} description={t('settings.completeProfileDesc')}>
+          <SettingRow label={t('settings:completeProfile')} description={t('settings:completeProfileDesc')}>
             <Button type="button" size="sm" className="h-8" onClick={() => welcomeOffer.open()}>
               {welcomeOffer.label}
             </Button>
@@ -131,8 +131,8 @@ export function InvestingProfilePanel() {
         ) : (
           <SettingsCardBody id={SETTINGS.investingAnswers.anchor} className="flex flex-col items-center gap-3 py-8 text-center">
             <div>
-              <p className="settings-row-label">{t('settings.completeProfile')}</p>
-              <p className="settings-row-desc">{t('settings.completeProfileDesc')}</p>
+              <p className="settings-row-label">{t('settings:completeProfile')}</p>
+              <p className="settings-row-desc">{t('settings:completeProfileDesc')}</p>
             </div>
             <Button
               type="button"
@@ -163,16 +163,16 @@ export function InvestingProfilePanel() {
             style={{ color: 'var(--color-loss)' }}
             onClick={() => setShowResetConfirm(true)}
           >
-            <Trash2 className="h-3.5 w-3.5" /> {t('settings.resetPreferences')}
+            <Trash2 className="h-3.5 w-3.5" /> {t('settings:resetPreferences')}
           </Button>
         </SettingRow>
       </SettingsGroup>
 
       <ConfirmDialog
         open={showResetConfirm}
-        title={t('settings.resetPreferences')}
-        message={t('settings.resetConfirmMsg')}
-        confirmLabel={isResetting ? t('settings.resetting') : t('settings.resetPreferences')}
+        title={t('settings:resetPreferences')}
+        message={t('settings:resetConfirmMsg')}
+        confirmLabel={isResetting ? t('settings:resetting') : t('settings:resetPreferences')}
         onConfirm={handleResetConfirm}
         onOpenChange={setShowResetConfirm}
       />

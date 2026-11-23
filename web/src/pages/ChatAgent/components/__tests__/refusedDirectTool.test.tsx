@@ -150,7 +150,7 @@ describe('a refused direct MCP tool call', () => {
     const failedRow = container.querySelector('.titem.failed');
     expect(failedRow).not.toBeNull();
     expect(failedRow!.querySelector('.nrow-badge')!.getAttribute('aria-label')).toBe(
-      'toolArtifact.a11y.toolCallFailed',
+      'toolArtifact:a11y.toolCallFailed',
     );
   });
 
@@ -159,7 +159,7 @@ describe('a refused direct MCP tool call', () => {
     try {
       const proc = refusedProc();
       render(<DetailPanel toolCallProcess={proc as never} />);
-      expect(screen.getByLabelText('toolArtifact.a11y.toolCallFailed')).toBeInTheDocument();
+      expect(screen.getByLabelText('toolArtifact:a11y.toolCallFailed')).toBeInTheDocument();
     } finally {
       viewport.mobile = false;
     }
@@ -170,7 +170,7 @@ describe('a refused direct MCP tool call', () => {
     try {
       const proc = { ...refusedProc(), isFailed: false };
       render(<DetailPanel toolCallProcess={proc as never} />);
-      expect(screen.queryByLabelText('toolArtifact.a11y.toolCallFailed')).toBeNull();
+      expect(screen.queryByLabelText('toolArtifact:a11y.toolCallFailed')).toBeNull();
     } finally {
       viewport.mobile = false;
     }
@@ -203,7 +203,7 @@ describe('a successful direct MCP tool call whose output opens with "Refused:"',
     viewport.mobile = true;
     try {
       render(<DetailPanel toolCallProcess={procFor(SUCCESS_TEXT, 'success') as never} />);
-      expect(screen.queryByLabelText('toolArtifact.a11y.toolCallFailed')).toBeNull();
+      expect(screen.queryByLabelText('toolArtifact:a11y.toolCallFailed')).toBeNull();
     } finally {
       viewport.mobile = false;
     }

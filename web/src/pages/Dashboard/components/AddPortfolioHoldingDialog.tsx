@@ -90,11 +90,11 @@ function AddPortfolioHoldingDialog({
 
     // Validate required fields
     if (!quantity.trim()) {
-      alert(t('dashboard.addPortfolioDialog.alertQuantityMissing'));
+      alert(t('dashboard:addPortfolioDialog.alertQuantityMissing'));
       return;
     }
     if (!averageCost.trim()) {
-      alert(t('dashboard.addPortfolioDialog.alertAverageCostMissing'));
+      alert(t('dashboard:addPortfolioDialog.alertAverageCostMissing'));
       return;
     }
 
@@ -102,17 +102,17 @@ function AddPortfolioHoldingDialog({
     const averageCostNum = parseFloat(averageCost);
 
     if (isNaN(quantityNum) || quantityNum <= 0) {
-      alert(t('dashboard.addPortfolioDialog.alertQuantityInvalid'));
+      alert(t('dashboard:addPortfolioDialog.alertQuantityInvalid'));
       return;
     }
 
     if (isNaN(averageCostNum) || averageCostNum <= 0) {
-      alert(t('dashboard.addPortfolioDialog.alertAverageCostInvalid'));
+      alert(t('dashboard:addPortfolioDialog.alertAverageCostInvalid'));
       return;
     }
 
     if (asksCurrency && !isCurrencyCode(costCurrency)) {
-      alert(t('dashboard.addPortfolioDialog.alertCurrencyMissing'));
+      alert(t('dashboard:addPortfolioDialog.alertCurrencyMissing'));
       return;
     }
 
@@ -142,7 +142,7 @@ function AddPortfolioHoldingDialog({
           <>
             <DialogHeader className="text-left">
               <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                {t('dashboard.addPortfolioDialog.titleSearch')}
+                {t('dashboard:addPortfolioDialog.titleSearch')}
               </DialogTitle>
             </DialogHeader>
             <SymbolSearchCard
@@ -152,10 +152,10 @@ function AddPortfolioHoldingDialog({
               loading={searchLoading}
               onSelect={handleStockSelect}
               copy={{
-                searching: t('dashboard.addPortfolioDialog.searching'),
-                noResults: t('dashboard.addPortfolioDialog.noResults'),
-                searchHint: t('dashboard.addPortfolioDialog.searchHint'),
-                searchPlaceholder: t('dashboard.addPortfolioDialog.searchPlaceholder'),
+                searching: t('dashboard:addPortfolioDialog.searching'),
+                noResults: t('dashboard:addPortfolioDialog.noResults'),
+                searchHint: t('dashboard:addPortfolioDialog.searchHint'),
+                searchPlaceholder: t('dashboard:addPortfolioDialog.searchPlaceholder'),
               }}
             />
           </>
@@ -170,12 +170,12 @@ function AddPortfolioHoldingDialog({
                   style={{ color: 'var(--color-text-secondary)' }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                  aria-label={t('dashboard.addPortfolioDialog.back')}
+                  aria-label={t('dashboard:addPortfolioDialog.back')}
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </button>
                 <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                  {t('dashboard.addPortfolioDialog.titleDetails')}
+                  {t('dashboard:addPortfolioDialog.titleDetails')}
                 </DialogTitle>
               </div>
             </DialogHeader>
@@ -187,13 +187,13 @@ function AddPortfolioHoldingDialog({
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
                       <span className="term-label dash-form-label">
-                        {t('dashboard.addPortfolioDialog.quantityLabel')} <span className="dash-form-required">*</span>
+                        {t('dashboard:addPortfolioDialog.quantityLabel')} <span className="dash-form-required">*</span>
                       </span>
                       <Input
                         type="number"
                         min="0"
                         step="any"
-                        placeholder={t('dashboard.addPortfolioDialog.quantityPlaceholder')}
+                        placeholder={t('dashboard:addPortfolioDialog.quantityPlaceholder')}
                         value={quantity}
                         onChange={(e) => setQuantity(e.target.value)}
                         className="dash-form-input dash-form-figure border"
@@ -202,8 +202,8 @@ function AddPortfolioHoldingDialog({
                     <label className="block">
                       <span className="term-label dash-form-label">
                         {costCurrency
-                          ? t('dashboard.addPortfolioDialog.averageCostIn', { currency: costCurrency })
-                          : t('dashboard.addPortfolioDialog.averageCostLabel')}{' '}
+                          ? t('dashboard:addPortfolioDialog.averageCostIn', { currency: costCurrency })
+                          : t('dashboard:addPortfolioDialog.averageCostLabel')}{' '}
                         <span className="dash-form-required">*</span>
                       </span>
                       <Input
@@ -212,8 +212,8 @@ function AddPortfolioHoldingDialog({
                         step="any"
                         placeholder={
                           isMinorUnitListingInMajor(selectedStock.symbol, costCurrency)
-                            ? t('dashboard.addPortfolioDialog.averageCostPlaceholderMinorUnit')
-                            : t('dashboard.addPortfolioDialog.averageCostPlaceholder')
+                            ? t('dashboard:addPortfolioDialog.averageCostPlaceholderMinorUnit')
+                            : t('dashboard:addPortfolioDialog.averageCostPlaceholder')
                         }
                         value={averageCost}
                         onChange={(e) => setAverageCost(e.target.value)}
@@ -225,10 +225,10 @@ function AddPortfolioHoldingDialog({
                   {asksCurrency && (
                     <label className="block">
                       <span className="term-label dash-form-label">
-                        {t('dashboard.addPortfolioDialog.currencyLabel')} <span className="dash-form-required">*</span>
+                        {t('dashboard:addPortfolioDialog.currencyLabel')} <span className="dash-form-required">*</span>
                       </span>
                       <Input
-                        placeholder={t('dashboard.addPortfolioDialog.currencyPlaceholder')}
+                        placeholder={t('dashboard:addPortfolioDialog.currencyPlaceholder')}
                         maxLength={3}
                         value={typedCurrency}
                         onChange={(e) => setTypedCurrency(e.target.value)}
@@ -238,9 +238,9 @@ function AddPortfolioHoldingDialog({
                   )}
 
                   <label className="block">
-                    <span className="term-label dash-form-label">{t('dashboard.addPortfolioDialog.accountNameLabel')}</span>
+                    <span className="term-label dash-form-label">{t('dashboard:addPortfolioDialog.accountNameLabel')}</span>
                     <Input
-                      placeholder={t('dashboard.addPortfolioDialog.accountNamePlaceholder')}
+                      placeholder={t('dashboard:addPortfolioDialog.accountNamePlaceholder')}
                       value={accountName}
                       onChange={(e) => setAccountName(e.target.value)}
                       className="dash-form-input border"
@@ -248,9 +248,9 @@ function AddPortfolioHoldingDialog({
                   </label>
 
                   <label className="block">
-                    <span className="term-label dash-form-label">{t('dashboard.addPortfolioDialog.notesLabel')}</span>
+                    <span className="term-label dash-form-label">{t('dashboard:addPortfolioDialog.notesLabel')}</span>
                     <Input
-                      placeholder={t('dashboard.addPortfolioDialog.notesPlaceholder')}
+                      placeholder={t('dashboard:addPortfolioDialog.notesPlaceholder')}
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       className="dash-form-input border"
@@ -264,7 +264,7 @@ function AddPortfolioHoldingDialog({
                   className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
                   style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
-                  {t('dashboard.addPortfolioDialog.addButton')}
+                  {t('dashboard:addPortfolioDialog.addButton')}
                 </button>
               </div>
             )}

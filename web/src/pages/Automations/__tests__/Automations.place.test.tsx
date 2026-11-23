@@ -89,7 +89,7 @@ async function startFrom(templateKey: string) {
   renderAt('/automations', []);
   fireEvent.click(await screen.findByText(label(templateKey)));
   fireEvent.change(await screen.findByLabelText(label('common.name')), { target: { value: 'Brief' } });
-  fireEvent.change(screen.getByLabelText(label('automation.instruction')), { target: { value: 'Summarize.' } });
+  fireEvent.change(screen.getByLabelText(label('automation:instruction')), { target: { value: 'Summarize.' } });
 }
 
 const created = () => vi.mocked(api.createAutomation).mock.calls[0][0] as AutomationPayload;
@@ -100,9 +100,9 @@ describe('where an automation runs', () => {
     const pane = (await screen.findByRole('heading', { level: 2, name: IN_HOME.name })).closest('article')!;
     expect(within(pane).getByText(new RegExp(label('agents.chiefOfStaff')))).toBeInTheDocument();
 
-    fireEvent.click(within(pane).getByRole('button', { name: label('automation.edit') }));
+    fireEvent.click(within(pane).getByRole('button', { name: label('automation:edit') }));
     expect(await screen.findByText(new RegExp(`^${label('agents.chiefOfStaff')} · `))).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: label('automation.saveChanges') }));
+    fireEvent.click(screen.getByRole('button', { name: label('automation:saveChanges') }));
 
     await waitFor(() => expect(api.updateAutomation).toHaveBeenCalled());
     const [id, payload] = vi.mocked(api.updateAutomation).mock.calls[0] as [string, AutomationUpdatePayload];
@@ -112,7 +112,7 @@ describe('where an automation runs', () => {
   });
 
   it("creates a blank automation in the Chief of Staff with Home's id", async () => {
-    await startFrom('automation.blankAutomation');
+    await startFrom('automation:blankAutomation');
     fireEvent.click(screen.getByRole('button', { name: label('common.create') }));
 
     await waitFor(() => expect(api.createAutomation).toHaveBeenCalled());
@@ -121,11 +121,11 @@ describe('where an automation runs', () => {
   });
 
   it('asks a workspace template for its workspace, then sends that id', async () => {
-    await startFrom('automation.templateWeeklyReview');
+    await startFrom('automation:templateWeeklyReview');
     fireEvent.click(screen.getByRole('button', { name: label('common.create') }));
 
     // Refused before the round trip, with the place unfolded to pick.
-    const trigger = await screen.findByRole('button', { name: new RegExp(label('automation.selectWorkspace').replace('...', '')) });
+    const trigger = await screen.findByRole('button', { name: new RegExp(label('automation:selectWorkspace').replace('...', '')) });
     expect(api.createAutomation).not.toHaveBeenCalled();
     fireEvent.click(trigger);
     const listbox = await screen.findByRole('listbox');
@@ -139,11 +139,11 @@ describe('where an automation runs', () => {
 });
 
 describe("while Home's request is out", () => {
-  const leave = () => fireEvent.click(screen.getByRole('button', { name: label('automation.viewFeed') }));
+  const leave = () => fireEvent.click(screen.getByRole('button', { name: label('automation:viewFeed') }));
 
   it('opens a new automation at once, and saves it in Home once Home answers', async () => {
     const answer = holdHome();
-    await startFrom('automation.blankAutomation');
+    await startFrom('automation:blankAutomation');
     fireEvent.click(screen.getByRole('button', { name: label('common.create') }));
     expect(await screen.findByRole('button', { name: label('common.saving') })).toBeDisabled();
     expect(api.createAutomation).not.toHaveBeenCalled();
@@ -155,8 +155,8 @@ describe("while Home's request is out", () => {
 
   it('saves a workspace the reader picked without waiting on Home', async () => {
     holdHome();
-    await startFrom('automation.blankAutomation');
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(label('automation.moreOptions')) }));
+    await startFrom('automation:blankAutomation');
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(label('automation:moreOptions')) }));
     fireEvent.click(screen.getByRole('button', { name: new RegExp(label('agents.chiefOfStaff')) }));
     fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Research' }));
     fireEvent.click(screen.getByRole('button', { name: label('common.create') }));
@@ -169,22 +169,22 @@ describe("while Home's request is out", () => {
     const answer = holdHome();
     renderAt('/automations?id=auto-1', [IN_HOME]);
     const pane = (await screen.findByRole('heading', { level: 2, name: IN_HOME.name })).closest('article')!;
-    fireEvent.click(within(pane).getByRole('button', { name: label('automation.edit') }));
-    expect(screen.queryByRole('button', { name: label('automation.saveChanges') })).not.toBeInTheDocument();
+    fireEvent.click(within(pane).getByRole('button', { name: label('automation:edit') }));
+    expect(screen.queryByRole('button', { name: label('automation:saveChanges') })).not.toBeInTheDocument();
 
     await answer();
-    await screen.findByRole('button', { name: label('automation.saveChanges') });
+    await screen.findByRole('button', { name: label('automation:saveChanges') });
     expect(screen.getByText(new RegExp(`^${label('agents.chiefOfStaff')} · `))).toBeInTheDocument();
     leave();
-    expect(screen.queryByText(label('automation.discardDraftTitle'))).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('button', { name: label('automation.saveChanges') })).not.toBeInTheDocument());
+    expect(screen.queryByText(label('automation:discardDraftTitle'))).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: label('automation:saveChanges') })).not.toBeInTheDocument());
   });
 });
 
 describe('when Home cannot be read', () => {
   it('says why at save, as a refused write does, and keeps the form', async () => {
     home.getHomeWorkspace.mockRejectedValue(new Error('Network Error'));
-    await startFrom('automation.blankAutomation');
+    await startFrom('automation:blankAutomation');
     fireEvent.click(screen.getByRole('button', { name: label('common.create') }));
 
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ variant: 'destructive', description: 'Network Error' }));

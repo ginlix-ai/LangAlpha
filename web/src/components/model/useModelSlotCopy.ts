@@ -51,7 +51,7 @@ export function useModelSlotCopy(): ModelSlotCopy {
     },
     explainerTitle: t('agents.models.explainerTitle'),
     defaultsToBackground: t('agents.models.defaultsToBackground'),
-    defaultsToConversation: t('settings.modelTuning.defaultsToConversationModel'),
+    defaultsToConversation: t('settings:modelTuning.defaultsToConversationModel'),
     backgroundSameAsDefault: t('agents.models.backgroundSameAsDefault'),
     fallbackDesc: t('agents.models.fallbackModelsDesc'),
     chooseDesc: t('agents.models.chooseYourModelsDesc'),

@@ -13,10 +13,11 @@ import { StoreTab } from './StoreTab';
 import { FileViewer, type FileViewerProps } from './FileViewer';
 import { EmptyTab } from './EmptyTab';
 import { useTranscriptRead, type TranscriptReader } from './useTranscript';
+import { withCopy } from '@/i18n';
 
 // Tool results draw market-data cards, and those carry the chart stack, so
 // like the chart tab they load when looked at rather than with the panel.
-const DetailPanel = React.lazy(() => import('../DetailPanel'));
+const DetailPanel = React.lazy(withCopy(() => import('../DetailPanel'), ['automation']));
 const SourcesPanel = React.lazy(() => import('../SourcesPanel'));
 
 interface ActiveTabBodyProps {
@@ -125,7 +126,7 @@ function ToolTabBody({ transcript, toolCallId, onOpenFile, onOpenSubagentTask }:
   if (!toolCallProcess) {
     return (
       <p className="px-6 py-10 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('toolArtifact.toolCallGone')}
+        {t('toolArtifact:toolCallGone')}
       </p>
     );
   }

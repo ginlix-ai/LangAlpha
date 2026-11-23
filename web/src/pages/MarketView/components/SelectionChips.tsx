@@ -20,8 +20,8 @@ export function SelectionChips({ chips }: { chips: readonly ChartSelection[] }):
         // The price arrives pre-formatted: the string carries no currency of its
         // own. It prints at the places the chart axis showed when it was drawn.
         const baseLabel = c.selectionType === 'region'
-          ? t('marketView.selection.chipRegion', { symbol: c.symbol, timeframe: c.timeframe })
-          : t('marketView.selection.chipPriceLevel', {
+          ? t('marketView:selection.chipRegion', { symbol: c.symbol, timeframe: c.timeframe })
+          : t('marketView:selection.chipPriceLevel', {
               price: Number.isFinite(c.priceLow)
                 ? formatMoney(c.priceLow, quoteCurrency(null, c.symbol), locale, { decimals: c.decimals ?? 2 })
                 : '—',
@@ -50,7 +50,7 @@ export function SelectionChips({ chips }: { chips: readonly ChartSelection[] }):
           >
             <button
               type="button"
-              title={t('marketView.selection.editChip')}
+              title={t('marketView:selection.editChip')}
               onClick={() => chartSelectionStore.openEditor(c.id)}
               style={{
                 overflow: 'hidden',
@@ -69,7 +69,7 @@ export function SelectionChips({ chips }: { chips: readonly ChartSelection[] }):
             </button>
             <button
               type="button"
-              aria-label={t('marketView.selection.removeChip')}
+              aria-label={t('marketView:selection.removeChip')}
               onClick={() => chartSelectionStore.remove(c.id)}
               style={{
                 display: 'inline-flex',

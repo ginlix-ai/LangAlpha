@@ -1,0 +1,78 @@
+{
+  "addSecret": "添加密钥",
+  "valuePlaceholder": "粘贴密钥",
+  "editValuePlaceholder": "留空则保留当前密钥",
+  "descriptionPlaceholder": "描述（可选）",
+  "edit": "编辑",
+  "delete": "删除",
+  "deleting": "删除中…",
+  "hideValue": "隐藏值",
+  "revealValue": "显示值",
+  "nameInvalid": "只能使用字母、数字和下划线，并以字母或下划线开头。",
+  "recommended": "连接器需要的密钥",
+  "setUp": "设置",
+  "settingUp": "正在设置",
+  "docs": "文档",
+  "atCapHint": "密钥已存满 {{max}}/{{max}} 个。请删除一个不再使用的密钥。",
+  "valueHintInvalid": "这与 {{label}} 的常见格式不符。",
+  "valueHintDocs": "请对照上方文档检查，也可以直接保存。",
+  "valueHintStillSave": "你仍然可以保存。",
+  "usage": {
+    "title": "读取密钥",
+    "lead": "任何工作区中的代码都可以按名称读取密钥。"
+  },
+  "security": {
+    "title": "安全",
+    "encrypted": "密钥使用 AES（pgcrypto）静态加密，绝不以明文存储。",
+    "agent": "Agent 无法直接读取密钥的值，只能在沙箱代码中调用 <code>{{call}}</code>。",
+    "leakScan": "Agent 的工具返回的所有内容都会经过泄漏检测，其中出现的密钥值会在到达模型前被遮盖。",
+    "store": "代码校验会阻止直接访问已存储的密钥文件，仅允许使用 <code>{{module}}</code> API。"
+  },
+  "fields": {
+    "name": "名称",
+    "value": "值",
+    "newValue": "新值",
+    "description": "描述"
+  },
+  "atCapSetUp": "删除一个已存储的密钥后才能设置这些密钥。",
+  "savedAs": "将保存为",
+  "nameTaken": "已存储。",
+  "editInstead": "改为编辑 {{name}}",
+  "readers": {
+    "none": "没有连接器读取它",
+    "one": "由 <connector>{{connector}}</connector> 使用",
+    "many_other": "{{count}} 个连接器在使用"
+  },
+  "deleteConfirm": {
+    "many_other": "删除 <code>{{name}}</code>？{{count}} 个连接器将停止工作，直到重新添加密钥。",
+    "one": "删除 <code>{{name}}</code>？{{connector}} 将停止工作，直到重新添加密钥。",
+    "none": "删除 <code>{{name}}</code>？没有连接器读取它，但工作区中读取它的代码将拿不到值。",
+    "unknown": "删除 <code>{{name}}</code>？所有读取它的内容都将停止工作，直到重新添加密钥。"
+  },
+  "reach": {
+    "workspaces": "所有工作区中的代码会在下一条消息前拿到新值。",
+    "oneConnector": "{{connector}} 和所有工作区中的代码会在下一条消息前拿到新值。",
+    "connectors_other": "读取它的 {{count}} 个连接器和所有工作区中的代码会在下一条消息前拿到新值。"
+  },
+  "cap": {
+    "unread_other": "{{count}} 个密钥没有被任何连接器读取。",
+    "showUnread_other": "查看"
+  },
+  "filter": {
+    "placeholder": "筛选密钥",
+    "unread": "未被连接器读取",
+    "empty": "没有与 “{{query}}” 匹配的密钥。",
+    "emptyUnread": "每个密钥都有连接器在读取。",
+    "clear": "清除筛选"
+  },
+  "errors": {
+    "notSaved": "未保存：{{reason}}",
+    "notSavedRetry": "未保存，请重试。",
+    "notDeleted": "未删除：{{reason}}",
+    "notDeletedRetry": "未删除，请重试。",
+    "notRevealed": "无法显示值：{{reason}}",
+    "notRevealedRetry": "无法显示值，请重试。"
+  },
+  "deletedElsewhere": "此密钥已在别处删除，保存会重新添加。",
+  "notStored": "还没有存储名为 <name>{{name}}</name> 的密钥，保存会添加它。"
+}

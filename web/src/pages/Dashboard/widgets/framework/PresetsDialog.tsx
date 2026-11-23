@@ -31,12 +31,12 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
       <DialogContent className="dash-window dash-window--radix max-w-[1120px] w-[96vw] max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader className="dash-presets-head space-y-0 text-left">
           <div className="term-line dash-window-meta">
-            <span className="term-t3">{t('dashboard.widgets.presetsDialog.eyebrow')}</span>
-            <TermTag tone="live">{t('dashboard.widgets.presetsDialog.tailoredBadge')}</TermTag>
+            <span className="term-t3">{t('dashboard:widgets.presetsDialog.eyebrow')}</span>
+            <TermTag tone="live">{t('dashboard:widgets.presetsDialog.tailoredBadge')}</TermTag>
           </div>
-          <DialogTitle className="dash-window-title">{t('dashboard.widgets.presetsDialog.title')}</DialogTitle>
+          <DialogTitle className="dash-window-title">{t('dashboard:widgets.presetsDialog.title')}</DialogTitle>
           <DialogDescription className="dash-window-prose dash-window-prose--sub max-w-[64ch]">
-            {t('dashboard.widgets.presetsDialog.description')}
+            {t('dashboard:widgets.presetsDialog.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
@@ -50,7 +50,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   className="dash-preset"
                   title={t(preset.nameKey)}
                   sub={t(preset.tagKey)}
-                  meta={preset.popular ? t('dashboard.widgets.presetsDialog.popularBadge') : undefined}
+                  meta={preset.popular ? t('dashboard:widgets.presetsDialog.popularBadge') : undefined}
                   onClick={() => apply(preset.id)}
                 >
                   <p className="dash-window-prose dash-window-prose--sub">{t(preset.descriptionKey)}</p>
@@ -64,10 +64,10 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   </div>
                   <div className="term-line dash-preset-foot">
                     <span className="term-t3">
-                      {t('dashboard.widgets.presetsDialog.bestWhen', { bestFor: t(preset.bestForKey) })}
+                      {t('dashboard:widgets.presetsDialog.bestWhen', { bestFor: t(preset.bestForKey) })}
                     </span>
                     <span className="term-push dash-preset-use" aria-hidden="true">
-                      {t('dashboard.widgets.presetsDialog.useLayout')}
+                      {t('dashboard:widgets.presetsDialog.useLayout')}
                     </span>
                   </div>
                 </TermCard>

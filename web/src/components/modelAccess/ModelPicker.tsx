@@ -119,7 +119,7 @@ function CustomModelForm({ provider, onAdd, onClose }: { provider: string; onAdd
       <CustomModelFields state={draft} onSubmit={submit} autoFocus />
       <div className="flex items-center justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button type="button" size="sm" disabled={!draft.ready} onClick={submit}>{t('setup.add')}</Button>
+        <Button type="button" size="sm" disabled={!draft.ready} onClick={submit}>{t('setup:add')}</Button>
       </div>
     </div>
   );
@@ -223,7 +223,7 @@ export function ModelPickerList({ picker, labelledBy }: { picker: ModelPickerSta
               label={m}
               meta={<Tag>{t('modelAccess.models.notTuned')}</Tag>}
               onRemove={() => picker.removeYours(m)}
-              removeLabel={t('setup.removeModel', { model: m })}
+              removeLabel={t('setup:removeModel', { model: m })}
             />
           ))}
         </section>
@@ -295,7 +295,7 @@ export function ModelPickerList({ picker, labelledBy }: { picker: ModelPickerSta
         )
       )}
 
-      {picker.localError && <QuietNote>{t('setup.errorFetchModels')}</QuietNote>}
+      {picker.localError && <QuietNote>{t('setup:errorFetchModels')}</QuietNote>}
 
       {showAdd ? (
         <CustomModelForm provider={picker.provider} onAdd={picker.addManual} onClose={() => setShowAdd(false)} />
@@ -307,7 +307,7 @@ export function ModelPickerList({ picker, labelledBy }: { picker: ModelPickerSta
           style={{ color: 'var(--color-text-secondary)' }}
         >
           <Plus aria-hidden="true" className="h-3 w-3" />
-          {t('setup.addModel')}
+          {t('setup:addModel')}
         </button>
       )}
 

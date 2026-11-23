@@ -151,13 +151,13 @@ export function StockPriceCard({
         style={label}
       >
         <span>
-          {t('toolArtifact.high')}: {high}
+          {t('toolArtifact:high')}: {high}
         </span>
         <span>
-          {t('toolArtifact.low')}: {low}
+          {t('toolArtifact:low')}: {low}
         </span>
         <span>
-          {t('toolArtifact.vol')}: {vol}
+          {t('toolArtifact:vol')}: {vol}
         </span>
       </div>
     </div>

@@ -47,7 +47,7 @@ export function routeForKey(
 
 /** Each intent as a footer button names it. */
 export const INTENT_LABEL: Record<CommentIntent, string> = {
-  queue: 'pageViewer.comments.addToQueue',
-  note: 'pageViewer.comments.saveNote',
-  send: 'pageViewer.comments.sendNow',
+  queue: 'pageViewer:comments.addToQueue',
+  note: 'pageViewer:comments.saveNote',
+  send: 'pageViewer:comments.sendNow',
 };

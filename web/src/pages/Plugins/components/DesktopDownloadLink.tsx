@@ -20,7 +20,7 @@ export function DesktopDownloadLink({
   children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const full = t('plugins.oauth.desktopDownloadFull');
+  const full = t('plugins:oauth.desktopDownloadFull');
   return (
     <a
       href={DESKTOP_DOWNLOAD_URL}
@@ -33,7 +33,7 @@ export function DesktopDownloadLink({
       className="underline underline-offset-2 transition-opacity hover:opacity-80"
       style={{ color: 'var(--color-text-secondary)' }}
     >
-      {children ?? (short ? t('plugins.oauth.desktopDownload') : full)}
+      {children ?? (short ? t('plugins:oauth.desktopDownload') : full)}
     </a>
   );
 }
@@ -53,7 +53,7 @@ export function NativeOnlyNote({ id }: { id?: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-[0.6875rem]">
       <RowNote icon={Monitor} id={id}>
-        {t('plugins.oauth.nativeOnlyNote')}
+        {t('plugins:oauth.nativeOnlyNote')}
       </RowNote>
       {download && <DesktopDownloadLink short />}
     </span>

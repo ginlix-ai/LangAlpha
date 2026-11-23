@@ -41,9 +41,9 @@ const STYLE_PREVIEW: Record<CardStyle, React.ReactNode> = {
 };
 
 const STYLE_COPY: Record<CardStyle, { title: string; desc: string }> = {
-  soft: { title: 'settings.cardStyleSoft', desc: 'settings.cardStyleSoftDesc' },
-  balanced: { title: 'settings.cardStyleBalanced', desc: 'settings.cardStyleBalancedDesc' },
-  terminal: { title: 'settings.cardStyleTerminal', desc: 'settings.cardStyleTerminalDesc' },
+  soft: { title: 'settings:cardStyleSoft', desc: 'settings:cardStyleSoftDesc' },
+  balanced: { title: 'settings:cardStyleBalanced', desc: 'settings:cardStyleBalancedDesc' },
+  terminal: { title: 'settings:cardStyleTerminal', desc: 'settings:cardStyleTerminalDesc' },
 };
 
 /** Appearance: the theme (a style and light or dark, both saved to the
@@ -59,7 +59,7 @@ export function AppearancePanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.theme')}>
+      <SettingsGroup title={t('settings:theme')}>
         <SettingsCardBody id={styleCopy.id}>
           <span id={styleLabelId} className="settings-row-label">{styleCopy.label}</span>
           <p className="settings-row-desc">{styleCopy.description}</p>
@@ -80,14 +80,14 @@ export function AppearancePanel() {
           value={theme}
           onChange={(mode: ThemePreference) => void reportFailure(pickTheme(mode))}
           options={[
-            { value: 'dark', label: <><Moon className="h-3.5 w-3.5" />{t('settings.dark')}</> },
-            { value: 'light', label: <><Sun className="h-3.5 w-3.5" />{t('settings.light')}</> },
-            { value: 'auto', label: <><Monitor className="h-3.5 w-3.5" />{t('settings.auto')}</> },
+            { value: 'dark', label: <><Moon className="h-3.5 w-3.5" />{t('settings:dark')}</> },
+            { value: 'light', label: <><Sun className="h-3.5 w-3.5" />{t('settings:light')}</> },
+            { value: 'auto', label: <><Monitor className="h-3.5 w-3.5" />{t('settings:auto')}</> },
           ]}
         />
       </SettingsGroup>
 
-      <SettingsGroup title={t('settings.displayGroup')}>
+      <SettingsGroup title={t('settings:displayGroup')}>
         <SegmentedRow
           {...copy(SETTINGS.fontSize)}
           value={String(fontScale)}

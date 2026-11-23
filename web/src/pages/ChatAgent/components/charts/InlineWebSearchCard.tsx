@@ -12,7 +12,7 @@ export function InlineWebSearchCard({ artifact, onClick }: InlineCardProps): Rea
   if (!hits.length) return null;
 
   return (
-    <TermCard title={t('toolArtifact.tool.webSearch')} meta={t('toolArtifact.nResults', { count: hits.length })} onClick={onClick}>
+    <TermCard title={t('toolArtifact:tool.webSearch')} meta={t('toolArtifact:nResults', { count: hits.length })} onClick={onClick}>
       {query && (
         <div className="term-t2 term-query">
           <span className="term-t3">{'> '}</span>&quot;<span>{query}</span>&quot;
@@ -21,7 +21,7 @@ export function InlineWebSearchCard({ artifact, onClick }: InlineCardProps): Rea
       <TermTable
         rows={hits}
         limit={MAX_INLINE_RESULTS}
-        more={(n) => t('toolArtifact.nMoreResults', { count: n })}
+        more={(n) => t('toolArtifact:nMoreResults', { count: n })}
         rowKey={(_, i) => i}
         columns={[
           { key: 'n', className: 'term-t3', cell: (_, i) => String(i + 1).padStart(2, '0') },

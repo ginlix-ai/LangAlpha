@@ -81,18 +81,18 @@ export function McpAdvancedFields({
           className="h-3.5 w-3.5 transition-transform"
           style={{ transform: shown ? 'rotate(90deg)' : undefined }}
         />
-        {t('mcp.modal.advanced')}
+        {t('mcp:modal.advanced')}
       </button>
 
       <Disclosure open={shown} className="flex flex-col gap-4 pl-1">
-        <Field label={t('mcp.modal.transportLabel')} hint={t('mcp.modal.transportHint')}>
+        <Field label={t('mcp:modal.transportLabel')} hint={t('mcp:modal.transportHint')}>
           <SegmentedControl
             value={transport}
             onChange={(next) => dispatch({ type: 'draft', change: (d) => transportPinned(d, next) })}
-            label={t('mcp.modal.transportLabel')}
+            label={t('mcp:modal.transportLabel')}
             options={transports.map((tr) => ({
               value: tr,
-              label: tr === 'sse' ? t('mcp.modal.transportSseRefused') : <span className="uppercase">{tr}</span>,
+              label: tr === 'sse' ? t('mcp:modal.transportSseRefused') : <span className="uppercase">{tr}</span>,
               disabled: tr === 'sse',
               testId: `mcp-transport-${tr}`,
             }))}
@@ -100,31 +100,31 @@ export function McpAdvancedFields({
         </Field>
 
         {textArea('description', DESCRIPTION_MAX, {
-          label: t('mcp.modal.descriptionLabel'),
-          hint: t('mcp.modal.descriptionHint'),
-          placeholder: t('mcp.modal.descriptionPlaceholder'),
+          label: t('mcp:modal.descriptionLabel'),
+          hint: t('mcp:modal.descriptionHint'),
+          placeholder: t('mcp:modal.descriptionPlaceholder'),
         })}
         {textArea('instruction', INSTRUCTION_MAX, {
-          label: t('mcp.modal.instructionLabel'),
-          hint: t('mcp.modal.instructionHint'),
-          placeholder: t('mcp.modal.instructionPlaceholder'),
+          label: t('mcp:modal.instructionLabel'),
+          hint: t('mcp:modal.instructionHint'),
+          placeholder: t('mcp:modal.instructionPlaceholder'),
         })}
 
-        <Field label={t('mcp.modal.exposureLabel')} hint={t('mcp.modal.exposureHint')}>
+        <Field label={t('mcp:modal.exposureLabel')} hint={t('mcp:modal.exposureHint')}>
           <SegmentedControl
             value={meta.exposure}
             onChange={(exposure) => dispatch({ type: 'meta', meta: { exposure } })}
-            label={t('mcp.modal.exposureLabel')}
+            label={t('mcp:modal.exposureLabel')}
             options={EXPOSURE_MODES.map((m) => ({
               value: m,
-              label: m === 'summary' ? t('mcp.modal.exposureSummary') : t('mcp.modal.exposureDetailed'),
+              label: m === 'summary' ? t('mcp:modal.exposureSummary') : t('mcp:modal.exposureDetailed'),
             }))}
           />
         </Field>
 
         <Field
-          label={t('mcp.modal.discoveryLabel')}
-          hint={discoveryForced ? t('mcp.modal.discoveryForced') : t('mcp.modal.discoveryHint')}
+          label={t('mcp:modal.discoveryLabel')}
+          hint={discoveryForced ? t('mcp:modal.discoveryForced') : t('mcp:modal.discoveryHint')}
         >
           <label
             className="flex items-center gap-2 text-sm"
@@ -142,7 +142,7 @@ export function McpAdvancedFields({
               className="h-4 w-4 rounded"
               style={{ accentColor: 'var(--color-accent-primary)' }}
             />
-            {t('mcp.modal.discoveryToggle')}
+            {t('mcp:modal.discoveryToggle')}
           </label>
         </Field>
       </Disclosure>

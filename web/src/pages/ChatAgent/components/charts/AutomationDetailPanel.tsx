@@ -22,7 +22,7 @@ import { TermLink, TermPanelHead } from './TermPanel';
 
 function marketI18nKey(triggerConfig: PriceTriggerConfig | null | undefined): string | null {
   if (!triggerConfig) return null;
-  return triggerConfig.market === 'index' ? 'automation.marketIndex' : null;
+  return triggerConfig.market === 'index' ? 'automation:marketIndex' : null;
 }
 
 /** Where the card's automation ran, or null when the card does not say.
@@ -31,7 +31,7 @@ function marketI18nKey(triggerConfig: PriceTriggerConfig | null | undefined): st
  *  the other, outside any, is the Chief of Staff now. */
 function cardPlace(auto: Automation, t: TFunction): string | null {
   if (!auto.agentMode) return null;
-  return auto.agentMode === 'ptc' ? t('automation.detailWorkspace') : t('agents.chiefOfStaff');
+  return auto.agentMode === 'ptc' ? t('automation:detailWorkspace') : t('agents.chiefOfStaff');
 }
 
 /** A run's state in the cards' tones: one that ran out of time failed too,
@@ -69,14 +69,14 @@ function planPairs(auto: Automation, t: TFunction, locale: string): Pairs {
     const market = marketI18nKey(trigger);
     const condition = <Qualified value={formatPriceTrigger(trigger, t)} aside={market && <TermTag>{t(market)}</TermTag>} />;
     return [
-      [t('toolArtifact.trigger'), condition],
-      [t('toolArtifact.retrigger'), formatRetriggerMode(trigger, t)],
+      [t('toolArtifact:trigger'), condition],
+      [t('toolArtifact:retrigger'), formatRetriggerMode(trigger, t)],
     ];
   }
   const { schedule, nextRunAt } = auto;
   const cron = auto.triggerType === 'cron' && schedule ? <Qualified value={cronToHuman(schedule, t, locale)} aside={schedule} /> : null;
   const next = nextRunAt ? <When at={nextRunAt} /> : null;
-  return [cron && [t('toolArtifact.schedule'), cron], next && [t('toolArtifact.nextRun'), next]];
+  return [cron && [t('toolArtifact:schedule'), cron], next && [t('toolArtifact:nextRun'), next]];
 }
 
 function AutomationsPageLink({ automationId }: { automationId?: string }): React.ReactElement {
@@ -84,7 +84,7 @@ function AutomationsPageLink({ automationId }: { automationId?: string }): React
   const navigate = useNavigate();
   const guardLeave = useRouteLeaveGuard();
   const path = automationId ? `/automations?id=${automationId}` : '/automations';
-  return <TermLink onClick={() => guardLeave(() => navigate(path))}>{t('toolArtifact.viewInAutomations')}</TermLink>;
+  return <TermLink onClick={() => guardLeave(() => navigate(path))}>{t('toolArtifact:viewInAutomations')}</TermLink>;
 }
 
 /** `[ Weekly earnings recap ] RECURRING ...... [PAUSED]  VIEW IN AUTOMATIONS`:
@@ -94,7 +94,7 @@ function AutomationHead({ auto, status }: { auto: Automation; status: React.Reac
   return (
     <TermPanelHead
       title={<span className="term-auto-name">{auto.name}</span>}
-      sub={triggerKind(auto, t) ?? t('toolArtifact.oneTime')}
+      sub={triggerKind(auto, t) ?? t('toolArtifact:oneTime')}
       aside={
         <>
           {status}
@@ -151,7 +151,7 @@ function ListPanel({ automations, total }: ListPanelProps): React.ReactElement {
 
   let body: React.ReactNode;
   if (rows.length === 0) {
-    body = <div className="term-t3">{t('toolArtifact.noAutomationsFound')}</div>;
+    body = <div className="term-t3">{t('toolArtifact:noAutomationsFound')}</div>;
   } else if (narrow) {
     // A phone has no width for five columns: each name over its schedule.
     body = (
@@ -162,7 +162,7 @@ function ListPanel({ automations, total }: ListPanelProps): React.ReactElement {
               <td className="term-fill term-auto-wrap">
                 <div>{r.name}</div>
                 <div className="term-t3">
-                  {[r.schedule, r.next && t('toolArtifact.next', { time: r.next }), r.place].filter(Boolean).join(' · ')}
+                  {[r.schedule, r.next && t('toolArtifact:next', { time: r.next }), r.place].filter(Boolean).join(' · ')}
                 </div>
               </td>
               <td className="term-num">
@@ -179,11 +179,11 @@ function ListPanel({ automations, total }: ListPanelProps): React.ReactElement {
         <table className="term-table">
           <thead>
             <tr>
-              <th>{t('toolArtifact.termHead.name')}</th>
-              <th>{t('toolArtifact.schedule')}</th>
-              {showNext && <th>{t('toolArtifact.nextRun')}</th>}
-              {showPlace && <th>{t('automation.agentMode')}</th>}
-              <th className="term-num">{t('toolArtifact.status')}</th>
+              <th>{t('toolArtifact:termHead.name')}</th>
+              <th>{t('toolArtifact:schedule')}</th>
+              {showNext && <th>{t('toolArtifact:nextRun')}</th>}
+              {showPlace && <th>{t('automation:agentMode')}</th>}
+              <th className="term-num">{t('toolArtifact:status')}</th>
             </tr>
           </thead>
           <tbody>
@@ -206,10 +206,10 @@ function ListPanel({ automations, total }: ListPanelProps): React.ReactElement {
 
   return (
     <TermCard
-      title={t('toolArtifact.automations')}
+      title={t('toolArtifact:automations')}
       meta={
         <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '1.25ch' }}>
-          {rows.length > 0 && <span className="term-auto-count">{t('toolArtifact.nTotalItems', { count: total })}</span>}
+          {rows.length > 0 && <span className="term-auto-count">{t('toolArtifact:nTotalItems', { count: total })}</span>}
           <AutomationsPageLink />
         </span>
       }
@@ -241,27 +241,27 @@ function DetailPanel({ automation, executions, totalExecutions }: DetailPanelPro
     <>
       <AutomationHead auto={automation} status={<AutomationStatus status={automation.status} />} />
 
-      <TermCard title={t('toolArtifact.configuration')}>
+      <TermCard title={t('toolArtifact:configuration')}>
         <TermKV
           cols={narrow ? 1 : 2}
           pairs={[
             ...planPairs(automation, t, locale),
-            lastRun && [t('toolArtifact.lastRun'), lastRun],
-            !!place && [t('automation.agentMode'), place],
+            lastRun && [t('toolArtifact:lastRun'), lastRun],
+            !!place && [t('automation:agentMode'), place],
             // With no runs listed below, the count is said here, as the card says it.
-            !executions.length && totalExecutions > 0 && [t('toolArtifact.executions'), t('toolArtifact.nTotal', { count: totalExecutions })],
+            !executions.length && totalExecutions > 0 && [t('toolArtifact:executions'), t('toolArtifact:nTotal', { count: totalExecutions })],
           ]}
         />
       </TermCard>
 
       {instruction && (
-        <TermCard title={t('toolArtifact.instruction')}>
+        <TermCard title={t('toolArtifact:instruction')}>
           <p className="term-prose term-auto-prose">{instruction}</p>
         </TermCard>
       )}
 
       {executions.length > 0 && (
-        <TermCard title={t('toolArtifact.executions')} meta={t('toolArtifact.nTotal', { count: totalExecutions })}>
+        <TermCard title={t('toolArtifact:executions')} meta={t('toolArtifact:nTotal', { count: totalExecutions })}>
           <table className="term-table">
             <tbody>
               {executions.map((e, i) => {
@@ -271,7 +271,7 @@ function DetailPanel({ automation, executions, totalExecutions }: DetailPanelPro
                   <React.Fragment key={(e.execution_id as string) || i}>
                     <tr>
                       <td className="term-fill">
-                        {e.scheduled_at ? formatDateTime(e.scheduled_at as string, locale) : t('toolArtifact.manualTrigger')}
+                        {e.scheduled_at ? formatDateTime(e.scheduled_at as string, locale) : t('toolArtifact:manualTrigger')}
                       </td>
                       <td className="term-num term-t3">
                         {!!(e.started_at && e.completed_at) && formatDuration(e.started_at as string, e.completed_at as string, t)}
@@ -311,13 +311,13 @@ function CreatedPanel({ automation }: { automation: Automation }): React.ReactEl
     <>
       <AutomationHead
         auto={automation}
-        status={<TermStatus tone="profit">{t('toolArtifact.automationStatus.created')}</TermStatus>}
+        status={<TermStatus tone="profit">{t('toolArtifact:automationStatus.created')}</TermStatus>}
       />
 
-      <TermCard title={t('toolArtifact.configuration')}>
+      <TermCard title={t('toolArtifact:configuration')}>
         <TermKV
           cols={narrow ? 1 : 2}
-          pairs={[...planPairs(automation, t, locale), [t('toolArtifact.status'), status]]}
+          pairs={[...planPairs(automation, t, locale), [t('toolArtifact:status'), status]]}
         />
       </TermCard>
     </>

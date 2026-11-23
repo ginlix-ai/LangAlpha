@@ -47,7 +47,7 @@ function Body({
   const { t } = useTranslation();
   const locale = useLocale();
   const summary = order.order;
-  const none = t('orders.detail.none');
+  const none = t('orders:detail.none');
   const assetKey = summary?.asset_class
     ? ORDER_ASSET_CLASS_KEY[summary.asset_class]
     : undefined;
@@ -66,64 +66,64 @@ function Body({
   return (
     <>
       {summary && (
-        <DetailSection title={t('orders.detail.order')}>
+        <DetailSection title={t('orders:detail.order')}>
           {summary.target_ref && (
-            <DetailField label={t('orders.detail.target')}>
+            <DetailField label={t('orders:detail.target')}>
               {summary.target_ref}
             </DetailField>
           )}
-          <DetailField label={t('orders.detail.assetClass')}>
+          <DetailField label={t('orders:detail.assetClass')}>
             {assetKey ? t(assetKey) : summary.asset_class || none}
           </DetailField>
-          <DetailField label={t('orders.detail.instrument')}>
+          <DetailField label={t('orders:detail.instrument')}>
             <InstrumentLabel instrument={summary.instrument} fallback={none} />
           </DetailField>
-          <DetailField label={t('orders.detail.side')}>
+          <DetailField label={t('orders:detail.side')}>
             {sideKey ? t(sideKey) : summary.side || none}
           </DetailField>
-          <DetailField label={t('orders.detail.size')}>
+          <DetailField label={t('orders:detail.size')}>
             {orderSize(summary, { hidden: valuesHidden, locale }) || none}
           </DetailField>
-          <DetailField label={t('orders.detail.orderType')}>
+          <DetailField label={t('orders:detail.orderType')}>
             {typeKey ? t(typeKey) : summary.order_type || none}
           </DetailField>
           {/* Only the prices the order carries, as on the approval card: a
               market order has none, and "Not recorded" in that slot would
               read as a price the ledger lost. */}
           {limitPrice && (
-            <DetailField label={t('toolArtifact.directTool.orderField.limitPrice')}>
+            <DetailField label={t('toolArtifact:directTool.orderField.limitPrice')}>
               {limitPrice}
             </DetailField>
           )}
           {stopPrice && (
-            <DetailField label={t('toolArtifact.directTool.orderField.stopPrice')}>
+            <DetailField label={t('toolArtifact:directTool.orderField.stopPrice')}>
               {stopPrice}
             </DetailField>
           )}
-          <DetailField label={t('orders.detail.timeInForce')}>
+          <DetailField label={t('orders:detail.timeInForce')}>
             {tifKey ? t(tifKey) : summary.time_in_force || none}
           </DetailField>
-          <DetailField label={t('orders.detail.session')}>
+          <DetailField label={t('orders:detail.session')}>
             {sessionKey ? t(sessionKey) : summary.session || none}
           </DetailField>
           {summary.note && (
-            <DetailField label={t('orders.detail.note')}>{summary.note}</DetailField>
+            <DetailField label={t('orders:detail.note')}>{summary.note}</DetailField>
           )}
         </DetailSection>
       )}
 
       {(filledQty || avgFillPrice || order.fees?.amount) && (
-        <DetailSection title={t('orders.detail.fill')}>
-          <DetailField label={t('orders.detail.filledQty')}>
+        <DetailSection title={t('orders:detail.fill')}>
+          <DetailField label={t('orders:detail.filledQty')}>
             {filledQty ? (valuesHidden ? HIDDEN : filledQty) : none}
           </DetailField>
-          <DetailField label={t('orders.detail.avgFillPrice')}>
+          <DetailField label={t('orders:detail.avgFillPrice')}>
             {orderAmount(avgFillPrice, summary?.currency, {
               hidden: valuesHidden,
               locale,
             }) || none}
           </DetailField>
-          <DetailField label={t('orders.detail.fees')}>
+          <DetailField label={t('orders:detail.fees')}>
             {orderAmount(order.fees?.amount, order.fees?.currency, {
               hidden: valuesHidden,
               locale,
@@ -132,45 +132,45 @@ function Body({
         </DetailSection>
       )}
 
-      <DetailSection title={t('orders.detail.timeline')}>
-        <DetailField label={t('orders.detail.created')}>
+      <DetailSection title={t('orders:detail.timeline')}>
+        <DetailField label={t('orders:detail.created')}>
           {formatOrderTime(order.created_at, locale) || none}
         </DetailField>
-        <DetailField label={t('orders.detail.decided')}>
+        <DetailField label={t('orders:detail.decided')}>
           {formatOrderTime(order.decided_at, locale) || none}
         </DetailField>
-        <DetailField label={t('orders.detail.executed')}>
+        <DetailField label={t('orders:detail.executed')}>
           {formatOrderTime(order.executed_at, locale) || none}
         </DetailField>
-        <DetailField label={t('orders.detail.completed')}>
+        <DetailField label={t('orders:detail.completed')}>
           {formatOrderTime(order.completed_at, locale) || none}
         </DetailField>
-        <DetailField label={t('orders.detail.approval')}>
+        <DetailField label={t('orders:detail.approval')}>
           {t(
             order.approval_required
-              ? 'orders.detail.approvalRequired'
-              : 'orders.detail.approvalNotRequired',
+              ? 'orders:detail.approvalRequired'
+              : 'orders:detail.approvalNotRequired',
           )}
         </DetailField>
         {order.decision_message && (
-          <DetailField label={t('orders.detail.decisionMessage')}>
+          <DetailField label={t('orders:detail.decisionMessage')}>
             {order.decision_message}
           </DetailField>
         )}
       </DetailSection>
 
       {order.failure && (
-        <DetailSection title={t('orders.detail.failure')}>
-          <DetailField label={t('orders.detail.failureKind')}>
+        <DetailSection title={t('orders:detail.failure')}>
+          <DetailField label={t('orders:detail.failureKind')}>
             {order.failure.kind}
           </DetailField>
           {order.failure.code && (
-            <DetailField label={t('orders.detail.failureCode')}>
+            <DetailField label={t('orders:detail.failureCode')}>
               {order.failure.code}
             </DetailField>
           )}
           {order.failure.message && (
-            <DetailField label={t('orders.detail.failureMessage')}>
+            <DetailField label={t('orders:detail.failureMessage')}>
               {order.failure.message}
             </DetailField>
           )}
@@ -178,7 +178,7 @@ function Body({
       )}
 
       {route.length > 0 && (
-        <DetailSection title={t('orders.detail.route')}>
+        <DetailSection title={t('orders:detail.route')}>
           {route.map(([key, value]) => (
             <DetailField key={key} label={key}>
               {String(value)}
@@ -187,24 +187,24 @@ function Body({
         </DetailSection>
       )}
 
-      <DetailSection title={t('orders.detail.provenance')}>
-        <DetailField label={t('orders.detail.vendor')}>{order.vendor}</DetailField>
-        <DetailField label={t('orders.detail.account')}>
+      <DetailSection title={t('orders:detail.provenance')}>
+        <DetailField label={t('orders:detail.vendor')}>{order.vendor}</DetailField>
+        <DetailField label={t('orders:detail.account')}>
           {order.account_ref ? maskAccountId(order.account_ref) : none}
         </DetailField>
-        <DetailField label={t('orders.detail.tool')}>
+        <DetailField label={t('orders:detail.tool')}>
           {order.tool || none}
         </DetailField>
         <DetailField
           label={t(
             order.vendor_order_id && order.vendor_order_id === order.route?.approval_id
-              ? 'orders.detail.approvalId'
-              : 'orders.detail.vendorOrderId',
+              ? 'orders:detail.approvalId'
+              : 'orders:detail.vendorOrderId',
           )}
         >
           {order.vendor_order_id || none}
         </DetailField>
-        <DetailField label={t('orders.detail.attemptId')}>
+        <DetailField label={t('orders:detail.attemptId')}>
           {order.attempt_id}
         </DetailField>
         {order.parent_attempt_id && (
@@ -212,21 +212,21 @@ function Body({
             label={t(
               // A cancel has a parent too, and it did not replace it.
               order.action === 'cancel'
-                ? 'orders.detail.parentCancel'
-                : 'orders.detail.parent',
+                ? 'orders:detail.parentCancel'
+                : 'orders:detail.parent',
             )}
           >
             {order.parent_attempt_id}
           </DetailField>
         )}
-        <DetailField label={t('orders.detail.thread')}>
+        <DetailField label={t('orders:detail.thread')}>
           {order.thread_id ? (
             <Link
               to={`/chat/t/${order.thread_id}`}
               className="inline-flex items-center gap-1 hover:underline"
               style={{ color: 'var(--color-accent-primary)' }}
             >
-              {t('orders.detail.openThread')}
+              {t('orders:detail.openThread')}
               <ArrowUpRight className="h-3 w-3" />
             </Link>
           ) : (
@@ -264,8 +264,8 @@ export function OrderDetail({
         instrumentLabel(order.order?.instrument),
       ]
         .filter(Boolean)
-        .join(' · ') || t('orders.detail.title')
-    : t('orders.detail.title');
+        .join(' · ') || t('orders:detail.title')
+    : t('orders:detail.title');
 
   return (
     <DetailOverlay
@@ -319,9 +319,9 @@ export function OrderDetail({
       ) : error && !isDefinitiveOrderError(error) ? (
         // A backend that faltered is not an order that does not exist, and the
         // poll is still asking, so say that rather than denying the row.
-        <ListError>{t('orders.detail.loadFailed')}</ListError>
+        <ListError>{t('orders:detail.loadFailed')}</ListError>
       ) : error || !order ? (
-        <ListError>{t('orders.detail.notFound')}</ListError>
+        <ListError>{t('orders:detail.notFound')}</ListError>
       ) : (
         <Body order={order} valuesHidden={valuesHidden} />
       )}

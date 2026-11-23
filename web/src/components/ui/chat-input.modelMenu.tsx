@@ -10,7 +10,7 @@ import type { ModelTuning } from './chat-input.modelTuning';
 import { EFFORT_LABELS, effortLabelFor, isCodexModel, tuningMenuLevels } from '@/lib/modelTuning';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { MarkedModelName } from '@/components/model/ModelMark';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { cn } from '@/lib/utils';
 
 type ModelMetadata = Record<string, ModelMetadataEntry>;

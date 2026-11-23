@@ -33,24 +33,24 @@ function TechnicalsSettings({ config, onChange, onClose }: WidgetSettingsProps<T
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.technicals.symbol')}
+        label={t('dashboard:widgets.technicals.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
       />
       <EnumField
-        label={t('dashboard.widgets.technicals.interval')}
+        label={t('dashboard:widgets.technicals.interval')}
         value={config.interval ?? '1D'}
         onChange={(v) => onChange({ interval: v })}
         options={[
-          { value: '1m', label: t('dashboard.widgets.technicals.interval_1m') },
-          { value: '5m', label: t('dashboard.widgets.technicals.interval_5m') },
-          { value: '15m', label: t('dashboard.widgets.technicals.interval_15m') },
-          { value: '1h', label: t('dashboard.widgets.technicals.interval_1h') },
-          { value: '4h', label: t('dashboard.widgets.technicals.interval_4h') },
-          { value: '1D', label: t('dashboard.widgets.technicals.interval_1d') },
-          { value: '1W', label: t('dashboard.widgets.technicals.interval_1w') },
-          { value: '1M', label: t('dashboard.widgets.technicals.interval_1M') },
+          { value: '1m', label: t('dashboard:widgets.technicals.interval_1m') },
+          { value: '5m', label: t('dashboard:widgets.technicals.interval_5m') },
+          { value: '15m', label: t('dashboard:widgets.technicals.interval_15m') },
+          { value: '1h', label: t('dashboard:widgets.technicals.interval_1h') },
+          { value: '4h', label: t('dashboard:widgets.technicals.interval_4h') },
+          { value: '1D', label: t('dashboard:widgets.technicals.interval_1d') },
+          { value: '1W', label: t('dashboard:widgets.technicals.interval_1w') },
+          { value: '1M', label: t('dashboard:widgets.technicals.interval_1M') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -61,8 +61,8 @@ function TechnicalsSettings({ config, onChange, onClose }: WidgetSettingsProps<T
 
 registerWidget<TechnicalsConfig>({
   type: 'tv.technicals',
-  titleKey: 'dashboard.widgets.technicals.title',
-  descriptionKey: 'dashboard.widgets.technicals.description',
+  titleKey: 'dashboard:widgets.technicals.title',
+  descriptionKey: 'dashboard:widgets.technicals.description',
   category: 'markets',
   icon: Gauge,
   component: TechnicalsWidget,

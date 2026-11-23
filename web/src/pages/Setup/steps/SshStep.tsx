@@ -45,14 +45,14 @@ function SshPage() {
 
   return (
     <div>
-      <WizardStepHeader titleId={headingId} title={t('setup.answers.ssh.title')} helper={t('setup.answers.ssh.lead')} />
+      <WizardStepHeader titleId={headingId} title={t('setup:answers.ssh.title')} helper={t('setup:answers.ssh.lead')} />
       <SshSetup state={ssh} busy={busy} />
       <SetupNote icon={<Laptop />}>
         {ssh.ready && !ssh.readyStep.filesBackup
-          ? t('setup.answers.computer.noBackupNote')
+          ? t('setup:answers.computer.noBackupNote')
           : ssh.defaultName
-            ? t('setup.answers.computer.onlineNoteNamed', { name: ssh.defaultName })
-            : t('setup.answers.computer.onlineNote')}
+            ? t('setup:answers.computer.onlineNoteNamed', { name: ssh.defaultName })
+            : t('setup:answers.computer.onlineNote')}
       </SetupNote>
       {error && !busy && (
         <CreateRefusal
@@ -61,9 +61,9 @@ function SshPage() {
           onTakeOver={takeOver && ssh.create ? () => send(takeOver) : undefined}
         />
       )}
-      {flow.finishFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+      {flow.finishFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: () => navigate('/setup/computer') }}
+        back={{ label: t('setup:back'), onClick: () => navigate('/setup/computer') }}
         primary={{
           label: busy ? t('computer.adding') : t('computer.add'),
           // Added already, only the record's write is tried again.

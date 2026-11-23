@@ -105,14 +105,14 @@ export function FileErrorDisplay({ error, onRetry, onDownload, downloadState = '
   // button keeps. A share that grants `allow_files` without `allow_download`
   // gets the sentence without that clause instead of a claim it cannot honour.
   const hintKey = downloadable && !onDownload
-    ? `filePanel.error.${key}NoDownloadHint`
-    : `filePanel.error.${key}Hint`;
+    ? `filePanel:error.${key}NoDownloadHint`
+    : `filePanel:error.${key}Hint`;
 
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12">
       <AlertTriangle className="h-6 w-6" style={{ color: 'var(--color-text-tertiary)' }} />
       <p className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-        {t(`filePanel.error.${key}`)}
+        {t(`filePanel:error.${key}`)}
       </p>
       <p className="text-xs text-center max-w-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {error.message ?? t(hintKey)}
@@ -124,7 +124,7 @@ export function FileErrorDisplay({ error, onRetry, onDownload, downloadState = '
             style={{ background: 'var(--color-bg-elevated)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-elevated)' }}
             onClick={onRetry}
           >
-            {t('filePanel.error.retry')}
+            {t('filePanel:error.retry')}
           </button>
         )}
         {showDownload && onDownload && (
@@ -134,7 +134,7 @@ export function FileErrorDisplay({ error, onRetry, onDownload, downloadState = '
             onClick={onDownload}
             disabled={downloadState !== 'idle'}
           >
-            {downloadLabel(downloadState, t('filePanel.error.download'), t)}
+            {downloadLabel(downloadState, t('filePanel:error.download'), t)}
           </button>
         )}
       </div>

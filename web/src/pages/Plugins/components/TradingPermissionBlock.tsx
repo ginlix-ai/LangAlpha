@@ -24,14 +24,14 @@ export function TradingPermissionBlock() {
   if (!trading.allowed) {
     return (
       <section className="detail-aside-block">
-        <h3>{t('settings.tradingPermission.title')}</h3>
+        <h3>{t('settings:tradingPermission.title')}</h3>
         <RuleNote>{t('organization.trading.off', { who: trading.who.start })}</RuleNote>
       </section>
     );
   }
   return (
     <section className="detail-aside-block">
-      <h3>{t('settings.tradingPermission.title')}</h3>
+      <h3>{t('settings:tradingPermission.title')}</h3>
       {info && (
         <>
           <div className={cn('trading-level', warning && 'is-warning')}>
@@ -44,10 +44,10 @@ export function TradingPermissionBlock() {
       <Link
         to={TRADING_PERMISSION_HREF}
         // The visible words say where it changes; the label says what.
-        aria-label={t('plugins.brokerages.manageTradingPermissionLabel')}
+        aria-label={t('plugins:brokerages.manageTradingPermissionLabel')}
         className="trading-manage"
       >
-        {t('plugins.brokerages.manageTradingPermission')}
+        {t('plugins:brokerages.manageTradingPermission')}
         <ChevronRight className="h-3.5 w-3.5" aria-hidden />
       </Link>
     </section>

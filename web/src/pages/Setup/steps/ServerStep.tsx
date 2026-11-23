@@ -27,20 +27,20 @@ export default function ServerStep() {
       {flow.first && <AnswersStrip answers={flow.answers} />}
       <WizardStepHeader
         titleId={headingId}
-        title={t('setup.server.title')}
-        helper={t(choosesComputer ? 'setup.server.helper' : 'setup.server.helperKeys')}
+        title={t('setup:server.title')}
+        helper={t(choosesComputer ? 'setup:server.helper' : 'setup:server.helperKeys')}
       />
       <ServerSetupForm
         layout="step"
         choosesComputer={choosesComputer}
-        onFailed={<SetupFooter primary={{ label: t('setup.continue'), onClick: () => void flow.finish() }} />}
+        onFailed={<SetupFooter primary={{ label: t('setup:continue'), onClick: () => void flow.finish() }} />}
         footer={(step) => (
           <>
-            {flow.finishFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+            {flow.finishFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
             <SetupFooter
-              back={flow.back ? { label: t('setup.back'), onClick: flow.back } : null}
+              back={flow.back ? { label: t('setup:back'), onClick: flow.back } : null}
               primary={{
-                label: t('setup.continue'),
+                label: t('setup:continue'),
                 disabled: !step.ready || step.saving || flow.finishing,
                 busy: step.saving || flow.finishing,
                 onClick: () => void step.run().then((saved) => (saved ? flow.finish() : false)),

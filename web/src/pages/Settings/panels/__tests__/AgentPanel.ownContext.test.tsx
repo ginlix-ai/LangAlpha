@@ -34,7 +34,7 @@ vi.mock('../OutputFormatRanking', () => ({ OutputFormatRanking: () => null }));
 
 import { AgentPanel } from '../AgentPanel';
 
-const LABEL = 'settings.ownContext';
+const LABEL = 'settings:ownContext';
 
 beforeEach(() => {
   h.featureOn = true;

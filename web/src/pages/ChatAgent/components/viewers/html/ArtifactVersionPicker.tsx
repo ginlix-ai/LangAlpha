@@ -54,11 +54,11 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
   const label = version === null
     ? visitorsAt > 0
       ? t('artifact.publishedVersion', { seq: visitorsAt })
-      : shared ? t('publish.published') : t('artifact.unsharedVersion', { seq: latestSeq })
+      : shared ? t('publish:published') : t('artifact.unsharedVersion', { seq: latestSeq })
     : announcing
-      ? t('filePanel.pageUpdated', { seq: version })
-      : t('filePanel.pageVersion', { seq: version });
-  const name = version === null ? t('artifact.liveName') : t('filePanel.pageVersionName', { seq: version });
+      ? t('filePanel:pageUpdated', { seq: version })
+      : t('filePanel:pageVersion', { seq: version });
+  const name = version === null ? t('artifact.liveName') : t('filePanel:pageVersionName', { seq: version });
   const face = <SwapCell swapKey={label}>{label}</SwapCell>;
   const list = view.versions ?? [];
 
@@ -74,7 +74,7 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
               data-artifact-version-picker=""
               className="file-panel-port-chip artifact-version-chip"
               aria-label={name}
-              title={t('filePanel.pageVersions')}
+              title={t('filePanel:pageVersions')}
             >
               {face}
               <ChevronDown className="h-3 w-3" />
@@ -86,7 +86,7 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
               variant="outline"
               size="sm"
               aria-label={name}
-              title={t('filePanel.pageVersions')}
+              title={t('filePanel:pageVersions')}
               className="h-[30px] gap-1 px-2 text-xs sm:px-2.5"
             >
               {face}
@@ -130,12 +130,12 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
                 <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ opacity: v.seq === version ? 1 : 0 }} aria-hidden="true" />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="flex items-center gap-1.5">
-                    <span>{t('filePanel.pageVersion', { seq: v.seq })}</span>
+                    <span>{t('filePanel:pageVersion', { seq: v.seq })}</span>
                     {v.seq === latestSeq && (
-                      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.pageLatest')}</span>
+                      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:pageLatest')}</span>
                     )}
                     {v.seq === visitorsAt && visitorsAt !== latestSeq && (
-                      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.pageShared')}</span>
+                      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:pageShared')}</span>
                     )}
                     <span className="ml-auto pl-2 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
                       {shortMonthDay(new Date(v.published_at), locale)}

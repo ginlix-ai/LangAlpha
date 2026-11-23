@@ -59,8 +59,8 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit, 
                 color: edit.editMode ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
                 backgroundColor: edit.editMode ? 'var(--color-btn-primary-bg)' : 'transparent',
               }}
-              aria-label={t(edit.editMode ? 'dashboard.header.exitEditLayout' : 'dashboard.header.editLayout')}
-              title={t(edit.editMode ? 'dashboard.header.exitEditLayout' : 'dashboard.header.editLayout')}
+              aria-label={t(edit.editMode ? 'dashboard:header.exitEditLayout' : 'dashboard:header.editLayout')}
+              title={t(edit.editMode ? 'dashboard:header.exitEditLayout' : 'dashboard:header.editLayout')}
             >
               <Pencil size={16} />
             </button>

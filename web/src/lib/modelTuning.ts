@@ -102,8 +102,8 @@ export type GuidanceLevel = (typeof GUIDANCE_LEVELS)[number];
  * length — which it is not.
  */
 export const GUIDANCE_LABELS: Record<GuidanceLevel, string> = {
-  lean: 'settings.modelTuning.guidanceLean',
-  detailed: 'settings.modelTuning.guidanceDetailed',
+  lean: 'settings:modelTuning.guidanceLean',
+  detailed: 'settings:modelTuning.guidanceDetailed',
 };
 
 export function isGuidanceLevel(value: unknown): value is GuidanceLevel {

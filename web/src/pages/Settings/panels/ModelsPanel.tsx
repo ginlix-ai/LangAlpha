@@ -259,9 +259,9 @@ export function ModelsPanel() {
             value={defaultModelScope}
             onChange={(e) => write({ default_model_scope: e.target.value as DefaultModelScope })}
           >
-            <option value="ask">{t('settings.defaultModelChange.scopeAsk')}</option>
-            <option value="new_threads">{t('settings.defaultModelChange.newThreads')}</option>
-            <option value="existing_threads">{t('settings.defaultModelChange.scopeExistingThreads')}</option>
+            <option value="ask">{t('settings:defaultModelChange.scopeAsk')}</option>
+            <option value="new_threads">{t('settings:defaultModelChange.newThreads')}</option>
+            <option value="existing_threads">{t('settings:defaultModelChange.scopeExistingThreads')}</option>
           </Select>
         </SettingRow>
       </SettingsGroup>
@@ -293,7 +293,7 @@ export function ModelsPanel() {
                     // the box ends at the chip's edge, off the next chip and Add.
                     className="tap-target ml-0.5 hover:opacity-70 [--tap-target-h:32px] [--tap-target-x:-9.5px]"
                     style={{ color: 'var(--color-text-tertiary)' }}
-                    aria-label={t('settings.removeModel', { model: modelLabel(key, modelMetadata) })}
+                    aria-label={t('settings:removeModel', { model: modelLabel(key, modelMetadata) })}
                   >
                     &times;
                   </button>
@@ -309,7 +309,7 @@ export function ModelsPanel() {
                   color: 'var(--color-text-secondary)',
                 }}
               >
-                + {t('settings.addModels', 'Add')}
+                + {t('settings:addModels', 'Add')}
               </button>
             </div>
 
@@ -418,8 +418,8 @@ export function ModelsPanel() {
           <SettingsGroup title={t(SETTINGS.routing.labelKey)}>
             <SettingsCardBody id={SETTINGS.routing.anchor} className="flex flex-col gap-4">
               <ModelSelector
-                label={t('settings.modelTuning.fetchModel')}
-                description={t('settings.modelTuning.fetchModelDesc')}
+                label={t('settings:modelTuning.fetchModel')}
+                description={t('settings:modelTuning.fetchModelDesc')}
                 value={mPref.fetch_model ?? ''}
                 onChange={(v) => write({ fetch_model: v || null })}
                 models={slotModels}
@@ -428,8 +428,8 @@ export function ModelsPanel() {
                 metadata={modelMetadata}
               />
               <ModelSelector
-                label={t('settings.modelTuning.compactionModel')}
-                description={t('settings.modelTuning.compactionModelDesc')}
+                label={t('settings:modelTuning.compactionModel')}
+                description={t('settings:modelTuning.compactionModelDesc')}
                 value={mPref.compaction_model ?? ''}
                 onChange={(v) => write({
                   compaction_model: v || null,
@@ -447,7 +447,7 @@ export function ModelsPanel() {
                   the rest of it rather than as a routing slot here. */}
               <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 <Trans
-                  i18nKey="settings.modelTuning.subagentsLink"
+                  i18nKey="settings:modelTuning.subagentsLink"
                   components={{
                     pane: (
                       <Link
@@ -466,23 +466,23 @@ export function ModelsPanel() {
                 payers={payers}
                 skipped={{
                   models: deploymentOnlyFallbacks,
-                  reason: t(isPlatformMode ? 'settings.payerOrder.skipped' : 'settings.payerOrder.skippedSelfHosted'),
+                  reason: t(isPlatformMode ? 'settings:payerOrder.skipped' : 'settings:payerOrder.skippedSelfHosted'),
                 }}
               />
               {savedCrossesPayer && (
                 <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                  {t('settings.payerOrder.savedNote')}
+                  {t('settings:payerOrder.savedNote')}
                 </p>
               )}
               {deploymentOnlyFallbacks.size > 0 && (
                 <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                  {t('settings.payerOrder.skippedNote')}{' '}
+                  {t('settings:payerOrder.skippedNote')}{' '}
                   <button
                     type="button"
                     onClick={() => write({ fallback_models: fallbackModels })}
                     className="underline underline-offset-2 hover:text-[var(--color-text-primary)]"
                   >
-                    {t('settings.payerOrder.useAlways')}
+                    {t('settings:payerOrder.useAlways')}
                   </button>
                 </p>
               )}

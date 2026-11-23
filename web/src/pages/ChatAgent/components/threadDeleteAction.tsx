@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import DeleteConfirmModal from './DeleteConfirmModal';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { DeleteConfirmModal } from './lazyDialogs';
 
 export interface ThreadDeleteConfirm {
   /**
@@ -47,15 +48,17 @@ export function useThreadDeleteConfirm(): ThreadDeleteConfirm {
   return {
     requestDelete,
     dialog: (
-      <DeleteConfirmModal
-        isOpen={!!pending}
-        workspaceName={pending?.title ?? ''}
-        onConfirm={() => void handleConfirm()}
-        onCancel={() => { setPending(null); setError(null); }}
-        isDeleting={busy}
-        error={error}
-        itemType="thread"
-      />
+      <MountOnceOpen open={!!pending}>
+        <DeleteConfirmModal
+          isOpen={!!pending}
+          workspaceName={pending?.title ?? ''}
+          onConfirm={() => void handleConfirm()}
+          onCancel={() => { setPending(null); setError(null); }}
+          isDeleting={busy}
+          error={error}
+          itemType="thread"
+        />
+      </MountOnceOpen>
     ),
   };
 }

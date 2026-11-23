@@ -66,18 +66,18 @@ export const DEFAULT_LAYER_TEXT: LayerText = {
 
 export function buildLayerText(t: TFunction, locale: string): LayerText {
   return {
-    hit: t('marketView.layerCanvas.hit'),
-    missed: t('marketView.layerCanvas.missed'),
-    replay: t('marketView.layerCanvas.replay'),
-    replayed: (from, to) => t('marketView.layerCanvas.replayed', { dates: layerTimeRange(from, to, locale) }),
-    long: t('marketView.layerCanvas.long'),
-    short: t('marketView.layerCanvas.short'),
-    target: t('marketView.layerCanvas.target'),
-    targetN: (n) => t('marketView.layerCanvas.targetN', { n }),
-    stop: t('marketView.layerCanvas.stop'),
-    riskReward: t('marketView.layerCanvas.riskReward'),
-    bars: (count) => t('marketView.layerCanvas.bars', { count }),
-    days: (count) => t('marketView.layerCanvas.days', { count }),
-    poc: t('marketView.layerCanvas.poc'),
+    hit: t('marketView:layerCanvas.hit'),
+    missed: t('marketView:layerCanvas.missed'),
+    replay: t('marketView:layerCanvas.replay'),
+    replayed: (from, to) => t('marketView:layerCanvas.replayed', { dates: layerTimeRange(from, to, locale) }),
+    long: t('marketView:layerCanvas.long'),
+    short: t('marketView:layerCanvas.short'),
+    target: t('marketView:layerCanvas.target'),
+    targetN: (n) => t('marketView:layerCanvas.targetN', { n }),
+    stop: t('marketView:layerCanvas.stop'),
+    riskReward: t('marketView:layerCanvas.riskReward'),
+    bars: (count) => t('marketView:layerCanvas.bars', { count }),
+    days: (count) => t('marketView:layerCanvas.days', { count }),
+    poc: t('marketView:layerCanvas.poc'),
   };
 }

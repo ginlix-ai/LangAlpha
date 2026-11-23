@@ -149,11 +149,11 @@ export function SkillDocument({
       </div>
     );
   } else if (failed) {
-    doc = <div className="pp-doc-status">{t('plugins.detail.sourceLoadFailed')}</div>;
+    doc = <div className="pp-doc-status">{t('plugins:detail.sourceLoadFailed')}</div>;
   } else if (content === null) {
     doc = (
       <div className="pp-doc-status">
-        {t('plugins.skillsPage.fileNotShown', { size: formatBytes(size, locale) })}
+        {t('plugins:skillsPage.fileNotShown', { size: formatBytes(size, locale) })}
       </div>
     );
   } else if (mode === 'source') {
@@ -175,8 +175,8 @@ export function SkillDocument({
   return (
     <div className={cn('pp-skill-body', showOutline && 'has-outline')}>
       {showOutline && (
-        <nav className="pp-outline" aria-label={t('plugins.skillsPage.onThisPage')}>
-          <h3>{t('plugins.skillsPage.onThisPage')}</h3>
+        <nav className="pp-outline" aria-label={t('plugins:skillsPage.onThisPage')}>
+          <h3>{t('plugins:skillsPage.onThisPage')}</h3>
           {headings.map((h) => (
             <button
               key={h.id}
@@ -200,15 +200,15 @@ export function SkillDocument({
           )}
           <span className="pp-doc-path">{path}</span>
           {lineCount > 0 && (
-            <span className="pp-doc-lines">{t('plugins.skillsPage.lines', { count: lineCount })}</span>
+            <span className="pp-doc-lines">{t('plugins:skillsPage.lines', { count: lineCount })}</span>
           )}
           {markdown && (
             <div className="pp-seg" role="group" data-slot="segmented">
               <button type="button" aria-pressed={mode === 'preview'} onClick={() => setMode('preview')}>
-                {t('plugins.skillsPage.preview')}
+                {t('plugins:skillsPage.preview')}
               </button>
               <button type="button" aria-pressed={mode === 'source'} onClick={() => setMode('source')}>
-                {t('plugins.skillsPage.source')}
+                {t('plugins:skillsPage.source')}
               </button>
             </div>
           )}

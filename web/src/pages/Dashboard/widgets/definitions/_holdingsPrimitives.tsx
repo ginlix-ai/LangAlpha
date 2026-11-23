@@ -52,9 +52,9 @@ export function WatchlistTable({ children }: { children: ReactNode }) {
     <table className="term-table dash-table">
       <thead>
         <tr>
-          <th>{t('dashboard.widgets.holdings.colSymbol')}</th>
-          <th className="term-num">{t('dashboard.widgets.holdings.colLast')}</th>
-          <th className="term-num">{t('dashboard.widgets.holdings.colChange')}</th>
+          <th>{t('dashboard:widgets.holdings.colSymbol')}</th>
+          <th className="term-num">{t('dashboard:widgets.holdings.colLast')}</th>
+          <th className="term-num">{t('dashboard:widgets.holdings.colChange')}</th>
         </tr>
       </thead>
       <tbody>{children}</tbody>
@@ -69,10 +69,10 @@ export function PortfolioTable({ children }: { children: ReactNode }) {
     <table className="term-table dash-table">
       <thead>
         <tr>
-          <th>{t('dashboard.widgets.holdings.colSymbol')}</th>
-          <th>{t('dashboard.widgets.holdings.colShares')}</th>
-          <th className="term-num">{t('dashboard.widgets.holdings.colValue')}</th>
-          <th className="term-num">{t('dashboard.widgets.holdings.colPl')}</th>
+          <th>{t('dashboard:widgets.holdings.colSymbol')}</th>
+          <th>{t('dashboard:widgets.holdings.colShares')}</th>
+          <th className="term-num">{t('dashboard:widgets.holdings.colValue')}</th>
+          <th className="term-num">{t('dashboard:widgets.holdings.colPl')}</th>
         </tr>
       </thead>
       <tbody>{children}</tbody>
@@ -145,7 +145,7 @@ export function WatchlistRowItem({ item, marketStatus, onDelete, attach }: Watch
         <ContextMenuContent>
           <ContextMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.watchlist_item_id))}>
             <Trash2 className="h-3.5 w-3.5" />
-            {t('dashboard.widgets.holdings.delete')}
+            {t('dashboard:widgets.holdings.delete')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -201,9 +201,9 @@ export function PortfolioRowItem({
       </td>
       <td className="term-fill term-t3 dash-attach-cell">
         {valuesHidden
-          ? t('dashboard.widgets.holdings.sharesHidden')
+          ? t('dashboard:widgets.holdings.sharesHidden')
           : item.quantity != null
-            ? t('dashboard.widgets.holdings.shares', { n: integer(Number(item.quantity), locale) })
+            ? t('dashboard:widgets.holdings.shares', { n: integer(Number(item.quantity), locale) })
             : ''}
         {attach}
       </td>
@@ -232,11 +232,11 @@ export function PortfolioRowItem({
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onEdit?.(item)}>
             <Pencil className="h-3.5 w-3.5" />
-            {t('dashboard.widgets.holdings.edit')}
+            {t('dashboard:widgets.holdings.edit')}
           </ContextMenuItem>
           <ContextMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
             <Trash2 className="h-3.5 w-3.5" />
-            {t('dashboard.widgets.holdings.delete')}
+            {t('dashboard:widgets.holdings.delete')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -280,7 +280,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
     () => summaries.filter((summary) => summary.totalValue !== 0),
     [summaries],
   );
-  const label = visibleSummaries.length > 1 ? t('dashboard.widgets.holdings.navByCurrency') : t('dashboard.widgets.holdings.nav');
+  const label = visibleSummaries.length > 1 ? t('dashboard:widgets.holdings.navByCurrency') : t('dashboard:widgets.holdings.nav');
 
   return (
     <div className="mb-2">
@@ -290,7 +290,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
           type="button"
           onClick={onToggleHidden}
           className="widget-card__icon-btn term-push widget-drag-cancel"
-          aria-label={valuesHidden ? t('dashboard.widgets.holdings.showValues') : t('dashboard.widgets.holdings.hideValues')}
+          aria-label={valuesHidden ? t('dashboard:widgets.holdings.showValues') : t('dashboard:widgets.holdings.hideValues')}
         >
           {valuesHidden ? <EyeOff size={12} /> : <Eye size={12} />}
         </button>
@@ -311,9 +311,9 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
                 <TermKV
                   cols={1}
                   pairs={[
-                    [t('dashboard.widgets.holdings.cost'), formatPortfolioMoney(summary.totalCost, summary.currency, locale)],
+                    [t('dashboard:widgets.holdings.cost'), formatPortfolioMoney(summary.totalCost, summary.currency, locale)],
                     [
-                      t('dashboard.widgets.holdings.totalPl'),
+                      t('dashboard:widgets.holdings.totalPl'),
                       (summary.isPlPositive ? '+' : '-') +
                         formatPortfolioMoney(Math.abs(summary.totalPl), summary.currency, locale),
                     ],
@@ -323,8 +323,8 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
             )}
             {summary.totalCost > 0 && summary.uncosted.length > 0 && (
               <div className="term-line term-word term-t3 mt-1">
-                {t('dashboard.widgets.holdings.plExcludes', {
-                  symbols: listSymbols([...new Set(summary.uncosted.map((h) => h.symbol))], locale, (n) => t('dashboard.widgets.holdings.andMore', { n })),
+                {t('dashboard:widgets.holdings.plExcludes', {
+                  symbols: listSymbols([...new Set(summary.uncosted.map((h) => h.symbol))], locale, (n) => t('dashboard:widgets.holdings.andMore', { n })),
                   currency: summary.currency,
                 })}
               </div>

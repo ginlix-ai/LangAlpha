@@ -21,12 +21,12 @@ export function toastConnectorAdded({
   onOpen?: () => void;
   t: TFunction;
 }) {
-  const open = t('mcp.added.open');
+  const open = t('mcp:added.open');
   toast({
     title:
       toolCount === null
-        ? t('mcp.added.title', { name })
-        : t('mcp.added.titleTools', { name, count: toolCount }),
+        ? t('mcp:added.title', { name })
+        : t('mcp:added.titleTools', { name, count: toolCount }),
     action: onOpen ? (
       <ToastAction altText={open} onClick={onOpen}>
         {open}

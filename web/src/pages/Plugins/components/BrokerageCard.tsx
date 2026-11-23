@@ -165,19 +165,19 @@ export function BrokerageCard({
         vendor={vendor}
         rowKey={rowKey}
         size="card"
-        label={t('plugins.shell.brokerage.switchOn')}
+        label={t('plugins:shell.brokerage.switchOn')}
         testid={`brokerage-switch-on-${brokerage.name}`}
         onClick={() => onToggle(true)}
       />
     );
   }
   if (!row) {
-    state = <span className="broker-card-state is-quiet">{t('plugins.brokerages.notAdded')}</span>;
+    state = <span className="broker-card-state is-quiet">{t('plugins:brokerages.notAdded')}</span>;
   } else if (unconnected) {
     state = (
       <span className="broker-card-state">
         <StatusDot tone="attn" />
-        {t('plugins.brokerages.sections.signIn')}
+        {t('plugins:brokerages.sections.signIn')}
       </span>
     );
   } else if (refreshing) {
@@ -193,11 +193,11 @@ export function BrokerageCard({
   const menu =
     row &&
     manage && (
-      <CellMenu label={t('mcp.row.actionsAria', { name: title })}>
+      <CellMenu label={t('mcp:row.actionsAria', { name: title })}>
         {enabled ? (
           <DropdownMenuItem disabled={toggling} onSelect={() => onToggle(false)}>
             <Power className="h-3.5 w-3.5 mr-2" />
-            {t('plugins.shell.brokerage.switchOff')}
+            {t('plugins:shell.brokerage.switchOff')}
           </DropdownMenuItem>
         ) : (
           // A switch cannot sign anyone in, and Connect sits right
@@ -208,10 +208,10 @@ export function BrokerageCard({
           >
             <Power className="h-3.5 w-3.5 mr-2" />
             <span className="flex flex-col">
-              <span>{t('plugins.shell.brokerage.switchOn')}</span>
+              <span>{t('plugins:shell.brokerage.switchOn')}</span>
               {unconnected && (
                 <span className="brokerage-menu-hint">
-                  {t('plugins.shell.brokerage.signInFirst')}
+                  {t('plugins:shell.brokerage.signInFirst')}
                 </span>
               )}
             </span>
@@ -219,7 +219,7 @@ export function BrokerageCard({
         )}
         <DropdownMenuItem onSelect={manage.onOpen}>
           <Layers className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.shell.brokerage.workspaces')}
+          {t('plugins:shell.brokerage.workspaces')}
         </DropdownMenuItem>
         <OauthMenuItems
           status={status}
@@ -231,7 +231,7 @@ export function BrokerageCard({
             just not from the section whose point is that we picked it. */}
         <DropdownMenuItem onSelect={manage.onOpenInMcpTab}>
           <Server className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.brokerages.openInMcp')}
+          {t('plugins:brokerages.openInMcp')}
         </DropdownMenuItem>
         {/* Hidden on a plugin's row, the way the Connectors section hides
             it: that row belongs to the plugin, and the delete route's
@@ -241,7 +241,7 @@ export function BrokerageCard({
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={manage.onRequestRemove} variant="destructive">
               <Trash2 className="h-3.5 w-3.5 mr-2" />
-              {t('plugins.shell.brokerage.remove')}
+              {t('plugins:shell.brokerage.remove')}
             </DropdownMenuItem>
           </>
         )}
@@ -308,12 +308,12 @@ export function BrokerageCard({
             <div className="broker-card-notes">
               {grantedNone && (
                 <RowNote icon={AlertTriangle} tone="warning">
-                  {t('plugins.brokerages.grantedNone')}
+                  {t('plugins:brokerages.grantedNone')}
                 </RowNote>
               )}
               {redirected && (
                 <RowNote icon={AlertTriangle} tone="warning">
-                  {t('plugins.brokerages.redirectedNote')}
+                  {t('plugins:brokerages.redirectedNote')}
                 </RowNote>
               )}
               <VendorNotes vendor={vendor} unconnected={unconnected} rowKey={rowKey} />
@@ -354,24 +354,24 @@ function BrokerCapabilities({
   // Where the broker trades, for the brokers whose registry entry says so.
   // Written here rather than read off the vendor's paragraph, which is the
   // agent's and in English.
-  const coverageKey = `plugins.brokerages.coverage.${vendor.name}`;
-  const reachKey = furthest && `plugins.brokerages.card.reach.${furthest.key}`;
+  const coverageKey = `plugins:brokerages.coverage.${vendor.name}`;
+  const reachKey = furthest && `plugins:brokerages.card.reach.${furthest.key}`;
   let ordersNote: string | null = null;
-  if (orders.length === 0) ordersNote = t('plugins.brokerages.card.noOrders');
-  else if (!furthest) ordersNote = t('plugins.brokerages.card.noOrdersGranted');
+  if (orders.length === 0) ordersNote = t('plugins:brokerages.card.noOrders');
+  else if (!furthest) ordersNote = t('plugins:brokerages.card.noOrdersGranted');
   else if (reachKey && i18n.exists(reachKey)) ordersNote = t(reachKey);
-  else if (furthest) ordersNote = t(`plugins.brokerages.capabilities.${furthest.key}.desc`);
+  else if (furthest) ordersNote = t(`plugins:brokerages.capabilities.${furthest.key}.desc`);
   return (
     <dl className="broker-caps">
       {i18n.exists(coverageKey) && (
         <div className="broker-caps-row">
-          <dt>{t('plugins.brokerages.card.covers')}</dt>
+          <dt>{t('plugins:brokerages.card.covers')}</dt>
           <dd className="broker-caps-text">{t(coverageKey)}</dd>
         </div>
       )}
       {access.length > 0 && (
         <div className="broker-caps-row">
-          <dt>{t('plugins.brokerages.card.access')}</dt>
+          <dt>{t('plugins:brokerages.card.access')}</dt>
           <dd className="broker-caps-chips">
             {access.map((group) => (
               <CapabilityChip key={group.key} group={group} granted={granted} />
@@ -380,7 +380,7 @@ function BrokerCapabilities({
         </div>
       )}
       <div className="broker-caps-row">
-        <dt>{t('plugins.brokerages.card.orders')}</dt>
+        <dt>{t('plugins:brokerages.card.orders')}</dt>
         <dd>
           {orders.length > 0 && (
             <span className="broker-caps-chips">
@@ -415,10 +415,10 @@ function CapabilityChip({
   const on = !settled || granted.includes(group.key);
   const state = t(
     !settled
-      ? 'plugins.brokerages.detail.offered'
+      ? 'plugins:brokerages.detail.offered'
       : on
-        ? 'plugins.brokerages.detail.granted'
-        : 'plugins.brokerages.detail.declined',
+        ? 'plugins:brokerages.detail.granted'
+        : 'plugins:brokerages.detail.declined',
   );
   const money = group.tone === 'danger';
   const Icon = on ? Check : Minus;
@@ -440,7 +440,7 @@ function CapabilityChip({
         // glance; neutral ink, since nothing is granted yet.
         money && <Banknote className="broker-cap-glyph" aria-hidden />
       )}
-      {t(`plugins.brokerages.capabilities.${group.key}.label`)}
+      {t(`plugins:brokerages.capabilities.${group.key}.label`)}
     </span>
   );
 }
@@ -457,9 +457,9 @@ function GrantState({ vendor, granted }: { vendor: Brokerage | null; granted: st
   const live = rungs.some((group) => group.tone === 'danger');
   const furthest = rungs[rungs.length - 1];
   const label = live
-    ? t('plugins.shell.brokerage.canPlaceOrders')
+    ? t('plugins:shell.brokerage.canPlaceOrders')
     : furthest
-      ? t(`plugins.brokerages.capabilities.${furthest.key}.label`)
-      : t('plugins.shell.brokerage.readOnly');
+      ? t(`plugins:brokerages.capabilities.${furthest.key}.label`)
+      : t('plugins:shell.brokerage.readOnly');
   return <span className={live ? 'brokerage-grant is-live' : 'brokerage-grant'}>{label}</span>;
 }

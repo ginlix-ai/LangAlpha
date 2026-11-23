@@ -16,17 +16,17 @@ export function DiscoverSummary({ scope }: { scope: DiscoverScope }) {
   const installed = entries.filter((e) => e.installed).length;
   const total =
     scope === 'connectors'
-      ? t('plugins.discoverPage.vendorCount', { count })
+      ? t('plugins:discoverPage.vendorCount', { count })
       : scope === 'skills'
-        ? t('plugins.discoverPage.collectionCount', { count })
-        : t('plugins.discoverPage.catalogCount', { count });
+        ? t('plugins:discoverPage.collectionCount', { count })
+        : t('plugins:discoverPage.catalogCount', { count });
   return (
     <>
       <span>{total}</span>
       {installed > 0 && (
         <>
           <span aria-hidden style={{ color: 'var(--color-text-quaternary)' }}>·</span>
-          <span>{t('plugins.discoverPage.installedCount', { count: installed })}</span>
+          <span>{t('plugins:discoverPage.installedCount', { count: installed })}</span>
         </>
       )}
     </>

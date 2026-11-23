@@ -43,18 +43,18 @@ export function freshnessTooltipLines(
     // The state line repeats the pill's own words; the parts' state is the
     // header's mid-sentence phrasing.
     return [
-      parts.source && `${t('marketView.header.source')}: ${parts.source}`,
+      parts.source && `${t('marketView:header.source')}: ${parts.source}`,
       freshnessBadgeText(t, p),
       parts.lastBar,
     ].filter((l): l is string => !!l);
   }
   const lines: string[] = [];
   const src = providerLabel(sourceId, t);
-  if (src) lines.push(`${t('marketView.header.source')}: ${src}`);
+  if (src) lines.push(`${t('marketView:header.source')}: ${src}`);
   const state = freshnessBadgeText(t, p);
   if (state) lines.push(state);
   if (p.asOfLocal) {
-    lines.push(p.printed === false ? t('toolArtifact.retrievedAt', { time: p.asOfLocal }) : p.asOfLocal);
+    lines.push(p.printed === false ? t('toolArtifact:retrievedAt', { time: p.asOfLocal }) : p.asOfLocal);
   }
   return lines;
 }

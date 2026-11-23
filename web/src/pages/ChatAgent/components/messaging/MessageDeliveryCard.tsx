@@ -26,15 +26,15 @@ export function MessageDeliveryCard({ artifact, toolArgs, onClick }: InlineCardP
   const delivery = readMessageDelivery(artifact, toolArgs);
   if (!delivery) return null;
 
-  const label = messagingAppName(delivery.platform) ?? t('toolArtifact.messageDelivery.message');
+  const label = messagingAppName(delivery.platform) ?? t('toolArtifact:messageDelivery.message');
   const domain = messagingAppDomain(delivery.platform) ?? '';
   const total = delivery.files.length;
   const delivered = deliveredFileCount(delivery.files);
   // A file that did not go turns the count into "ok/N"; an unknown outcome stays "N".
   const anyMissed = delivery.files.some((f) => f.status === 'failed' || f.status === 'not_sent');
   const count = anyMissed ? `${delivered}/${total}` : `${total}`;
-  const statusLabel = t(`toolArtifact.messageDelivery.status.${delivery.status}`);
-  const summary = [label, total > 0 ? t('toolArtifact.messageDelivery.fileCount', { count: total }) : null, statusLabel]
+  const statusLabel = t(`toolArtifact:messageDelivery.status.${delivery.status}`);
+  const summary = [label, total > 0 ? t('toolArtifact:messageDelivery.fileCount', { count: total }) : null, statusLabel]
     .filter(Boolean)
     .join(' · ');
 

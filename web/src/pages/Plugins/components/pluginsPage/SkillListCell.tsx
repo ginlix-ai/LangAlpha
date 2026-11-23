@@ -66,40 +66,40 @@ export function SkillListCell({
       meta={meta}
       trailing={
         isPluginSuppressed(skill) ? (
-          <CellState state="off" label={t('plugins.skillsPage.pluginOff')} />
+          <CellState state="off" label={t('plugins:skillsPage.pluginOff')} />
         ) : undefined
       }
       onOpen={onOpen}
       menu={
-        <CellMenu label={t('mcp.row.actionsAria', { name: skill.name })}>
+        <CellMenu label={t('mcp:row.actionsAria', { name: skill.name })}>
           <DropdownMenuItem
             disabled={toggling || lockedByUserTier}
             onSelect={() => onToggle(!skill.enabled)}
           >
             <Power className="h-3.5 w-3.5" />
-            {skill.enabled ? t('plugins.pluginsPage.switchOff') : t('plugins.pluginsPage.switchOn')}
+            {skill.enabled ? t('plugins:pluginsPage.switchOff') : t('plugins:pluginsPage.switchOn')}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={onOpen}>
             <Layers className="h-3.5 w-3.5" />
-            {t('plugins.skillsPage.workspaces')}
+            {t('plugins:skillsPage.workspaces')}
           </DropdownMenuItem>
           {skill.command && (
             <DropdownMenuItem onSelect={onEditCommand}>
               <Pencil className="h-3.5 w-3.5" />
-              {t('plugins.skillsPage.editCommand')}
+              {t('plugins:skillsPage.editCommand')}
             </DropdownMenuItem>
           )}
           <DropdownMenuSeparator />
           {onRemove ? (
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
               <Trash2 className="h-3.5 w-3.5" />
-              {t('plugins.skillsPage.remove')}
+              {t('plugins:skillsPage.remove')}
             </DropdownMenuItem>
           ) : (
             <p className="pp-menu-note">
               {isPluginOwned(skill) && skill.origin !== 'platform'
-                ? t('plugins.skillsPage.pluginNote', { plugin: skill.plugin_name })
-                : t('plugins.skillsPage.builtinNote')}
+                ? t('plugins:skillsPage.pluginNote', { plugin: skill.plugin_name })
+                : t('plugins:skillsPage.builtinNote')}
             </p>
           )}
         </CellMenu>
@@ -128,16 +128,16 @@ function RemoveConfirm({
   const { nameById } = useWorkspaceOptions();
   const workspaceId = skillScopeId(skill);
   const message = workspaceId
-    ? t('plugins.skillsPage.removeConfirmIn', {
+    ? t('plugins:skillsPage.removeConfirmIn', {
         skill: skill.name,
-        workspace: nameById.get(workspaceId) ?? t('plugins.skillsPage.thisWorkspace'),
+        workspace: nameById.get(workspaceId) ?? t('plugins:skillsPage.thisWorkspace'),
       })
-    : t('plugins.skillsPage.removeConfirm', { skill: skill.name });
+    : t('plugins:skillsPage.removeConfirm', { skill: skill.name });
   return (
     <ConfirmStrip
       message={message}
-      confirmLabel={removing ? t('common.loading') : t('plugins.skillsPage.removeYes')}
-      cancelLabel={t('plugins.skills.deleteConfirmNo')}
+      confirmLabel={removing ? t('common.loading') : t('plugins:skillsPage.removeYes')}
+      cancelLabel={t('plugins:skills.deleteConfirmNo')}
       pending={removing}
       onConfirm={onConfirm}
       onCancel={onCancel}

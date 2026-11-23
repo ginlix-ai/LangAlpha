@@ -43,8 +43,8 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
       if (!snapshot) {
         toast({
           variant: 'destructive',
-          title: t('dashboard.widgets.frame.contextUnavailable', { defaultValue: 'Widget not available' }),
-          description: t('dashboard.widgets.frame.contextUnavailableHint', {
+          title: t('dashboard:widgets.frame.contextUnavailable', { defaultValue: 'Widget not available' }),
+          description: t('dashboard:widgets.frame.contextUnavailableHint', {
             defaultValue: 'This widget has not registered a context exporter yet.',
           }),
         });
@@ -52,7 +52,7 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
       }
       ContextBus.attach(snapshot);
       toast({
-        title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+        title: t('dashboard:widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
         description: snapshot.label,
       });
     } finally {
@@ -66,8 +66,8 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
       className={`row-attach tap-target widget-drag-cancel ${className ?? ''}`}
       onClick={handleClick}
       disabled={busy}
-      aria-label={t('dashboard.widgets.frame.addRowToContext', { defaultValue: 'Attach to chat' })}
-      title={t('dashboard.widgets.frame.addRowToContextTitle', { defaultValue: 'Attach to chat' })}
+      aria-label={t('dashboard:widgets.frame.addRowToContext', { defaultValue: 'Attach to chat' })}
+      title={t('dashboard:widgets.frame.addRowToContextTitle', { defaultValue: 'Attach to chat' })}
     >
       {busy ? (
         <span aria-hidden="true" className="shrink-0">

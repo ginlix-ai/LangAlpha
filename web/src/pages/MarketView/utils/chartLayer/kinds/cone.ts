@@ -52,7 +52,7 @@ function lastPrice(pts: readonly IP[]): number {
 }
 
 export const cone: DrawingKind<ConeDrawing, ConeScene> = {
-  nameKey: 'marketView.layerExplain.types.cone',
+  nameKey: 'marketView:layerExplain.types.cone',
   times: (d) => cone.anchors(d).map((pt) => pt.time),
   anchors: (d) => [d.origin, ...d.bands.flatMap((b) => [...b.upper, ...b.lower])],
   resolve(d, { base, P }) {

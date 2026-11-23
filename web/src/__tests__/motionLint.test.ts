@@ -207,7 +207,7 @@ describe('motion lint: what passes', () => {
       ['a setTimeout-like helper', 'schedule(fn, { delay: 300, retries: 3 });'],
       ['a toast duration', 'toast({ title, duration: 6000 });'],
       ['a toast method', 'toast.success(msg, { duration: 8000 });'],
-      ['an i18n parameter', "t('toolArtifact.thoughtFor', { duration: '1s' });"],
+      ['an i18n parameter', "t('toolArtifact:thoughtFor', { duration: '1s' });"],
       ['a retry record', 'const retry = { delay: 300, attempts: 5 };'],
       ['a hook option', 'const v = useDebouncedValue(value, { delay: 250 });'],
       [

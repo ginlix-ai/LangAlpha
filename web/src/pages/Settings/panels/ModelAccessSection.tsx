@@ -222,11 +222,11 @@ export function ModelAccessSection() {
   const sheetTitle = (() => {
     if (!sheet) return null;
     const providerTitle = (name: string, markProvider: string) => (
-      <ProviderTitle name={name} markProvider={markProvider} title={t('setup.connectTitle', { provider: name })} />
+      <ProviderTitle name={name} markProvider={markProvider} title={t('setup:connectTitle', { provider: name })} />
     );
     switch (sheet.kind) {
       case 'pick-subscription': return t('modelAccess.connectSubscription');
-      case 'connect-subscription': return t('setup.connectTitle', { provider: subscriptionName(t, sheet.provider) });
+      case 'connect-subscription': return t('setup:connectTitle', { provider: subscriptionName(t, sheet.provider) });
       case 'pick-key': return t('modelAccess.addKey');
       case 'pick-local': return t('modelAccess.addLocal');
       case 'key': return providerTitle(sheet.group.name, sheet.group.markProvider);

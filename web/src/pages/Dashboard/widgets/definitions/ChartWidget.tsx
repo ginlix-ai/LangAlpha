@@ -283,7 +283,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       } catch (err) {
         console.warn('[ChartWidget] canvas capture failed, sending text-only', err);
       }
-      const labelBits = [config.symbol.toUpperCase(), config.interval, t('dashboard.widgets.chart.title', { defaultValue: 'Chart' })];
+      const labelBits = [config.symbol.toUpperCase(), config.interval, t('dashboard:widgets.chart.title', { defaultValue: 'Chart' })];
       return {
         widget_type: 'markets.chart',
         widget_id: instance.id,
@@ -1185,7 +1185,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
               maxLength={12}
               autoComplete="off"
               spellCheck={false}
-              placeholder={t('dashboard.widgets.chart.searchPlaceholder')}
+              placeholder={t('dashboard:widgets.chart.searchPlaceholder')}
             />
           ) : (
             <div className="flex items-baseline gap-2">
@@ -1193,7 +1193,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
               <button
                 type="button"
                 onClick={startEditSymbol}
-                title={t('dashboard.widgets.chart.clickToChange')}
+                title={t('dashboard:widgets.chart.clickToChange')}
                 className="text-sm font-semibold tabular-nums hover:opacity-70 transition-opacity"
                 style={{ color: 'var(--color-text-primary)' }}
               >
@@ -1225,14 +1225,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="px-2.5 py-1.5 text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
-                  {t('dashboard.widgets.chart.searching')}
+                  {t('dashboard:widgets.chart.searching')}
                 </div>
               ) : searchHits.length === 0 ? (
                 <div
                   className="px-2.5 py-1.5 text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
-                  {t('dashboard.widgets.chart.noMatchesEnter', { symbol: symbolDraft.trim().toUpperCase() })}
+                  {t('dashboard:widgets.chart.noMatchesEnter', { symbol: symbolDraft.trim().toUpperCase() })}
                 </div>
               ) : (
                 searchHits.map((hit, i) => (
@@ -1292,20 +1292,20 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             className="flex items-center gap-0.5 pl-2"
             style={{ borderLeft: '1px solid var(--color-border-muted)' }}
           >
-            <ToolbarIconBtn title={t('dashboard.widgets.chart.zoomIn')} onClick={handleZoomIn}>
+            <ToolbarIconBtn title={t('dashboard:widgets.chart.zoomIn')} onClick={handleZoomIn}>
               <ZoomIn size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title={t('dashboard.widgets.chart.zoomOut')} onClick={handleZoomOut}>
+            <ToolbarIconBtn title={t('dashboard:widgets.chart.zoomOut')} onClick={handleZoomOut}>
               <ZoomOut size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title={t('dashboard.widgets.chart.fitAll')} onClick={handleFitAll}>
+            <ToolbarIconBtn title={t('dashboard:widgets.chart.fitAll')} onClick={handleFitAll}>
               <Maximize2 size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title={t('dashboard.widgets.chart.resetView')} onClick={handleResetView}>
+            <ToolbarIconBtn title={t('dashboard:widgets.chart.resetView')} onClick={handleResetView}>
               <RotateCcw size={12} />
             </ToolbarIconBtn>
             <ToolbarIconBtn
-              title={t('dashboard.widgets.chart.openInMarket')}
+              title={t('dashboard:widgets.chart.openInMarket')}
               onClick={() => navigate(`/market?symbol=${encodeURIComponent(config.symbol)}`)}
             >
               <ExternalLink size={12} />
@@ -1380,16 +1380,16 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
   };
 
   const types: { key: ChartType; label: string }[] = [
-    { key: 'candle', label: t('dashboard.widgets.chart.chartType_candle') },
-    { key: 'area', label: t('dashboard.widgets.chart.chartType_area') },
-    { key: 'line', label: t('dashboard.widgets.chart.chartType_line') },
+    { key: 'candle', label: t('dashboard:widgets.chart.chartType_candle') },
+    { key: 'area', label: t('dashboard:widgets.chart.chartType_area') },
+    { key: 'line', label: t('dashboard:widgets.chart.chartType_line') },
   ];
 
   return (
     <div className="space-y-3">
       <div>
         <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('dashboard.widgets.chart.settingsSymbol')}
+          {t('dashboard:widgets.chart.settingsSymbol')}
         </label>
         <input
           type="text"
@@ -1406,7 +1406,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
       </div>
       <div>
         <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('dashboard.widgets.chart.settingsChartType')}
+          {t('dashboard:widgets.chart.settingsChartType')}
         </label>
         <div className="flex gap-1">
           {types.map((t) => (
@@ -1433,7 +1433,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
           className="px-3 py-1 text-xs rounded border"
           style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
         >
-          {t('dashboard.widgets.common.cancel')}
+          {t('dashboard:widgets.common.cancel')}
         </button>
         <button
           type="button"
@@ -1441,7 +1441,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
           className="px-3 py-1 text-xs rounded font-medium"
           style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
         >
-          {t('dashboard.widgets.common.save')}
+          {t('dashboard:widgets.common.save')}
         </button>
       </div>
     </div>

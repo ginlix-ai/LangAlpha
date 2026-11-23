@@ -71,8 +71,8 @@ function useStaleNotice(dashboard: SavedDashboard | null): (detail: string | nul
     if (!dashboard) return;
     toast({
       variant: 'destructive',
-      title: t('customDashboard.reloadFailed', { name: dashboard.title || t('customDashboard.untitled') }),
-      description: detail ?? t(dashboard.kind === 'page' ? 'customDashboard.away.failedDetailPage' : 'customDashboard.away.failedDetail'),
+      title: t('customDashboard:reloadFailed', { name: dashboard.title || t('customDashboard:untitled') }),
+      description: detail ?? t(dashboard.kind === 'page' ? 'customDashboard:away.failedDetailPage' : 'customDashboard:away.failedDetail'),
     });
   };
 }
@@ -164,7 +164,7 @@ function usePageSource(page: PageDashboard | null): DashboardSource {
   const keep = useMutation({
     mutationFn: () => setKept(qc, artifactId, true),
     onError: (err) =>
-      toast({ variant: 'destructive', title: t('customDashboard.keepFailed'), description: apiErrorReason(err) ?? undefined }),
+      toast({ variant: 'destructive', title: t('customDashboard:keepFailed'), description: apiErrorReason(err) ?? undefined }),
   });
 
   const seq = record.data?.latest_seq ?? 0;

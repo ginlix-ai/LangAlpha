@@ -106,7 +106,7 @@ export default function MarketChatHistoryButton({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label={t('marketView.chatHistory.triggerLabel')}
+          aria-label={t('marketView:chatHistory.triggerLabel')}
           className="group inline-flex items-center gap-2 rounded-md px-2 py-1 max-w-[260px] transition-colors hover:bg-foreground/6"
           style={{ color: 'var(--color-text-primary)' }}
         >
@@ -161,7 +161,7 @@ export default function MarketChatHistoryButton({
             style={{ color: 'var(--color-accent-primary)' }}
           />
           <span className="text-sm font-medium" style={{ letterSpacing: '-0.005em' }}>
-            {t('marketView.chatHistory.newChat')}
+            {t('marketView:chatHistory.newChat')}
           </span>
         </DropdownMenuItem>
 
@@ -174,7 +174,7 @@ export default function MarketChatHistoryButton({
               letterSpacing: '0.14em',
             }}
           >
-            {t('marketView.chatHistory.recent')}
+            {t('marketView:chatHistory.recent')}
           </span>
           <div
             className="flex-1 h-px"
@@ -230,7 +230,7 @@ export default function MarketChatHistoryButton({
               className="px-3 py-6 text-xs text-center"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('marketView.chatHistory.noWorkspace')}
+              {t('marketView:chatHistory.noWorkspace')}
             </div>
           )}
 
@@ -242,7 +242,7 @@ export default function MarketChatHistoryButton({
               <span aria-hidden="true" className="shrink-0">
                 <Loader size={12} className="text-current" />
               </span>
-              <span style={{ letterSpacing: '0.04em' }}>{t('marketView.chatHistory.loading')}</span>
+              <span style={{ letterSpacing: '0.04em' }}>{t('marketView:chatHistory.loading')}</span>
             </div>
           )}
 
@@ -252,7 +252,7 @@ export default function MarketChatHistoryButton({
               style={{ color: 'var(--color-loss)' }}
             >
               <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
-              <span>{t('marketView.chatHistory.loadError')}</span>
+              <span>{t('marketView:chatHistory.loadError')}</span>
             </div>
           )}
 
@@ -262,7 +262,7 @@ export default function MarketChatHistoryButton({
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <MessageSquare className="h-4 w-4" style={{ opacity: 0.45 }} />
-              <span>{t('marketView.chatHistory.empty')}</span>
+              <span>{t('marketView:chatHistory.empty')}</span>
             </div>
           )}
 
@@ -271,7 +271,7 @@ export default function MarketChatHistoryButton({
               className="flex flex-col items-center gap-2 px-3 py-8 text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              <span>{t('marketView.chatHistory.emptyPage')}</span>
+              <span>{t('marketView:chatHistory.emptyPage')}</span>
             </div>
           )}
 
@@ -306,7 +306,7 @@ export default function MarketChatHistoryButton({
                     opacity: isActive ? 1 : 0.88,
                   }}
                 >
-                  {threadLabel(thread, t('marketView.chatHistory.untitled'))}
+                  {threadLabel(thread, t('marketView:chatHistory.untitled'))}
                 </span>
                 {thread.updated_at && (
                   <span
@@ -335,7 +335,7 @@ export default function MarketChatHistoryButton({
           >
             <button
               type="button"
-              aria-label={t('marketView.chatHistory.prevPage')}
+              aria-label={t('marketView:chatHistory.prevPage')}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -361,7 +361,7 @@ export default function MarketChatHistoryButton({
 
             <button
               type="button"
-              aria-label={t('marketView.chatHistory.nextPage')}
+              aria-label={t('marketView:chatHistory.nextPage')}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();

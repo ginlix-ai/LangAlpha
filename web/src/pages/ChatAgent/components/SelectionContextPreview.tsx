@@ -120,28 +120,28 @@ export function SelectionContextPreview({
             {selection?.symbol}:{selection?.timeframe}
           </DialogTitle>
           <DialogDescription className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('marketView.selection.previewSubtitle')}
+            {t('marketView:selection.previewSubtitle')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="max-h-[65vh] overflow-auto text-sm">
           <div className="mb-3">
             <MetaRow
-              label={t('marketView.selection.previewKind')}
+              label={t('marketView:selection.previewKind')}
               value={isRegion
-                ? t('marketView.selection.cardRegionTitle')
-                : t('marketView.selection.cardPriceTitle')}
+                ? t('marketView:selection.cardRegionTitle')
+                : t('marketView:selection.cardPriceTitle')}
             />
             {hasTimeRange && (
               <MetaRow
-                label={t('marketView.selection.previewTimeRange')}
+                label={t('marketView:selection.previewTimeRange')}
                 value={`${fmtTime(timeStart)} → ${fmtTime(timeEnd)}`}
               />
             )}
-            <MetaRow label={t('marketView.selection.previewPrice')} value={price} />
+            <MetaRow label={t('marketView:selection.previewPrice')} value={price} />
             {selection?.comment && (
               <MetaRow
-                label={t('marketView.selection.previewNote')}
+                label={t('marketView:selection.previewNote')}
                 value={<span style={{ color: 'var(--color-text-secondary)' }}>“{selection.comment}”</span>}
               />
             )}
@@ -153,12 +153,12 @@ export function SelectionContextPreview({
                 className="flex items-center justify-between mb-1 text-xs"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                <span>{t('marketView.selection.previewBars')}</span>
+                <span>{t('marketView:selection.previewBars')}</span>
                 <span>
                   {bars.length > shown.length
-                    ? t('marketView.selection.previewBarsShown', { shown: shown.length, total: bars.length })
-                    : t('marketView.selection.previewBarsCount', { count: bars.length })}
-                  {selection?.barsTruncated ? ` · ${t('marketView.selection.previewBarsTruncated')}` : ''}
+                    ? t('marketView:selection.previewBarsShown', { shown: shown.length, total: bars.length })
+                    : t('marketView:selection.previewBarsCount', { count: bars.length })}
+                  {selection?.barsTruncated ? ` · ${t('marketView:selection.previewBarsTruncated')}` : ''}
                 </span>
               </div>
               <div
@@ -175,7 +175,7 @@ export function SelectionContextPreview({
                             className="text-left font-medium px-2 py-1"
                             style={{ borderBottom: '1px solid var(--color-border-muted)' }}
                           >
-                            {t(`marketView.selection.${col}`)}
+                            {t(`marketView:selection.${col}`)}
                           </th>
                         ),
                       )}
@@ -199,7 +199,7 @@ export function SelectionContextPreview({
           )}
 
           <p className="mt-3 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('marketView.selection.previewDrawBack')}
+            {t('marketView:selection.previewDrawBack')}
           </p>
         </div>
       </DialogContent>

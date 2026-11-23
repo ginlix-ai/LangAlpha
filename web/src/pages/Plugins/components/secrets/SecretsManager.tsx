@@ -137,7 +137,7 @@ export function SecretsManager({
 
   const adding = mode.kind === 'add';
   const atCap = secrets.length >= maxSecrets;
-  const capMessage = atCap ? t('vault.atCapHint', { max: maxSecrets }) : null;
+  const capMessage = atCap ? t('vault:atCapHint', { max: maxSecrets }) : null;
   const pendingAdd = mode.kind === 'add' ? savedSecretName(mode.draft.name) : '';
   // After a refused save the list still holds the key the server just said is
   // gone, until the refetch lands; it is not a clash with itself.
@@ -159,7 +159,7 @@ export function SecretsManager({
       )}
 
       <SurfaceSection
-        title={t('plugins.secrets.title')}
+        title={t('plugins:secrets.title')}
         note={<span className="surface-count">{`${secrets.length} / ${maxSecrets}`}</span>}
         action={
           // The button is the form's toggle, so it says which way it points:
@@ -177,7 +177,7 @@ export function SecretsManager({
             aria-describedby={atCap ? capLineId : undefined}
             onClick={() => open(adding ? IDLE : addMode({}))}
           >
-            {adding ? t('common.cancel') : t('vault.addSecret')}
+            {adding ? t('common.cancel') : t('vault:addSecret')}
           </HeaderButton>
         }
       >
@@ -189,9 +189,9 @@ export function SecretsManager({
               {!!filter.unreadCount && !filter.unreadOnly && (
                 <>
                   {' '}
-                  {t('vault.cap.unread', { count: filter.unreadCount })}{' '}
+                  {t('vault:cap.unread', { count: filter.unreadCount })}{' '}
                   <button type="button" className="vault-inline-btn" onClick={filter.showUnread}>
-                    {t('vault.cap.showUnread', { count: filter.unreadCount })}
+                    {t('vault:cap.showUnread', { count: filter.unreadCount })}
                   </button>
                 </>
               )}
@@ -234,7 +234,7 @@ export function SecretsManager({
         {filter.offered && <KeyFilter filter={filter} />}
 
         {secrets.length === 0 && !adding ? (
-          <ListEmpty>{t('plugins.secrets.empty')}</ListEmpty>
+          <ListEmpty>{t('plugins:secrets.empty')}</ListEmpty>
         ) : filter.visible.length === 0 && filter.filtering ? (
           <KeyFilterEmpty filter={filter} />
         ) : (

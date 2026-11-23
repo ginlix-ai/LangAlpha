@@ -18,8 +18,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import type { OrderAttempt, OrderPage } from '@/pages/ChatAgent/utils/api';
 import { renderWithProviders } from '@/test/utils';
 import { HIDDEN } from '@/components/orders/format';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, lookup, zhCN } from '@/test/catalogs';
 import ToolApprovalCard from '../ToolApprovalCard';
 import { instrumentLabel } from '@/components/orders/instrument';
 import { ORDER_REF_KEY, ORDER_SUMMARY_KEYS, orderReadFully, orderTicket } from '../mcp/orderSummary';
@@ -85,7 +84,7 @@ const keyedPending: ToolApprovalState = {
 };
 
 const openArguments = () =>
-  fireEvent.click(screen.getByText('toolArtifact.directTool.orderApproval.arguments'));
+  fireEvent.click(screen.getByText('toolArtifact:directTool.orderApproval.arguments'));
 
 describe('the pending order card', () => {
   it('is the receipt: the action, the mode, the vendor and a verdict pill', () => {
@@ -93,14 +92,14 @@ describe('the pending order card', () => {
       <ToolApprovalCard data={keyedPending} onApprove={() => {}} onReject={() => {}} />,
     );
     const card = screen.getByTestId('order-approval');
-    expect(card).toHaveTextContent('toolArtifact.directTool.orderAction.place');
-    expect(card).toHaveTextContent('plugins.detail.orderModeLive');
+    expect(card).toHaveTextContent('toolArtifact:directTool.orderAction.place');
+    expect(card).toHaveTextContent('plugins:detail.orderModeLive');
     expect(card).toHaveTextContent('moomoo');
     expect(screen.getByTestId('order-status-proposed')).toHaveTextContent(
-      'toolArtifact.directTool.orderStatus.proposed',
+      'toolArtifact:directTool.orderStatus.proposed',
     );
     expect(card).toHaveTextContent('moomoo · ••••5678');
-    expect(screen.getByTestId('order-headline')).toHaveTextContent('orders.side.buy US.AAPL');
+    expect(screen.getByTestId('order-headline')).toHaveTextContent('orders:side.buy US.AAPL');
   });
 
   // The card answers a question about a trade. The frame that will be sent is
@@ -121,7 +120,7 @@ describe('the pending order card', () => {
     renderWithProviders(
       <ToolApprovalCard data={keyedPending} onApprove={onApprove} onReject={() => {}} />,
     );
-    fireEvent.click(screen.getByText('toolArtifact.directTool.approve'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.approve'));
     expect(onApprove).toHaveBeenCalledTimes(1);
   });
 
@@ -131,10 +130,10 @@ describe('the pending order card', () => {
       <ToolApprovalCard data={keyedPending} onApprove={() => {}} onReject={onReject} />,
     );
     fireEvent.change(
-      screen.getByLabelText('toolArtifact.directTool.orderApproval.reasonPlaceholder'),
+      screen.getByLabelText('toolArtifact:directTool.orderApproval.reasonPlaceholder'),
       { target: { value: 'wrong account' } },
     );
-    fireEvent.click(screen.getByText('toolArtifact.directTool.reject'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.reject'));
     expect(onReject).toHaveBeenCalledWith('wrong account');
     unmount();
 
@@ -142,7 +141,7 @@ describe('the pending order card', () => {
     renderWithProviders(
       <ToolApprovalCard data={keyedPending} onApprove={() => {}} onReject={bare} />,
     );
-    fireEvent.click(screen.getByText('toolArtifact.directTool.reject'));
+    fireEvent.click(screen.getByText('toolArtifact:directTool.reject'));
     expect(bare).toHaveBeenCalledWith(undefined);
   });
 
@@ -151,13 +150,13 @@ describe('the pending order card', () => {
   it('read-only, says it was never answered and offers nothing to press', () => {
     renderWithProviders(<ToolApprovalCard data={keyedPending} />);
     expect(screen.getByTestId('order-status-unanswered')).toHaveTextContent(
-      'toolArtifact.directTool.orderApproval.notAnswered',
+      'toolArtifact:directTool.orderApproval.notAnswered',
     );
     expect(screen.queryByTestId('order-status-proposed')).toBeNull();
-    expect(screen.queryByText('toolArtifact.directTool.approve')).toBeNull();
-    expect(screen.queryByText('toolArtifact.directTool.reject')).toBeNull();
+    expect(screen.queryByText('toolArtifact:directTool.approve')).toBeNull();
+    expect(screen.queryByText('toolArtifact:directTool.reject')).toBeNull();
     expect(
-      screen.queryByLabelText('toolArtifact.directTool.orderApproval.reasonPlaceholder'),
+      screen.queryByLabelText('toolArtifact:directTool.orderApproval.reasonPlaceholder'),
     ).toBeNull();
   });
 
@@ -176,9 +175,9 @@ describe('the pending order card', () => {
       />,
     );
     const card = screen.getByTestId('order-approval');
-    expect(card).toHaveTextContent('toolArtifact.directTool.orderAction.cancel');
+    expect(card).toHaveTextContent('toolArtifact:directTool.orderAction.cancel');
     expect(screen.getByTestId('order-headline')).toHaveTextContent(
-      `toolArtifact.directTool.orderTicket.order ${TARGET}`,
+      `toolArtifact:directTool.orderTicket.order ${TARGET}`,
     );
     const target = screen.getByTestId('order-target-ref');
     expect(target.textContent).toBe(TARGET);
@@ -215,7 +214,7 @@ describe('an order the adapter could not read whole', () => {
       <ToolApprovalCard data={pendingWith({ ...ORDER, qty: null })} onApprove={() => {}} onReject={() => {}} />,
     );
     expect(screen.getByTestId('order-incomplete')).toHaveTextContent(
-      'toolArtifact.directTool.orderApproval.incomplete',
+      'toolArtifact:directTool.orderApproval.incomplete',
     );
     expect(screen.getByText('code')).toBeInTheDocument();
   });
@@ -336,9 +335,9 @@ describe('an approved order still in flight', () => {
       'sending',
     );
     expect(screen.getByTestId('order-status-submitting')).toHaveTextContent(
-      'toolArtifact.directTool.orderStatus.submitting',
+      'toolArtifact:directTool.orderStatus.submitting',
     );
-    expect(screen.queryByText('toolArtifact.directTool.approve')).toBeNull();
+    expect(screen.queryByText('toolArtifact:directTool.approve')).toBeNull();
     expect(screen.queryByTestId('tool-approval-settled')).toBeNull();
   });
 
@@ -368,7 +367,7 @@ describe('an approved order whose call never answered', () => {
       { queryClient },
     );
     expect(screen.getByTestId('order-status-filled')).toHaveTextContent(
-      'toolArtifact.directTool.orderStatusShort.filled',
+      'toolArtifact:directTool.orderStatusShort.filled',
     );
     expect(
       screen.getByRole('link', { name: /orderReceipt\.viewInOrders/ }),
@@ -425,9 +424,9 @@ describe('a settled order step', () => {
       <ToolApprovalCard data={{ ...keyedPending, status: 'approved' }} resultPending={false} />,
     );
     const row = screen.getByTestId('tool-approval-settled');
-    expect(row).toHaveTextContent('toolArtifact.directTool.orderApproval.approved');
-    expect(row).toHaveTextContent('toolArtifact.directTool.orderAction.place');
-    expect(row).toHaveTextContent('plugins.detail.orderModeLive');
+    expect(row).toHaveTextContent('toolArtifact:directTool.orderApproval.approved');
+    expect(row).toHaveTextContent('toolArtifact:directTool.orderAction.place');
+    expect(row).toHaveTextContent('plugins:detail.orderModeLive');
     expect(screen.queryByTestId('order-approval')).toBeNull();
     expect(screen.queryByText('code')).toBeNull();
     fireEvent.click(screen.getByRole('button'));
@@ -439,7 +438,7 @@ describe('a settled order step', () => {
       <ToolApprovalCard data={{ ...keyedPending, status: 'rejected', reason: 'too big' }} />,
     );
     const row = screen.getByTestId('tool-approval-settled');
-    expect(row).toHaveTextContent('toolArtifact.directTool.orderApproval.rejected');
+    expect(row).toHaveTextContent('toolArtifact:directTool.orderApproval.rejected');
     expect(row).toHaveTextContent('too big');
     expect(screen.queryByTestId('order-approval')).toBeNull();
   });
@@ -563,7 +562,7 @@ describe('what the order ticket reads off the server', () => {
       SHOWN,
     );
     expect(ticket.figures).toEqual([
-      { field: 'notional', labelKey: 'toolArtifact.directTool.orderField.notional', value: '$250.00' },
+      { field: 'notional', labelKey: 'toolArtifact:directTool.orderField.notional', value: '$250.00' },
     ]);
   });
 
@@ -576,11 +575,11 @@ describe('what the order ticket reads off the server', () => {
     // A price on a type that takes no limit is not one: a field of its own.
     expect(fields({ order_type: 'market' })).toEqual(['qty', 'order_type', 'price']);
     const market = orderTicket({ ...ORDER, order_type: 'market' }, SHOWN).figures;
-    expect(market[1]).toMatchObject({ valueKey: 'orders.orderType.market' });
+    expect(market[1]).toMatchObject({ valueKey: 'orders:orderType.market' });
     // Not a limit, so not called one.
-    expect(market[2]).toMatchObject({ labelKey: 'toolArtifact.directTool.orderField.price' });
+    expect(market[2]).toMatchObject({ labelKey: 'toolArtifact:directTool.orderField.price' });
     expect(orderTicket(ORDER, SHOWN).figures[1]).toMatchObject({
-      labelKey: 'toolArtifact.directTool.orderField.limitPrice',
+      labelKey: 'toolArtifact:directTool.orderField.limitPrice',
     });
     expect(fields({ order_type: 'stop', stop_price: '95' })).toEqual([
       'qty',
@@ -661,7 +660,7 @@ describe('a call that places no order', () => {
       />,
     );
     expect(screen.queryByTestId('order-approval')).toBeNull();
-    expect(screen.getByText('toolArtifact.directTool.approvalTitle')).toBeInTheDocument();
+    expect(screen.getByText('toolArtifact:directTool.approvalTitle')).toBeInTheDocument();
     expect(screen.getByText('••••5678')).toBeInTheDocument();
   });
 });
@@ -689,15 +688,7 @@ describe('the copy the order cards ask for', () => {
   // These keys are held in a map and reach `t()` through a variable, so the
   // tree-wide locale sweep cannot see them. This is their coverage.
   it.each(ORDER_SUMMARY_KEYS)('%s resolves in both catalogs', (key) => {
-    const lookup = (catalog: unknown) =>
-      key.split('.').reduce<unknown>(
-        (acc, part) =>
-          acc && typeof acc === 'object' && part in (acc as object)
-            ? (acc as Record<string, unknown>)[part]
-            : undefined,
-        catalog,
-      );
-    expect(typeof lookup(enUS)).toBe('string');
-    expect(typeof lookup(zhCN)).toBe('string');
+    expect(typeof lookup(enUS, key)).toBe('string');
+    expect(typeof lookup(zhCN, key)).toBe('string');
   });
 });

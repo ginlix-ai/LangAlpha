@@ -49,7 +49,7 @@ export function AccountPanel() {
       setUploadedAvatar(`${avatar_url}?t=${Date.now()}`);
       queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
     } catch {
-      setAvatarError(t('settings.failedToUploadAvatar'));
+      setAvatarError(t('settings:failedToUploadAvatar'));
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -75,7 +75,7 @@ export function AccountPanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.profileGroup')} action={<SaveStatus status={nameSaveStatus} />}>
+      <SettingsGroup title={t('settings:profileGroup')} action={<SaveStatus status={nameSaveStatus} />}>
         <SettingRow
           {...copy(SETTINGS.photo)}
           description={avatarError
@@ -88,7 +88,7 @@ export function AccountPanel() {
               className="h-12 w-12 rounded-xl flex items-center justify-center overflow-hidden shrink-0"
               style={{ backgroundColor: 'var(--color-accent-soft)' }}
               onClick={() => fileInputRef.current?.click()}
-              aria-label={t('settings.changeAvatar')}
+              aria-label={t('settings:changeAvatar')}
             >
               {avatarUrl ? (
                 <img src={avatarUrl} alt="" className="h-full w-full object-cover" onError={() => setBrokenAvatar(avatarUrl)} />
@@ -104,7 +104,7 @@ export function AccountPanel() {
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploadingAvatar}
             >
-              {isUploadingAvatar ? t('settings.uploading') : t('settings.changeAvatar')}
+              {isUploadingAvatar ? t('settings:uploading') : t('settings:changeAvatar')}
             </Button>
           </div>
           <input
@@ -159,16 +159,16 @@ export function AccountPanel() {
             style={{ color: 'var(--color-loss)' }}
             onClick={() => setShowLogoutConfirm(true)}
           >
-            <LogOut className="h-3.5 w-3.5" /> {t('settings.logout')}
+            <LogOut className="h-3.5 w-3.5" /> {t('account.logout')}
           </Button>
         </SettingRow>
       </SettingsGroup>
 
       <ConfirmDialog
         open={showLogoutConfirm}
-        title={t('settings.logout')}
-        message={t('settings.logoutConfirmMsg')}
-        confirmLabel={t('settings.logout')}
+        title={t('account.logout')}
+        message={t('account.logoutConfirmMsg')}
+        confirmLabel={t('account.logout')}
         onConfirm={() => {
           logout();
           setShowLogoutConfirm(false);

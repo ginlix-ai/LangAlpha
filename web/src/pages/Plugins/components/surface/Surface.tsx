@@ -147,12 +147,12 @@ export function SurfaceGrid({
         <button type="button" className="surface-more" onClick={() => setExpanded(true)}>
           <ChevronDown className="h-3.5 w-3.5" aria-hidden />
           {names.length >= 3
-            ? t('plugins.surface.seeMoreNamed', { first: names[0], second: names[1], count: hidden - 2 })
+            ? t('plugins:surface.seeMoreNamed', { first: names[0], second: names[1], count: hidden - 2 })
             : names.length === 2
-              ? t('plugins.surface.seeTwo', { first: names[0], second: names[1] })
+              ? t('plugins:surface.seeTwo', { first: names[0], second: names[1] })
               : names.length === 1
-                ? t('plugins.surface.seeOne', { first: names[0] })
-                : t('plugins.surface.seeMore', { count: hidden })}
+                ? t('plugins:surface.seeOne', { first: names[0] })
+                : t('plugins:surface.seeMore', { count: hidden })}
         </button>
       )}
     </>
@@ -302,7 +302,7 @@ export function CellState({
 }) {
   const { t } = useTranslation();
   if (state === 'off') {
-    return <span className="surface-state-off">{label ?? t('plugins.surface.off')}</span>;
+    return <span className="surface-state-off">{label ?? t('plugins:surface.off')}</span>;
   }
   if (state === 'warn') {
     return (
@@ -312,7 +312,7 @@ export function CellState({
     );
   }
   return (
-    <span className="surface-state-on" title={label} aria-label={label ?? t('plugins.surface.on')} role="img">
+    <span className="surface-state-on" title={label} aria-label={label ?? t('plugins:surface.on')} role="img">
       <Check className="h-4 w-4" />
     </span>
   );

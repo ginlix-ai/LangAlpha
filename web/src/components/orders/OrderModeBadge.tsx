@@ -14,7 +14,7 @@ export function OrderModeBadge({ mode }: { mode: OrderMode | null | undefined })
   return (
     <TagBadge
       tone={mode === 'live' ? 'warning' : 'muted'}
-      title={t('plugins.detail.orderModeTitle')}
+      title={t('plugins:detail.orderModeTitle')}
     >
       {t(ORDER_MODE_KEY[mode])}
     </TagBadge>

@@ -27,14 +27,14 @@ export function DescriptionField({
   return (
     <div>
       <div className="sa-field-head">
-        <label htmlFor={id}>{t('plugins.subagents.whenToUse')}</label>
+        <label htmlFor={id}>{t('plugins:subagents.whenToUse')}</label>
         <span className={over ? 'sa-field-aside is-over' : sameAs !== null ? 'sa-field-aside is-warn' : 'sa-field-aside'}>
           {sameAs !== null && !over
-            ? t('plugins.subagents.sayWhen', { name: sameAs })
-            : t('plugins.subagents.whenToUseHint')}
-          {t('plugins.subagents.sep')}
+            ? t('plugins:subagents.sayWhen', { name: sameAs })
+            : t('plugins:subagents.whenToUseHint')}
+          {t('plugins:subagents.sep')}
           {/* One unit: on a phone the hint wraps, and "40 /" over "400" reads as two numbers. */}
-          <span className="whitespace-nowrap">{t('plugins.subagents.charCount', { used, max })}</span>
+          <span className="whitespace-nowrap">{t('plugins:subagents.charCount', { used, max })}</span>
         </span>
       </div>
       <textarea
@@ -71,7 +71,7 @@ export function InstructionsField({
   return (
     <div>
       <div className="sa-field-head">
-        <label htmlFor={id}>{t('plugins.subagents.instructions')}</label>
+        <label htmlFor={id}>{t('plugins:subagents.instructions')}</label>
         <span className={over ? 'sa-field-aside is-over' : 'sa-field-aside'}>{aside}</span>
       </div>
       <textarea

@@ -45,7 +45,7 @@ export function useTradingPermissionChoice({
     toast({
       variant: 'destructive',
       title: t('common.error'),
-      description: t('settings.tradingPermission.saveFailed'),
+      description: t('settings:tradingPermission.saveFailed'),
     });
   };
 

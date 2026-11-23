@@ -48,7 +48,7 @@ export function PriceMeter({ reading, symbol }: { reading: MeterReading; symbol:
         <span>
           <TickerLabel symbol={symbol} className="text-[var(--color-text-secondary)]" /> {formatValue(reading, current, locale)}
         </span>
-        <span>{t('automation.firesAt', { value: formatValue(reading, threshold, locale) })}</span>
+        <span>{t('automation:firesAt', { value: formatValue(reading, threshold, locale) })}</span>
       </div>
     </div>
   );

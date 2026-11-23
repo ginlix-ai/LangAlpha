@@ -160,18 +160,18 @@ function CommentPin({
             data-working={working || undefined}
             data-unread={unread || undefined}
             data-pulse={pulse || undefined}
-            aria-label={t(unread ? 'pageViewer.comments.pinLabelUnread' : 'pageViewer.comments.pinLabel', { number: comment.number })}
+            aria-label={t(unread ? 'pageViewer:comments.pinLabelUnread' : 'pageViewer:comments.pinLabel', { number: comment.number })}
             aria-expanded={open}
             tabIndex={offView ? -1 : undefined}
             onClick={onClick}
           >
             <span className="page-comment-pin-disc">
-              <PinFace number={comment.number} working={working} label={t('pageViewer.comments.working')} size={11} />
+              <PinFace number={comment.number} working={working} label={t('pageViewer:comments.working')} size={11} />
             </span>
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" align="start" className="max-w-64 truncate">
-          {t('pageViewer.comments.pinPreview', { number: comment.number, words: preview })}
+          {t('pageViewer:comments.pinPreview', { number: comment.number, words: preview })}
         </TooltipContent>
       </Tooltip>
     </motion.span>

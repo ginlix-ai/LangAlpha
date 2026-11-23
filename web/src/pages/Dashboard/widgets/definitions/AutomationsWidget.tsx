@@ -51,12 +51,12 @@ function triggerLabel(a: Automation, t: TFunction): string {
   if (a.trigger_type === 'price') {
     const sym = a.trigger_config?.symbol;
     return sym
-      ? t('dashboard.widgets.automations.trigger.priceSymbol', { symbol: sym })
-      : t('dashboard.widgets.automations.trigger.price');
+      ? t('dashboard:widgets.automations.trigger.priceSymbol', { symbol: sym })
+      : t('dashboard:widgets.automations.trigger.price');
   }
-  if (a.trigger_type === 'once') return t('dashboard.widgets.automations.trigger.once');
-  if (a.cron_expression) return t('dashboard.widgets.automations.trigger.cron');
-  return t('dashboard.widgets.automations.trigger.auto');
+  if (a.trigger_type === 'once') return t('dashboard:widgets.automations.trigger.once');
+  if (a.cron_expression) return t('dashboard:widgets.automations.trigger.cron');
+  return t('dashboard:widgets.automations.trigger.auto');
 }
 
 function AutomationRow({
@@ -90,7 +90,7 @@ function AutomationRow({
       : row.kind === 'next'
         ? relativeTime(row.at, locale, now)
         : row.at
-          ? t('dashboard.widgets.automations.lastRun', { when: relativeTime(row.at, locale, now) })
+          ? t('dashboard:widgets.automations.lastRun', { when: relativeTime(row.at, locale, now) })
           : '';
 
   return (
@@ -116,7 +116,7 @@ function AutomationRow({
             className="text-[0.8125rem] truncate leading-tight font-medium"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {automation.name || t('dashboard.widgets.automations.untitled')}
+            {automation.name || t('dashboard:widgets.automations.untitled')}
           </span>
           <span
             className="text-[0.625rem] uppercase tracking-wider truncate"
@@ -145,8 +145,8 @@ function AutomationRow({
               onRun();
             }}
             disabled={busy || runBusy}
-            title={t('dashboard.widgets.automations.runNow')}
-            aria-label={t('dashboard.widgets.automations.runNow')}
+            title={t('dashboard:widgets.automations.runNow')}
+            aria-label={t('dashboard:widgets.automations.runNow')}
             className="p-1 rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={(e) => {
@@ -169,8 +169,8 @@ function AutomationRow({
               onToggle();
             }}
             disabled={busy}
-            title={canPause ? t('dashboard.widgets.automations.pause') : t('dashboard.widgets.automations.resume')}
-            aria-label={canPause ? t('dashboard.widgets.automations.pauseAria') : t('dashboard.widgets.automations.resumeAria')}
+            title={canPause ? t('dashboard:widgets.automations.pause') : t('dashboard:widgets.automations.resume')}
+            aria-label={canPause ? t('dashboard:widgets.automations.pauseAria') : t('dashboard:widgets.automations.resumeAria')}
             className="p-1 rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={(e) => {
@@ -258,7 +258,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
   useWidgetContextExport(instance.id, {
     full: () => {
       const tableRows = automations.map((a) => ({
-        name: a.name || t('dashboard.widgets.automations.untitled'),
+        name: a.name || t('dashboard:widgets.automations.untitled'),
         trigger: triggerLabel(a, t),
         state: automationState(a),
         next_run: a.next_run_at ?? '',
@@ -283,7 +283,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
       return {
         widget_type: 'automations.list',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.automations.title')} · ${counts.total}`,
+        label: `${t('dashboard:widgets.automations.title')} · ${counts.total}`,
         description: counts.total ? summary || `${counts.total} automations` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -328,7 +328,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
           onClick={() => navigate('/automations')}
           className="dash-link widget-drag-cancel"
         >
-          {t('dashboard.widgets.automations.viewAll')}
+          {t('dashboard:widgets.automations.viewAll')}
           <ArrowUpRight className="h-3 w-3" />
         </button>
       </WidgetCardMeta>
@@ -359,7 +359,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
                 className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {t('dashboard.widgets.automations.empty')}
+                {t('dashboard:widgets.automations.empty')}
               </div>
               <button
                 type="button"
@@ -367,7 +367,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
                 className="text-[0.6875rem] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                {t('dashboard.widgets.automations.emptyCta')}
+                {t('dashboard:widgets.automations.emptyCta')}
               </button>
             </div>
           </div>
@@ -393,9 +393,9 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
 
 registerWidget<AutomationsConfig>({
   type: 'automations.list',
-  titleKey: 'dashboard.widgets.automations.title',
-  cardTitleKey: 'dashboard.widgets.automations.header',
-  descriptionKey: 'dashboard.widgets.automations.description',
+  titleKey: 'dashboard:widgets.automations.title',
+  cardTitleKey: 'dashboard:widgets.automations.header',
+  descriptionKey: 'dashboard:widgets.automations.description',
   category: 'personal',
   icon: Workflow,
   component: AutomationsWidget,

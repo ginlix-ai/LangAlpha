@@ -148,7 +148,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
           color: 'var(--color-accent-primary)',
         }}
       >
-        {t('memoPanel.status.ready')}
+        {t('memoPanel:status.ready')}
       </span>
     );
   }
@@ -161,7 +161,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
           color: 'var(--color-loss)',
         }}
       >
-        {t('memoPanel.status.failed')}
+        {t('memoPanel:status.failed')}
       </span>
     );
   }
@@ -176,7 +176,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
       <span aria-hidden="true" className="shrink-0">
         <Loader size={12} className="text-current" />
       </span>
-      {t('memoPanel.status.pending')}
+      {t('memoPanel:status.pending')}
     </span>
   );
 }
@@ -384,9 +384,9 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   const discardConfirmDialog = (
     <ConfirmDialog
       open={discardConfirmOpen}
-      title={t('memoPanel.discardEditTitle')}
-      body={t('memoPanel.unsavedDiscardConfirm')}
-      confirmLabel={t('memoPanel.discardEdits')}
+      title={t('memoPanel:discardEditTitle')}
+      body={t('memoPanel:unsavedDiscardConfirm')}
+      confirmLabel={t('memoPanel:discardEdits')}
       cancelLabel={t('common.cancel')}
       onConfirm={handleDiscardConfirm}
       onCancel={handleDiscardCancel}
@@ -433,7 +433,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
     exitSelectMode();
     if (failures.length > 0) {
       setListError(
-        t('memoPanel.errors.bulkDeleteFailed', {
+        t('memoPanel:errors.bulkDeleteFailed', {
           count: failures.length,
           first: failures[0],
         }),
@@ -461,7 +461,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   // Surface list errors
   useEffect(() => {
     if (list.error) {
-      setListError(errToString(list.error) || t('memoPanel.errors.loadFailed'));
+      setListError(errToString(list.error) || t('memoPanel:errors.loadFailed'));
     } else {
       setListError(null);
     }
@@ -471,7 +471,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   useEffect(() => {
     if (read.error) {
       setViewerError(
-        errToString(read.error) || t('memoPanel.errors.readFailed'),
+        errToString(read.error) || t('memoPanel:errors.readFailed'),
       );
     } else {
       setViewerError(null);
@@ -497,7 +497,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         .catch((err) => {
           if (cancelled) return;
           setViewerError(
-            errToString(err) || t('memoPanel.errors.readFailed'),
+            errToString(err) || t('memoPanel:errors.readFailed'),
           );
         });
     } else {
@@ -515,19 +515,19 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
     async (file: File) => {
       setUploadError(null);
       if (!isAcceptedFile(file)) {
-        setUploadError(t('memoPanel.errors.unsupportedType'));
+        setUploadError(t('memoPanel:errors.unsupportedType'));
         return;
       }
       if (file.size > MAX_UPLOAD_BYTES) {
         const mb = (file.size / (1024 * 1024)).toFixed(1);
-        setUploadError(t('memoPanel.errors.fileTooLarge', { size: mb }));
+        setUploadError(t('memoPanel:errors.fileTooLarge', { size: mb }));
         return;
       }
       try {
         await uploadMutation.mutateAsync(file);
       } catch (err) {
         setUploadError(
-          errToString(err) || t('memoPanel.errors.uploadFailed'),
+          errToString(err) || t('memoPanel:errors.uploadFailed'),
         );
       }
     },
@@ -670,7 +670,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         await triggerUserMemoDownload(key, filename);
       } catch (err) {
         setViewerError(
-          errToString(err) || t('memoPanel.errors.downloadFailed'),
+          errToString(err) || t('memoPanel:errors.downloadFailed'),
         );
       }
     },
@@ -697,7 +697,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
       });
       setEditing(false);
     } catch (err) {
-      setViewerError(errToString(err) || t('memoPanel.errors.saveFailed'));
+      setViewerError(errToString(err) || t('memoPanel:errors.saveFailed'));
     }
   }, [selectedKey, editContent, writeMutation, t]);
 
@@ -707,7 +707,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         await regenerateMutation.mutateAsync(key);
       } catch (err) {
         setViewerError(
-          errToString(err) || t('memoPanel.errors.regenerateFailed'),
+          errToString(err) || t('memoPanel:errors.regenerateFailed'),
         );
       }
     },
@@ -724,7 +724,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
       setDeleteKey(null);
     } catch (err) {
       setViewerError(
-        errToString(err) || t('memoPanel.errors.deleteFailed'),
+        errToString(err) || t('memoPanel:errors.deleteFailed'),
       );
     }
   }, [deleteKey, deleteMutation, selectedKey, handleBackToList, t]);
@@ -758,7 +758,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             <button
               onClick={handleBackToList}
               className="file-panel-icon-btn"
-              title={t('memoPanel.backToList')}
+              title={t('memoPanel:backToList')}
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -780,7 +780,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               <button
                 onClick={() => handleRegenerate(selectedEntry.key)}
                 className="file-panel-icon-btn"
-                title={t('memoPanel.actions.regenerate')}
+                title={t('memoPanel:actions.regenerate')}
                 disabled={regenerateMutation.isPending}
               >
                 {regenerateMutation.isPending ? (
@@ -798,7 +798,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 )
               }
               className="file-panel-icon-btn"
-              title={t('memoPanel.actions.download')}
+              title={t('memoPanel:actions.download')}
             >
               <Download className="h-4 w-4" />
             </button>
@@ -806,7 +806,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               <button
                 onClick={handleStartEdit}
                 className="file-panel-icon-btn"
-                title={t('memoPanel.actions.edit')}
+                title={t('memoPanel:actions.edit')}
                 disabled={read.isLoading || !read.data}
               >
                 <Pencil className="h-4 w-4" />
@@ -815,7 +815,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             <button
               onClick={() => setDeleteKey(selectedEntry.key)}
               className="file-panel-icon-btn"
-              title={t('memoPanel.actions.delete')}
+              title={t('memoPanel:actions.delete')}
             >
               <Trash2 className="h-4 w-4" />
             </button>
@@ -844,7 +844,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 color: 'var(--color-loss)',
               }}
             >
-              {t('memoPanel.metadataFailed')}
+              {t('memoPanel:metadataFailed')}
             </div>
           )}
 
@@ -873,7 +873,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                   className="text-xs"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
-                  {t('memoPanel.pdfFallback')}{' '}
+                  {t('memoPanel:pdfFallback')}{' '}
                   <button
                     onClick={() =>
                       handleDownload(
@@ -884,7 +884,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                     className="underline"
                     style={{ color: 'var(--color-accent-primary)' }}
                   >
-                    {t('memoPanel.actions.download')}
+                    {t('memoPanel:actions.download')}
                   </button>
                 </div>
               </object>
@@ -919,7 +919,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                     border: '1px solid var(--color-border-muted)',
                   }}
                 >
-                  {t('memoPanel.actions.cancel')}
+                  {t('memoPanel:actions.cancel')}
                 </button>
                 <button
                   onClick={handleSaveEdit}
@@ -933,7 +933,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                   {writeMutation.isPending ? (
                     <Loader size={12} className="text-current" />
                   ) : (
-                    t('memoPanel.actions.save')
+                    t('memoPanel:actions.save')
                   )}
                 </button>
               </div>
@@ -943,7 +943,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               className="text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('memoPanel.loading')}
+              {t('memoPanel:loading')}
             </div>
           ) : isMarkdown ? (
             <div className="font-content">
@@ -965,13 +965,13 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
 
         <ConfirmDialog
           open={!!deleteKey}
-          title={t('memoPanel.confirm.deleteTitle')}
-          body={t('memoPanel.confirm.deleteBody', {
+          title={t('memoPanel:confirm.deleteTitle')}
+          body={t('memoPanel:confirm.deleteBody', {
             name:
               selectedEntry.original_filename || selectedEntry.key,
           })}
-          confirmLabel={t('memoPanel.confirm.deleteConfirm')}
-          cancelLabel={t('memoPanel.confirm.deleteCancel')}
+          confirmLabel={t('memoPanel:confirm.deleteConfirm')}
+          cancelLabel={t('memoPanel:confirm.deleteCancel')}
           busy={deleteMutation.isPending}
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeleteKey(null)}
@@ -1004,14 +1004,14 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             className="text-sm font-semibold"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {t('memoPanel.title')}
+            {t('memoPanel:title')}
           </span>
           <HoverCard openDelay={150} closeDelay={100}>
             <HoverCardTrigger asChild>
               <button
                 type="button"
                 className="inline-flex shrink-0 cursor-help"
-                aria-label={t('memoPanel.uploadHint')}
+                aria-label={t('memoPanel:uploadHint')}
               >
                 <Info
                   className="h-3.5 w-3.5"
@@ -1029,7 +1029,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 color: 'var(--color-text-secondary)',
               }}
             >
-              {t('memoPanel.uploadHint')}
+              {t('memoPanel:uploadHint')}
             </HoverCardContent>
           </HoverCard>
         </div>
@@ -1040,7 +1040,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 className="text-xs mr-2"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                {t('memoPanel.selectedCount', { count: selectedKeys.size })}
+                {t('memoPanel:selectedCount', { count: selectedKeys.size })}
               </span>
               <button
                 onClick={() => setBulkDeleteOpen(true)}
@@ -1052,14 +1052,14 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                {t('memoPanel.deleteSelected')}
+                {t('memoPanel:deleteSelected')}
               </button>
               <button
                 onClick={exitSelectMode}
                 className="inline-flex items-center px-2.5 py-1 rounded text-xs font-medium"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {t('memoPanel.actions.cancel')}
+                {t('memoPanel:actions.cancel')}
               </button>
             </>
           ) : (
@@ -1067,7 +1067,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               <button
                 onClick={() => list.refetch()}
                 className="file-panel-icon-btn"
-                title={t('memoPanel.refresh')}
+                title={t('memoPanel:refresh')}
                 disabled={list.isFetching}
               >
                 {list.isFetching ? (
@@ -1079,7 +1079,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               <button
                 onClick={() => setSelectMode(true)}
                 className="file-panel-icon-btn"
-                title={t('memoPanel.selectMode')}
+                title={t('memoPanel:selectMode')}
                 disabled={sortedEntries.length === 0}
               >
                 <CheckSquare className="h-4 w-4" />
@@ -1101,8 +1101,8 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                   <Upload className="h-3.5 w-3.5" />
                 )}
                 {uploadMutation.isPending
-                  ? t('memoPanel.uploading')
-                  : t('memoPanel.uploadButton')}
+                  ? t('memoPanel:uploading')
+                  : t('memoPanel:uploadButton')}
               </button>
               <input
                 ref={fileInputRef}
@@ -1128,7 +1128,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           <button
             onClick={() => setUploadError(null)}
             className="shrink-0"
-            title={t('memoPanel.actions.cancel')}
+            title={t('memoPanel:actions.cancel')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -1156,13 +1156,13 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           }}
         >
           <span className="min-w-0">
-            {t('memoPanel.notFound', { key: notFoundKey })}
+            {t('memoPanel:notFound', { key: notFoundKey })}
           </span>
           <button
             type="button"
             onClick={() => setNotFoundKey(null)}
             className="shrink-0"
-            title={t('memoPanel.dismissNotFound')}
+            title={t('memoPanel:dismissNotFound')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -1180,7 +1180,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               className="h-8 w-8"
               style={{ color: 'var(--color-accent-primary)' }}
             />
-            <span>{t('memoPanel.dragOverlayText')}</span>
+            <span>{t('memoPanel:dragOverlayText')}</span>
           </div>
         )}
 
@@ -1189,7 +1189,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             className="px-3 py-6 text-xs text-center"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('memoPanel.loadingList')}
+            {t('memoPanel:loadingList')}
           </div>
         )}
 
@@ -1203,10 +1203,10 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               className="text-sm font-medium"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              {t('memoPanel.empty.title')}
+              {t('memoPanel:empty.title')}
             </div>
             <div className="text-xs max-w-[18rem]">
-              {t('memoPanel.empty.hint')}
+              {t('memoPanel:empty.hint')}
             </div>
           </div>
         )}
@@ -1224,22 +1224,22 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                   <th className="font-medium px-2 py-2 w-6" />
                 )}
                 <th className="font-medium px-3 py-2">
-                  {t('memoPanel.columns.name')}
+                  {t('memoPanel:columns.name')}
                 </th>
                 <th className="hidden @min-[640px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
-                  {t('memoPanel.columns.type')}
+                  {t('memoPanel:columns.type')}
                 </th>
                 <th className="hidden @min-[420px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
-                  {t('memoPanel.columns.size')}
+                  {t('memoPanel:columns.size')}
                 </th>
                 <th className="font-medium px-2 py-2 whitespace-nowrap">
-                  {t('memoPanel.columns.status')}
+                  {t('memoPanel:columns.status')}
                 </th>
                 <th className="font-medium px-2 py-2">
-                  {t('memoPanel.columns.description')}
+                  {t('memoPanel:columns.description')}
                 </th>
                 <th className="hidden @min-[420px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
-                  {t('memoPanel.columns.uploaded')}
+                  {t('memoPanel:columns.uploaded')}
                 </th>
               </tr>
             </thead>
@@ -1253,7 +1253,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 const workspaceLabel = isSandboxSourced
                   ? (entry.source_workspace_id
                       ? workspaceNameById.get(entry.source_workspace_id)
-                      : null) || t('memoPanel.source.sandbox')
+                      : null) || t('memoPanel:source.sandbox')
                   : null;
                 const sourceTitle = isSandboxSourced
                   ? `${workspaceLabel} · ${entry.source_path}`
@@ -1349,12 +1349,12 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
 
       <ConfirmDialog
         open={bulkDeleteOpen}
-        title={t('memoPanel.confirm.bulkDeleteTitle')}
-        body={t('memoPanel.confirm.bulkDeleteBody', {
+        title={t('memoPanel:confirm.bulkDeleteTitle')}
+        body={t('memoPanel:confirm.bulkDeleteBody', {
           count: selectedKeys.size,
         })}
-        confirmLabel={t('memoPanel.confirm.deleteConfirm')}
-        cancelLabel={t('memoPanel.confirm.deleteCancel')}
+        confirmLabel={t('memoPanel:confirm.deleteConfirm')}
+        cancelLabel={t('memoPanel:confirm.deleteCancel')}
         busy={bulkDeleting}
         onConfirm={handleBulkDelete}
         onCancel={() => setBulkDeleteOpen(false)}

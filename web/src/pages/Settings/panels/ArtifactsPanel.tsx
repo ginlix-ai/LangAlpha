@@ -40,9 +40,9 @@ export function ArtifactsPanel() {
             queryClient.invalidateQueries({ queryKey: queryKeys.artifacts.allDestinations }));
         }}
         options={[
-          { value: 'beside', label: t('settings.artifacts.destinationBeside') },
-          { value: 'creator', label: t('settings.artifacts.destinationCreator') },
-          { value: 'new', label: t('settings.artifacts.destinationNew') },
+          { value: 'beside', label: t('settings:artifacts.destinationBeside') },
+          { value: 'creator', label: t('settings:artifacts.destinationCreator') },
+          { value: 'new', label: t('settings:artifacts.destinationNew') },
         ]}
       />
       <SegmentedRow
@@ -50,8 +50,8 @@ export function ArtifactsPanel() {
         value={enter}
         onChange={(v) => { if (v !== enter) void write(commentEnterPatch(v)); }}
         options={[
-          { value: 'queue', label: t('pageViewer.comments.addToQueue') },
-          { value: 'send', label: t('pageViewer.comments.sendNow') },
+          { value: 'queue', label: t('pageViewer:comments.addToQueue') },
+          { value: 'send', label: t('pageViewer:comments.sendNow') },
         ]}
       />
       <SegmentedRow
@@ -59,9 +59,9 @@ export function ArtifactsPanel() {
         value={answers}
         onChange={(v) => { if (v !== answers) void write(artifactAnswersPatch(v)); }}
         options={[
-          { value: 'auto', label: t('settings.artifacts.answersAuto') },
-          { value: 'chat', label: t('settings.artifacts.answersChat') },
-          { value: 'file', label: t('settings.artifacts.answersFile') },
+          { value: 'auto', label: t('settings:artifacts.answersAuto') },
+          { value: 'chat', label: t('settings:artifacts.answersChat') },
+          { value: 'file', label: t('settings:artifacts.answersFile') },
         ]}
       />
     </SettingsGroup>

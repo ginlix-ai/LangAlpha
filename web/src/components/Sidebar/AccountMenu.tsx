@@ -1,5 +1,5 @@
 import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning, BookOpen, CircleHelp, Sparkles, History, LifeBuoy, Building2 } from 'lucide-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { lazy, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
@@ -19,8 +19,12 @@ import {
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { DOCS_URL, INTEGRATIONS_URL, PLATFORM_URL, SUPPORT_URL } from '@/config/supportLinks';
 import { useLocale } from '@/hooks/useLocale';
-import { ReportDialog, type ReportSubject } from '@/components/report/ReportDialog';
+import type { ReportSubject } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
+
+// Lazy: the menu is on every page and the report form opens from it rarely.
+const ReportDialog = lazy(() => import('@/components/report/ReportDialog'));
 
 const MENU_REPORT: ReportSubject = { event: 'user_report', source: 'button' };
 
@@ -334,16 +338,16 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
             onSelect={() => setShowLogoutConfirm(true)}
           >
             <LogOut className="h-4 w-4" />
-            {t('settings.logout', 'Log out')}
+            {t('account.logout', 'Log out')}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
       <ConfirmDialog
         open={showLogoutConfirm}
-        title={t('settings.logout', 'Log out')}
-        message={t('settings.logoutConfirmMsg', 'Are you sure you want to log out?')}
-        confirmLabel={t('settings.logout', 'Log out')}
+        title={t('account.logout', 'Log out')}
+        message={t('account.logoutConfirmMsg', 'Are you sure you want to log out?')}
+        confirmLabel={t('account.logout', 'Log out')}
         onConfirm={() => {
           logout();
           setShowLogoutConfirm(false);
@@ -352,7 +356,9 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
       />
 
       {reportsEnabled && (
-        <ReportDialog open={showReport} onOpenChange={setShowReport} subject={MENU_REPORT} />
+        <MountOnceOpen open={showReport}>
+          <ReportDialog open={showReport} onOpenChange={setShowReport} subject={MENU_REPORT} />
+        </MountOnceOpen>
       )}
     </>
   );

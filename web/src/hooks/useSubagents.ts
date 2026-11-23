@@ -118,8 +118,8 @@ function useConflictToast() {
   return (err: unknown) => {
     if (isSubagentVersionConflict(err)) {
       toast({
-        title: t('plugins.subagents.conflictTitle'),
-        description: t('plugins.subagents.conflictBody'),
+        title: t('plugins:subagents.conflictTitle'),
+        description: t('plugins:subagents.conflictBody'),
       });
       return true;
     }
@@ -165,7 +165,7 @@ export function usePatchSubagent() {
       if (conflict(err)) return;
       toast({
         variant: 'destructive',
-        title: t('plugins.subagents.saveFailed'),
+        title: t('plugins:subagents.saveFailed'),
         description: formatApiErrorDetail(err),
       });
     },
@@ -228,7 +228,7 @@ export function useDeleteSubagent() {
       if (conflict(err)) return;
       toast({
         variant: 'destructive',
-        title: t('plugins.subagents.saveFailed'),
+        title: t('plugins:subagents.saveFailed'),
         description: formatApiErrorDetail(err),
       });
     },

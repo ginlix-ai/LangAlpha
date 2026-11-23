@@ -121,7 +121,7 @@ describe('ExportPreviewModal', () => {
     renderModal();
     expect(screen.getByTestId('dialog')).toBeInTheDocument();
     // Title uses the i18n key
-    expect(screen.getByText('filePanel.exportPreview')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:exportPreview')).toBeInTheDocument();
   });
 
   it('shows loading skeleton initially before readFileFullFn resolves', () => {
@@ -239,7 +239,7 @@ describe('ExportPreviewModal', () => {
   it('renders "Save as PDF" button with i18n key', () => {
     renderModal();
 
-    expect(screen.getByText('filePanel.saveAsPdf')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:saveAsPdf')).toBeInTheDocument();
   });
 
   it('calls readFileFullFn with correct workspaceId and fileName on open', () => {
@@ -270,9 +270,9 @@ describe('ExportPreviewModal', () => {
     renderModal({ readFileFullFn: failFn });
 
     await waitFor(() => {
-      expect(screen.getByText('filePanel.exportLoadError')).toBeInTheDocument();
-      expect(screen.getByText('filePanel.tryAgain')).toBeInTheDocument();
-      expect(screen.getByText('filePanel.exportAnyway')).toBeInTheDocument();
+      expect(screen.getByText('filePanel:exportLoadError')).toBeInTheDocument();
+      expect(screen.getByText('filePanel:tryAgain')).toBeInTheDocument();
+      expect(screen.getByText('filePanel:exportAnyway')).toBeInTheDocument();
     });
   });
 
@@ -281,13 +281,13 @@ describe('ExportPreviewModal', () => {
     renderModal({ readFileFullFn: failFn });
 
     await waitFor(() => {
-      expect(screen.getByText('filePanel.tryAgain')).toBeInTheDocument();
+      expect(screen.getByText('filePanel:tryAgain')).toBeInTheDocument();
     });
 
     // First call was on mount
     expect(failFn).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText('filePanel.tryAgain'));
+    fireEvent.click(screen.getByText('filePanel:tryAgain'));
 
     await waitFor(() => {
       expect(failFn).toHaveBeenCalledTimes(2);
@@ -299,14 +299,14 @@ describe('ExportPreviewModal', () => {
     renderModal({ readFileFullFn: failFn });
 
     await waitFor(() => {
-      expect(screen.getByText('filePanel.exportAnyway')).toBeInTheDocument();
+      expect(screen.getByText('filePanel:exportAnyway')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('filePanel.exportAnyway'));
+    fireEvent.click(screen.getByText('filePanel:exportAnyway'));
 
     await waitFor(() => {
       // Error should be gone, markdown preview shows the fallback content
-      expect(screen.queryByText('filePanel.exportLoadError')).not.toBeInTheDocument();
+      expect(screen.queryByText('filePanel:exportLoadError')).not.toBeInTheDocument();
       expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Test Report');
     });
   });
@@ -374,7 +374,7 @@ describe('ExportPreviewModal', () => {
     // Preset should now show Custom
     expect(presetSelect).toHaveValue('');
     // The "Custom" option text
-    expect(screen.getByText('filePanel.custom')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:custom')).toBeInTheDocument();
   });
 });
 
@@ -389,7 +389,7 @@ describe('ExportPreviewModal', () => {
 // as the app not listening.
 describe('ExportPreviewModal — save', () => {
   const saveButton = () =>
-    screen.getByText('filePanel.saveAsPdf').closest('button') as HTMLButtonElement;
+    screen.getByText('filePanel:saveAsPdf').closest('button') as HTMLButtonElement;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -444,8 +444,8 @@ describe('ExportPreviewModal — save', () => {
     // Without this the control stays live throughout and a second click is
     // swallowed by the re-entry guard, which shows nothing: the button reads as
     // dead rather than as busy.
-    await waitFor(() => expect(screen.getByText('filePanel.pdfGenerating')).toBeInTheDocument());
-    expect(screen.getByText('filePanel.pdfGenerating').closest('button')).toBeDisabled();
+    await waitFor(() => expect(screen.getByText('filePanel:pdfGenerating')).toBeInTheDocument());
+    expect(screen.getByText('filePanel:pdfGenerating').closest('button')).toBeDisabled();
 
     release({ saved: true });
     await waitFor(() => expect(saveButton()).not.toBeDisabled());

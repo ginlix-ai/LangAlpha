@@ -63,7 +63,7 @@ function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost
 
   const detailBlock = (
     <div className="rounded-lg px-4 py-3" style={{ border: '1px solid var(--color-border-muted)' }}>
-      <ArgsTable args={args || {}} emptyLabel={t('toolArtifact.directTool.noArguments')} />
+      <ArgsTable args={args || {}} emptyLabel={t('toolArtifact:directTool.noArguments')} />
     </div>
   );
 
@@ -78,8 +78,8 @@ function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost
           reason={isRejected ? data.reason : null}
           label={
             isApproved
-              ? t('toolArtifact.directTool.approvedAction', { vendor: vendorLabel, tool: toolLabel })
-              : t('toolArtifact.directTool.rejectedAction', { vendor: vendorLabel, tool: toolLabel })
+              ? t('toolArtifact:directTool.approvedAction', { vendor: vendorLabel, tool: toolLabel })
+              : t('toolArtifact:directTool.rejectedAction', { vendor: vendorLabel, tool: toolLabel })
           }
         >
           {detailBlock}
@@ -92,8 +92,8 @@ function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost
           <div className="min-w-0 flex-1">
             <div className="text-[0.9375rem] font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
               {canAct
-                ? t('toolArtifact.directTool.approvalTitle')
-                : t('toolArtifact.directTool.unansweredTitle')}
+                ? t('toolArtifact:directTool.approvalTitle')
+                : t('toolArtifact:directTool.unansweredTitle')}
             </div>
             <div className="text-xs truncate" style={{ color: 'var(--color-text-tertiary)' }}>
               {vendorLabel} · {toolLabel}
@@ -116,7 +116,7 @@ function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost
               style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
               <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-              {t('toolArtifact.directTool.approve')}
+              {t('toolArtifact:directTool.approve')}
             </button>
             <button
               type="button"
@@ -126,15 +126,15 @@ function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost
               style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
             >
               <X className="h-3.5 w-3.5" />
-              {t('toolArtifact.directTool.reject')}
+              {t('toolArtifact:directTool.reject')}
             </button>
             <input
               type="text"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               maxLength={200}
-              placeholder={t('toolArtifact.directTool.reasonPlaceholder')}
-              aria-label={t('toolArtifact.directTool.reasonPlaceholder')}
+              placeholder={t('toolArtifact:directTool.reasonPlaceholder')}
+              aria-label={t('toolArtifact:directTool.reasonPlaceholder')}
               className="flex-1 min-w-40 text-sm px-3 py-2 rounded-md bg-transparent outline-hidden"
               style={{ border: '1px solid var(--color-border-muted)', color: 'var(--color-text-primary)' }}
             />

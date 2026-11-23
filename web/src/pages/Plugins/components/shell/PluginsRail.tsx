@@ -106,7 +106,7 @@ export function PluginsRail({
         {attention[s] && (
           <>
             <StatusDot tone="attn" />
-            <span className="sr-only">{t('plugins.shell.needsAttention')}</span>
+            <span className="sr-only">{t('plugins:shell.needsAttention')}</span>
           </>
         )}
         {/* A zero says nothing a name does not: no brokerage connected, no
@@ -130,11 +130,11 @@ export function PluginsRail({
       >
         <BrandMark name={plugin.name} size="xs" className="plugins-rail-mark" {...pluginMark(plugin)} />
         <span className={cn('page-rail-name', active && 'rail-prompt')}>{plugin.name}</span>
-        {!plugin.enabled && <span className="sr-only">{t('plugins.shell.pluginOff')}</span>}
+        {!plugin.enabled && <span className="sr-only">{t('plugins:shell.pluginOff')}</span>}
         {problem && (
           <>
             <StatusDot tone="attn" />
-            <span className="sr-only">{t('plugins.shell.needsAttention')}</span>
+            <span className="sr-only">{t('plugins:shell.needsAttention')}</span>
           </>
         )}
       </Link>
@@ -142,17 +142,17 @@ export function PluginsRail({
   };
 
   return (
-    <nav ref={navRef} className="page-rail plugins-rail" aria-label={t('plugins.shell.railLabel')}>
-      <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.customize')}</div>
+    <nav ref={navRef} className="page-rail plugins-rail" aria-label={t('plugins:shell.railLabel')}>
+      <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.customize')}</div>
       {CUSTOMIZE.map(sectionLink)}
-      <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.accounts')}</div>
+      <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.accounts')}</div>
       {ACCOUNTS.map(sectionLink)}
 
       {/* The label heads the built-in fold as well: without it, an account
           with only bundled plugins showed "Built in" straight under Accounts,
           read as one more account section. */}
       {installed.length + builtIn.length > 0 && (
-        <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.installed')}</div>
+        <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.installed')}</div>
       )}
       {installed.length > 0 && <div className="plugins-rail-plugins">{installed.map(pluginLink)}</div>}
       {builtIn.length > 0 && (
@@ -166,7 +166,7 @@ export function PluginsRail({
             <span className="plugins-rail-chevron" aria-hidden>
               <ChevronRight className={cn('h-3.5 w-3.5', builtInOpen && 'rotate-90')} />
             </span>
-            <span className="page-rail-name">{t('plugins.shell.group.builtIn')}</span>
+            <span className="page-rail-name">{t('plugins:shell.group.builtIn')}</span>
             {!builtInOpen && builtInAttention && <StatusDot tone="attn" />}
             <span className="plugins-rail-count">{builtIn.length}</span>
           </button>

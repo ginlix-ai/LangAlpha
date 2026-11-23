@@ -120,7 +120,7 @@ export function AutomationList({ groups, readings, selectedId, onSelect, keyboar
     <nav
       ref={navRef}
       className="automations-list"
-      aria-label={t('automation.automations')}
+      aria-label={t('automation:automations')}
       data-nav={viaKeys ? 'keys' : undefined}
       onKeyDown={keyboardNav ? onArrow : undefined}
     >

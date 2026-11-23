@@ -79,7 +79,7 @@ export function OrderReceiptCard({ artifact, onClick }: InlineCardProps): React.
           {/* Said once: a staged instruction's state is itself "Staged". */}
           {mode && modeWord?.toLowerCase() !== word.toLowerCase() && (
             // Amber only for live: it is the one that spends real money.
-            <span title={t('plugins.detail.orderModeTitle')}>
+            <span title={t('plugins:detail.orderModeTitle')}>
               <TermTag tone={mode === 'live' ? 'warning' : undefined}>{modeWord}</TermTag>
             </span>
           )}
@@ -116,11 +116,11 @@ export function OrderReceiptCard({ artifact, onClick }: InlineCardProps): React.
 function columnLabel(part: OrderPart, t: TFunction): string | null {
   switch (part.field) {
     case 'limit_price':
-      return t('toolArtifact.directTool.orderTerm.limit');
+      return t('toolArtifact:directTool.orderTerm.limit');
     case 'stop_price':
-      return t('toolArtifact.directTool.orderTerm.stop');
+      return t('toolArtifact:directTool.orderTerm.stop');
     case 'avg_fill_price':
-      return t('toolArtifact.directTool.orderTerm.avgFill');
+      return t('toolArtifact:directTool.orderTerm.avgFill');
     default:
       return part.labelKey ? t(part.labelKey) : null;
   }
@@ -262,8 +262,8 @@ function ReceiptFigures({
   if (figures.length === 0 && !orderId) return null;
   const idLabel = t(
     isApproval
-      ? 'toolArtifact.directTool.orderOutcome.approvalId'
-      : 'toolArtifact.directTool.orderOutcome.orderId',
+      ? 'toolArtifact:directTool.orderOutcome.approvalId'
+      : 'toolArtifact:directTool.orderOutcome.orderId',
   );
   // The vendor's id is matched by eye against its own app, so one too long
   // for a column takes a row of its own rather than being cut.
@@ -311,7 +311,7 @@ function ReceiptOutcome({ receipt }: { receipt: OrderReceiptView }): React.React
     <div className="order-term-outcome" data-testid="order-outcome">
       {decisionMessage && (
         <p className="order-term-prose">
-          <span className="term-k">{t('toolArtifact.directTool.orderOutcome.decisionMessage')}</span>{' '}
+          <span className="term-k">{t('toolArtifact:directTool.orderOutcome.decisionMessage')}</span>{' '}
           {decisionMessage}
         </p>
       )}
@@ -325,7 +325,7 @@ function ReceiptOutcome({ receipt }: { receipt: OrderReceiptView }): React.React
             {failure.message && failure.code && ' '}
             {failure.code && (
               <span className="term-t3 whitespace-nowrap">
-                {t('toolArtifact.directTool.orderOutcome.failureCode', { code: failure.code })}
+                {t('toolArtifact:directTool.orderOutcome.failureCode', { code: failure.code })}
               </span>
             )}
           </span>

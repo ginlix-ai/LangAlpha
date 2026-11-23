@@ -22,9 +22,9 @@ import { useNow } from '@/hooks/useNow';
 
 /** When each step is assumed to start, in seconds since the save began. */
 const STEPS = [
-  { key: 'mcp.modal.stdioStepWake', from: 0 },
-  { key: 'mcp.modal.stdioStepRun', from: 8 },
-  { key: 'mcp.modal.stdioStepTools', from: 30 },
+  { key: 'mcp:modal.stdioStepWake', from: 0 },
+  { key: 'mcp:modal.stdioStepRun', from: 8 },
+  { key: 'mcp:modal.stdioStepTools', from: 30 },
 ] as const;
 
 export function McpStdioCheck() {
@@ -45,9 +45,9 @@ export function McpStdioCheck() {
       role="status"
     >
       <div className="flex items-center justify-between gap-2">
-        <span style={{ color: 'var(--color-text-primary)' }}>{t('mcp.modal.stdioChecking')}</span>
+        <span style={{ color: 'var(--color-text-primary)' }}>{t('mcp:modal.stdioChecking')}</span>
         <span className="tabular-nums shrink-0" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('mcp.modal.stdioElapsed', { seconds: elapsed })}
+          {t('mcp:modal.stdioElapsed', { seconds: elapsed })}
         </span>
       </div>
       <ol className="flex flex-col gap-1">
@@ -73,7 +73,7 @@ export function McpStdioCheck() {
         ))}
       </ol>
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('mcp.modal.stdioCannotCancel')}
+        {t('mcp:modal.stdioCannotCancel')}
       </p>
     </div>
   );

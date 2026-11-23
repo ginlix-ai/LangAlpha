@@ -156,20 +156,20 @@ function NewMenu({ hover }: { hover: boolean }) {
     <MenuSurface className="w-[150px]">
       <MenuItem
         icon={Plus}
-        name={t('automation.blankAutomation')}
-        desc={t('automation.blankAutomationDesc')}
+        name={t('automation:blankAutomation')}
+        desc={t('automation:blankAutomationDesc')}
       />
       <div
         className="-mx-[3px] my-[3px] h-px"
         style={{ background: 'var(--color-border-muted)' }}
       />
-      <Kicker className="px-[6px] pb-[3px] pt-[3px]">{t('automation.fromTemplate')}</Kicker>
+      <Kicker className="px-[6px] pb-[3px] pt-[3px]">{t('automation:fromTemplate')}</Kicker>
       {templates.map(([icon, id], i) => (
         <MenuItem
           key={id}
           icon={icon}
-          name={t(`automation.template${id}`)}
-          desc={t(`automation.template${id}Desc`)}
+          name={t(`automation:template${id}`)}
+          desc={t(`automation:template${id}Desc`)}
           hovered={hover && i === 0}
         />
       ))}
@@ -191,7 +191,7 @@ function PriceReadout() {
       </Appear>
     );
   }
-  if (now < TRIG.asking) return <Readout>{t('automation.priceHint')}</Readout>;
+  if (now < TRIG.asking) return <Readout>{t('automation:priceHint')}</Readout>;
   return (
     <Readout className="flex items-baseline gap-[4px]">
       <span className={mono} style={{ color: 'var(--color-text-secondary)' }}>
@@ -208,7 +208,7 @@ function PriceReadout() {
             <span className={mono} style={{ color: 'var(--color-profit)' }}>
               {B.move}%
             </span>{' '}
-            {t('automation.quoteToday')}
+            {t('automation:quoteToday')}
           </span>
         </>
       )}
@@ -227,12 +227,12 @@ function PriceForm() {
   const saving = now >= TRIG.clickCreate + 120;
   return (
     <div>
-      <FormTitle>{t('automation.newAutomation')}</FormTitle>
+      <FormTitle>{t('automation:newAutomation')}</FormTitle>
       <div className="mt-[6px] border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
         <FormRow first className="border-t" label={t('common.name')}>
           <Field>{B.alert}</Field>
         </FormRow>
-        <FormRow label={t('automation.fieldWhen')}>
+        <FormRow label={t('automation:fieldWhen')}>
           <TriggerChips value="price" days={DEFAULT_DAYS} />
           <div className="flex items-center gap-1">
             <Field focus={symbolFocus} className="w-[44px] font-mono">
@@ -242,12 +242,12 @@ function PriceForm() {
                 <Caret />
               ) : (
                 <span style={{ color: 'var(--color-text-tertiary)' }}>
-                  {t('automation.priceSymbol')}
+                  {t('automation:priceSymbol')}
                 </span>
               )}
             </Field>
             <Field chevron className="w-[86px]">
-              {t('automation.priceConditionAbove')}
+              {t('automation:priceConditionAbove')}
             </Field>
             <Field focus={levelFocus} className="w-[52px] font-mono tabular-nums">
               <span style={{ color: 'var(--color-text-tertiary)' }}>$</span>{' '}
@@ -262,7 +262,7 @@ function PriceForm() {
             <PriceReadout />
           </div>
         </FormRow>
-        <FormRow label={t('automation.instruction')}>
+        <FormRow label={t('automation:instruction')}>
           <InstructionBox text={ALERT_INSTRUCTION} />
         </FormRow>
         <MoreToggle open={false} summary={summary} />
@@ -359,12 +359,12 @@ function AutomationFeed() {
           scroll={FEED.scrollBy * ease(now, FEED.scroll, 900)}
           runs={
             <>
-              <Day label={t('automation.today')}>
+              <Day label={t('automation:today')}>
                 <FiredRun land={FEED.land} done={FEED.done} />
                 <BriefRun />
                 <PreviewRun />
               </Day>
-              <Day label={t('automation.yesterday')}>
+              <Day label={t('automation:yesterday')}>
                 <BriefRun excerpt={LAST_EXCERPT} />
               </Day>
             </>
@@ -440,8 +440,8 @@ function DeliveryList({ pick }: { pick: boolean }) {
   const item = 'flex items-center gap-1 rounded-[3px] px-[5px] py-[3px] text-[6.5px] leading-none';
   const slack: { label: string; tag?: string }[] = [
     {
-      label: t('automation.deliveryDefaultOptionLands', { name: '#markets' }),
-      tag: t('automation.deliveryViaPreferred'),
+      label: t('automation:deliveryDefaultOptionLands', { name: '#markets' }),
+      tag: t('automation:deliveryViaPreferred'),
     },
     { label: B.deliverTo },
     { label: '#markets' },
@@ -449,7 +449,7 @@ function DeliveryList({ pick }: { pick: boolean }) {
   return (
     <MenuSurface className="w-[140px]">
       <div className={heading} style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('automation.deliverToSlack')}
+        {t('automation:deliverToSlack')}
       </div>
       {slack.map(({ label, tag }, i) => (
         <div
@@ -473,10 +473,10 @@ function DeliveryList({ pick }: { pick: boolean }) {
         style={{ borderColor: 'var(--color-border-muted)' }}
       >
         <div className={heading} style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('automation.deliverToDiscord')}
+          {t('automation:deliverToDiscord')}
         </div>
         <div className={item} style={{ color: 'var(--color-text-primary)' }}>
-          {t('automation.deliveryDefaultOption')}
+          {t('automation:deliveryDefaultOption')}
         </div>
       </div>
     </MenuSurface>
@@ -496,23 +496,23 @@ function EditForm() {
     'flex h-[15px] w-[15px] items-center justify-center rounded-[3px] border font-mono text-[6px]';
   return (
     <div>
-      <FormTitle>{t('automation.editAutomation')}</FormTitle>
+      <FormTitle>{t('automation:editAutomation')}</FormTitle>
       <div className="mt-[6px] border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
         <FormRow first className="border-t" label={t('common.name')}>
           <Field>{B.brief}</Field>
         </FormRow>
-        <FormRow label={t('automation.fieldWhen')}>
+        <FormRow label={t('automation:fieldWhen')}>
           <TriggerChips value="cron" days={WEEKDAYS} />
           <div
             className="flex items-center gap-1 text-[7px]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             <Field chevron className="shrink-0">
-              {t('automation.freqDays')}
+              {t('automation:freqDays')}
             </Field>
-            <span className="leading-none">{t('automation.atTime')}</span>
+            <span className="leading-none">{t('automation:atTime')}</span>
             <Field className="shrink-0 tabular-nums">{B.time(8, 0)}</Field>
-            <span className="leading-none">{t('automation.inZone')}</span>
+            <span className="leading-none">{t('automation:inZone')}</span>
             <Field chevron className="min-w-0 flex-1">
               {B.zone}
             </Field>
@@ -520,7 +520,7 @@ function EditForm() {
           <WeekPicker className={day} />
           <Readout>{B.briefReadout}</Readout>
         </FormRow>
-        <FormRow label={t('automation.instruction')}>
+        <FormRow label={t('automation:instruction')}>
           <InstructionBox text={BRIEF_INSTRUCTION} />
         </FormRow>
         <MoreToggle open={open} summary={summary} />
@@ -530,15 +530,15 @@ function EditForm() {
               {t('agents.chiefOfStaff')}
             </Field>
           </FormRow>
-          <FormRow label={t('automation.threadStrategy')}>
+          <FormRow label={t('automation:threadStrategy')}>
             <div className="flex">
               <Segmented
-                options={[t('automation.newThreadEachRun'), t('automation.continueExisting')]}
+                options={[t('automation:newThreadEachRun'), t('automation:continueExisting')]}
                 value={1}
               />
             </div>
           </FormRow>
-          <FormRow label={t('automation.delivery')}>
+          <FormRow label={t('automation:delivery')}>
             {added && (
               <Appear at={DLV.clickDm + 60} pop className="flex">
                 <span
@@ -559,7 +559,7 @@ function EditForm() {
                 focus={during(now, DLV.popover, DLV.clickDm + 60)}
                 className="w-fit pr-[4px]"
               >
-                {t('automation.deliveryAdd')}
+                {t('automation:deliveryAdd')}
               </Field>
               {during(now, DLV.popover, DLV.clickDm + 80) && (
                 <div className="absolute left-0 top-[19px] z-[5]">
@@ -570,7 +570,7 @@ function EditForm() {
               )}
             </div>
           </FormRow>
-          <FormRow label={t('automation.maxFailures')}>
+          <FormRow label={t('automation:maxFailures')}>
             <Field className="w-[32px] font-mono tabular-nums">3</Field>
           </FormRow>
           <FormRow label={t('common.description')}>
@@ -582,13 +582,13 @@ function EditForm() {
                 color: 'var(--color-text-tertiary)',
               }}
             >
-              {t('automation.descPlaceholder')}
+              {t('automation:descPlaceholder')}
             </div>
           </FormRow>
         </Grow>
       </div>
       <FormActions
-        label={t(now >= DLV.clickSave + 120 ? 'common.saving' : 'automation.saveChanges')}
+        label={t(now >= DLV.clickSave + 120 ? 'common.saving' : 'automation:saveChanges')}
         pressed={pressAt(now, DLV.clickSave)}
       />
     </div>
@@ -612,10 +612,10 @@ function AutomationDelivery() {
             <FeedLayout
               runs={
                 <>
-                  <Day label={t('automation.today')}>
+                  <Day label={t('automation:today')}>
                     <BriefRun excerpt={NEXT_EXCERPT} delivered={B.deliverTo} at={DLV.sent} />
                   </Day>
-                  <Day label={t('automation.yesterday')}>
+                  <Day label={t('automation:yesterday')}>
                     <FiredRun />
                     <BriefRun />
                   </Day>

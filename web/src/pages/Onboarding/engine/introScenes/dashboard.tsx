@@ -255,20 +255,20 @@ function EditToolbar() {
         }}
       >
         <Plus className="h-2 w-2" />
-        {t('dashboard.widgets.shell.addWidget')}
+        {t('dashboard:widgets.shell.addWidget')}
       </span>
       <span className={cn(btn, 'font-medium')} style={{ color: 'var(--color-text-primary)' }}>
         <Layers className="h-2 w-2" />
-        {t('dashboard.widgets.shell.presets')}
+        {t('dashboard:widgets.shell.presets')}
       </span>
       <span className={btn} style={{ color: 'var(--color-text-secondary)' }}>
         <RotateCcw className="h-2 w-2" />
-        {t('dashboard.widgets.shell.reset')}
+        {t('dashboard:widgets.shell.reset')}
       </span>
       <span className="mx-0.5 h-2.5 w-px" style={{ background: 'var(--color-border-muted)' }} />
       <span className={cn(btn, 'font-medium')} style={{ color: 'var(--color-text-secondary)' }}>
         <X className="h-2 w-2" />
-        {t('dashboard.widgets.shell.done')}
+        {t('dashboard:widgets.shell.done')}
       </span>
     </Appear>
   );
@@ -301,7 +301,7 @@ function EditGrid() {
         style={{ gridTemplateRows: `${MARKETS_ROW}px ${ROW}px ${ROW}px` }}
       >
         <div style={{ gridColumn: '1 / 3', gridRow: 1 }}>
-          <Widget title={tr('dashboard.widgets.marketsOverview.title')} edit className="h-full">
+          <Widget title={tr('dashboard:widgets.marketsOverview.title')} edit className="h-full">
             <IndexRow fill />
           </Widget>
         </div>
@@ -359,8 +359,8 @@ function EditGrid() {
         <div className="shrink-0 overflow-hidden" style={{ height: grown(t) }}>
           <Appear at={ADDED} pop className="flex" style={{ paddingTop: GAP, height: GROW }}>
             <Widget
-              title={tr('dashboard.widgets.miniChartGrid.header')}
-              meta={tr('dashboard.widgets.miniChartGrid.summary', {
+              title={tr('dashboard:widgets.miniChartGrid.header')}
+              meta={tr('dashboard:widgets.miniChartGrid.summary', {
                 count: MINI.length,
                 days: MINI_DAYS,
               })}

@@ -185,9 +185,9 @@ export function CommentComposer({
             type="button"
             className="page-comment-icon-btn page-comment-draft-close tap-target -my-1.5 -mr-1.5 shrink-0"
             onClick={over.onClose}
-            aria-label={t('pageViewer.comments.cancelDraft')}
+            aria-label={t('pageViewer:comments.cancelDraft')}
             aria-keyshortcuts="Escape"
-            title={t('pageViewer.comments.cancelDraftTitle')}
+            title={t('pageViewer:comments.cancelDraftTitle')}
           >
             <X className="h-[15px] w-[15px]" aria-hidden />
           </button>
@@ -203,7 +203,7 @@ export function CommentComposer({
           onClick={over.addPart.onToggle}
         >
           <Plus className="h-3.5 w-3.5" aria-hidden />
-          {t('pageViewer.comments.addPart')}
+          {t('pageViewer:comments.addPart')}
         </button>
       )}
       <textarea
@@ -233,7 +233,7 @@ export function CommentComposer({
       )}
       {failed && (
         <p role="alert" className="text-xs" style={{ color: 'var(--color-icon-danger)' }}>
-          {t('pageViewer.comments.saveFailed')}
+          {t('pageViewer:comments.saveFailed')}
         </p>
       )}
       {/* Where the label and both buttons do not fit on one line (a reply
@@ -243,7 +243,7 @@ export function CommentComposer({
         {drafting?.confirmDiscard ? (
           <>
             <span role="alert" className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {t('pageViewer.comments.discardConfirm')}
+              {t('pageViewer:comments.discardConfirm')}
             </span>
             <Button
               type="button"
@@ -255,10 +255,10 @@ export function CommentComposer({
                 fieldRef.current?.focus();
               }}
             >
-              {t('pageViewer.comments.keepWriting')}
+              {t('pageViewer:comments.keepWriting')}
             </Button>
             <Button type="button" size="sm" variant="destructive" className={cn(buttonSize, 'px-2.5 text-xs')} onClick={drafting.onDiscard}>
-              {t('pageViewer.comments.discard')}
+              {t('pageViewer:comments.discard')}
             </Button>
           </>
         ) : (
@@ -269,7 +269,7 @@ export function CommentComposer({
               className="mr-auto shrink-0 items-center gap-[7px] rounded-sm text-xs whitespace-nowrap select-none"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              {t('pageViewer.comments.forAgent')}
+              {t('pageViewer:comments.forAgent')}
             </CheckboxChoice>
             <span className="ml-auto flex shrink-0 items-center gap-1">
               {quiet && (
@@ -287,7 +287,7 @@ export function CommentComposer({
                   aria-hidden={!quiet.shown || undefined}
                   disabled={held(quiet.route)}
                   aria-keyshortcuts={quiet.route === layout.modEnter ? 'Meta+Enter Control+Enter' : undefined}
-                  title={t(quiet.route === 'send' ? 'pageViewer.comments.sendNowTitle' : 'pageViewer.comments.addToQueueTitle', {
+                  title={t(quiet.route === 'send' ? 'pageViewer:comments.sendNowTitle' : 'pageViewer:comments.addToQueueTitle', {
                     keys: clientOs() === 'mac' ? '⌘↵' : 'Ctrl+↵',
                   })}
                   onClick={() => void submit(quiet.route)}
@@ -339,7 +339,7 @@ function PartChips({ labels, onDrop }: { labels: string[]; onDrop?: (index: numb
   const { t } = useTranslation();
   const shown = shortLabels(labels);
   return (
-    <ul className="page-comment-parts" aria-label={t('pageViewer.comments.partsLabel')}>
+    <ul className="page-comment-parts" aria-label={t('pageViewer:comments.partsLabel')}>
       {labels.map((label, i) => (
         // A part is known by its place in the list, which is how the page drops it.
         <li key={i} className="page-comment-part" title={label}>
@@ -349,7 +349,7 @@ function PartChips({ labels, onDrop }: { labels: string[]; onDrop?: (index: numb
               type="button"
               className="page-comment-part-drop"
               onClick={() => onDrop(i)}
-              aria-label={t('pageViewer.comments.dropPart', { label })}
+              aria-label={t('pageViewer:comments.dropPart', { label })}
             >
               <X className="h-3 w-3" aria-hidden />
             </button>

@@ -264,7 +264,7 @@ function MemoryViewer() {
 function Memory() {
   const t = useSceneTime();
   const { t: tr } = useTranslation();
-  const overview = tr('toolArtifact.tool.companyOverview');
+  const overview = tr('toolArtifact:tool.companyOverview');
   return (
     <Camera shots={MEM_SHOTS} pointer={MEM_POINTER}>
       <ThreadPage
@@ -273,7 +273,7 @@ function Memory() {
         tabs={
           <>
             <PanelTab icon={FileText} label="notes.md" />
-            <PanelTab icon={BookMarked} label={tr('filePanel.tabs.memory')} active />
+            <PanelTab icon={BookMarked} label={tr('filePanel:tabs.memory')} active />
           </>
         }
         ask={{ text: MEM.ask, at: MEM.typeAsk, send: MEM.sendAsk, cps: MEM.cps }}
@@ -295,17 +295,17 @@ function Memory() {
               <ToolRow
                 icon={BookMarked}
                 running={{
-                  label: tr('toolArtifact.inProgress.addingMemoryTopic', { topic: MEM.topic }),
+                  label: tr('toolArtifact:inProgress.addingMemoryTopic', { topic: MEM.topic }),
                 }}
-                settled={{ label: tr('toolArtifact.completed.addedMemory'), pill: MEM.topic }}
+                settled={{ label: tr('toolArtifact:completed.addedMemory'), pill: MEM.topic }}
                 at={MEM.save}
                 done={MEM.saved}
               />
               {/* the index names no topic, so its row carries no pill */}
               <ToolRow
                 icon={BookMarked}
-                running={{ label: tr('toolArtifact.inProgress.updatingMemory') }}
-                settled={{ label: tr('toolArtifact.completed.updatedMemory') }}
+                running={{ label: tr('toolArtifact:inProgress.updatingMemory') }}
+                settled={{ label: tr('toolArtifact:completed.updatedMemory') }}
                 at={MEM.index}
                 done={MEM.indexed}
               />
@@ -453,7 +453,7 @@ function MemoStatus({ ready }: { ready: number }) {
         style={{ background: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
       >
         <Loader />
-        {tr('memoPanel.status.pending')}
+        {tr('memoPanel:status.pending')}
       </span>
     );
   }
@@ -463,7 +463,7 @@ function MemoStatus({ ready }: { ready: number }) {
         className={pill}
         style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
       >
-        {tr('memoPanel.status.ready')}
+        {tr('memoPanel:status.ready')}
       </span>
     </Appear>
   );
@@ -535,7 +535,7 @@ function MemoTab() {
             className="text-[8px] font-semibold leading-none"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {tr('memoPanel.title')}
+            {tr('memoPanel:title')}
           </span>
           <Info className="h-[7px] w-[7px]" style={{ color: 'var(--color-text-tertiary)' }} />
         </span>
@@ -553,7 +553,7 @@ function MemoTab() {
             }}
           >
             {uploading ? <Loader /> : <Upload className="h-[7px] w-[7px] shrink-0" />}
-            {uploading ? tr('memoPanel.uploading') : tr('memoPanel.uploadButton')}
+            {uploading ? tr('memoPanel:uploading') : tr('memoPanel:uploadButton')}
           </span>
         </span>
       </div>
@@ -562,9 +562,9 @@ function MemoTab() {
           className="flex py-1 text-[7px] font-medium leading-none"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          <span className={COL_NAME}>{tr('memoPanel.columns.name')}</span>
-          <span className={COL_STATUS}>{tr('memoPanel.columns.status')}</span>
-          <span>{tr('memoPanel.columns.description')}</span>
+          <span className={COL_NAME}>{tr('memoPanel:columns.name')}</span>
+          <span className={COL_STATUS}>{tr('memoPanel:columns.status')}</span>
+          <span>{tr('memoPanel:columns.description')}</span>
         </div>
         {MEMO.held.map((r) => (
           <MemoRow key={r.name} {...r} at={PAST} ready={PAST} />
@@ -583,7 +583,7 @@ function MemoTab() {
             }}
           >
             <Upload className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
-            {tr('memoPanel.dragOverlayText')}
+            {tr('memoPanel:dragOverlayText')}
           </div>
         )}
       </div>
@@ -593,18 +593,18 @@ function MemoTab() {
 
 function Memo() {
   const { t: tr } = useTranslation();
-  const overview = tr('toolArtifact.tool.companyOverview');
-  const prices = tr('toolArtifact.tool.stockPrices');
-  const statements = tr('toolArtifact.tool.financialStatements');
-  const filing = tr('toolArtifact.tool.secFiling');
+  const overview = tr('toolArtifact:tool.companyOverview');
+  const prices = tr('toolArtifact:tool.stockPrices');
+  const statements = tr('toolArtifact:tool.financialStatements');
+  const filing = tr('toolArtifact:tool.secFiling');
   const memo = MEMO.upload.name;
   return (
     <Camera shots={MEMO_SHOTS} pointer={MEMO_POINTER}>
       <ThreadPage
         tabs={
           <>
-            <PanelTab icon={BookMarked} label={tr('filePanel.tabs.memory')} />
-            <PanelTab icon={ScrollText} label={tr('filePanel.tabs.memo')} active />
+            <PanelTab icon={BookMarked} label={tr('filePanel:tabs.memory')} />
+            <PanelTab icon={ScrollText} label={tr('filePanel:tabs.memo')} active />
           </>
         }
         title="MSFT capex"
@@ -630,8 +630,8 @@ function Memo() {
             <Timeline>
               <ToolRow
                 icon={BookText}
-                running={{ label: tr('toolArtifact.inProgress.readingMemoSlug', { slug: memo }) }}
-                settled={{ label: tr('toolArtifact.completed.readMemo'), pill: memo }}
+                running={{ label: tr('toolArtifact:inProgress.readingMemoSlug', { slug: memo }) }}
+                settled={{ label: tr('toolArtifact:completed.readMemo'), pill: memo }}
                 at={MEMO.readMemo.at}
                 done={MEMO.readMemo.done}
               />
@@ -641,7 +641,7 @@ function Memo() {
               <ToolRow
                 icon={FileBarChart}
                 running={{
-                  label: `${filing} ${tr('toolArtifact.inProgress.fetchingSymbolFiling', { symbol: 'MSFT' })}`,
+                  label: `${filing} ${tr('toolArtifact:inProgress.fetchingSymbolFiling', { symbol: 'MSFT' })}`,
                 }}
                 settled={{ label: filing, pill: 'MSFT' }}
                 at={MEMO.filing.at}

@@ -42,29 +42,29 @@ export function InlineOptionsChainCard({ artifact, onClick, toolArgs }: InlineCa
     >
       {/* An error or an empty chain keeps its call in the transcript; the
           panel behind it holds the tool's own words for why. */}
-      {!rows.length && <div className="term-t3">{t('toolArtifact.noOptionsData')}</div>}
+      {!rows.length && <div className="term-t3">{t('toolArtifact:noOptionsData')}</div>}
       <TermTable
         rows={rows}
         limit={MAX_INLINE_ROWS}
-        more={(n) => t('toolArtifact.nMoreContracts', { count: n })}
+        more={(n) => t('toolArtifact:nMoreContracts', { count: n })}
         rowKey={(row, i) => row.ticker || i}
         // The last of the contract's terms takes the spare width, so the figures sit right.
         columns={[
-          { key: 'strike', label: t('toolArtifact.termHead.strike'), fill: 'grow', className: 'term-strong', cell: (r) => (r.strike != null ? money(r.strike) : '') },
-          { key: 'exp', label: t('toolArtifact.termHead.exp'), fill: 'grow', className: 'term-t2', show: showExp, cell: (r) => expiryOf(r.expiry) },
+          { key: 'strike', label: t('toolArtifact:termHead.strike'), fill: 'grow', className: 'term-strong', cell: (r) => (r.strike != null ? money(r.strike) : '') },
+          { key: 'exp', label: t('toolArtifact:termHead.exp'), fill: 'grow', className: 'term-t2', show: showExp, cell: (r) => expiryOf(r.expiry) },
           {
             key: 'type',
-            label: t('toolArtifact.termHead.type'),
+            label: t('toolArtifact:termHead.type'),
             fill: 'grow',
             className: 'term-t2 term-label',
             show: showType,
-            cell: (r) => (r.type ? t(`toolArtifact.optionType.${r.type}`) : ''),
+            cell: (r) => (r.type ? t(`toolArtifact:optionType.${r.type}`) : ''),
           },
           // A contract that has not traded this session keeps an older day's
           // close and move: dimmed, with that day in the tooltip.
           {
             key: 'last',
-            label: t('toolArtifact.termHead.last'),
+            label: t('toolArtifact:termHead.last'),
             num: true,
             show: rows.some((r) => r.last != null),
             title: (r) => staleOptionTitle(t, r),
@@ -72,7 +72,7 @@ export function InlineOptionsChainCard({ artifact, onClick, toolArgs }: InlineCa
           },
           {
             key: 'change',
-            label: t('toolArtifact.termHead.change'),
+            label: t('toolArtifact:termHead.change'),
             num: true,
             show: rows.some((r) => r.changePct != null),
             title: (r) => staleOptionTitle(t, r),
@@ -80,7 +80,7 @@ export function InlineOptionsChainCard({ artifact, onClick, toolArgs }: InlineCa
           },
           {
             key: 'vol',
-            label: t('toolArtifact.termHead.vol'),
+            label: t('toolArtifact:termHead.vol'),
             num: true,
             className: 'term-t2',
             // A phone keeps the contract's terms and its price; volume needs

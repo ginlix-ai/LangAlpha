@@ -105,15 +105,15 @@ export function readChecklist(
 export function reachText(t: TFunction, reach: ScopeReach): string {
   switch (reach.kind) {
     case 'all':
-      return t('plugins.scope.allWorkspaces');
+      return t('plugins:scope.allWorkspaces');
     case 'allExcept':
-      return t('plugins.scope.allExcept', { count: reach.count });
+      return t('plugins:scope.allExcept', { count: reach.count });
     case 'none':
-      return t('plugins.scope.noWorkspaces');
+      return t('plugins:scope.noWorkspaces');
     case 'only':
-      return t('plugins.scope.onlyIn', { name: reach.name });
+      return t('plugins:scope.onlyIn', { name: reach.name });
     case 'some':
-      return t('plugins.scope.someWorkspaces', { count: reach.count });
+      return t('plugins:scope.someWorkspaces', { count: reach.count });
   }
 }
 
@@ -181,13 +181,13 @@ export function ScopeControl({
   // A workspace's own row is off in the one place it lives; its pill names
   // that place either way, so only the all-workspaces reach gives way.
   const offAll = isUserTier ? off : null;
-  const workspaceName = scopeWorkspace?.name ?? t('plugins.scope.unknownWorkspace');
+  const workspaceName = scopeWorkspace?.name ?? t('plugins:scope.unknownWorkspace');
 
   const label =
     offAll === 'plugin'
-      ? t('plugins.scope.pluginOff')
+      ? t('plugins:scope.pluginOff')
       : offAll === 'self'
-        ? t('plugins.scope.offEverywhere')
+        ? t('plugins:scope.offEverywhere')
         : isUserTier
           ? reachText(t, reach)
           : workspaceName;
@@ -226,7 +226,7 @@ export function ScopeControl({
         <button
           type="button"
           disabled={busy}
-          aria-label={t('plugins.scope.triggerAria', { scope: label })}
+          aria-label={t('plugins:scope.triggerAria', { scope: label })}
           title={labelTitle}
           className="inline-flex items-center gap-1 px-2 py-1 text-[0.6875rem] rounded-md transition-colors hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:hover:bg-transparent whitespace-nowrap max-w-[12rem]"
           style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border-muted)' }}
@@ -244,12 +244,12 @@ export function ScopeControl({
             className="font-normal max-w-[16rem] whitespace-normal"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            {offAll === 'plugin' ? t('plugins.scope.pluginOffHint') : t('plugins.scope.offHint')}
+            {offAll === 'plugin' ? t('plugins:scope.pluginOffHint') : t('plugins:scope.offHint')}
           </DropdownMenuLabel>
         ) : hasChecklist ? (
           // A named group, so a screen reader hears which half an item is in.
           <div role="group" aria-labelledby={useInId}>
-            <DropdownMenuLabel id={useInId}>{t('plugins.scope.activeIn')}</DropdownMenuLabel>
+            <DropdownMenuLabel id={useInId}>{t('plugins:scope.activeIn')}</DropdownMenuLabel>
             {checklist.map((ws) => {
               const active = !disabled.has(ws.id);
               return (
@@ -279,7 +279,7 @@ export function ScopeControl({
                 className="font-normal"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                {t('plugins.scope.futureHint')}
+                {t('plugins:scope.futureHint')}
               </DropdownMenuLabel>
             )}
           </div>
@@ -302,7 +302,7 @@ export function ScopeControl({
               }}
             >
               <Check className="h-3.5 w-3.5 mr-2" style={{ opacity: newOn ? 1 : 0 }} />
-              <span>{t('plugins.scope.newWorkspacesOn')}</span>
+              <span>{t('plugins:scope.newWorkspacesOn')}</span>
             </DropdownMenuCheckboxItem>
           </>
         )}
@@ -317,8 +317,8 @@ export function ScopeControl({
                 trades. */}
             <DropdownMenuLabel id={moveId} className="max-w-[16rem] whitespace-normal">
               {isUserTier
-                ? t('plugins.scope.moveIntoOne')
-                : t('plugins.scope.onlyIn', { name: workspaceName })}
+                ? t('plugins:scope.moveIntoOne')
+                : t('plugins:scope.onlyIn', { name: workspaceName })}
             </DropdownMenuLabel>
             {moveBlockedReason !== null ? (
               <DropdownMenuItem disabled>
@@ -334,7 +334,7 @@ export function ScopeControl({
                     className="font-normal pt-0 max-w-[16rem] whitespace-normal"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
-                    {t('plugins.scope.moveIntoOneNote')}
+                    {t('plugins:scope.moveIntoOneNote')}
                   </DropdownMenuLabel>
                 )}
                 {!isUserTier &&
@@ -348,7 +348,7 @@ export function ScopeControl({
                   ) : (
                     <DropdownMenuItem disabled={busy} onSelect={() => onMove?.(null)}>
                       <Globe className="h-3.5 w-3.5 mr-2" />
-                      {t('plugins.scope.moveToAll')}
+                      {t('plugins:scope.moveToAll')}
                     </DropdownMenuItem>
                   ))}
                 {moveTargets.length > 0 && (
@@ -356,8 +356,8 @@ export function ScopeControl({
                     <DropdownMenuSubTrigger>
                       <ArrowRightLeft className="h-3.5 w-3.5 mr-2" />
                       {isUserTier
-                        ? t('plugins.scope.chooseWorkspace')
-                        : t('plugins.scope.moveToAnother')}
+                        ? t('plugins:scope.chooseWorkspace')
+                        : t('plugins:scope.moveToAnother')}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent>
                       {moveTargets.map((ws) => (

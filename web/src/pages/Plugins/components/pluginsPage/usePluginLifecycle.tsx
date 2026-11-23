@@ -81,7 +81,7 @@ export function usePluginLifecycle(
       }
       toast({
         variant: 'destructive',
-        title: t('plugins.card.toggleFailed'),
+        title: t('plugins:card.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -102,9 +102,9 @@ export function usePluginLifecycle(
       if (keys.answer(file, error)) return;
       toast({
         variant: 'destructive',
-        title: t('plugins.card.updateFailed'),
+        title: t('plugins:card.updateFailed'),
         // A toast is narrow, so three of each at most.
-        description: <RefusalView refusal={error.refusal} limit={3} lead="plugins.discover.checkLead" />,
+        description: <RefusalView refusal={error.refusal} limit={3} lead="plugins:discover.checkLead" />,
       });
     }
   }
@@ -129,8 +129,8 @@ export function usePluginLifecycle(
     if (reason) {
       toast({
         variant: 'destructive',
-        title: t('plugins.card.updateFailed'),
-        description: t(`plugins.install.${reason}`),
+        title: t('plugins:card.updateFailed'),
+        description: t(`plugins:install.${reason}`),
       });
       clearPicker();
       return;
@@ -146,7 +146,7 @@ export function usePluginLifecycle(
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.card.exportFailed'),
+        title: t('plugins:card.exportFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -192,7 +192,7 @@ export function usePluginLifecycle(
         'after',
       );
       toast({
-        title: t('plugins.card.uninstalledTitle', { plugin: plugin.name }),
+        title: t('plugins:card.uninstalledTitle', { plugin: plugin.name }),
         description:
           lines.length > 0 ? (
             <>
@@ -206,7 +206,7 @@ export function usePluginLifecycle(
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.card.uninstallFailed'),
+        title: t('plugins:card.uninstallFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -225,8 +225,8 @@ export function usePluginLifecycle(
       />
       {asked && (
         <PluginDialog
-          title={t('plugins.card.updateKeysTitle', { plugin: plugin.name })}
-          subtitle={t('plugins.install.stepKeys')}
+          title={t('plugins:card.updateKeysTitle', { plugin: plugin.name })}
+          subtitle={t('plugins:install.stepKeys')}
           dismissable={!busy}
           onClose={keys.close}
         >
@@ -237,14 +237,14 @@ export function usePluginLifecycle(
             onSubmit={(secrets) => void runUpdate(asked.target, secrets)}
             onCancel={keys.close}
             submitting={busy}
-            submitLabel={t('plugins.card.updateKeysSubmit')}
+            submitLabel={t('plugins:card.updateKeysSubmit')}
           />
         </PluginDialog>
       )}
       {outcome && (
         <PluginOutcome
           outcome={outcome}
-          title={t('plugins.card.updatedTitle', { plugin: plugin.name })}
+          title={t('plugins:card.updatedTitle', { plugin: plugin.name })}
           onDone={() => setOutcome(null)}
         />
       )}

@@ -171,7 +171,7 @@ function MarketAsk() {
       />
       {t >= ASK.tip && t < ASK.arm && (
         <Tip x={ON_REGION.x} y={REGION_BTN.y + 9}>
-          {tr('marketView.selection.toolRegion')}
+          {tr('marketView:selection.toolRegion')}
         </Tip>
       )}
     </Camera>

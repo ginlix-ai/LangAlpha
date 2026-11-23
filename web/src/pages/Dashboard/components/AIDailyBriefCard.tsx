@@ -50,10 +50,10 @@ export function getCachedInsights(): Insight[] | null {
 }
 
 const TYPE_LABEL_KEY: Record<string, string> = {
-  pre_market: 'dashboard.brief.typeLabel.preMarket',
-  market_update: 'dashboard.brief.typeLabel.marketUpdate',
-  post_market: 'dashboard.brief.typeLabel.postMarket',
-  personalized: 'dashboard.brief.typeLabel.personalized',
+  pre_market: 'dashboard:brief.typeLabel.preMarket',
+  market_update: 'dashboard:brief.typeLabel.marketUpdate',
+  post_market: 'dashboard:brief.typeLabel.postMarket',
+  personalized: 'dashboard:brief.typeLabel.personalized',
 };
 
 
@@ -154,7 +154,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
             }
             if (detail.status === 'failed') {
               if (mountedRef.current) {
-                setGenerateError(t('dashboard.brief.errors.generationFailed'));
+                setGenerateError(t('dashboard:brief.errors.generationFailed'));
               }
               return;
             }
@@ -164,7 +164,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
         }
         // Poll exhausted without completion
         if (mountedRef.current) {
-          setGenerateError(t('dashboard.brief.errors.timeout'));
+          setGenerateError(t('dashboard:brief.errors.timeout'));
         }
       };
       await poll();
@@ -174,11 +174,11 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
         ? ((err as Record<string, unknown>).response as Record<string, unknown>)?.status
         : undefined;
       if (status === 409) {
-        setGenerateError(t('dashboard.brief.errors.alreadyGenerating'));
+        setGenerateError(t('dashboard:brief.errors.alreadyGenerating'));
       } else if (status === 429) {
-        setGenerateError(t('dashboard.brief.errors.creditLimit'));
+        setGenerateError(t('dashboard:brief.errors.creditLimit'));
       } else {
-        setGenerateError(t('dashboard.brief.errors.generic'));
+        setGenerateError(t('dashboard:brief.errors.generic'));
       }
     } finally {
       setGenerating(false);
@@ -210,7 +210,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
     return (
       <SwapCell as="div" swapKey="empty">
         <div className="widget-term dash-empty">
-          <span>{t('dashboard.brief.generatingFirst')}</span>
+          <span>{t('dashboard:brief.generatingFirst')}</span>
         </div>
       </SwapCell>
     );
@@ -225,7 +225,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
     <SwapCell as="div" swapKey="ready">
       <WidgetCardSub>{t(typeLabelKey)}</WidgetCardSub>
       <WidgetCardMeta>
-        <span title={updatedAgo ? t('dashboard.brief.updatedWhen', { when: updatedAgo }) : undefined}>
+        <span title={updatedAgo ? t('dashboard:brief.updatedWhen', { when: updatedAgo }) : undefined}>
           {formatTime(latest.completed_at, locale)}
         </span>
       </WidgetCardMeta>
@@ -238,7 +238,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
         <p className="dash-brief-lede">{latest.headline}</p>
         <p className="dash-brief-summary">{latest.summary}</p>
         {isPersonalized && (
-          <p className="term-t3 mb-2">{t('dashboard.brief.basedOnWatchlistPortfolio')}</p>
+          <p className="term-t3 mb-2">{t('dashboard:brief.basedOnWatchlistPortfolio')}</p>
         )}
 
         {topics.length > 0 && (
@@ -258,7 +258,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                 setExpanded((v) => !v);
               }}
             >
-              {t('dashboard.brief.earlierToday', { count: older.length })}
+              {t('dashboard:brief.earlierToday', { count: older.length })}
               <ChevronDown
                 size={11}
                 className="transition-transform"
@@ -271,14 +271,14 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
             className="dash-link term-push"
             onClick={handleGeneratePersonalized}
             disabled={generating}
-            title={t('dashboard.brief.generateTooltip')}
+            title={t('dashboard:brief.generateTooltip')}
           >
             {generating && (
               <span aria-hidden="true" className="shrink-0">
                 <Loader size={11} className="text-current" />
               </span>
             )}
-            {generating ? t('dashboard.brief.generating') : t('dashboard.brief.generatePersonalized')}
+            {generating ? t('dashboard:brief.generating') : t('dashboard:brief.generatePersonalized')}
           </button>
           <button
             type="button"
@@ -288,14 +288,14 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
               onReadFull?.(latest.market_insight_id);
             }}
           >
-            {t('dashboard.brief.readFullBrief')} <span aria-hidden="true">›</span>
+            {t('dashboard:brief.readFullBrief')} <span aria-hidden="true">›</span>
           </button>
         </div>
         {generateError && <p className="dash-error">{generateError}</p>}
 
         {/* The earlier briefs of the day, folded under the latest. */}
         <Disclosure open={expanded && older.length > 0}>
-          <TermDivider>{t('dashboard.brief.earlierInsights')}</TermDivider>
+          <TermDivider>{t('dashboard:brief.earlierInsights')}</TermDivider>
           <table className="term-table dash-table">
             <tbody>
               {older.map((item) => (

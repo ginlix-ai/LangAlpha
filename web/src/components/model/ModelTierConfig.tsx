@@ -62,7 +62,7 @@ export function ModelTierConfig({
   const [explainerOpen, setExplainerOpen] = useState(true)
   const copy = useModelSlotCopy()
   const autoLabel = (model: string | undefined) =>
-    model ? t("settings.autoModel", { model }) : undefined
+    model ? t("settings:autoModel", { model }) : undefined
   const primaryAuto = autoLabel(auto?.primary)
   const backgroundAuto = autoLabel(auto?.background)
   // An unset Background follows a saved primary, except one that runs a

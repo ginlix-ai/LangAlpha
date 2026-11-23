@@ -134,22 +134,22 @@ describe('draftHeading', () => {
 
   it('names words by their place and quotes them, and an element by its own name alone', () => {
     expect(draftHeading(t, { kind: 'text', quote: 'Q3 revenue', label: 'Revenue' })).toEqual({
-      label: 'pageViewer.comments.onLabel {"label":"Revenue"}',
+      label: 'pageViewer:comments.onLabel {"label":"Revenue"}',
       quote: 'chat.artifactComments.message.quote {"quote":"Q3 revenue"}',
     });
-    expect(draftHeading(t, { kind: 'text' })).toEqual({ label: 'pageViewer.comments.onText', quote: null });
-    expect(draftHeading(t, { kind: 'element', path: '#a', quote: 'Total' })).toEqual({ label: 'pageViewer.comments.onElement', quote: null });
+    expect(draftHeading(t, { kind: 'text' })).toEqual({ label: 'pageViewer:comments.onText', quote: null });
+    expect(draftHeading(t, { kind: 'element', path: '#a', quote: 'Total' })).toEqual({ label: 'pageViewer:comments.onElement', quote: null });
   });
 
   it('names an area that lists every part by its parts, and one too large to list by its size', () => {
     const area = { kind: 'area' as const, elements: [{ path: '#a' }, { path: '#b' }], count: 2, label: 'Chart, Table' };
-    expect(draftHeading(t, area)).toEqual({ label: 'pageViewer.comments.partsTitle {"count":2}', quote: 'Chart, Table' });
-    expect(draftHeading(t, { ...area, count: 70 })).toEqual({ label: 'pageViewer.comments.areaTitle {"count":70}', quote: 'Chart, Table' });
+    expect(draftHeading(t, area)).toEqual({ label: 'pageViewer:comments.partsTitle {"count":2}', quote: 'Chart, Table' });
+    expect(draftHeading(t, { ...area, count: 70 })).toEqual({ label: 'pageViewer:comments.areaTitle {"count":70}', quote: 'Chart, Table' });
   });
 
   it('names a block nothing in the file names by its lines', () => {
-    expect(draftHeading(t, { kind: 'block', lines: '6', quote: 'MAX_PAYOUT = 0.75' }).label).toBe('pageViewer.comments.onLine {"line":"6"}');
-    expect(draftHeading(t, { kind: 'block', lines: '6-8' }).label).toBe('pageViewer.comments.onLines {"lines":"6-8"}');
+    expect(draftHeading(t, { kind: 'block', lines: '6', quote: 'MAX_PAYOUT = 0.75' }).label).toBe('pageViewer:comments.onLine {"line":"6"}');
+    expect(draftHeading(t, { kind: 'block', lines: '6-8' }).label).toBe('pageViewer:comments.onLines {"lines":"6-8"}');
   });
 });
 

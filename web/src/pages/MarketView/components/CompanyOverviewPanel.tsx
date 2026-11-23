@@ -101,18 +101,18 @@ function QuoteSummary({ data, symbol }: QuoteSummaryProps) {
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-        {quote.open != null && <QuoteStat label={t('toolArtifact.open')} value={quoteMoney(quote.open)} />}
-        {quote.previousClose != null && <QuoteStat label={t('toolArtifact.prevClose')} value={quoteMoney(quote.previousClose)} />}
+        {quote.open != null && <QuoteStat label={t('toolArtifact:open')} value={quoteMoney(quote.open)} />}
+        {quote.previousClose != null && <QuoteStat label={t('toolArtifact:prevClose')} value={quoteMoney(quote.previousClose)} />}
         {quote.dayLow != null && quote.dayHigh != null && (
-          <QuoteStat label={t('toolArtifact.dayRange')} value={`${quoteMoney(quote.dayLow)} - ${quoteMoney(quote.dayHigh)}`} />
+          <QuoteStat label={t('toolArtifact:dayRange')} value={`${quoteMoney(quote.dayLow)} - ${quoteMoney(quote.dayHigh)}`} />
         )}
         {quote.yearLow != null && quote.yearHigh != null && (
-          <QuoteStat label={t('toolArtifact.52wRange')} value={`${quoteMoney(quote.yearLow)} - ${quoteMoney(quote.yearHigh)}`} />
+          <QuoteStat label={t('toolArtifact:52wRange')} value={`${quoteMoney(quote.yearLow)} - ${quoteMoney(quote.yearHigh)}`} />
         )}
-        {quote.volume != null && <QuoteStat label={t('toolArtifact.volume')} value={compactNumberFixed2(quote.volume, locale)} />}
-        {quote.marketCap != null && <QuoteStat label={t('toolArtifact.marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />}
-        {quote.pe != null && <QuoteStat label={t('toolArtifact.peRatio')} value={fixed2(quote.pe, locale)} />}
-        {quote.eps != null && <QuoteStat label={t('toolArtifact.eps')} value={money(quote.eps)} />}
+        {quote.volume != null && <QuoteStat label={t('toolArtifact:volume')} value={compactNumberFixed2(quote.volume, locale)} />}
+        {quote.marketCap != null && <QuoteStat label={t('toolArtifact:marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />}
+        {quote.pe != null && <QuoteStat label={t('toolArtifact:peRatio')} value={fixed2(quote.pe, locale)} />}
+        {quote.eps != null && <QuoteStat label={t('toolArtifact:eps')} value={money(quote.eps)} />}
       </div>
     </div>
   );
@@ -128,12 +128,12 @@ export default function CompanyOverviewPanel({ symbol, visible, onClose, data, l
   // A payload with nothing to draw is as empty as no payload; an index still
   // says why its fundamentals are missing.
   const empty = !data || (!isIndex && !data.quote && !hasFundamentals(data));
-  const error = empty && !loading ? t('marketView.overview.noData') : null;
+  const error = empty && !loading ? t('marketView:overview.noData') : null;
 
   return (
     <div className="company-overview-panel">
       <div className="company-overview-header">
-        <h3>{t('marketView.companyOverview')}</h3>
+        <h3>{t('marketView:companyOverview')}</h3>
         <button className="company-overview-close" onClick={onClose} aria-label={t('common.close')}>
           <X size={16} />
         </button>
@@ -155,7 +155,7 @@ export default function CompanyOverviewPanel({ symbol, visible, onClose, data, l
       {data && !empty && !loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <QuoteSummary data={data} symbol={shownSymbol} />
-          {isIndex && <div className="company-overview-note">{t('marketView.overview.indexNoFundamentals')}</div>}
+          {isIndex && <div className="company-overview-note">{t('marketView:overview.indexNoFundamentals')}</div>}
           <PerformanceBarChart performance={data.performance} />
           <AnalystRatingsChart ratings={data.analystRatings} />
           <QuarterlyRevenueChart data={data.quarterlyFundamentals} currency={statementCurrency} />

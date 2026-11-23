@@ -23,16 +23,16 @@ import type {
 
 /** A problem's words where a row has room for one short phrase. */
 const PROBLEM_KEYS: Record<SubagentProblemCode, string> = {
-  model_unavailable: 'plugins.subagents.problem.modelUnavailable',
-  skill_missing: 'plugins.subagents.problem.skillMissing',
-  connector_missing: 'plugins.subagents.problem.connectorMissing',
-  search_not_on_plan: 'plugins.subagents.problem.searchNotOnPlan',
-  search_unavailable: 'plugins.subagents.problem.searchUnavailable',
-  depth_not_offered: 'plugins.subagents.problem.depthNotOffered',
-  effort_not_offered: 'plugins.subagents.problem.effortNotOffered',
-  description_matches: 'plugins.subagents.problem.descriptionMatches',
-  base_removed: 'plugins.subagents.problem.baseRemoved',
-  name_collision: 'plugins.subagents.problem.nameCollision',
+  model_unavailable: 'plugins:subagents.problem.modelUnavailable',
+  skill_missing: 'plugins:subagents.problem.skillMissing',
+  connector_missing: 'plugins:subagents.problem.connectorMissing',
+  search_not_on_plan: 'plugins:subagents.problem.searchNotOnPlan',
+  search_unavailable: 'plugins:subagents.problem.searchUnavailable',
+  depth_not_offered: 'plugins:subagents.problem.depthNotOffered',
+  effort_not_offered: 'plugins:subagents.problem.effortNotOffered',
+  description_matches: 'plugins:subagents.problem.descriptionMatches',
+  base_removed: 'plugins:subagents.problem.baseRemoved',
+  name_collision: 'plugins:subagents.problem.nameCollision',
 };
 
 export function problemText(
@@ -41,11 +41,11 @@ export function problemText(
   providerName: (name: string) => string,
 ): string {
   const key = PROBLEM_KEYS[problem.code];
-  if (!key) return t('plugins.subagents.problem.unknown');
+  if (!key) return t('plugins:subagents.problem.unknown');
   const detail = problem.detail ?? '';
   return t(key, {
     name: detail,
-    provider: detail ? providerName(detail) : t('plugins.subagents.problem.thisProvider'),
+    provider: detail ? providerName(detail) : t('plugins:subagents.problem.thisProvider'),
   });
 }
 
@@ -54,33 +54,33 @@ export const TOOL_ORDER: readonly SubagentTool[] = ['web', 'market_data', 'code'
 
 export const TOOL_COPY: Record<SubagentTool, { label: string; desc: string; short: string }> = {
   web: {
-    label: 'plugins.subagents.tool.web',
-    desc: 'plugins.subagents.tool.webDesc',
-    short: 'plugins.subagents.tool.webShort',
+    label: 'plugins:subagents.tool.web',
+    desc: 'plugins:subagents.tool.webDesc',
+    short: 'plugins:subagents.tool.webShort',
   },
   market_data: {
-    label: 'plugins.subagents.tool.marketData',
-    desc: 'plugins.subagents.tool.marketDataDesc',
-    short: 'plugins.subagents.tool.marketDataShort',
+    label: 'plugins:subagents.tool.marketData',
+    desc: 'plugins:subagents.tool.marketDataDesc',
+    short: 'plugins:subagents.tool.marketDataShort',
   },
   code: {
-    label: 'plugins.subagents.tool.code',
-    desc: 'plugins.subagents.tool.codeDesc',
-    short: 'plugins.subagents.tool.codeShort',
+    label: 'plugins:subagents.tool.code',
+    desc: 'plugins:subagents.tool.codeDesc',
+    short: 'plugins:subagents.tool.codeShort',
   },
   shell: {
-    label: 'plugins.subagents.tool.shell',
-    desc: 'plugins.subagents.tool.shellDesc',
-    short: 'plugins.subagents.tool.shellShort',
+    label: 'plugins:subagents.tool.shell',
+    desc: 'plugins:subagents.tool.shellDesc',
+    short: 'plugins:subagents.tool.shellShort',
   },
 };
 
 /** The Preset menu: the four tool sets the folder README names too. */
 export const PRESETS: ReadonlyArray<{ id: string; label: string; tools: readonly SubagentTool[] }> = [
-  { id: 'research', label: 'plugins.subagents.preset.research', tools: ['web'] },
-  { id: 'analyst', label: 'plugins.subagents.preset.analyst', tools: ['web', 'market_data', 'code', 'shell'] },
-  { id: 'data', label: 'plugins.subagents.preset.data', tools: ['market_data', 'code', 'shell'] },
-  { id: 'writer', label: 'plugins.subagents.preset.writer', tools: ['code', 'shell'] },
+  { id: 'research', label: 'plugins:subagents.preset.research', tools: ['web'] },
+  { id: 'analyst', label: 'plugins:subagents.preset.analyst', tools: ['web', 'market_data', 'code', 'shell'] },
+  { id: 'data', label: 'plugins:subagents.preset.data', tools: ['market_data', 'code', 'shell'] },
+  { id: 'writer', label: 'plugins:subagents.preset.writer', tools: ['code', 'shell'] },
 ];
 
 export function sameTools(a: readonly SubagentTool[], b: readonly SubagentTool[]): boolean {
@@ -100,23 +100,23 @@ export function capitalize(text: string, locale: string): string {
  *  fact reads them. */
 export function toolsSummary(t: TFunction, tools: readonly SubagentTool[], locale: string): string {
   const words = orderedTools(tools).map((tool) => t(TOOL_COPY[tool].short));
-  if (words.length === 0) return t('plugins.subagents.tool.none');
-  return capitalize(words.join(t('plugins.shell.summary.sep')), locale);
+  if (words.length === 0) return t('plugins:subagents.tool.none');
+  return capitalize(words.join(t('plugins:shell.summary.sep')), locale);
 }
 
 /** What a user's row can set, in the words a sentence about it uses. */
 const FIELD_KEYS: Record<string, string> = {
-  enabled: 'plugins.subagents.field.enabled',
-  model: 'plugins.subagents.field.model',
-  effort: 'plugins.subagents.field.effort',
-  tools: 'plugins.subagents.field.tools',
-  search_provider: 'plugins.subagents.field.searchProvider',
-  search_depth: 'plugins.subagents.field.searchDepth',
-  connectors: 'plugins.subagents.field.connectors',
-  brokerages: 'plugins.subagents.field.brokerages',
-  memory: 'plugins.subagents.field.memory',
-  preferred_connectors: 'plugins.subagents.field.preferredConnectors',
-  preferred_skills: 'plugins.subagents.field.preferredSkills',
+  enabled: 'plugins:subagents.field.enabled',
+  model: 'plugins:subagents.field.model',
+  effort: 'plugins:subagents.field.effort',
+  tools: 'plugins:subagents.field.tools',
+  search_provider: 'plugins:subagents.field.searchProvider',
+  search_depth: 'plugins:subagents.field.searchDepth',
+  connectors: 'plugins:subagents.field.connectors',
+  brokerages: 'plugins:subagents.field.brokerages',
+  memory: 'plugins:subagents.field.memory',
+  preferred_connectors: 'plugins:subagents.field.preferredConnectors',
+  preferred_skills: 'plugins:subagents.field.preferredSkills',
 };
 
 /** "model and effort", or null when the row sets nothing this pane names. */
@@ -131,8 +131,8 @@ export function fieldsPhrase(
 }
 
 const BROKERAGE_KEYS: Record<SubagentBrokerages, string> = {
-  off: 'plugins.subagents.brokerageState.off',
-  on: 'plugins.subagents.brokerageState.on',
+  off: 'plugins:subagents.brokerageState.off',
+  on: 'plugins:subagents.brokerageState.on',
 };
 
 export function brokerageText(t: TFunction, value: SubagentBrokerages): string {
@@ -141,19 +141,19 @@ export function brokerageText(t: TFunction, value: SubagentBrokerages): string {
 
 /** "On" or "Off", as the subagent's own switch reads. */
 export function memoryText(t: TFunction, on: boolean): string {
-  return t(on ? 'plugins.surface.on' : 'plugins.surface.off');
+  return t(on ? 'plugins:surface.on' : 'plugins:surface.off');
 }
 
 export const AUDIENCES: readonly SubagentAudience[] = ['analyst', 'chief_of_staff'];
 
 const AUDIENCE_KEYS: Record<SubagentAudience, { choice: string; fact: string }> = {
   analyst: {
-    choice: 'plugins.subagents.audience.analyst',
-    fact: 'plugins.subagents.audience.analystFact',
+    choice: 'plugins:subagents.audience.analyst',
+    fact: 'plugins:subagents.audience.analystFact',
   },
   chief_of_staff: {
-    choice: 'plugins.subagents.audience.chiefOfStaff',
-    fact: 'plugins.subagents.audience.chiefOfStaffFact',
+    choice: 'plugins:subagents.audience.chiefOfStaff',
+    fact: 'plugins:subagents.audience.chiefOfStaffFact',
   },
 };
 
@@ -164,16 +164,16 @@ export function audienceChoice(t: TFunction, audience: SubagentAudience): string
 export function audienceFacts(t: TFunction, audiences: readonly SubagentAudience[]): string {
   return AUDIENCES.filter((a) => audiences.includes(a))
     .map((a) => t(AUDIENCE_KEYS[a].fact))
-    .join(t('plugins.shell.summary.sep'));
+    .join(t('plugins:shell.summary.sep'));
 }
 
 /** Where a subagent comes from, as its Info and header say it. */
 export function sourceText(t: TFunction, view: SubagentView): string {
-  if (view.source === 'custom') return t('plugins.subagents.source.custom');
+  if (view.source === 'custom') return t('plugins:subagents.source.custom');
   if (view.source === 'plugin') {
-    return t('plugins.subagents.source.plugin', { plugin: view.plugin.display_name });
+    return t('plugins:subagents.source.plugin', { plugin: view.plugin.display_name });
   }
-  return t('plugins.subagents.source.builtin');
+  return t('plugins:subagents.source.builtin');
 }
 
 /** Where a base's read-only instructions come from, and so what moves them:
@@ -181,10 +181,10 @@ export function sourceText(t: TFunction, view: SubagentView): string {
  *  configuration. */
 export function baseBannerText(t: TFunction, view: SubagentView): string {
   if (view.source === 'plugin') {
-    return t('plugins.subagents.baseBannerPlugin', { plugin: view.plugin.display_name });
+    return t('plugins:subagents.baseBannerPlugin', { plugin: view.plugin.display_name });
   }
-  if (view.source === 'deployment') return t('plugins.subagents.baseBannerDeployment');
-  return t('plugins.subagents.baseBanner');
+  if (view.source === 'deployment') return t('plugins:subagents.baseBannerDeployment');
+  return t('plugins:subagents.baseBanner');
 }
 
 /** A model as the composer's pill prints it, so the pane and the thread
@@ -198,8 +198,8 @@ export function modelName(key: string, metadata?: Record<string, ModelMetadataEn
  *  heading. */
 export function baseSide(t: TFunction, view: SubagentView, value: string): string {
   return view.source === 'plugin'
-    ? t('plugins.subagents.sideFrom', { plugin: view.plugin.display_name, value })
-    : t('plugins.subagents.sideBuiltIn', { value });
+    ? t('plugins:subagents.sideFrom', { plugin: view.plugin.display_name, value })
+    : t('plugins:subagents.sideBuiltIn', { value });
 }
 
 /** A custom subagent with the user's text, or a base whose file the user
@@ -246,29 +246,29 @@ export function removalCopy(
   const reset = removal(view) === 'reset';
   return {
     message: !reset
-      ? t('plugins.subagents.removeConfirm', { name: view.name })
+      ? t('plugins:subagents.removeConfirm', { name: view.name })
       : fields
-        ? t('plugins.subagents.resetConfirm', { name: view.name, fields })
-        : t('plugins.subagents.resetConfirmPlain', { name: view.name }),
+        ? t('plugins:subagents.resetConfirm', { name: view.name, fields })
+        : t('plugins:subagents.resetConfirmPlain', { name: view.name }),
     confirmLabel: busy
       ? t('common.loading')
       : reset
-        ? t('plugins.subagents.resetYes')
-        : t('plugins.subagents.removeYes'),
+        ? t('plugins:subagents.resetYes')
+        : t('plugins:subagents.removeYes'),
   };
 }
 
 export function resetLabel(t: TFunction, view: SubagentView): string {
   return view.source === 'builtin' || view.source === 'deployment'
-    ? t('plugins.subagents.resetToBuiltIn')
-    : t('plugins.subagents.resetToDefault');
+    ? t('plugins:subagents.resetToBuiltIn')
+    : t('plugins:subagents.resetToDefault');
 }
 
 /** Why a base the user has not changed has nothing to remove or reset. */
 export function untouchedNote(t: TFunction, view: SubagentView): string {
   return view.source === 'plugin'
-    ? t('plugins.subagents.pluginNote', { plugin: view.plugin.display_name })
-    : t('plugins.subagents.builtinNote');
+    ? t('plugins:subagents.pluginNote', { plugin: view.plugin.display_name })
+    : t('plugins:subagents.builtinNote');
 }
 
 /** An effort's name, or what an unset one runs: the pinned model's own
@@ -276,7 +276,7 @@ export function untouchedNote(t: TFunction, view: SubagentView): string {
 export function effortOrSetting(t: TFunction, effort: string | null, pinned: string | null): string {
   return (
     effortLabelFor(t, effort) ??
-    (pinned ? t('plugins.subagents.modelsSetting') : t('plugins.subagents.threadsSetting'))
+    (pinned ? t('plugins:subagents.modelsSetting') : t('plugins:subagents.threadsSetting'))
   );
 }
 
@@ -370,7 +370,7 @@ export function modelMeta(
   values: Pick<SubagentBaseValues, 'model' | 'effort'>,
   metadata: Record<string, ModelMetadataEntry>,
 ): string[] {
-  const parts = [values.model ? modelName(values.model, metadata) : t('plugins.subagents.threadsModel')];
+  const parts = [values.model ? modelName(values.model, metadata) : t('plugins:subagents.threadsModel')];
   const effort = effortLabelFor(t, values.effort);
   if (effort) parts.push(effort);
   return parts;

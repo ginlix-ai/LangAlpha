@@ -210,24 +210,24 @@ export function getDisplayName(
 function displayNameOf(info: CallInfo | null, rawToolName: string, t: TFn | undefined, context: ToolTitleContext): string {
   if (info) {
     if (info.kind === 'skill') {
-      return t ? t('toolArtifact.tool.skill') : 'Skill';
+      return t ? t('toolArtifact:tool.skill') : 'Skill';
     }
     if (info.kind === 'memory') {
       const isWorkspaceTier = info.tier === 'workspace';
-      if (isWorkspaceTier) return t ? t('toolArtifact.tool.workspaceMemory') : 'Workspace Memory';
-      return t ? t('toolArtifact.tool.memory') : 'Memory';
+      if (isWorkspaceTier) return t ? t('toolArtifact:tool.workspaceMemory') : 'Workspace Memory';
+      return t ? t('toolArtifact:tool.memory') : 'Memory';
     }
     if (info.kind === 'memo') {
-      return t ? t('toolArtifact.tool.memo') : 'Memo';
+      return t ? t('toolArtifact:tool.memo') : 'Memo';
     }
     if (info.kind === 'user-data') {
-      return t ? t(`toolArtifact.tool.${info.entity}`) : entityLabel(info.entity);
+      return t ? t(`toolArtifact:tool.${info.entity}`) : entityLabel(info.entity);
     }
   }
   const direct = directToolDisplayName(rawToolName, artifactOf(context));
   if (direct) return direct;
   const config = TOOL_DISPLAY_CONFIG[rawToolName];
-  if (t && config?.i18nKey) return t(`toolArtifact.tool.${config.i18nKey}`);
+  if (t && config?.i18nKey) return t(`toolArtifact:tool.${config.i18nKey}`);
   return config?.displayName || rawToolName;
 }
 
@@ -269,7 +269,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
 }
 
 function inProgressTextOf(info: CallInfo | null, rawToolName: string, args: ToolCallArgs | undefined, t?: TFn): string {
-  const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact.inProgress.${key}`, opts) : null;
+  const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact:inProgress.${key}`, opts) : null;
 
   // Path-aware variants for store-backed paths, and an `la` step. These
   // short-circuit the generic Read/Write/Edit/Bash branches below.
@@ -624,41 +624,41 @@ export function getCompletedRowTitle(
   if (info) {
     if (info.kind === 'la' && laStepSettled(context.record)) return laCompletedTitle(info.step, t);
     if (info.kind === 'skill' && toolName === 'Read') {
-      return t ? t('toolArtifact.completed.activatedSkill') : 'Activated skill';
+      return t ? t('toolArtifact:completed.activatedSkill') : 'Activated skill';
     }
     if (info.kind === 'memory') {
       const ws = info.tier === 'workspace';
       if (toolName === 'Write') {
-        return t ? t('toolArtifact.completed.addedMemory') : 'Added memory';
+        return t ? t('toolArtifact:completed.addedMemory') : 'Added memory';
       }
       if (toolName === 'Edit') {
-        return t ? t('toolArtifact.completed.updatedMemory') : 'Updated memory';
+        return t ? t('toolArtifact:completed.updatedMemory') : 'Updated memory';
       }
       if (toolName === 'Read') {
-        if (ws) return t ? t('toolArtifact.completed.readWorkspaceMemory') : 'Read workspace memory';
-        return t ? t('toolArtifact.completed.readMemory') : 'Read memory';
+        if (ws) return t ? t('toolArtifact:completed.readWorkspaceMemory') : 'Read workspace memory';
+        return t ? t('toolArtifact:completed.readMemory') : 'Read memory';
       }
     }
     if (info.kind === 'memo') {
       if (toolName === 'Read') {
-        if (info.isIndex) return t ? t('toolArtifact.completed.readMemoIndex') : 'Read memo index';
-        return t ? t('toolArtifact.completed.readMemo') : 'Read memo';
+        if (info.isIndex) return t ? t('toolArtifact:completed.readMemoIndex') : 'Read memo index';
+        return t ? t('toolArtifact:completed.readMemo') : 'Read memo';
       }
       // Distinguish Write vs Edit verbs so a regression that lets the agent
       // mutate a memo surfaces with the correct framing instead of "Read memo".
       if (toolName === 'Write') {
-        return t ? t('toolArtifact.completed.wroteMemo') : 'Wrote memo';
+        return t ? t('toolArtifact:completed.wroteMemo') : 'Wrote memo';
       }
       if (toolName === 'Edit') {
-        return t ? t('toolArtifact.completed.updatedMemo') : 'Updated memo';
+        return t ? t('toolArtifact:completed.updatedMemo') : 'Updated memo';
       }
     }
     if (info.kind === 'user-data') {
       const { entity } = info;
       if (toolName === 'Read') {
-        return t ? t(`toolArtifact.completed.read_${entity}`) : `Read ${entity}`;
+        return t ? t(`toolArtifact:completed.read_${entity}`) : `Read ${entity}`;
       }
-      return t ? t(`toolArtifact.completed.updated_${entity}`) : `Updated ${entity}`;
+      return t ? t(`toolArtifact:completed.updated_${entity}`) : `Updated ${entity}`;
     }
   }
   return displayNameOf(info, toolName, t, context);
@@ -724,16 +724,16 @@ export function categorizeTool(toolName: string, toolCall: ToolCall | undefined,
 function formatByteSize(bytes: number, t?: TFn): string | null {
   if (bytes < 100) return null;
   if (bytes < 1000) {
-    return t ? t('toolArtifact.nChars', { count: bytes }) : `~${bytes} chars`;
+    return t ? t('toolArtifact:nChars', { count: bytes }) : `~${bytes} chars`;
   }
   const size = (bytes / 1000).toFixed(1);
-  return t ? t('toolArtifact.nKB', { size }) : `~${size} KB`;
+  return t ? t('toolArtifact:nKB', { size }) : `~${size} KB`;
 }
 
 export function getPreparingText(toolName: string, argsLength: number, t?: TFn): string {
   const size = formatByteSize(argsLength, t);
   const sizeLabel = size ? ` (${size})` : '';
-  const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact.preparing.${key}`, opts) : null;
+  const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact:preparing.${key}`, opts) : null;
 
   switch (toolName) {
     case 'Write':

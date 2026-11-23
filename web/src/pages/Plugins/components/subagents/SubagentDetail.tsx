@@ -96,7 +96,7 @@ export function SubagentDetail({
       // around the link into items and drop the spaces beside it.
       <span>
         <Trans
-          i18nKey="plugins.subagents.source.pluginLink"
+          i18nKey="plugins:subagents.source.pluginLink"
           values={{ plugin: view.plugin.display_name }}
           components={{
             open: (
@@ -116,16 +116,16 @@ export function SubagentDetail({
   const callouts: ReactNode[] = [];
   if (orphan) {
     callouts.push(
-      <DetailCallout key="orphan" title={t('plugins.subagents.orphanTitle')}>
-        {t('plugins.subagents.orphanBody')}
+      <DetailCallout key="orphan" title={t('plugins:subagents.orphanTitle')}>
+        {t('plugins:subagents.orphanBody')}
       </DetailCallout>,
     );
   }
   const collision = view.problems.find((p) => p.code === 'name_collision');
   if (collision) {
     callouts.push(
-      <DetailCallout key="collision" title={t('plugins.subagents.collisionTitle')}>
-        {t('plugins.subagents.collisionBody')}
+      <DetailCallout key="collision" title={t('plugins:subagents.collisionTitle')}>
+        {t('plugins:subagents.collisionBody')}
       </DetailCallout>,
     );
   }
@@ -181,16 +181,16 @@ export function SubagentDetail({
               <Info aria-hidden />
               <p>{baseBannerText(t, view)}</p>
               <button type="button" className="sa-banner-action" onClick={onDuplicate}>
-                {t('plugins.subagents.duplicateToEdit')}
+                {t('plugins:subagents.duplicateToEdit')}
               </button>
             </div>
           )}
           <div>
             <div className="sa-field-head">
-              <h3>{t('plugins.subagents.instructions')}</h3>
+              <h3>{t('plugins:subagents.instructions')}</h3>
               <span className="sa-readonly">
                 <Lock aria-hidden />
-                {t('plugins.subagents.readOnly')}
+                {t('plugins:subagents.readOnly')}
               </span>
             </div>
             <SkillDocument
@@ -224,11 +224,11 @@ function useProvenance(view: SubagentView): ReactNode {
     return (
       <span>
         <Trans
-          i18nKey={named ? 'plugins.subagents.provenance.fieldsAgentIn' : 'plugins.subagents.provenance.agentIn'}
+          i18nKey={named ? 'plugins:subagents.provenance.fieldsAgentIn' : 'plugins:subagents.provenance.agentIn'}
           values={{
             fields: named,
             when,
-            thread: view.updated_thread_title || t('plugins.subagents.provenance.aThread'),
+            thread: view.updated_thread_title || t('plugins:subagents.provenance.aThread'),
           }}
           components={{
             thread: <Link to={`/chat/t/${view.updated_thread_id}`} className="pp-note-link pp-meta-link" />,
@@ -239,12 +239,12 @@ function useProvenance(view: SubagentView): ReactNode {
   }
   if (view.updated_by === 'agent') {
     return named
-      ? t('plugins.subagents.provenance.fieldsAgent', { fields: named, when })
-      : t('plugins.subagents.provenance.agent', { when });
+      ? t('plugins:subagents.provenance.fieldsAgent', { fields: named, when })
+      : t('plugins:subagents.provenance.agent', { when });
   }
   return named
-    ? t('plugins.subagents.provenance.fieldsUser', { fields: named, when })
-    : t('plugins.subagents.provenance.user', { when });
+    ? t('plugins:subagents.provenance.fieldsUser', { fields: named, when })
+    : t('plugins:subagents.provenance.user', { when });
 }
 
 function InfoBlock({ view }: { view: SubagentView }) {
@@ -254,30 +254,30 @@ function InfoBlock({ view }: { view: SubagentView }) {
   const when = relativeTime(view.updated_at, locale, now);
   const custom = isCustom(view);
   const changed = view.edited
-    ? fieldsPhrase(t, view.user_fields, locale, (items) => items.join(t('plugins.shell.summary.sep')))
+    ? fieldsPhrase(t, view.user_fields, locale, (items) => items.join(t('plugins:shell.summary.sep')))
     : null;
   const updated = !custom
     ? null
     : !when
       ? null
       : view.updated_by === 'agent'
-        ? t('plugins.subagents.updatedByAgent', { when })
+        ? t('plugins:subagents.updatedByAgent', { when })
         : view.updated_by === 'user'
-          ? t('plugins.subagents.updatedByYou', { when })
+          ? t('plugins:subagents.updatedByYou', { when })
           : when;
   return (
-    <DetailAsideBlock title={t('plugins.subagents.info')}>
+    <DetailAsideBlock title={t('plugins:subagents.info')}>
       <div className="sa-facts">
         <DetailFacts
           items={[
-            [t('plugins.detail.sourceLabel'), sourceText(t, view)],
+            [t('plugins:detail.sourceLabel'), sourceText(t, view)],
             [
-              t('plugins.subagents.availableTo'),
+              t('plugins:subagents.availableTo'),
               !custom ? audienceFacts(t, view.available_to) : null,
             ],
-            [t('plugins.subagents.file'), view.file ? <span key="file" className="sa-file">{view.file}</span> : null],
-            [t('plugins.detail.updated'), updated],
-            [t('plugins.subagents.changed'), changed ? capitalize(changed, locale) : null],
+            [t('plugins:subagents.file'), view.file ? <span key="file" className="sa-file">{view.file}</span> : null],
+            [t('plugins:detail.updated'), updated],
+            [t('plugins:subagents.changed'), changed ? capitalize(changed, locale) : null],
           ]}
         />
       </div>
@@ -303,7 +303,7 @@ function Footer({ view, onDuplicate }: { view: SubagentView; onDuplicate: () => 
     return (
       <ConfirmStrip
         {...removalCopy(t, view, fields, remove.isPending)}
-        cancelLabel={t('plugins.skills.deleteConfirmNo')}
+        cancelLabel={t('plugins:skills.deleteConfirmNo')}
         pending={remove.isPending}
         onConfirm={() => remove.mutate(view.name, { onSettled: () => setAsking(false) })}
         onCancel={() => setAsking(false)}
@@ -316,14 +316,14 @@ function Footer({ view, onDuplicate }: { view: SubagentView; onDuplicate: () => 
       <div className="pp-verbs">
         {custom && (
           <PageButton icon={<Copy />} onClick={onDuplicate}>
-            {t('plugins.subagents.duplicate')}
+            {t('plugins:subagents.duplicate')}
           </PageButton>
         )}
         <PageButton variant="danger" icon={<Trash2 />} onClick={() => setAsking(true)}>
-          {t('plugins.subagents.removeNamed', { name: view.name })}
+          {t('plugins:subagents.removeNamed', { name: view.name })}
         </PageButton>
         <p className="pp-note">
-          {orphan ? t('plugins.subagents.removeOrphanNote') : t('plugins.subagents.removeNote')}
+          {orphan ? t('plugins:subagents.removeOrphanNote') : t('plugins:subagents.removeNote')}
         </p>
       </div>
     );
@@ -336,8 +336,8 @@ function Footer({ view, onDuplicate }: { view: SubagentView; onDuplicate: () => 
         </PageButton>
         <p className="pp-note">
           {fields
-            ? t('plugins.subagents.resetNote', { fields })
-            : t('plugins.subagents.resetNotePlain')}
+            ? t('plugins:subagents.resetNote', { fields })
+            : t('plugins:subagents.resetNotePlain')}
         </p>
       </div>
     );
@@ -404,7 +404,7 @@ function TextFields({ view, data }: { view: SubagentView; data: SubagentsRespons
           setErrors(fieldErrors);
           if (fieldErrors.length > 0) return;
           setFailure(
-            isSubagentVersionConflict(err) ? t('plugins.subagents.conflictBody') : formatApiErrorDetail(err),
+            isSubagentVersionConflict(err) ? t('plugins:subagents.conflictBody') : formatApiErrorDetail(err),
           );
         },
       },
@@ -431,7 +431,7 @@ function TextFields({ view, data }: { view: SubagentView; data: SubagentsRespons
         value={draft.instructions}
         onChange={(instructions) => set({ instructions })}
         over={instrOver}
-        aside={t('plugins.subagents.markdownSize', {
+        aside={t('plugins:subagents.markdownSize', {
           used: formatBytes(instrUsed, locale),
           max: formatBytes(instrMax, locale),
         })}
@@ -442,11 +442,11 @@ function TextFields({ view, data }: { view: SubagentView; data: SubagentsRespons
           {/* The saved text is the newer write, so its writer is who moved it:
               the agent mid-thread, or the user in another tab or the API. */}
           {view.updated_by === 'agent'
-            ? t('plugins.subagents.draftConflict')
-            : t('plugins.subagents.draftConflictElsewhere')}
+            ? t('plugins:subagents.draftConflict')
+            : t('plugins:subagents.draftConflictElsewhere')}
           <div className="sa-conflict-actions">
             <PageButton onClick={submit} disabled={save.isPending || descOver || instrOver || blank}>
-              {t('plugins.subagents.saveMine')}
+              {t('plugins:subagents.saveMine')}
             </PageButton>
             <PageButton
               onClick={() => {
@@ -455,7 +455,7 @@ function TextFields({ view, data }: { view: SubagentView; data: SubagentsRespons
                 setErrors([]);
               }}
             >
-              {t('plugins.subagents.loadSaved')}
+              {t('plugins:subagents.loadSaved')}
             </PageButton>
           </div>
         </div>
@@ -469,7 +469,7 @@ function TextFields({ view, data }: { view: SubagentView; data: SubagentsRespons
           {save.isPending ? t('common.saving') : t('common.save')}
         </PageButton>
         <span className={shownFailure ? 'sa-savebar-note is-warn' : 'sa-savebar-note'}>
-          {shownFailure ?? t('plugins.subagents.appliesNextTurn')}
+          {shownFailure ?? t('plugins:subagents.appliesNextTurn')}
         </span>
       </div>
     </div>

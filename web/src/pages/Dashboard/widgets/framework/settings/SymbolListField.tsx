@@ -117,7 +117,7 @@ export function SymbolListField({
             <button
               type="button"
               onClick={() => remove(sym)}
-              aria-label={t('dashboard.widgets.settings.symbolListRemove', { symbol: sym })}
+              aria-label={t('dashboard:widgets.settings.symbolListRemove', { symbol: sym })}
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <X size={10} />
@@ -133,9 +133,9 @@ export function SymbolListField({
           disabled={atCap}
           placeholder={
             atCap
-              ? t('dashboard.widgets.settings.symbolListAtCap', { max })
+              ? t('dashboard:widgets.settings.symbolListAtCap', { max })
               : value.length === 0
-                ? placeholder ?? t('dashboard.widgets.settings.symbolListPlaceholder')
+                ? placeholder ?? t('dashboard:widgets.settings.symbolListPlaceholder')
                 : ''
           }
           className="dash-form-figure flex-1 min-w-[100px] border-0 p-0! h-6! text-xs bg-transparent shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
@@ -152,7 +152,7 @@ export function SymbolListField({
       )}
       {atCap && (
         <span className="dash-form-help">
-          {t('dashboard.widgets.settings.symbolListHelperAtCap', { max })}
+          {t('dashboard:widgets.settings.symbolListHelperAtCap', { max })}
         </span>
       )}
     </div>

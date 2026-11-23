@@ -31,10 +31,10 @@ export function SetupStatusGate({
     return (
       <div className="flex flex-col items-start gap-3">
         <p role="alert" className="text-sm text-(--color-text-secondary)">
-          {t('setup.errors.statusFailed')}
+          {t('setup:errors.statusFailed')}
         </p>
         <Button type="button" variant="outline" size="sm" onClick={() => void refetch()}>
-          {t('setup.errors.tryAgain')}
+          {t('setup:errors.tryAgain')}
         </Button>
         {onFailed}
       </div>

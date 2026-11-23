@@ -30,7 +30,7 @@ export function CapabilityList({
     <div className="flex flex-col gap-2.5">
       {granted?.length === 0 && (
         <RowNote icon={AlertTriangle} tone="warning">
-          {t('plugins.brokerages.detail.grantedNone')}
+          {t('plugins:brokerages.detail.grantedNone')}
         </RowNote>
       )}
 
@@ -54,7 +54,7 @@ export function CapabilityList({
                         : 'var(--color-text-quaternary)',
                 }}
               >
-                {t(`plugins.brokerages.capabilities.${group.key}.label`)}
+                {t(`plugins:brokerages.capabilities.${group.key}.label`)}
               </p>
               <p
                 className="text-xs mt-0.5"
@@ -64,7 +64,7 @@ export function CapabilityList({
                     : 'var(--color-text-quaternary)',
                 }}
               >
-                {t(`plugins.brokerages.capabilities.${group.key}.desc`)}
+                {t(`plugins:brokerages.capabilities.${group.key}.desc`)}
               </p>
             </div>
           </div>
@@ -74,8 +74,8 @@ export function CapabilityList({
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-quaternary)' }}>
         {t(
           settled
-            ? 'plugins.brokerages.detail.capabilitiesNote'
-            : 'plugins.brokerages.detail.notConnectedNote',
+            ? 'plugins:brokerages.detail.capabilitiesNote'
+            : 'plugins:brokerages.detail.notConnectedNote',
         )}
       </p>
     </div>
@@ -94,10 +94,10 @@ function GrantGlyph({ on, settled }: { on: boolean; settled: boolean }) {
   const { t } = useTranslation();
   const label = t(
     !settled
-      ? 'plugins.brokerages.detail.offered'
+      ? 'plugins:brokerages.detail.offered'
       : on
-        ? 'plugins.brokerages.detail.granted'
-        : 'plugins.brokerages.detail.declined',
+        ? 'plugins:brokerages.detail.granted'
+        : 'plugins:brokerages.detail.declined',
   );
   const Icon = settled && !on ? Minus : Check;
   return (
@@ -130,11 +130,11 @@ export function BrokerFacts({
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1.5">
-      <DetailField label={t('plugins.brokerages.detail.broker')}>
+      <DetailField label={t('plugins:brokerages.detail.broker')}>
         {vendor.label}
       </DetailField>
       {vendor.site && (
-        <DetailField label={t('plugins.brokerages.detail.website')}>
+        <DetailField label={t('plugins:brokerages.detail.website')}>
           <a
             href={`https://${vendor.site}`}
             target="_blank"
@@ -147,7 +147,7 @@ export function BrokerFacts({
         </DetailField>
       )}
       {rowUrl !== vendor.url && (
-        <DetailField label={t('plugins.brokerages.detail.endpoint')}>
+        <DetailField label={t('plugins:brokerages.detail.endpoint')}>
           {vendor.url}
         </DetailField>
       )}
@@ -155,7 +155,7 @@ export function BrokerFacts({
         <div className="flex flex-col gap-1 pt-1">
           {vendor.exclusive_connection && (
             <RowNote icon={AlertTriangle} tone="warning">
-              {t('plugins.brokerages.exclusiveWarning')}
+              {t('plugins:brokerages.exclusiveWarning')}
             </RowNote>
           )}
           {vendor.native_callback_only && (

@@ -126,7 +126,7 @@ export function useFileComments({
         path={target.path}
         ui={target.ui}
         variant="crumb"
-        modeTitle={t('pageViewer.comments.modeTitleFile')}
+        modeTitle={t('pageViewer:comments.modeTitleFile')}
       />
     ) : path && ui && (
       <>

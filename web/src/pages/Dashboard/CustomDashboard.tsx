@@ -101,7 +101,7 @@ function DashboardFrame({ dashboard, source, switcher, onSetAside }: DashboardFr
   const place = useRef<(ScrollPlace & { code: string }) | null>(null);
   const placeFor = (): ScrollPlace => (place.current?.code === dashboard.code ? place.current : TOP);
   const page = dashboard.kind === 'page';
-  const title = source.title || dashboard.title || t('customDashboard.untitled');
+  const title = source.title || dashboard.title || t('customDashboard:untitled');
 
   useEffect(() => {
     if (url) return;
@@ -140,16 +140,16 @@ function DashboardFrame({ dashboard, source, switcher, onSetAside }: DashboardFr
                 onDone={reloadFrame}
               />
             )}
-            <HeaderButton label={t('customDashboard.edit')} onClick={() => agent.edit(dashboard)}>
+            <HeaderButton label={t('customDashboard:edit')} onClick={() => agent.edit(dashboard)}>
               <Pencil size={16} />
             </HeaderButton>
-            <HeaderButton label={t('customDashboard.reload')} onClick={reload}>
+            <HeaderButton label={t('customDashboard:reload')} onClick={reload}>
               <RefreshCw size={16} />
             </HeaderButton>
             {!page && (
               // A page opened on its own has no LangAlpha around it to answer for its data.
               <HeaderButton
-                label={t('filePanel.openInBrowser')}
+                label={t('filePanel:openInBrowser')}
                 className="hidden sm:flex"
                 onClick={() => window.open(shareLinkHref(dashboard.code, dashboard.path), '_blank', 'noopener,noreferrer')}
               >
@@ -197,7 +197,7 @@ function DashboardFrame({ dashboard, source, switcher, onSetAside }: DashboardFr
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
             <Loader size={20} style={{ color: 'var(--color-accent-primary)' }} />
             <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              {t(page ? 'customDashboard.startingPage' : 'customDashboard.starting', { name: title })}
+              {t(page ? 'customDashboard:startingPage' : 'customDashboard:starting', { name: title })}
             </div>
             {slow && !url && (
               <button
@@ -206,7 +206,7 @@ function DashboardFrame({ dashboard, source, switcher, onSetAside }: DashboardFr
                 className="text-xs underline-offset-2 hover:underline"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                {t('customDashboard.showBuiltIn')}
+                {t('customDashboard:showBuiltIn')}
               </button>
             )}
           </div>

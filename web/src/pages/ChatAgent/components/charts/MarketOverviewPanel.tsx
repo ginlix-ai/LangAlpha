@@ -15,7 +15,7 @@ export function MarketOverviewPanel({ data }: PanelProps): React.ReactElement {
   return (
     <>
       <TermPanelHead
-        title={t('toolArtifact.marketOverview')}
+        title={t('toolArtifact:marketOverview')}
         sub={text(data.region)?.toUpperCase()}
         aside={date ? formatCalendarDay(date, locale) : undefined}
       />

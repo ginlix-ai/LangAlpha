@@ -30,41 +30,41 @@ import type { OrderAction, OrderInstrument, OrderProposal } from '@/types/sse';
 /** Written out rather than built from the action, so the locale sweep and a
  *  reader can both see every verdict these cards can name. */
 export const ORDER_ACTION_KEY: Record<OrderAction, string> = {
-  place: 'toolArtifact.directTool.orderAction.place',
-  replace: 'toolArtifact.directTool.orderAction.replace',
-  cancel: 'toolArtifact.directTool.orderAction.cancel',
-  confirm: 'toolArtifact.directTool.orderAction.confirm',
-  stage: 'toolArtifact.directTool.orderAction.stage',
-  unstage: 'toolArtifact.directTool.orderAction.unstage',
-  exercise: 'toolArtifact.directTool.orderAction.exercise',
-  cancel_exercise: 'toolArtifact.directTool.orderAction.cancelExercise',
-  watch: 'toolArtifact.directTool.orderAction.watch',
+  place: 'toolArtifact:directTool.orderAction.place',
+  replace: 'toolArtifact:directTool.orderAction.replace',
+  cancel: 'toolArtifact:directTool.orderAction.cancel',
+  confirm: 'toolArtifact:directTool.orderAction.confirm',
+  stage: 'toolArtifact:directTool.orderAction.stage',
+  unstage: 'toolArtifact:directTool.orderAction.unstage',
+  exercise: 'toolArtifact:directTool.orderAction.exercise',
+  cancel_exercise: 'toolArtifact:directTool.orderAction.cancelExercise',
+  watch: 'toolArtifact:directTool.orderAction.watch',
 };
 
 const ORDER_FIELD_KEY = {
-  quantity: 'toolArtifact.directTool.orderField.quantity',
-  notional: 'toolArtifact.directTool.orderField.notional',
-  stopPrice: 'toolArtifact.directTool.orderField.stopPrice',
-  limitPrice: 'toolArtifact.directTool.orderField.limitPrice',
-  price: 'toolArtifact.directTool.orderField.price',
-  orderType: 'toolArtifact.directTool.orderField.orderType',
-  note: 'toolArtifact.directTool.orderField.note',
+  quantity: 'toolArtifact:directTool.orderField.quantity',
+  notional: 'toolArtifact:directTool.orderField.notional',
+  stopPrice: 'toolArtifact:directTool.orderField.stopPrice',
+  limitPrice: 'toolArtifact:directTool.orderField.limitPrice',
+  price: 'toolArtifact:directTool.orderField.price',
+  orderType: 'toolArtifact:directTool.orderField.orderType',
+  note: 'toolArtifact:directTool.orderField.note',
 };
 
 /** The total column is named for what it adds up: an estimate says so, and a
  *  fill still moving does not read as the final cost. */
 export const ORDER_TOTAL_KEY: Record<OrderTotalKind, string> = {
-  estimated: 'toolArtifact.directTool.orderTotal.estimated',
-  filled: 'toolArtifact.directTool.orderTotal.filled',
-  partial: 'toolArtifact.directTool.orderTotal.partial',
+  estimated: 'toolArtifact:directTool.orderTotal.estimated',
+  filled: 'toolArtifact:directTool.orderTotal.filled',
+  partial: 'toolArtifact:directTool.orderTotal.partial',
 };
 
 /** The word in front of the vendor id an amend acts on. */
-export const ORDER_REF_KEY = 'toolArtifact.directTool.orderTicket.order';
+export const ORDER_REF_KEY = 'toolArtifact:directTool.orderTicket.order';
 
 /** Every locale key the ticket can ask for through a map, so one test can hold
  *  them all against both catalogs. The order's own words (side, type and the
- *  rest) are bare `orders.*` keys, which the tree-wide sweep already reads. */
+ *  rest) are bare `orders:*` keys, which the tree-wide sweep already reads. */
 export const ORDER_SUMMARY_KEYS: readonly string[] = [
   ...Object.values(ORDER_ACTION_KEY),
   ...Object.values(ORDER_FIELD_KEY),

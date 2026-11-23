@@ -197,7 +197,7 @@ function TaskToolContent({ description, type, subagentId, subagentStatus, onOpen
             className="text-xs font-medium uppercase tracking-wider mb-2 px-1"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('toolArtifact.instructions')}
+            {t('toolArtifact:instructions')}
           </div>
           <div
             className="rounded-lg px-3 py-3"
@@ -220,7 +220,7 @@ function TaskToolContent({ description, type, subagentId, subagentStatus, onOpen
           <img src={isRunning ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 shrink-0" />
           <div className="flex flex-col gap-0.5 min-w-0 flex-1 text-left">
             <span className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>
-              {t('toolArtifact.goToSubagentTab')}
+              {t('toolArtifact:goToSubagentTab')}
             </span>
             {description && (
               <span className="text-xs truncate" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -288,7 +288,7 @@ function CodeToolDisplay({ toolName, toolCallProcess, rawContent }: CodeToolDisp
   const input = formatToolInput(toolName, toolCallProcess.toolCall?.args);
   const toolCallId = toolCallProcess.toolCall?.id;
 
-  let displayContent = rawContent || t('toolArtifact.noResultContent');
+  let displayContent = rawContent || t('toolArtifact:noResultContent');
   if (toolName === 'ExecuteCode') displayContent = displayContent.replace(/^SUCCESS\n?/, '');
 
   return (
@@ -313,7 +313,7 @@ function CodeToolDisplay({ toolName, toolCallProcess, rawContent }: CodeToolDisp
               className="text-xs font-medium uppercase tracking-wider"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('toolArtifact.input')}
+              {t('toolArtifact:input')}
             </span>
           </button>
           {inputExpanded && (
@@ -327,7 +327,7 @@ function CodeToolDisplay({ toolName, toolCallProcess, rawContent }: CodeToolDisp
           className="text-xs font-medium uppercase tracking-wider mb-2 px-1"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('toolArtifact.output')}
+          {t('toolArtifact:output')}
         </div>
         <Markdown variant="panel" content={`\`\`\`\n${displayContent}\n\`\`\``} className="text-sm" />
       </div>
@@ -374,7 +374,7 @@ function ArtifactOrMarkdown(props: ArtifactOrMarkdownProps): React.ReactElement 
     );
   }
 
-  const displayContent = stripLineNumbers(rawContent || t('toolArtifact.noResultContent'));
+  const displayContent = stripLineNumbers(rawContent || t('toolArtifact:noResultContent'));
   return <Markdown variant="panel" content={displayContent || ''} className="text-sm" />;
 }
 
@@ -441,7 +441,7 @@ function parseWebSearchResults(proc: ToolCallProcessRecord, t: TFunction): WebSe
       const itemUrl = (item.url as string) || '';
       const rich = richResultByUrl.get(itemUrl);
       return {
-        title: (item.title as string) || t('toolArtifact.untitled'),
+        title: (item.title as string) || t('toolArtifact:untitled'),
         url: itemUrl,
         favicon: (rich?.favicon as string) || '',
         snippet: resolveSnippet(item, rich),
@@ -466,8 +466,8 @@ function WebSearchPanel({ data }: { data: WebSearchData }): React.ReactElement {
 
   return (
     <TermCard
-      title={t('toolArtifact.tool.webSearch')}
-      meta={t('toolArtifact.nResults', { count: results.length })}
+      title={t('toolArtifact:tool.webSearch')}
+      meta={t('toolArtifact:nResults', { count: results.length })}
     >
       {query && (
         <div className="term-web-query term-t2">
@@ -530,10 +530,10 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
           <FileText className="h-5 w-5 shrink-0 mt-0.5" style={{ color: 'var(--color-accent-primary)' }} />
           <div className="space-y-2 min-w-0">
             <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-              {t('toolArtifact.resultTooLarge')}
+              {t('toolArtifact:resultTooLarge')}
             </p>
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('toolArtifact.resultSavedToFilesystem')}
+              {t('toolArtifact:resultSavedToFilesystem')}
             </p>
             {filePath && onOpenFile && (
               <button
@@ -545,7 +545,7 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
                 }}
               >
                 <FileText className="h-3.5 w-3.5" />
-                {t('toolArtifact.openFullResult')}
+                {t('toolArtifact:openFullResult')}
               </button>
             )}
             {filePath && (
@@ -560,7 +560,7 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
       {preview && (
         <div className="space-y-2">
           <p className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('toolArtifact.preview')}
+            {t('toolArtifact:preview')}
           </p>
           <Markdown variant="panel" content={stripLineNumbers(preview) || ''} className="text-sm" />
         </div>

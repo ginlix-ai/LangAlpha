@@ -44,6 +44,7 @@ import { CommandPaletteProvider } from './components/CommandPalette/CommandPalet
 import { CreateWorkspaceHost } from './components/CreateWorkspaceHost';
 import { DesktopMenuCommands } from './lib/desktopMenuCommands/DesktopMenuCommands';
 import { setSentryUser } from './lib/sentry';
+import { withCopy } from '@/i18n';
 import './App.css';
 
 // Login carries the market-tape canvas subsystem (~2k lines that only a
@@ -55,14 +56,18 @@ const LoginPage = React.lazy(() => import('./pages/Login/LoginPage'));
 // The public share route reuses the chat transcript renderer, so a static import
 // pulled the whole ChatAgent tree — plus the markdown and chart vendors it reaches
 // — into the entry chunk that every visitor loads before login.
-const SharePage = lazyWithMotion(() => import('./pages/SharedChat/SharePage'));
-const SetupWizard = lazyWithMotion(() => import('./pages/Setup/SetupWizard'));
+const SharePage = lazyWithMotion(withCopy(() => import('./pages/SharedChat/SharePage'), ['marketView']));
+const SetupWizard = lazyWithMotion(withCopy(() => import('./pages/Setup/SetupWizard'), ['setup']));
 // The welcome flow renders in place of the whole app layout, so it is the
 // shell's to load rather than one of Main's routes.
-const Welcome = lazyWithMotion(() => import('./pages/Onboarding/welcome/Welcome'));
+const Welcome = lazyWithMotion(withCopy(() => import('./pages/Onboarding/welcome/Welcome'), [
+  'dashboard', 'filePanel', 'mcp', 'plugins', 'settings',
+]));
 const Legal = React.lazy(() => import('./pages/Legal/Legal'));
 // The desktop shell's menu bar panel, loaded only in that window.
-const DesktopMenubar = React.lazy(() => import('./pages/DesktopMenubar/MenubarPage'));
+const DesktopMenubar = React.lazy(withCopy(() => import('./pages/DesktopMenubar/MenubarPage'), [
+  'marketView', 'settings',
+]));
 const ResetPassword = React.lazy(() => import('./pages/Login/ResetPassword'));
 
 /** How long a callback may sit holding neither a session nor a stated reason

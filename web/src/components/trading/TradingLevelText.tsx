@@ -40,7 +40,7 @@ export function TradingLevelName({
       </span>
       {level === DEFAULT_TRADING_LEVEL && (
         <span className="rounded-full border border-(--color-border-muted) px-1.5 text-[0.6875rem] font-medium leading-4 text-(--color-text-tertiary)">
-          {t('settings.tradingPermission.defaultTag')}
+          {t('settings:tradingPermission.defaultTag')}
         </span>
       )}
     </span>
@@ -67,7 +67,7 @@ export function TradingLevelAgreedOn({
   if (!chosen || !skipsApproval(level) || !agreedDate) return null;
   return (
     <span className={cn('mt-1.5 block text-[0.6875rem]', className)}>
-      {t('settings.tradingPermission.agreedOn', { date: agreedDate })}
+      {t('settings:tradingPermission.agreedOn', { date: agreedDate })}
     </span>
   );
 }

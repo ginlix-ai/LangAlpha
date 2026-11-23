@@ -71,7 +71,7 @@ export function PluginSourceStep({
       // file the user believes they just replaced, under an error describing
       // a different one, with Install still armed on the old file.
       setFile(null);
-      onError(t(`plugins.install.${reason}`));
+      onError(t(`plugins:install.${reason}`));
       return;
     }
     setFile(f);
@@ -89,7 +89,7 @@ export function PluginSourceStep({
     }
     const reason = validatePluginSourceUrl(trimmedUrl);
     if (reason) {
-      onError(t(`plugins.install.${reason}`));
+      onError(t(`plugins:install.${reason}`));
       return;
     }
     onSubmit({ url: trimmedUrl });
@@ -116,7 +116,7 @@ export function PluginSourceStep({
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {catalogOn ? (
           <Trans
-            i18nKey="plugins.install.sourceHint"
+            i18nKey="plugins:install.sourceHint"
             // Not `link`: the parser reads that as the void HTML element and
             // leaves the anchor empty beside its text.
             components={{
@@ -131,7 +131,7 @@ export function PluginSourceStep({
             }}
           />
         ) : (
-          t('plugins.install.sourceHintNoCatalog')
+          t('plugins:install.sourceHintNoCatalog')
         )}
       </p>
 
@@ -158,10 +158,10 @@ export function PluginSourceStep({
                 onError(null);
                 setFile(null);
               }}
-              aria-label={t('plugins.install.removeZip', { name: file.name })}
+              aria-label={t('plugins:install.removeZip', { name: file.name })}
               className="underline underline-offset-2 transition-colors hover:text-(--color-text-primary)"
             >
-              {t('plugins.install.remove')}
+              {t('plugins:install.remove')}
             </button>
           </span>
         </div>
@@ -183,7 +183,7 @@ export function PluginSourceStep({
           }}
         >
           <Upload className="h-5 w-5" />
-          <span className="text-xs">{t('plugins.install.sourceZip')}</span>
+          <span className="text-xs">{t('plugins:install.sourceZip')}</span>
         </div>
       )}
       <input
@@ -204,7 +204,7 @@ export function PluginSourceStep({
         style={{ color: 'var(--color-text-tertiary)' }}
       >
         <span className="flex-1 border-t" style={{ borderColor: 'var(--color-border-muted)' }} />
-        {t('plugins.install.or')}
+        {t('plugins:install.or')}
         <span className="flex-1 border-t" style={{ borderColor: 'var(--color-border-muted)' }} />
       </div>
 
@@ -214,7 +214,7 @@ export function PluginSourceStep({
           style={{ color: 'var(--color-text-secondary)' }}
           htmlFor="plugin-source-url"
         >
-          {t('plugins.install.sourceGit')}
+          {t('plugins:install.sourceGit')}
         </label>
         <input
           id="plugin-source-url"
@@ -262,7 +262,7 @@ export function PluginSourceStep({
             backgroundColor: 'var(--color-btn-primary-bg)',
           }}
         >
-          {t('plugins.install.installConfirm')}
+          {t('plugins:install.installConfirm')}
         </button>
       </div>
     </div>

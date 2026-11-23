@@ -124,10 +124,10 @@ function Orders() {
                 className="font-[family-name:var(--cs-face,var(--font-ui))] text-[length:var(--cs-text-title,1.25rem)] leading-7 font-semibold tracking-[var(--cs-title-track,normal)] mb-1"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {t('orders.title')}
+                {t('orders:title')}
               </h1>
               <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('orders.description')}
+                {t('orders:description')}
               </p>
             </div>
             <HeaderButton
@@ -136,7 +136,7 @@ function Orders() {
               onClick={toggleValuesHidden}
               aria-pressed={valuesHidden}
             >
-              {t(valuesHidden ? 'orders.showValues' : 'orders.hideValues')}
+              {t(valuesHidden ? 'orders:showValues' : 'orders:hideValues')}
             </HeaderButton>
           </div>
 
@@ -148,27 +148,27 @@ function Orders() {
                 cache throughout, so reading it alone threw away a list the
                 query was still holding. */}
             {error && orders.length === 0 ? (
-              <ListError>{t('orders.loadFailed')}</ListError>
+              <ListError>{t('orders:loadFailed')}</ListError>
             ) : isLoading ? (
               <ListSkeleton rows={5} />
             ) : orders.length === 0 ? (
               filtered ? (
-                <ListEmpty>{t('orders.noMatches')}</ListEmpty>
+                <ListEmpty>{t('orders:noMatches')}</ListEmpty>
               ) : hasBrokerage === false ? (
                 <EmptyState
-                  message={t('orders.empty.noBrokerage')}
+                  message={t('orders:empty.noBrokerage')}
                   action={
                     <HeaderButton
                       variant="primary"
                       icon={Blocks}
                       onClick={() => navigate('/plugins?tab=brokerages')}
                     >
-                      {t('orders.empty.noBrokerageAction')}
+                      {t('orders:empty.noBrokerageAction')}
                     </HeaderButton>
                   }
                 />
               ) : (
-                <EmptyState message={t('orders.empty.noOrders')} />
+                <EmptyState message={t('orders:empty.noOrders')} />
               )
             ) : (
               <>
@@ -184,7 +184,7 @@ function Orders() {
                         className="text-sm"
                         style={{ color: 'var(--color-text-tertiary)' }}
                       >
-                        {t('orders.loadMoreFailed')}
+                        {t('orders:loadMoreFailed')}
                       </span>
                     )}
                     <HeaderButton
@@ -194,10 +194,10 @@ function Orders() {
                     >
                       {t(
                         isFetchingNextPage
-                          ? 'orders.loading'
+                          ? 'orders:loading'
                           : isFetchNextPageError
                             ? 'common.retry'
-                            : 'orders.loadMore',
+                            : 'orders:loadMore',
                       )}
                     </HeaderButton>
                   </div>

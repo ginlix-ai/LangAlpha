@@ -19,8 +19,7 @@
  * the attempt here, while the failure is still something the user can be told.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, zhCN } from '@/test/catalogs';
 
 const LOOPBACK = 'http://127.0.0.1:8788/mcp/callback';
 const flow = { redirectUri: LOOPBACK, flowId: 'flow-1' };
@@ -100,7 +99,7 @@ beforeEach(() => {
 /**
  * Every `LoopbackRequiredError` reason has a sentence in both catalogs.
  *
- * The caller renders these as `t(`plugins.oauth.loopback.${reason}`)`, a
+ * The caller renders these as `t(`plugins:oauth.loopback.${reason}`)`, a
  * template the tree-wide locale sweep cannot read, so nothing else notices one
  * going missing -- and what the user then sees is the raw key, on the one
  * failure path whose whole purpose is to say which of four things went wrong.

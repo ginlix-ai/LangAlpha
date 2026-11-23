@@ -76,7 +76,7 @@ export function ConnectorCell({
     // The reason Connect is held, under the id the button points at.
     line = (
       <span id={`${BLOCKED_NOTE_PREFIX}${server.name}`}>
-        {t(blocked === 'native-only' ? 'plugins.oauth.nativeOnlyNote' : 'plugins.oauth.shellOutdatedNote')}
+        {t(blocked === 'native-only' ? 'plugins:oauth.nativeOnlyNote' : 'plugins:oauth.shellOutdatedNote')}
       </span>
     );
   } else if (broken) {
@@ -94,14 +94,14 @@ export function ConnectorCell({
   } else if (state.kind === 'connect') {
     line =
       server.probe?.verdict === 'oauth'
-        ? t('plugins.connectorsPage.lineSignIn')
-        : server.description || t('plugins.connectorsPage.lineNotChecked');
+        ? t('plugins:connectorsPage.lineSignIn')
+        : server.description || t('plugins:connectorsPage.lineNotChecked');
   } else if (!line) {
     // Nothing of its own to say: what it is, in the words a list of hand-made
     // servers tells apart, instead of an empty second line.
     const count = server.tool_count;
     line = [
-      typeof count === 'number' && count > 0 ? t('mcp.row.toolCount', { count }) : null,
+      typeof count === 'number' && count > 0 ? t('mcp:row.toolCount', { count }) : null,
       server.transport,
     ]
       .filter(Boolean)
@@ -109,7 +109,7 @@ export function ConnectorCell({
   }
 
   const meta = checking
-    ? t('plugins.connectorsPage.lineChecking')
+    ? t('plugins:connectorsPage.lineChecking')
     : state.kind === 'on' && !workspacesLoading
       ? partialReachText(t, server, workspaces, home)
       : null;
@@ -138,7 +138,7 @@ export function ConnectorCell({
         icon={<KeyRound className="h-3.5 w-3.5" aria-hidden />}
         testId={`connector-key-${server.name}`}
       >
-        {fix.kind === 'add' ? t('plugins.surface.addKey') : t('plugins.surface.replaceKey')}
+        {fix.kind === 'add' ? t('plugins:surface.addKey') : t('plugins:surface.replaceKey')}
       </CellAction>
     ) : state.kind === 'failing' ? (
       <CellState state="warn" label={capitalizeFirst(t(state.noteKey))} />
@@ -201,22 +201,22 @@ export function ConnectorMenu({
   const block = switchOnBlock(connectorState(server));
   const owned = isPluginOwned(server);
   return (
-    <CellMenu label={t('mcp.row.actionsAria', { name: server.name })}>
+    <CellMenu label={t('mcp:row.actionsAria', { name: server.name })}>
       {server.enabled ? (
         <DropdownMenuItem disabled={toggling} onSelect={() => onToggle(false)}>
           <Power className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.connectorsPage.switchOff')}
+          {t('plugins:connectorsPage.switchOff')}
         </DropdownMenuItem>
       ) : (
         <DropdownMenuItem disabled={toggling || block !== null} onSelect={() => onToggle(true)}>
           <Power className="h-3.5 w-3.5 mr-2" />
           <span className="flex flex-col">
-            <span>{t('plugins.connectorsPage.switchOn')}</span>
+            <span>{t('plugins:connectorsPage.switchOn')}</span>
             {block && (
               <span className="connector-menu-hint">
                 {block === 'connect'
-                  ? t('plugins.connectorsPage.switchOnNeedsConnect')
-                  : t('plugins.connectorsPage.switchOnNeedsFix')}
+                  ? t('plugins:connectorsPage.switchOnNeedsConnect')
+                  : t('plugins:connectorsPage.switchOnNeedsFix')}
               </span>
             )}
           </span>
@@ -224,17 +224,17 @@ export function ConnectorMenu({
       )}
       <DropdownMenuItem onSelect={onOpen}>
         <Layers className="h-3.5 w-3.5 mr-2" />
-        {t('plugins.connectorsPage.workspaces')}
+        {t('plugins:connectorsPage.workspaces')}
       </DropdownMenuItem>
       {/* Editing a plugin's row detaches it from the plugin: the save is the
           same PUT, and the backend's detach warning comes back as a toast. */}
       <DropdownMenuItem onSelect={onEdit}>
         <Pencil className="h-3.5 w-3.5 mr-2" />
         <span className="flex flex-col">
-          <span>{t('plugins.connectorsPage.edit')}</span>
+          <span>{t('plugins:connectorsPage.edit')}</span>
           {owned && (
             <span className="connector-menu-hint">
-              {t('plugins.connectorsPage.editDetaches', { plugin: server.plugin_name })}
+              {t('plugins:connectorsPage.editDetaches', { plugin: server.plugin_name })}
             </span>
           )}
         </span>
@@ -251,7 +251,7 @@ export function ConnectorMenu({
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive" onSelect={onRemove}>
             <Trash2 className="h-3.5 w-3.5 mr-2" />
-            {t('plugins.connectorsPage.remove')}
+            {t('plugins:connectorsPage.remove')}
           </DropdownMenuItem>
         </>
       )}
@@ -309,16 +309,16 @@ export function BuiltinConnectorMenu({
 }) {
   const { t } = useTranslation();
   return (
-    <CellMenu label={t('mcp.row.actionsAria', { name: server.name })}>
+    <CellMenu label={t('mcp:row.actionsAria', { name: server.name })}>
       <DropdownMenuItem disabled={busy} onSelect={() => onToggle(!server.enabled)}>
         <Power className="h-3.5 w-3.5 mr-2" />
         {server.enabled
-          ? t('plugins.connectorsPage.switchOff')
-          : t('plugins.connectorsPage.switchOn')}
+          ? t('plugins:connectorsPage.switchOff')
+          : t('plugins:connectorsPage.switchOn')}
       </DropdownMenuItem>
       <DropdownMenuItem onSelect={onOpen}>
         <Layers className="h-3.5 w-3.5 mr-2" />
-        {t('plugins.connectorsPage.workspaces')}
+        {t('plugins:connectorsPage.workspaces')}
       </DropdownMenuItem>
     </CellMenu>
   );

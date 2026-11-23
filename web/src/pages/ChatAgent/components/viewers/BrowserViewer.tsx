@@ -224,19 +224,19 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
         <div className="browser-viewer-strip" role="status">
           <Hand className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 truncate">
-            {t('filePanel.browser.heldNote', 'You have the browser. The agent waits until you hand it back.')}
+            {t('filePanel:browser.heldNote', 'You have the browser. The agent waits until you hand it back.')}
           </span>
-          <span className="browser-viewer-strip-keys">{t('filePanel.browser.heldKeys', 'Shift+Esc to hand back')}</span>
+          <span className="browser-viewer-strip-keys">{t('filePanel:browser.heldKeys', 'Shift+Esc to hand back')}</span>
         </div>
       )}
       <div ref={stage} className="browser-viewer-stage" tabIndex={-1}>
       <canvas
         ref={attachCanvas}
         className={cn('browser-viewer-canvas', phase === 'reconnecting' && 'is-stale', !holding && 'is-watching')}
-        title={showing && !holding ? t('filePanel.browser.watchingHint') : undefined}
+        title={showing && !holding ? t('filePanel:browser.watchingHint') : undefined}
         style={showing ? undefined : { visibility: 'hidden' }}
         role="img"
-        aria-label={t('filePanel.browser.label')}
+        aria-label={t('filePanel:browser.label')}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onContextMenu={(e) => e.preventDefault()}
@@ -245,7 +245,7 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
         <textarea
           ref={keys}
           className="browser-viewer-keys"
-          aria-label={t('filePanel.browser.label')}
+          aria-label={t('filePanel:browser.label')}
           autoCapitalize="off"
           autoComplete="off"
           autoCorrect="off"
@@ -262,9 +262,9 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
       {blank ? (
         <StatusCard
           icon={Globe}
-          title={t('filePanel.browser.blankTitle', 'No page open')}
+          title={t('filePanel:browser.blankTitle', 'No page open')}
           body={t(
-            holding ? 'filePanel.browser.blankBodyHeld' : 'filePanel.browser.blankBody',
+            holding ? 'filePanel:browser.blankBodyHeld' : 'filePanel:browser.blankBody',
             holding
               ? 'Enter an address above to open a page.'
               : 'Pages the agent opens show here. Take control to go to one yourself.',
@@ -277,9 +277,9 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
         <div className="browser-viewer-foot">
           {nudged && (
             <span className="browser-viewer-pill">
-              {t('filePanel.browser.watchingHint')}
+              {t('filePanel:browser.watchingHint')}
               <button type="button" className="browser-viewer-pill-action tap-target" onClick={() => view.takeControl()}>
-                {t('filePanel.browser.takeControl')}
+                {t('filePanel:browser.takeControl')}
               </button>
             </span>
           )}
@@ -287,9 +287,9 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
             <span className="browser-viewer-pill" role="status">
               {/* Running, as a thread's dot says it. */}
               <span className="browser-viewer-dot animate-pulse motion-reduce:animate-none" aria-hidden="true" />
-              <span className="browser-viewer-who">{t('filePanel.browser.agent', 'Agent')}</span>
+              <span className="browser-viewer-who">{t('filePanel:browser.agent', 'Agent')}</span>
               <span className="min-w-0 truncate">
-                {t(`filePanel.browser.doing.${agent.key}`, { detail: agent.detail ?? '' })}
+                {t(`filePanel:browser.doing.${agent.key}`, { detail: agent.detail ?? '' })}
               </span>
             </span>
           )}

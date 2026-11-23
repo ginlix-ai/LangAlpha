@@ -406,7 +406,7 @@ export default function ExportPreviewModal({
         }
       }}
     >
-      {!activePreset && <option value="">{t('filePanel.custom') ?? 'Custom'}</option>}
+      {!activePreset && <option value="">{t('filePanel:custom') ?? 'Custom'}</option>}
       {PRINT_PRESETS.map((p) => (
         <option key={p.label} value={p.label}>
           {p.label}
@@ -491,7 +491,7 @@ export default function ExportPreviewModal({
 
   const pageCountLabel = !loading && !error && pageCount > 0 && (
     <span className="export-preview-page-count">
-      {t('filePanel.pages', { count: pageCount }) ?? `~${pageCount} pages`}
+      {t('filePanel:pages', { count: pageCount }) ?? `~${pageCount} pages`}
     </span>
   );
 
@@ -508,22 +508,22 @@ export default function ExportPreviewModal({
       disabled={rendering || typoPending || saving}
       style={rendering || typoPending || saving ? { opacity: 0.6, cursor: 'wait' } : undefined}
     >
-      {saving ? t('filePanel.pdfGenerating') : t('filePanel.saveAsPdf')}
+      {saving ? t('filePanel:pdfGenerating') : t('filePanel:saveAsPdf')}
     </button>
   );
 
   // ---- Desktop sidebar (vertical stack) ----
   const desktopSidebar = (
     <div className="export-preview-sidebar">
-      <label className="export-preview-sidebar-label">{t('filePanel.style')}</label>
+      <label className="export-preview-sidebar-label">{t('filePanel:style')}</label>
       {presetSelect}
-      <label className="export-preview-sidebar-label">{t('filePanel.font')}</label>
+      <label className="export-preview-sidebar-label">{t('filePanel:font')}</label>
       {fontSelect}
-      <label className="export-preview-sidebar-label">{t('filePanel.fontSize')}</label>
+      <label className="export-preview-sidebar-label">{t('filePanel:fontSize')}</label>
       {fontSizeStepper}
-      <label className="export-preview-sidebar-label">{t('filePanel.lineHeight')}</label>
+      <label className="export-preview-sidebar-label">{t('filePanel:lineHeight')}</label>
       {lineHeightStepper}
-      <label className="export-preview-sidebar-label">{t('filePanel.zoom') ?? 'Zoom'}</label>
+      <label className="export-preview-sidebar-label">{t('filePanel:zoom') ?? 'Zoom'}</label>
       {zoomStepper}
       {pageCountLabel}
       {saveBtn}
@@ -534,24 +534,24 @@ export default function ExportPreviewModal({
   const mobileSettings = (
     <div className="export-preview-mobile-settings">
       <div className="export-preview-mobile-row">
-        <label className="export-preview-sidebar-label">{t('filePanel.style')}</label>
+        <label className="export-preview-sidebar-label">{t('filePanel:style')}</label>
         {presetSelect}
       </div>
       <div className="export-preview-mobile-row">
-        <label className="export-preview-sidebar-label">{t('filePanel.font')}</label>
+        <label className="export-preview-sidebar-label">{t('filePanel:font')}</label>
         {fontSelect}
       </div>
       <div className="export-preview-mobile-row-pair">
         <div className="export-preview-mobile-row">
-          <label className="export-preview-sidebar-label">{t('filePanel.fontSize')}</label>
+          <label className="export-preview-sidebar-label">{t('filePanel:fontSize')}</label>
           {fontSizeStepper}
         </div>
         <div className="export-preview-mobile-row">
-          <label className="export-preview-sidebar-label">{t('filePanel.lineHeight')}</label>
+          <label className="export-preview-sidebar-label">{t('filePanel:lineHeight')}</label>
           {lineHeightStepper}
         </div>
         <div className="export-preview-mobile-row">
-          <label className="export-preview-sidebar-label">{t('filePanel.zoom') ?? 'Zoom'}</label>
+          <label className="export-preview-sidebar-label">{t('filePanel:zoom') ?? 'Zoom'}</label>
           {zoomStepper}
         </div>
         <div className="export-preview-mobile-row">
@@ -568,15 +568,15 @@ export default function ExportPreviewModal({
       {error ? (
         <div className="export-preview-error">
           <p>
-            {t('filePanel.exportLoadError') ??
+            {t('filePanel:exportLoadError') ??
               'Could not load full content. Export may be incomplete.'}
           </p>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={() => fetchContent()} className="export-preview-retry-btn">
-              {t('filePanel.tryAgain') ?? 'Try Again'}
+              {t('filePanel:tryAgain') ?? 'Try Again'}
             </button>
             <button onClick={() => { setError(null); setFullContent(content); }} className="export-preview-anyway-btn">
-              {t('filePanel.exportAnyway') ?? 'Export Anyway'}
+              {t('filePanel:exportAnyway') ?? 'Export Anyway'}
             </button>
           </div>
         </div>
@@ -636,7 +636,7 @@ export default function ExportPreviewModal({
         style={{ paddingBottom: 'calc(var(--bottom-tab-height, 0px) + 16px)' }}
       >
         <div className="export-preview-mobile-header">
-          <h2 className="export-preview-mobile-title">{t('filePanel.exportPreview')}</h2>
+          <h2 className="export-preview-mobile-title">{t('filePanel:exportPreview')}</h2>
         </div>
         {mobileSettings}
         {previewArea}
@@ -654,7 +654,7 @@ export default function ExportPreviewModal({
         aria-describedby={undefined}
       >
         <DialogHeader className="px-6 pt-6 pb-0">
-          <DialogTitle>{t('filePanel.exportPreview')}</DialogTitle>
+          <DialogTitle>{t('filePanel:exportPreview')}</DialogTitle>
         </DialogHeader>
 
         <div className="export-preview-body">

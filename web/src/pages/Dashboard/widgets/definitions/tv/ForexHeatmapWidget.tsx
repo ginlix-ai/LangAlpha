@@ -31,7 +31,7 @@ function ForexHeatmapSettings({ config: _config, onChange: _onChange, onClose }:
   return (
     <div className="space-y-4">
       <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-        {t('dashboard.widgets.forexHeatmap.info')}
+        {t('dashboard:widgets.forexHeatmap.info')}
       </div>
       <TradingViewSettingsFooter />
       <SettingsDoneButton onClick={onClose} />
@@ -41,8 +41,8 @@ function ForexHeatmapSettings({ config: _config, onChange: _onChange, onClose }:
 
 registerWidget<ForexHeatmapConfig>({
   type: 'tv.forex-heatmap',
-  titleKey: 'dashboard.widgets.forexHeatmap.title',
-  descriptionKey: 'dashboard.widgets.forexHeatmap.description',
+  titleKey: 'dashboard:widgets.forexHeatmap.title',
+  descriptionKey: 'dashboard:widgets.forexHeatmap.description',
   category: 'markets',
   icon: DollarSign,
   component: ForexHeatmapWidget,

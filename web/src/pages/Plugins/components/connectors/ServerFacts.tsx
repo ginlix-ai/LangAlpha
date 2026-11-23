@@ -55,7 +55,7 @@ export function ServerFacts({
           <Link
             key={key}
             to={stored.has(key) ? secretEditHref(key) : secretSetupHref(key)}
-            title={t('plugins.connectorsPage.callout.keyLinkTitle', { key })}
+            title={t('plugins:connectorsPage.callout.keyLinkTitle', { key })}
             className="connector-mono max-w-full truncate"
           >
             {key}
@@ -64,17 +64,17 @@ export function ServerFacts({
       </span>
     ) : null;
   const facts: Array<readonly [string, ReactNode]> = [
-    [t('plugins.connectorsPage.plugin'), pluginFact],
-    [t('plugins.detail.transport'), transport],
-    [t('plugins.detail.url'), urlFact],
-    [t('plugins.detail.command'), commandFact],
-    [t('plugins.connectorsPage.keys'), keysFact],
+    [t('plugins:connectorsPage.plugin'), pluginFact],
+    [t('plugins:detail.transport'), transport],
+    [t('plugins:detail.url'), urlFact],
+    [t('plugins:detail.command'), commandFact],
+    [t('plugins:connectorsPage.keys'), keysFact],
     [
-      t('plugins.detail.created'),
+      t('plugins:detail.created'),
       catalog?.created_at ? mediumDate(new Date(catalog.created_at), locale) : null,
     ],
     [
-      t('plugins.detail.updated'),
+      t('plugins:detail.updated'),
       catalog?.updated_at ? mediumDate(new Date(catalog.updated_at), locale) : null,
     ],
   ];

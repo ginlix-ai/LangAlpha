@@ -25,11 +25,11 @@ type ConversationConfig = Record<string, never>;
 
 function greetingKey(now: number): string {
   const hour = new Date(now).getHours();
-  if (hour < 5) return 'dashboard.widgets.conversation.greetingLate';
-  if (hour < 12) return 'dashboard.widgets.conversation.greetingMorning';
-  if (hour < 17) return 'dashboard.widgets.conversation.greetingAfternoon';
-  if (hour < 22) return 'dashboard.widgets.conversation.greetingEvening';
-  return 'dashboard.widgets.conversation.greetingStillAtIt';
+  if (hour < 5) return 'dashboard:widgets.conversation.greetingLate';
+  if (hour < 12) return 'dashboard:widgets.conversation.greetingMorning';
+  if (hour < 17) return 'dashboard:widgets.conversation.greetingAfternoon';
+  if (hour < 22) return 'dashboard:widgets.conversation.greetingEvening';
+  return 'dashboard:widgets.conversation.greetingStillAtIt';
 }
 
 
@@ -94,7 +94,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
       if (recentThreads.length) {
         lines.push('', '**Resume threads:**');
         recentThreads.forEach((th) => {
-          const title = th.title || t('dashboard.widgets.conversation.untitledThread');
+          const title = th.title || t('dashboard:widgets.conversation.untitledThread');
           lines.push(`- ${title} — ${th.updated_at ?? ''} (${th.thread_id})`);
         });
       }
@@ -106,7 +106,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
       return {
         widget_type: 'agent.conversation',
         widget_id: instance.id,
-        label: t('dashboard.widgets.conversation.title'),
+        label: t('dashboard:widgets.conversation.title'),
         description: workspaceName ?? 'no workspace',
         captured_at: new Date().toISOString(),
         text,
@@ -163,7 +163,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
-            placeholder={t('dashboard.widgets.conversation.placeholder')}
+            placeholder={t('dashboard:widgets.conversation.placeholder')}
             minRows={4}
           />
         </motion.div>
@@ -175,7 +175,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
           >
             <span className="conversation-widget__resume-label">
               <MessagesSquare size={11} />
-              {t('dashboard.widgets.conversation.resume')}
+              {t('dashboard:widgets.conversation.resume')}
             </span>
             <div className="conversation-widget__resume-chips">
               {recentThreads.map((thread) => (
@@ -184,10 +184,10 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
                   type="button"
                   className="conversation-widget__chip"
                   onClick={() => navigate(`/chat/t/${thread.thread_id}`)}
-                  title={thread.title || t('dashboard.widgets.conversation.untitledThread')}
+                  title={thread.title || t('dashboard:widgets.conversation.untitledThread')}
                 >
                   <span className="conversation-widget__chip-title">
-                    {thread.title || t('dashboard.widgets.conversation.untitledThread')}
+                    {thread.title || t('dashboard:widgets.conversation.untitledThread')}
                   </span>
                   <span className="conversation-widget__chip-age">
                     {relativeTime(thread.updated_at, locale, now)}
@@ -204,8 +204,8 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
 
 registerWidget<ConversationConfig>({
   type: 'agent.conversation',
-  titleKey: 'dashboard.widgets.conversation.title',
-  descriptionKey: 'dashboard.widgets.conversation.description',
+  titleKey: 'dashboard:widgets.conversation.title',
+  descriptionKey: 'dashboard:widgets.conversation.description',
   category: 'agent',
   icon: MessageSquareText,
   component: ConversationWidget,

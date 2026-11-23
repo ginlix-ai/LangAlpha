@@ -71,7 +71,7 @@ export function WidgetFrame({
   // in the tooltip so users don't wonder why nothing happens.
   const attachUnsupportedReason =
     definition.source === 'tradingview'
-      ? t('dashboard.widgets.frame.contextUnsupportedTradingView', {
+      ? t('dashboard:widgets.frame.contextUnsupportedTradingView', {
           defaultValue:
             "Can't attach this — the content is managed by TradingView, so the agent can't access it.",
         })
@@ -79,7 +79,7 @@ export function WidgetFrame({
   const attachDisabled = attachUnsupportedReason !== null || !exporterRegistered;
   const attachTooltip =
     attachUnsupportedReason ??
-    t('dashboard.widgets.frame.addToContextTitle', { defaultValue: 'Attach to chat' });
+    t('dashboard:widgets.frame.addToContextTitle', { defaultValue: 'Attach to chat' });
 
   const handleAddToContext = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -88,8 +88,8 @@ export function WidgetFrame({
     if (!snapshot) {
       toast({
         variant: 'destructive',
-        title: t('dashboard.widgets.frame.contextUnavailable', { defaultValue: 'Widget not available' }),
-        description: t('dashboard.widgets.frame.contextUnavailableHint', {
+        title: t('dashboard:widgets.frame.contextUnavailable', { defaultValue: 'Widget not available' }),
+        description: t('dashboard:widgets.frame.contextUnavailableHint', {
           defaultValue: 'This widget has not registered a context exporter yet.',
         }),
       });
@@ -97,7 +97,7 @@ export function WidgetFrame({
     }
     ContextBus.attach(snapshot);
     toast({
-      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      title: t('dashboard:widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
       description: snapshot.label,
     });
   };
@@ -257,7 +257,7 @@ export function WidgetFrame({
       >
         <header className="term-card-head" data-keep="title">
           {editMode && (
-            <span className="widget-card__grip" aria-label={t('dashboard.widgets.frame.drag')}>
+            <span className="widget-card__grip" aria-label={t('dashboard:widgets.frame.drag')}>
               <GripVertical size={12} />
             </span>
           )}
@@ -273,8 +273,8 @@ export function WidgetFrame({
                 type="button"
                 className="widget-card__icon-btn"
                 onClick={() => onOpenSettings(instance.id)}
-                aria-label={t('dashboard.widgets.frame.settings')}
-                title={t('dashboard.widgets.frame.settingsTitle')}
+                aria-label={t('dashboard:widgets.frame.settings')}
+                title={t('dashboard:widgets.frame.settingsTitle')}
               >
                 <Settings size={12} />
               </button>
@@ -296,7 +296,7 @@ export function WidgetFrame({
                   type="button"
                   className="widget-card__icon-btn"
                   onClick={() => setMenuOpen((p) => !p)}
-                  aria-label={t('dashboard.widgets.frame.menu')}
+                  aria-label={t('dashboard:widgets.frame.menu')}
                 >
                   <MoreVertical size={12} />
                 </button>
@@ -311,7 +311,7 @@ export function WidgetFrame({
                           setMenuOpen(false);
                         }}
                       >
-                        <Copy size={12} /> {t('dashboard.widgets.frame.duplicate')}
+                        <Copy size={12} /> {t('dashboard:widgets.frame.duplicate')}
                       </button>
                     )}
                     <button
@@ -322,7 +322,7 @@ export function WidgetFrame({
                         setMenuOpen(false);
                       }}
                     >
-                      <X size={12} /> {t('dashboard.widgets.frame.remove')}
+                      <X size={12} /> {t('dashboard:widgets.frame.remove')}
                     </button>
                   </div>
                 )}

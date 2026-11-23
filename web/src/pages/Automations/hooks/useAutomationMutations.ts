@@ -32,7 +32,7 @@ export function useAutomationMutations() {
     // read again and no button comes back on over stale rows.
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.automations.all }),
     onError: (err: unknown) =>
-      toast({ variant: 'destructive', description: mutationErrorMessage(err, t('automation.actionFailed')) }),
+      toast({ variant: 'destructive', description: mutationErrorMessage(err, t('automation:actionFailed')) }),
   };
 
   const create = useMutation({
@@ -51,7 +51,7 @@ export function useAutomationMutations() {
     ...shared,
     mutationFn: (id: string) => automationApi.triggerAutomation(id),
     onSuccess: () => {
-      toast({ description: t('automation.runStarted') });
+      toast({ description: t('automation:runStarted') });
       return shared.onSuccess();
     },
   });

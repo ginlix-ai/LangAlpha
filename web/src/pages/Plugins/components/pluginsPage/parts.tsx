@@ -23,7 +23,7 @@ export function OnOffControl({
   const { t } = useTranslation();
   return (
     <div className={cn('pp-onoff open-style:control-voice', disabled && 'is-disabled')} title={title}>
-      <span>{enabled ? t('plugins.surface.on') : t('plugins.surface.off')}</span>
+      <span>{enabled ? t('plugins:surface.on') : t('plugins:surface.off')}</span>
       <EnabledToggle enabled={enabled} name={name} disabled={disabled} onToggle={onToggle} />
     </div>
   );

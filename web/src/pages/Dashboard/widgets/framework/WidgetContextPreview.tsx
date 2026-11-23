@@ -137,7 +137,7 @@ function renderStructuredValue(v: unknown, depth: number, locale: string, emptyL
 function StructuredDataFallback({ data }: { data: unknown }) {
   const locale = useLocale();
   const { t } = useTranslation();
-  return <div className="text-sm">{renderStructuredValue(data, 0, locale, t('dashboard.widgets.contextPreview.empty'))}</div>;
+  return <div className="text-sm">{renderStructuredValue(data, 0, locale, t('dashboard:widgets.contextPreview.empty'))}</div>;
 }
 
 /**
@@ -197,7 +197,7 @@ export function WidgetContextPreview({
             <StructuredDataFallback data={snapshot.data} />
           ) : (
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('dashboard.widgets.contextPreview.noContent')}
+              {t('dashboard:widgets.contextPreview.noContent')}
             </p>
           )}
         </div>

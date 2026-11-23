@@ -63,17 +63,17 @@ export function ListControls({
   // state under it carries the way back.
   if (counts.all === 0 && stateFilter === 'all' && !selecting) return null;
   const pills: { key: StateFilter; label: string }[] = [
-    { key: 'all', label: t('plugins.stateFilter.all') },
-    { key: 'on', label: t('plugins.stateFilter.on') },
-    { key: 'off', label: t('plugins.stateFilter.off') },
-    { key: 'attention', label: t('plugins.stateFilter.attention') },
+    { key: 'all', label: t('plugins:stateFilter.all') },
+    { key: 'on', label: t('plugins:stateFilter.on') },
+    { key: 'off', label: t('plugins:stateFilter.off') },
+    { key: 'attention', label: t('plugins:stateFilter.attention') },
   ];
   // A pill that would show nothing is not offered, unless it is the one the
   // list is narrowed to, which has to stay to be undone.
   const shown = pills.filter((p) => p.key === 'all' || counts[p.key] > 0 || p.key === stateFilter);
   return (
     <div className="list-controls">
-      <div role="group" aria-label={t('plugins.stateFilter.label')} className="list-controls-pills">
+      <div role="group" aria-label={t('plugins:stateFilter.label')} className="list-controls-pills">
         {shown.map((pill) => (
           <button
             key={pill.key}
@@ -97,13 +97,13 @@ export function ListControls({
             onClick={() => onSelectShown(!allShownSelected)}
           >
             {allShownSelected
-              ? t('plugins.bulk.selectNone')
-              : t('plugins.bulk.selectAll', { count: shownCount })}
+              ? t('plugins:bulk.selectNone')
+              : t('plugins:bulk.selectAll', { count: shownCount })}
           </button>
         ) : (
           <button type="button" className="list-controls-btn" onClick={onStartSelect}>
             <ListChecks className="h-3.5 w-3.5" aria-hidden />
-            {t('plugins.bulk.select')}
+            {t('plugins:bulk.select')}
           </button>
         )}
       </div>

@@ -105,7 +105,7 @@ describe('automation state', () => {
   it.each(cases)('%s %s, last %s', (trigger, status, last, group, label, attention, upcoming, watching) => {
     const a = automation(trigger, status, last);
     expect(automationGroup(a)).toBe(group);
-    expect(automationStatusUi(a).labelKey).toBe(`automation.${label}`);
+    expect(automationStatusUi(a).labelKey).toBe(`automation:${label}`);
     expect(needsAttention(a)).toBe(attention);
     expect(isUpcoming(a)).toBe(upcoming);
     expect(isWatching(a)).toBe(watching);
@@ -154,7 +154,7 @@ describe('why an automation needs attention', () => {
     const a = failedWith(status, disable, reason);
     expect(attentionKind(a)).toBe(kind);
     expect(needsAttention(a)).toBe(kind !== null);
-    expect(automationStatusUi(a).labelKey).toBe(`automation.${label}`);
+    expect(automationStatusUi(a).labelKey).toBe(`automation:${label}`);
   });
 });
 
@@ -202,26 +202,26 @@ describe('describeRun', () => {
     const { ui } = describeRun(run(status as ExecutionStatus));
     expect(!!ui.live).toBe(live);
     expect(!!ui.danger).toBe(danger);
-    expect(ui.labelKey).toBe(`automation.${label}`);
+    expect(ui.labelKey).toBe(`automation:${label}`);
   });
 
   it('notes why a run waits or was skipped, unless the reader skipped it', () => {
-    expect(describeRun(run('waiting')).noteKey).toBe('automation.waitingNote');
-    expect(describeRun(run('waiting', { wait_reason: 'thread_busy' })).noteKey).toBe('automation.waitingNote');
+    expect(describeRun(run('waiting')).noteKey).toBe('automation:waitingNote');
+    expect(describeRun(run('waiting', { wait_reason: 'thread_busy' })).noteKey).toBe('automation:waitingNote');
     expect(describeRun(run('waiting', { wait_reason: 'computer_unreachable' })).noteKey).toBe(
-      'automation.waitingForComputerNote',
+      'automation:waitingForComputerNote',
     );
-    expect(describeRun(run('skipped', { skip_reason: 'thread_busy' })).noteKey).toBe('automation.skippedThreadBusy');
+    expect(describeRun(run('skipped', { skip_reason: 'thread_busy' })).noteKey).toBe('automation:skippedThreadBusy');
     expect(describeRun(run('skipped', { skip_reason: 'computer_unreachable' })).noteKey).toBe(
-      'automation.skippedComputerUnreachable',
+      'automation:skippedComputerUnreachable',
     );
     expect(describeRun(run('skipped', { skip_reason: 'user' })).noteKey).toBeNull();
     expect(describeRun(run('completed')).noteKey).toBeNull();
   });
 
   it('notes a failure that was not the automation\'s, and leaves the rest to the error', () => {
-    expect(describeRun(run('failed', { failure_reason: 'server_error' })).noteKey).toBe('automation.failedServerError');
-    expect(describeRun(run('timeout', { failure_reason: 'interrupted' })).noteKey).toBe('automation.failedInterrupted');
+    expect(describeRun(run('failed', { failure_reason: 'server_error' })).noteKey).toBe('automation:failedServerError');
+    expect(describeRun(run('timeout', { failure_reason: 'interrupted' })).noteKey).toBe('automation:failedInterrupted');
     expect(describeRun(run('failed', { failure_reason: 'usage_limit' })).noteKey).toBeNull();
     expect(describeRun(run('failed', { failure_reason: 'provider_auth' })).noteKey).toBeNull();
     expect(describeRun(run('failed', { failure_reason: 'plan_limit' })).noteKey).toBeNull();
@@ -282,10 +282,10 @@ describe('a dismissed run', () => {
     const a = dismissed(automation('cron', 'disabled', 'failed'));
     const paused = automation('cron', 'paused', null);
     expect(automationState(a)).toBe('off');
-    expect(automationStatusUi(a)).toEqual({ ...automationStatusUi(paused), labelKey: 'automation.stateDisabled' });
+    expect(automationStatusUi(a)).toEqual({ ...automationStatusUi(paused), labelKey: 'automation:stateDisabled' });
     expect(automationGroup(a)).toBe('scheduled');
     expect(automationGroup(dismissed(automation('price', 'disabled', 'failed')))).toBe('watching');
-    expect(rowTrailing(a, 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation.stateDisabled' });
+    expect(rowTrailing(a, 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation:stateDisabled' });
     expect(automationActions(a)).toMatchObject({ canResume: true, canDismiss: false });
     expect(automationCensus([a, paused])).toEqual({ running: 0, attention: 0, scheduled: 0, watching: 0, paused: 1, off: 1, finished: 0 });
   });
@@ -313,9 +313,9 @@ describe('a dismissed run', () => {
 
 describe('rowTrailing', () => {
   it('names a state the glyph leaves unnamed, before any time', () => {
-    expect(rowTrailing(automation('cron', 'active', 'waiting'), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation.stateWaiting' });
-    expect(rowTrailing(automation('cron', 'paused', null), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation.statePaused' });
-    expect(rowTrailing(automation('cron', 'paused', 'running'), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation.stateRunning' });
+    expect(rowTrailing(automation('cron', 'active', 'waiting'), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation:stateWaiting' });
+    expect(rowTrailing(automation('cron', 'paused', null), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation:statePaused' });
+    expect(rowTrailing(automation('cron', 'paused', 'running'), 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation:stateRunning' });
   });
 
   it('reads a schedule by its next run and a finished one by its last', () => {

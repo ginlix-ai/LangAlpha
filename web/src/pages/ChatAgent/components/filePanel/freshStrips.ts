@@ -1,7 +1,7 @@
 import { registerAuthReset } from '@/lib/authResets';
 import { userLocalStorage } from '@/lib/userStorage';
 
-const stripPrefix = (workspaceId: string) => `filePanel.tabs.${workspaceId}`;
+const stripPrefix = (workspaceId: string) => `filePanel:tabs.${workspaceId}`;
 
 /**
  * A fresh chat's strip in a workspace, before it has a thread. Never in

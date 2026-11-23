@@ -10,7 +10,7 @@ import { landAfterSignIn } from '../../lib/hostedSignIn';
 import { useShellHandoff } from './useShellHandoff';
 import ShellHandoff from './ShellHandoff';
 import EdgeGrain from './EdgeGrain';
-import './LoginPage.css';
+import './AuthPage.css';
 
 /** How long to wait for the client's automatic `?code=` exchange to land. */
 const PKCE_FALLBACK_TIMEOUT_MS = 8000;

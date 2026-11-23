@@ -47,7 +47,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
       return {
         widget_type: 'portfolio.holdings',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.portfolio.title')} · ${rows.length}`,
+        label: `${t('dashboard:widgets.portfolio.title')} · ${rows.length}`,
         description: rows.length ? `${rows.length} holding${rows.length === 1 ? '' : 's'}` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -67,7 +67,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
           (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
-        description: t('dashboard.widgets.portfolio.title'),
+        description: t('dashboard:widgets.portfolio.title'),
         captured_at: new Date().toISOString(),
         text,
         data: { row: portfolioRowData(row) },
@@ -127,7 +127,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
                 </AnimatePresence>
               )}
             </PortfolioTable>
-            <HoldingsAddButton label={t('dashboard.widgets.portfolio.addTransaction')} onClick={portfolioHandlers.onAdd} />
+            <HoldingsAddButton label={t('dashboard:widgets.portfolio.addTransaction')} onClick={portfolioHandlers.onAdd} />
           </div>
         </SwapCell>
       </div>
@@ -137,9 +137,9 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
 
 registerWidget<PortfolioConfig>({
   type: 'portfolio.holdings',
-  titleKey: 'dashboard.widgets.portfolio.title',
-  cardTitleKey: 'dashboard.widgets.portfolio.header',
-  descriptionKey: 'dashboard.widgets.portfolio.description',
+  titleKey: 'dashboard:widgets.portfolio.title',
+  cardTitleKey: 'dashboard:widgets.portfolio.header',
+  descriptionKey: 'dashboard:widgets.portfolio.description',
   category: 'personal',
   icon: Briefcase,
   component: PortfolioWidget,

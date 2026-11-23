@@ -22,32 +22,32 @@ function AnnualQuarterlyView({ filing }: { filing: Extract<SecFiling, { kind: 'p
     <>
       <TermPanelHead
         title={symbol}
-        sub={t('toolArtifact.filing', { type: form })}
-        aside={filingDate ? <span className="term-t3">{t('toolArtifact.filedOn', { date: filingDate })}</span> : undefined}
+        sub={t('toolArtifact:filing', { type: form })}
+        aside={filingDate ? <span className="term-t3">{t('toolArtifact:filedOn', { date: filingDate })}</span> : undefined}
       />
-      <TermCard title={t('toolArtifact.termHead.filing')}>
+      <TermCard title={t('toolArtifact:termHead.filing')}>
         <TermKV
           cols={2}
           pairs={[
-            periodEnd != null && [t('toolArtifact.periodEnd'), periodEnd],
-            cik != null && [t('toolArtifact.cik'), cik],
-            sections != null && [t('toolArtifact.sectionsExtracted'), String(sections)],
-            earningsCall && [t('toolArtifact.earningsCall'), t('toolArtifact.included')],
-            recent8Ks != null && [t('toolArtifact.recent8KFilings'), t('toolArtifact.nLast90Days', { count: recent8Ks })],
+            periodEnd != null && [t('toolArtifact:periodEnd'), periodEnd],
+            cik != null && [t('toolArtifact:cik'), cik],
+            sections != null && [t('toolArtifact:sectionsExtracted'), String(sections)],
+            earningsCall && [t('toolArtifact:earningsCall'), t('toolArtifact:included')],
+            recent8Ks != null && [t('toolArtifact:recent8KFilings'), t('toolArtifact:nLast90Days', { count: recent8Ks })],
           ]}
         />
       </TermCard>
       {sourceUrl && (
         <TermCard
-          title={t('toolArtifact.secFilingDocument')}
-          meta={<TermLink href={sourceUrl}>{t('toolArtifact.openOnEdgar')}</TermLink>}
+          title={t('toolArtifact:secFilingDocument')}
+          meta={<TermLink href={sourceUrl}>{t('toolArtifact:openOnEdgar')}</TermLink>}
           className="term-panel-fill"
         >
           <div className="relative flex-1 min-h-0">
             {iframeLoading && (
               <div className="absolute inset-0 flex items-center justify-center gap-2">
                 <Loader size={16} className="text-(--color-term-text-tertiary)" />
-                <span className="term-t3">{t('toolArtifact.loadingSecDocument')}</span>
+                <span className="term-t3">{t('toolArtifact:loadingSecDocument')}</span>
               </div>
             )}
             <iframe
@@ -76,8 +76,8 @@ function EightKListView({ filing }: { filing: Extract<SecFiling, { kind: '8-K' }
     <>
       <TermPanelHead
         title={filing.symbol}
-        sub={t('toolArtifact.8kFilings')}
-        aside={<span className="term-t3">{t('toolArtifact.nFilings', { count: filing.count, days: filing.days })}</span>}
+        sub={t('toolArtifact:8kFilings')}
+        aside={<span className="term-t3">{t('toolArtifact:nFilings', { count: filing.count, days: filing.days })}</span>}
       />
       {filing.filings.map((report, i) => (
         <TermCard
@@ -85,8 +85,8 @@ function EightKListView({ filing }: { filing: Extract<SecFiling, { kind: '8-K' }
           title={report.filingDate}
           meta={
             <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '1.25ch' }}>
-              {report.pressRelease && <TermTag>{t('toolArtifact.pressRelease')}</TermTag>}
-              {report.sourceUrl && <TermLink href={proxied(report.sourceUrl)}>{t('toolArtifact.view')}</TermLink>}
+              {report.pressRelease && <TermTag>{t('toolArtifact:pressRelease')}</TermTag>}
+              {report.sourceUrl && <TermLink href={proxied(report.sourceUrl)}>{t('toolArtifact:view')}</TermLink>}
             </span>
           }
         >
@@ -102,7 +102,7 @@ function EightKListView({ filing }: { filing: Extract<SecFiling, { kind: '8-K' }
       ))}
       {filing.filings.length === 0 && (
         <div className="term-t3" style={{ padding: '1rem 0', textAlign: 'center' }}>
-          {t('toolArtifact.no8KFilings', { days: filing.days })}
+          {t('toolArtifact:no8KFilings', { days: filing.days })}
         </div>
       )}
     </>

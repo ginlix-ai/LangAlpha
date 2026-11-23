@@ -45,7 +45,7 @@ export function useWorkspaceOptions(): WorkspaceOptions {
   const rows = data?.workspaces ?? [];
   const workspaces: ScopeWorkspace[] = rows.map((w) => ({
     id: w.workspace_id,
-    name: w.name || t('plugins.scope.unknownWorkspace'),
+    name: w.name || t('plugins:scope.unknownWorkspace'),
   }));
   return {
     workspaces,

@@ -60,8 +60,8 @@ export function KeyField({
         <Trans
           i18nKey={
             stored
-              ? 'plugins.connectorsPage.callout.keyNewValue'
-              : 'plugins.connectorsPage.callout.keyValue'
+              ? 'plugins:connectorsPage.callout.keyNewValue'
+              : 'plugins:connectorsPage.callout.keyValue'
           }
           values={{ key: name }}
           components={{ mono: <span className="connector-mono" /> }}
@@ -75,8 +75,8 @@ export function KeyField({
           visible={visible}
           onToggleVisible={() => setVisible((v) => !v)}
           labels={{
-            show: t('plugins.connectorsPage.callout.keyShow'),
-            hide: t('plugins.connectorsPage.callout.keyHide'),
+            show: t('plugins:connectorsPage.callout.keyShow'),
+            hide: t('plugins:connectorsPage.callout.keyHide'),
           }}
           maxLength={MAX_SECRET_VALUE_LENGTH}
           data-testid={`detail-key-${name}`}
@@ -95,8 +95,8 @@ export function KeyField({
         >
           {saving && <Loader size={12} className="text-current" />}
           {checks
-            ? t('plugins.connectorsPage.callout.keySaveAndCheck')
-            : t('plugins.connectorsPage.callout.keySave')}
+            ? t('plugins:connectorsPage.callout.keySaveAndCheck')
+            : t('plugins:connectorsPage.callout.keySave')}
         </button>
       </div>
       {error && (

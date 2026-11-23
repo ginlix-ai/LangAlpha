@@ -53,7 +53,7 @@ export function LegendLead({ symbol, quote: q, onSwitchSymbol, showName = false,
   const status = (
     <span
       className={`legend-lead-status legend-lead-status--${quoteDotState(q)}`}
-      title={source ? undefined : t('marketView.quote.source', { label: quoteSourceText(t, q) })}
+      title={source ? undefined : t('marketView:quote.source', { label: quoteSourceText(t, q) })}
       // A tab stop so the provenance opens by keyboard and by tap too.
       tabIndex={source ? 0 : undefined}
       data-no-drag={source ? '' : undefined}
@@ -112,19 +112,19 @@ export function LegendStats({ quote: q, detail = 'compact' }: LegendStatsProps):
   const locale = useLocale();
   const fmt = (n: number | null | undefined): string => priceOrDash(n, q.places, locale);
   const cells: Array<{ k: string; v: string; tone?: string; hint?: string }> = [
-    { k: t('marketView.quote.open'), v: fmt(q.open), hint: detail === 'full' ? t('marketView.header.openHint') : undefined },
-    { k: t('marketView.quote.high'), v: fmt(q.high) },
-    { k: t('marketView.quote.low'), v: fmt(q.low) },
+    { k: t('marketView:quote.open'), v: fmt(q.open), hint: detail === 'full' ? t('marketView:header.openHint') : undefined },
+    { k: t('marketView:quote.high'), v: fmt(q.high) },
+    { k: t('marketView:quote.low'), v: fmt(q.low) },
     // The candle ends at the regular close: in an extended session the live
     // price belongs to the lead, and C is the settled close the headline shows.
-    { k: t('marketView.quote.close'), v: fmt(q.headline.price) },
-    { k: t(q.volumeIsAverage ? 'marketView.quote.avgVolume3m' : 'marketView.quote.volume'), v: q.shownVolume != null ? compactNumberFixed2(q.shownVolume, locale) : DASH },
+    { k: t('marketView:quote.close'), v: fmt(q.headline.price) },
+    { k: t(q.volumeIsAverage ? 'marketView:quote.avgVolume3m' : 'marketView:quote.volume'), v: q.shownVolume != null ? compactNumberFixed2(q.shownVolume, locale) : DASH },
     ...(detail === 'full' && !q.volumeIsAverage && q.averageVolume != null
-      ? [{ k: t('marketView.quote.avgVolume3m'), v: compactNumberFixed2(q.averageVolume, locale) }]
+      ? [{ k: t('marketView:quote.avgVolume3m'), v: compactNumberFixed2(q.averageVolume, locale) }]
       : []),
-    { k: t('marketView.quote.prevClose'), v: fmt(q.previousClose) },
-    { k: t('marketView.quote.range52w'), v: q.fiftyTwoWeekLow != null && q.fiftyTwoWeekHigh != null ? `${fmt(q.fiftyTwoWeekLow)}–${fmt(q.fiftyTwoWeekHigh)}` : DASH },
-    { k: t(q.ext ? 'marketView.quote.changeExt' : 'marketView.quote.change'), v: q.changePercent != null ? `${signedFixed2(q.changePercent, locale)}%` : DASH, tone: q.tone },
+    { k: t('marketView:quote.prevClose'), v: fmt(q.previousClose) },
+    { k: t('marketView:quote.range52w'), v: q.fiftyTwoWeekLow != null && q.fiftyTwoWeekHigh != null ? `${fmt(q.fiftyTwoWeekLow)}–${fmt(q.fiftyTwoWeekHigh)}` : DASH },
+    { k: t(q.ext ? 'marketView:quote.changeExt' : 'marketView:quote.change'), v: q.changePercent != null ? `${signedFixed2(q.changePercent, locale)}%` : DASH, tone: q.tone },
   ];
   return (
     <div className="legend-stats">

@@ -77,7 +77,7 @@ export function AgentPanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.answersGroup')}>
+      <SettingsGroup title={t('settings:answersGroup')}>
         <SettingsCardBody id={SETTINGS.outputFormat.anchor} className="flex flex-col gap-3">
           <div>
             <p id={outputFormatId} className="settings-row-label">{t(SETTINGS.outputFormat.labelKey)}</p>
@@ -102,7 +102,7 @@ export function AgentPanel() {
             value={researchDepth}
             onChange={(e) => writeAgent({ research_depth: e.target.value || null })}
           >
-            <option value="">{t('settings.agentDecides')}</option>
+            <option value="">{t('settings:agentDecides')}</option>
             {RESEARCH_DEPTHS.map((depth) => (
               <option key={depth} value={depth}>{t(`onboarding.welcome.agent.depth.${depth}.title`)}</option>
             ))}
@@ -121,7 +121,7 @@ export function AgentPanel() {
             value={proactivity}
             onChange={(e) => writeAgent({ proactivity: e.target.value || null })}
           >
-            <option value="">{t('settings.agentDecides')}</option>
+            <option value="">{t('settings:agentDecides')}</option>
             {PROACTIVITY.map((level) => (
               <option key={level} value={level}>{t(`onboarding.welcome.agent.proactivity.${level}.title`)}</option>
             ))}
@@ -142,7 +142,7 @@ export function AgentPanel() {
       </SettingsGroup>
 
       {instructions.length > 0 && (
-        <SettingsGroup title={t('settings.instructions')} description={t('settings.instructionsDesc')}>
+        <SettingsGroup title={t('settings:instructions')} description={t('settings:instructionsDesc')}>
           {instructions.map(([key, value]) => (
             <Instruction
               key={`${key}:${JSON.stringify(value)}`}
@@ -157,11 +157,11 @@ export function AgentPanel() {
 
       <AutoApproveSettings />
 
-      <SettingsGroup title={t('settings.modelTuning.sectionSearch')}>
+      <SettingsGroup title={t('settings:modelTuning.sectionSearch')}>
         <SettingRow
           {...providerCopy}
           description={search.gated
-            ? <>{providerCopy.description} <span>{t('settings.searchProviderUpgradeHint')}</span></>
+            ? <>{providerCopy.description} <span>{t('settings:searchProviderUpgradeHint')}</span></>
             : providerCopy.description}
           htmlFor={`${providerCopy.id}-select`}
           wide
@@ -170,10 +170,10 @@ export function AgentPanel() {
         </SettingRow>
         {search.depths.length > 0 && (
           <SettingRow
-            label={t('settings.searchDepth')}
+            label={t('settings:searchDepth')}
             description={search.depths.some((d) => !tierAllows(d.min_tier))
-              ? <>{t('settings.searchDepthDesc')} <span>{t('settings.searchDepthUpgradeHint')}</span></>
-              : t('settings.searchDepthDesc')}
+              ? <>{t('settings:searchDepthDesc')} <span>{t('settings:searchDepthUpgradeHint')}</span></>
+              : t('settings:searchDepthDesc')}
             htmlFor={depthId}
             wide
           >
@@ -183,10 +183,10 @@ export function AgentPanel() {
               onChange={(e) => { void write(searchDepthPatch(e.target.value)); }}
               disabled={!search.depths.some((d) => tierAllows(d.min_tier))}
             >
-              <option value="">{t('settings.searchDepthDefault')}</option>
+              <option value="">{t('settings:searchDepthDefault')}</option>
               {search.depths.map((d) => (
                 <option key={d.name} value={d.name} disabled={!tierAllows(d.min_tier)}>
-                  {t(`settings.searchDepthLevel.${d.name}`, d.display_name)}
+                  {t(`settings:searchDepthLevel.${d.name}`, d.display_name)}
                 </option>
               ))}
             </Select>
@@ -236,7 +236,7 @@ function Instruction({ name, value, onSave, onRemove }: {
         <button
           type="button"
           onClick={onRemove}
-          aria-label={t('settings.instructionsRemove', { name })}
+          aria-label={t('settings:instructionsRemove', { name })}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
         >
           <X className="h-4 w-4" />

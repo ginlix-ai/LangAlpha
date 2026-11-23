@@ -124,10 +124,10 @@ export function SubagentsList() {
     try {
       const workspaceId = await resolveChatWorkspace(qc, 'all');
       navigate('/chat/t/__default__', {
-        state: { workspaceId, draftMessage: t('plugins.subagents.chatPrefill') },
+        state: { workspaceId, draftMessage: t('plugins:subagents.chatPrefill') },
       });
     } catch {
-      toast({ variant: 'destructive', title: t('plugins.subagents.chatFailed') });
+      toast({ variant: 'destructive', title: t('plugins:subagents.chatFailed') });
     }
   }
 
@@ -172,12 +172,12 @@ export function SubagentsList() {
     setEnabled: (s, on) => sendSubagentEdit(qc, s.name, { enabled: on }),
     remove: {
       verb: 'remove',
-      labelKey: 'plugins.bulk.remove',
-      confirmKey: 'plugins.bulk.confirmRemoveSubagents',
+      labelKey: 'plugins:bulk.remove',
+      confirmKey: 'plugins:bulk.confirmRemoveSubagents',
       eligible: (s) => isCustom(s) || isOrphan(s),
       run: (s) => deleteSubagent(s.name, s.version),
     },
-    keptKey: 'plugins.bulk.keptBuiltInSubagents',
+    keptKey: 'plugins:bulk.keptBuiltInSubagents',
   });
 
   const providerName = (name: string) => models.searchProviders?.[name]?.display_name ?? name;
@@ -210,7 +210,7 @@ export function SubagentsList() {
 
   function pluginSection(group: PluginGroup): ReactNode {
     const info: PluginInfo | undefined = plugins.find((p) => p.name === group.plugin.name);
-    const note = info ? sourceLabel(t, info, catalogPlugins) : t('plugins.skillsPage.fromCatalog');
+    const note = info ? sourceLabel(t, info, catalogPlugins) : t('plugins:skillsPage.fromCatalog');
     return (
       <SurfaceSection
         key={group.plugin.name}
@@ -225,7 +225,7 @@ export function SubagentsList() {
         action={
           info ? (
             <SectionLink onClick={() => openDetail({ kind: 'plugin', name: info.name })}>
-              {t('plugins.skillsPage.openPlugin')}
+              {t('plugins:skillsPage.openPlugin')}
             </SectionLink>
           ) : undefined
         }
@@ -241,23 +241,23 @@ export function SubagentsList() {
       <PluginListFrame
         list={list}
         query={subagentsQuery}
-        loadFailed={t('plugins.loadFailed.subagents')}
-        noun={t('plugins.filter.nounSubagents')}
+        loadFailed={t('plugins:loadFailed.subagents')}
+        noun={t('plugins:filter.nounSubagents')}
         bulk={bulk}
         hidden={!!detailView || formOpen}
         className="pp-list"
       >
         {(own.length > 0 || !list.narrowed) && (
-          <SurfaceSection title={t('plugins.subagents.addedByYou')} count={own.length || undefined}>
+          <SurfaceSection title={t('plugins:subagents.addedByYou')} count={own.length || undefined}>
             {own.length > 0 ? (
               <SurfaceGrid>{own.map(renderCell)}</SurfaceGrid>
             ) : (
               <EmptyState
                 compact
-                message={t('plugins.subagents.emptyOwn')}
+                message={t('plugins:subagents.emptyOwn')}
                 action={
                   <HeaderButton variant="secondary" icon={FilePlus} onClick={() => openNew(null)}>
-                    {t('plugins.addMenu.newSubagent')}
+                    {t('plugins:addMenu.newSubagent')}
                   </HeaderButton>
                 }
               />
@@ -266,7 +266,7 @@ export function SubagentsList() {
         )}
         {pluginGroups.map(pluginSection)}
         {builtIn.length > 0 && (
-          <SurfaceSection title={t('plugins.subagents.builtIn')} count={builtIn.length}>
+          <SurfaceSection title={t('plugins:subagents.builtIn')} count={builtIn.length}>
             <SurfaceGrid>{builtIn.map(renderCell)}</SurfaceGrid>
           </SurfaceSection>
         )}
@@ -357,7 +357,7 @@ function SubagentListCell({
       <div className="pp-confirm">
         <ConfirmStrip
           {...removalCopy(t, view, resetFields, busy)}
-          cancelLabel={t('plugins.skills.deleteConfirmNo')}
+          cancelLabel={t('plugins:skills.deleteConfirmNo')}
           pending={busy}
           onConfirm={onConfirm}
           onCancel={onCancel}
@@ -368,7 +368,7 @@ function SubagentListCell({
 
   const problem = view.problems[0];
   const modelParts = modelMeta(t, view, metadata);
-  if (view.edited) modelParts.push(t('plugins.subagents.edited'));
+  if (view.edited) modelParts.push(t('plugins:subagents.edited'));
   const meta = (
     <span className="sa-meta">
       {problem ? (
@@ -392,16 +392,16 @@ function SubagentListCell({
       trailing={<CellState state={on ? 'on' : 'off'} />}
       onOpen={onOpen}
       menu={
-        <CellMenu label={t('mcp.row.actionsAria', { name: view.name })}>
+        <CellMenu label={t('mcp:row.actionsAria', { name: view.name })}>
           {!orphan && (
             <>
               <DropdownMenuItem onSelect={onToggle}>
                 <Power className="h-3.5 w-3.5" />
-                {view.enabled ? t('plugins.pluginsPage.switchOff') : t('plugins.pluginsPage.switchOn')}
+                {view.enabled ? t('plugins:pluginsPage.switchOff') : t('plugins:pluginsPage.switchOn')}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onDuplicate}>
                 <Copy className="h-3.5 w-3.5" />
-                {t('plugins.subagents.duplicate')}
+                {t('plugins:subagents.duplicate')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
@@ -409,7 +409,7 @@ function SubagentListCell({
           {custom || orphan ? (
             <DropdownMenuItem variant="destructive" onSelect={onAsk}>
               <Trash2 className="h-3.5 w-3.5" />
-              {t('plugins.subagents.remove')}
+              {t('plugins:subagents.remove')}
             </DropdownMenuItem>
           ) : isResettable(view) ? (
             <DropdownMenuItem onSelect={onAsk}>

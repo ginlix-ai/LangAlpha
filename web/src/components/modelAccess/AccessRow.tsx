@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ClaudeCodePlan } from '@/api/model';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
-import { llmProviderArt } from '@/lib/brandArt';
+import { llmProviderArt } from '@/lib/providerArt';
 import { cn } from '@/lib/utils';
 import { StatusActions, StatusLabel, type RowStatus } from './parts';
 import { UsageCells, UsageDetail } from './PlanUsage';

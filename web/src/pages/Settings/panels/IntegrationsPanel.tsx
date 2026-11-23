@@ -37,10 +37,10 @@ export function IntegrationsPanel() {
                   {messagingAppName(app)}
                 </span>
               )}
-              description={linked && t(isLinked ? 'settings.integrations.connected' : 'settings.integrations.notConnected')}
+              description={linked && t(isLinked ? 'settings:integrations.connected' : 'settings:integrations.notConnected')}
             >
               <ConsoleLink path={`integrations?app=${app}`}>
-                {t(`settings.integrations.${action}`)}
+                {t(`settings:integrations.${action}`)}
                 <span className="sr-only"> {messagingAppName(app)}</span>
               </ConsoleLink>
             </SettingRow>
@@ -51,7 +51,7 @@ export function IntegrationsPanel() {
       <SettingsGroup>
         <SettingRow {...copy(SETTINGS.connectedApps)}>
           <ConsoleLink path="connected-apps">
-            {t('settings.integrations.manage')}
+            {t('settings:integrations.manage')}
             <span className="sr-only"> {copy(SETTINGS.connectedApps).label}</span>
           </ConsoleLink>
         </SettingRow>

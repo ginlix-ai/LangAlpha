@@ -84,11 +84,11 @@ export function parseSchedule(expression: string): Schedule {
 }
 
 function dayList(days: boolean[], t: TFunction, locale: string): string {
-  if (sameDays(days, MON_TO_FRI)) return t('automation.cron.weekdays');
-  if (sameDays(days, WEEKEND)) return t('automation.cron.weekends');
+  if (sameDays(days, MON_TO_FRI)) return t('automation:cron.weekdays');
+  if (sameDays(days, WEEKEND)) return t('automation:cron.weekends');
   return weekdayNames(locale)
     .filter((_, i) => days[i])
-    .join(t('automation.cron.daySeparator'));
+    .join(t('automation:cron.daySeparator'));
 }
 
 /** A schedule in words, in the reader's language and clock. */
@@ -96,28 +96,28 @@ export function describeSchedule(s: Schedule, t: TFunction, locale: string): str
   switch (s.kind) {
     case 'minutes':
       return s.interval === 1
-        ? t('automation.cron.everyMinute')
-        : t('automation.cron.everyMinutes', { n: s.interval });
+        ? t('automation:cron.everyMinute')
+        : t('automation:cron.everyMinutes', { n: s.interval });
     case 'hours':
       return s.interval === 1
-        ? t('automation.cron.everyHour')
-        : t('automation.cron.everyHours', { n: s.interval });
+        ? t('automation:cron.everyHour')
+        : t('automation:cron.everyHours', { n: s.interval });
     case 'hourly':
       return s.minute === 0
-        ? t('automation.cron.everyHour')
-        : t('automation.cron.hourlyAt', { minute: String(s.minute).padStart(2, '0'), m: s.minute });
+        ? t('automation:cron.everyHour')
+        : t('automation:cron.hourlyAt', { minute: String(s.minute).padStart(2, '0'), m: s.minute });
     case 'days': {
       const time = formatTimeOfDay(s.hour, s.minute, locale);
       return s.days.every(Boolean)
-        ? t('automation.cron.daily', { time })
-        : t('automation.cron.weekly', { time, days: dayList(s.days, t, locale) });
+        ? t('automation:cron.daily', { time })
+        : t('automation:cron.weekly', { time, days: dayList(s.days, t, locale) });
     }
     // The same "At time, when" shape as a weekly schedule, short enough for a list line.
     case 'monthly': {
       const time = formatTimeOfDay(s.hour, s.minute, locale);
       return s.dayOfMonth === 'L'
-        ? t('automation.cron.monthEnd', { time })
-        : t('automation.cron.monthly', { time, count: s.dayOfMonth, ordinal: true });
+        ? t('automation:cron.monthEnd', { time })
+        : t('automation:cron.monthly', { time, count: s.dayOfMonth, ordinal: true });
     }
     case 'custom':
       return s.raw;

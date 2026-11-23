@@ -27,16 +27,16 @@ export interface AutomationTemplate {
 export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
   {
     id: 'custom',
-    nameKey: 'automation.blankAutomation',
-    descriptionKey: 'automation.blankAutomationDesc',
+    nameKey: 'automation:blankAutomation',
+    descriptionKey: 'automation:blankAutomationDesc',
     icon: Plus,
     runsIn: 'all',
     defaults: {},
   },
   {
     id: 'price_alert',
-    nameKey: 'automation.templatePriceAlert',
-    descriptionKey: 'automation.templatePriceAlertDesc',
+    nameKey: 'automation:templatePriceAlert',
+    descriptionKey: 'automation:templatePriceAlertDesc',
     icon: TrendingUp,
     runsIn: 'all',
     defaults: {
@@ -47,8 +47,8 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
   },
   {
     id: 'morning_briefing',
-    nameKey: 'automation.templateMorningBriefing',
-    descriptionKey: 'automation.templateMorningBriefingDesc',
+    nameKey: 'automation:templateMorningBriefing',
+    descriptionKey: 'automation:templateMorningBriefingDesc',
     icon: Sun,
     runsIn: 'all',
     defaults: {
@@ -61,8 +61,8 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
   },
   {
     id: 'weekly_review',
-    nameKey: 'automation.templateWeeklyReview',
-    descriptionKey: 'automation.templateWeeklyReviewDesc',
+    nameKey: 'automation:templateWeeklyReview',
+    descriptionKey: 'automation:templateWeeklyReviewDesc',
     icon: BarChart3,
     runsIn: 'workspace',
     defaults: {
@@ -75,8 +75,8 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
   },
   {
     id: 'earnings_watch',
-    nameKey: 'automation.templateEarningsWatch',
-    descriptionKey: 'automation.templateEarningsWatchDesc',
+    nameKey: 'automation:templateEarningsWatch',
+    descriptionKey: 'automation:templateEarningsWatchDesc',
     icon: CalendarSearch,
     runsIn: 'workspace',
     defaults: {

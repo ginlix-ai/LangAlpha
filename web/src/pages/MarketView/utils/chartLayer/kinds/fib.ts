@@ -59,7 +59,7 @@ function range(p: Painter, d: FibScene): [number, number] | null {
 }
 
 export const fib: DrawingKind<FibDrawing, FibScene> = {
-  nameKey: 'marketView.layerExplain.types.fib',
+  nameKey: 'marketView:layerExplain.types.fib',
   times: (d) => [d.p1.time, d.p2.time],
   anchors: (d) => [d.p1, d.p2],
   resolve(d, { base, P }) {

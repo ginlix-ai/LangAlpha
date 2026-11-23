@@ -331,7 +331,7 @@ export const SelectionCommentOverlay = React.memo(function SelectionCommentOverl
           type="button"
           className="selection-pin"
           style={{ left: `${p.left}px`, top: `${p.top}px` }}
-          title={t('marketView.selection.editChip')}
+          title={t('marketView:selection.editChip')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => chartSelectionStore.openEditor(p.id)}
         >
@@ -355,14 +355,14 @@ export const SelectionCommentOverlay = React.memo(function SelectionCommentOverl
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={t('marketView.selection.commentPlaceholder')}
+              placeholder={t('marketView:selection.commentPlaceholder')}
             />
             <button
               type="button"
               className="selection-composer-send"
               aria-label={active.status === 'pending'
-                ? t('marketView.selection.commentAdd')
-                : t('marketView.selection.commentSave')}
+                ? t('marketView:selection.commentAdd')
+                : t('marketView:selection.commentSave')}
               onClick={onPrimary}
             >
               {active.status === 'pending' ? <Plus size={16} /> : <Check size={15} />}
@@ -371,7 +371,7 @@ export const SelectionCommentOverlay = React.memo(function SelectionCommentOverl
           <button
             type="button"
             className="selection-composer-cancel"
-            aria-label={t('marketView.selection.removeChip')}
+            aria-label={t('marketView:selection.removeChip')}
             onClick={onDiscard}
           >
             <X size={14} />

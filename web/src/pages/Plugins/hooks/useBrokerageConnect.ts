@@ -68,7 +68,7 @@ export function useBrokerageConnect({
       if (!oauth.offerSignInIfRefused(err, connectRequest(brokerage, row))) {
         toast({
           variant: 'destructive',
-          title: t('plugins.brokerages.toggleFailed'),
+          title: t('plugins:brokerages.toggleFailed'),
           description: formatApiErrorDetail(err),
         });
       }

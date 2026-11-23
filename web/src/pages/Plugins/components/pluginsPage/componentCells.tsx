@@ -75,7 +75,7 @@ export function SubagentCell({
     <SurfaceCell
       mark={<BrandMark name={name} kind="subagent" size="md" />}
       name={name}
-      meta={view?.edited ? <span className="pp-cell-meta">{t('plugins.subagents.edited')}</span> : null}
+      meta={view?.edited ? <span className="pp-cell-meta">{t('plugins:subagents.edited')}</span> : null}
       line={view?.description || null}
       off={!on}
       trailing={view ? <CellState state={on ? 'on' : 'off'} /> : null}

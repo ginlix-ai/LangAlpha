@@ -1,7 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, lookup, zhCN } from '@/test/catalogs';
 import {
   CALLBACK_ERROR_REASONS,
   CALLBACK_PARAMS,
@@ -17,16 +16,6 @@ import {
 function params(query: string) {
   return new URLSearchParams(query);
 }
-function sentence(catalog: object, key: string): unknown {
-  return key.split('.').reduce<unknown>(
-    (acc, part) =>
-      acc && typeof acc === 'object' && part in acc
-        ? (acc as Record<string, unknown>)[part]
-        : undefined,
-    catalog,
-  );
-}
-
 describe('readConnectOutcome', () => {
   it('is silent on a landing that is not a callback', () => {
     expect(readConnectOutcome(params('tab=brokerages'))).toBeNull();
@@ -45,11 +34,11 @@ describe('readConnectOutcome', () => {
       const outcome = readConnectOutcome(params(`mcp_error=${reason}`));
       expect(outcome).toMatchObject({ kind: 'failed', server: null });
       const key = (outcome as { reasonKey: string }).reasonKey;
-      expect(key).toBe(`plugins.oauth.callbackError.${reason}`);
+      expect(key).toBe(`plugins:oauth.callbackError.${reason}`);
       // Both catalogs, because the key is built by template and the tree-wide
       // sweep that would otherwise catch this cannot read one.
-      expect(typeof sentence(enUS, key)).toBe('string');
-      expect(typeof sentence(zhCN, key)).toBe('string');
+      expect(typeof lookup(enUS, key)).toBe('string');
+      expect(typeof lookup(zhCN, key)).toBe('string');
     }
   });
 
@@ -61,12 +50,12 @@ describe('readConnectOutcome', () => {
         kind: 'failed',
         server: null,
         plugin: null,
-        reasonKey: 'plugins.oauth.callbackError.unknown',
+        reasonKey: 'plugins:oauth.callbackError.unknown',
         detail: null,
       });
     }
-    expect(typeof sentence(enUS, 'plugins.oauth.callbackError.unknown')).toBe('string');
-    expect(typeof sentence(zhCN, 'plugins.oauth.callbackError.unknown')).toBe('string');
+    expect(typeof lookup(enUS, 'plugins:oauth.callbackError.unknown')).toBe('string');
+    expect(typeof lookup(zhCN, 'plugins:oauth.callbackError.unknown')).toBe('string');
   });
 
   it('drops a server name that could not be one', () => {

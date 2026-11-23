@@ -109,7 +109,7 @@ export function ConnectorCallout({
         <DetailCallout
           tone="quiet"
           icon={<Loader size={14} className="text-current" />}
-          title={t('plugins.connectorsPage.callout.keyChecking', { name })}
+          title={t('plugins:connectorsPage.callout.keyChecking', { name })}
         />
       );
     case 'keySaved':
@@ -117,9 +117,9 @@ export function ConnectorCallout({
         <DetailCallout
           tone="quiet"
           icon={<CheckCircle2 className="h-4 w-4" aria-hidden />}
-          title={t('plugins.connectorsPage.callout.keySaved')}
+          title={t('plugins:connectorsPage.callout.keySaved')}
         >
-          {t('plugins.connectorsPage.callout.keySavedBody')}
+          {t('plugins:connectorsPage.callout.keySavedBody')}
         </DetailCallout>
       );
     case 'keyAccepted':
@@ -127,11 +127,11 @@ export function ConnectorCallout({
         <DetailCallout
           tone="quiet"
           icon={<CheckCircle2 className="h-4 w-4" style={{ color: 'var(--color-profit)' }} aria-hidden />}
-          title={t('plugins.connectorsPage.callout.keyAccepted')}
+          title={t('plugins:connectorsPage.callout.keyAccepted')}
         >
           <span className="flex flex-col gap-0.5">
             <span data-testid="detail-key-verdict">{verdictDetail(callout.result, t)}</span>
-            {!catalog?.enabled && <span>{t('plugins.connectorsPage.callout.switchOnNow')}</span>}
+            {!catalog?.enabled && <span>{t('plugins:connectorsPage.callout.switchOnNow')}</span>}
           </span>
         </DetailCallout>
       );
@@ -152,7 +152,7 @@ export function ConnectorCallout({
         keys.length > 0 ? null : (
           <span className="connector-verbs-row">
             <button type="button" {...buttonSlot('outline')} className="connector-btn" onClick={() => void fix.recheck()}>
-              {t('plugins.connectorsPage.callout.checkAgain')}
+              {t('plugins:connectorsPage.callout.checkAgain')}
             </button>
             {edit}
           </span>
@@ -161,7 +161,7 @@ export function ConnectorCallout({
         <DetailCallout
           align="start"
           icon={warnIcon}
-          title={t('plugins.connectorsPage.callout.keyFailed')}
+          title={t('plugins:connectorsPage.callout.keyFailed')}
           action={
             probeRowState(result.verdict)?.oauth === 'no' ? retry : withConnect(retry, keys.length > 0)
           }
@@ -183,15 +183,15 @@ export function ConnectorCallout({
       const verdict = catalog?.probe?.verdict;
       const text =
         verdict === 'missing_secrets'
-          ? t('plugins.connectorsPage.callout.missingBody', {
+          ? t('plugins:connectorsPage.callout.missingBody', {
               keys: keys.join(', '),
               count: keys.length,
             })
           : verdict === 'credential_rejected'
-            ? t('plugins.connectorsPage.callout.rejectedBody')
+            ? t('plugins:connectorsPage.callout.rejectedBody')
             : verdict === 'needs_credential'
-              ? t('plugins.connectorsPage.callout.credentialBody')
-              : t('plugins.connectorsPage.callout.unreachableBody');
+              ? t('plugins:connectorsPage.callout.credentialBody')
+              : t('plugins:connectorsPage.callout.unreachableBody');
       return (
         <DetailCallout
           align={keys.length > 0 ? 'start' : 'center'}
@@ -215,20 +215,20 @@ export function ConnectorCallout({
           icon={<LogIn className="h-4 w-4" aria-hidden />}
           title={
             status
-              ? t('plugins.connectorsPage.callout.reconnect', { name })
+              ? t('plugins:connectorsPage.callout.reconnect', { name })
               : signIn
-                ? t('plugins.connectorsPage.callout.signIn', { name })
-                : t('plugins.connectorsPage.callout.notChecked', { name })
+                ? t('plugins:connectorsPage.callout.signIn', { name })
+                : t('plugins:connectorsPage.callout.notChecked', { name })
           }
           action={connect?.('loud')}
         >
           <span className="flex flex-col gap-1">
             <span>
               {status
-                ? t('plugins.connectorsPage.callout.reconnectBody')
+                ? t('plugins:connectorsPage.callout.reconnectBody')
                 : signIn
-                  ? t('plugins.connectorsPage.callout.signInBody')
-                  : t('plugins.connectorsPage.callout.notCheckedBody')}
+                  ? t('plugins:connectorsPage.callout.signInBody')
+                  : t('plugins:connectorsPage.callout.notCheckedBody')}
             </span>
             <VendorNotes vendor={vendor} unconnected rowKey={`detail-${name}`} />
           </span>

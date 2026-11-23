@@ -67,14 +67,14 @@ export function OrderFilters({
 }) {
   const { t } = useTranslation();
   const { data: brokerages } = useBrokerages();
-  const all = t('orders.filter.all');
+  const all = t('orders:filter.all');
   const active =
     !!filters.vendor || !!filters.mode || !!filters.status || !!filters.asset_class;
 
   return (
     <div className="flex flex-wrap items-end gap-3">
       <Select
-        label={t('orders.filter.vendor')}
+        label={t('orders:filter.vendor')}
         value={filters.vendor ?? ''}
         onChange={(vendor) => onChange({ ...filters, vendor: vendor || null })}
       >
@@ -87,7 +87,7 @@ export function OrderFilters({
       </Select>
 
       <Select
-        label={t('orders.filter.mode')}
+        label={t('orders:filter.mode')}
         value={filters.mode ?? ''}
         onChange={(mode) =>
           onChange({ ...filters, mode: (mode as OrderMode) || null })
@@ -102,7 +102,7 @@ export function OrderFilters({
       </Select>
 
       <Select
-        label={t('orders.filter.status')}
+        label={t('orders:filter.status')}
         value={filters.status ?? ''}
         onChange={(status) =>
           onChange({ ...filters, status: (status as OrderStatusGroup) || null })
@@ -117,7 +117,7 @@ export function OrderFilters({
       </Select>
 
       <Select
-        label={t('orders.filter.assetClass')}
+        label={t('orders:filter.assetClass')}
         value={filters.asset_class ?? ''}
         onChange={(assetClass) =>
           onChange({
@@ -136,7 +136,7 @@ export function OrderFilters({
 
       {active && (
         <HeaderButton variant="ghost" icon={X} onClick={() => onChange({})}>
-          {t('orders.filter.clear')}
+          {t('orders:filter.clear')}
         </HeaderButton>
       )}
     </div>

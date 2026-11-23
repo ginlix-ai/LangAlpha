@@ -189,7 +189,7 @@ describe('HtmlViewer', () => {
     grant.state.minted = false;
     grant.state.error = new Error('Request failed with status code 500');
     renderViewer(<HtmlViewer {...defaultProps} />);
-    expect(screen.getByRole('alert')).toHaveTextContent('filePanel.htmlPreviewFailed');
+    expect(screen.getByRole('alert')).toHaveTextContent('filePanel:htmlPreviewFailed');
     fireEvent.click(screen.getByText('common.retry'));
     expect(grant.refetch).toHaveBeenCalledTimes(1);
   });

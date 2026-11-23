@@ -92,7 +92,7 @@ export function Brokerages() {
       // The strip stays up so the user can retry or back out.
       toast({
         variant: 'destructive',
-        title: t('plugins.servers.deleteFailed'),
+        title: t('plugins:servers.deleteFailed'),
         description: formatApiErrorDetail(err),
       });
     }
@@ -127,11 +127,11 @@ export function Brokerages() {
 
   const removeStrip = removing && (
     <ConfirmStrip
-      message={t('plugins.brokerages.removeConfirm', { server: removing.b.label })}
+      message={t('plugins:brokerages.removeConfirm', { server: removing.b.label })}
       confirmLabel={
-        deleteMutation.isPending ? t('common.loading') : t('plugins.servers.deleteConfirmYes')
+        deleteMutation.isPending ? t('common.loading') : t('plugins:servers.deleteConfirmYes')
       }
-      cancelLabel={t('plugins.servers.deleteConfirmNo')}
+      cancelLabel={t('plugins:servers.deleteConfirmNo')}
       pending={deleteMutation.isPending}
       onConfirm={() => void confirmRemove(removing.b.name)}
       onCancel={() => setRemovingName(null)}
@@ -158,16 +158,16 @@ export function Brokerages() {
         // Why a broker cannot connect from here is said on its card, beside
         // the button it stops; said again up here it was the same sentence
         // twice on one screen.
-        lead={t('plugins.brokerages.intro')}
+        lead={t('plugins:brokerages.intro')}
         aside={<TradingPermissionBlock />}
       >
         {/* Where the column stacks, the aside falls below every card, and
             what a brokerage connection is would be read after the choice it
             explains. The same lead sits above the cards there instead. */}
-        <p className="accounts-lead-stacked">{t('plugins.brokerages.intro')}</p>
+        <p className="accounts-lead-stacked">{t('plugins:brokerages.intro')}</p>
         {listError ? (
           <LoadFailed
-            what={t('plugins.loadFailed.brokerages')}
+            what={t('plugins:loadFailed.brokerages')}
             error={listError}
             onRetry={() => {
               if (error) void refetch();
@@ -177,7 +177,7 @@ export function Brokerages() {
         ) : loadingOffers || loadingCatalog ? (
           <ListSkeleton rows={2} />
         ) : shipped.length === 0 ? (
-          <ListEmpty>{t('plugins.brokerages.none')}</ListEmpty>
+          <ListEmpty>{t('plugins:brokerages.none')}</ListEmpty>
         ) : (
           <>
             <div className="broker-cards">

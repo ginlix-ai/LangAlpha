@@ -80,7 +80,7 @@ describe('ToolCallDetailView — task panel', () => {
     // getAllByText: a running chip carries the key twice — the visible text
     // and the ascii loader's screen-reader label.
     expect(screen.getAllByText('chat.taskCard.statusRunning').length).toBeGreaterThan(0);
-    expect(screen.getByText('toolArtifact.goToSubagentTab')).toBeInTheDocument();
+    expect(screen.getByText('toolArtifact:goToSubagentTab')).toBeInTheDocument();
   });
 
   it('reports a failed task as failed rather than as a missing result', () => {

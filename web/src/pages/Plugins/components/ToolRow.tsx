@@ -73,7 +73,7 @@ function ToolDocBody({ id, doc }: { id: string; doc: ToolDoc }) {
       ))}
       {doc.params.length > 0 && (
         <div className="tool-doc-block">
-          <div className="tool-doc-label">{t('plugins.detail.toolParams')}</div>
+          <div className="tool-doc-label">{t('plugins:detail.toolParams')}</div>
           <dl className="tool-params">
             {doc.params.map((param) => (
               <ToolParamRow key={param.name} param={param} />
@@ -83,7 +83,7 @@ function ToolDocBody({ id, doc }: { id: string; doc: ToolDoc }) {
       )}
       {doc.returns && (
         <div className="tool-doc-block">
-          <div className="tool-doc-label">{t('plugins.detail.toolReturns')}</div>
+          <div className="tool-doc-label">{t('plugins:detail.toolReturns')}</div>
           <p className="tool-doc-returns">{doc.returns}</p>
         </div>
       )}
@@ -108,11 +108,11 @@ function ToolParamRow({ param }: { param: ToolParam }) {
         <span className="tool-param-meta">
           {param.type && <span>{param.type}</span>}
           {param.required ? (
-            <span className="is-required">{t('plugins.detail.toolRequired')}</span>
+            <span className="is-required">{t('plugins:detail.toolRequired')}</span>
           ) : (
             param.defaultValue !== null && (
               <span>
-                {t('plugins.detail.toolDefault')} <code>{param.defaultValue}</code>
+                {t('plugins:detail.toolDefault')} <code>{param.defaultValue}</code>
               </span>
             )
           )}

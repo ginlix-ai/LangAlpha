@@ -87,7 +87,7 @@ export function ManageSheet({
         <div className="shell-box flex items-center justify-between gap-3 p-4">
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {local ? t('setup.baseUrlLabel') : t('modelAccess.apiKey.savedKey')}
+              {local ? t('setup:baseUrlLabel') : t('modelAccess.apiKey.savedKey')}
             </span>
             <span className="truncate font-mono text-sm" style={{ color: 'var(--color-text-primary)' }}>
               {keyDetail(p, t)}
@@ -139,7 +139,7 @@ export function ManageSheet({
             }
           }}
         >
-          {picker.saving ? t('setup.saving') : t('modelAccess.models.save')}
+          {picker.saving ? t('setup:saving') : t('modelAccess.models.save')}
         </Button>
       </div>
     </div>

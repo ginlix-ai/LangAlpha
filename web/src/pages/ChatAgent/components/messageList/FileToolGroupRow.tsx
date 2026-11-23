@@ -38,7 +38,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
   const isFailed = items.some(isFailedCall);
   const single = items.length === 1;
   const item = items[0];
-  const failedLabel = t('toolArtifact.a11y.toolCallFailed');
+  const failedLabel = t('toolArtifact:a11y.toolCallFailed');
 
   const paths: string[] = [];
   for (const item of items) {
@@ -47,10 +47,10 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
   }
   const verbKey = toolName === 'Edit' ? 'edit' : toolName === 'Write' ? 'write' : 'read';
   const title = single ? getCompletedRowTitle(toolName, item.toolCall, t, { root }) : paths.length > 1
-    ? t(`toolArtifact.fileGroup.${verbKey}`, { count: paths.length })
-    : t(`toolArtifact.fileGroup.${verbKey}One`);
+    ? t(`toolArtifact:fileGroup.${verbKey}`, { count: paths.length })
+    : t(`toolArtifact:fileGroup.${verbKey}One`);
   const repeat = !single && paths.length <= 1
-    ? (toolName === 'Edit' ? t('toolArtifact.fileGroup.edits', { count: items.length }) : `${items.length}×`)
+    ? (toolName === 'Edit' ? t('toolArtifact:fileGroup.edits', { count: items.length }) : `${items.length}×`)
     : null;
 
   const diffs = toolName === 'Edit'
@@ -60,7 +60,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
   const category = categorizeTool(toolName, item.toolCall, root);
   const tab = category === 'memoryRead' || category === 'memoryWrite' ? 'memory'
     : category === 'memo' || category === 'memoWrite' ? 'memo' : 'files';
-  const openLabel = t('toolArtifact.a11y.openInTab', { tab: t(`filePanel.tabs.${tab}`) });
+  const openLabel = t('toolArtifact:a11y.openInTab', { tab: t(`filePanel:tabs.${tab}`) });
   const singlePath = filePathOf(item);
   const singleLabel = getCompletedSummary(toolName, item.toolCall, t, { root })
     || (singlePath && classifyAgentPath(singlePath, root).kind === 'file' ? singlePath.split('/').pop() : null);
@@ -105,7 +105,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
                 className="inline-flex items-center shrink-0 bg-transparent border-0 p-0 cursor-pointer"
                 style={{ color: 'inherit', alignSelf: 'center' }}
                 aria-expanded={expanded}
-                aria-label={expanded ? t('toolArtifact.a11y.collapseDiff') : t('toolArtifact.a11y.expandDiff')}
+                aria-label={expanded ? t('toolArtifact:a11y.collapseDiff') : t('toolArtifact:a11y.expandDiff')}
               >
                 <motion.span className="inline-flex" animate={{ rotate: expanded ? 90 : 0 }} transition={SPRING_FOLD}>
                   <ChevronDown className="h-3 w-3 -rotate-90" style={{ opacity: 0.5 }} />

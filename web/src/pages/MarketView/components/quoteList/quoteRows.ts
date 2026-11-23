@@ -36,20 +36,20 @@ export type Column =
   | { key: 'symbol'; label: string; print: 'symbol' }
   | { key: Exclude<SortKey, 'symbol'>; label: string; print: 'price' | 'pct' | 'money'; value: (row: QuoteListRow) => number | null };
 
-const SYMBOL: Column = { key: 'symbol', label: 'marketView.quoteList.col.symbol', print: 'symbol' };
+const SYMBOL: Column = { key: 'symbol', label: 'marketView:quoteList.col.symbol', print: 'symbol' };
 const MOVE = (label: string): Column => ({ key: 'pct', label, print: 'pct', value: (r) => r.pct });
 
 export const COLUMNS: Record<QuoteListTab, readonly Column[]> = {
   watchlist: [
     SYMBOL,
-    { key: 'price', label: 'marketView.quoteList.col.last', print: 'price', value: (r) => r.price },
-    MOVE('marketView.quoteList.col.chg'),
+    { key: 'price', label: 'marketView:quoteList.col.last', print: 'price', value: (r) => r.price },
+    MOVE('marketView:quoteList.col.chg'),
   ],
   holdings: [
     SYMBOL,
-    { key: 'value', label: 'marketView.quoteList.col.value', print: 'money', value: (r) => r.value },
-    MOVE('marketView.quoteList.col.today'),
-    { key: 'pl', label: 'marketView.quoteList.col.pl', print: 'pct', value: (r) => r.plPct },
+    { key: 'value', label: 'marketView:quoteList.col.value', print: 'money', value: (r) => r.value },
+    MOVE('marketView:quoteList.col.today'),
+    { key: 'pl', label: 'marketView:quoteList.col.pl', print: 'pct', value: (r) => r.plPct },
   ],
 };
 

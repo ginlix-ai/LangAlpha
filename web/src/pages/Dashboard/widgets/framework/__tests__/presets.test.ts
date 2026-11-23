@@ -110,7 +110,7 @@ describe('presets', () => {
   // user-visible chrome (name/tag/description/bestFor + per-pill keys), and
   // every key must resolve to a non-empty string in BOTH locales. Rendering
   // is i18n-only after the literal cleanup — a missing key surfaces as the
-  // raw key path on the dialog ('dashboard.widgets.presets.foo.name') and
+  // raw key path on the dialog ('dashboard:widgets.presets.foo.name') and
   // the user sees the wrong copy.
   describe('preset i18n key coverage', () => {
     PRESETS_META.forEach((meta) => {

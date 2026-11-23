@@ -109,7 +109,7 @@ describe('ActivityBlock, live-row lifecycle states', () => {
 
     const badge = container.querySelector('.nrow .nrow-badge');
     expect(badge).not.toBeNull();
-    expect(badge!.getAttribute('aria-label')).toBe('toolArtifact.a11y.toolCallFailed');
+    expect(badge!.getAttribute('aria-label')).toBe('toolArtifact:a11y.toolCallFailed');
     // Failed rows stay neutral, no active rule.
     expect(container.querySelector('.nrow.state-active')).toBeNull();
   });
