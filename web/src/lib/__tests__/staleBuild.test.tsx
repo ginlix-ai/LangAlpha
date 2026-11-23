@@ -18,6 +18,7 @@ import { holdReload, trackRequest } from '@/lib/reloadHolds';
 import { authGeneration, clearAuthToken } from '@/lib/authToken';
 import { runAuthResets } from '@/lib/authResets';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
 import { Toast, ToastDescription, ToastProvider, ToastTitle, ToastViewport } from '@/components/ui/toast';
 import i18n from '@/i18n';
 
@@ -612,6 +613,23 @@ describe('StaleBuildBoundary', () => {
       </StaleBuildBoundary>,
     );
     expect(screen.getByRole('alert')).toBeInTheDocument();
+  });
+
+  it('leaves a dialog whose chunk is gone shut and lets the toast offer the reload', async () => {
+    // A dialog opened in a tab left open across a deploy: its chunk 404s. The
+    // page around it stays, rather than the failure reaching the app boundary.
+    const Dialog = React.lazy(() => Promise.reject(new Error(`${CHUNK_MSG}${window.location.origin}/assets/d-1234abcd.js`)));
+    render(
+      <>
+        <div data-testid="page" />
+        <MountOnceOpen open>
+          <Dialog />
+        </MountOnceOpen>
+      </>,
+    );
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('page')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('rethrows an ordinary error instead of swallowing it', () => {
