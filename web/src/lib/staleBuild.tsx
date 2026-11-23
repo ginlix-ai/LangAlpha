@@ -134,14 +134,20 @@ function currentBuild(): string | null {
   // there is exactly one module script in index.html — scripts/check-critical-path.mjs
   // fails the build otherwise, since a second one (an analytics or polyfill
   // loader in <head>) would be read as the entry and never match version.json,
-  // giving every user a permanent "new version" prompt.
-  const el = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
-  if (!el?.src) return null;
-  try {
-    return new URL(el.src, window.location.href).pathname.split('/').pop() || null;
-  } catch {
-    return null;
+  // giving every user a permanent "new version" prompt. A module script the
+  // edge adds to the served page (Cloudflare Web Analytics injects its beacon
+  // as one) is not in the build at all, so only a script under the build's own
+  // asset folder counts, wherever its base put that folder.
+  const assets = new URL(`${import.meta.env.BASE_URL}assets/`, window.location.href).href;
+  for (const el of document.querySelectorAll<HTMLScriptElement>('script[type="module"][src]')) {
+    try {
+      const url = new URL(el.src, window.location.href);
+      if (url.href.startsWith(assets)) return url.pathname.split('/').pop() || null;
+    } catch {
+      // An unparsable src is nobody's entry.
+    }
   }
+  return null;
 }
 
 const ABSOLUTE_URL = /https?:\/\/[^\s'")]+/g;
