@@ -8,8 +8,7 @@
  * or a dead end they were not warned about, so it is pinned both ways.
  */
 import { describe, expect, it } from 'vitest';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
+import { enUS, zhCN } from '@/test/catalogs';
 
 import {
   activeRungs,
@@ -144,7 +143,7 @@ describe('connectAsks', () => {
 /**
  * Every group the backend can offer has a sentence in both catalogs.
  *
- * The dialog reads these as `t(`plugins.brokerages.capabilities.${key}.label`)`,
+ * The dialog reads these as `t(`plugins:brokerages.capabilities.${key}.label`)`,
  * a template the tree-wide locale sweep cannot see, so nothing else notices one
  * going missing. What the user would then be shown is a raw key beside a switch
  * that decides whether an agent may spend their money.

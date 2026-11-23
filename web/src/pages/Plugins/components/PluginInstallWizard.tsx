@@ -276,17 +276,17 @@ export function PluginInstallWizard({
 
   function phaseLabel(s: InstallingStep): string {
     if (s.transport === 'zip' && s.uploadedAt === null) {
-      return t('plugins.install.uploading', { percent: s.pct });
+      return t('plugins:install.uploading', { percent: s.pct });
     }
     // A git source spends its first seconds downloading; a zip is already
     // there once its upload completes.
     const download = s.transport === 'git' ? DOWNLOAD_MS : 0;
     const elapsed = Math.max(0, now - (s.uploadedAt ?? s.startedAt));
-    if (elapsed < download) return t('plugins.install.downloading');
+    if (elapsed < download) return t('plugins:install.downloading');
     if (elapsed < download + CHECK_MS) {
-      return s.hasConnectors ? t('plugins.install.checking') : t('plugins.install.checkingPlugin');
+      return s.hasConnectors ? t('plugins:install.checking') : t('plugins:install.checkingPlugin');
     }
-    return t('plugins.install.installingPhase');
+    return t('plugins:install.installingPhase');
   }
 
   // A sign-in that asks first (a brokerage's capabilities) puts its consent
@@ -295,19 +295,19 @@ export function PluginInstallWizard({
   const shown = step.kind === 'signing-in' && oauth.pendingConfirm ? step.back : step;
 
   const stepTitles: Record<WizardStep['kind'], string> = {
-    source: t('plugins.install.stepSource'),
-    choose: t('plugins.install.stepChoose'),
-    keys: t('plugins.install.stepKeys'),
-    installing: t('plugins.install.stepInstalling'),
-    'signing-in': t('plugins.install.stepSigningIn'),
-    outcome: t('plugins.install.stepReport'),
+    source: t('plugins:install.stepSource'),
+    choose: t('plugins:install.stepChoose'),
+    keys: t('plugins:install.stepKeys'),
+    installing: t('plugins:install.stepInstalling'),
+    'signing-in': t('plugins:install.stepSigningIn'),
+    outcome: t('plugins:install.stepReport'),
   };
   const working = { color: 'var(--color-text-tertiary)' };
 
   return (
     <>
       <PluginDialog
-        title={t('plugins.install.title')}
+        title={t('plugins:install.title')}
         subtitle={stepTitles[shown.kind]}
         // Closing mid-install does not cancel it: the request is already with
         // the server, and the report it answers with is the only statement of
@@ -345,7 +345,7 @@ export function PluginInstallWizard({
               onSubmit={(secrets) => void install(shown.source, shown.subdir, secrets)}
               onBack={() => setStep(shown.back)}
               submitting={false}
-              submitLabel={t('plugins.install.keysInstall')}
+              submitLabel={t('plugins:install.keysInstall')}
             />
           )}
 
@@ -361,11 +361,11 @@ export function PluginInstallWizard({
               <span className="flex items-center gap-2">
                 <Loader size={14} className="text-current" />
                 {shown.kind === 'signing-in'
-                  ? t('plugins.install.openingSignIn')
+                  ? t('plugins:install.openingSignIn')
                   : phaseLabel(shown)}
               </span>
               {shown.kind === 'installing' && (
-                <span className="text-[0.6875rem]">{t('plugins.install.takesTime')}</span>
+                <span className="text-[0.6875rem]">{t('plugins:install.takesTime')}</span>
               )}
             </div>
           )}

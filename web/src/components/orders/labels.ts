@@ -19,31 +19,31 @@ import type {
  */
 
 export const ORDER_ASSET_CLASS_KEY: Record<OrderAssetClass, string> = {
-  equity: 'orders.assetClass.equity',
-  option: 'orders.assetClass.option',
-  option_combo: 'orders.assetClass.option_combo',
-  future: 'orders.assetClass.future',
-  crypto: 'orders.assetClass.crypto',
-  warrant: 'orders.assetClass.warrant',
-  other: 'orders.assetClass.other',
+  equity: 'orders:assetClass.equity',
+  option: 'orders:assetClass.option',
+  option_combo: 'orders:assetClass.option_combo',
+  future: 'orders:assetClass.future',
+  crypto: 'orders:assetClass.crypto',
+  warrant: 'orders:assetClass.warrant',
+  other: 'orders:assetClass.other',
 };
 
 export const ORDER_SIDE_KEY: Record<OrderSide, string> = {
-  buy: 'orders.side.buy',
-  sell: 'orders.side.sell',
-  sell_short: 'orders.side.sell_short',
-  buy_to_cover: 'orders.side.buy_to_cover',
+  buy: 'orders:side.buy',
+  sell: 'orders:side.sell',
+  sell_short: 'orders:side.sell_short',
+  buy_to_cover: 'orders:side.buy_to_cover',
 };
 
 export const ORDER_TYPE_KEY: Record<OrderType, string> = {
-  market: 'orders.orderType.market',
-  limit: 'orders.orderType.limit',
-  stop: 'orders.orderType.stop',
-  stop_limit: 'orders.orderType.stop_limit',
-  market_if_touched: 'orders.orderType.market_if_touched',
-  limit_if_touched: 'orders.orderType.limit_if_touched',
-  auction: 'orders.orderType.auction',
-  auction_limit: 'orders.orderType.auction_limit',
+  market: 'orders:orderType.market',
+  limit: 'orders:orderType.limit',
+  stop: 'orders:orderType.stop',
+  stop_limit: 'orders:orderType.stop_limit',
+  market_if_touched: 'orders:orderType.market_if_touched',
+  limit_if_touched: 'orders:orderType.limit_if_touched',
+  auction: 'orders:orderType.auction',
+  auction_limit: 'orders:orderType.auction_limit',
 };
 
 /**
@@ -52,25 +52,25 @@ export const ORDER_TYPE_KEY: Record<OrderType, string> = {
  * beyond `day` and `gtc` say nothing at all until they are spelled out.
  */
 export const ORDER_TIME_IN_FORCE_KEY: Record<OrderTimeInForce, string> = {
-  day: 'orders.timeInForce.day',
-  gtc: 'orders.timeInForce.gtc',
-  overnight: 'orders.timeInForce.overnight',
-  overnight_next_day: 'orders.timeInForce.overnight_next_day',
-  at_the_open: 'orders.timeInForce.at_the_open',
+  day: 'orders:timeInForce.day',
+  gtc: 'orders:timeInForce.gtc',
+  overnight: 'orders:timeInForce.overnight',
+  overnight_next_day: 'orders:timeInForce.overnight_next_day',
+  at_the_open: 'orders:timeInForce.at_the_open',
 };
 
 export const ORDER_SESSION_KEY: Record<OrderSession, string> = {
-  rth: 'orders.session.rth',
-  rth_plus_ext: 'orders.session.rth_plus_ext',
-  overnight: 'orders.session.overnight',
-  all_day: 'orders.session.all_day',
+  rth: 'orders:session.rth',
+  rth_plus_ext: 'orders:session.rth_plus_ext',
+  overnight: 'orders:session.overnight',
+  all_day: 'orders:session.all_day',
 };
 
 /** A call or a put in words: the letter is the vendor's shorthand, and on a
  *  card asking someone to buy one it is the part least worth guessing at. */
 export const OPTION_RIGHT_KEY: Record<OptionRight, string> = {
-  C: 'orders.optionRight.C',
-  P: 'orders.optionRight.P',
+  C: 'orders:optionRight.C',
+  P: 'orders:optionRight.P',
 };
 
 /**

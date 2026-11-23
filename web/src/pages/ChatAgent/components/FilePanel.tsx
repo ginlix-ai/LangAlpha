@@ -618,7 +618,7 @@ function FilePanel({
   // same guard is handed down to the tool tabs, whose result views carry links
   // off the route.
   const askDiscard = useCallback((discard: () => void) => ask(
-    { title: t('filePanel.discardTitle'), message: t('filePanel.discardUnsaved'), confirmLabel: t('filePanel.discard') },
+    { title: t('filePanel:discardTitle'), message: t('filePanel:discardUnsaved'), confirmLabel: t('filePanel:discard') },
     discard,
   ), [ask, t]);
 
@@ -760,10 +760,10 @@ function FilePanel({
   const meta = useMemo(() => {
     if (!selectedFile || !body) return null;
     const pages = pageCounts[selectedFile];
-    if (body.mime === 'pdf') return pages ? t('filePanel.metaPages', { count: pages }) : null;
+    if (body.mime === 'pdf') return pages ? t('filePanel:metaPages', { count: pages }) : null;
     if (body.content == null) return null;
     const lines = countLines(body.content);
-    return body.truncated ? t('filePanel.metaFirstLines', { count: lines }) : t('filePanel.metaLines', { count: lines });
+    return body.truncated ? t('filePanel:metaFirstLines', { count: lines }) : t('filePanel:metaLines', { count: lines });
   }, [selectedFile, body, pageCounts, t]);
 
   /** Opening a running app from the tree: the tab it already has, or a new one. */
@@ -779,17 +779,17 @@ function FilePanel({
   const liveViews: PanelLauncher[] = readOnly ? [] : [
     {
       key: 'chart',
-      label: t('filePanel.chartTab'),
+      label: t('filePanel:chartTab'),
       icon: CandlestickChart,
       open: () => { cancelPending(); tabs.openChart({ symbol: lastChartSymbol(workspaceId, { persist: persistStrip }) }); },
     },
-    ...(browserView && workspaceId && browserHere ? [{ key: 'browser', label: t('filePanel.browserTab'), icon: Globe, open: () => { cancelPending(); tabs.openBrowser(); } }] : []),
+    ...(browserView && workspaceId && browserHere ? [{ key: 'browser', label: t('filePanel:browserTab'), icon: Globe, open: () => { cancelPending(); tabs.openBrowser(); } }] : []),
   ];
 
   // Pinned above the tree's listing: the reader's stores, then the live views.
   const pinned: PanelLauncher[] = [
-    ...(stores ? [{ key: 'memory', label: t('filePanel.tabs.memory'), icon: BookMarked, open: openMemory }] : []),
-    ...(viewInMemo ? [{ key: 'memo', label: t('filePanel.tabs.memo'), icon: ScrollText, open: viewInMemo }] : []),
+    ...(stores ? [{ key: 'memory', label: t('filePanel:tabs.memory'), icon: BookMarked, open: openMemory }] : []),
+    ...(viewInMemo ? [{ key: 'memo', label: t('filePanel:tabs.memo'), icon: ScrollText, open: viewInMemo }] : []),
     ...liveViews,
   ];
 
@@ -803,9 +803,9 @@ function FilePanel({
   // it already has.
   const newTabMenu: NewTabMenu = {
     kinds: [
-      { key: 'files', label: t('filePanel.files'), icon: FolderTree, open: newTab },
+      { key: 'files', label: t('filePanel:files'), icon: FolderTree, open: newTab },
       ...liveViews,
-      ...(openStatus ? [{ key: 'status', label: t('filePanel.tabs.status'), icon: Activity, open: openStatus }] : []),
+      ...(openStatus ? [{ key: 'status', label: t('filePanel:tabs.status'), icon: Activity, open: openStatus }] : []),
     ],
     apps: previews.previews.map((app) => ({
       key: `app:${app.port}`, label: app.title || `:${app.port}`, icon: LayoutDashboard, open: () => openPreviewTab(app.port),
@@ -958,7 +958,7 @@ function FilePanel({
           {canDropHere && isDragOver && (
             <div className="file-panel-drag-overlay">
               <Upload className="h-8 w-8" style={{ color: 'var(--color-accent-primary)' }} />
-              <span>{t('filePanel.dropToUpload')}</span>
+              <span>{t('filePanel:dropToUpload')}</span>
             </div>
           )}
           {/* Still mounted under a full tree, at no width: the running apps'

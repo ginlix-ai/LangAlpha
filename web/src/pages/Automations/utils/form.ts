@@ -163,25 +163,25 @@ export function validateForm(
 ): FormProblem | null {
   if (form.trigger_type === 'once' && form.next_run_at !== initial?.next_run_at) {
     const at = Date.parse(form.next_run_at);
-    if (Number.isNaN(at)) return { messageKey: 'automation.onceHint', section: 'when' };
-    if (at <= now) return { messageKey: 'automation.oncePassed', section: 'when' };
+    if (Number.isNaN(at)) return { messageKey: 'automation:onceHint', section: 'when' };
+    if (at <= now) return { messageKey: 'automation:oncePassed', section: 'when' };
   }
   if (form.trigger_type === 'price') {
-    if (!isValidSymbol(form.price_symbol)) return { messageKey: 'automation.priceSymbolInvalid', section: 'when' };
+    if (!isValidSymbol(form.price_symbol)) return { messageKey: 'automation:priceSymbolInvalid', section: 'when' };
     const level = Number(form.price_value);
     if (!form.price_value.trim() || !Number.isFinite(level) || level <= 0) {
-      return { messageKey: 'automation.priceValuePositive', section: 'when' };
+      return { messageKey: 'automation:priceValuePositive', section: 'when' };
     }
     if (form.price_retrigger_mode === 'recurring' && form.price_cooldown_minutes.trim()) {
       const mins = cooldownMinutes(form.price_cooldown_minutes);
       if (mins === null || mins < MIN_COOLDOWN_MINUTES) {
-        return { messageKey: 'automation.cooldownTooShort', section: 'more' };
+        return { messageKey: 'automation:cooldownTooShort', section: 'more' };
       }
     }
   }
   // Saved unfilled, the agent would be asked about "{symbol}" itself.
   if (fillSymbol(form).includes(SYMBOL_PLACEHOLDER)) {
-    return { messageKey: 'automation.instructionSymbolUnfilled', section: 'instruction' };
+    return { messageKey: 'automation:instructionSymbolUnfilled', section: 'instruction' };
   }
   if (!form.place) return { messageKey: 'agents.workspaceRequired', section: 'more' };
   return null;

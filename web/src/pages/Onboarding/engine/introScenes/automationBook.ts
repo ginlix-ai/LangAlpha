@@ -76,37 +76,37 @@ export function useBook(now = NOW) {
   const nextBrief = on(new Date(now).getDate() + 1, 8, 0);
   const nextReview = on(23, 22, 0);
   return {
-    brief: t('automation.templateMorningBriefing'),
-    alert: t('automation.templatePriceAlert'),
+    brief: t('automation:templateMorningBriefing'),
+    alert: t('automation:templatePriceAlert'),
     briefLine,
     briefReadout: `${briefLine} · ${zone}`,
-    briefSentence: t('automation.sentenceThen', {
-      first: t('automation.sentenceRecurring', { schedule: briefLine, zone }),
-      then: t('automation.sentenceNextRun', {
+    briefSentence: t('automation:sentenceThen', {
+      first: t('automation:sentenceRecurring', { schedule: briefLine, zone }),
+      then: t('automation:sentenceNextRun', {
         when: formatUpcoming(nextBrief, locale, now),
         relative: relativeTime(nextBrief, locale, now),
       }),
     }),
     nextBrief: relativeTime(nextBrief, locale, now),
-    review: t('automation.templateWeeklyReview'),
+    review: t('automation:templateWeeklyReview'),
     reviewLine: cronToHuman(REVIEW_CRON, t, locale),
     nextReview: relativeTime(nextReview, locale, now),
     /** What runs next, soonest first. */
     upNext: [
-      [nextBrief, t('automation.templateMorningBriefing')],
-      [nextReview, t('automation.templateWeeklyReview')],
+      [nextBrief, t('automation:templateMorningBriefing')],
+      [nextReview, t('automation:templateWeeklyReview')],
     ] as [Date, string][],
     zone,
     alertLine: formatPriceTrigger(ALERT, t),
-    alertSentence: t('automation.sentenceWatching', {
+    alertSentence: t('automation:sentenceWatching', {
       condition: formatPriceTrigger(ALERT, t),
       retrigger: formatRetriggerMode(ALERT, t),
     }),
     /** The page header's census line; the watching part waits for a saved alert. */
     census: (watching = true) =>
       [
-        t('automation.censusScheduled', { count: 2 }),
-        ...(watching ? [t('automation.censusWatching', { count: 1 })] : []),
+        t('automation:censusScheduled', { count: 2 }),
+        ...(watching ? [t('automation:censusWatching', { count: 1 })] : []),
       ].join(' · '),
     away: distanceLabel(reading, t, locale),
     price: fixed2(NVDA.price, locale),
@@ -116,6 +116,6 @@ export function useBook(now = NOW) {
     upcoming: (d: Date) => formatUpcoming(d, locale, now),
     moment: (d: Date) => formatDateTimeShort(d, locale),
     took: (ms: number) => formatTook(ms, (key, opts) => t(key, opts)),
-    deliverTo: t('automation.deliverToDm', { app: t('automation.deliverToSlack') }),
+    deliverTo: t('automation:deliverToDm', { app: t('automation:deliverToSlack') }),
   };
 }

@@ -44,7 +44,7 @@ export function PluginOriginBadge({
 }) {
   const { t } = useTranslation();
   if (!plugin) return null;
-  const label = t('plugins.component.fromPlugin', { plugin });
+  const label = t('plugins:component.fromPlugin', { plugin });
   if (variant === 'prose') return <MetaText>{label}</MetaText>;
   return (
     <TagBadge soft title={label} bracket={bracket}>
@@ -68,11 +68,11 @@ export function PluginSuppressedBadge({
 }) {
   const { t } = useTranslation();
   if (!row || !isPluginSuppressed(row)) return null;
-  const label = t('plugins.component.suppressed', { plugin: row.plugin_name });
+  const label = t('plugins:component.suppressed', { plugin: row.plugin_name });
   if (variant === 'prose') return <MetaText>{label}</MetaText>;
   return (
     <TagBadge soft title={label}>
-      {t('plugins.component.suppressedBadge')}
+      {t('plugins:component.suppressedBadge')}
     </TagBadge>
   );
 }

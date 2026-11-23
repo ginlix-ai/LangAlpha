@@ -329,7 +329,7 @@ function ExplainCard({
           className="h-[3.5px] w-[3.5px] shrink-0 rounded-full"
           style={{ background: LAYER_COLOR }}
         />
-        <span className="shrink-0 uppercase">{t('marketView.layerExplain.types.label')}</span>
+        <span className="shrink-0 uppercase">{t('marketView:layerExplain.types.label')}</span>
         <span className="shrink-0">·</span>
         <span className="min-w-0 truncate">{layer}</span>
         {pinned && <X className="ml-auto h-[6.5px] w-[6.5px] shrink-0" />}
@@ -351,14 +351,14 @@ function ExplainCard({
           style={{ borderColor: 'var(--color-border-elevated)', color: 'var(--color-text-primary)' }}
         >
           <MessageSquarePlus className="h-[6.5px] w-[6.5px]" />
-          {t('marketView.layerExplain.ask')}
+          {t('marketView:layerExplain.ask')}
         </span>
       ) : (
         <span
           className="mt-px text-[5.5px] leading-none"
           style={{ color: 'var(--color-text-quaternary)' }}
         >
-          {t('marketView.layerExplain.pinHint')}
+          {t('marketView:layerExplain.pinHint')}
         </span>
       )}
     </span>

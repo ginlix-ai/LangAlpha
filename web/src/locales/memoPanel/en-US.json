@@ -1,0 +1,72 @@
+{
+  "title": "Memos",
+  "description": "Upload research memos, source documents, and reference material. Stored per user — the agent can read them across any workspace.",
+  "uploadButton": "Upload",
+  "uploadHint": "Markdown, TXT, CSV, JSON, or PDF · up to 5 MB",
+  "dragOverlayText": "Drop file to upload",
+  "refresh": "Refresh",
+  "selectMode": "Select",
+  "selectedCount_one": "{{count}} selected",
+  "selectedCount_other": "{{count}} selected",
+  "deleteSelected": "Delete selected",
+  "backToList": "Back to memos",
+  "unsavedDiscardConfirm": "You have unsaved memo edits. Discard them?",
+  "discardEditTitle": "Discard unsaved edits?",
+  "discardEdits": "Discard",
+  "loading": "Loading…",
+  "loadingList": "Loading memos…",
+  "uploading": "Uploading…",
+  "columns": {
+    "name": "Name",
+    "type": "Type",
+    "size": "Size",
+    "status": "Status",
+    "description": "Description",
+    "uploaded": "Uploaded"
+  },
+  "status": {
+    "pending": "Generating…",
+    "ready": "Ready",
+    "failed": "Failed"
+  },
+  "actions": {
+    "view": "View",
+    "download": "Download original",
+    "edit": "Edit",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "regenerate": "Regenerate"
+  },
+  "empty": {
+    "title": "No memos yet",
+    "hint": "Drop a file here or click Upload to add your first memo."
+  },
+  "errors": {
+    "fileTooLarge": "File is too large ({{size}} MB). Maximum is 5 MB.",
+    "unsupportedType": "Unsupported file type. Accepted: .md, .txt, .csv, .json, .pdf.",
+    "uploadFailed": "Upload failed",
+    "readFailed": "Failed to read memo",
+    "saveFailed": "Failed to save memo",
+    "deleteFailed": "Failed to delete memo",
+    "downloadFailed": "Download failed",
+    "regenerateFailed": "Failed to regenerate metadata",
+    "loadFailed": "Failed to load memos",
+    "bulkDeleteFailed": "{{count}} memo(s) failed to delete. {{first}}"
+  },
+  "notFound": "Memo \"{{key}}\" no longer exists. Showing all memos.",
+  "dismissNotFound": "Dismiss",
+  "confirm": {
+    "deleteTitle": "Delete memo",
+    "deleteBody": "Permanently delete \"{{name}}\"? This cannot be undone.",
+    "bulkDeleteTitle": "Delete selected memos",
+    "bulkDeleteBody": "Permanently delete {{count}} memo(s)? This cannot be undone.",
+    "deleteConfirm": "Delete",
+    "deleteCancel": "Cancel"
+  },
+  "source": {
+    "sandbox": "Sandbox"
+  },
+  "metadataFailed": "Metadata generation failed. Click Regenerate to retry.",
+  "pdfFallback": "Your browser cannot display this PDF inline."
+}

@@ -1,6 +1,7 @@
 import { use } from 'react';
 import type { IntroVisualId } from '../../registry';
 import type { IntroScene } from './types';
+import { withCopy } from '@/i18n';
 
 export type { IntroScene } from './types';
 
@@ -10,15 +11,25 @@ type SceneMap = Partial<Record<IntroVisualId, IntroScene>>;
 // and no others, so it downloads only the scenes it plays, and a What's New
 // downloads none. Most intros take one module; the chat intro takes two and
 // the thread intro four, one for each part of the app they show.
-const chat = () => import('./chat').then((m): SceneMap => m.chatScenes);
-const share = () => import('./share').then((m): SceneMap => m.shareScenes);
+const chat = withCopy(() => import('./chat').then((m): SceneMap => m.chatScenes), ['filePanel', 'toolArtifact']);
+const share = withCopy(() => import('./share').then((m): SceneMap => m.shareScenes), [
+  'filePanel', 'publish', 'toolArtifact',
+]);
 const workspaces = () => import('./workspaces').then((m): SceneMap => m.workspaceScenes);
-const threadFiles = () => import('./threadFiles').then((m): SceneMap => m.threadFileScenes);
-const threadChart = () => import('./threadChart').then((m): SceneMap => m.threadChartScenes);
-const thread = () => import('./thread').then((m): SceneMap => m.threadScenes);
-const dashboard = () => import('./dashboard').then((m): SceneMap => m.dashboardScenes);
-const market = () => import('./market').then((m): SceneMap => m.marketScenes);
-const automations = () => import('./automations').then((m): SceneMap => m.automationScenes);
+const threadFiles = withCopy(() => import('./threadFiles').then((m): SceneMap => m.threadFileScenes), [
+  'filePanel', 'toolArtifact',
+]);
+const threadChart = withCopy(() => import('./threadChart').then((m): SceneMap => m.threadChartScenes), [
+  'marketView', 'toolArtifact',
+]);
+const thread = withCopy(() => import('./thread').then((m): SceneMap => m.threadScenes), [
+  'filePanel', 'memoPanel', 'toolArtifact',
+]);
+const dashboard = withCopy(() => import('./dashboard').then((m): SceneMap => m.dashboardScenes), ['dashboard']);
+const market = withCopy(() => import('./market').then((m): SceneMap => m.marketScenes), ['marketView', 'toolArtifact']);
+const automations = withCopy(() => import('./automations').then((m): SceneMap => m.automationScenes), [
+  'automation', 'toolArtifact',
+]);
 
 const MODULES: Record<IntroVisualId, () => Promise<SceneMap>> = {
   twoModes: chat,

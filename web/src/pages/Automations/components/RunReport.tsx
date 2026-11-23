@@ -52,7 +52,7 @@ export function RunReport({ run, view, meta, layout, busy, onSkip, onOpenThread,
         <div className="automation-run-actions">
           {view.waiting && (
             <HeaderButton variant="secondary" disabled={busy} onClick={onSkip}>
-              {t('automation.skipRun')}
+              {t('automation:skipRun')}
             </HeaderButton>
           )}
           {onRetry && (
@@ -62,7 +62,7 @@ export function RunReport({ run, view, meta, layout, busy, onSkip, onOpenThread,
           )}
           {onResume && (
             <HeaderButton variant="secondary" disabled={busy} onClick={onResume}>
-              {t('automation.resume')}
+              {t('automation:resume')}
             </HeaderButton>
           )}
           {links.map((l) => (
@@ -72,7 +72,7 @@ export function RunReport({ run, view, meta, layout, busy, onSkip, onOpenThread,
           ))}
           {hasThread && (
             <button type="button" className="automation-link" onClick={onOpenThread}>
-              {t(view.ui.live ? 'automation.watchLive' : 'automation.openThread')}
+              {t(view.ui.live ? 'automation:watchLive' : 'automation:openThread')}
               <ArrowUpRight className="h-3 w-3" />
             </button>
           )}

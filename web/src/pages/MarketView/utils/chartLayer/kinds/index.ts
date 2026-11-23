@@ -58,4 +58,4 @@ export function drawingKind(type: string): AnyDrawingKind | undefined {
   return Object.hasOwn(DRAWING_KINDS, type) ? DRAWING_KINDS[type as LayerDrawingType] : undefined;
 }
 
-export const UNKNOWN_KIND_NAME = 'marketView.layerExplain.types.element';
+export const UNKNOWN_KIND_NAME = 'marketView:layerExplain.types.element';

@@ -185,7 +185,7 @@ function TreeColumn({
             <TreeTool key={i} icon={icon} />
           ))}
           <span className="ml-auto" />
-          <Chip>{t('filePanel.systemDirs')}</Chip>
+          <Chip>{t('filePanel:systemDirs')}</Chip>
           <TreeTool icon={Settings} />
         </div>
         <div className="px-[4.5px] pb-[3.5px]">
@@ -201,13 +201,13 @@ function TreeColumn({
               className="truncate text-[7px] leading-none"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('filePanel.searchFiles')}
+              {t('filePanel:searchFiles')}
             </span>
           </div>
         </div>
         {types.length > 1 && (
           <div className="flex flex-wrap items-center gap-[2.5px] px-[4.5px] pb-[3.5px]">
-            <Chip active>{t('filePanel.filterAll')}</Chip>
+            <Chip active>{t('filePanel:filterAll')}</Chip>
             {types.map((type) => (
               <Chip key={type}>{type}</Chip>
             ))}
@@ -217,9 +217,9 @@ function TreeColumn({
           className="border-b pb-[2.5px] pt-px"
           style={{ borderColor: 'var(--color-border-muted)' }}
         >
-          <StoreRow icon={BookMarked} name={t('filePanel.tabs.memory')} />
-          <StoreRow icon={ScrollText} name={t('filePanel.tabs.memo')} />
-          <StoreRow icon={CandlestickChart} name={t('filePanel.chartTab')} />
+          <StoreRow icon={BookMarked} name={t('filePanel:tabs.memory')} />
+          <StoreRow icon={ScrollText} name={t('filePanel:tabs.memo')} />
+          <StoreRow icon={CandlestickChart} name={t('filePanel:chartTab')} />
         </div>
         <div className="flex flex-col">{children}</div>
       </div>
@@ -382,7 +382,7 @@ function FilePanel() {
           opened ? (
             <PanelTab icon={Globe} label="report.html" active onLoan />
           ) : (
-            <PanelTab icon={FolderOpen} label={tr('filePanel.emptyTab')} active />
+            <PanelTab icon={FolderOpen} label={tr('filePanel:emptyTab')} active />
           )
         }
         back={opened}
@@ -394,8 +394,8 @@ function FilePanel() {
             <Timeline>
               <ToolRow
                 icon={FileText}
-                running={{ label: tr('toolArtifact.running.read'), pill: FILES.read.name }}
-                settled={{ label: tr('toolArtifact.tool.read'), pill: FILES.read.name }}
+                running={{ label: tr('toolArtifact:running.read'), pill: FILES.read.name }}
+                settled={{ label: tr('toolArtifact:tool.read'), pill: FILES.read.name }}
                 at={FILES.read.at}
                 done={FILES.read.done}
               />
@@ -403,8 +403,8 @@ function FilePanel() {
                 <ToolRow
                   key={w.name}
                   icon={FilePlus}
-                  running={{ label: tr('toolArtifact.running.write'), pill: w.name }}
-                  settled={{ label: tr('toolArtifact.tool.write'), pill: w.name }}
+                  running={{ label: tr('toolArtifact:running.write'), pill: w.name }}
+                  settled={{ label: tr('toolArtifact:tool.write'), pill: w.name }}
                   at={w.at}
                   done={w.at + FILES.write}
                 />
@@ -418,7 +418,7 @@ function FilePanel() {
             {opened && (
               <FileCrumbs
                 path={['results', 'report.html']}
-                meta={tr('filePanel.metaLines', { count: 64 })}
+                meta={tr('filePanel:metaLines', { count: 64 })}
                 actions={HTML_FILE_ACTIONS}
               />
             )}

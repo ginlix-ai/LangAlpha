@@ -15,7 +15,7 @@ import { markJustAdded } from './hooks/useJustAdded';
 import { VIEW_PARAM, withDetail } from './utils/detailParam';
 
 const PLUGINS_PATH = '/plugins';
-const DENIED = 'plugins.oauth.callbackError.denied';
+const DENIED = 'plugins:oauth.callbackError.denied';
 
 /**
  * Where a sign-in that did not finish puts the user back, as the Plugins
@@ -109,27 +109,27 @@ function toastAbandoned(record: ConnectRecord, t: TFunction, navigate: NavigateF
   const needsDesktop = record.desktopOnly && !canBeginMcpOAuth();
   const place = needsDesktop ? null : landingPlace(record.retry, pluginsParams());
   toast({
-    title: t('plugins.signin.abandoned', { label }),
+    title: t('plugins:signin.abandoned', { label }),
     description: needsDesktop ? (
       <Trans
-        i18nKey="plugins.signin.needsDesktop"
+        i18nKey="plugins:signin.needsDesktop"
         values={{ label }}
         // Not `link`: the Trans parser reads that as the void HTML element
         // and drops the words inside it.
         components={{ download: <DesktopDownloadLink /> }}
       />
     ) : (
-      t(`plugins.signin.nothing.${pendingIntent(record.retry.kind)}`)
+      t(`plugins:signin.nothing.${pendingIntent(record.retry.kind)}`)
     ),
     action: place ? (
       <ToastAction
-        altText={t('plugins.signin.tryAgain')}
+        altText={t('plugins:signin.tryAgain')}
         onClick={() => {
           setConnectLanding({ owner: 'page', draft: record, outcome: 'retry' });
           goToPlugins(navigate, landingPlace(record.retry, pluginsParams()) ?? place, false);
         }}
       >
-        {t('plugins.signin.tryAgain')}
+        {t('plugins:signin.tryAgain')}
       </ToastAction>
     ) : undefined,
   });
@@ -186,12 +186,12 @@ export function landConnectReturn({ t, navigate }: { t: TFunction; navigate: Nav
 
   if (outcome.kind === 'connected') {
     toast({
-      title: t('plugins.oauth.connectedTitle'),
+      title: t('plugins:oauth.connectedTitle'),
       description: outcome.plugin
-        ? t('plugins.oauth.pluginInstalledDesc', { plugin: outcome.plugin })
+        ? t('plugins:oauth.pluginInstalledDesc', { plugin: outcome.plugin })
         : server
-          ? t('plugins.oauth.connectedDesc', { server })
-          : t('plugins.oauth.connectedDescAnon'),
+          ? t('plugins:oauth.connectedDesc', { server })
+          : t('plugins:oauth.connectedDescAnon'),
     });
     // A sign-in that installed a plugin lands on its page, on the section it
     // started from: Plugins and Discover both open a plugin's page.
@@ -225,17 +225,17 @@ export function landConnectReturn({ t, navigate }: { t: TFunction; navigate: Nav
   if (denied) {
     // The user's own choice at the vendor, not a fault.
     toast({
-      title: t('plugins.signin.denied', {
-        label: record?.label ?? outcome.plugin ?? server ?? t('plugins.signin.theVendor'),
+      title: t('plugins:signin.denied', {
+        label: record?.label ?? outcome.plugin ?? server ?? t('plugins:signin.theVendor'),
       }),
-      description: t('plugins.signin.nothing.other'),
+      description: t('plugins:signin.nothing.other'),
     });
   } else {
     // A reconnect has no form to reopen: the row it started from is the way
     // to try again, and the toast stays until it is read.
     toast({
       variant: 'destructive',
-      title: t('plugins.oauth.callbackErrorTitle'),
+      title: t('plugins:oauth.callbackErrorTitle'),
       description: <SignInFailure reasonKey={outcome.reasonKey} detail={outcome.detail} />,
     });
   }

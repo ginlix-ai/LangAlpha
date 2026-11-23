@@ -45,7 +45,7 @@ function toneOf(p: Painter, d: MeasureScene): string {
 }
 
 export const measure: DrawingKind<MeasureDrawing, MeasureScene> = {
-  nameKey: 'marketView.layerExplain.types.measure',
+  nameKey: 'marketView:layerExplain.types.measure',
   times: (d) => [d.p1.time, d.p2.time],
   anchors: (d) => [d.p1, d.p2],
   alwaysExplained: true,

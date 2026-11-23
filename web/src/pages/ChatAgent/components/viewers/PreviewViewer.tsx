@@ -14,8 +14,8 @@ import type { PreviewFailure } from '../../utils/api/sandbox';
 
 /** What the card says for each failure; the hint takes the port. */
 const FAILURE_COPY: Record<PreviewFailure, { title: string; hint: string }> = {
-  offline: { title: 'filePanel.serverOffline', hint: 'filePanel.serverOfflineHint' },
-  portInUse: { title: 'filePanel.portInUse', hint: 'filePanel.portInUseHint' },
+  offline: { title: 'filePanel:serverOffline', hint: 'filePanel:serverOfflineHint' },
+  portInUse: { title: 'filePanel:portInUse', hint: 'filePanel:portInUseHint' },
 };
 
 interface PreviewViewerProps extends Pick<PreviewData, 'url' | 'port' | 'title' | 'path' | 'loading' | 'error' | 'workspaceId'> {
@@ -89,7 +89,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
     if (link) window.open(shareLinkHref(link.code, path ?? '/'), '_blank', 'noopener,noreferrer');
   }, [link, path]);
 
-  const displayTitle = title || t('filePanel.previewTab');
+  const displayTitle = title || t('filePanel:previewTab');
 
   return (
     <div className={`preview-viewer${chrome ? '' : ' is-bare'}`} style={{ position: 'relative' }}>
@@ -100,14 +100,14 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
             <span className="preview-viewer-port-badge">:{port}</span>
           </div>
           <div className="preview-viewer-actions">
-            <button className="preview-viewer-btn" onClick={handleRefresh} title={t('filePanel.reloadApp')} aria-label={t('filePanel.reloadApp')}>
+            <button className="preview-viewer-btn" onClick={handleRefresh} title={t('filePanel:reloadApp')} aria-label={t('filePanel:reloadApp')}>
               <RefreshCw size={18} />
             </button>
-            <button className="preview-viewer-btn" onClick={handleOpenExternal} disabled={!link} title={t('filePanel.openInBrowser')} aria-label={t('filePanel.openInBrowser')}>
+            <button className="preview-viewer-btn" onClick={handleOpenExternal} disabled={!link} title={t('filePanel:openInBrowser')} aria-label={t('filePanel:openInBrowser')}>
               <ExternalLink size={18} />
             </button>
             {onClose && (
-              <button className="preview-viewer-btn" onClick={onClose} title={t('filePanel.closePreview')} aria-label={t('filePanel.closePreview')}>
+              <button className="preview-viewer-btn" onClick={onClose} title={t('filePanel:closePreview')} aria-label={t('filePanel:closePreview')}>
                 <X size={18} />
               </button>
             )}
@@ -125,7 +125,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
         />
       ) : externalLoading || !url ? (
         /* Server is starting, or its URL is still being minted. */
-        <StatusCard icon="working" title={t('filePanel.startingServer')} detail={`${displayTitle} :${port}`} />
+        <StatusCard icon="working" title={t('filePanel:startingServer')} detail={`${displayTitle} :${port}`} />
       ) : (
         /* Normal iframe view */
         <>
@@ -150,7 +150,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
             {...app.frame}
             key={iframeKey}
             className="preview-viewer-frame"
-            title={t('filePanel.previewFrameTitle', { port })}
+            title={t('filePanel:previewFrameTitle', { port })}
             onLoad={handleIframeLoad}
             style={isDragging ? { pointerEvents: 'none' } : undefined}
           />

@@ -272,8 +272,8 @@ describe('useHtmlActions — file mode', () => {
     // No print fallback on the success path.
     expect(open).not.toHaveBeenCalled();
     // The in-flight "generating" toast shows then clears; no print hint.
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfGenerating' });
-    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel.pdfPrintHint' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfGenerating' });
+    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel:pdfPrintHint' });
     expect(toastDismiss).toHaveBeenCalledTimes(1);
   });
 
@@ -344,7 +344,7 @@ describe('useHtmlActions — file mode', () => {
     await result.current.exportPdf();
     // Keep the handle: open with no third arg.
     expect(open).toHaveBeenCalledWith(OPEN, '_blank');
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfPrintHint' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfPrintHint' });
     // No anchor download on the failure path.
     expect(anchorClick).not.toHaveBeenCalled();
   });
@@ -360,7 +360,7 @@ describe('useHtmlActions — file mode', () => {
     expect(open).toHaveBeenCalledWith(OPEN, '_blank');
     expect(print).toHaveBeenCalled();
     // Print succeeded → no print-hint toast (the generating toast still fires).
-    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel.pdfPrintHint' });
+    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel:pdfPrintHint' });
   });
 
   it('falls back to print + hint when fetch rejects', async () => {
@@ -375,7 +375,7 @@ describe('useHtmlActions — file mode', () => {
     );
     await result.current.exportPdf();
     expect(open).toHaveBeenCalledWith(OPEN, '_blank');
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfPrintHint' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfPrintHint' });
   });
 
   it('aborts a hung fetch after the timeout and falls back to print', async () => {
@@ -408,7 +408,7 @@ describe('useHtmlActions — file mode', () => {
       useHtmlActions({ mode: 'file', filePath: 'results/report.html', servedUrl: SERVED, openUrl: OPEN }),
     );
     await result.current.exportPdf();
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfPrintHint' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfPrintHint' });
   });
 
   it('ignores re-entry while a PDF render is in flight', async () => {
@@ -550,7 +550,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
     await result.current.exportPdf();
 
     expect(open).not.toHaveBeenCalled();
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfFailed' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfFailed' });
   });
 
   it('shows the same generating toast the served export shows, and clears it', async () => {
@@ -561,7 +561,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
 
     await result.current.exportPdf();
 
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfGenerating' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfGenerating' });
     expect(toastDismiss).toHaveBeenCalledTimes(1);
   });
 
@@ -570,7 +570,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
     let hook = await install();
     let view = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
     await view.result.current.exportPdf();
-    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel.pdfFailed' });
+    expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfFailed' });
 
     toastMock.mockClear();
     saveWidgetPdf.mockResolvedValue({ canceled: true });
@@ -580,6 +580,6 @@ describe('useHtmlActions — inside the desktop shell', () => {
     // Dismissing a save dialog is not an error, and reporting it as one is how
     // an app tells the user it was not listening. The generating toast is still
     // raised and dismissed, so this asks about the failure specifically.
-    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel.pdfFailed' });
+    expect(toastMock).not.toHaveBeenCalledWith({ description: 'filePanel:pdfFailed' });
   });
 });

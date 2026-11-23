@@ -338,16 +338,16 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
             onSelect={() => setShowLogoutConfirm(true)}
           >
             <LogOut className="h-4 w-4" />
-            {t('settings.logout', 'Log out')}
+            {t('account.logout', 'Log out')}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
       <ConfirmDialog
         open={showLogoutConfirm}
-        title={t('settings.logout', 'Log out')}
-        message={t('settings.logoutConfirmMsg', 'Are you sure you want to log out?')}
-        confirmLabel={t('settings.logout', 'Log out')}
+        title={t('account.logout', 'Log out')}
+        message={t('account.logoutConfirmMsg', 'Are you sure you want to log out?')}
+        confirmLabel={t('account.logout', 'Log out')}
         onConfirm={() => {
           logout();
           setShowLogoutConfirm(false);

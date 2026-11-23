@@ -13,24 +13,24 @@ import type { OrderAction, OrderStatusGroup } from '@/pages/ChatAgent/utils/api'
  */
 
 export const ORDER_STATUS_GROUP_KEY: Record<OrderStatusGroup, string> = {
-  awaiting: 'orders.statusGroup.awaiting',
-  open: 'orders.statusGroup.open',
-  filled: 'orders.statusGroup.filled',
-  cancelled: 'orders.statusGroup.cancelled',
-  expired: 'orders.statusGroup.expired',
-  handed_off: 'orders.statusGroup.handedOff',
-  rejected: 'orders.statusGroup.rejected',
-  failed: 'orders.statusGroup.failed',
+  awaiting: 'orders:statusGroup.awaiting',
+  open: 'orders:statusGroup.open',
+  filled: 'orders:statusGroup.filled',
+  cancelled: 'orders:statusGroup.cancelled',
+  expired: 'orders:statusGroup.expired',
+  handed_off: 'orders:statusGroup.handedOff',
+  rejected: 'orders:statusGroup.rejected',
+  failed: 'orders:statusGroup.failed',
 };
 
 export const ORDER_ACTION_KEY: Record<OrderAction, string> = {
-  place: 'orders.action.place',
-  replace: 'orders.action.replace',
-  cancel: 'orders.action.cancel',
-  confirm: 'orders.action.confirm',
-  stage: 'orders.action.stage',
-  unstage: 'orders.action.unstage',
-  exercise: 'orders.action.exercise',
-  cancel_exercise: 'orders.action.cancel_exercise',
-  watch: 'orders.action.watch',
+  place: 'orders:action.place',
+  replace: 'orders:action.replace',
+  cancel: 'orders:action.cancel',
+  confirm: 'orders:action.confirm',
+  stage: 'orders:action.stage',
+  unstage: 'orders:action.unstage',
+  exercise: 'orders:action.exercise',
+  cancel_exercise: 'orders:action.cancel_exercise',
+  watch: 'orders:action.watch',
 };

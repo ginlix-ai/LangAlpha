@@ -2,8 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import enUS from '../en-US.json';
-import zhCN from '../zh-CN.json';
+import enUSMain from '../en-US.json';
+import { enUS, lookup, zhCN } from '@/test/catalogs';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 // Sweep the whole source tree: any statically-written locale key anywhere in
@@ -12,34 +12,36 @@ const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 const SRC_DIR = resolve(REPO_ROOT, 'src');
 
 // A captured string counts as a locale key only when its first segment is a
-// real top-level catalog namespace — that keeps dotted non-keys the regexes
-// can also match ('settings.json', module paths) out of the report.
-const NAMESPACES = new Set(Object.keys(enUS as Record<string, unknown>));
+// real top-level catalog section or a namespace folder — that keeps dotted
+// non-keys the regexes can also match ('settings.json', module paths) out of
+// the report. A namespace folder's keys are written `ns:key` and the main
+// catalog's `section.key`; the other spelling is caught below, since it
+// resolves here and nowhere at runtime.
+const MAIN_SECTIONS = new Set(Object.keys(enUSMain as Record<string, unknown>));
+const NAMESPACES = new Set(Object.keys(enUS));
 function isLocaleKey(candidate: string): boolean {
-  const dot = candidate.indexOf('.');
-  return dot > 0 && NAMESPACES.has(candidate.slice(0, dot));
+  const cut = candidate.search(/[.:]/);
+  return cut > 0 && NAMESPACES.has(candidate.slice(0, cut));
 }
 
 // Match `t('foo.bar.baz')` and `t("foo.bar.baz")` — the second arg form for
 // interpolation is fine because we only capture the first quoted argument.
-const T_CALL = /\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]/g;
+const T_CALL = /\bt\(\s*['"]([a-zA-Z0-9_.:]+)['"]/g;
 // Match `titleKey: 'foo.bar'` / `descriptionKey: 'foo.bar'` / etc. — keys
 // stored in widget definitions, STATUS_UI tables, and PresetMeta. Catches our
 // static metadata references that aren't wrapped in t(). A bare `key:` is a
 // locale key too (freshness specs, table columns); a React `key` never names
 // a catalog namespace, so `isLocaleKey` keeps it out.
-const KEY_PROP = /\b(?:key|titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKey|blurbKey|messageKey|noteKey|bodyKey|descKey)\s*[:=]\s*['"]([a-zA-Z0-9_.]+)['"]/g;
+const KEY_PROP = /\b(?:key|titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKey|blurbKey|messageKey|noteKey|bodyKey|descKey)\s*[:=]\s*['"]([a-zA-Z0-9_.:]+)['"]/g;
 // Bare quoted keys held in const maps and passed to a helper rather than to
 // `t()` directly: SOURCE_KEY / BUCKET_KEY on the dashboard, the tab-label map
 // and the skill-action failure helper under plugins, and the probe verdict
 // tables under mcp, and the status, group and delivery tables under
-// automation. Scoped to those namespaces rather than swept tree-wide,
-// because `isLocaleKey` only checks
-// the first segment and plenty of dotted non-keys (module paths, filenames)
-// would otherwise qualify. The cost of being in this list is that a namespace
-// here may not also be used for storage keys or other dotted identifiers --
-// see `plugins:deckExpanded`, which uses a colon for exactly that reason.
-const KEY_VALUE = /['"]((?:dashboard|plugins|orders|mcp|automation|timezone)\.[a-zA-Z0-9_.]+)['"]/g;
+// automation. Scoped to those namespaces rather than swept tree-wide, because
+// storage keys elsewhere take the same `ns:word` shape (`'settings:modelMode'`;
+// the build's copyNamespaces plugin lists them in NOT_KEYS), and a namespace
+// here may not use one.
+const KEY_VALUE = /['"]((?:dashboard|plugins|orders|mcp|automation)[:][a-zA-Z0-9_.]+|timezone\.[a-zA-Z0-9_.]+)['"]/g;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -54,15 +56,6 @@ function walk(dir: string, out: string[] = []): string[] {
     }
   }
   return out;
-}
-
-function lookup(obj: unknown, key: string): unknown {
-  return key.split('.').reduce<unknown>((acc, part) => {
-    if (acc && typeof acc === 'object' && part in (acc as object)) {
-      return (acc as Record<string, unknown>)[part];
-    }
-    return undefined;
-  }, obj);
 }
 
 // i18next falls back to plural-suffixed variants (`_one` / `_other` /
@@ -182,7 +175,7 @@ interface TCallSite {
 
 function collectCallSites(): TCallSite[] {
   const sites: TCallSite[] = [];
-  const call = /\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]\s*/g;
+  const call = /\bt\(\s*['"]([a-zA-Z0-9_.:]+)['"]\s*/g;
   for (const file of walk(SRC_DIR)) {
     const src = readFileSync(file, 'utf8');
     call.lastIndex = 0;
@@ -236,6 +229,22 @@ describe('locale key parity (src-wide)', () => {
 
   it('discovers a non-trivial number of keys (sanity check)', () => {
     expect(keys.size).toBeGreaterThan(200);
+  });
+
+  it('spells each key with the separator its catalog takes', () => {
+    // `setup.x` resolves in this test's merged catalog but nowhere at runtime,
+    // where `setup` is its own namespace; `chat:x` names a file that does not
+    // exist. Either renders as a raw key.
+    const wrong: string[] = [];
+    for (const [file, fileKeys] of perFile) {
+      for (const key of fileKeys) {
+        const cut = key.search(/[.:]/);
+        const head = key.slice(0, cut);
+        const folder = !MAIN_SECTIONS.has(head);
+        if (folder !== (key[cut] === ':')) wrong.push(`  - ${key} in ${file.replace(REPO_ROOT + '/', '')} (want ${head}${folder ? ':' : '.'})`);
+      }
+    }
+    if (wrong.length > 0) throw new Error(`Keys with the wrong separator (${wrong.length}):\n${[...new Set(wrong)].join('\n')}`);
   });
 
   it('every referenced key resolves in en-US.json', () => {

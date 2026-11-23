@@ -515,7 +515,7 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
             console.error('[SharedChatView] Download failed:', err);
             // A reader on a shared link has no other way to learn the save did
             // not happen: there is no panel error to fall back on here.
-            toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+            toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
           }
         }
       : undefined,

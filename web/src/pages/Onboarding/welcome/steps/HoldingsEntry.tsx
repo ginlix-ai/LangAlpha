@@ -197,7 +197,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
     try {
       await deletePortfolioHolding(id);
     } catch (err) {
-      fail('plugins.bulk.notDone.remove', { what: symbol }, err);
+      fail('plugins:bulk.notDone.remove', { what: symbol }, err);
     } finally {
       await queryClient.invalidateQueries({ queryKey: portfolioHoldingsQuery.queryKey });
     }
@@ -208,7 +208,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
     try {
       await deleteWatchlistItem(watchlistId, id);
     } catch (err) {
-      fail('plugins.bulk.notDone.remove', { what: symbol }, err);
+      fail('plugins:bulk.notDone.remove', { what: symbol }, err);
     } finally {
       await queryClient.invalidateQueries({ queryKey: watchlistItemsQuery.queryKey });
     }

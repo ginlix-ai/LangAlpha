@@ -57,8 +57,8 @@ export default function ModelPickStep() {
     <div>
       <WizardStepHeader
         titleId={headingId}
-        title={t('setup.manageModels', { provider: displayName })}
-        helper={t('setup.chooseModels', { provider: displayName })}
+        title={t('setup:manageModels', { provider: displayName })}
+        helper={t('setup:chooseModels', { provider: displayName })}
       />
       <div className="flex flex-col gap-4 sm:gap-6">
         {isSubscription && <SubscriptionSummary provider={provider} />}
@@ -72,7 +72,7 @@ export default function ModelPickStep() {
             style={{ color: 'var(--color-text-tertiary)' }}
           >
             <KeyRound aria-hidden="true" className="h-3 w-3" />
-            {t('setup.updateApiKey')}
+            {t('setup:updateApiKey')}
           </button>
         )}
 
@@ -85,22 +85,22 @@ export default function ModelPickStep() {
         >
           <div className="flex flex-col gap-0.5">
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-              {t('setup.addAnotherProvider')}
+              {t('setup:addAnotherProvider')}
             </span>
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('setup.addAnotherDescription')}
+              {t('setup:addAnotherDescription')}
             </span>
           </div>
           <Button variant="outline" size="sm" className="shrink-0" onClick={() => navigate(answering ? '/setup/model' : '/setup/method')}>
-            {t('setup.addAnother')}
+            {t('setup:addAnother')}
           </Button>
         </div>
       </div>
 
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: handleBack }}
+        back={{ label: t('setup:back'), onClick: handleBack }}
         primary={{
-          label: picker.saving ? t('setup.saving') : t('setup.continue'),
+          label: picker.saving ? t('setup:saving') : t('setup:continue'),
           onClick: handleNext,
           disabled: picker.loading,
           busy: picker.saving,

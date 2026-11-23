@@ -42,20 +42,20 @@ function useListToasts() {
   const navigate = useNavigate();
   const full = () =>
     toast({
-      description: t('customDashboard.full', { max: MAX_DASHBOARDS }),
+      description: t('customDashboard:full', { max: MAX_DASHBOARDS }),
       action: (
         <ToastAction
-          altText={t('customDashboard.manage')}
+          altText={t('customDashboard:manage')}
           onClick={() => navigate('/dashboard', { state: { [OPEN_SWITCHER]: true } })}
         >
-          {t('customDashboard.manage')}
+          {t('customDashboard:manage')}
         </ToastAction>
       ),
     });
   /** Why a write did not land, when the user should hear it. */
   const unsaved = (result: { status: string }) => {
-    if (result.status === 'notLoaded') toast({ description: t('customDashboard.notLoaded') });
-    else if (result.status === 'failed') toast({ variant: 'destructive', title: t('customDashboard.saveFailed') });
+    if (result.status === 'notLoaded') toast({ description: t('customDashboard:notLoaded') });
+    else if (result.status === 'failed') toast({ variant: 'destructive', title: t('customDashboard:saveFailed') });
   };
   return { full, unsaved, notLoaded: () => unsaved({ status: 'notLoaded' }) };
 }
@@ -103,11 +103,11 @@ export function useSavedDashboards(): SavedDashboardsApi {
       else toasts.unsaved(result);
     };
     toast({
-      description: t('customDashboard.removed', { name: gone.title || t('customDashboard.untitled') }),
+      description: t('customDashboard:removed', { name: gone.title || t('customDashboard:untitled') }),
       duration: UNDO_MS,
       action: (
-        <ToastAction altText={t('customDashboard.undo')} onClick={() => void undo()}>
-          {t('customDashboard.undo')}
+        <ToastAction altText={t('customDashboard:undo')} onClick={() => void undo()}>
+          {t('customDashboard:undo')}
         </ToastAction>
       ),
     });

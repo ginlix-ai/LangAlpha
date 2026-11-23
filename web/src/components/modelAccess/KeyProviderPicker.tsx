@@ -220,9 +220,9 @@ export function RegionChoice({
   if (group.options.length < 2) return null;
   return (
     <div className="flex flex-col items-start gap-1.5">
-      <span className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{t('setup.regionLabel')}</span>
+      <span className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{t('setup:regionLabel')}</span>
       <Segmented<string>
-        label={t('setup.regionLabel')}
+        label={t('setup:regionLabel')}
         value={option.provider}
         onChange={(provider) => {
           const next = group.options.find((o) => o.provider === provider);

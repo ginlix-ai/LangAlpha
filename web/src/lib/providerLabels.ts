@@ -17,6 +17,6 @@ const PROVIDER_LABELS: Record<string, string> = {
  *  rather than a brand and needs the catalog. */
 export function providerLabel(source: string | null | undefined, t: TFunction): string | null {
   if (!source) return null;
-  if (source === 'daily') return t('marketView.header.sourceDaily');
+  if (source === 'daily') return t('marketView:header.sourceDaily');
   return PROVIDER_LABELS[source] ?? source;
 }

@@ -230,7 +230,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
       return {
         widget_type: 'markets.miniChartGrid',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.miniChartGrid.title')} · ${rows.length}`,
+        label: `${t('dashboard:widgets.miniChartGrid.title')} · ${rows.length}`,
         description: rows.length ? `${rows.length} symbols, last ${SPARK_DAYS}d` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -242,7 +242,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
   return (
     <div className="flex flex-col h-full">
       <WidgetCardMeta>
-        {t('dashboard.widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
+        {t('dashboard:widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
       </WidgetCardMeta>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {isLoading && !data ? (
@@ -260,7 +260,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
             className="text-center py-8 text-xs"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('dashboard.widgets.miniChartGrid.empty')}
+            {t('dashboard:widgets.miniChartGrid.empty')}
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -335,10 +335,10 @@ function MiniChartGridSettings({
   return (
     <div className="space-y-4">
       <SymbolListField
-        label={t('dashboard.widgets.miniChartGrid.symbols')}
+        label={t('dashboard:widgets.miniChartGrid.symbols')}
         value={displayedSymbols}
         onChange={(next) => onChange({ symbols: next })}
-        placeholder={t('dashboard.widgets.miniChartGrid.symbolsPlaceholder')}
+        placeholder={t('dashboard:widgets.miniChartGrid.symbolsPlaceholder')}
         max={18}
       />
       <SettingsDoneButton onClick={onClose} />
@@ -348,9 +348,9 @@ function MiniChartGridSettings({
 
 registerWidget<MiniChartGridConfig>({
   type: 'markets.miniChartGrid',
-  titleKey: 'dashboard.widgets.miniChartGrid.title',
-  cardTitleKey: 'dashboard.widgets.miniChartGrid.header',
-  descriptionKey: 'dashboard.widgets.miniChartGrid.description',
+  titleKey: 'dashboard:widgets.miniChartGrid.title',
+  cardTitleKey: 'dashboard:widgets.miniChartGrid.header',
+  descriptionKey: 'dashboard:widgets.miniChartGrid.description',
   category: 'markets',
   icon: Grid2x2,
   component: MiniChartGridWidget,

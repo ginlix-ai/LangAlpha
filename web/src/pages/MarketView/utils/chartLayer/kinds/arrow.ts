@@ -12,7 +12,7 @@ export interface ArrowScene extends SceneBase {
 }
 
 export const arrow: DrawingKind<ArrowDrawing, ArrowScene> = {
-  nameKey: 'marketView.layerExplain.types.arrow',
+  nameKey: 'marketView:layerExplain.types.arrow',
   times: (d) => [d.p1.time, d.p2.time],
   anchors: (d) => [d.p1, d.p2],
   resolve(d, { base, P }) {

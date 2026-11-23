@@ -165,8 +165,8 @@ export function BriefWidget({
   const locale = useLocale();
   return (
     <Widget
-      title={t('dashboard.widgets.insightBrief.cardTitle')}
-      sub={t('dashboard.brief.typeLabel.marketUpdate')}
+      title={t('dashboard:widgets.insightBrief.cardTitle')}
+      sub={t('dashboard:brief.typeLabel.marketUpdate')}
       meta={clockTime(INSIGHT.written, locale)}
       edit={edit}
       delay={delay}
@@ -224,9 +224,9 @@ function BriefCard({ at }: { at: number }) {
       </Appear>
       <Appear at={at + 3 * GRID.briefPer} reserve>
         <div className="term-line dash-brief-foot">
-          <span className="dash-link term-push">{t('dashboard.brief.generatePersonalized')}</span>
+          <span className="dash-link term-push">{t('dashboard:brief.generatePersonalized')}</span>
           <span className="dash-link term-ink">
-            {t('dashboard.brief.readFullBrief')} <span aria-hidden>›</span>
+            {t('dashboard:brief.readFullBrief')} <span aria-hidden>›</span>
           </span>
         </div>
       </Appear>
@@ -266,11 +266,11 @@ export function NewsWidget({
 }) {
   const { t } = useTranslation();
   const tabs = (['tab_top', 'tab_market', 'tab_portfolio', 'tab_watchlist'] as const).map((key) =>
-    t(`dashboard.widgets.newsFeed.${key}`)
+    t(`dashboard:widgets.newsFeed.${key}`)
   );
   return (
     <Widget
-      title={t('dashboard.widgets.newsFeed.cardTitle')}
+      title={t('dashboard:widgets.newsFeed.cardTitle')}
       meta="24"
       edit={edit}
       delay={delay}
@@ -371,7 +371,7 @@ export function WatchWidget({
   const { t } = useTranslation();
   return (
     <Widget
-      title={t('dashboard.widgets.portfolioWatchlist.cardTitle')}
+      title={t('dashboard:widgets.portfolioWatchlist.cardTitle')}
       meta={String(WATCH.length)}
       edit={edit}
       delay={delay}
@@ -380,16 +380,16 @@ export function WatchWidget({
       <div className="widget-term">
         <Chips
           labels={[
-            t('dashboard.widgets.portfolioWatchlist.headerWatchlist'),
-            t('dashboard.widgets.portfolioWatchlist.headerHoldings'),
+            t('dashboard:widgets.portfolioWatchlist.headerWatchlist'),
+            t('dashboard:widgets.portfolioWatchlist.headerHoldings'),
           ]}
         />
         <table className="term-table dash-table">
           <thead>
             <tr>
-              <th>{t('dashboard.widgets.holdings.colSymbol')}</th>
-              <th className="term-num">{t('dashboard.widgets.holdings.colLast')}</th>
-              <th className="term-num">{t('dashboard.widgets.holdings.colChange')}</th>
+              <th>{t('dashboard:widgets.holdings.colSymbol')}</th>
+              <th className="term-num">{t('dashboard:widgets.holdings.colLast')}</th>
+              <th className="term-num">{t('dashboard:widgets.holdings.colChange')}</th>
             </tr>
           </thead>
           <tbody>
@@ -398,7 +398,7 @@ export function WatchWidget({
             ))}
           </tbody>
         </table>
-        <div className="term-more">+ {t('dashboard.widgets.portfolioWatchlist.addSymbol')}</div>
+        <div className="term-more">+ {t('dashboard:widgets.portfolioWatchlist.addSymbol')}</div>
       </div>
     </Widget>
   );
@@ -454,11 +454,11 @@ export function EarningsWidget({
   const locale = useLocale();
   return (
     <Widget
-      title={t('dashboard.widgets.earningsCalendar.header')}
+      title={t('dashboard:widgets.earningsCalendar.header')}
       meta={
         <>
           <span>{EARNINGS.length}</span>
-          <span>{t('dashboard.widgets.earningsCalendar.windowLabel', { days: EARNINGS_DAYS })}</span>
+          <span>{t('dashboard:widgets.earningsCalendar.windowLabel', { days: EARNINGS_DAYS })}</span>
         </>
       }
       edit={edit}
@@ -478,7 +478,7 @@ export function EarningsWidget({
                   <TermTag>AMC</TermTag>
                 </td>
                 <td className="term-num term-t2">
-                  {t('dashboard.widgets.earningsCalendar.estEps', {
+                  {t('dashboard:widgets.earningsCalendar.estEps', {
                     value: formatMoney(row.eps, 'USD', locale),
                   })}
                 </td>

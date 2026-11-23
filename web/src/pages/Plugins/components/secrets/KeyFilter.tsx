@@ -13,7 +13,7 @@ import type { KeyFilterState } from './useKeyFilter';
 export function KeyFilter({ filter }: { filter: KeyFilterState }) {
   const { t } = useTranslation();
   const { query, setQuery, unreadOnly, setUnreadOnly, unreadCount } = filter;
-  const placeholder = t('vault.filter.placeholder');
+  const placeholder = t('vault:filter.placeholder');
   return (
     <div className="vault-filter">
       <div className="vault-search">
@@ -38,7 +38,7 @@ export function KeyFilter({ filter }: { filter: KeyFilterState }) {
           <button
             type="button"
             className="vault-search-clear"
-            aria-label={t('vault.filter.clear')}
+            aria-label={t('vault:filter.clear')}
             onClick={() => setQuery('')}
           >
             <X className="h-3.5 w-3.5" />
@@ -54,7 +54,7 @@ export function KeyFilter({ filter }: { filter: KeyFilterState }) {
           data-bracket="chip"
           onClick={() => setUnreadOnly(!unreadOnly)}
         >
-          {t('vault.filter.unread')}
+          {t('vault:filter.unread')}
           <span className="surface-count">{unreadCount}</span>
         </button>
       )}
@@ -68,9 +68,9 @@ export function KeyFilterEmpty({ filter }: { filter: KeyFilterState }) {
   const query = filter.query.trim();
   return (
     <div className="vault-filter-empty">
-      <span>{query ? t('vault.filter.empty', { query }) : t('vault.filter.emptyUnread')}</span>
+      <span>{query ? t('vault:filter.empty', { query }) : t('vault:filter.emptyUnread')}</span>
       <HeaderButton variant="secondary" icon={X} onClick={filter.clear}>
-        {t('vault.filter.clear')}
+        {t('vault:filter.clear')}
       </HeaderButton>
     </div>
   );

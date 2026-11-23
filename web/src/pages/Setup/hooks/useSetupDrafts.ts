@@ -52,8 +52,8 @@ function useApplyStatus() {
 export function useSaveErrorCopy() {
   const { t } = useTranslation();
   return (error: unknown): string => {
-    if (apiErrorStatus(error) === 503) return t('setup.errors.noEncryptionKey');
-    return apiErrorDetailMessage(error) ?? t('setup.errors.saveFailed');
+    if (apiErrorStatus(error) === 503) return t('setup:errors.noEncryptionKey');
+    return apiErrorDetailMessage(error) ?? t('setup:errors.saveFailed');
   };
 }
 

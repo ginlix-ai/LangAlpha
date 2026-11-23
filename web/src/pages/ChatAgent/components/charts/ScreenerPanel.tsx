@@ -16,7 +16,7 @@ export function StockScreenerTable({ data }: PanelProps): React.ReactElement {
   const { rows, filters, count } = readScreener(data);
 
   if (!rows.length) {
-    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact.noScreenerResults')}</div>;
+    return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact:noScreenerResults')}</div>;
   }
 
   // A pence quote served in pounds keeps its places (3.17p is £0.0317).
@@ -24,25 +24,25 @@ export function StockScreenerTable({ data }: PanelProps): React.ReactElement {
     formatMoney(n, row.currency, locale, { upTo: quotePlaces(row.symbol, { currency: row.currency, price: n }) });
 
   const columns: Array<SortColumn<ScreenerRow>> = [
-    { key: 'symbol', label: t('toolArtifact.symbol'), className: 'term-strong', value: (r) => r.symbol, cell: (r) => <MarketLink symbol={r.symbol} inline /> },
-    { key: 'companyName', label: t('toolArtifact.company'), className: 'term-t3 term-clip term-word', value: (r) => r.name },
-    { key: 'price', label: t('toolArtifact.price'), num: true, value: (r) => r.price, cell: (r) => money(r.price!, r) },
-    { key: 'change', label: t('toolArtifact.changePct'), num: true, value: (r) => r.changePct, cell: (r) => <TermChange value={r.changePct} /> },
+    { key: 'symbol', label: t('toolArtifact:symbol'), className: 'term-strong', value: (r) => r.symbol, cell: (r) => <MarketLink symbol={r.symbol} inline /> },
+    { key: 'companyName', label: t('toolArtifact:company'), className: 'term-t3 term-clip term-word', value: (r) => r.name },
+    { key: 'price', label: t('toolArtifact:price'), num: true, value: (r) => r.price, cell: (r) => money(r.price!, r) },
+    { key: 'change', label: t('toolArtifact:changePct'), num: true, value: (r) => r.changePct, cell: (r) => <TermChange value={r.changePct} /> },
     {
-      key: 'marketCap', label: t('toolArtifact.mktCap'), num: true, className: 'term-t2', value: (r) => r.marketCap,
+      key: 'marketCap', label: t('toolArtifact:mktCap'), num: true, className: 'term-t2', value: (r) => r.marketCap,
       cell: (r) => formatMoney(r.marketCap!, r.currency, locale, { compact: true }),
     },
-    { key: 'volume', label: t('toolArtifact.volume'), num: true, className: 'term-t2', value: (r) => r.volume, cell: (r) => compactNumberFixed2(r.volume!, locale) },
-    { key: 'beta', label: t('toolArtifact.beta'), num: true, className: 'term-t2', value: (r) => r.beta, cell: (r) => r.beta!.toFixed(2) },
-    { key: 'lastAnnualDividend', label: t('toolArtifact.dividend'), num: true, className: 'term-t2', value: (r) => r.dividend, cell: (r) => money(r.dividend!, r) },
-    { key: 'sector', label: t('toolArtifact.sector'), className: 'term-t2 term-word', value: (r) => r.sector },
-    { key: 'industry', label: t('toolArtifact.industry'), className: 'term-t2 term-clip term-word', value: (r) => r.industry },
-    { key: 'exchangeShortName', label: t('toolArtifact.exchange'), className: 'term-t2', value: (r) => r.exchange },
-    { key: 'country', label: t('toolArtifact.country'), className: 'term-t2 term-word', value: (r) => r.country },
+    { key: 'volume', label: t('toolArtifact:volume'), num: true, className: 'term-t2', value: (r) => r.volume, cell: (r) => compactNumberFixed2(r.volume!, locale) },
+    { key: 'beta', label: t('toolArtifact:beta'), num: true, className: 'term-t2', value: (r) => r.beta, cell: (r) => r.beta!.toFixed(2) },
+    { key: 'lastAnnualDividend', label: t('toolArtifact:dividend'), num: true, className: 'term-t2', value: (r) => r.dividend, cell: (r) => money(r.dividend!, r) },
+    { key: 'sector', label: t('toolArtifact:sector'), className: 'term-t2 term-word', value: (r) => r.sector },
+    { key: 'industry', label: t('toolArtifact:industry'), className: 'term-t2 term-clip term-word', value: (r) => r.industry },
+    { key: 'exchangeShortName', label: t('toolArtifact:exchange'), className: 'term-t2', value: (r) => r.exchange },
+    { key: 'country', label: t('toolArtifact:country'), className: 'term-t2 term-word', value: (r) => r.country },
   ];
 
   return (
-    <TermCard title={t('toolArtifact.stockScreener')} meta={t('toolArtifact.nResults', { count })}>
+    <TermCard title={t('toolArtifact:stockScreener')} meta={t('toolArtifact:nResults', { count })}>
       {filters.length > 0 && (
         <div className="term-chips" style={{ marginBottom: 10 }}>
           {filters.map(([name, value]) => (

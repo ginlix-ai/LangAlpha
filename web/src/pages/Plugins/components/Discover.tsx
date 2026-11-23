@@ -115,7 +115,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
     if (isLoading || !error) return <ListSkeleton />;
     return (
       <ListError>
-        {t('plugins.discover.loadFailed')} {formatApiErrorDetail(error)}{' '}
+        {t('plugins:discover.loadFailed')} {formatApiErrorDetail(error)}{' '}
         <button type="button" onClick={() => void refetch()} className="underline underline-offset-2">
           {t('common.retry')}
         </button>
@@ -157,10 +157,10 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
   const mine = scoped.filter((e) => e.installed);
   // The featured entry is not repeated under it; its section still counts it.
   const sections = [
-    { id: 'vendors' as SectionId, title: t('plugins.discoverPage.sectionVendors'), all: ordered.filter(addsConnector) },
+    { id: 'vendors' as SectionId, title: t('plugins:discoverPage.sectionVendors'), all: ordered.filter(addsConnector) },
     {
       id: 'collections' as SectionId,
-      title: t('plugins.discoverPage.sectionCollections'),
+      title: t('plugins:discoverPage.sectionCollections'),
       all: ordered.filter((e) => !addsConnector(e)),
     },
   ]
@@ -183,10 +183,10 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
       <EmptyState
         message={
           scope === 'connectors'
-            ? t('plugins.discoverPage.emptyVendors')
+            ? t('plugins:discoverPage.emptyVendors')
             : scope === 'skills'
-              ? t('plugins.discoverPage.emptyCollections')
-              : t('plugins.discover.emptyCatalog')
+              ? t('plugins:discoverPage.emptyCollections')
+              : t('plugins:discover.emptyCatalog')
         }
       />
     );
@@ -195,19 +195,19 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
       <EmptyState
         message={
           query
-            ? t('plugins.discoverPage.emptyQuery', { query })
-            : t('plugins.discoverPage.emptyFilter')
+            ? t('plugins:discoverPage.emptyQuery', { query })
+            : t('plugins:discoverPage.emptyFilter')
         }
         action={
           <div className="flex items-center gap-2">
             {query && (
               <HeaderButton icon={X} onClick={() => setParam('q', null)}>
-                {t('plugins.discoverPage.clearSearch')}
+                {t('plugins:discoverPage.clearSearch')}
               </HeaderButton>
             )}
             {chip && (
               <HeaderButton onClick={() => setChip(null)}>
-                {t('plugins.discoverPage.showEverything')}
+                {t('plugins:discoverPage.showEverything')}
               </HeaderButton>
             )}
           </div>
@@ -226,7 +226,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
           action={
             canFold ? (
               <SectionLink onClick={() => toggleFold(section.id)}>
-                {isUnfolded ? t('plugins.discoverPage.showLess') : t('plugins.discoverPage.showAll')}
+                {isUnfolded ? t('plugins:discoverPage.showLess') : t('plugins:discoverPage.showAll')}
               </SectionLink>
             ) : undefined
           }
@@ -274,8 +274,8 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
             role="group"
             aria-label={
               scope === 'connectors'
-                ? t('plugins.discoverPage.marketsLabel')
-                : t('plugins.discoverPage.chipsLabel')
+                ? t('plugins:discoverPage.marketsLabel')
+                : t('plugins:discoverPage.chipsLabel')
             }
           >
             <button
@@ -285,7 +285,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
               aria-pressed={chip === null}
               onClick={() => setChip(null)}
             >
-              {t('plugins.discoverPage.all')}
+              {t('plugins:discoverPage.all')}
               <span className="surface-count">{searched.length}</span>
             </button>
             {shownChips.map((c) => (
@@ -322,7 +322,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
           <span>{data.description}</span>
           {catalogUrl && (
             <a href={catalogUrl} target="_blank" rel="noopener noreferrer">
-              {t('plugins.discover.viewCatalog')}
+              {t('plugins:discover.viewCatalog')}
               <ExternalLink className="h-3 w-3" aria-hidden />
             </a>
           )}
@@ -344,7 +344,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
         />
       )}
       {pluginDetail.target && (
-        <DetailTrailStep label={t('plugins.discoverPage.discover')} onClick={pluginDetail.close}>
+        <DetailTrailStep label={t('plugins:discoverPage.discover')} onClick={pluginDetail.close}>
           <PluginDetail
             key={pluginDetail.target.name}
             plugin={pluginDetail.target}

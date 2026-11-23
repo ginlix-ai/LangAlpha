@@ -19,18 +19,18 @@ import { EmptyState } from './EmptyState';
 
 /** Both controls are narrowing: the sentence has to carry both. */
 const WITH_QUERY: Record<StateFilter, string> = {
-  all: 'plugins.filter.empty.query',
-  on: 'plugins.filter.empty.queryOn',
-  off: 'plugins.filter.empty.queryOff',
-  attention: 'plugins.filter.empty.queryAttention',
+  all: 'plugins:filter.empty.query',
+  on: 'plugins:filter.empty.queryOn',
+  off: 'plugins:filter.empty.queryOff',
+  attention: 'plugins:filter.empty.queryAttention',
 };
 
 /** Only a state pill is narrowing ('all' cannot narrow, so it never lands). */
 const STATE_ONLY: Record<StateFilter, string> = {
-  all: 'plugins.filter.noMatches',
-  on: 'plugins.filter.empty.on',
-  off: 'plugins.filter.empty.off',
-  attention: 'plugins.filter.empty.attention',
+  all: 'plugins:filter.noMatches',
+  on: 'plugins:filter.empty.on',
+  off: 'plugins:filter.empty.off',
+  attention: 'plugins:filter.empty.attention',
 };
 
 export function FilterEmpty({
@@ -61,7 +61,7 @@ export function FilterEmpty({
       action={
         <div className="filter-empty-actions">
           <HeaderButton variant="secondary" icon={X} onClick={onReset}>
-            {query ? t('plugins.filter.reset') : t('plugins.filter.resetState')}
+            {query ? t('plugins:filter.reset') : t('plugins:filter.resetState')}
           </HeaderButton>
           {catalogScope && query && <CatalogMatches scope={catalogScope} query={query} />}
         </div>
@@ -82,7 +82,7 @@ function CatalogMatches({ scope, query }: { scope: DiscoverScope; query: string 
   const params = new URLSearchParams({ tab: SCOPE_TAB[scope], [VIEW_PARAM]: 'discover', q: query });
   return (
     <Link to={`?${params.toString()}`} className="filter-empty-catalog">
-      {t('plugins.filter.catalogMatches', { count, query })}
+      {t('plugins:filter.catalogMatches', { count, query })}
       <ChevronRight className="h-3.5 w-3.5" aria-hidden />
     </Link>
   );

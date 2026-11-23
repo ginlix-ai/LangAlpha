@@ -56,7 +56,7 @@ export function useLayerSending({ workspaceId, docPath, draftPath, ui, to, onTo 
   const bindBeside = () => {
     if (!beside) return;
     bind.mutate({ workspaceId, path: draftPath, threadId: beside }, {
-      onError: () => toast({ description: t('pageViewer.comments.bindFailed'), variant: 'destructive' }),
+      onError: () => toast({ description: t('pageViewer:comments.bindFailed'), variant: 'destructive' }),
     });
     onTo(null);
   };

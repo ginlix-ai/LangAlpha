@@ -58,10 +58,10 @@ export function SkillRow({
             )}
             <PluginOriginBadge plugin={skill.plugin_name} />
             {skill.shadows_inherited && (
-              <TagBadge soft>{t('plugins.skills.shadowsBadge')}</TagBadge>
+              <TagBadge soft>{t('plugins:skills.shadowsBadge')}</TagBadge>
             )}
             {lockedByUserTier && (
-              <TagBadge soft>{t('plugins.skills.userDisabledBadge')}</TagBadge>
+              <TagBadge soft>{t('plugins:skills.userDisabledBadge')}</TagBadge>
             )}
             <PluginSuppressedBadge row={skill} />
           </ServerNameLine>
@@ -86,12 +86,12 @@ export function SkillRow({
           {skill.deletable && onDelete && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <KebabTrigger aria-label={t('mcp.row.actionsAria', { name: skill.name })} />
+                <KebabTrigger aria-label={t('mcp:row.actionsAria', { name: skill.name })} />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={onDelete} variant="destructive">
                   <Trash2 className="h-3.5 w-3.5 mr-2" />
-                  {t('plugins.skillsPage.remove')}
+                  {t('plugins:skillsPage.remove')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

@@ -57,7 +57,7 @@ export function KeyField({ setupKey, label, description, draft, onDraft, error }
             rel="noopener noreferrer"
             className="inline-flex shrink-0 items-center gap-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
           >
-            {t('setup.key.getKey')}
+            {t('setup:key.getKey')}
             <ExternalLink aria-hidden="true" className="h-3 w-3" />
           </a>
         )}
@@ -67,7 +67,7 @@ export function KeyField({ setupKey, label, description, draft, onDraft, error }
       {setupKey.state === 'environment' ? (
         <p className="mt-0.5 flex items-center gap-1.5 text-[0.8125rem] text-(--color-text-secondary)">
           <Lock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-          {t('setup.key.environment')}
+          {t('setup:key.environment')}
         </p>
       ) : editing ? (
         <div className="mt-0.5 flex items-start gap-2">
@@ -106,7 +106,7 @@ export function KeyField({ setupKey, label, description, draft, onDraft, error }
             {setupKey.masked}
           </span>
           <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => setReplacing(true)}>
-            {t('setup.key.replace')}
+            {t('setup:key.replace')}
           </Button>
           <Button
             type="button"
@@ -116,7 +116,7 @@ export function KeyField({ setupKey, label, description, draft, onDraft, error }
             disabled={remove.isPending}
             onClick={() => remove.mutate(setupKey.name)}
           >
-            {t('setup.key.remove')}
+            {t('setup:key.remove')}
           </Button>
         </div>
       )}

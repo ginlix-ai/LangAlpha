@@ -25,7 +25,7 @@ export function CompactionProfilePicker({
   const { t } = useTranslation()
   // Named for the column it heads in the per-model table below it. One screen
   // must not call one setting two things.
-  const heading = t("settings.modelTuning.colContext")
+  const heading = t("settings:modelTuning.colContext")
   const available = useMemo(
     () => COMPACTION_PROFILE_ORDER.filter((name) => profiles?.[name]),
     [profiles],
@@ -43,7 +43,7 @@ export function CompactionProfilePicker({
           {heading}
         </label>
         <p className="text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-          {t("settings.compactionProfileDesc")}
+          {t("settings:compactionProfileDesc")}
         </p>
       </div>
 
@@ -76,19 +76,19 @@ export function CompactionProfilePicker({
               }}
             >
               <span className="text-sm font-medium">
-                {t(`settings.compactionProfiles.${name}.label`)}
+                {t(`settings:compactionProfiles.${name}.label`)}
               </span>
               <span
                 className="mt-0.5 text-[0.6875rem]"
                 style={{ color: "var(--color-text-tertiary)" }}
               >
-                {t(`settings.compactionProfiles.${name}.description`)}
+                {t(`settings:compactionProfiles.${name}.description`)}
               </span>
               <span
                 className="mt-2 text-[0.6875rem] tabular-nums"
                 style={{ color: "var(--color-text-secondary, var(--color-text-tertiary))" }}
               >
-                {t("settings.compactionProfilePreset", {
+                {t("settings:compactionProfilePreset", {
                   tokens: Math.round(preset.token_threshold / 1000),
                 })}
               </span>
@@ -104,7 +104,7 @@ export function CompactionProfilePicker({
           className="self-start text-xs underline-offset-2 hover:underline"
           style={{ color: "var(--color-text-tertiary)" }}
         >
-          {t("settings.compactionProfileUseDefault")}
+          {t("settings:compactionProfileUseDefault")}
         </button>
       )}
     </div>

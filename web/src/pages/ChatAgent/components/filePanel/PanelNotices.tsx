@@ -65,14 +65,14 @@ export function PanelNotices({
       )}
       {!filesError && filesRestoreIncomplete && (
         <p className="px-3 pt-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('filePanel.restoreIncomplete')}
+          {t('filePanel:restoreIncomplete')}
         </p>
       )}
       {filesError && (
         <div className="file-panel-upload-error" role="alert">
           <span>{filesError}</span>
           {onRefreshFiles && (
-            <button onClick={onRefreshFiles} className="file-panel-icon-btn" title={t('filePanel.refresh')} aria-label={t('filePanel.refresh')}>
+            <button onClick={onRefreshFiles} className="file-panel-icon-btn" title={t('filePanel:refresh')} aria-label={t('filePanel:refresh')}>
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
           )}
@@ -94,8 +94,8 @@ export function PanelNotices({
           <span>
             {backupResult.error
               ? backupResult.error
-              : t('filePanel.backupSummary', { count: backupResult.synced ?? 0 })
-                + (backupResult.skipped ? t('filePanel.backupUnchanged', { count: backupResult.skipped }) : '')}
+              : t('filePanel:backupSummary', { count: backupResult.synced ?? 0 })
+                + (backupResult.skipped ? t('filePanel:backupUnchanged', { count: backupResult.skipped }) : '')}
           </span>
           <button onClick={onDismissBackupResult} className="file-panel-icon-btn" style={{ padding: 2 }} aria-label={t('common.close')}>
             <X className="h-3 w-3" />
@@ -105,7 +105,7 @@ export function PanelNotices({
       {editing && (
         <div className="file-panel-edit-hint">
           <Pencil className="h-3 w-3" style={{ flexShrink: 0 }} />
-          <span>{t('filePanel.editingHint')}</span>
+          <span>{t('filePanel:editingHint')}</span>
         </div>
       )}
     </>
@@ -122,9 +122,9 @@ function UnsavedBackupNotice({ result, onDismiss }: { result: BackupResult; onDi
     <div className="file-panel-backup-result unsaved" role="status">
       <div className="file-panel-backup-result-head">
         <span>
-          {t('filePanel.backupSummary', { count: result.synced ?? 0 })}
+          {t('filePanel:backupSummary', { count: result.synced ?? 0 })}
           {' · '}
-          <span className="file-panel-unsaved-count">{t('filePanel.backupNotSaved', { count: total })}</span>
+          <span className="file-panel-unsaved-count">{t('filePanel:backupNotSaved', { count: total })}</span>
         </span>
         <button onClick={onDismiss} className="file-panel-icon-btn" style={{ padding: 2 }} aria-label={t('common.close')}>
           <X className="h-3 w-3" />
@@ -140,7 +140,7 @@ function UnsavedBackupNotice({ result, onDismiss }: { result: BackupResult; onDi
           </li>
         ))}
       </ul>
-      {rest > 0 && <span className="file-panel-unsaved-more">{t('filePanel.backupNotSavedMore', { count: rest })}</span>}
+      {rest > 0 && <span className="file-panel-unsaved-more">{t('filePanel:backupNotSavedMore', { count: rest })}</span>}
     </div>
   );
 }

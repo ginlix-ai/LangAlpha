@@ -59,20 +59,20 @@ export function DashboardAccess({ grantKey, asked, onRevoked, onDone }: Dashboar
           type="button"
           className="tap-target flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-(--color-bg-hover)"
           style={{ color: 'var(--color-text-secondary)' }}
-          title={t('customDashboard.access.label')}
-          aria-label={t('customDashboard.access.label')}
+          title={t('customDashboard:access.label')}
+          aria-label={t('customDashboard:access.label')}
         >
           <ShieldCheck size={16} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-3">
-        <p className="text-sm font-medium text-(--color-text-primary)">{t('customDashboard.access.title')}</p>
-        <p className="mt-0.5 text-xs text-(--color-text-secondary)">{t('customDashboard.access.hint')}</p>
+        <p className="text-sm font-medium text-(--color-text-primary)">{t('customDashboard:access.title')}</p>
+        <p className="mt-0.5 text-xs text-(--color-text-secondary)">{t('customDashboard:access.hint')}</p>
         <ul className="mt-3 flex flex-col gap-2.5">
           {scopes.map((scope) => (
             <li key={scope} className="flex items-center justify-between gap-3">
               <label htmlFor={`${id}-${scope}`} className="text-sm text-(--color-text-primary)">
-                {t(`customDashboard.access.scope.${scope}`)}
+                {t(`customDashboard:access.scope.${scope}`)}
               </label>
               <ToggleSwitch
                 id={`${id}-${scope}`}

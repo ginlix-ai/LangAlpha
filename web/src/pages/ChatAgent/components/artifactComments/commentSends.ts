@@ -50,11 +50,11 @@ export function queuedBatches(
 /** A refused send as a card says it, after "Not sent.": where the comments still are, unless the server said why. */
 export function refusalReason(t: TFunction, err: unknown, queued: boolean): string {
   if (err instanceof CommentSendRefused) {
-    if (err.code === 'comments_unavailable') return t('pageViewer.comments.notSentUnavailable');
+    if (err.code === 'comments_unavailable') return t('pageViewer:comments.notSentUnavailable');
     // A conflict's message is written for the reader (a busy agent, a move).
     if (err.status === 409 && err.message) return err.message;
   }
-  return queued ? t('pageViewer.comments.notSentQueued') : t('pageViewer.comments.notSentNote');
+  return queued ? t('pageViewer:comments.notSentQueued') : t('pageViewer:comments.notSentNote');
 }
 
 /**

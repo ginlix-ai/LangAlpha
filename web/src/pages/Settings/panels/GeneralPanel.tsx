@@ -54,7 +54,7 @@ export function GeneralPanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.regionGroup')}>
+      <SettingsGroup title={t('settings:regionGroup')}>
         <SettingRow {...copy(SETTINGS.language)} htmlFor={languageId} wide>
           <Select
             id={languageId}
@@ -78,7 +78,7 @@ export function GeneralPanel() {
               void saveUser({ timezone: next });
             }}
             home={{ zone: deviceTimezone(), label: t('timezone.thisDevice') }}
-            placeholder={t('settings.selectTimezone')}
+            placeholder={t('settings:selectTimezone')}
             className="w-full"
             // The card fill the language select beside it takes.
             triggerClassName="bg-(--color-bg-card)"
@@ -88,20 +88,20 @@ export function GeneralPanel() {
 
       {/* Desktop only: the browser has tabs, and keeps them for these links. */}
       {isDesktopShell() && (
-        <SettingsGroup title={t('settings.desktopGroup')}>
+        <SettingsGroup title={t('settings:desktopGroup')}>
           <SegmentedRow
             {...copy(SETTINGS.linkTarget)}
             value={shareLinkOpen}
             onChange={(v) => { setShareLinkOpen(v); setShareLinkOpenState(v); }}
             options={[
-              { value: 'panel', label: t('settings.shareLinkOpenPanel') },
-              { value: 'browser', label: t('settings.shareLinkOpenBrowser') },
+              { value: 'panel', label: t('settings:shareLinkOpenPanel') },
+              { value: 'browser', label: t('settings:shareLinkOpenBrowser') },
             ]}
           />
         </SettingsGroup>
       )}
 
-      <SettingsGroup title={t('settings.helpGroup')}>
+      <SettingsGroup title={t('settings:helpGroup')}>
         <SettingRow {...copy(SETTINGS.guides)}>
           <div className="flex flex-wrap gap-2">
             <Button

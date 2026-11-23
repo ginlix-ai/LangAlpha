@@ -16,15 +16,15 @@ export function PlanPanel() {
     <SettingsGroup>
       <SettingRow
         {...copy(SETTINGS.plan)}
-        description={plan ? t('settings.planUsage.current', { plan }) : t(SETTINGS.plan.descKey)}
+        description={plan ? t('settings:planUsage.current', { plan }) : t(SETTINGS.plan.descKey)}
       >
-        <ConsoleLink path="plans">{t('settings.planUsage.change')}</ConsoleLink>
+        <ConsoleLink path="plans">{t('settings:planUsage.change')}</ConsoleLink>
       </SettingRow>
       <SettingRow {...copy(SETTINGS.usage)}>
-        <ConsoleLink path="usage">{t('settings.planUsage.viewUsage')}</ConsoleLink>
+        <ConsoleLink path="usage">{t('settings:planUsage.viewUsage')}</ConsoleLink>
       </SettingRow>
       <SettingRow {...copy(SETTINGS.billing)}>
-        <ConsoleLink path="billing">{t('settings.planUsage.manageBilling')}</ConsoleLink>
+        <ConsoleLink path="billing">{t('settings:planUsage.manageBilling')}</ConsoleLink>
       </SettingRow>
     </SettingsGroup>
   );

@@ -31,7 +31,7 @@ export function OrdersPageLink({
   const className = ownClassName ?? 'inline-flex items-center gap-1 text-xs hover:underline text-(--color-text-tertiary)';
   const label = (
     <>
-      {t('toolArtifact.directTool.orderReceipt.viewInOrders')}
+      {t('toolArtifact:directTool.orderReceipt.viewInOrders')}
       <ArrowRight className="w-3 h-3" aria-hidden="true" />
     </>
   );

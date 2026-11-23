@@ -85,8 +85,8 @@ export function SettingsRail({ section }: { section: Section }) {
           aria-controls={listId}
           aria-autocomplete="list"
           aria-activedescendant={searching && matches.length > 0 ? `${listId}-${shownActive}` : undefined}
-          aria-label={t('settings.search.label')}
-          placeholder={t('settings.search.placeholder')}
+          aria-label={t('settings:search.label')}
+          placeholder={t('settings:search.placeholder')}
           value={query}
           onChange={(e) => { setQuery(e.target.value); setActive(0); }}
           onFocus={() => setFocused(true)}
@@ -118,7 +118,7 @@ export function SettingsRail({ section }: { section: Section }) {
           <button
             type="button"
             className="settings-search-clear"
-            aria-label={t('settings.search.clear')}
+            aria-label={t('settings:search.clear')}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setQuery('')}
           >
@@ -128,9 +128,9 @@ export function SettingsRail({ section }: { section: Section }) {
       </div>
 
       {searching ? (
-        <div id={listId} role="listbox" aria-label={t('settings.search.results')} className="settings-results">
+        <div id={listId} role="listbox" aria-label={t('settings:search.results')} className="settings-results">
           {matches.length === 0 ? (
-            <p className="settings-results-empty">{t('settings.search.empty')}</p>
+            <p className="settings-results-empty">{t('settings:search.empty')}</p>
           ) : (
             matches.map((entry, index) => {
               const Icon = SECTIONS[entry.section].icon;
@@ -156,11 +156,11 @@ export function SettingsRail({ section }: { section: Section }) {
           )}
         </div>
       ) : (
-        <nav ref={navRef} className="settings-rail-nav" aria-label={t('settings.railLabel')}>
+        <nav ref={navRef} className="settings-rail-nav" aria-label={t('settings:railLabel')}>
           <button
             type="button"
             className="settings-search-toggle"
-            aria-label={t('settings.search.label')}
+            aria-label={t('settings:search.label')}
             onClick={() => setSearchOpen(true)}
           >
             <Search aria-hidden />

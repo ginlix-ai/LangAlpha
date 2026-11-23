@@ -31,7 +31,7 @@ export function EntryMark({
 /** The check beside an entry published by the vendor itself. */
 export function OfficialMark({ size = 13 }: { size?: number }) {
   const { t } = useTranslation();
-  const label = t('plugins.discover.officialTitle');
+  const label = t('plugins:discover.officialTitle');
   return (
     <span className="discover-official" title={label} aria-label={label} role="img">
       <BadgeCheck style={{ width: size, height: size }} />
@@ -59,7 +59,7 @@ export function EntryMeta({ entry, category }: { entry: MarketplaceEntry; catego
   if (entry.publisher) {
     parts.push(
       <span key="by" className="discover-by">
-        {t('plugins.discoverPage.by', { publisher: entry.publisher.name })}
+        {t('plugins:discoverPage.by', { publisher: entry.publisher.name })}
       </span>,
     );
   }
@@ -88,7 +88,7 @@ export function InstallBusy({ entry }: { entry: MarketplaceEntry }) {
   return (
     <span role="status" className="discover-busy">
       <Loader size={12} style={{ color: 'var(--color-accent-primary)' }} />
-      {t(entry.auth === 'oauth' ? 'plugins.discover.signingIn' : 'plugins.discover.installing')}
+      {t(entry.auth === 'oauth' ? 'plugins:discover.signingIn' : 'plugins:discover.installing')}
     </span>
   );
 }
@@ -107,12 +107,12 @@ export function EntryInstallButton({ entry, install }: { entry: MarketplaceEntry
       disabled={install.held(entry)}
       title={install.holdReason(entry)}
       // The visible label is generic; the name says which entry.
-      aria-label={t(oauth ? 'plugins.discoverPage.signInInstallAria' : 'plugins.discover.installAria', {
+      aria-label={t(oauth ? 'plugins:discoverPage.signInInstallAria' : 'plugins:discover.installAria', {
         plugin: entry.name,
       })}
       className="transition-opacity hover:opacity-90"
     >
-      {t(oauth ? 'plugins.discoverPage.signInInstall' : 'plugins.discover.install')}
+      {t(oauth ? 'plugins:discoverPage.signInInstall' : 'plugins:discover.install')}
     </HeaderButton>
   );
 }
@@ -123,7 +123,7 @@ export function EntryInstallSlot({ entry, install }: { entry: MarketplaceEntry; 
   if (install.installing(entry)) return <InstallBusy entry={entry} />;
   return (
     <CellAdd
-      label={t('plugins.discover.installAria', { plugin: entry.name })}
+      label={t('plugins:discover.installAria', { plugin: entry.name })}
       onClick={() => install.start(entry)}
       disabled={install.held(entry)}
       reason={install.holdReason(entry)}

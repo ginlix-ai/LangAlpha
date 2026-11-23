@@ -33,14 +33,14 @@ export function ChatPanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.repliesGroup')}>
+      <SettingsGroup title={t('settings:repliesGroup')}>
         <SegmentedRow
           {...copy(SETTINGS.turnDisplay)}
           value={turnDisplay}
           onChange={(v) => { if (v !== turnDisplay) void write(turnDisplayPatch(v)); }}
           options={[
-            { value: 'lean', label: t('settings.turnDisplayLean') },
-            { value: 'verbose', label: t('settings.turnDisplayVerbose') },
+            { value: 'lean', label: t('settings:turnDisplayLean') },
+            { value: 'verbose', label: t('settings:turnDisplayVerbose') },
           ]}
         />
         <SegmentedRow
@@ -48,8 +48,8 @@ export function ChatPanel() {
           value={streamingMode}
           onChange={(v) => { if (v !== streamingMode) void write(streamingModePatch(v)); }}
           options={[
-            { value: 'token', label: t('settings.streamingModeToken') },
-            { value: 'paragraph', label: t('settings.streamingModeParagraph') },
+            { value: 'token', label: t('settings:streamingModeToken') },
+            { value: 'paragraph', label: t('settings:streamingModeParagraph') },
           ]}
         />
         <SegmentedRow
@@ -57,8 +57,8 @@ export function ChatPanel() {
           value={toolCallLayout}
           onChange={(v) => { if (v !== toolCallLayout) void write(toolCallLayoutPatch(v)); }}
           options={[
-            { value: 'rows', label: t('settings.toolCallLayoutRows') },
-            { value: 'status', label: t('settings.toolCallLayoutStatus') },
+            { value: 'rows', label: t('settings:toolCallLayoutRows') },
+            { value: 'status', label: t('settings:toolCallLayoutStatus') },
           ]}
         />
         <SegmentedRow
@@ -66,20 +66,20 @@ export function ChatPanel() {
           value={turnEndScroll}
           onChange={(v) => { if (v !== turnEndScroll) void write(turnEndScrollPatch(v)); }}
           options={[
-            { value: 'bottom', label: t('settings.turnEndScrollBottom') },
-            { value: 'reply_start', label: t('settings.turnEndScrollReplyStart') },
+            { value: 'bottom', label: t('settings:turnEndScrollBottom') },
+            { value: 'reply_start', label: t('settings:turnEndScrollReplyStart') },
           ]}
         />
       </SettingsGroup>
 
-      <SettingsGroup title={t('settings.composerGroup')}>
+      <SettingsGroup title={t('settings:composerGroup')}>
         <SegmentedRow
           {...copy(SETTINGS.composerTray)}
           value={composerTray}
           onChange={(v) => { if (v !== composerTray) void write(composerTrayPatch(v)); }}
           options={[
-            { value: 'above', label: t('settings.composerTrayAbove') },
-            { value: 'inside', label: t('settings.composerTrayInside') },
+            { value: 'above', label: t('settings:composerTrayAbove') },
+            { value: 'inside', label: t('settings:composerTrayInside') },
           ]}
         />
         <ToggleRow

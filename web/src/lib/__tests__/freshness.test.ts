@@ -20,76 +20,76 @@ const f = (partial: Partial<Freshness>): Freshness =>
 describe('resolveFreshnessBadge', () => {
   const cases: Array<[string, FreshnessFields, string | null, number | undefined]> = [
     ['no fields at all', {}, null, undefined],
-    ['measured live reads realtime', { freshness: f({ label: 'live', measured: true }) }, 'marketView.header.statusRealtime', undefined],
+    ['measured live reads realtime', { freshness: f({ label: 'live', measured: true }) }, 'marketView:header.statusRealtime', undefined],
     [
       'measured live wins over a delayed declaration',
       { tier: 'delayed_15m', freshness: f({ label: 'live', measured: true }) },
-      'marketView.header.statusRealtime',
+      'marketView:header.statusRealtime',
       undefined,
     ],
-    ['declared realtime, nothing measured', { tier: 'realtime' }, 'marketView.header.statusRealtime', undefined],
+    ['declared realtime, nothing measured', { tier: 'realtime' }, 'marketView:header.statusRealtime', undefined],
     [
       'a daily series one session behind reads last close, not 1440 minutes',
       { freshness: f({ label: 'delayed', measured: true, lag_s: 86400, interval: '1day' }) },
-      'marketView.header.statusLastClose',
+      'marketView:header.statusLastClose',
       undefined,
     ],
     [
       'a declared delay the bars were too wide to measure, no tier on the row',
       { freshness: f({ label: 'delayed', measured: false, interval: '4hour' }) },
-      'marketView.header.statusDelayed15m',
+      'marketView:header.statusDelayed15m',
       undefined,
     ],
-    ['declared 15-min delay, nothing measured', { tier: 'delayed_15m' }, 'marketView.header.statusDelayed15m', undefined],
+    ['declared 15-min delay, nothing measured', { tier: 'delayed_15m' }, 'marketView:header.statusDelayed15m', undefined],
     [
       'declared 15-min delay with an unmeasured freshness block',
       { tier: 'delayed_15m', freshness: f({ label: 'unknown', measured: false }) },
-      'marketView.header.statusDelayed15m',
+      'marketView:header.statusDelayed15m',
       undefined,
     ],
     [
       'measured delay rounds to whole minutes',
       { tier: 'delayed_15m', freshness: f({ label: 'delayed', measured: true, lag_s: 754 }) },
-      'marketView.header.statusDelayedMin',
+      'marketView:header.statusDelayedMin',
       13,
     ],
     [
       'a sub-minute measured delay floors at one minute',
       { freshness: f({ label: 'delayed', measured: true, lag_s: 12 }) },
-      'marketView.header.statusDelayedMin',
+      'marketView:header.statusDelayedMin',
       1,
     ],
-    ['stale', { freshness: f({ label: 'stale', measured: true, lag_s: 90_000 }) }, 'marketView.header.statusStale', undefined],
-    ['end-of-day tier', { tier: 'eod' }, 'marketView.header.statusLastClose', undefined],
+    ['stale', { freshness: f({ label: 'stale', measured: true, lag_s: 90_000 }) }, 'marketView:header.statusStale', undefined],
+    ['end-of-day tier', { tier: 'eod' }, 'marketView:header.statusLastClose', undefined],
     [
       'end-of-day reads "last close", never "stale"',
       { tier: 'eod', freshness: f({ label: 'stale', measured: true, lag_s: 90_000 }) },
-      'marketView.header.statusLastClose',
+      'marketView:header.statusLastClose',
       undefined,
     ],
     ['an unknown measurement with no tier says nothing', { freshness: f({ label: 'unknown', measured: true }) }, null, undefined],
     [
       'a current quote on a closed venue is the last close, not realtime',
       { tier: 'realtime', freshness: f({ label: 'live', measured: true, closed: true }) },
-      'marketView.header.statusLastClose',
+      'marketView:header.statusLastClose',
       undefined,
     ],
     [
       'a realtime declaration on a closed venue is the last close too',
       { tier: 'realtime', freshness: f({ label: 'live', measured: false, closed: true }) },
-      'marketView.header.statusLastClose',
+      'marketView:header.statusLastClose',
       undefined,
     ],
     [
       'a declared delay on a closed venue is the last close, not "delayed 15 min"',
       { tier: 'delayed_15m', freshness: f({ label: 'delayed', measured: false, closed: true }) },
-      'marketView.header.statusLastClose',
+      'marketView:header.statusLastClose',
       undefined,
     ],
     [
       'a stale print on a closed venue still reads stale',
       { tier: 'realtime', freshness: f({ label: 'stale', measured: true, closed: true }) },
-      'marketView.header.statusStale',
+      'marketView:header.statusStale',
       undefined,
     ],
   ];
@@ -131,40 +131,40 @@ describe('cases the header and the badge used to disagree on', () => {
       tier: 'eod',
       freshness: f({ label: 'delayed', measured: true, lag_s: 86_400, interval: '1day' }),
     });
-    expect(spec?.key).toBe('marketView.header.statusLastClose');
+    expect(spec?.key).toBe('marketView:header.statusLastClose');
   });
 
   it.each(['1day', 'daily', '1d'])('treats %s as a daily interval', (interval) => {
     const spec = resolveFreshnessBadge({ freshness: f({ label: 'delayed', measured: true, lag_s: 86_400, interval }) });
-    expect(spec?.key).toBe('marketView.header.statusLastClose');
+    expect(spec?.key).toBe('marketView:header.statusLastClose');
   });
 
   it('an unmeasured delay reads the declared 15-minute delay', () => {
     expect(resolveFreshnessBadge({ freshness: f({ label: 'delayed', measured: false }) })?.key)
-      .toBe('marketView.header.statusDelayed15m');
+      .toBe('marketView:header.statusDelayed15m');
   });
 });
 
 describe('resolveChartFreshness', () => {
   it('phrases each state for the chart line', () => {
-    expect(resolveChartFreshness(f({ label: 'live', measured: true }))?.key).toBe('marketView.header.chartLive');
+    expect(resolveChartFreshness(f({ label: 'live', measured: true }))?.key).toBe('marketView:header.chartLive');
     expect(resolveChartFreshness(f({ label: 'delayed', measured: true, lag_s: 600, interval: '1min' })))
-      .toEqual({ key: 'marketView.header.chartDelayedMin', minutes: 10, state: 'delayed' });
+      .toEqual({ key: 'marketView:header.chartDelayedMin', minutes: 10, state: 'delayed' });
     expect(resolveChartFreshness(f({ label: 'incomplete', measured: true, lag_s: 180 })))
-      .toEqual({ key: 'marketView.header.chartShortOfClose', minutes: 3, state: 'incomplete' });
-    expect(resolveChartFreshness(f({ label: 'stale', measured: true }))?.key).toBe('marketView.header.statusStale');
+      .toEqual({ key: 'marketView:header.chartShortOfClose', minutes: 3, state: 'incomplete' });
+    expect(resolveChartFreshness(f({ label: 'stale', measured: true }))?.key).toBe('marketView:header.statusStale');
   });
 
   it('a complete series on a closed venue reads last close, never live', () => {
     for (const interval of ['5min', '1day']) {
       const spec = resolveChartFreshness(f({ label: 'live', measured: true, closed: true, interval }));
-      expect(spec).toEqual({ key: 'marketView.header.statusLastClose', state: 'eod' });
+      expect(spec).toEqual({ key: 'marketView:header.statusLastClose', state: 'eod' });
     }
   });
 
   it('a daily chart a session behind reads last close, as the badge does', () => {
     expect(resolveChartFreshness(f({ label: 'delayed', measured: true, lag_s: 86_400, interval: 'daily' }))?.key)
-      .toBe('marketView.header.statusLastClose');
+      .toBe('marketView:header.statusLastClose');
   });
 
   it('says nothing when nothing was measured or declared', () => {
@@ -225,13 +225,13 @@ describe('chartFreshnessParts', () => {
       'ACME', 'en-US', NOW,
     );
     expect(parts.source).toBe('Tushare');
-    expect(parts.state).toBe('marketView.header.chartLive');
-    expect(parts.lastBar).toBe('marketView.header.chartLastBar:{"time":"15:45"}');
+    expect(parts.state).toBe('marketView:header.chartLive');
+    expect(parts.lastBar).toBe('marketView:header.chartLastBar:{"time":"15:45"}');
     expect(chartFreshnessParts(t, null, 'ACME', 'en-US', NOW)).toEqual({ source: null, state: null, lastBar: null });
   });
 
   it('names a daily series by key, not a provider', () => {
-    expect(chartFreshnessParts(t, f({ source: 'daily' }), 'ACME', 'en-US', NOW).source).toBe('marketView.header.sourceDaily');
+    expect(chartFreshnessParts(t, f({ source: 'daily' }), 'ACME', 'en-US', NOW).source).toBe('marketView:header.sourceDaily');
   });
 });
 

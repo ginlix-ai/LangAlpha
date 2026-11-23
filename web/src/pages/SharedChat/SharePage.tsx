@@ -10,14 +10,21 @@ import { isHtmlFile } from '../ChatAgent/utils/filePaths';
 import { getSharedMetadata, type ShareMetadata } from './api';
 import ShareUnavailable from './ShareUnavailable';
 import SharedAppView from './SharedAppView';
+import { withCopy } from '@/i18n';
 
 // A file or app page never loads the chat replay, and an app page never loads
 // the file viewers.
-const SharedChatView = React.lazy(() => import('./SharedChatView'));
-const SharedFileView = React.lazy(() => import('./SharedFileView'));
-const SharedPageView = React.lazy(() => import('./SharedPageView'));
+const SharedChatView = React.lazy(withCopy(() => import('./SharedChatView'), [
+  'automation', 'customDashboard', 'dashboard', 'filePanel', 'mcp', 'orders', 'pageViewer', 'plugins', 'publish', 'toolArtifact', 'vault',
+]));
+const SharedFileView = React.lazy(withCopy(() => import('./SharedFileView'), [
+  'filePanel', 'pageViewer', 'toolArtifact',
+]));
+const SharedPageView = React.lazy(withCopy(() => import('./SharedPageView'), ['filePanel']));
 // The owner's own HTML file, live with comments; their other files read as a visitor's do.
-const OwnerArtifactView = React.lazy(() => import('./OwnerArtifactView'));
+const OwnerArtifactView = React.lazy(withCopy(() => import('./OwnerArtifactView'), [
+  'filePanel', 'pageViewer', 'publish',
+]));
 
 /** An app's signed URL lasts an hour; swapping it reloads the running app, so only near the end. */
 const APP_URL_MARGIN_MS = 5 * 60_000;

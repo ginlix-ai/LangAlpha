@@ -93,20 +93,20 @@ export function ModelBlock({ view, models, write }: AsideProps) {
 
   return (
     <DetailAsideBlock
-      title={t('plugins.subagents.model')}
+      title={t('plugins:subagents.model')}
       side={
         base
-          ? baseSide(t, view, base.model ? modelName(base.model, metadata) : t('plugins.subagents.threadsModel'))
+          ? baseSide(t, view, base.model ? modelName(base.model, metadata) : t('plugins:subagents.threadsModel'))
           : undefined
       }
     >
       <ModelSelector
-        ariaLabel={t('plugins.subagents.modelAria', { name: view.name })}
+        ariaLabel={t('plugins:subagents.modelAria', { name: view.name })}
         nameOf={(m) => modelName(m, metadata)}
         value={view.model ?? ''}
         onChange={pickModel}
         models={offered.models}
-        placeholder={t('plugins.subagents.threadsModel')}
+        placeholder={t('plugins:subagents.threadsModel')}
         payers={models.payers}
         metadata={metadata}
         disabledModels={offered.locked}
@@ -115,15 +115,15 @@ export function ModelBlock({ view, models, write }: AsideProps) {
         // doesn't list (a key the user can't pick today) may well still run.
         missingLabel={(m) =>
           unavailable
-            ? t('plugins.subagents.modelUnavailableOption', { model: modelName(m, metadata) })
+            ? t('plugins:subagents.modelUnavailableOption', { model: modelName(m, metadata) })
             : modelName(m, metadata)
         }
       />
       {unavailable ? (
-        <p className="sa-hint is-warn">{t('plugins.subagents.modelUnavailableHint')}</p>
+        <p className="sa-hint is-warn">{t('plugins:subagents.modelUnavailableHint')}</p>
       ) : pinnedClaudeCode ? (
         <p className="sa-hint">
-          {t('plugins.subagents.claudeCodePinHint')}
+          {t('plugins:subagents.claudeCodePinHint')}
           {hold?.link && (
             <>
               {' '}
@@ -132,7 +132,7 @@ export function ModelBlock({ view, models, write }: AsideProps) {
           )}
         </p>
       ) : (
-        !base && <p className="sa-hint">{t('plugins.subagents.modelHint')}</p>
+        !base && <p className="sa-hint">{t('plugins:subagents.modelHint')}</p>
       )}
     </DetailAsideBlock>
   );
@@ -179,41 +179,41 @@ export function EffortBlock({ view, models, write }: AsideProps) {
     efforts = tuning.efforts;
     const named = effortLabelFor(t, tuning.effective.reasoning_effort);
     defaultLabel = named
-      ? t('plugins.subagents.modelsSettingNamed', { effort: named })
-      : t('plugins.subagents.modelsSetting');
+      ? t('plugins:subagents.modelsSettingNamed', { effort: named })
+      : t('plugins:subagents.modelsSetting');
     const model = modelName(pinned, metadata);
     // A set level hides what the model would pick, so that comes first; left
     // on the model's setting, the select already names it.
     if (efforts.length === 0) {
-      hint = t('plugins.subagents.effortNone', { model });
+      hint = t('plugins:subagents.effortNone', { model });
     } else if (hasProblem(view, 'effort_not_offered')) {
-      hint = t('plugins.subagents.effortHintInherit');
+      hint = t('plugins:subagents.effortHintInherit');
     } else if (stored && named) {
-      hint = t('plugins.subagents.effortHintSetting', { effort: named });
+      hint = t('plugins:subagents.effortHintSetting', { effort: named });
     } else if ([...offeredAnywhere].some((lv) => !efforts.includes(lv) && EFFORT_LABELS[lv])) {
-      hint = t('plugins.subagents.effortHintUnlisted', { model });
+      hint = t('plugins:subagents.effortHintUnlisted', { model });
     }
   } else {
     const offered = pinMeta && (pinMeta.reasoning_efforts ?? []);
     efforts = EFFORT_ORDER.filter((lv) => EFFORT_LABELS[lv] && (!offered || offered.includes(lv)));
-    defaultLabel = t('plugins.subagents.threadsSetting');
+    defaultLabel = t('plugins:subagents.threadsSetting');
     hint =
       unavailablePin && offered && efforts.length === 0
-        ? t('plugins.subagents.effortNone', { model: modelName(unavailablePin, metadata) })
-        : t('plugins.subagents.effortHintInherit');
+        ? t('plugins:subagents.effortNone', { model: modelName(unavailablePin, metadata) })
+        : t('plugins:subagents.effortHintInherit');
   }
 
   const base = view.base;
   return (
     <DetailAsideBlock
-      title={t('plugins.subagents.effort')}
+      title={t('plugins:subagents.effort')}
       side={base ? baseSide(t, view, effortOrSetting(t, base.effort, pinned)) : undefined}
     >
       {hasEffortOptions(efforts, stored) ? (
         <EffortSelect
           value={stored}
           onChange={(v) => write({ effort: v || null })}
-          ariaLabel={t('plugins.subagents.effortAria', { name: view.name })}
+          ariaLabel={t('plugins:subagents.effortAria', { name: view.name })}
           defaultLabel={defaultLabel}
           efforts={efforts}
           fill
@@ -231,7 +231,7 @@ function PresetMenu({ view, write }: Pick<AsideProps, 'view' | 'write'>) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" className="sa-preset">
-          {t('plugins.subagents.preset.label')}
+          {t('plugins:subagents.preset.label')}
           <ChevronDown aria-hidden />
         </button>
       </DropdownMenuTrigger>
@@ -270,7 +270,7 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
   const providerName = (name: string) => catalog[name]?.display_name ?? name;
   const levelName = (provider: string | null, level: string) => {
     const info = provider ? catalog[provider]?.depths.find((d) => d.name === level) : undefined;
-    return t(`settings.searchDepthLevel.${level}`, info?.display_name ?? level);
+    return t(`settings:searchDepthLevel.${level}`, info?.display_name ?? level);
   };
 
   const yours = data.main;
@@ -287,7 +287,7 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
   if (view.search_provider && !catalog[view.search_provider]) {
     providerOptions.push({
       value: view.search_provider,
-      label: t('plugins.subagents.unavailableOption', { name: view.search_provider }),
+      label: t('plugins:subagents.unavailableOption', { name: view.search_provider }),
       disabled: true,
     });
   }
@@ -302,7 +302,7 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
   if (view.search_depth && depthShown && !depths.some((d) => d.name === view.search_depth)) {
     depthOptions.push({
       value: view.search_depth,
-      label: t('plugins.subagents.unavailableOption', { name: view.search_depth }),
+      label: t('plugins:subagents.unavailableOption', { name: view.search_depth }),
       disabled: true,
     });
   }
@@ -312,10 +312,10 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
   const yourDepthHere =
     yours.search_depth && depths.some((d) => d.name === yours.search_depth) ? yours.search_depth : null;
   const depthDefault = yourDepthHere
-    ? t('plugins.subagents.sameAsYoursNamed', { name: levelName(effective, yourDepthHere) })
+    ? t('plugins:subagents.sameAsYoursNamed', { name: levelName(effective, yourDepthHere) })
     : effective && catalog[effective]?.default_depth
-      ? t('plugins.subagents.depthDefaultNamed', { name: levelName(effective, catalog[effective].default_depth) })
-      : t('plugins.subagents.sameAsYours');
+      ? t('plugins:subagents.depthDefaultNamed', { name: levelName(effective, catalog[effective].default_depth) })
+      : t('plugins:subagents.sameAsYours');
 
   function pickProvider(next: string) {
     const nextProvider = next || yours.search_provider;
@@ -326,12 +326,12 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
 
   const yoursLine = yours.search_provider
     ? yours.search_depth
-      ? t('plugins.subagents.searchYours', {
+      ? t('plugins:subagents.searchYours', {
           provider: providerName(yours.search_provider),
           depth: levelName(yours.search_provider, yours.search_depth),
         })
-      : t('plugins.subagents.searchYoursProvider', { provider: providerName(yours.search_provider) })
-    : t('plugins.subagents.searchCredits');
+      : t('plugins:subagents.searchYoursProvider', { provider: providerName(yours.search_provider) })
+    : t('plugins:subagents.searchCredits');
 
   const notOnPlan = hasProblem(view, 'search_not_on_plan');
   const providerUnavailable = hasProblem(view, 'search_unavailable');
@@ -339,15 +339,15 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
 
   return (
     <div className="sa-search">
-      <span className="sa-search-label">{t('plugins.subagents.searchProvider')}</span>
+      <span className="sa-search-label">{t('plugins:subagents.searchProvider')}</span>
       <CompactSelect
         value={view.search_provider ?? ''}
         onChange={pickProvider}
-        ariaLabel={t('plugins.subagents.searchProvider')}
+        ariaLabel={t('plugins:subagents.searchProvider')}
         defaultLabel={
           yours.search_provider
-            ? t('plugins.subagents.sameAsYoursNamed', { name: providerName(yours.search_provider) })
-            : t('plugins.subagents.sameAsYours')
+            ? t('plugins:subagents.sameAsYoursNamed', { name: providerName(yours.search_provider) })
+            : t('plugins:subagents.sameAsYours')
         }
         options={providerOptions}
         disabled={!providerOptions.some((o) => !o.disabled) && !view.search_provider}
@@ -355,11 +355,11 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
       />
       {depthShown && (
         <>
-          <span className="sa-search-label">{t('plugins.subagents.depth')}</span>
+          <span className="sa-search-label">{t('plugins:subagents.depth')}</span>
           <CompactSelect
             value={view.search_depth ?? ''}
             onChange={(v) => write({ search_depth: v || null })}
-            ariaLabel={t('plugins.subagents.depth')}
+            ariaLabel={t('plugins:subagents.depth')}
             defaultLabel={depthDefault}
             options={depthOptions}
             disabled={!depthOptions.some((o) => !o.disabled) && !view.search_depth}
@@ -367,21 +367,21 @@ function SearchSettings({ view, data, models, write }: AsideProps) {
           />
         </>
       )}
-      {notOnPlan && <p className="sa-search-hint is-warn">{t('plugins.subagents.searchNotOnPlanHint')}</p>}
-      {providerUnavailable && <p className="sa-search-hint is-warn">{t('plugins.subagents.searchUnavailableHint')}</p>}
+      {notOnPlan && <p className="sa-search-hint is-warn">{t('plugins:subagents.searchNotOnPlanHint')}</p>}
+      {providerUnavailable && <p className="sa-search-hint is-warn">{t('plugins:subagents.searchUnavailableHint')}</p>}
       {depthMissing && (
         <p className="sa-search-hint is-warn">
-          {t('plugins.subagents.depthNotOfferedHint', {
+          {t('plugins:subagents.depthNotOfferedHint', {
             provider: depthMissing.detail ? providerName(depthMissing.detail) : effective ? providerName(effective) : '',
           })}
         </p>
       )}
       <p className="sa-search-hint">{yoursLine}</p>
       {providerOptions.some((o) => o.disabled) && (
-        <p className="sa-search-hint">{t('settings.searchProviderUpgradeHint')}</p>
+        <p className="sa-search-hint">{t('settings:searchProviderUpgradeHint')}</p>
       )}
       {depthShown && depthAbovePlan && (
-        <p className="sa-search-hint">{t('settings.searchDepthUpgradeHint')}</p>
+        <p className="sa-search-hint">{t('settings:searchDepthUpgradeHint')}</p>
       )}
     </div>
   );
@@ -398,13 +398,13 @@ export function ToolsBlock(props: AsideProps) {
   }
   const base = view.base;
   const hint = !base
-    ? t('plugins.subagents.filesAlwaysOn')
+    ? t('plugins:subagents.filesAlwaysOn')
     : sameTools(view.tools, base.tools)
-      ? t('plugins.subagents.toolsSameAsBase')
-      : t('plugins.subagents.toolsBaseDiffers', { base: baseSide(t, view, toolsSummary(t, base.tools, locale)) });
+      ? t('plugins:subagents.toolsSameAsBase')
+      : t('plugins:subagents.toolsBaseDiffers', { base: baseSide(t, view, toolsSummary(t, base.tools, locale)) });
 
   return (
-    <DetailAsideBlock title={t('plugins.subagents.tools')} side={<PresetMenu view={view} write={write} />}>
+    <DetailAsideBlock title={t('plugins:subagents.tools')} side={<PresetMenu view={view} write={write} />}>
       <ul className="sa-switches">
         {TOOL_ORDER.map((tool) => (
           <ToolRow key={tool} tool={tool} on={has(tool)} onToggle={() => toggle(tool)}>
@@ -413,8 +413,8 @@ export function ToolsBlock(props: AsideProps) {
             ) : tool === 'code' && has('code') ? (
               <ul className="sa-nest-list">
                 <SwitchRow
-                  label={t('plugins.subagents.connectors')}
-                  desc={t('plugins.subagents.connectorsDesc')}
+                  label={t('plugins:subagents.connectors')}
+                  desc={t('plugins:subagents.connectorsDesc')}
                   enabled={view.connectors}
                   disabled={false}
                   onToggle={() => write({ connectors: !view.connectors })}
@@ -469,20 +469,20 @@ export function BrokeragesBlock({ view, write }: Pick<AsideProps, 'view' | 'writ
   const base = view.base;
   return (
     <DetailAsideBlock
-      title={t('plugins.subagents.brokerages')}
+      title={t('plugins:subagents.brokerages')}
       side={base ? baseSide(t, view, brokerageText(t, base.brokerages)) : undefined}
     >
       <ul className="sa-switches">
         <SwitchRow
-          label={t('plugins.subagents.access')}
+          label={t('plugins:subagents.access')}
           desc={
             codeOn ? (
               <Trans
-                i18nKey="plugins.subagents.accessDesc"
+                i18nKey="plugins:subagents.accessDesc"
                 components={{ brokerages: <Link to="/plugins?tab=brokerages" className="sa-link" /> }}
               />
             ) : (
-              t('plugins.subagents.needsCode')
+              t('plugins:subagents.needsCode')
             )
           }
           enabled={access && codeOn}
@@ -504,13 +504,13 @@ export function MemoryBlock({ view, write }: Pick<AsideProps, 'view' | 'write'>)
   const base = view.base;
   return (
     <DetailAsideBlock
-      title={t('plugins.subagents.memory')}
+      title={t('plugins:subagents.memory')}
       side={base ? baseSide(t, view, memoryText(t, base.memory)) : undefined}
     >
       <ul className="sa-switches">
         <SwitchRow
-          label={t('plugins.subagents.memory')}
-          desc={t('plugins.subagents.memoryDesc')}
+          label={t('plugins:subagents.memory')}
+          desc={t('plugins:subagents.memoryDesc')}
           enabled={view.memory}
           disabled={false}
           onToggle={() => write({ memory: !view.memory })}
@@ -531,15 +531,15 @@ export function PreferredBlock({ view, data, write }: AsideProps) {
 
   const shipped = base ? [...base.preferred_connectors, ...base.preferred_skills.map((s) => `/${s}`)] : [];
   const side = base
-    ? baseSide(t, view, shipped.length > 0 ? shipped.join(t('plugins.shell.summary.sep')) : t('plugins.subagents.none'))
+    ? baseSide(t, view, shipped.length > 0 ? shipped.join(t('plugins:shell.summary.sep')) : t('plugins:subagents.none'))
     : undefined;
 
   const setConnectors = (next: string[]) => write({ preferred_connectors: next });
   const setSkills = (next: string[]) => write({ preferred_skills: next });
 
   return (
-    <DetailAsideBlock title={t('plugins.subagents.preferred')} side={side}>
-      <p className="sa-sublabel">{t('plugins.subagents.preferredConnectors')}</p>
+    <DetailAsideBlock title={t('plugins:subagents.preferred')} side={side}>
+      <p className="sa-sublabel">{t('plugins:subagents.preferredConnectors')}</p>
       <div className="sa-chips">
         {view.preferred_connectors.map((name) => (
           <Chip
@@ -548,12 +548,12 @@ export function PreferredBlock({ view, data, write }: AsideProps) {
             title={connectorLabel(name)}
             missing={hasProblem(view, 'connector_missing', name)}
             off={connectorOff(name)}
-            offNote={t('plugins.subagents.connectorOff')}
+            offNote={t('plugins:subagents.connectorOff')}
             onRemove={() => setConnectors(view.preferred_connectors.filter((n) => n !== name))}
           />
         ))}
         <AddChip
-          label={t('plugins.subagents.addConnector')}
+          label={t('plugins:subagents.addConnector')}
           // One switched off in Connectors is nothing to reach for.
           options={data.connectors
             .filter((c) => c.enabled && !view.preferred_connectors.includes(c.name))
@@ -561,7 +561,7 @@ export function PreferredBlock({ view, data, write }: AsideProps) {
           onPick={(name) => setConnectors([...view.preferred_connectors, name])}
         />
       </div>
-      <p className="sa-sublabel">{t('plugins.subagents.preferredSkills')}</p>
+      <p className="sa-sublabel">{t('plugins:subagents.preferredSkills')}</p>
       <div className="sa-chips">
         {view.preferred_skills.map((name) => (
           <Chip
@@ -570,12 +570,12 @@ export function PreferredBlock({ view, data, write }: AsideProps) {
             title={name}
             missing={hasProblem(view, 'skill_missing', name)}
             off={skillOff(name)}
-            offNote={t('plugins.subagents.skillOff')}
+            offNote={t('plugins:subagents.skillOff')}
             onRemove={() => setSkills(view.preferred_skills.filter((n) => n !== name))}
           />
         ))}
         <AddChip
-          label={t('plugins.subagents.addSkill')}
+          label={t('plugins:subagents.addSkill')}
           options={addableSkills(skills, data.skills, view.preferred_skills).map((s) => ({
             value: s.name,
             label: `/${s.command ?? s.name}`,
@@ -584,7 +584,7 @@ export function PreferredBlock({ view, data, write }: AsideProps) {
         />
       </div>
       <p className="sa-hint" style={{ marginTop: 0 }}>
-        {t('plugins.subagents.preferredHint')}
+        {t('plugins:subagents.preferredHint')}
       </p>
     </DetailAsideBlock>
   );
@@ -613,11 +613,11 @@ function Chip({
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
-  const note = missing ? t('plugins.subagents.missing') : off && offNote ? offNote : title;
+  const note = missing ? t('plugins:subagents.missing') : off && offNote ? offNote : title;
   return (
     <span className={cn('sa-chip', missing && 'is-missing', !missing && off && 'is-off')} title={note}>
       <span>{text}</span>
-      <button type="button" onClick={onRemove} aria-label={t('plugins.subagents.removeChip', { name: text })}>
+      <button type="button" onClick={onRemove} aria-label={t('plugins:subagents.removeChip', { name: text })}>
         <X aria-hidden />
       </button>
     </span>
@@ -644,7 +644,7 @@ function AddChip({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="sa-add-menu min-w-[200px]">
         {options.length === 0 ? (
-          <DropdownMenuItem disabled>{t('plugins.subagents.nothingToAdd')}</DropdownMenuItem>
+          <DropdownMenuItem disabled>{t('plugins:subagents.nothingToAdd')}</DropdownMenuItem>
         ) : (
           options.map((o) => (
             <DropdownMenuItem key={o.value} onSelect={() => onPick(o.value)}>
@@ -666,7 +666,7 @@ export function AvailableBlock({ view, write }: Pick<AsideProps, 'view' | 'write
     write({ available_to: next });
   }
   return (
-    <DetailAsideBlock title={t('plugins.subagents.availableTo')}>
+    <DetailAsideBlock title={t('plugins:subagents.availableTo')}>
       <div className="sa-checks">
         {AUDIENCES.map((audience) => {
           const checked = view.available_to.includes(audience);
@@ -683,7 +683,7 @@ export function AvailableBlock({ view, write }: Pick<AsideProps, 'view' | 'write
           );
         })}
       </div>
-      <p className="sa-hint">{t('plugins.subagents.availableHint')}</p>
+      <p className="sa-hint">{t('plugins:subagents.availableHint')}</p>
     </DetailAsideBlock>
   );
 }

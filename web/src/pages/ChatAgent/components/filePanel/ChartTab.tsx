@@ -47,7 +47,7 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
       kind: 'chip',
       source: 'chart',
       label: `${symbol} · ${timeframe}`,
-      snippet: t('filePanel.chartContextHint', { symbol, timeframe }),
+      snippet: t('filePanel:chartContextHint', { symbol, timeframe }),
     });
   }, [onAddContext, symbol, timeframe, t]);
 
@@ -69,12 +69,12 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
     <>
       <QuoteListDrawer symbol={symbol} onPick={onSwitchSymbol} />
       {onAddContext && (
-        <ChartToolButton onClick={addToContext} title={t('filePanel.addChartToContext')}>
+        <ChartToolButton onClick={addToContext} title={t('filePanel:addChartToContext')}>
           <TextSelect size={14} />
         </ChartToolButton>
       )}
       {onOpenInMarketView && (
-        <ChartToolButton onClick={openInMarketView} title={t('filePanel.openInMarketView')}>
+        <ChartToolButton onClick={openInMarketView} title={t('filePanel:openInMarketView')}>
           <ExternalLink size={14} />
         </ChartToolButton>
       )}

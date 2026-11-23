@@ -26,14 +26,14 @@ export function SubscriptionConnect({ state }: { state: LocationState }) {
     <div>
       <WizardStepHeader
         titleId={headingId}
-        title={t('setup.connectTitle', { provider: t(`modelAccess.${key}.name`) })}
+        title={t('setup:connectTitle', { provider: t(`modelAccess.${key}.name`) })}
         helper={t(`modelAccess.${key}.intro`)}
       />
       {provider === 'claude-oauth'
         ? <ClaudeConnect onConnected={done} />
         : <DeviceConnect key={provider} provider={provider} onConnected={done} />}
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth', answering: state.answering } }) }}
+        back={{ label: t('setup:back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth', answering: state.answering } }) }}
         primary={null}
       />
     </div>

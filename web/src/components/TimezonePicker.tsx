@@ -107,7 +107,7 @@ export default function TimezonePicker({
 
   return (
     <Select
-      aria-label={ariaLabel ?? t('settings.timezone')}
+      aria-label={ariaLabel ?? t('settings:timezone')}
       selectedKey={selected || null}
       onSelectionChange={(k) => {
         if (k != null) onChange(String(k));

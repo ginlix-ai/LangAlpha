@@ -24,34 +24,34 @@ export function InlineMarketMoversCard({ artifact, onClick, toolArgs }: InlineCa
       title={moversTitle(t, direction)}
       meta={[
         failed && <TermStatus key="failed" tone="loss">{t('common.failed')}</TermStatus>,
-        rows.length > 0 && t('toolArtifact.nResults', { count: rows.length }),
+        rows.length > 0 && t('toolArtifact:nResults', { count: rows.length }),
       ]}
       metaTitle={retrievedTitle(t, asOfTs, locale)}
       onClick={onClick}
     >
       {/* An error or an empty list keeps its call in the transcript; the
           panel behind it holds the tool's own words for why. */}
-      {!rows.length && <div className="term-t3">{t('toolArtifact.noMoversData')}</div>}
+      {!rows.length && <div className="term-t3">{t('toolArtifact:noMoversData')}</div>}
       <TermTable
         rows={rows}
         limit={MAX_INLINE_ROWS}
-        more={(n) => t('toolArtifact.nMoreStocks', { count: n })}
+        more={(n) => t('toolArtifact:nMoreStocks', { count: n })}
         rowKey={(row, i) => row.symbol || i}
         columns={[
           // Without the name column, the symbol takes the spare width.
-          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'grow', className: 'term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
+          { key: 'sym', label: t('toolArtifact:termHead.sym'), fill: 'grow', className: 'term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
           // The vendor names few US movers; a column blank on every row says nothing.
-          { key: 'name', label: t('toolArtifact.termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow && listed.some((r) => r.name), cell: (r) => r.name },
+          { key: 'name', label: t('toolArtifact:termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow && listed.some((r) => r.name), cell: (r) => r.name },
           {
             key: 'last',
-            label: t('toolArtifact.termHead.last'),
+            label: t('toolArtifact:termHead.last'),
             num: true,
             cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale, { decimals: moneyPlaces(r.price) }) : ''),
           },
-          { key: 'change', label: t('toolArtifact.termHead.change'), num: true, cell: (r) => <TermChange value={r.changePct} /> },
+          { key: 'change', label: t('toolArtifact:termHead.change'), num: true, cell: (r) => <TermChange value={r.changePct} /> },
           {
             key: 'vol',
-            label: t('toolArtifact.termHead.vol'),
+            label: t('toolArtifact:termHead.vol'),
             num: true,
             className: 'term-t2',
             show: listed.some((r) => r.volume != null),

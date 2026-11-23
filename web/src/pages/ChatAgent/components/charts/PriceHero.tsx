@@ -65,10 +65,10 @@ export function PriceHero({
   const money = (n: number): string => formatMoney(n, currency, locale, { upTo });
   const signed = (n: number): string => formatMoney(n, currency, locale, { signed: true, upTo });
   const pairs = [
-    figures.open != null && ([t('toolArtifact.open'), money(figures.open)] as const),
-    figures.prevClose != null && ([t('toolArtifact.prevClose'), money(figures.prevClose)] as const),
+    figures.open != null && ([t('toolArtifact:open'), money(figures.open)] as const),
+    figures.prevClose != null && ([t('toolArtifact:prevClose'), money(figures.prevClose)] as const),
     // In the reader's locale: a Chinese reader counts in 万 and 亿.
-    figures.volume != null && ([t('toolArtifact.volume'), compactNumber(figures.volume, locale)] as const),
+    figures.volume != null && ([t('toolArtifact:volume'), compactNumber(figures.volume, locale)] as const),
     ...stats,
   ].filter((p) => !!p);
   const extAside = ext && extAt === 'end' && (

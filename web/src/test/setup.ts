@@ -1,21 +1,8 @@
 /// <reference types="vitest/globals" />
 import i18n, { initI18n } from '@/i18n';
-import enUS from '@/locales/en-US.json';
-import zhCN from '@/locales/zh-CN.json';
-import enUSIntros from '@/locales/intros/en-US.json';
-import zhCNIntros from '@/locales/intros/zh-CN.json';
-import enUSFirstRun from '@/locales/thisMacFirstRun/en-US.json';
-import zhCNFirstRun from '@/locales/thisMacFirstRun/zh-CN.json';
 import { installBrowserTraps } from './browserTraps';
 import { installJsdomShims } from './jsdomShims';
-
-// The app's i18n config with both catalogs handed over up front, so `t()`
-// returns real strings and a language switch lands before the next line. The
-// app loads catalogs on demand, which would make every switch in a test async.
-const catalogs = {
-  'en-US': { translation: enUS, intros: enUSIntros, thisMacFirstRun: enUSFirstRun },
-  'zh-CN': { translation: zhCN, intros: zhCNIntros, thisMacFirstRun: zhCNFirstRun },
-};
+import { resources } from './catalogs';
 
 // Node's BroadcastChannel reaches every worker thread in the process, so under
 // the vm pool a file hears whatever the files running beside it broadcast: one
@@ -36,17 +23,20 @@ if (typeof BroadcastChannel !== 'undefined') {
   };
 }
 
-// One setup file for both environments: a test file that declares
-// `// @vitest-environment node` has no `window`, and gets the traps instead of
-// the jsdom shims.
+// The app's i18n config with every catalog handed over up front
+// (`test/catalogs.ts`), so `t()` returns real strings and a language switch
+// lands before the next line; the app loads catalogs on demand, which would
+// make every switch in a test async. One setup file serves both environments:
+// a test file that declares `// @vitest-environment node` has no `window`,
+// and gets the traps instead of the jsdom shims.
 if (typeof window === 'undefined') {
   // jsdom answers `navigator.language` with en-US; Node derives it from the
   // machine's locale. Pin it so a node file renders the same strings on every
   // machine. Done before the traps so i18n's own document probe still runs.
-  await initI18n(catalogs);
+  await initI18n(resources);
   await i18n.changeLanguage('en-US');
   installBrowserTraps();
 } else {
-  void initI18n(catalogs);
+  void initI18n(resources);
   installJsdomShims();
 }

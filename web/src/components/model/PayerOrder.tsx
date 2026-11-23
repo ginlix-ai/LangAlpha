@@ -17,7 +17,7 @@ export function PayerOrder({ className }: { className?: string }) {
   return (
     <p className={cn('text-xs', className)} style={{ color: 'var(--color-text-tertiary)' }}>
       <Trans
-        i18nKey="settings.payerOrder.rule"
+        i18nKey="settings:payerOrder.rule"
         components={{
           ownKey: <PayerBadge payer="own_key" />,
           deployment: <PayerBadge payer={deploymentPayer()} />,

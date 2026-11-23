@@ -141,7 +141,7 @@ describe('delivery names in the inspector', () => {
     renderAt('/automations?id=auto-1');
     const pane = await inspector();
 
-    const term = await within(pane).findByText(label('automation.delivery'), { selector: 'dt' });
+    const term = await within(pane).findByText(label('automation:delivery'), { selector: 'dt' });
     // #ops is no longer listed; the failed run named it.
     expect(await within(pane).findByText('Slack (#demo), Your Discord DM, #ops')).toBeInTheDocument();
     expect(term.nextElementSibling).toHaveTextContent('Slack (#demo), Your Discord DM, #ops');
@@ -154,23 +154,23 @@ describe('where each run’s delivery landed', () => {
     renderAt('/automations?id=auto-1');
     const { row } = await historyRow('25');
 
-    expect(within(row).getByText(label('automation.deliveredVia', { method: '#demo' }))).toBeInTheDocument();
-    expect(within(row).getByText(label('automation.deliveredFallbackVia', { method: 'Your Discord DM' }))).toBeInTheDocument();
+    expect(within(row).getByText(label('automation:deliveredVia', { method: '#demo' }))).toBeInTheDocument();
+    expect(within(row).getByText(label('automation:deliveredFallbackVia', { method: 'Your Discord DM' }))).toBeInTheDocument();
   });
 
   it('says a notice went', async () => {
     renderAt('/automations?id=auto-1');
     const { row } = await historyRow('24');
 
-    expect(within(row).getByText(label('automation.deliveredNoticeVia', { method: '#demo' }))).toBeInTheDocument();
+    expect(within(row).getByText(label('automation:deliveredNoticeVia', { method: '#demo' }))).toBeInTheDocument();
   });
 
   it('says a delivery failed, and why, under the run', async () => {
     renderAt('/automations?id=auto-1');
     const { row, next } = await historyRow('23');
 
-    expect(within(row).getByText(label('automation.deliveryFailedVia', { method: '#ops' }))).toBeInTheDocument();
-    expect(within(row).getByLabelText(label('automation.runFailed'))).toBeInTheDocument();
+    expect(within(row).getByText(label('automation:deliveryFailedVia', { method: '#ops' }))).toBeInTheDocument();
+    expect(within(row).getByLabelText(label('automation:runFailed'))).toBeInTheDocument();
     expect(row).toHaveClass('has-error');
     expect(next).toHaveTextContent('#ops: The bot was removed from the channel.');
   });
@@ -191,14 +191,14 @@ describe('delivery in the feed', () => {
 
     const agent = (await screen.findByText('Report run-agent')).closest('article')!;
     expect(agent).toHaveTextContent(
-      `${label('automation.deliveredVia', { method: '#demo' })} · ${label('automation.deliveredFallbackVia', { method: 'Your Discord DM' })}`,
+      `${label('automation:deliveredVia', { method: '#demo' })} · ${label('automation:deliveredFallbackVia', { method: 'Your Discord DM' })}`,
     );
     const notice = screen.getByText('Report run-notice').closest('article')!;
-    expect(notice).toHaveTextContent(label('automation.deliveredNoticeVia', { method: '#demo' }));
+    expect(notice).toHaveTextContent(label('automation:deliveredNoticeVia', { method: '#demo' }));
     const failed = screen.getByText('Report run-failed').closest('article')!;
-    expect(failed).toHaveTextContent(label('automation.deliveryFailedVia', { method: '#ops' }));
+    expect(failed).toHaveTextContent(label('automation:deliveryFailedVia', { method: '#ops' }));
     const legacy = screen.getByText('Report run-legacy').closest('article')!;
-    expect(legacy).toHaveTextContent(label('automation.deliveredVia', { method: 'Slack' }));
+    expect(legacy).toHaveTextContent(label('automation:deliveredVia', { method: 'Slack' }));
     // The feed reads names from the runs alone, never the apps' chats.
     expect(api.getDeliveryOptions).not.toHaveBeenCalled();
   });
@@ -237,7 +237,7 @@ describe('a delivery record that lands after the run ends', () => {
     });
   }
 
-  const sent = label('automation.deliveredVia', { method: '#demo' });
+  const sent = label('automation:deliveredVia', { method: '#demo' });
 
   it('shows in the history at the live pace, without a reload', async () => {
     const { land } = renderLanding('/automations?id=auto-1');

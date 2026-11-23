@@ -80,7 +80,7 @@ export function LivenessBadge({ active }: { active: boolean }) {
   });
   const textFor = (state: RowLiveness): string =>
     state.kind === 'streaming'
-      ? t('marketView.quote.live')
+      ? t('marketView:quote.live')
       : state.kind === 'overdue'
         ? t('menubar.feed.overdue')
         : (freshnessSpecText(t, state.spec) ?? '');
@@ -101,7 +101,7 @@ export function LivenessBadge({ active }: { active: boolean }) {
     return `${text}: ${rest > 0 ? `${listed} ${t('menubar.feed.more', { count: rest })}` : listed}`;
   });
   const sources = [...new Set(rows.map((r) => providerLabel(r.source, t)).filter((s): s is string => !!s))];
-  if (sources.length) lines.push(`${t('marketView.header.source')}: ${sources.join(', ')}`);
+  if (sources.length) lines.push(`${t('marketView:header.source')}: ${sources.join(', ')}`);
   const answered = rows.map((r) => r.updatedAt).filter((at) => at > 0);
   if (answered.length) lines.push(t('menubar.feed.updated', { time: mediumTime(Math.min(...answered), locale) }));
 

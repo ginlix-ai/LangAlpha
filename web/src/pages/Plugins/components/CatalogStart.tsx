@@ -22,15 +22,15 @@ const SECTION_OF: Record<DiscoverScope, InstallSection> = {
 };
 
 const LEAD_KEYS: Record<DiscoverScope, string> = {
-  plugins: 'plugins.start.lead.plugins',
-  connectors: 'plugins.start.lead.connectors',
-  skills: 'plugins.start.lead.skills',
+  plugins: 'plugins:start.lead.plugins',
+  connectors: 'plugins:start.lead.connectors',
+  skills: 'plugins:start.lead.skills',
 };
 
 const NO_CATALOG_LEAD_KEYS: Record<DiscoverScope, string> = {
-  plugins: 'plugins.start.leadNoCatalog.plugins',
-  connectors: 'plugins.start.leadNoCatalog.connectors',
-  skills: 'plugins.start.leadNoCatalog.skills',
+  plugins: 'plugins:start.leadNoCatalog.plugins',
+  connectors: 'plugins:start.leadNoCatalog.connectors',
+  skills: 'plugins:start.leadNoCatalog.skills',
 };
 
 /**
@@ -113,7 +113,7 @@ export function CatalogStart({
       <div className="catalog-start-foot">
         {catalogOn && (
           <HeaderButton variant="primary" icon={Compass} onClick={() => openDiscover(scope)}>
-            {t('plugins.start.browse')}
+            {t('plugins:start.browse')}
           </HeaderButton>
         )}
         <div className="catalog-start-routes">

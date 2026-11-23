@@ -40,17 +40,17 @@ import { buttonSlot } from '@/components/ui/button-class';
 function mismatchNote(t: TFunction, mismatch: KeyMismatch): string {
   switch (mismatch.kind) {
     case 'prefix':
-      return t('plugins.install.keyFormatPrefix', { prefix: mismatch.prefix });
+      return t('plugins:install.keyFormatPrefix', { prefix: mismatch.prefix });
     case 'length': {
       const { actual: count, min, max } = mismatch;
-      if (max === null) return t('plugins.install.keyFormatLengthAtLeast', { count, min });
-      if (max !== min) return t('plugins.install.keyFormatLengthRange', { count, min, max });
-      return t('plugins.install.keyFormatLength', { count, expected: min });
+      if (max === null) return t('plugins:install.keyFormatLengthAtLeast', { count, min });
+      if (max !== min) return t('plugins:install.keyFormatLengthRange', { count, min, max });
+      return t('plugins:install.keyFormatLength', { count, expected: min });
     }
     case 'characters':
-      return t('plugins.install.keyFormatCharacters');
+      return t('plugins:install.keyFormatCharacters');
     default:
-      return t('plugins.install.keyFormat');
+      return t('plugins:install.keyFormat');
   }
 }
 
@@ -154,11 +154,11 @@ function KeyField({
         onChange={onChange}
         visible={revealed}
         onToggleVisible={() => setRevealed((r) => !r)}
-        labels={{ show: t('plugins.install.showKey'), hide: t('plugins.install.hideKey') }}
+        labels={{ show: t('plugins:install.showKey'), hide: t('plugins:install.hideKey') }}
         required
         disabled={disabled}
         maxLength={MAX_SECRET_VALUE_LENGTH}
-        placeholder={t('plugins.install.keyPlaceholder')}
+        placeholder={t('plugins:install.keyPlaceholder')}
         aria-invalid={refused || offPattern || undefined}
         aria-describedby={refused || offPattern ? noteId : undefined}
         className="w-full text-xs pl-2 pr-8 py-1.5 rounded-md placeholder:text-(--color-text-quaternary)"
@@ -188,7 +188,7 @@ function KeyField({
           className="self-start text-[0.6875rem] underline underline-offset-2"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('plugins.install.keyDocs')}
+          {t('plugins:install.keyDocs')}
         </a>
       )}
     </div>
@@ -262,7 +262,7 @@ export function PluginKeysStep({
       }}
     >
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('plugins.install.keysHint')}
+        {t('plugins:install.keysHint')}
       </p>
 
       {required.map(({ name, label, description, docs_url, regex }) => (
@@ -284,7 +284,7 @@ export function PluginKeysStep({
             key={name}
             name={name}
             label={name}
-            description={t('plugins.install.keyUndeclared', { server: servers[0] })}
+            description={t('plugins:install.keyUndeclared', { server: servers[0] })}
             docsUrl={null}
             regex={null}
             {...props}
@@ -327,7 +327,7 @@ export function PluginKeysStep({
             className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('plugins.install.keysCancel')}
+            {t('plugins:install.keysCancel')}
           </button>
         )}
         <button

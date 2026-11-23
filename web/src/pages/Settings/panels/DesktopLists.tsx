@@ -65,7 +65,7 @@ export function ItemChips<T extends MenubarItem>({
         <li>
           {items.length >= max ? (
             <span className="px-1 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('settings.desktop.itemsFull', { count: max })}
+              {t('settings:desktop.itemsFull', { count: max })}
             </span>
           ) : (
             <Popover open={adding} onOpenChange={setAdding}>
@@ -86,7 +86,7 @@ export function ItemChips<T extends MenubarItem>({
                     onClick={() => add(PORTFOLIO_ITEM as T)}
                     className="mb-1.5 flex w-full items-center rounded-md px-2 py-1.5 text-left text-[0.8125rem] text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                   >
-                    {t('settings.desktop.addPortfolio')}
+                    {t('settings:desktop.addPortfolio')}
                   </button>
                 )}
                 <SymbolSearch onPick={(symbol) => add(quoteRef(symbol) as T)} />
@@ -120,7 +120,7 @@ function ItemChip({ id, label, onRemove }: { id: string; label: string; onRemove
       <button
         type="button"
         onClick={onRemove}
-        aria-label={t('settings.desktop.removeItem', { name: label })}
+        aria-label={t('settings:desktop.removeItem', { name: label })}
         className="tap-target mr-1 flex h-5 w-5 items-center justify-center rounded-full text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       >
         <X className="h-3 w-3" aria-hidden="true" />
@@ -141,7 +141,7 @@ export function SectionList({
 }) {
   const { t } = useTranslation();
   const ids = sections.map((s) => s.id);
-  const nameOf = (id: UniqueIdentifier) => t(`settings.desktop.section.${String(id)}`);
+  const nameOf = (id: UniqueIdentifier) => t(`settings:desktop.section.${String(id)}`);
   return (
     <SortableArea ids={ids} nameOf={nameOf} column onMove={(from, to) => onChange(arrayMove([...sections], from, to))}>
       <ul aria-labelledby={labelledBy} className="flex min-w-40 flex-col gap-0.5">

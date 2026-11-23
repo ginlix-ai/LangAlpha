@@ -245,7 +245,7 @@ export function EnabledToggle({
       type="button"
       role="switch"
       aria-checked={enabled}
-      aria-label={enabled ? t('mcp.row.disableAria', { name }) : t('mcp.row.enableAria', { name })}
+      aria-label={enabled ? t('mcp:row.disableAria', { name }) : t('mcp:row.enableAria', { name })}
       disabled={disabled}
       onClick={onToggle}
       className="tap-target relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
@@ -390,7 +390,7 @@ export function ListToolbar({
   children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const atCapHint = cap && cap.used >= cap.max ? t('mcp.list.atCap', { max: cap.max }) : undefined;
+  const atCapHint = cap && cap.used >= cap.max ? t('mcp:list.atCap', { max: cap.max }) : undefined;
   return (
     <ListHeader icon={icon} title={title} count={count}>
       {children}
@@ -399,9 +399,9 @@ export function ListToolbar({
         icon={Download}
         onClick={onImport}
         disabled={!!atCapHint}
-        title={atCapHint ?? t('mcp.list.importHint')}
+        title={atCapHint ?? t('mcp:list.importHint')}
       >
-        {t('mcp.list.importJson')}
+        {t('mcp:list.importJson')}
       </HeaderButton>
       <HeaderButton
         variant="primary"
@@ -410,7 +410,7 @@ export function ListToolbar({
         disabled={!!atCapHint}
         title={atCapHint}
       >
-        {t('mcp.list.addServer')}
+        {t('mcp:list.addServer')}
       </HeaderButton>
     </ListHeader>
   );

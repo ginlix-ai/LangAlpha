@@ -97,29 +97,29 @@ export function thoughtDuration(items: ActivityItem[]): number | undefined {
 function fragmentLabel(f: SummaryFragment, t: TFn): string {
   if (f.slot === 'reasoning') {
     return f.thoughtMs !== undefined
-      ? t('toolArtifact.thoughtFor', { duration: formatThoughtFor(f.thoughtMs, t) })
-      : t('toolArtifact.nReasoning', { count: f.count });
+      ? t('toolArtifact:thoughtFor', { duration: formatThoughtFor(f.thoughtMs, t) })
+      : t('toolArtifact:nReasoning', { count: f.count });
   }
-  if (f.slot === 'skill') return t('toolArtifact.categoryCount.skill', { count: f.count });
+  if (f.slot === 'skill') return t('toolArtifact:categoryCount.skill', { count: f.count });
   // No count for memory, profile or automations: each is one surface, and any
   // write/edit overrules the pure-read framing.
   if (f.slot === 'memory') {
-    return t(f.modified ? 'toolArtifact.categoryCount.memoryUpdated' : 'toolArtifact.categoryCount.memoryRead');
+    return t(f.modified ? 'toolArtifact:categoryCount.memoryUpdated' : 'toolArtifact:categoryCount.memoryRead');
   }
   if (f.slot === 'profile') {
-    return t(f.modified ? 'toolArtifact.categoryCount.profileUpdated' : 'toolArtifact.categoryCount.profileRead');
+    return t(f.modified ? 'toolArtifact:categoryCount.profileUpdated' : 'toolArtifact:categoryCount.profileRead');
   }
   if (f.slot === 'automations') {
-    return t(f.modified ? 'toolArtifact.categoryCount.automationsUpdated' : 'toolArtifact.categoryCount.automationsRead');
+    return t(f.modified ? 'toolArtifact:categoryCount.automationsUpdated' : 'toolArtifact:categoryCount.automationsRead');
   }
-  if (f.slot === 'fileRead') return t('toolArtifact.categoryCount.fileRead', { count: f.count });
-  if (f.slot === 'fileEdit') return t('toolArtifact.categoryCount.fileEdit', { count: f.count });
-  if (f.slot === 'memo') return t('toolArtifact.categoryCount.memo', { count: f.count });
-  if (f.slot === 'memoWrite') return t('toolArtifact.categoryCount.memoWrite', { count: f.count });
-  if (f.slot === 'code') return t('toolArtifact.categoryCount.code', { count: f.count });
-  if (f.slot === 'web') return t('toolArtifact.categoryCount.web', { count: f.count });
-  if (f.slot === 'search') return t('toolArtifact.categoryCount.search', { count: f.count });
-  return t('toolArtifact.categoryCount.generic', { count: f.count });
+  if (f.slot === 'fileRead') return t('toolArtifact:categoryCount.fileRead', { count: f.count });
+  if (f.slot === 'fileEdit') return t('toolArtifact:categoryCount.fileEdit', { count: f.count });
+  if (f.slot === 'memo') return t('toolArtifact:categoryCount.memo', { count: f.count });
+  if (f.slot === 'memoWrite') return t('toolArtifact:categoryCount.memoWrite', { count: f.count });
+  if (f.slot === 'code') return t('toolArtifact:categoryCount.code', { count: f.count });
+  if (f.slot === 'web') return t('toolArtifact:categoryCount.web', { count: f.count });
+  if (f.slot === 'search') return t('toolArtifact:categoryCount.search', { count: f.count });
+  return t('toolArtifact:categoryCount.generic', { count: f.count });
 }
 
 function failedCall(item: ActivityItem): boolean {
@@ -139,7 +139,7 @@ export function summarizeCompletedItems(
 ): string | undefined {
   const fragments = summaryFragments(items);
   const failures = options?.countFailures ? items.filter(failedCall).length : 0;
-  const failed = failures > 0 ? [t('toolArtifact.categoryCount.failed', { count: failures })] : [];
+  const failed = failures > 0 ? [t('toolArtifact:categoryCount.failed', { count: failures })] : [];
   let label: string | undefined;
 
   const reasoning = fragments.find((f) => f.slot === 'reasoning');
@@ -159,12 +159,12 @@ export function summarizeCompletedItems(
     // "and more" ends the counts it cuts, before the failures: after them it
     // read as more calls having failed.
     const shown = visible.map((f) => fragmentLabel(f, t)).join(' · ');
-    label = [overflowing ? `${shown} ${t('toolArtifact.andMore')}` : shown, ...failed].join(' · ');
+    label = [overflowing ? `${shown} ${t('toolArtifact:andMore')}` : shown, ...failed].join(' · ');
   } else if (fragments.length === 1 && reasoning?.thoughtMs !== undefined) {
     // A run that was only thought: say how long, not how many.
     label = fragmentLabel(reasoning, t);
   } else if (items.length > 0) {
-    label = [t('toolArtifact.nStepsCompleted', { count: items.length }), ...failed].join(' · ');
+    label = [t('toolArtifact:nStepsCompleted', { count: items.length }), ...failed].join(' · ');
   }
 
   // Capitalize the first character only — embedded proper nouns and casing

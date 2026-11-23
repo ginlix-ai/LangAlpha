@@ -43,23 +43,23 @@ function SymbolSpotlightSettings({ config, onChange, onClose }: WidgetSettingsPr
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.symbolSpotlight.symbol')}
+        label={t('dashboard:widgets.symbolSpotlight.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
       />
       <EnumField
-        label={t('dashboard.widgets.symbolSpotlight.range')}
+        label={t('dashboard:widgets.symbolSpotlight.range')}
         value={config.range ?? '12M'}
         onChange={(v) => onChange({ range: v })}
         options={[
-          { value: '1D', label: t('dashboard.widgets.symbolSpotlight.range_1d') },
-          { value: '5D', label: t('dashboard.widgets.symbolSpotlight.range_5d') },
-          { value: '1M', label: t('dashboard.widgets.symbolSpotlight.range_1m') },
-          { value: '3M', label: t('dashboard.widgets.symbolSpotlight.range_3m') },
-          { value: '12M', label: t('dashboard.widgets.symbolSpotlight.range_12m') },
-          { value: '60M', label: t('dashboard.widgets.symbolSpotlight.range_5y') },
-          { value: 'ALL', label: t('dashboard.widgets.symbolSpotlight.range_all') },
+          { value: '1D', label: t('dashboard:widgets.symbolSpotlight.range_1d') },
+          { value: '5D', label: t('dashboard:widgets.symbolSpotlight.range_5d') },
+          { value: '1M', label: t('dashboard:widgets.symbolSpotlight.range_1m') },
+          { value: '3M', label: t('dashboard:widgets.symbolSpotlight.range_3m') },
+          { value: '12M', label: t('dashboard:widgets.symbolSpotlight.range_12m') },
+          { value: '60M', label: t('dashboard:widgets.symbolSpotlight.range_5y') },
+          { value: 'ALL', label: t('dashboard:widgets.symbolSpotlight.range_all') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -70,8 +70,8 @@ function SymbolSpotlightSettings({ config, onChange, onClose }: WidgetSettingsPr
 
 registerWidget<SymbolSpotlightConfig>({
   type: 'tv.symbol-spotlight',
-  titleKey: 'dashboard.widgets.symbolSpotlight.title',
-  descriptionKey: 'dashboard.widgets.symbolSpotlight.description',
+  titleKey: 'dashboard:widgets.symbolSpotlight.title',
+  descriptionKey: 'dashboard:widgets.symbolSpotlight.description',
   category: 'markets',
   icon: Target,
   component: SymbolSpotlightWidget,

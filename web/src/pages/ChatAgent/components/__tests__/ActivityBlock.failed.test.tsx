@@ -112,7 +112,7 @@ describe('ActivityBlock, failed tool calls', () => {
     // Folded summary intentionally omits the failed count, failure
     // visibility lives on the per-row badge instead.
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount\.failed/i);
+    expect(summary).not.toHaveTextContent(/toolArtifact:categoryCount\.failed/i);
   });
 
   it('renders the failed badge on the timeline icon when the accordion is expanded', () => {
@@ -135,7 +135,7 @@ describe('ActivityBlock, failed tool calls', () => {
     expect(failedRow).not.toBeNull();
     const badge = failedRow!.querySelector('.nrow-badge');
     expect(badge).not.toBeNull();
-    expect(badge!.getAttribute('aria-label')).toBe('toolArtifact.a11y.toolCallFailed');
+    expect(badge!.getAttribute('aria-label')).toBe('toolArtifact:a11y.toolCallFailed');
   });
 
   it('renders the failed badge on an Edit row (EditToolRow path)', () => {
@@ -175,9 +175,9 @@ describe('ActivityBlock, failed tool calls', () => {
     render(<ActivityBlock items={items} isStreaming={false} />);
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
     // Three reads in the fileRead bucket (failures don't split the count).
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.fileRead/i);
+    expect(summary).toHaveTextContent(/toolArtifact:categoryCount.fileRead/i);
     // No standalone failed fragment.
-    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount.failed/i);
+    expect(summary).not.toHaveTextContent(/toolArtifact:categoryCount.failed/i);
   });
 
   it('does not render any failed badge when no item is failed', () => {
@@ -210,9 +210,9 @@ describe('ActivityBlock, memo write/edit fragment', () => {
 
     render(<ActivityBlock items={items} isStreaming={false} />);
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.memoWrite/i);
+    expect(summary).toHaveTextContent(/toolArtifact:categoryCount.memoWrite/i);
     // It must NOT show as a memo read.
-    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount.memo /i);
+    expect(summary).not.toHaveTextContent(/toolArtifact:categoryCount.memo /i);
   });
 
   it('keeps memo reads in the existing memo fragment', () => {
@@ -225,8 +225,8 @@ describe('ActivityBlock, memo write/edit fragment', () => {
 
     render(<ActivityBlock items={items} isStreaming={false} />);
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.memo/i);
-    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount.memoWrite/i);
+    expect(summary).toHaveTextContent(/toolArtifact:categoryCount.memo/i);
+    expect(summary).not.toHaveTextContent(/toolArtifact:categoryCount.memoWrite/i);
   });
 });
 
@@ -252,9 +252,9 @@ describe('ActivityBlock, priority fragments survive the cap', () => {
     render(<ActivityBlock items={items} isStreaming={false} />);
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
     // memoryUpdated must be in the visible 3 even with overflow.
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.memoryUpdated/i);
+    expect(summary).toHaveTextContent(/toolArtifact:categoryCount.memoryUpdated/i);
     // The "and more" suffix indicates the cap fired.
-    expect(summary).toHaveTextContent(/toolArtifact\.andMore/i);
+    expect(summary).toHaveTextContent(/toolArtifact:andMore/i);
   });
 });
 

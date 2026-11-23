@@ -26,7 +26,7 @@ function SingleTickerSettings({ config, onChange, onClose }: WidgetSettingsProps
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.singleTicker.symbol')}
+        label={t('dashboard:widgets.singleTicker.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -39,8 +39,8 @@ function SingleTickerSettings({ config, onChange, onClose }: WidgetSettingsProps
 
 registerWidget<SingleTickerConfig>({
   type: 'tv.single-ticker',
-  titleKey: 'dashboard.widgets.singleTicker.title',
-  descriptionKey: 'dashboard.widgets.singleTicker.description',
+  titleKey: 'dashboard:widgets.singleTicker.title',
+  descriptionKey: 'dashboard:widgets.singleTicker.description',
   category: 'markets',
   icon: Tag,
   component: SingleTickerWidget,

@@ -98,7 +98,7 @@ export function backupCode(from: ReadFrom | undefined): string | null {
 
 /** What to tell someone whose request the computer could not take. */
 export function awayRetryText(t: Translate, code: string, machine: AwayMachine): string {
-  return t(`filePanel.away.retry${variant(code, machine)}`, { name: machine.name });
+  return t(`filePanel:away.retry${variant(code, machine)}`, { name: machine.name });
 }
 
 /** A request refused because the computer did not answer, in words; null for any other failure. */
@@ -109,7 +109,7 @@ export function awayRetryMessage(err: unknown, t: Translate, machine: AwayMachin
 
 /** The notice over files the panel shows from the backup while the computer is away. */
 export function backupShownText(t: Translate, code: string, machine: AwayMachine): string {
-  return t(`filePanel.away.backup${variant(code, machine)}`, { name: machine.name });
+  return t(`filePanel:away.backup${variant(code, machine)}`, { name: machine.name });
 }
 
 /**

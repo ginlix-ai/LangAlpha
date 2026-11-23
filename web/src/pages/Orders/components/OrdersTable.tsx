@@ -30,15 +30,15 @@ import { ORDER_ACTION_KEY } from '../utils/labels';
  * detail panel a row opens has it in full.
  */
 const COLUMNS: ReadonlyArray<{ key: string; width: string }> = [
-  { key: 'orders.column.created', width: '13.5%' },
-  { key: 'orders.column.mode', width: '9%' },
-  { key: 'orders.column.vendor', width: '10.5%' },
-  { key: 'orders.column.action', width: '9.5%' },
-  { key: 'orders.column.instrument', width: '12.5%' },
-  { key: 'orders.column.side', width: '8%' },
-  { key: 'orders.column.size', width: '8%' },
-  { key: 'orders.column.price', width: '12%' },
-  { key: 'orders.column.status', width: '17%' },
+  { key: 'orders:column.created', width: '13.5%' },
+  { key: 'orders:column.mode', width: '9%' },
+  { key: 'orders:column.vendor', width: '10.5%' },
+  { key: 'orders:column.action', width: '9.5%' },
+  { key: 'orders:column.instrument', width: '12.5%' },
+  { key: 'orders:column.side', width: '8%' },
+  { key: 'orders:column.size', width: '8%' },
+  { key: 'orders:column.price', width: '12%' },
+  { key: 'orders:column.status', width: '17%' },
 ];
 
 /** An empty cell reads as a dash rather than as a missing column. The detail
@@ -137,7 +137,7 @@ function OrderRow({
               className="text-[0.6875rem]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {t('orders.stopLine', { price: stopLine })}
+              {t('orders:stopLine', { price: stopLine })}
             </span>
           )}
         </div>

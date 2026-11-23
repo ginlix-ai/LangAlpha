@@ -6,22 +6,22 @@ import type { OrderMode, OrderStatus } from '@/types/orders';
  * written out rather than built so the locale sweep can see every key.
  */
 export const ORDER_STATUS_KEY: Record<OrderStatus, string> = {
-  proposed: 'toolArtifact.directTool.orderStatus.proposed',
-  approved: 'toolArtifact.directTool.orderStatus.approved',
-  rejected_by_user: 'toolArtifact.directTool.orderStatus.rejectedByUser',
-  refused: 'toolArtifact.directTool.orderStatus.refused',
-  submitting: 'toolArtifact.directTool.orderStatus.submitting',
-  submitted: 'toolArtifact.directTool.orderStatus.submitted',
-  pending_confirm: 'toolArtifact.directTool.orderStatus.pendingConfirm',
-  working: 'toolArtifact.directTool.orderStatus.working',
-  partially_filled: 'toolArtifact.directTool.orderStatus.partiallyFilled',
-  filled: 'toolArtifact.directTool.orderStatus.filled',
-  cancelled: 'toolArtifact.directTool.orderStatus.cancelled',
-  expired: 'toolArtifact.directTool.orderStatus.expired',
-  rejected_by_vendor: 'toolArtifact.directTool.orderStatus.rejectedByVendor',
-  handed_off: 'toolArtifact.directTool.orderStatus.handedOff',
-  failed: 'toolArtifact.directTool.orderStatus.failed',
-  unknown: 'toolArtifact.directTool.orderStatus.unknown',
+  proposed: 'toolArtifact:directTool.orderStatus.proposed',
+  approved: 'toolArtifact:directTool.orderStatus.approved',
+  rejected_by_user: 'toolArtifact:directTool.orderStatus.rejectedByUser',
+  refused: 'toolArtifact:directTool.orderStatus.refused',
+  submitting: 'toolArtifact:directTool.orderStatus.submitting',
+  submitted: 'toolArtifact:directTool.orderStatus.submitted',
+  pending_confirm: 'toolArtifact:directTool.orderStatus.pendingConfirm',
+  working: 'toolArtifact:directTool.orderStatus.working',
+  partially_filled: 'toolArtifact:directTool.orderStatus.partiallyFilled',
+  filled: 'toolArtifact:directTool.orderStatus.filled',
+  cancelled: 'toolArtifact:directTool.orderStatus.cancelled',
+  expired: 'toolArtifact:directTool.orderStatus.expired',
+  rejected_by_vendor: 'toolArtifact:directTool.orderStatus.rejectedByVendor',
+  handed_off: 'toolArtifact:directTool.orderStatus.handedOff',
+  failed: 'toolArtifact:directTool.orderStatus.failed',
+  unknown: 'toolArtifact:directTool.orderStatus.unknown',
 };
 
 /**
@@ -29,26 +29,26 @@ export const ORDER_STATUS_KEY: Record<OrderStatus, string> = {
  * table shows this and keeps the full sentence for the tooltip and the drawer.
  */
 export const ORDER_STATUS_SHORT_KEY: Record<OrderStatus, string> = {
-  proposed: 'toolArtifact.directTool.orderStatusShort.proposed',
-  approved: 'toolArtifact.directTool.orderStatusShort.approved',
-  rejected_by_user: 'toolArtifact.directTool.orderStatusShort.rejectedByUser',
-  refused: 'toolArtifact.directTool.orderStatusShort.refused',
-  submitting: 'toolArtifact.directTool.orderStatusShort.submitting',
-  submitted: 'toolArtifact.directTool.orderStatusShort.submitted',
-  pending_confirm: 'toolArtifact.directTool.orderStatusShort.pendingConfirm',
-  working: 'toolArtifact.directTool.orderStatusShort.working',
-  partially_filled: 'toolArtifact.directTool.orderStatusShort.partiallyFilled',
-  filled: 'toolArtifact.directTool.orderStatusShort.filled',
-  cancelled: 'toolArtifact.directTool.orderStatusShort.cancelled',
-  expired: 'toolArtifact.directTool.orderStatusShort.expired',
-  rejected_by_vendor: 'toolArtifact.directTool.orderStatusShort.rejectedByVendor',
-  handed_off: 'toolArtifact.directTool.orderStatusShort.handedOff',
-  failed: 'toolArtifact.directTool.orderStatusShort.failed',
-  unknown: 'toolArtifact.directTool.orderStatusShort.unknown',
+  proposed: 'toolArtifact:directTool.orderStatusShort.proposed',
+  approved: 'toolArtifact:directTool.orderStatusShort.approved',
+  rejected_by_user: 'toolArtifact:directTool.orderStatusShort.rejectedByUser',
+  refused: 'toolArtifact:directTool.orderStatusShort.refused',
+  submitting: 'toolArtifact:directTool.orderStatusShort.submitting',
+  submitted: 'toolArtifact:directTool.orderStatusShort.submitted',
+  pending_confirm: 'toolArtifact:directTool.orderStatusShort.pendingConfirm',
+  working: 'toolArtifact:directTool.orderStatusShort.working',
+  partially_filled: 'toolArtifact:directTool.orderStatusShort.partiallyFilled',
+  filled: 'toolArtifact:directTool.orderStatusShort.filled',
+  cancelled: 'toolArtifact:directTool.orderStatusShort.cancelled',
+  expired: 'toolArtifact:directTool.orderStatusShort.expired',
+  rejected_by_vendor: 'toolArtifact:directTool.orderStatusShort.rejectedByVendor',
+  handed_off: 'toolArtifact:directTool.orderStatusShort.handedOff',
+  failed: 'toolArtifact:directTool.orderStatusShort.failed',
+  unknown: 'toolArtifact:directTool.orderStatusShort.unknown',
 };
 
 const STAGED_STATUS_SHORT_KEY: Partial<Record<OrderStatus, string>> = {
-  submitted: 'toolArtifact.directTool.orderStatusShort.submittedStaged',
+  submitted: 'toolArtifact:directTool.orderStatusShort.submittedStaged',
 };
 
 /**
@@ -67,9 +67,9 @@ export function vendorNamedEnd(unlistedAt: string | null | undefined): boolean {
 /** An order the user confirmed in the broker's own client, as the broker
  *  reported it, in place of the sentence for one that only left: a staged
  *  instruction they sent, or a live order waiting on their approval. */
-const CONFIRMED_KEY = 'toolArtifact.directTool.orderStatus.handedOffConfirmedStaged';
-const CONFIRMED_KEY_UNNAMED = 'toolArtifact.directTool.orderStatus.handedOffConfirmedStagedUnnamed';
-const CONFIRMED_SHORT_KEY = 'toolArtifact.directTool.orderStatusShort.handedOffConfirmed';
+const CONFIRMED_KEY = 'toolArtifact:directTool.orderStatus.handedOffConfirmedStaged';
+const CONFIRMED_KEY_UNNAMED = 'toolArtifact:directTool.orderStatus.handedOffConfirmedStagedUnnamed';
+const CONFIRMED_SHORT_KEY = 'toolArtifact:directTool.orderStatusShort.handedOffConfirmed';
 
 /**
  * What a staged order that reached the vendor is actually waiting on.
@@ -81,16 +81,16 @@ const CONFIRMED_SHORT_KEY = 'toolArtifact.directTool.orderStatusShort.handedOffC
  * and every other mode keeps the word it had.
  */
 const STAGED_STATUS_KEY: Partial<Record<OrderStatus, string>> = {
-  submitted: 'toolArtifact.directTool.orderStatus.submittedStaged',
-  handed_off: 'toolArtifact.directTool.orderStatus.handedOffStaged',
-  expired: 'toolArtifact.directTool.orderStatus.expiredStaged',
+  submitted: 'toolArtifact:directTool.orderStatus.submittedStaged',
+  handed_off: 'toolArtifact:directTool.orderStatus.handedOffStaged',
+  expired: 'toolArtifact:directTool.orderStatus.expiredStaged',
 };
 
 /** The same sentence for a surface that cannot name the broker. */
 const STAGED_STATUS_KEY_UNNAMED: Partial<Record<OrderStatus, string>> = {
-  submitted: 'toolArtifact.directTool.orderStatus.submittedStagedUnnamed',
-  handed_off: 'toolArtifact.directTool.orderStatus.handedOffStagedUnnamed',
-  expired: 'toolArtifact.directTool.orderStatus.expiredStagedUnnamed',
+  submitted: 'toolArtifact:directTool.orderStatus.submittedStagedUnnamed',
+  handed_off: 'toolArtifact:directTool.orderStatus.handedOffStagedUnnamed',
+  expired: 'toolArtifact:directTool.orderStatus.expiredStagedUnnamed',
 };
 
 /** Every staged sentence, so the tests that hold keys against both catalogs

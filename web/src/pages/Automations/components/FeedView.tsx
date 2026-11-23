@@ -52,17 +52,17 @@ export default function FeedView({ automations, readings, onOpenAutomation, onOp
 
   const near = nearDayKeys(new Date(now));
   const dayLabel = (key: string, date: Date) =>
-    key === near.today ? t('automation.today') : key === near.yesterday ? t('automation.yesterday') : formatDayHeading(date, locale);
+    key === near.today ? t('automation:today') : key === near.yesterday ? t('automation:yesterday') : formatDayHeading(date, locale);
 
   return (
     <div className="automations-feed">
-      <section className="automations-feed-main" aria-label={t('automation.viewFeed')}>
+      <section className="automations-feed-main" aria-label={t('automation:viewFeed')}>
         {error && runs.length === 0 ? (
-          <ListError>{t('automation.loadFailed')}</ListError>
+          <ListError>{t('automation:loadFailed')}</ListError>
         ) : isLoading ? (
           <FeedDaySkeleton />
         ) : runs.length === 0 ? (
-          <p className="automations-quiet-note">{t('automation.noRunsYet')}</p>
+          <p className="automations-quiet-note">{t('automation:noRunsYet')}</p>
         ) : (
           <>
             {days.map((day) => (
@@ -83,7 +83,7 @@ export default function FeedView({ automations, readings, onOpenAutomation, onOp
             {hasNextPage && (
               <div className="flex justify-center pt-4">
                 <HeaderButton variant="secondary" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
-                  {t(isFetchingNextPage ? 'common.loading' : 'automation.loadMore')}
+                  {t(isFetchingNextPage ? 'common.loading' : 'automation:loadMore')}
                 </HeaderButton>
               </div>
             )}
@@ -186,7 +186,7 @@ function RunEntry({
   if (run.status !== 'completed') meta.push(t(ui.labelKey));
   meta.push(placeLabel(run));
   if (ui.live) {
-    if (run.started_at) meta.push(t('automation.startedAgo', { when: relativeTime(run.started_at, locale, now) }));
+    if (run.started_at) meta.push(t('automation:startedAgo', { when: relativeTime(run.started_at, locale, now) }));
   } else if (view.showDuration) {
     meta.push(formatDuration(run.started_at, run.completed_at, t));
   }

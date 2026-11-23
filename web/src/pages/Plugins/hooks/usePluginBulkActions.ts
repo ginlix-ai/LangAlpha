@@ -38,7 +38,7 @@ export function usePluginBulkActions(
     setEnabled: (p, on) => setPluginEnabled(p.name, on),
     remove: {
       verb: 'uninstall',
-      labelKey: 'plugins.bulk.uninstall',
+      labelKey: 'plugins:bulk.uninstall',
       confirm: (plugins) => bulkUninstallConfirm(t, plugins, views),
       eligible: hasLifecycle,
       run: async (p) => ({ deleted: (await deletePlugin(p.name)).deleted, changed: changedSubagents(p, views) }),
@@ -56,7 +56,7 @@ export function usePluginBulkActions(
           'after',
         ),
     },
-    keptKey: 'plugins.bulk.keptPlugins',
+    keptKey: 'plugins:bulk.keptPlugins',
     signIn,
   });
 }

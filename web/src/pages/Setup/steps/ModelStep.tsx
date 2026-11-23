@@ -50,8 +50,8 @@ export default function ModelStep() {
         <AnswersDeadEnd
           flow={flow}
           testId="setup-claude-code-unavailable"
-          title={t('setup.answers.model.claudeCodeUnavailableTitle')}
-          helper={t('setup.answers.model.claudeCodeUnavailableLead')}
+          title={t('setup:answers.model.claudeCodeUnavailableTitle')}
+          helper={t('setup:answers.model.claudeCodeUnavailableLead')}
         />
       );
     case 'refused':
@@ -59,7 +59,7 @@ export default function ModelStep() {
         <AnswersDeadEnd
           flow={flow}
           testId="setup-token-refused"
-          title={t('setup.answers.model.tokenTitle')}
+          title={t('setup:answers.model.tokenTitle')}
           helper={t(step.helper, step.values)}
         />
       );
@@ -131,8 +131,8 @@ function AnswersDeadEnd({ flow, testId, title, helper }: { flow: Flow; testId: s
       <StepKicker>Claude Code</StepKicker>
       <WizardStepHeader titleId={headingId} title={title} helper={helper} />
       <SetupFooter
-        back={flow.back ? { label: t('setup.back'), onClick: flow.back } : null}
-        primary={{ label: t('setup.answers.changeAnswers'), onClick: change }}
+        back={flow.back ? { label: t('setup:back'), onClick: flow.back } : null}
+        primary={{ label: t('setup:answers.changeAnswers'), onClick: change }}
       />
     </div>
   );
@@ -160,9 +160,9 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
   const cloudDetail = t(isPlatformMode ? S + '.savedDetailCloud' : S + '.savedDetailServer');
   const hasToken = !!flow.facts?.claudeCodeToken && !replacing;
   const lead = target.kind === 'computer'
-    ? t('setup.answers.model.tokenForComputer', { name: target.name })
+    ? t('setup:answers.model.tokenForComputer', { name: target.name })
     : askConsent && !hasToken ? cloudDetail
-      : t(isPlatformMode ? 'setup.answers.model.tokenForCloud' : 'setup.answers.model.tokenForServer');
+      : t(isPlatformMode ? 'setup:answers.model.tokenForCloud' : 'setup:answers.model.tokenForServer');
 
   // A token stored for the cloud earlier is left as it is: leaving it deletes
   // it and stops the turns on it, which only Settings does, on the user's
@@ -180,7 +180,7 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
     <div>
       {flow.first && flow.answers && <AnswersStrip answers={flow.answers} />}
       <StepKicker>Claude Code</StepKicker>
-      <WizardStepHeader titleId={headingId} title={t('setup.answers.model.tokenTitle')} helper={lead} />
+      <WizardStepHeader titleId={headingId} title={t('setup:answers.model.tokenTitle')} helper={lead} />
       {hasToken ? (
         <Group title={t('modelAccess.claudeCode.savedTag')}>
           <AccessRow
@@ -190,7 +190,7 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
             detail={target.kind === 'computer' ? t('modelAccess.claudeCode.computer.separate', { name: target.name }) : cloudDetail}
             wrapDetail
             status="connected"
-            action={<RowButton onClick={() => setReplacing(true)}>{t('setup.answers.model.replaceToken')}</RowButton>}
+            action={<RowButton onClick={() => setReplacing(true)}>{t('setup:answers.model.replaceToken')}</RowButton>}
           />
         </Group>
       ) : (
@@ -209,12 +209,12 @@ function ClaudeCodeTokenStep({ flow, askConsent }: { flow: Flow; askConsent: boo
           <RowButton onClick={() => setReplacing(false)} disabled={saving}>{t('common.cancel')}</RowButton>
         </div>
       )}
-      <SetupNote>{t('setup.answers.model.planOutNote')}</SetupNote>
-      {flow.finishFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+      <SetupNote>{t('setup:answers.model.planOutNote')}</SetupNote>
+      {flow.finishFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
-        back={flow.back ? { label: t('setup.back'), onClick: flow.back } : null}
+        back={flow.back ? { label: t('setup:back'), onClick: flow.back } : null}
         primary={{
-          label: t('setup.continue'),
+          label: t('setup:continue'),
           onClick: () => void next(),
           disabled: !flow.facts?.claudeCodeToken || flow.finishing || defaults.saving,
           busy: flow.finishing || defaults.saving,
@@ -259,7 +259,7 @@ function SubscriptionStep({ flow }: { flow: Flow }) {
   return (
     <div>
       {flow.first && flow.answers && <AnswersStrip answers={flow.answers} />}
-      <WizardStepHeader titleId={headingId} title={t('setup.answers.model.subTitle')} helper={t('setup.answers.model.subLead')} />
+      <WizardStepHeader titleId={headingId} title={t('setup:answers.model.subTitle')} helper={t('setup:answers.model.subLead')} />
       {/* The legacy Claude sign-in is left to Settings: Claude Code is an answer of its own. */}
       <SubscriptionChoices
         planGroups={ownKeys ? planGroups : []}
@@ -278,16 +278,16 @@ function SubscriptionStep({ flow }: { flow: Flow }) {
           onClick={() => navigate('/setup/provider', { state: { list: 'api_key', answering: true } })}
           className={cn('tap-target mt-4 px-3', QUIET_LINK)}
         >
-          {t('setup.answers.model.withApiKey')}
+          {t('setup:answers.model.withApiKey')}
         </button>
       )}
       <OwnAccessNote variant="setup" />
-      {defaultFailed && <StepError quiet>{t('setup.answers.model.saveDefaultFailed')}</StepError>}
-      {flow.finishFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+      {defaultFailed && <StepError quiet>{t('setup:answers.model.saveDefaultFailed')}</StepError>}
+      {flow.finishFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
-        back={flow.back ? { label: t('setup.back'), onClick: flow.back } : null}
+        back={flow.back ? { label: t('setup:back'), onClick: flow.back } : null}
         primary={{
-          label: t('setup.continue'),
+          label: t('setup:continue'),
           onClick: () => void flow.finish(),
           disabled: !flow.facts?.providerConnected || flow.finishing || defaults.saving || !!justConnected,
           busy: flow.finishing || defaults.saving || !!justConnected,

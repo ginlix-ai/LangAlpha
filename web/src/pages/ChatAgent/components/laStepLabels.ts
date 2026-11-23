@@ -37,11 +37,11 @@ const EN: Record<LaStepKind, readonly [done: string, active: string]> = {
 };
 
 export function laCompletedTitle(step: LaStep, t?: TFn): string {
-  return t ? t(`toolArtifact.completed.la.${step.kind}`) : EN[step.kind][0];
+  return t ? t(`toolArtifact:completed.la.${step.kind}`) : EN[step.kind][0];
 }
 
 export function laActiveLabel(step: LaStep, t?: TFn): string {
-  return t ? t(`toolArtifact.inProgress.la.${step.kind}`) : EN[step.kind][1];
+  return t ? t(`toolArtifact:inProgress.la.${step.kind}`) : EN[step.kind][1];
 }
 
 /**

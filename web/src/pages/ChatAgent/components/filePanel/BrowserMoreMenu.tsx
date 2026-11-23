@@ -36,7 +36,7 @@ export function BrowserMoreMenu({
 }): React.ReactElement {
   const { t } = useTranslation();
   const { value, label, retinaHeld, autoIs, set } = useBrowserQuality(computer);
-  const title = t('filePanel.browser.more', 'More');
+  const title = t('filePanel:browser.more', 'More');
   const copy = () => {
     if (!pageUrl) return;
     copyWithToast(pageUrl, t('nav.linkCopied'), t('nav.copyLinkFailed'));
@@ -51,11 +51,11 @@ export function BrowserMoreMenu({
       <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuItem disabled={!pageUrl} onSelect={copy}>
           <Copy className="h-4 w-4" />
-          {t('filePanel.browser.copyAddress', 'Copy address')}
+          {t('filePanel:browser.copyAddress', 'Copy address')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={reconnecting} onSelect={onReconnect}>
           <RefreshCw className="h-4 w-4" />
-          {t('filePanel.browser.reconnect')}
+          {t('filePanel:browser.reconnect')}
         </DropdownMenuItem>
         {computer && (
           <>
@@ -89,7 +89,7 @@ export function BrowserMoreMenu({
                   {value === 'retina' && retinaHeld
                     ? t('computer.browserQuality.retinaFallback', 'Retina needs 2 or more CPUs, so this computer uses Sharp.') + ' '
                     : ''}
-                  {t('filePanel.browser.qualityNote', 'Applies the next time the browser opens.')}
+                  {t('filePanel:browser.qualityNote', 'Applies the next time the browser opens.')}
                 </p>
               </DropdownMenuSubContent>
             </DropdownMenuSub>

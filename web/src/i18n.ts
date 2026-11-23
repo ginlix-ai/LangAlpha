@@ -26,34 +26,47 @@ const CATALOGS: Record<Locale, Catalog> = {
   'zh-CN': () => import('./locales/zh-CN.json'),
 };
 
-// The page intros' copy is a namespace of its own, so only someone opening an
-// intro downloads it: useTranslation('intros') fetches it on first use. The
-// desktop app's first run is one too, read only by its own lazy page.
-const NAMESPACES: Record<string, Record<Locale, Catalog>> = {
-  translation: CATALOGS,
-  intros: {
-    'en-US': () => import('./locales/intros/en-US.json'),
-    'zh-CN': () => import('./locales/intros/zh-CN.json'),
-  },
-  thisMacFirstRun: {
-    'en-US': () => import('./locales/thisMacFirstRun/en-US.json'),
-    'zh-CN': () => import('./locales/thisMacFirstRun/zh-CN.json'),
-  },
-};
+// Every other namespace is a folder of its own, `locales/<ns>/<locale>.json`,
+// fetched the first time something needs it rather than on every load: the
+// page intros, the desktop app's first run, and the sections of the app whose
+// copy only lazy code reads (Settings, Plugins, the file panel, ...). Their
+// keys name the namespace, `setup:steps.title`, and the lazy import that first
+// reaches one loads it beside its chunk with `withCopy`. The build refuses a
+// bundle where the entry reads one or a lazy import leaves one out
+// (scripts/vite-plugins/copyNamespaces.ts).
+const NAMESPACE_FILES = import.meta.glob<{ default: ResourceKey }>('./locales/*/*.json');
+
+const NAMESPACES: Record<string, Partial<Record<Locale, Catalog>>> = { translation: CATALOGS };
+for (const [file, load] of Object.entries(NAMESPACE_FILES)) {
+  const [, ns, lng] = /^\.\/locales\/([^/]+)\/([^/]+)\.json$/.exec(file) ?? [];
+  if (ns && isSupported(lng)) (NAMESPACES[ns] ??= {})[lng] = load;
+}
+
+const loaderFor = (lng: string, ns: string) => (isSupported(lng) ? NAMESPACES[ns]?.[lng] : undefined);
+
+// The error a namespace's read failed with, so `loadCopy` can hand the import
+// failure itself to the lazy boundary instead of rendering raw keys.
+const readFailures = new Map<string, unknown>();
 
 const catalogBackend: BackendModule = {
   type: 'backend',
   init() {},
   read(lng, ns, callback) {
-    const catalogs = NAMESPACES[ns];
-    // `false` tells i18next not to retry. The usual cause is a build asset the
-    // server no longer has, and only a reload fixes that.
-    if (!catalogs || !isSupported(lng)) {
+    const load = loaderFor(lng, ns);
+    // `false` marks a catalog that does not exist, which no retry finds.
+    if (!load) {
       return callback(new Error(`no ${ns} catalog for ${lng}`), false);
     }
-    catalogs[lng]().then(
+    // A failed import is marked retryable: with `maxRetries: 0` i18next gives
+    // up on it at once rather than retrying for seconds, but reads it again the
+    // next time anything asks, so a dropped connection is not the end of that
+    // namespace. A deploy that retired the file is lib/staleBuild.tsx's.
+    load().then(
       (m) => callback(null, m.default),
-      (err: unknown) => callback(err instanceof Error ? err : String(err), false),
+      (err: unknown) => {
+        readFailures.set(`${lng}|${ns}`, err);
+        callback(err instanceof Error ? err : String(err), true);
+      },
     );
   },
 };
@@ -79,10 +92,40 @@ export async function initI18n(resources?: Resource): Promise<void> {
       // `en`, which have no catalogs.
       load: 'currentOnly',
       interpolation: { escapeValue: false },
+      maxRetries: 0,
+      // Stated rather than left to the defaults: with neither set, i18next
+      // guesses whether a key "looks like natural language" before it splits
+      // off a namespace, and a deferred key must always split.
+      nsSeparator: ':',
+      keySeparator: '.',
     });
   if (!i18n.hasResourceBundle(lng, 'translation')) {
     throw new Error(`[i18n] the ${lng} catalog did not load`);
   }
+}
+
+/**
+ * Loads namespaces into the active language, rejecting with the read's own
+ * error if one did not arrive. i18next settles `loadNamespaces` either way and
+ * would render the keys; a rejection reaches the lazy boundary like a failed
+ * chunk, which is what it almost always is, and the next ask reads it again.
+ */
+export async function loadCopy(namespaces: readonly string[]): Promise<void> {
+  if (!namespaces.length) return;
+  await i18n.loadNamespaces([...namespaces]);
+  const lng = i18n.language;
+  const missing = namespaces.find((ns) => !i18n.hasResourceBundle(lng, ns));
+  if (missing) throw readFailures.get(`${lng}|${missing}`) ?? new Error(`[i18n] the ${missing} catalog did not load`);
+}
+
+/**
+ * A lazy import that also loads the namespaces its chunk reads, in parallel,
+ * so the code never renders before its copy: `lazy(withCopy(() =>
+ * import('./Page'), ['setup']))`. List what the chunk reads beyond what the
+ * importing chunk already did; the build names any that are missing.
+ */
+export function withCopy<T>(load: () => Promise<T>, namespaces: readonly string[]): () => Promise<T> {
+  return () => Promise.all([load(), loadCopy(namespaces)]).then(([m]) => m);
 }
 
 export default i18n;

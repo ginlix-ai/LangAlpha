@@ -28,7 +28,7 @@ export function McpDiscoverResult({ result }: McpDiscoverResultProps) {
       >
         <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
         <span className="whitespace-pre-wrap wrap-break-word">
-          {result.error || t('mcp.discover.failed')}
+          {result.error || t('mcp:discover.failed')}
         </span>
       </div>
     );
@@ -42,7 +42,7 @@ export function McpDiscoverResult({ result }: McpDiscoverResultProps) {
         data-testid="mcp-discover-pending"
       >
         <Clock className="h-3.5 w-3.5 shrink-0" />
-        {t('mcp.status.pendingHint')}
+        {t('mcp:status.pendingHint')}
       </div>
     );
   }
@@ -66,8 +66,8 @@ export function McpDiscoverResult({ result }: McpDiscoverResultProps) {
       <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--color-profit)' }}>
         <CheckCircle2 className="h-3.5 w-3.5" />
         {tools.length === 0
-          ? t('mcp.discover.noTools')
-          : t('mcp.discover.toolCount', { count: tools.length })}
+          ? t('mcp:discover.noTools')
+          : t('mcp:discover.toolCount', { count: tools.length })}
       </div>
       {tools.length > 0 && (
         <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">

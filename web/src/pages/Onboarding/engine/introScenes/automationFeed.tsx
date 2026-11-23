@@ -83,9 +83,9 @@ export function FiredRun({ land = 0, done = 0 }: { land?: number; done?: number 
         meta={
           live
             ? [
-                t('automation.runRunning'),
+                t('automation:runRunning'),
                 place,
-                t('automation.startedAgo', { when: B.ago(on(21, 10, 13)) }),
+                t('automation:startedAgo', { when: B.ago(on(21, 10, 13)) }),
               ].join(' · ')
             : [place, B.took(138_000)].join(' · ')
         }
@@ -96,7 +96,7 @@ export function FiredRun({ land = 0, done = 0 }: { land?: number; done?: number 
             </Grow>
           )
         }
-        actions={<LinkOut>{t(live ? 'automation.watchLive' : 'automation.openThread')}</LinkOut>}
+        actions={<LinkOut>{t(live ? 'automation:watchLive' : 'automation:openThread')}</LinkOut>}
       />
     </Grow>
   );
@@ -126,14 +126,14 @@ export function BriefRun({
             <span style={{ opacity: shown ? 1 : 0, transition: 'opacity var(--motion-quick) var(--ease-out)' }}>
               {' · '}
               <span style={{ color: 'var(--color-text-secondary)' }}>
-                {t('automation.deliveredVia', { method: delivered })}
+                {t('automation:deliveredVia', { method: delivered })}
               </span>
             </span>
           )}
         </>
       }
       excerpt={<Excerpt>{excerpt}</Excerpt>}
-      actions={<LinkOut>{t('automation.openThread')}</LinkOut>}
+      actions={<LinkOut>{t('automation:openThread')}</LinkOut>}
     />
   );
 }
@@ -148,7 +148,7 @@ export function PreviewRun() {
       name={PREVIEW.name}
       meta={[PREVIEW.place, B.took(192_000)].join(' · ')}
       excerpt={<Excerpt>{PREVIEW.excerpt}</Excerpt>}
-      actions={<LinkOut>{t('automation.openThread')}</LinkOut>}
+      actions={<LinkOut>{t('automation:openThread')}</LinkOut>}
     />
   );
 }
@@ -171,7 +171,7 @@ export function FeedRail({ now }: { now?: number }) {
   const rowLine = { borderColor: 'var(--color-border-muted)' };
   return (
     <div className="flex min-w-0 flex-col gap-[12px]">
-      <RailSection title={t('automation.upNext')}>
+      <RailSection title={t('automation:upNext')}>
         <div className="grid grid-cols-[max-content_minmax(0,1fr)]">
           {B.upNext.map(([when, name]) => (
             <div
@@ -195,7 +195,7 @@ export function FeedRail({ now }: { now?: number }) {
           ))}
         </div>
       </RailSection>
-      <RailSection title={t('automation.groupWatching')}>
+      <RailSection title={t('automation:groupWatching')}>
         <div className="border-b py-[6px]" style={rowLine}>
           <div className="flex items-baseline justify-between gap-1">
             <span
@@ -220,7 +220,7 @@ export function FeedRail({ now }: { now?: number }) {
         className="inline-flex items-center gap-[3px] text-[6px] leading-none"
         style={{ color: 'var(--color-text-secondary)' }}
       >
-        {t('automation.manageAll', { count: 4 })}
+        {t('automation:manageAll', { count: 4 })}
         <ArrowRight className="h-[6px] w-[6px]" />
       </span>
     </div>

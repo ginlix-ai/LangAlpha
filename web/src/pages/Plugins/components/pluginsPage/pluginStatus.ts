@@ -11,7 +11,7 @@ import {
 import { isBundled } from '../../utils/pluginSurface';
 import { connectorNeedsUser } from '../connectors/attention';
 
-const KEY_REJECTED = 'mcp.probe.rowCredentialRejected';
+const KEY_REJECTED = 'mcp:probe.rowCredentialRejected';
 
 /** What fixes a plugin's problem, which its cell and its page both offer. */
 export type PluginFix =
@@ -87,11 +87,11 @@ function unique(values: string[]): string[] {
 /** The short reason for a probe note, as a plugin cell words it. Literal keys
  *  so the locale check can see each one. */
 const REASON_KEY: Record<string, string> = {
-  'mcp.probe.rowCredentialRejected': 'plugins.pluginsPage.reason.rejected',
-  'mcp.probe.rowMissingSecrets': 'plugins.pluginsPage.reason.missing',
-  'mcp.probe.rowCredential': 'plugins.pluginsPage.reason.credential',
-  'mcp.probe.rowUnreachable': 'plugins.pluginsPage.reason.unreachable',
-  'mcp.probe.rowOauth': 'plugins.pluginsPage.reason.signIn',
+  'mcp:probe.rowCredentialRejected': 'plugins:pluginsPage.reason.rejected',
+  'mcp:probe.rowMissingSecrets': 'plugins:pluginsPage.reason.missing',
+  'mcp:probe.rowCredential': 'plugins:pluginsPage.reason.credential',
+  'mcp:probe.rowUnreachable': 'plugins:pluginsPage.reason.unreachable',
+  'mcp:probe.rowOauth': 'plugins:pluginsPage.reason.signIn',
 };
 
 export function reasonLabel(t: TFunction, noteKey: string): string {
@@ -112,8 +112,8 @@ export function statusLine(
     return {
       text:
         problem.count === 1 && server
-          ? t('plugins.pluginsPage.problemOn', { reason, server: server.name })
-          : t('plugins.pluginsPage.problemOnCount', { reason, count: problem.count }),
+          ? t('plugins:pluginsPage.problemOn', { reason, server: server.name })
+          : t('plugins:pluginsPage.problemOnCount', { reason, count: problem.count }),
       warn: true,
     };
   }
@@ -121,17 +121,17 @@ export function statusLine(
     // A connector that never got past the vault still offers Connect, but the
     // missing value is the thing to tell.
     if (missingKeys.length > 0) {
-      return { text: t('plugins.pluginsPage.keyMissing', { key: missingKeys[0] }), warn: true };
+      return { text: t('plugins:pluginsPage.keyMissing', { key: missingKeys[0] }), warn: true };
     }
     return {
       text:
         problem.count === 1 && server
-          ? t('plugins.pluginsPage.signInTo', { server: server.name })
-          : t('plugins.pluginsPage.signInCount', { count: problem.count }),
+          ? t('plugins:pluginsPage.signInTo', { server: server.name })
+          : t('plugins:pluginsPage.signInCount', { count: problem.count }),
       warn: false,
     };
   }
-  if (updateAvailable) return { text: t('plugins.pluginsPage.updateAvailable'), warn: false };
+  if (updateAvailable) return { text: t('plugins:pluginsPage.updateAvailable'), warn: false };
   return { text: plugin.description, warn: false };
 }
 
@@ -154,9 +154,9 @@ export function uninstallLines(
 ): string[] {
   const lines: string[] = [];
   const parts = [
-    removed.connectors > 0 ? t('plugins.pluginsPage.connectorCount', { count: removed.connectors }) : null,
-    removed.skills > 0 ? t('plugins.card.skillCount', { count: removed.skills }) : null,
-    removed.subagents > 0 ? t('plugins.card.subagentCount', { count: removed.subagents }) : null,
+    removed.connectors > 0 ? t('plugins:pluginsPage.connectorCount', { count: removed.connectors }) : null,
+    removed.skills > 0 ? t('plugins:card.skillCount', { count: removed.skills }) : null,
+    removed.subagents > 0 ? t('plugins:card.subagentCount', { count: removed.subagents }) : null,
   ].filter((p): p is string => p !== null);
   if (parts.length > 0) {
     // "2 connectors, 1 skill and 3 subagents": a list, then "and" before the last.
@@ -164,21 +164,21 @@ export function uninstallLines(
     const what =
       parts.length === 1
         ? last
-        : t('plugins.card.partsAnd', {
-            connectors: parts.slice(0, -1).reduce((a, b) => t('plugins.card.componentCount', { servers: a, skills: b })),
+        : t('plugins:card.partsAnd', {
+            connectors: parts.slice(0, -1).reduce((a, b) => t('plugins:card.componentCount', { servers: a, skills: b })),
             skills: last,
           });
     lines.push(
       when === 'before'
-        ? t('plugins.pluginsPage.uninstallNote', { what })
-        : t('plugins.card.uninstalledRemoved', { what }),
+        ? t('plugins:pluginsPage.uninstallNote', { what })
+        : t('plugins:card.uninstalledRemoved', { what }),
     );
   }
   if (removed.subagents > 0 && removed.changedSubagents > 0) {
     lines.push(t(subagentChangesKey(when, (removed.plugins ?? 1) > 1)));
   }
-  if (keptKeys.length === 1) lines.push(t('plugins.pluginsPage.keyStays', { key: keptKeys[0] }));
-  else if (keptKeys.length > 1) lines.push(t('plugins.pluginsPage.keysStay', { n: keptKeys.length }));
+  if (keptKeys.length === 1) lines.push(t('plugins:pluginsPage.keyStays', { key: keptKeys[0] }));
+  else if (keptKeys.length > 1) lines.push(t('plugins:pluginsPage.keysStay', { n: keptKeys.length }));
   return lines;
 }
 
@@ -212,9 +212,9 @@ export function bulkUninstallConfirm(
 ): string {
   const count = plugins.length;
   const carries = plugins.some((p) => p.components.some((c) => c.kind === 'subagent'));
-  if (!carries) return t('plugins.bulk.confirmUninstall', { count });
+  if (!carries) return t('plugins:bulk.confirmUninstall', { count });
   const changed = plugins.reduce((sum, p) => sum + changedSubagents(p, views), 0);
-  const ask = t('plugins.bulk.confirmUninstallSubagents', { count });
+  const ask = t('plugins:bulk.confirmUninstallSubagents', { count });
   if (changed === 0) return ask;
   return `${ask} ${t(subagentChangesKey('before', count > 1))}`;
 }
@@ -222,8 +222,8 @@ export function bulkUninstallConfirm(
 /** That the user's changes to the subagents go with them, before or after
  *  the uninstall, of one plugin or several. */
 function subagentChangesKey(when: 'before' | 'after', many: boolean): string {
-  if (when === 'before') return many ? 'plugins.bulk.subagentChangesGo' : 'plugins.pluginsPage.subagentChangesGo';
-  return many ? 'plugins.bulk.subagentChangesGone' : 'plugins.card.subagentChangesGone';
+  if (when === 'before') return many ? 'plugins:bulk.subagentChangesGo' : 'plugins:pluginsPage.subagentChangesGo';
+  return many ? 'plugins:bulk.subagentChangesGone' : 'plugins:card.subagentChangesGone';
 }
 
 /** "7 connectors", "20 skills", "4 connectors, 2 skills", "1 skill, 2 subagents". */
@@ -232,12 +232,12 @@ export function partsLabel(t: TFunction, plugin: PluginInfo): string {
   const skills = plugin.components.filter((c) => c.kind === 'skill').length;
   const subagents = plugin.components.filter((c) => c.kind === 'subagent').length;
   const parts = [
-    servers > 0 ? t('plugins.pluginsPage.connectorCount', { count: servers }) : null,
-    skills > 0 ? t('plugins.card.skillCount', { count: skills }) : null,
-    subagents > 0 ? t('plugins.card.subagentCount', { count: subagents }) : null,
+    servers > 0 ? t('plugins:pluginsPage.connectorCount', { count: servers }) : null,
+    skills > 0 ? t('plugins:card.skillCount', { count: skills }) : null,
+    subagents > 0 ? t('plugins:card.subagentCount', { count: subagents }) : null,
   ].filter((part): part is string => part !== null);
-  if (parts.length === 0) return t('plugins.pluginsPage.empty');
-  return parts.reduce((servers, skills) => t('plugins.card.componentCount', { servers, skills }));
+  if (parts.length === 0) return t('plugins:pluginsPage.empty');
+  return parts.reduce((servers, skills) => t('plugins:card.componentCount', { servers, skills }));
 }
 
 export type PluginOrigin = 'builtIn' | 'catalog' | 'git' | 'uploaded';
@@ -258,10 +258,10 @@ export function pluginOrigin(
 }
 
 const ORIGIN_LABEL: Record<PluginOrigin, string> = {
-  builtIn: 'plugins.pluginsPage.sourceBuiltIn',
-  catalog: 'plugins.pluginsPage.sourceCatalog',
-  git: 'plugins.pluginsPage.sourceGit',
-  uploaded: 'plugins.pluginsPage.sourceUploaded',
+  builtIn: 'plugins:pluginsPage.sourceBuiltIn',
+  catalog: 'plugins:pluginsPage.sourceCatalog',
+  git: 'plugins:pluginsPage.sourceGit',
+  uploaded: 'plugins:pluginsPage.sourceUploaded',
 };
 
 /** How the package got here, in the words of its group. */

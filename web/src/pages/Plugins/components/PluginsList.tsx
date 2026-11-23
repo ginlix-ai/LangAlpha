@@ -144,8 +144,8 @@ export function PluginsList() {
       <PluginListFrame
         list={list}
         query={pluginsQuery}
-        loadFailed={t('plugins.loadFailed.plugins')}
-        noun={t('plugins.filter.nounPlugins')}
+        loadFailed={t('plugins:loadFailed.plugins')}
+        noun={t('plugins:filter.nounPlugins')}
         catalogScope="plugins"
         bulk={bulk}
         hidden={!!detailPlugin}
@@ -155,12 +155,12 @@ export function PluginsList() {
             <div className="pp-foot">
               {/* The limit is only worth a word when it is close, as on Connectors;
                   "6 of 50" read beside Discover's catalog count looks like one. */}
-              <span title={atCap ? t('plugins.list.atCap', { max: maxPlugins }) : undefined}>
-                {nearCap ? t('plugins.pluginsPage.limit', { count: installed.length, max: maxPlugins }) : null}
+              <span title={atCap ? t('plugins:list.atCap', { max: maxPlugins }) : undefined}>
+                {nearCap ? t('plugins:pluginsPage.limit', { count: installed.length, max: maxPlugins }) : null}
               </span>
               {catalogOn && (
                 <button type="button" onClick={() => openDiscover('plugins')}>
-                  {t('plugins.pluginsPage.discoverMore')}
+                  {t('plugins:pluginsPage.discoverMore')}
                   <ChevronRight className="h-3.5 w-3.5" aria-hidden />
                 </button>
               )}
@@ -169,18 +169,18 @@ export function PluginsList() {
         }
       >
         {list.showStart && <CatalogStart scope="plugins" onAdd={() => setWizardOpen(true)} />}
-        {section(t('plugins.pluginsPage.needsAttention'), attention, { attention: true })}
+        {section(t('plugins:pluginsPage.needsAttention'), attention, { attention: true })}
         {(hasLeft || builtIn.length > 0) && (
           <div className={hasLeft && builtIn.length > 0 ? 'pp-pair is-split' : 'pp-pair'}>
             {hasLeft && (
               <div className="pp-pair-col">
-                {section(t('plugins.pluginsPage.fromCatalog'), fromCatalog)}
-                {section(t('plugins.pluginsPage.sourceGit'), fromGit)}
-                {section(t('plugins.pluginsPage.uploaded'), uploaded)}
+                {section(t('plugins:pluginsPage.fromCatalog'), fromCatalog)}
+                {section(t('plugins:pluginsPage.sourceGit'), fromGit)}
+                {section(t('plugins:pluginsPage.uploaded'), uploaded)}
               </div>
             )}
             {builtIn.length > 0 && (
-              <div className="pp-pair-col">{section(t('plugins.pluginsPage.builtIn'), builtIn)}</div>
+              <div className="pp-pair-col">{section(t('plugins:pluginsPage.builtIn'), builtIn)}</div>
             )}
           </div>
         )}

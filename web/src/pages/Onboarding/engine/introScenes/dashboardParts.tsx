@@ -237,7 +237,7 @@ export function DashTopbar({ edit = false, pressed }: { edit?: boolean; pressed?
           className="truncate text-[6px] leading-none"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('dashboard.searchPlaceholder')}
+          {t('dashboard:searchPlaceholder')}
         </span>
         <span
           className="ml-auto rounded-[2px] border px-[2px] text-[5px] leading-[1.3]"

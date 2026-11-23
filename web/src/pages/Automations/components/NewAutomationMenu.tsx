@@ -25,7 +25,7 @@ export function NewAutomationMenu({ onPick }: { onPick: (id: TemplateId) => void
           trigger hands it as a prop, which React 19 passes through. */}
       <DropdownMenuTrigger asChild>
         <HeaderButton variant="primary" icon={Plus}>
-          {t('automation.newAutomation')}
+          {t('automation:newAutomation')}
           <ChevronDown className="h-3 w-3 opacity-70" />
         </HeaderButton>
       </DropdownMenuTrigger>
@@ -33,14 +33,14 @@ export function NewAutomationMenu({ onPick }: { onPick: (id: TemplateId) => void
         <DropdownMenuItem onSelect={() => onPick('custom')} className="items-start gap-3 py-2">
           <Plus className="mt-0.5 h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
           <span className="flex min-w-0 flex-col">
-            <span style={{ color: 'var(--color-text-primary)' }}>{t('automation.blankAutomation')}</span>
+            <span style={{ color: 'var(--color-text-primary)' }}>{t('automation:blankAutomation')}</span>
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('automation.blankAutomationDesc')}
+              {t('automation:blankAutomationDesc')}
             </span>
           </span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <div className="automations-kicker px-2.5 pb-1 pt-1.5">{t('automation.fromTemplate')}</div>
+        <div className="automations-kicker px-2.5 pb-1 pt-1.5">{t('automation:fromTemplate')}</div>
         {templates.map((tpl) => {
           const Icon = tpl.icon;
           return (

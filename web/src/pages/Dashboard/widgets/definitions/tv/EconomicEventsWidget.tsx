@@ -30,23 +30,23 @@ function EconomicEventsSettings({ config, onChange, onClose }: WidgetSettingsPro
   return (
     <div className="space-y-4">
       <EnumField
-        label={t('dashboard.widgets.economicEvents.importance')}
+        label={t('dashboard:widgets.economicEvents.importance')}
         value={config.importanceFilter ?? '-1,0,1'}
         onChange={(v) => onChange({ importanceFilter: v })}
         options={[
-          { value: '-1,0,1', label: t('dashboard.widgets.economicEvents.importance_all') },
-          { value: '0,1', label: t('dashboard.widgets.economicEvents.importance_mediumHigh') },
-          { value: '1', label: t('dashboard.widgets.economicEvents.importance_high') },
+          { value: '-1,0,1', label: t('dashboard:widgets.economicEvents.importance_all') },
+          { value: '0,1', label: t('dashboard:widgets.economicEvents.importance_mediumHigh') },
+          { value: '1', label: t('dashboard:widgets.economicEvents.importance_high') },
         ]}
       />
       <EnumField
-        label={t('dashboard.widgets.economicEvents.countries')}
+        label={t('dashboard:widgets.economicEvents.countries')}
         value={config.countryFilter ?? 'us,eu,jp,gb,cn'}
         onChange={(v) => onChange({ countryFilter: v })}
         options={[
-          { value: 'us,eu,jp,gb,cn', label: t('dashboard.widgets.economicEvents.countries_major') },
-          { value: 'us', label: t('dashboard.widgets.economicEvents.countries_us') },
-          { value: 'us,eu,gb', label: t('dashboard.widgets.economicEvents.countries_usEuGb') },
+          { value: 'us,eu,jp,gb,cn', label: t('dashboard:widgets.economicEvents.countries_major') },
+          { value: 'us', label: t('dashboard:widgets.economicEvents.countries_us') },
+          { value: 'us,eu,gb', label: t('dashboard:widgets.economicEvents.countries_usEuGb') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -57,8 +57,8 @@ function EconomicEventsSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<EconomicEventsConfig>({
   type: 'tv.economic-events',
-  titleKey: 'dashboard.widgets.economicEvents.title',
-  descriptionKey: 'dashboard.widgets.economicEvents.description',
+  titleKey: 'dashboard:widgets.economicEvents.title',
+  descriptionKey: 'dashboard:widgets.economicEvents.description',
   category: 'markets',
   icon: CalendarClock,
   component: EconomicEventsWidget,

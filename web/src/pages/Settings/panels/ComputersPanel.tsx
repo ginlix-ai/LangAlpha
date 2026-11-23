@@ -50,7 +50,7 @@ export function ComputersPanel() {
         </div>
       ) : isError && !data ? (
         <div className="settings-machine is-static">
-          <span className="settings-machine-desc flex-1" role="alert">{t('settings.computers.loadFailed')}</span>
+          <span className="settings-machine-desc flex-1" role="alert">{t('settings:computers.loadFailed')}</span>
           <Button variant="outline" size="sm" onClick={() => void refetch()}>{t('common.retry')}</Button>
         </div>
       ) : (

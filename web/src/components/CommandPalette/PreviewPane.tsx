@@ -17,11 +17,14 @@ import { useShown, type TurnBodyProps } from './turnBody';
 import { useSearchPreview } from './useServerSearch';
 import { useNames } from './useVerbs';
 import type { PreviewTarget } from './types';
+import { withCopy } from '@/i18n';
 
 // The Markdown renderer (with its parser and highlighter) is the pane's to
 // load, the first time it shows a turn, so the palette opens without it.
 // Until it arrives the turn shows as plain text, and stays so if it cannot.
-const MarkdownBody = lazy<ComponentType<TurnBodyProps>>(() => import('./PreviewMarkdown').catch(() => ({ default: PlainBody })));
+const MarkdownBody = lazy<ComponentType<TurnBodyProps>>(() => withCopy(() => import('./PreviewMarkdown'), [
+  'filePanel',
+])().catch(() => ({ default: PlainBody })));
 
 interface PaneProps {
   /** What the selected row shows. */

@@ -33,12 +33,12 @@ describe('get_market_overview — display config', () => {
   });
 
   it('resolves the dedicated translation key via getDisplayName', () => {
-    expect(getDisplayName('get_market_overview', tIdentity)).toBe('toolArtifact.tool.marketOverview');
+    expect(getDisplayName('get_market_overview', tIdentity)).toBe('toolArtifact:tool.marketOverview');
   });
 
   it('resolves the dedicated in-progress translation key', () => {
     expect(getInProgressText('get_market_overview', undefined, tIdentity)).toBe(
-      'toolArtifact.inProgress.fetchingMarketOverview',
+      'toolArtifact:inProgress.fetchingMarketOverview',
     );
   });
 

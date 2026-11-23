@@ -30,10 +30,10 @@ export function ExperimentsPanel() {
 
   if (groups.length === 0) {
     return (
-      <SettingsGroup title={t('settings.experimentsGroup')} description={t(SETTINGS.experiments.descKey)}>
+      <SettingsGroup title={t('settings:experimentsGroup')} description={t(SETTINGS.experiments.descKey)}>
         <SettingsCardBody id={SETTINGS.experiments.anchor} className="py-6 text-center">
           <p className="text-[0.8125rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('settings.experimentsEmpty')}
+            {t('settings:experimentsEmpty')}
           </p>
         </SettingsCardBody>
       </SettingsGroup>
@@ -44,8 +44,8 @@ export function ExperimentsPanel() {
     <SettingsGroup
       key={group.key}
       id={index === 0 ? SETTINGS.experiments.anchor : undefined}
-      title={t(`settings.features.groups.${group.key}.title`)}
-      description={t(`settings.features.groups.${group.key}.description`)}
+      title={t(`settings:features.groups.${group.key}.title`)}
+      description={t(`settings:features.groups.${group.key}.description`)}
     >
       {group.rows.map((row) => row.feature.set_by_organization
         ? <OrgSetRow key={row.feature.key} feature={row.feature} nested={row.nested} />
@@ -55,11 +55,11 @@ export function ExperimentsPanel() {
 }
 
 /** A feature's copy in the reader's language. The API serves the catalog's
- *  English; a locale translates a feature under `settings.featureCatalog.<key>`,
+ *  English; a locale translates a feature under `settings:featureCatalog.<key>`,
  *  and one it has not translated shows the English. */
 function localize(t: TFunction, feature: FeatureState) {
   const text = (field: string, english: string) =>
-    t(`settings.featureCatalog.${feature.key}.${field}`, { defaultValue: english });
+    t(`settings:featureCatalog.${feature.key}.${field}`, { defaultValue: english });
   const { guide } = feature;
   return {
     label: text('label', feature.label),
@@ -130,8 +130,8 @@ function FeatureRow({ row: { feature, nested, blockedBy } }: { row: ExperimentRo
             <p className="feature-facts">
               <span>
                 {needs
-                  ? t('settings.features.needs', { name: needs })
-                  : t(feature.gate === 'opt_out' ? 'settings.features.onByDefault' : 'settings.features.offByDefault')}
+                  ? t('settings:features.needs', { name: needs })
+                  : t(feature.gate === 'opt_out' ? 'settings:features.onByDefault' : 'settings:features.offByDefault')}
               </span>
               {copy.guide?.cost && (
                 <>
@@ -164,7 +164,7 @@ function FeatureName({ label, preview }: { label: string; preview: boolean }) {
   return (
     <>
       {label}
-      {preview && <NameTag className="ml-1.5 inline-block align-[1px]">{t('settings.features.preview')}</NameTag>}
+      {preview && <NameTag className="ml-1.5 inline-block align-[1px]">{t('settings:features.preview')}</NameTag>}
     </>
   );
 }
@@ -195,17 +195,17 @@ function FeatureDecideDialog({ feature, copy, needs, onToggle }: {
 
       {guide && (
         <div className="grid gap-3 sm:grid-cols-2">
-          <FeatureSide on heading={t(`settings.features.onIf.${feature.gate}`)} text={guide.on_if} />
-          <FeatureSide on={false} heading={t(`settings.features.offIf.${feature.gate}`)} text={guide.off_if} />
+          <FeatureSide on heading={t(`settings:features.onIf.${feature.gate}`)} text={guide.on_if} />
+          <FeatureSide on={false} heading={t(`settings:features.offIf.${feature.gate}`)} text={guide.off_if} />
         </div>
       )}
 
       <dl className="feature-dialog-facts">
-        <dt>{t('settings.features.defaultLabel')}</dt>
-        <dd>{t(feature.gate === 'opt_out' ? 'settings.features.on' : 'settings.features.off')}</dd>
+        <dt>{t('settings:features.defaultLabel')}</dt>
+        <dd>{t(feature.gate === 'opt_out' ? 'settings:features.on' : 'settings:features.off')}</dd>
         {guide?.cost && (
           <>
-            <dt>{t('settings.features.costLabel')}</dt>
+            <dt>{t('settings:features.costLabel')}</dt>
             <dd>{guide.cost}</dd>
           </>
         )}
@@ -232,8 +232,8 @@ function FeatureDecideDialog({ feature, copy, needs, onToggle }: {
           />
           <label htmlFor={switchId} className="min-w-0 text-sm" style={{ color: 'var(--color-text-primary)' }}>
             {needs
-              ? t('settings.features.needs', { name: needs })
-              : t(feature.enabled ? 'settings.features.isOn' : 'settings.features.isOff', { name: copy.label })}
+              ? t('settings:features.needs', { name: needs })
+              : t(feature.enabled ? 'settings:features.isOn' : 'settings:features.isOff', { name: copy.label })}
           </label>
         </div>
         <DialogClose asChild>

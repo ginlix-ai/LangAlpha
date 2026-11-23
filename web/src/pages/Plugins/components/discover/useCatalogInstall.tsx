@@ -234,8 +234,8 @@ export function useCatalogInstall(
       (install.isPending && install.variables?.sourceUrl === entry.source_url),
     held: (entry) => busy || atCap || nameTaken(entry),
     holdReason: (entry) => {
-      if (nameTaken(entry)) return t('plugins.discover.nameTaken', { name: entry.name });
-      return atCap ? t('plugins.list.atCap', { max: maxPlugins }) : undefined;
+      if (nameTaken(entry)) return t('plugins:discover.nameTaken', { name: entry.name });
+      return atCap ? t('plugins:list.atCap', { max: maxPlugins }) : undefined;
     },
     nameTaken,
     offerSignIn,
@@ -266,7 +266,7 @@ export function CatalogInstallDialogs({ install }: { install: CatalogInstall }) 
           <PluginOutcome
             key={outcome.entry.source_url}
             outcome={outcome}
-            title={t('plugins.discover.installedTitle', { plugin: outcome.entry.name })}
+            title={t('plugins:discover.installedTitle', { plugin: outcome.entry.name })}
             onDone={install.closeOutcome}
             onOpenPlugin={install.openPlugin}
           />
@@ -276,8 +276,8 @@ export function CatalogInstallDialogs({ install }: { install: CatalogInstall }) 
         {asked && (
           <PluginDialog
             key={asked.target.source_url}
-            title={t('plugins.discover.keysTitle', { plugin: asked.target.name })}
-            subtitle={t('plugins.install.stepKeys')}
+            title={t('plugins:discover.keysTitle', { plugin: asked.target.name })}
+            subtitle={t('plugins:install.stepKeys')}
             dismissable={!install.busy}
             onClose={keys.close}
           >
@@ -288,7 +288,7 @@ export function CatalogInstallDialogs({ install }: { install: CatalogInstall }) 
               onSubmit={(secrets) => install.start(asked.target, secrets)}
               onCancel={keys.close}
               submitting={install.busy}
-              submitLabel={t('plugins.install.keysInstall')}
+              submitLabel={t('plugins:install.keysInstall')}
             />
           </PluginDialog>
         )}
@@ -306,16 +306,16 @@ export function InstallNotice({ install, entry }: { install: CatalogInstall; ent
   if (install.nameTaken(entry)) {
     return (
       <DetailCallout
-        title={t('plugins.discover.nameTaken', { name: entry.name })}
+        title={t('plugins:discover.nameTaken', { name: entry.name })}
         action={
           openPlugin && (
             <PageButton onClick={() => openPlugin(entry.name)}>
-              {t('plugins.discoverPage.openPlugin')}
+              {t('plugins:discoverPage.openPlugin')}
             </PageButton>
           )
         }
       >
-        {t('plugins.discover.nameTakenFix')}
+        {t('plugins:discover.nameTakenFix')}
       </DetailCallout>
     );
   }
@@ -323,17 +323,17 @@ export function InstallNotice({ install, entry }: { install: CatalogInstall; ent
   const retry = (
     // Outline: the header's install button stays the page's one primary.
     <PageButton icon={<RotateCcw />} onClick={() => install.start(entry)} disabled={install.held(entry)}>
-      {t('plugins.signin.tryAgain')}
+      {t('plugins:signin.tryAgain')}
     </PageButton>
   );
   if (failure.kind === 'refused') {
     return (
       <DetailCallout
-        title={t('plugins.signin.failed.install', { name: entry.name })}
+        title={t('plugins:signin.failed.install', { name: entry.name })}
         action={retry}
         align="start"
       >
-        <RefusalView refusal={failure.refusal} lead="plugins.discover.checkLead" />
+        <RefusalView refusal={failure.refusal} lead="plugins:discover.checkLead" />
       </DetailCallout>
     );
   }
@@ -344,16 +344,16 @@ export function InstallNotice({ install, entry }: { install: CatalogInstall; ent
       <DetailCallout
         tone="quiet"
         icon={<LogIn className="h-4 w-4" aria-hidden />}
-        title={t('plugins.signin.denied', { label: failure.label })}
+        title={t('plugins:signin.denied', { label: failure.label })}
         action={retry}
       >
-        {t('plugins.signin.nothing.install')}
+        {t('plugins:signin.nothing.install')}
       </DetailCallout>
     );
   }
   return (
     <DetailCallout
-      title={t('plugins.signin.failed.install', { name: entry.name })}
+      title={t('plugins:signin.failed.install', { name: entry.name })}
       action={retry}
       align="start"
     >

@@ -54,10 +54,10 @@ export function BulkScopeMenu({
         <button
           type="button"
           disabled={!anyEligible}
-          aria-label={t('plugins.bulk.scopeAria')}
+          aria-label={t('plugins:bulk.scopeAria')}
           className="bulk-bar-btn"
         >
-          {t('plugins.bulk.scope')}
+          {t('plugins:bulk.scope')}
           <ChevronDown className="h-3 w-3" />
         </button>
       </DropdownMenuTrigger>
@@ -67,16 +67,16 @@ export function BulkScopeMenu({
           onSelect={onEverywhere}
         >
           <Globe className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.bulk.scopeEverywhere', { count: everywhereCount })}
+          {t('plugins:bulk.scopeEverywhere', { count: everywhereCount })}
         </DropdownMenuItem>
 
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={onlyInCount === 0 || workspaces.length === 0}>
             <Check className="h-3.5 w-3.5 mr-2" />
-            {t('plugins.bulk.scopeOnlyIn', { count: onlyInCount })}
+            {t('plugins:bulk.scopeOnlyIn', { count: onlyInCount })}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
-            <DropdownMenuLabel>{t('plugins.scope.activeIn')}</DropdownMenuLabel>
+            <DropdownMenuLabel>{t('plugins:scope.activeIn')}</DropdownMenuLabel>
             {workspaces.map((ws) => {
               const checked = staged.has(ws.id);
               return (
@@ -106,7 +106,7 @@ export function BulkScopeMenu({
               onSelect={() => onOnlyIn([...staged])}
             >
               <span className="font-medium">
-                {t('plugins.bulk.scopeApply', { count: onlyInCount })}
+                {t('plugins:bulk.scopeApply', { count: onlyInCount })}
               </span>
             </DropdownMenuItem>
           </DropdownMenuSubContent>
@@ -116,7 +116,7 @@ export function BulkScopeMenu({
           <DropdownMenuSub>
             <DropdownMenuSubTrigger disabled={move.count === 0 || workspaces.length === 0}>
               <ArrowRightLeft className="h-3.5 w-3.5 mr-2" />
-              {t('plugins.bulk.scopeMoveTo', { count: move.count })}
+              {t('plugins:bulk.scopeMoveTo', { count: move.count })}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {workspaces.map((ws) => (

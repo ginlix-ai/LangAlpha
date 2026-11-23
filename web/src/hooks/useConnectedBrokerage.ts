@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { queryKeys } from '@/lib/queryKeys';
-import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/oauthState';
 import { brokerageForUrl } from '@/pages/Plugins/brokerages';
 
 // The nav asks this on every page, so it loads with the app shell, and the

@@ -31,12 +31,12 @@ export function OrderCapabilityBadges({
   // are what it may actually do. The title says which, and the section in the
   // detail overlay says it in full.
   const state = t(
-    settled ? 'plugins.brokerages.detail.granted' : 'plugins.brokerages.detail.offered',
+    settled ? 'plugins:brokerages.detail.granted' : 'plugins:brokerages.detail.offered',
   );
   return (
     <>
       {rungs.map((group) => {
-        const label = t(`plugins.brokerages.capabilities.${group.key}.label`);
+        const label = t(`plugins:brokerages.capabilities.${group.key}.label`);
         return (
           <TagBadge
             key={group.key}

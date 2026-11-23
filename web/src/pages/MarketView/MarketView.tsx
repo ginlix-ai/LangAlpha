@@ -75,14 +75,14 @@ interface ChartMetadata {
 
 // Literal keys so the catalog key test sees every question.
 const QUICK_QUERY_KEYS = [
-  'marketView.quickQuery.q1',
-  'marketView.quickQuery.q2',
-  'marketView.quickQuery.q3',
-  'marketView.quickQuery.q4',
-  'marketView.quickQuery.q5',
-  'marketView.quickQuery.q6',
-  'marketView.quickQuery.q7',
-  'marketView.quickQuery.q8',
+  'marketView:quickQuery.q1',
+  'marketView:quickQuery.q2',
+  'marketView:quickQuery.q3',
+  'marketView:quickQuery.q4',
+  'marketView:quickQuery.q5',
+  'marketView:quickQuery.q6',
+  'marketView:quickQuery.q7',
+  'marketView:quickQuery.q8',
 ] as const;
 
 function pickQuickQueryIndices(): number[] {
@@ -292,7 +292,7 @@ function MarketViewInner() {
   // chart's "ask about this layer" becomes its draft instead. The desktop chat
   // panel answers with a pill.
   useChartAskHandler(isMobile ? (req) => {
-    setPrefillMessage(t('marketView.layers.askDraft', { label: layerAskContext(req).label }));
+    setPrefillMessage(t('marketView:layers.askDraft', { label: layerAskContext(req).label }));
     setChatExpanded(true);
   } : null);
 
@@ -493,7 +493,7 @@ function MarketViewInner() {
       if (!workspaceId) {
         toast({
           variant: 'destructive',
-          title: t('marketView.chatHistory.noWorkspace'),
+          title: t('marketView:chatHistory.noWorkspace'),
           description: t('agents.market.noWorkspaceToast'),
         });
         return;
@@ -543,7 +543,7 @@ function MarketViewInner() {
       <QuoteListDrawer symbol={selectedStock} onPick={handleListPick} />
       <ChartToolButton
         onClick={toggleOverview}
-        title={t('marketView.companyOverview')}
+        title={t('marketView:companyOverview')}
         aria-pressed={showOverview}
         className={showOverview ? 'chart-tool-btn-active' : undefined}
       >
@@ -602,7 +602,7 @@ function MarketViewInner() {
           Page-wide, so the chat and watchlist columns stay draggable too; it
           overlaps the header rather than pushing it down (App.css). */}
       <div className="chrome-drag-strip" aria-hidden="true" />
-      <h1 className="sr-only">{t('marketView.pageHeading', { symbol: selectedStock })}</h1>
+      <h1 className="sr-only">{t('marketView:pageHeading', { symbol: selectedStock })}</h1>
       {isMobile ? (
         <div className="market-mobile-layout">
           <StockHeader
@@ -680,7 +680,7 @@ function MarketViewInner() {
               prefillMessage={prefillMessage}
               onClearPrefill={() => setPrefillMessage('')}
               hasExternalContext={hasChartSelectionForChart}
-              placeholder={t('marketView.chatPanel.askStockPlaceholder')}
+              placeholder={t('marketView:chatPanel.askStockPlaceholder')}
               // The desktop panel waits out the same check: until it confirms
               // the restored workspace there is none to send to, and
               // a send would clear the draft into the no-workspace toast.

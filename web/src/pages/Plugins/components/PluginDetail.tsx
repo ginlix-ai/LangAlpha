@@ -162,7 +162,7 @@ export function PluginDetail({
         onClick={() => connect(server)}
         disabled={signIn.oauth.connectingName === server.name || !canConnect(server)}
       >
-        {t('plugins.pluginsPage.callout.connect')}
+        {t('plugins:pluginsPage.callout.connect')}
       </PageButton>
     );
     if (fix.kind === 'replaceKey') {
@@ -173,8 +173,8 @@ export function PluginDetail({
         <DetailCallout
           title={
             count === 1
-              ? t('plugins.pluginsPage.callout.rejected', { server: server.name })
-              : t('plugins.pluginsPage.callout.rejectedCount', { n: count })
+              ? t('plugins:pluginsPage.callout.rejected', { server: server.name })
+              : t('plugins:pluginsPage.callout.rejectedCount', { n: count })
           }
           action={
             <PageButton
@@ -182,49 +182,49 @@ export function PluginDetail({
               icon={<KeyRound />}
               onClick={() => navigate(fix.key ? secretEditHref(fix.key) : '/plugins?tab=secrets')}
             >
-              {t('plugins.pluginsPage.callout.replaceKey')}
+              {t('plugins:pluginsPage.callout.replaceKey')}
             </PageButton>
           }
         >
           {count === 1
             ? others
-              ? t('plugins.pluginsPage.callout.rejectedBody')
-              : t('plugins.pluginsPage.callout.rejectedBodyOne')
+              ? t('plugins:pluginsPage.callout.rejectedBody')
+              : t('plugins:pluginsPage.callout.rejectedBodyOne')
             : others
-              ? t('plugins.pluginsPage.callout.rejectedBodyCount')
-              : t('plugins.pluginsPage.callout.rejectedBodyAll')}
+              ? t('plugins:pluginsPage.callout.rejectedBodyCount')
+              : t('plugins:pluginsPage.callout.rejectedBodyAll')}
         </DetailCallout>
       );
     } else if (fix.kind === 'addKey') {
       callout = (
         <DetailCallout
-          title={t('plugins.pluginsPage.callout.missing', { key: fix.key })}
+          title={t('plugins:pluginsPage.callout.missing', { key: fix.key })}
           action={
             <div className="pp-callout-actions">
               {problem.kind === 'connect' && connectButton('outline')}
               <PageButton variant="primary" icon={<KeyRound />} onClick={() => openSecrets(fix.key)}>
-                {t('plugins.pluginsPage.callout.addKey')}
+                {t('plugins:pluginsPage.callout.addKey')}
               </PageButton>
             </div>
           }
         >
-          {t('plugins.pluginsPage.callout.missingBody')}
+          {t('plugins:pluginsPage.callout.missingBody')}
         </DetailCallout>
       );
     } else if (fix.kind === 'open' && problem.kind === 'failing') {
       callout = (
         <DetailCallout
-          title={t('plugins.pluginsPage.callout.failing', {
+          title={t('plugins:pluginsPage.callout.failing', {
             reason: reasonLabel(t, problem.noteKey),
             server: server.name,
           })}
           action={
             <PageButton variant="primary" onClick={() => openComponent('mcp', server.name)}>
-              {t('plugins.pluginsPage.callout.open', { server: server.name })}
+              {t('plugins:pluginsPage.callout.open', { server: server.name })}
             </PageButton>
           }
         >
-          {t('plugins.pluginsPage.callout.failingBody')}
+          {t('plugins:pluginsPage.callout.failingBody')}
         </DetailCallout>
       );
     } else {
@@ -232,14 +232,14 @@ export function PluginDetail({
         <DetailCallout
           title={
             problem.count === 1
-              ? t('plugins.pluginsPage.callout.signIn', { server: server.name })
-              : t('plugins.pluginsPage.callout.signInCount', { n: problem.count })
+              ? t('plugins:pluginsPage.callout.signIn', { server: server.name })
+              : t('plugins:pluginsPage.callout.signInCount', { n: problem.count })
           }
           action={connectButton('primary')}
         >
           {problem.count === 1
-            ? t('plugins.pluginsPage.callout.signInBodyOne')
-            : t('plugins.pluginsPage.callout.signInBody')}
+            ? t('plugins:pluginsPage.callout.signInBodyOne')
+            : t('plugins:pluginsPage.callout.signInBody')}
         </DetailCallout>
       );
     }
@@ -323,7 +323,7 @@ export function PluginDetail({
   // ── Side column ─────────────────────────────────────────────────────────
   const keyBlock =
     status.keys.length > 0 ? (
-      <DetailAsideBlock title={t('plugins.pluginsPage.keys')}>
+      <DetailAsideBlock title={t('plugins:pluginsPage.keys')}>
         <div className="pp-keys">
           {status.keys.map((key) => {
             // Every connector that reads it, this plugin's or not: changing
@@ -336,13 +336,13 @@ export function PluginDetail({
             let state: string;
             let warn = false;
             if (missing) {
-              state = t('plugins.pluginsPage.keyMissingState');
+              state = t('plugins:pluginsPage.keyMissingState');
               warn = true;
             } else if (rejecter) {
-              state = t('plugins.pluginsPage.keyRejectedBy', { server: rejecter.name });
+              state = t('plugins:pluginsPage.keyRejectedBy', { server: rejecter.name });
               warn = true;
             } else {
-              state = t('plugins.pluginsPage.keyUsedBy', { count: users.length });
+              state = t('plugins:pluginsPage.keyUsedBy', { count: users.length });
             }
             return (
               <div key={key} className="pp-key">
@@ -359,7 +359,7 @@ export function PluginDetail({
         </div>
         <p className="pp-note">
           <button type="button" className="pp-note-link" onClick={() => openSecrets()}>
-            {t('plugins.pluginsPage.openSecrets')} ›
+            {t('plugins:pluginsPage.openSecrets')} ›
           </button>
         </p>
       </DetailAsideBlock>
@@ -369,7 +369,7 @@ export function PluginDetail({
   const repository = webLink(plugin.repository);
   const contains = [
     partsLabel(t, plugin),
-    toolTotal > 0 ? t('mcp.row.toolCount', { count: toolTotal }) : null,
+    toolTotal > 0 ? t('mcp:row.toolCount', { count: toolTotal }) : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -400,19 +400,19 @@ export function PluginDetail({
     pluginReachText(t, reach)
   );
   const facts = (
-    <DetailAsideBlock title={t('plugins.detail.info')}>
+    <DetailAsideBlock title={t('plugins:detail.info')}>
       <DetailFacts
         items={[
-          [t('plugins.pluginsPage.contains'), contains],
-          [t('plugins.pluginsPage.factWorkspaces'), reachFact],
-          [t('plugins.detail.version'), plugin.version],
-          [t('plugins.detail.author'), plugin.author],
-          [t('plugins.detail.homepage'), homepageLink],
-          [t('plugins.detail.repository'), repositoryLink],
-          [t('plugins.detail.license'), plugin.license ?? null],
-          [t('plugins.detail.sourceLabel'), sourceFact],
-          [t('plugins.detail.installed'), plugin.installed_at ? mediumDate(new Date(plugin.installed_at), locale) : null],
-          [t('plugins.detail.updated'), plugin.updated_at ? mediumDate(new Date(plugin.updated_at), locale) : null],
+          [t('plugins:pluginsPage.contains'), contains],
+          [t('plugins:pluginsPage.factWorkspaces'), reachFact],
+          [t('plugins:detail.version'), plugin.version],
+          [t('plugins:detail.author'), plugin.author],
+          [t('plugins:detail.homepage'), homepageLink],
+          [t('plugins:detail.repository'), repositoryLink],
+          [t('plugins:detail.license'), plugin.license ?? null],
+          [t('plugins:detail.sourceLabel'), sourceFact],
+          [t('plugins:detail.installed'), plugin.installed_at ? mediumDate(new Date(plugin.installed_at), locale) : null],
+          [t('plugins:detail.updated'), plugin.updated_at ? mediumDate(new Date(plugin.updated_at), locale) : null],
         ]}
       />
     </DetailAsideBlock>
@@ -432,14 +432,14 @@ export function PluginDetail({
   // The note stays under the confirm too: what goes matters most while the
   // user is deciding.
   const footer = !installed ? (
-    <p className="pp-note">{t('plugins.pluginsPage.builtinNote')}</p>
+    <p className="pp-note">{t('plugins:pluginsPage.builtinNote')}</p>
   ) : (
     <div className="pp-verbs">
       {life.confirmingUninstall ? (
         <ConfirmStrip
-          message={t('plugins.pluginsPage.uninstallAsk', { plugin: plugin.name })}
-          confirmLabel={life.uninstalling ? t('common.loading') : t('plugins.card.uninstallConfirmYes')}
-          cancelLabel={t('plugins.card.uninstallConfirmNo')}
+          message={t('plugins:pluginsPage.uninstallAsk', { plugin: plugin.name })}
+          confirmLabel={life.uninstalling ? t('common.loading') : t('plugins:card.uninstallConfirmYes')}
+          cancelLabel={t('plugins:card.uninstallConfirmNo')}
           pending={life.uninstalling}
           onConfirm={() => void life.uninstall()}
           onCancel={life.cancelUninstall}
@@ -453,14 +453,14 @@ export function PluginDetail({
               onClick={life.update}
               disabled={life.busy}
             >
-              {t('plugins.card.update')}
+              {t('plugins:card.update')}
             </PageButton>
             <PageButton icon={<Download />} onClick={() => void life.exportPackage()} disabled={life.exporting}>
-              {t('plugins.card.export')}
+              {t('plugins:card.export')}
             </PageButton>
           </div>
           <PageButton onClick={life.requestUninstall} disabled={life.uninstalling}>
-            {t('plugins.pluginsPage.uninstallNamed', { plugin: plugin.name })}
+            {t('plugins:pluginsPage.uninstallNamed', { plugin: plugin.name })}
           </PageButton>
         </>
       )}
@@ -477,8 +477,8 @@ export function PluginDetail({
   const metaParts = [
     <span key="source">{sourceLabel(t, plugin, catalogPlugins)}</span>,
     plugin.version ? <code key="version" className="pp-meta-mono">v{plugin.version}</code> : null,
-    life.updateAvailable ? <span key="update">{t('plugins.pluginsPage.updateAvailable')}</span> : null,
-    plugin.author ? <span key="author">{t('plugins.pluginsPage.by', { author: plugin.author })}</span> : null,
+    life.updateAvailable ? <span key="update">{t('plugins:pluginsPage.updateAvailable')}</span> : null,
+    plugin.author ? <span key="author">{t('plugins:pluginsPage.by', { author: plugin.author })}</span> : null,
   ];
 
   return (
@@ -512,25 +512,25 @@ export function PluginDetail({
         }
         footer={footer}
       >
-        {!plugin.enabled && <p className="pp-empty-line">{t('plugins.pluginsPage.offNote')}</p>}
+        {!plugin.enabled && <p className="pp-empty-line">{t('plugins:pluginsPage.offNote')}</p>}
         {callout}
         {allConnectorCells.length > 0 && (
-          <DetailSection title={t('plugins.pluginsPage.connectors')} count={allConnectorCells.length}>
+          <DetailSection title={t('plugins:pluginsPage.connectors')} count={allConnectorCells.length}>
             <SurfaceGrid className="is-wide">{allConnectorCells}</SurfaceGrid>
           </DetailSection>
         )}
         {skillCells.length > 0 && (
-          <DetailSection title={t('plugins.pluginsPage.skills')} count={skillCells.length}>
+          <DetailSection title={t('plugins:pluginsPage.skills')} count={skillCells.length}>
             <SurfaceGrid className="is-wide">{skillCells}</SurfaceGrid>
           </DetailSection>
         )}
         {subagentCells.length > 0 && (
-          <DetailSection title={t('plugins.pluginsPage.subagents')} count={subagentCells.length}>
+          <DetailSection title={t('plugins:pluginsPage.subagents')} count={subagentCells.length}>
             <SurfaceGrid className="is-wide">{subagentCells}</SurfaceGrid>
           </DetailSection>
         )}
         {allConnectorCells.length === 0 && skillCells.length === 0 && subagentCells.length === 0 && (
-          <p className="pp-empty-line">{t('plugins.pluginsPage.nothingInside')}</p>
+          <p className="pp-empty-line">{t('plugins:pluginsPage.nothingInside')}</p>
         )}
       </DetailPage>
       {life.dialogs}

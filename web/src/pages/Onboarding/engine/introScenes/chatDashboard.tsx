@@ -504,7 +504,7 @@ export function DashboardPanel({ at, filterAt }: { at: number; filterAt?: number
       />
       <FileCrumbs
         path={['results', 'capex-tracker.html']}
-        meta={t('filePanel.metaLines', { count: 412 })}
+        meta={t('filePanel:metaLines', { count: 412 })}
         actions={HTML_FILE_ACTIONS}
       />
       <Dashboard at={at} filterAt={filterAt} />

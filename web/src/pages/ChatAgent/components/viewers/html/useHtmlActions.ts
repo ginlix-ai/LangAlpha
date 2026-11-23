@@ -208,7 +208,7 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
         // Measuring the widget and rendering it takes seconds, same as a server
         // render, so it gets the same dismissible toast rather than a button
         // that looks broken until a file dialog appears.
-        const pending = toast({ description: t('filePanel.pdfGenerating') });
+        const pending = toast({ description: t('filePanel:pdfGenerating') });
         let result;
         try {
           // The shell renders it directly. Not merely nicer than the blob tab
@@ -220,7 +220,7 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
           pending.dismiss();
         }
         if (result) {
-          if ('error' in result) toast({ description: t('filePanel.pdfFailed') });
+          if ('error' in result) toast({ description: t('filePanel:pdfFailed') });
           return;
         }
         // Null inside the shell does not mean "print in the browser instead", it
@@ -230,7 +230,7 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
         // all and says nothing either. Every install older than the one that
         // added savePdf lands on exactly this line.
         if (desktop) {
-          toast({ description: t('filePanel.pdfFailed') });
+          toast({ description: t('filePanel:pdfFailed') });
           return;
         }
         const blob = new Blob([opts.srcDoc], { type: 'text/html' });
@@ -253,15 +253,15 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
       }
 
       if (!opts.servedUrl) {
-        toast({ description: t('filePanel.pdfFailed') });
+        toast({ description: t('filePanel:pdfFailed') });
         return;
       }
       await exportServedPdf({
         filePath: opts.filePath,
         servedUrl: opts.servedUrl,
         openUrl: opts.openUrl,
-        printHint: t('filePanel.pdfPrintHint'),
-        generatingHint: t('filePanel.pdfGenerating'),
+        printHint: t('filePanel:pdfPrintHint'),
+        generatingHint: t('filePanel:pdfGenerating'),
       });
     } finally {
       pdfInFlight.current = false;

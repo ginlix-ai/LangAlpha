@@ -99,15 +99,15 @@ export function FileContextMenu({
       {memoState === 'present' && item('add-to-memo', <RefreshCw {...ICON} />, t('context.syncWithMemo'))}
       {memoState === 'absent' && item('add-to-memo', <ScrollText {...ICON} />, t('context.addToMemo'))}
       {item('open', <FolderOpen {...ICON} />, t('context.openFile'))}
-      {item('open-new-tab', <PanelRight {...ICON} />, t('filePanel.openInNewTab'))}
+      {item('open-new-tab', <PanelRight {...ICON} />, t('filePanel:openInNewTab'))}
       {canDownload && item(
         'download',
         <Download {...ICON} />,
-        downloadLabel(downloadState, t('filePanel.download'), t),
+        downloadLabel(downloadState, t('filePanel:download'), t),
         downloadState !== 'idle',
       )}
       {canDownload && selectedCount > 1
-        && item('download-many', <Download {...ICON} />, t('filePanel.downloadCount', { count: selectedCount }))}
+        && item('download-many', <Download {...ICON} />, t('filePanel:downloadCount', { count: selectedCount }))}
     </div>,
     document.body,
   );

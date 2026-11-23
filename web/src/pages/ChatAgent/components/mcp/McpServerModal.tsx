@@ -108,20 +108,20 @@ export interface McpServerModalProps {
 const NOOP = () => {};
 
 const NAME_ERROR_KEY: Record<ServerNameError, string> = {
-  shape: 'mcp.modal.nameShape',
-  runtimeModule: 'mcp.modal.nameReservedRuntime',
-  dunder: 'mcp.modal.nameReservedDunder',
-  keyword: 'mcp.modal.nameReservedKeyword',
+  shape: 'mcp:modal.nameShape',
+  runtimeModule: 'mcp:modal.nameReservedRuntime',
+  dunder: 'mcp:modal.nameReservedDunder',
+  keyword: 'mcp:modal.nameReservedKeyword',
 };
 
 // The address policy's own words name the rule, in English; the field says the
 // fix. Explicit so the i18n parity test sees each key as a literal.
 const URL_PROBLEM_KEY: Record<RemoteUrlProblem, string> = {
-  scheme: 'mcp.modal.urlScheme',
-  local: 'mcp.modal.urlLocal',
-  userinfo: 'mcp.modal.urlUserinfo',
-  secret: 'mcp.modal.urlSecret',
-  malformed: 'mcp.modal.urlMalformed',
+  scheme: 'mcp:modal.urlScheme',
+  local: 'mcp:modal.urlLocal',
+  userinfo: 'mcp:modal.urlUserinfo',
+  secret: 'mcp:modal.urlSecret',
+  malformed: 'mcp:modal.urlMalformed',
 };
 
 export function McpServerModal({
@@ -234,15 +234,15 @@ export function McpServerModal({
     const blankPath = draftBlankKeyPath(draft);
     const duplicatePath = draftDuplicateKeyPath(draft);
     const rowErrors = [
-      ...(blankPath ? [{ path: blankPath, message: t('mcp.modal.blankKey') }] : []),
+      ...(blankPath ? [{ path: blankPath, message: t('mcp:modal.blankKey') }] : []),
       ...(duplicatePath
         ? [
             {
               path: duplicatePath,
               message:
                 duplicatePath === 'headers'
-                  ? t('mcp.modal.duplicateHeader')
-                  : t('mcp.modal.duplicateEnvKey'),
+                  ? t('mcp:modal.duplicateHeader')
+                  : t('mcp:modal.duplicateEnvKey'),
             },
           ]
         : []),
@@ -289,15 +289,15 @@ export function McpServerModal({
   const nameError = nameReason
     ? t(NAME_ERROR_KEY[nameReason], { name })
     : takenBy === 'yours'
-      ? t('mcp.modal.nameTakenYours', { name: name.trim() })
+      ? t('mcp:modal.nameTakenYours', { name: name.trim() })
       : takenBy === 'reserved'
-        ? t('mcp.modal.nameTakenReserved', { name: name.trim() })
+        ? t('mcp:modal.nameTakenReserved', { name: name.trim() })
         : null;
   const nameNote = suffixedFrom
     ? t(
         takenNames.get(suffixedFrom) === 'reserved'
-          ? 'mcp.modal.nameSuffixedReserved'
-          : 'mcp.modal.nameSuffixed',
+          ? 'mcp:modal.nameSuffixedReserved'
+          : 'mcp:modal.nameSuffixed',
         { taken: suffixedFrom, name },
       )
     : null;
@@ -331,18 +331,18 @@ export function McpServerModal({
         style={{ color: 'var(--color-text-tertiary)' }}
         data-testid="mcp-refusal-detail"
       >
-        {t('mcp.probe.wireDetail', { detail: refusedFailures?.map((f) => f.reason).join(' · ') })}
+        {t('mcp:probe.wireDetail', { detail: refusedFailures?.map((f) => f.reason).join(' · ') })}
       </p>
     );
 
   const filled = draft.kind === 'remote' || draft.kind === 'stdio' ? draft.filled : undefined;
   const entryNote =
     draft.kind === 'invalid'
-      ? draft.note || t('mcp.modal.pasteNoServer')
+      ? draft.note || t('mcp:modal.pasteNoServer')
       : filled
         ? filled.more > 0
-          ? t('mcp.modal.filledFromMore', { name: filled.from, count: filled.more })
-          : t('mcp.modal.filledFrom', { name: filled.from })
+          ? t('mcp:modal.filledFromMore', { name: filled.from, count: filled.more })
+          : t('mcp:modal.filledFrom', { name: filled.from })
         : null;
 
   const inputStyle = {
@@ -361,12 +361,12 @@ export function McpServerModal({
           type="button"
           onClick={handleTest}
           disabled={testing || saving || !canSubmit}
-          title={t('mcp.modal.testSavedHint')}
+          title={t('mcp:modal.testSavedHint')}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
           style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border-muted)' }}
         >
           {testing ? <Loader size={14} className="text-current" /> : <Zap className="h-3.5 w-3.5" />}
-          {t('mcp.modal.testSaved')}
+          {t('mcp:modal.testSaved')}
         </button>
       ) : (
         <span />
@@ -380,7 +380,7 @@ export function McpServerModal({
           className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('mcp.modal.cancel')}
+          {t('mcp:modal.cancel')}
         </button>
         <button
           type="button"
@@ -401,10 +401,10 @@ export function McpServerModal({
         >
           {saving && <Loader size={14} className="text-current" />}
           {signingIn
-            ? t('mcp.modal.signingIn')
+            ? t('mcp:modal.signingIn')
             : isEdit
-              ? (editLabels?.save ?? t('mcp.modal.save'))
-              : t('mcp.modal.add')}
+              ? (editLabels?.save ?? t('mcp:modal.save'))
+              : t('mcp:modal.add')}
         </button>
       </div>
     </div>
@@ -413,7 +413,7 @@ export function McpServerModal({
   return (
     <ModalShell
       labelId={titleId}
-      title={isEdit ? (editLabels?.title ?? t('mcp.modal.editTitle')) : t('mcp.modal.addTitle')}
+      title={isEdit ? (editLabels?.title ?? t('mcp:modal.editTitle')) : t('mcp:modal.addTitle')}
       onClose={onClose}
       closeDisabled={saving}
       footer={footer}
@@ -423,7 +423,7 @@ export function McpServerModal({
           {said?.note || note}
         </p>
       )}
-      <Field label={t('mcp.modal.entryLabel')} hint={t('mcp.modal.entryHint')}>
+      <Field label={t('mcp:modal.entryLabel')} hint={t('mcp:modal.entryHint')}>
         <input
           type="text"
           value={draft.entry}
@@ -435,7 +435,7 @@ export function McpServerModal({
           onKeyDown={(e) => {
             if (e.key === 'Enter') dispatch({ type: 'commit' });
           }}
-          placeholder={t('mcp.modal.entryPlaceholder')}
+          placeholder={t('mcp:modal.entryPlaceholder')}
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
@@ -452,10 +452,10 @@ export function McpServerModal({
           >
             {transport === 'stdio' ? <Terminal className="h-3 w-3" /> : <Globe className="h-3 w-3" />}
             {transport === 'stdio'
-              ? t('mcp.modal.detectedStdio')
+              ? t('mcp:modal.detectedStdio')
               : transport === 'sse'
-                ? t('mcp.modal.detectedSse')
-                : t('mcp.modal.detectedHttp')}
+                ? t('mcp:modal.detectedSse')
+                : t('mcp:modal.detectedHttp')}
           </p>
         )}
         {isSse && (
@@ -471,7 +471,7 @@ export function McpServerModal({
               >
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                 <span className="wrap-break-word">
-                  {sseRefused ? t('mcp.modal.sseRefused') : t('mcp.modal.sseEditNote')}
+                  {sseRefused ? t('mcp:modal.sseRefused') : t('mcp:modal.sseEditNote')}
                 </span>
               </span>
               <McpQuietButton
@@ -479,7 +479,7 @@ export function McpServerModal({
                 onClick={() => dispatch({ type: 'draft', change: (d) => transportPinned(d, 'http') })}
                 data-testid="mcp-sse-to-http"
               >
-                {t('mcp.modal.sseUseHttp')}
+                {t('mcp:modal.sseUseHttp')}
               </McpQuietButton>
             </div>
             {refusalSpot === 'sse' && <div className="pl-5">{refusalDetail('sse')}</div>}
@@ -493,15 +493,15 @@ export function McpServerModal({
       </Field>
 
       <Field
-        label={t('mcp.modal.nameLabel')}
-        hint={isEdit || nameNote ? undefined : t('mcp.modal.nameHint')}
+        label={t('mcp:modal.nameLabel')}
+        hint={isEdit || nameNote ? undefined : t('mcp:modal.nameHint')}
       >
         <input
           type="text"
           value={name}
           onChange={(e) => setTypedName(e.target.value)}
           disabled={isEdit}
-          placeholder={t('mcp.modal.namePlaceholder')}
+          placeholder={t('mcp:modal.namePlaceholder')}
           aria-invalid={nameError ? true : undefined}
           className="w-full px-3 py-2 text-sm rounded-md bg-transparent font-mono disabled:opacity-60"
           style={inputStyle}
@@ -522,8 +522,8 @@ export function McpServerModal({
           {/* The hint speaks to a row's value field, so it waits for a row:
               under a bare Add header it pointed at nothing. */}
           <Field
-            label={t('mcp.modal.headersLabel')}
-            hint={draft.headers.length ? t('mcp.modal.headersHint') : undefined}
+            label={t('mcp:modal.headersLabel')}
+            hint={draft.headers.length ? t('mcp:modal.headersHint') : undefined}
           >
             <KeyValueEditor
               kind="headers"
@@ -532,7 +532,7 @@ export function McpServerModal({
               onChange={(rows) => dispatch({ type: 'headers', rows })}
               onSettle={() => dispatch({ type: 'settle' })}
               standIns={standIns.headers}
-              keyPlaceholder={t('mcp.modal.headerCustomPlaceholder')}
+              keyPlaceholder={t('mcp:modal.headerCustomPlaceholder')}
             />
             <FieldError error={errorFor('headers')} />
             {refusalDetail('headers')}
@@ -544,7 +544,7 @@ export function McpServerModal({
                 style={{ color: 'var(--color-text-tertiary)' }}
                 data-testid="mcp-probe-held"
               >
-                {t('mcp.probe.saveToCheck')}
+                {t('mcp:probe.saveToCheck')}
               </p>
             ) : (
               <McpProbePanel
@@ -560,7 +560,7 @@ export function McpServerModal({
 
       {draft.kind === 'stdio' && (
         <>
-          <Field label={t('mcp.modal.argsLabel')}>
+          <Field label={t('mcp:modal.argsLabel')}>
             <ArgsEditor
               args={draftArgv(draft).args}
               onChange={(args) => dispatch({ type: 'draft', change: (d) => argsChanged(d, args) })}
@@ -568,8 +568,8 @@ export function McpServerModal({
             />
           </Field>
           <Field
-            label={t('mcp.modal.envLabel')}
-            hint={draft.env.length ? t('mcp.modal.envHint') : undefined}
+            label={t('mcp:modal.envLabel')}
+            hint={draft.env.length ? t('mcp:modal.envHint') : undefined}
           >
             <KeyValueEditor
               kind="env"
@@ -577,7 +577,7 @@ export function McpServerModal({
               rows={draft.env}
               onChange={(rows) => dispatch({ type: 'draft', change: (d) => envChanged(d, rows) })}
               standIns={standIns.env}
-              keyPlaceholder={t('mcp.modal.envKeyPlaceholder')}
+              keyPlaceholder={t('mcp:modal.envKeyPlaceholder')}
             />
             <FieldError error={errorFor('env')} />
             {refusalDetail('env')}
@@ -587,7 +587,7 @@ export function McpServerModal({
           ) : (
             stdioChecks && (
               <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('mcp.modal.stdioCheckNote')}
+                {t('mcp:modal.stdioCheckNote')}
               </p>
             )
           )}
@@ -596,7 +596,7 @@ export function McpServerModal({
 
       {blockedByStandIns && (
         <p className="text-[0.6875rem]" style={{ color: 'var(--color-loss)' }} data-testid="mcp-standins">
-          {t('mcp.modal.placeholdersBlock')}
+          {t('mcp:modal.placeholdersBlock')}
         </p>
       )}
 

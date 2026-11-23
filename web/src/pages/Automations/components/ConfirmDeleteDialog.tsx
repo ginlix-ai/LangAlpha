@@ -27,9 +27,9 @@ export default function ConfirmDeleteDialog({ open, onOpenChange, onConfirm, aut
         style={{ backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))', borderColor: 'var(--color-shell-edge, var(--color-border-elevated))' }}
       >
         <DialogHeader>
-          <DialogTitle style={{ color: 'var(--color-text-primary)' }}>{t('automation.deleteAutomation')}</DialogTitle>
+          <DialogTitle style={{ color: 'var(--color-text-primary)' }}>{t('automation:deleteAutomation')}</DialogTitle>
           <DialogDescription style={{ color: 'var(--color-text-secondary)' }}>
-            {t('automation.deleteConfirmMsg', { name: automationName })}
+            {t('automation:deleteConfirmMsg', { name: automationName })}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2 sm:gap-0">
@@ -45,7 +45,7 @@ export default function ConfirmDeleteDialog({ open, onOpenChange, onConfirm, aut
             onClick={onConfirm}
             disabled={loading}
           >
-            {loading ? t('automation.deleting') : t('common.delete')}
+            {loading ? t('automation:deleting') : t('common.delete')}
           </Button>
         </DialogFooter>
       </DialogContent>

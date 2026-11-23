@@ -190,9 +190,9 @@ function TwoModes() {
               dense
               icon={TrendingUp}
               running={{
-                label: t('toolArtifact.inProgress.fetchingSymbolPrices', { symbol: 'NVDA' }),
+                label: t('toolArtifact:inProgress.fetchingSymbolPrices', { symbol: 'NVDA' }),
               }}
-              settled={{ label: t('toolArtifact.tool.stockPrices'), pill: 'NVDA' }}
+              settled={{ label: t('toolArtifact:tool.stockPrices'), pill: 'NVDA' }}
               at={MODES.fetch}
               done={MODES.card}
             />
@@ -353,7 +353,7 @@ function ChiefOfStaffAnswer() {
               <ToolRow
                 dense
                 icon={Search}
-                settled={{ label: t('toolArtifact.tool.webSearch'), pill: 'earnings this week' }}
+                settled={{ label: t('toolArtifact:tool.webSearch'), pill: 'earnings this week' }}
               />
               <Reply
                 text="**A busy week.** CPI prints Wednesday at 8:30, and NVDA reports after Thursday's close. Its guide rests on hyperscaler capex."
@@ -368,7 +368,7 @@ function ChiefOfStaffAnswer() {
                 dense
                 icon={Zap}
                 settled={{
-                  label: t('toolArtifact.tool.liveQuotes'),
+                  label: t('toolArtifact:tool.liveQuotes'),
                   pill: 'SOXX, AVGO, NVDA, TSM, AMD, MU',
                 }}
               />
@@ -390,8 +390,8 @@ function ChiefOfStaffAnswer() {
                 <ToolRow
                   dense
                   icon={Brain}
-                  running={{ label: t('toolArtifact.thinkingFor', { duration: '1s' }) }}
-                  settled={{ label: t('toolArtifact.thoughtFor', { duration: '1s' }) }}
+                  running={{ label: t('toolArtifact:thinkingFor', { duration: '1s' }) }}
+                  settled={{ label: t('toolArtifact:thoughtFor', { duration: '1s' }) }}
                   after={
                     // centered on the line, as the app's chevron is, not
                     // sat on the label's baseline
@@ -424,8 +424,8 @@ function ChiefOfStaffAnswer() {
                 <ToolRow
                   dense
                   icon={Send}
-                  running={{ label: t('toolArtifact.inProgress.sendingTo', { app }) }}
-                  settled={{ label: t('toolArtifact.tool.sendMessage'), pill: app }}
+                  running={{ label: t('toolArtifact:inProgress.sendingTo', { app }) }}
+                  settled={{ label: t('toolArtifact:tool.sendMessage'), pill: app }}
                   at={send}
                   done={sent}
                 />

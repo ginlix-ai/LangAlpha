@@ -117,7 +117,8 @@ describe('describeProblem', () => {
       const fixed = i18n.getFixedT(lng);
       for (const p of kinds) {
         const text = describeProblem(p, fixed, lng);
-        expect(text).not.toMatch(/plugins\.skillUpload/);
+        // A missing `plugins:` key renders without its namespace.
+        expect(text).not.toMatch(/skillUpload\./);
         expect(text).not.toMatch(/\{\{/);
       }
     }

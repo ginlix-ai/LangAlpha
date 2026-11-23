@@ -27,9 +27,9 @@ import { PriceMeter } from './PriceMeter';
 import TickerAutocomplete from './TickerAutocomplete';
 
 const TRIGGERS: { id: TriggerType; labelKey: string }[] = [
-  { id: 'cron', labelKey: 'automation.triggerSchedule' },
-  { id: 'once', labelKey: 'automation.once' },
-  { id: 'price', labelKey: 'automation.triggerPrice' },
+  { id: 'cron', labelKey: 'automation:triggerSchedule' },
+  { id: 'once', labelKey: 'automation:once' },
+  { id: 'price', labelKey: 'automation:triggerPrice' },
 ];
 
 /** The three ways an automation can start, each drawn with the mark the
@@ -86,12 +86,12 @@ function PriceFields({ form, patch }: { form: FormState; patch: FormPatch }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <TickerAutocomplete
-        label={t('automation.priceSymbol')}
+        label={t('automation:priceSymbol')}
         value={form.price_symbol}
         onChange={(symbol) => patch('price_symbol', symbol)}
       />
       <OptionSelect
-        aria-label={t('automation.priceCondition')}
+        aria-label={t('automation:priceCondition')}
         value={form.price_condition_type}
         options={PRICE_CONDITION_TYPES}
         onChange={(type) => patch('price_condition_type', type)}
@@ -102,7 +102,7 @@ function PriceFields({ form, patch }: { form: FormState; patch: FormPatch }) {
           type="number"
           step="any"
           min={0}
-          aria-label={t('automation.priceValue')}
+          aria-label={t('automation:priceValue')}
           value={form.price_value}
           onChange={(e) => patch('price_value', e.target.value)}
           placeholder={pct ? '5' : '150.00'}
@@ -116,9 +116,9 @@ function PriceFields({ form, patch }: { form: FormState; patch: FormPatch }) {
       {/* One unit, so a wrap never strands the reference on a line alone. */}
       {pct && (
         <span className="flex items-center gap-2">
-          <span className="automation-form-joiner">{t('automation.pctFrom')}</span>
+          <span className="automation-form-joiner">{t('automation:pctFrom')}</span>
           <OptionSelect
-            aria-label={t('automation.priceReference')}
+            aria-label={t('automation:priceReference')}
             value={form.price_reference}
             options={PRICE_REFERENCE_OPTIONS}
             onChange={(reference) => patch('price_reference', reference)}
@@ -182,7 +182,7 @@ function PriceReadout({ form }: { form: FormState }) {
             >
               {signedFixed2(move.pct, locale)}%
             </span>{' '}
-            {t(move.from === 'day_open' ? 'automation.quoteSinceOpen' : 'automation.quoteToday')}
+            {t(move.from === 'day_open' ? 'automation:quoteSinceOpen' : 'automation:quoteToday')}
           </span>
         )}
       </p>
@@ -200,7 +200,7 @@ function PriceReadout({ form }: { form: FormState }) {
 
   return (
     <p className="automation-form-readout">
-      {watch.symbol ? t('automation.noQuote', { symbol: watch.symbol }) : t('automation.priceHint')}
+      {watch.symbol ? t('automation:noQuote', { symbol: watch.symbol }) : t('automation:priceHint')}
     </p>
   );
 }
@@ -231,7 +231,7 @@ export default function TriggerSection({ form, patch, isEdit, onZone }: TriggerS
   );
 
   return (
-    <FormRow label={t('automation.fieldWhen')} labelId={labelId}>
+    <FormRow label={t('automation:fieldWhen')} labelId={labelId}>
       <TriggerChoice
         value={form.trigger_type}
         cron={form.cron_expression}
@@ -259,7 +259,7 @@ export default function TriggerSection({ form, patch, isEdit, onZone }: TriggerS
               labelledBy={labelId}
             />
             <div className="flex items-center gap-2">
-              <span className="automation-form-joiner">{t('automation.inZone')}</span>
+              <span className="automation-form-joiner">{t('automation:inZone')}</span>
               {zoneSelect}
             </div>
           </div>

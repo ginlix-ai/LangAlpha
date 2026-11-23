@@ -33,45 +33,45 @@ function TopStoriesSettings({ config, onChange, onClose }: WidgetSettingsProps<T
   return (
     <div className="space-y-4">
       <EnumField
-        label={t('dashboard.widgets.topStories.feed')}
+        label={t('dashboard:widgets.topStories.feed')}
         value={feedMode}
         onChange={(v) => onChange({ feedMode: v as TopStoriesConfig['feedMode'] })}
         options={[
-          { value: 'all_symbols', label: t('dashboard.widgets.topStories.feed_all') },
-          { value: 'market', label: t('dashboard.widgets.topStories.feed_market') },
-          { value: 'symbol', label: t('dashboard.widgets.topStories.feed_symbol') },
+          { value: 'all_symbols', label: t('dashboard:widgets.topStories.feed_all') },
+          { value: 'market', label: t('dashboard:widgets.topStories.feed_market') },
+          { value: 'symbol', label: t('dashboard:widgets.topStories.feed_symbol') },
         ]}
       />
       {feedMode === 'market' && (
         <EnumField
-          label={t('dashboard.widgets.topStories.market')}
+          label={t('dashboard:widgets.topStories.market')}
           value={config.market ?? 'stock'}
           onChange={(v) => onChange({ market: v as TopStoriesConfig['market'] })}
           options={[
-            { value: 'stock', label: t('dashboard.widgets.topStories.market_stocks') },
-            { value: 'crypto', label: t('dashboard.widgets.topStories.market_crypto') },
-            { value: 'forex', label: t('dashboard.widgets.topStories.market_forex') },
-            { value: 'index', label: t('dashboard.widgets.topStories.market_indices') },
-            { value: 'futures', label: t('dashboard.widgets.topStories.market_futures') },
-            { value: 'bond', label: t('dashboard.widgets.topStories.market_bonds') },
-            { value: 'economic', label: t('dashboard.widgets.topStories.market_economic') },
+            { value: 'stock', label: t('dashboard:widgets.topStories.market_stocks') },
+            { value: 'crypto', label: t('dashboard:widgets.topStories.market_crypto') },
+            { value: 'forex', label: t('dashboard:widgets.topStories.market_forex') },
+            { value: 'index', label: t('dashboard:widgets.topStories.market_indices') },
+            { value: 'futures', label: t('dashboard:widgets.topStories.market_futures') },
+            { value: 'bond', label: t('dashboard:widgets.topStories.market_bonds') },
+            { value: 'economic', label: t('dashboard:widgets.topStories.market_economic') },
           ]}
         />
       )}
       {feedMode === 'symbol' && (
         <SymbolField
-          label={t('dashboard.widgets.topStories.symbol')}
+          label={t('dashboard:widgets.topStories.symbol')}
           value={config.symbol ?? 'NASDAQ:NVDA'}
           onChange={(v) => onChange({ symbol: v })}
         />
       )}
       <EnumField
-        label={t('dashboard.widgets.topStories.density')}
+        label={t('dashboard:widgets.topStories.density')}
         value={config.displayMode ?? 'regular'}
         onChange={(v) => onChange({ displayMode: v as TopStoriesConfig['displayMode'] })}
         options={[
-          { value: 'regular', label: t('dashboard.widgets.topStories.density_regular') },
-          { value: 'compact', label: t('dashboard.widgets.topStories.density_compact') },
+          { value: 'regular', label: t('dashboard:widgets.topStories.density_regular') },
+          { value: 'compact', label: t('dashboard:widgets.topStories.density_compact') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -82,8 +82,8 @@ function TopStoriesSettings({ config, onChange, onClose }: WidgetSettingsProps<T
 
 registerWidget<TopStoriesConfig>({
   type: 'tv.top-stories',
-  titleKey: 'dashboard.widgets.topStories.title',
-  descriptionKey: 'dashboard.widgets.topStories.description',
+  titleKey: 'dashboard:widgets.topStories.title',
+  descriptionKey: 'dashboard:widgets.topStories.description',
   category: 'markets',
   icon: Newspaper,
   component: TopStoriesWidget,

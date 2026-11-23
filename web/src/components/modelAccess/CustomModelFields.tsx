@@ -150,7 +150,7 @@ export function CustomModelFields({
           onKeyDown={enter}
         />
         {typedName && slug !== typedName && (
-          <QuietNote>{slug ? t('setup.customModelNameSlugPreview', { slug }) : t('setup.customModelNameSlugEmpty')}</QuietNote>
+          <QuietNote>{slug ? t('setup:customModelNameSlugPreview', { slug }) : t('setup:customModelNameSlugEmpty')}</QuietNote>
         )}
       </div>
 

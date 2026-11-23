@@ -30,8 +30,8 @@ type Panel = DesktopSettings['panel'];
  * in the tray icon's tooltip on Windows, at the top of the tray menu on Linux.
  */
 function itemsWhereKey(trayTitle: boolean, platform: string): string {
-  if (trayTitle) return 'settings.desktop.menubarItemsDesc';
-  return platform === 'linux' ? 'settings.desktop.menubarItemsDescMenu' : 'settings.desktop.menubarItemsDescTooltip';
+  if (trayTitle) return 'settings:desktop.menubarItemsDesc';
+  return platform === 'linux' ? 'settings:desktop.menubarItemsDescMenu' : 'settings:desktop.menubarItemsDescTooltip';
 }
 
 /** The rows drawn only while the menu bar icon is on. */
@@ -63,7 +63,7 @@ export function DesktopPanel() {
   if (!settings) {
     return failed ? (
       <SettingsGroup>
-        <SettingRow label={t('settings.desktop.unavailable')} />
+        <SettingRow label={t('settings:desktop.unavailable')} />
       </SettingsGroup>
     ) : null;
   }
@@ -92,7 +92,7 @@ export function DesktopPanel() {
 
   return (
     <>
-      <SettingsGroup title={t('settings.desktop.notificationsGroup')} description={t('settings.desktop.notificationsGroupDesc')}>
+      <SettingsGroup title={t('settings:desktop.notificationsGroup')} description={t('settings:desktop.notificationsGroupDesc')}>
         {notificationRows.map(({ kind, setting }) => (
           <ToggleRow
             key={kind}
@@ -103,7 +103,7 @@ export function DesktopPanel() {
         ))}
       </SettingsGroup>
 
-      <SettingsGroup title={t('settings.desktop.menubarGroup')}>
+      <SettingsGroup title={t('settings:desktop.menubarGroup')}>
         <ToggleRow
           {...copy(SETTINGS.menubarIcon)}
           id={iconAnchor}
@@ -121,7 +121,7 @@ export function DesktopPanel() {
                 onChange={(items) => saveMenubar({ items })}
                 max={MAX_MENUBAR_ITEMS}
                 allowPortfolio
-                addLabel={t('settings.desktop.addSymbol')}
+                addLabel={t('settings:desktop.addSymbol')}
                 labelledBy={labelledBy}
               />
             )}
@@ -141,9 +141,9 @@ export function DesktopPanel() {
             value={menubar.show}
             onChange={(show) => { if (show !== menubar.show) saveMenubar({ show }); }}
             options={[
-              { value: 'change', label: t('settings.desktop.menubarShowChange') },
-              { value: 'price', label: t('settings.desktop.menubarShowPrice') },
-              { value: 'both', label: t('settings.desktop.menubarShowBoth') },
+              { value: 'change', label: t('settings:desktop.menubarShowChange') },
+              { value: 'price', label: t('settings:desktop.menubarShowPrice') },
+              { value: 'both', label: t('settings:desktop.menubarShowBoth') },
             ]}
           />
         )}
@@ -164,7 +164,7 @@ export function DesktopPanel() {
       </SettingsGroup>
 
       {menubarOn && (
-        <SettingsGroup title={t('settings.desktop.panelGroup')} description={t('settings.desktop.panelGroupDesc')}>
+        <SettingsGroup title={t('settings:desktop.panelGroup')} description={t('settings:desktop.panelGroupDesc')}>
           <ListRow {...copy(SETTINGS.panelSections)}>
             {(labelledBy) => (
               <SectionList
@@ -180,7 +180,7 @@ export function DesktopPanel() {
                 items={panel.tiles}
                 onChange={(tiles) => savePanel({ tiles })}
                 max={MAX_PANEL_TILES}
-                addLabel={t('settings.desktop.addTile')}
+                addLabel={t('settings:desktop.addTile')}
                 labelledBy={labelledBy}
               />
             )}
@@ -196,21 +196,21 @@ export function DesktopPanel() {
       )}
 
       {(support.openAtLogin || support.keepRunningInTray) && (
-        <SettingsGroup title={t('settings.desktop.startupGroup')}>
+        <SettingsGroup title={t('settings:desktop.startupGroup')}>
           {support.openAtLogin && (
             <ToggleRow
-              label={t('settings.desktop.openAtLogin')}
+              label={t('settings:desktop.openAtLogin')}
               // With no Dock and no icon, a login launch opens the window
               // (desktop/AGENTS.md): a background start would be unfindable.
-              description={t(platform !== 'darwin' && !menubarOn ? 'settings.desktop.openAtLoginWindowDesc' : 'settings.desktop.openAtLoginDesc')}
+              description={t(platform !== 'darwin' && !menubarOn ? 'settings:desktop.openAtLoginWindowDesc' : 'settings:desktop.openAtLoginDesc')}
               checked={settings.openAtLogin}
               onChange={() => save({ openAtLogin: !settings.openAtLogin })}
             />
           )}
           {support.keepRunningInTray && (
             <ToggleRow
-              label={t('settings.desktop.keepRunning')}
-              description={t('settings.desktop.keepRunningDesc')}
+              label={t('settings:desktop.keepRunning')}
+              description={t('settings:desktop.keepRunningDesc')}
               checked={settings.keepRunningInTray}
               onChange={() => save({ keepRunningInTray: !settings.keepRunningInTray })}
             />
@@ -247,8 +247,8 @@ function StyleRow({ style, rotateSeconds, onStyle, onRotateSeconds }: {
   const labelId = useId();
   return (
     <SettingRow
-      label={t('settings.desktop.menubarStyle')}
-      description={t('settings.desktop.menubarStyleDesc')}
+      label={t('settings:desktop.menubarStyle')}
+      description={t('settings:desktop.menubarStyleDesc')}
       labelId={labelId}
     >
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -257,19 +257,19 @@ function StyleRow({ style, rotateSeconds, onStyle, onRotateSeconds }: {
           value={style}
           onChange={onStyle}
           options={[
-            { value: 'rotate', label: t('settings.desktop.menubarStyleRotate') },
-            { value: 'side', label: t('settings.desktop.menubarStyleSide') },
+            { value: 'rotate', label: t('settings:desktop.menubarStyleRotate') },
+            { value: 'side', label: t('settings:desktop.menubarStyleSide') },
           ]}
         />
         {style === 'rotate' && (
           <Select
             className="w-28"
-            aria-label={t('settings.desktop.rotateEvery')}
+            aria-label={t('settings:desktop.rotateEvery')}
             value={String(rotateSeconds)}
             onChange={(e) => onRotateSeconds(Number(e.target.value))}
           >
             {choicesWith(ROTATE_SECONDS, rotateSeconds).map((s) => (
-              <option key={s} value={s}>{t('settings.desktop.rotateSeconds', { count: s })}</option>
+              <option key={s} value={s}>{t('settings:desktop.rotateSeconds', { count: s })}</option>
             ))}
           </Select>
         )}
@@ -300,7 +300,7 @@ function WatchlistRow({ watchlistId, rows, lists, onList, onRows }: {
       <div className="flex flex-wrap items-center justify-end gap-2">
         <Select
           className="w-44"
-          aria-label={t('settings.desktop.watchlistWhich')}
+          aria-label={t('settings:desktop.watchlistWhich')}
           value={value}
           onChange={(e) => onList(e.target.value || null)}
         >
@@ -309,9 +309,9 @@ function WatchlistRow({ watchlistId, rows, lists, onList, onRows }: {
                 when tagged, so it is shown by its name alone. */}
             {fallback?.name &&
             fallback.name.trim().toLocaleLowerCase() !==
-              t('settings.desktop.watchlistDefault').toLocaleLowerCase()
-              ? t('settings.desktop.watchlistDefaultNamed', { name: fallback.name })
-              : t('settings.desktop.watchlistDefault')}
+              t('settings:desktop.watchlistDefault').toLocaleLowerCase()
+              ? t('settings:desktop.watchlistDefaultNamed', { name: fallback.name })
+              : t('settings:desktop.watchlistDefault')}
           </option>
           {others.map((list) => (
             <option key={list.id} value={list.id}>{list.name}</option>
@@ -319,12 +319,12 @@ function WatchlistRow({ watchlistId, rows, lists, onList, onRows }: {
         </Select>
         <Select
           className="w-28"
-          aria-label={t('settings.desktop.watchlistRowsLabel')}
+          aria-label={t('settings:desktop.watchlistRowsLabel')}
           value={String(rows)}
           onChange={(e) => onRows(Number(e.target.value))}
         >
           {choicesWith(WATCHLIST_ROWS, rows).map((n) => (
-            <option key={n} value={n}>{t('settings.desktop.watchlistRows', { count: n })}</option>
+            <option key={n} value={n}>{t('settings:desktop.watchlistRows', { count: n })}</option>
           ))}
         </Select>
       </div>
@@ -365,21 +365,21 @@ function ShortcutRow({
   };
 
   const label = recording
-    ? t('settings.desktop.shortcutRecording')
+    ? t('settings:desktop.shortcutRecording')
     : shortcut
       ? formatAccelerator(shortcut, platform)
-      : t('settings.desktop.shortcutNone');
+      : t('settings:desktop.shortcutNone');
 
   return (
     <SettingRow
-      label={t('settings.desktop.shortcut')}
+      label={t('settings:desktop.shortcut')}
       description={
         error ? (
           <span role="alert" style={{ color: 'var(--color-icon-danger)' }}>
-            {t('settings.desktop.shortcutError', { error })}
+            {t('settings:desktop.shortcutError', { error })}
           </span>
         ) : (
-          t('settings.desktop.shortcutDesc')
+          t('settings:desktop.shortcutDesc')
         )
       }
     >
@@ -405,7 +405,7 @@ function ShortcutRow({
             style={{ color: 'var(--color-text-secondary)' }}
             onClick={() => onSave('')}
           >
-            {t('settings.desktop.shortcutClear')}
+            {t('settings:desktop.shortcutClear')}
           </Button>
         )}
       </div>

@@ -1,5 +1,6 @@
 import type { CatalogServer, McpOauthStatus, PluginInfo } from '@/pages/ChatAgent/utils/api';
-import { needsOauthConnect, probeRowState } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { probeRowState } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/oauthState';
 import { serverKeyRefs } from '@/hooks/useSecretUsage';
 import { isEffectivelyEnabled } from './provenance';
 
@@ -101,13 +102,13 @@ export type FailureBucket = 'key' | 'rejected' | 'unreachable' | 'signIn';
 
 export function failureBucket(noteKey: string): FailureBucket {
   switch (noteKey) {
-    case 'mcp.probe.rowCredentialRejected':
+    case 'mcp:probe.rowCredentialRejected':
       return 'rejected';
-    case 'mcp.probe.rowUnreachable':
+    case 'mcp:probe.rowUnreachable':
       return 'unreachable';
     // A server off http that answered with a sign-in: Connect cannot speak
     // for it, but what it wants is still a sign-in.
-    case 'mcp.probe.rowOauth':
+    case 'mcp:probe.rowOauth':
       return 'signIn';
     default:
       return 'key';

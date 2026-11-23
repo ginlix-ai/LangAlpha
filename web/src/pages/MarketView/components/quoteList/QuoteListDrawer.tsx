@@ -26,7 +26,7 @@ interface QuoteListDrawerProps {
 export function QuoteListDrawer({ symbol, onPick }: QuoteListDrawerProps): React.ReactElement {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const label = t('marketView.quoteList.openList');
+  const label = t('marketView:quoteList.openList');
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

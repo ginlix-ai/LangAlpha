@@ -68,14 +68,14 @@ export function DefaultModelScopeChoice({
       style={bare ? undefined : { backgroundColor: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)' }}
     >
       <div id={`${id}-title`} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-        {t('settings.defaultModelChange.title', { model: named.text, context: named.context })}
+        {t('settings:defaultModelChange.title', { model: named.text, context: named.context })}
       </div>
       <div role="radiogroup" aria-labelledby={`${id}-title`} className="flex flex-col -mx-2">
         <ScopeOption
           name={`${id}-scope`}
           value="new_threads"
           checked={applyTo === 'new_threads'}
-          label={t('settings.defaultModelChange.newThreads', { context: named.context })}
+          label={t('settings:defaultModelChange.newThreads', { context: named.context })}
           disabled={saving}
           autoFocus={autoFocus}
           onSelect={setApplyTo}
@@ -85,8 +85,8 @@ export function DefaultModelScopeChoice({
           value="existing_threads"
           checked={applyTo === 'existing_threads'}
           label={previous.length > 0
-            ? t('settings.defaultModelChange.existingThreads', { previous: replaced.text, context: replaced.context })
-            : t('settings.defaultModelChange.scopeExistingThreads')}
+            ? t('settings:defaultModelChange.existingThreads', { previous: replaced.text, context: replaced.context })
+            : t('settings:defaultModelChange.scopeExistingThreads')}
           disabled={saving}
           onSelect={setApplyTo}
         />
@@ -98,7 +98,7 @@ export function DefaultModelScopeChoice({
           onCheckedChange={setRemember}
           className="items-center gap-2 rounded-md text-xs"
         >
-          <span style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.defaultModelChange.remember')}</span>
+          <span style={{ color: 'var(--color-text-tertiary)' }}>{t('settings:defaultModelChange.remember')}</span>
         </CheckboxChoice>
         <div className="flex items-center gap-1.5">
           <button
@@ -117,7 +117,7 @@ export function DefaultModelScopeChoice({
             className="text-xs font-medium whitespace-nowrap rounded-md px-2.5 py-1 hover:opacity-90 disabled:opacity-50"
             style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
-            {t('settings.defaultModelChange.confirm')}
+            {t('settings:defaultModelChange.confirm')}
           </button>
         </div>
       </div>

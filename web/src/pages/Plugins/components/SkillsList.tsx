@@ -122,7 +122,7 @@ export function SkillsList() {
     // its reach when that is not everywhere.
     const meta =
       skill.origin === 'workspace'
-        ? (wsNameById.get(skill.workspace_id ?? '') ?? t('plugins.scope.unknownWorkspace'))
+        ? (wsNameById.get(skill.workspace_id ?? '') ?? t('plugins:scope.unknownWorkspace'))
         : wsLoading
           ? null
           : partialReachText(t, skill, wsOptions, home);
@@ -155,8 +155,8 @@ export function SkillsList() {
     const note = group.plugin
       ? sourceLabel(t, group.plugin, catalogPlugins)
       : group.builtIn
-        ? t('plugins.skillsPage.builtIn')
-        : t('plugins.skillsPage.fromCatalog');
+        ? t('plugins:skillsPage.builtIn')
+        : t('plugins:skillsPage.fromCatalog');
     const off = group.plugin ? !group.plugin.enabled : group.rows[0]?.plugin_enabled === false;
     return (
       <SurfaceSection
@@ -172,10 +172,10 @@ export function SkillsList() {
           )
         }
         count={group.rows.length}
-        note={off ? `${note} · ${t('plugins.skillsPage.pluginOff')}` : note}
+        note={off ? `${note} · ${t('plugins:skillsPage.pluginOff')}` : note}
         action={
           group.plugin ? (
-            <SectionLink onClick={() => openPlugin(group.name)}>{t('plugins.skillsPage.openPlugin')}</SectionLink>
+            <SectionLink onClick={() => openPlugin(group.name)}>{t('plugins:skillsPage.openPlugin')}</SectionLink>
           ) : undefined
         }
       >
@@ -191,8 +191,8 @@ export function SkillsList() {
       <PluginListFrame
         list={list}
         query={skillsQuery}
-        loadFailed={t('plugins.loadFailed.skills')}
-        noun={t('plugins.filter.nounSkills')}
+        loadFailed={t('plugins:loadFailed.skills')}
+        noun={t('plugins:filter.nounSkills')}
         catalogScope="skills"
         bulk={bulk}
         hidden={!!detailSkill}
@@ -202,16 +202,16 @@ export function SkillsList() {
         {/* Always there unnarrowed, as the place an upload lands; the first-run
             block above already carries the upload, so it says nothing twice. */}
         {(own.length > 0 || (!list.narrowed && !list.showStart)) && (
-          <SurfaceSection title={t('plugins.skillsPage.addedByYou')} count={own.length || undefined}>
+          <SurfaceSection title={t('plugins:skillsPage.addedByYou')} count={own.length || undefined}>
             {own.length > 0 ? (
               <SurfaceGrid>{own.map(renderCell)}</SurfaceGrid>
             ) : (
               <EmptyState
                 compact
-                message={t('plugins.skillsPage.emptyOwn')}
+                message={t('plugins:skillsPage.emptyOwn')}
                 action={
                   <HeaderButton variant="secondary" icon={Upload} onClick={() => setUploadOpen(true)}>
-                    {t('plugins.addMenu.uploadSkill')}
+                    {t('plugins:addMenu.uploadSkill')}
                   </HeaderButton>
                 }
               />
@@ -219,13 +219,13 @@ export function SkillsList() {
           </SurfaceSection>
         )}
         {oneWorkspace.length > 0 && (
-          <SurfaceSection title={t('plugins.skillsPage.oneWorkspace')} count={oneWorkspace.length}>
+          <SurfaceSection title={t('plugins:skillsPage.oneWorkspace')} count={oneWorkspace.length}>
             <SurfaceGrid>{oneWorkspace.map(renderCell)}</SurfaceGrid>
           </SurfaceSection>
         )}
         {pluginGroups.map(pluginSection)}
         {operator.length > 0 && (
-          <SurfaceSection title={t('plugins.skillsPage.builtIn')} count={operator.length}>
+          <SurfaceSection title={t('plugins:skillsPage.builtIn')} count={operator.length}>
             <SurfaceGrid {...fold(operator)}>
               {operator.map(renderCell)}
             </SurfaceGrid>

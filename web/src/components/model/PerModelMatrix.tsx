@@ -91,7 +91,7 @@ export function PerModelMatrix({
     () =>
       COMPACTION_PROFILE_ORDER.filter((name) => compactionProfiles?.[name]).map((name) => ({
         value: name,
-        label: t(`settings.compactionProfiles.${name}.label`),
+        label: t(`settings:compactionProfiles.${name}.label`),
       })),
     [compactionProfiles, t],
   );
@@ -122,11 +122,11 @@ export function PerModelMatrix({
   // Every column after the model's but the reset button's.
   const settingColumns = providerCompaction ? 5 : 4;
 
-  const plainDefault = t('settings.modelTuning.default');
+  const plainDefault = t('settings:modelTuning.default');
   /** "Default" alone says nothing about what will actually happen, so name the
    *  value it resolves to whenever the account or the model declares one. */
   const defaultLabelFor = (value: string | null) =>
-    value ? t('settings.modelTuning.defaultNamed', { value }) : plainDefault;
+    value ? t('settings:modelTuning.defaultNamed', { value }) : plainDefault;
 
   const drop = (model: string) => {
     setPendingRows((prev) => prev.filter((m) => m !== model));
@@ -138,7 +138,7 @@ export function PerModelMatrix({
       {/* No label of its own: the tab gives this a section heading, the same
           as the account defaults it overrides. */}
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('settings.modelTuning.perModelDesc')}
+        {t('settings:modelTuning.perModelDesc')}
       </p>
 
       {rows.length > 0 && (
@@ -150,13 +150,13 @@ export function PerModelMatrix({
           <table className="w-full text-xs" style={{ borderCollapse: 'collapse', minWidth: '800px' }}>
             <thead>
               <tr style={{ color: 'var(--color-text-tertiary)' }}>
-                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.modelTuning.colModel')}</th>
-                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.modelTuning.colEffort')}</th>
-                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.modelTuning.colContext')}</th>
-                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.modelTuning.colGuidance')}</th>
-                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.modelTuning.colSpeed')}</th>
+                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:modelTuning.colModel')}</th>
+                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:modelTuning.colEffort')}</th>
+                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:modelTuning.colContext')}</th>
+                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:modelTuning.colGuidance')}</th>
+                <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:modelTuning.colSpeed')}</th>
                 {providerCompaction && (
-                  <th className="text-left font-medium py-1 pl-px pr-3">{t('settings.nativeCompaction')}</th>
+                  <th className="text-left font-medium py-1 pl-px pr-3">{t('settings:nativeCompaction')}</th>
                 )}
                 <th />
               </tr>
@@ -170,14 +170,14 @@ export function PerModelMatrix({
                         {modelLabel(model, metadata)}
                       </td>
                       <td className="py-2 pl-px pr-3 align-middle" colSpan={settingColumns}>
-                        <NotSupported label={t('settings.modelTuning.modelUnavailable')} />
+                        <NotSupported label={t('settings:modelTuning.modelUnavailable')} />
                       </td>
                       <td className="py-2 px-px align-middle">
                         <button
                           type="button"
                           onClick={() => drop(model)}
-                          aria-label={`${t('settings.modelTuning.resetModel')} ${model}`}
-                          title={t('settings.modelTuning.resetModel')}
+                          aria-label={`${t('settings:modelTuning.resetModel')} ${model}`}
+                          title={t('settings:modelTuning.resetModel')}
                           className="hover:opacity-70"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         >
@@ -211,7 +211,7 @@ export function PerModelMatrix({
                         <EffortSelect
                           value={storedEffort}
                           onChange={(v) => writeProfile(model, { reasoning_effort: v || null })}
-                          ariaLabel={`${model} ${t('settings.modelTuning.colEffort')}`}
+                          ariaLabel={`${model} ${t('settings:modelTuning.colEffort')}`}
                           defaultLabel={defaultLabelFor(
                             inherited.reasoning_effort && EFFORT_LABELS[inherited.reasoning_effort]
                               ? t(EFFORT_LABELS[inherited.reasoning_effort])
@@ -220,7 +220,7 @@ export function PerModelMatrix({
                           efforts={efforts}
                         />
                       ) : (
-                        <NotSupported label={t('settings.modelTuning.notSupported')} />
+                        <NotSupported label={t('settings:modelTuning.notSupported')} />
                       )}
                     </td>
                     <td className="py-2 pl-px pr-3 align-middle">
@@ -229,10 +229,10 @@ export function PerModelMatrix({
                         onChange={(v) =>
                           writeProfile(model, { compaction_profile: (v as CompactionProfileName) || null })
                         }
-                        ariaLabel={`${model} ${t('settings.modelTuning.colContext')}`}
+                        ariaLabel={`${model} ${t('settings:modelTuning.colContext')}`}
                         defaultLabel={defaultLabelFor(
                           inherited.compaction_profile
-                            ? t(`settings.compactionProfiles.${inherited.compaction_profile}.label`)
+                            ? t(`settings:compactionProfiles.${inherited.compaction_profile}.label`)
                             : null,
                         )}
                         options={profileOptions}
@@ -242,7 +242,7 @@ export function PerModelMatrix({
                       <CompactSelect
                         value={profile.prompt_guidance ?? ''}
                         onChange={(v) => writeProfile(model, { prompt_guidance: (v as GuidanceLevel) || null })}
-                        ariaLabel={`${model} ${t('settings.modelTuning.colGuidance')}`}
+                        ariaLabel={`${model} ${t('settings:modelTuning.colGuidance')}`}
                         defaultLabel={defaultLabelFor(t(GUIDANCE_LABELS[inherited.prompt_guidance]))}
                         options={guidanceOptions}
                       />
@@ -252,7 +252,7 @@ export function PerModelMatrix({
                         <CompactSelect
                           value={storedSpeed === true ? 'fast' : storedSpeed === false ? 'standard' : ''}
                           onChange={(v) => writeProfile(model, { fast_mode: v === '' ? null : v === 'fast' })}
-                          ariaLabel={`${model} ${t('settings.modelTuning.colSpeed')}`}
+                          ariaLabel={`${model} ${t('settings:modelTuning.colSpeed')}`}
                           defaultLabel={defaultLabelFor(
                             t(SPEED_LABELS[inherited.fast_mode ? 'fast' : 'standard']),
                           )}
@@ -262,7 +262,7 @@ export function PerModelMatrix({
                           ]}
                         />
                       ) : (
-                        <NotSupported label={t('settings.modelTuning.notSupported')} />
+                        <NotSupported label={t('settings:modelTuning.notSupported')} />
                       )}
                     </td>
                     {providerCompaction && (
@@ -271,19 +271,19 @@ export function PerModelMatrix({
                           <CompactSelect
                             value={storedNative === true ? 'on' : storedNative === false ? 'off' : ''}
                             onChange={(v) => writeProfile(model, { native_compaction: v === '' ? null : v === 'on' })}
-                            ariaLabel={`${model} ${t('settings.nativeCompaction')}`}
+                            ariaLabel={`${model} ${t('settings:nativeCompaction')}`}
                             defaultLabel={defaultLabelFor(
                               inherited.native_compaction === null
                                 ? null
-                                : t(inherited.native_compaction ? 'settings.nativeCompactionOn' : 'settings.nativeCompactionOff'),
+                                : t(inherited.native_compaction ? 'settings:nativeCompactionOn' : 'settings:nativeCompactionOff'),
                             )}
                             options={[
-                              { value: 'on', label: t('settings.nativeCompactionOn') },
-                              { value: 'off', label: t('settings.nativeCompactionOff') },
+                              { value: 'on', label: t('settings:nativeCompactionOn') },
+                              { value: 'off', label: t('settings:nativeCompactionOff') },
                             ]}
                           />
                         ) : (
-                          <NotSupported label={t('settings.modelTuning.notSupported')} />
+                          <NotSupported label={t('settings:modelTuning.notSupported')} />
                         )}
                       </td>
                     )}
@@ -291,8 +291,8 @@ export function PerModelMatrix({
                       <button
                         type="button"
                         onClick={() => drop(model)}
-                        aria-label={`${t('settings.modelTuning.resetModel')} ${model}`}
-                        title={t('settings.modelTuning.resetModel')}
+                        aria-label={`${t('settings:modelTuning.resetModel')} ${model}`}
+                        title={t('settings:modelTuning.resetModel')}
                         className="hover:opacity-70"
                         style={{ color: 'var(--color-text-tertiary)' }}
                       >
@@ -311,12 +311,12 @@ export function PerModelMatrix({
         <div className="flex flex-col gap-1">
           {nativeKinds.has('anthropic') && (
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('settings.nativeCompactionAnthropicDesc')}
+              {t('settings:nativeCompactionAnthropicDesc')}
             </p>
           )}
           {nativeKinds.has('openai') && (
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('settings.nativeCompactionOpenAIDesc')}
+              {t('settings:nativeCompactionOpenAIDesc')}
             </p>
           )}
         </div>
@@ -328,10 +328,10 @@ export function PerModelMatrix({
           onChange={(e) => {
             if (e.target.value) setPendingRows((prev) => [...prev, e.target.value]);
           }}
-          aria-label={t('settings.modelTuning.addModel')}
+          aria-label={t('settings:modelTuning.addModel')}
           className="self-start text-xs"
         >
-          <option value="">+ {t('settings.modelTuning.addModel')}</option>
+          <option value="">+ {t('settings:modelTuning.addModel')}</option>
           {addable.map((m) => (
             <option key={m} value={m}>{modelLabel(m, metadata)}</option>
           ))}

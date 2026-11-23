@@ -5,6 +5,7 @@ import type {
   McpStatus,
   ProbeVerdict,
 } from '../../utils/api';
+import { isOauthBroken } from './oauthState';
 
 /**
  * Pure derivation shared by the MCP surfaces — the predicates more than one
@@ -18,41 +19,11 @@ import type {
  * were derived twice from overlapping conditions. Holding them here makes
  * "these agree" a property of the code rather than of review discipline.
  *
- * The OAuth predicates are written as NEGATIONS of the states that need
- * nothing, never as an enumeration of the states that do — an enumeration is a
- * list someone has to remember to extend when a status is added, and the
- * Plugins page had already grown two of them.
+ * The OAuth predicates live in `oauthState`, apart from the labels here: the
+ * sidebar asks whether a brokerage is connected on every page, and a module's
+ * code ships in one chunk, so sharing a file would put the Plugins page's
+ * lifecycle and probe copy on first load.
  */
-
-/**
- * The user-level OAuth connection is unusable (revoked / needs reauth / a
- * refresh whose outcome we can't prove). The only fix is reconnecting in
- * the Plugins page, so this dominates whatever workspace-local status is cached.
- */
-export function isOauthBroken(
-  status: McpOauthStatus | null | undefined,
-): status is Exclude<McpOauthStatus, 'connected'> {
-  return !!status && status !== 'connected';
-}
-
-/**
- * The next step for this connection is (re-)running the authorize flow. Stated
- * as the negation of the one good state so a new status can't be forgotten
- * here: every status that isn't a live connection — including none at all —
- * needs one.
- */
-export function needsOauthConnect(status: McpOauthStatus | null | undefined): boolean {
-  return status !== 'connected';
-}
-
-/**
- * There is a connection worth tearing down. Also a negation: only a
- * never-connected server (no status) and an already-revoked one have nothing
- * to disconnect.
- */
-export function canDisconnectOauth(status: McpOauthStatus | null | undefined): boolean {
-  return !!status && status !== 'revoked';
-}
 
 /**
  * The row's tools are discovered host-side, so an in-sandbox probe is wrong for
@@ -188,21 +159,21 @@ export function deriveLifecycle({
   const readyState = verified ? 'active' : 'todo';
 
   if (verifying) {
-    return { kind: 'progress', phase: 'verifying', labelKey: 'mcp.lifecycle.verifying', verifyState, readyState };
+    return { kind: 'progress', phase: 'verifying', labelKey: 'mcp:lifecycle.verifying', verifyState, readyState };
   }
   if (warmingUp) {
-    return { kind: 'progress', phase: 'starting', labelKey: 'mcp.lifecycle.starting', verifyState, readyState };
+    return { kind: 'progress', phase: 'starting', labelKey: 'mcp:lifecycle.starting', verifyState, readyState };
   }
   if (verified) {
     return {
       kind: 'progress',
       phase: 'applying',
-      labelKey: sandboxRunning ? 'mcp.lifecycle.applying' : 'mcp.lifecycle.appliesOnStart',
+      labelKey: sandboxRunning ? 'mcp:lifecycle.applying' : 'mcp:lifecycle.appliesOnStart',
       verifyState,
       readyState,
     };
   }
-  return { kind: 'progress', phase: 'waiting', labelKey: 'mcp.lifecycle.waiting', verifyState, readyState };
+  return { kind: 'progress', phase: 'waiting', labelKey: 'mcp:lifecycle.waiting', verifyState, readyState };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,16 +211,16 @@ const PROBE_ROW_STATE: Record<ProbeVerdict, McpProbeRowState> = {
   ok_authed: { oauth: 'no', noteKey: null, tone: 'muted', wire: false },
   // The note is the fallback for a row Connect cannot speak for: the button is
   // offered on http only, and an sse server that answers 401 still wants one.
-  oauth: { oauth: 'wants', noteKey: 'mcp.probe.rowOauth', tone: 'muted', wire: false },
+  oauth: { oauth: 'wants', noteKey: 'mcp:probe.rowOauth', tone: 'muted', wire: false },
   needs_credential: {
     oauth: 'no',
-    noteKey: 'mcp.probe.rowCredential',
+    noteKey: 'mcp:probe.rowCredential',
     tone: 'muted',
     wire: false,
   },
   credential_rejected: {
     oauth: 'no',
-    noteKey: 'mcp.probe.rowCredentialRejected',
+    noteKey: 'mcp:probe.rowCredentialRejected',
     tone: 'warning',
     wire: false,
   },
@@ -257,13 +228,13 @@ const PROBE_ROW_STATE: Record<ProbeVerdict, McpProbeRowState> = {
   // little about auth as a dropped packet did and must leave Connect offered.
   missing_secrets: {
     oauth: 'unknown',
-    noteKey: 'mcp.probe.rowMissingSecrets',
+    noteKey: 'mcp:probe.rowMissingSecrets',
     tone: 'muted',
     wire: false,
   },
   unreachable: {
     oauth: 'unknown',
-    noteKey: 'mcp.probe.rowUnreachable',
+    noteKey: 'mcp:probe.rowUnreachable',
     tone: 'warning',
     wire: true,
   },

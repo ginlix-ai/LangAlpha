@@ -38,28 +38,28 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
     <div>
       <WizardStepHeader
         titleId={headingId}
-        title={t('setup.addCustomProvider')}
-        helper={t('setup.addCustomProviderDesc')}
+        title={t('setup:addCustomProvider')}
+        helper={t('setup:addCustomProviderDesc')}
       />
       <div className="flex flex-col gap-4 sm:gap-6">
-        {form.knownEndpoint === false && <UnverifiedNote>{t('setup.customUnverifiedBody')}</UnverifiedNote>}
+        {form.knownEndpoint === false && <UnverifiedNote>{t('setup:customUnverifiedBody')}</UnverifiedNote>}
 
         <div className="flex flex-col gap-1.5">
           <label htmlFor={nameId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.providerNameLabel')}
+            {t('setup:providerNameLabel')}
           </label>
           <Input
             id={nameId}
             value={form.name}
             onChange={(e) => form.setName(e.target.value)}
-            placeholder={t('setup.providerNamePlaceholder')}
+            placeholder={t('setup:providerNamePlaceholder')}
             autoComplete="off"
           />
         </div>
 
         <div className="flex flex-col gap-1.5">
           <label id={formatLabelId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.apiFormatLabel')}
+            {t('setup:apiFormatLabel')}
           </label>
           <div role="group" aria-labelledby={formatLabelId} aria-describedby={formatTipsId} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {API_FORMATS.map((fmt) => (
@@ -83,28 +83,28 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
             ))}
           </div>
           <ul id={formatTipsId} className="mt-1 flex list-disc flex-col gap-1 pl-4 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            <li>{t('setup.apiFormatTipDocs')}</li>
-            <li>{t('setup.apiFormatTipBest')}</li>
+            <li>{t('setup:apiFormatTipDocs')}</li>
+            <li>{t('setup:apiFormatTipBest')}</li>
           </ul>
         </div>
 
         <div className="flex flex-col gap-1.5">
           <label htmlFor={baseUrlId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.baseUrlLabel')}
+            {t('setup:baseUrlLabel')}
           </label>
           <Input
             id={baseUrlId}
             type="url"
             value={form.baseUrl}
             onChange={(e) => form.setBaseUrl(e.target.value)}
-            placeholder={t('setup.customBaseUrlPlaceholder')}
+            placeholder={t('setup:customBaseUrlPlaceholder')}
             className="font-mono text-xs"
           />
         </div>
 
         <div className="flex flex-col gap-1.5">
           <label htmlFor={apiKeyId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.apiKeyLabel')}
+            {t('setup:apiKeyLabel')}
           </label>
           <ApiKeyInput
             id={apiKeyId}
@@ -116,31 +116,31 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
 
         <section className="flex flex-col gap-3" aria-live="polite">
           <h3 className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.endpointModels.title')}
+            {t('setup:endpointModels.title')}
           </h3>
-          {!entered && <QuietNote>{t('setup.endpointModels.enterFirst')}</QuietNote>}
+          {!entered && <QuietNote>{t('setup:endpointModels.enterFirst')}</QuietNote>}
           {checking && (
             <div className="flex items-center gap-2">
               <Loader size={14} className="text-(--color-text-tertiary)" />
-              <QuietNote>{t('setup.endpointModels.checking')}</QuietNote>
+              <QuietNote>{t('setup:endpointModels.checking')}</QuietNote>
             </div>
           )}
           {!checking && form.unavailable && <QuietNote>{form.unavailable}</QuietNote>}
           {!checking && listing?.status === 'ok' && recognized.length === 0 && (
-            <QuietNote>{t('setup.endpointModels.noneKnown')}</QuietNote>
+            <QuietNote>{t('setup:endpointModels.noneKnown')}</QuietNote>
           )}
 
           {!checking && recognized.length > 0 && (
             <div className="flex flex-col gap-2">
               <p id={knownLabelId} className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                {t('setup.endpointModels.knownDesc')}
+                {t('setup:endpointModels.knownDesc')}
               </p>
               <div role="group" aria-labelledby={knownLabelId} className="flex max-h-[240px] flex-col gap-1 overflow-y-auto">
                 {recognized.map((m) => {
                   const holder = form.takenBy.get(m.name);
                   return holder ? (
                     <QuietNote key={m.name} className="px-3 py-2">
-                      {m.display_name} · {t('setup.endpointModels.takenBy', { provider: holder })}
+                      {m.display_name} · {t('setup:endpointModels.takenBy', { provider: holder })}
                     </QuietNote>
                   ) : (
                     <ModelCheckRow
@@ -162,9 +162,9 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
             >
               <div className="flex flex-col gap-0.5">
                 <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-                  {t('setup.endpointModels.yourModel')}
+                  {t('setup:endpointModels.yourModel')}
                 </span>
-                <QuietNote>{t('setup.endpointModels.yourModelDesc')}</QuietNote>
+                <QuietNote>{t('setup:endpointModels.yourModelDesc')}</QuietNote>
               </div>
               <CustomModelFields state={form.manual} suggestions={form.others} autoFocus={form.manualOpen} />
             </div>
@@ -176,7 +176,7 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
               style={{ color: 'var(--color-text-secondary)' }}
             >
               <Plus aria-hidden="true" className="h-3.5 w-3.5" />
-              {t('setup.endpointModels.addAnother')}
+              {t('setup:endpointModels.addAnother')}
             </button>
           ))}
         </section>
@@ -189,9 +189,9 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
       </div>
 
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: state.list, answering: state.answering } }) }}
+        back={{ label: t('setup:back'), onClick: () => navigate('/setup/provider', { state: { list: state.list, answering: state.answering } }) }}
         primary={{
-          label: form.saving ? t('setup.saving') : t('setup.continue'),
+          label: form.saving ? t('setup:saving') : t('setup:continue'),
           onClick: handleSave,
           disabled: !form.canSave,
           busy: form.saving,

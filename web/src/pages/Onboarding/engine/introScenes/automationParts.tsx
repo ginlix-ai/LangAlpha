@@ -129,7 +129,7 @@ export function PageHeader({
           className="text-[12px] font-semibold leading-[1.2] tracking-[-0.01em]"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {t('automation.automations')}
+          {t('automation:automations')}
         </div>
         {census ? (
           <div
@@ -143,19 +143,19 @@ export function PageHeader({
             className="mt-[3px] text-[7px] leading-none"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            {t('automation.tagline')}
+            {t('automation:tagline')}
           </div>
         )}
       </div>
       {view && (
         <div className="flex shrink-0 items-center gap-[5px]">
           <Segmented
-            options={[t('automation.viewFeed'), t('automation.viewManage')]}
+            options={[t('automation:viewFeed'), t('automation:viewManage')]}
             value={view === 'feed' ? 0 : 1}
           />
           <Btn variant="primary" pressed={pressNew} className="font-medium">
             <Plus className="h-[7px] w-[7px]" />
-            {t('automation.newAutomation')}
+            {t('automation:newAutomation')}
             <ChevronDown className="h-[7px] w-[7px] opacity-70" />
           </Btn>
         </div>
@@ -285,7 +285,7 @@ export function PriceMeter({
           <span style={{ color: 'var(--color-text-secondary)' }}>{symbol}</span>{' '}
           {fixed2(current, locale)}
         </span>
-        <span>{t('automation.firesAt', { value: fixed2(threshold, locale) })}</span>
+        <span>{t('automation:firesAt', { value: fixed2(threshold, locale) })}</span>
       </div>
     </div>
   );
@@ -421,7 +421,7 @@ export function AutomationRows({
     <div className="flex flex-col gap-[9px]">
       <div>
         <Kicker count={2} className="px-1 pb-[4px] pt-[2px]">
-          {t('automation.groupScheduled')}
+          {t('automation:groupScheduled')}
         </Kicker>
         <ListRow
           name={B.brief}
@@ -442,7 +442,7 @@ export function AlertGroup({ selected }: { selected: boolean }) {
   return (
     <div>
       <Kicker count={1} className="px-1 pb-[4px] pt-[2px]">
-        {t('automation.groupWatching')}
+        {t('automation:groupWatching')}
       </Kicker>
       <ListRow name={B.alert} sub={B.alertLine} trailing={B.away} selected={selected} />
     </div>
@@ -462,7 +462,7 @@ export function Inspector({ which, pressEdit }: { which: 'brief' | 'alert'; pres
     <div>
       <Kicker>
         {[
-          t(brief ? 'automation.stateScheduled' : 'automation.stateWatching'),
+          t(brief ? 'automation:stateScheduled' : 'automation:stateWatching'),
           t('agents.chiefOfStaff'),
         ].join(' · ')}
       </Kicker>
@@ -488,15 +488,15 @@ export function Inspector({ which, pressEdit }: { which: 'brief' | 'alert'; pres
       <div className="mt-[9px] flex flex-wrap items-center gap-1">
         <Btn>
           <Zap className={icon} />
-          {t('automation.runNow')}
+          {t('automation:runNow')}
         </Btn>
         <Btn>
           <Pause className={icon} />
-          {t('automation.pause')}
+          {t('automation:pause')}
         </Btn>
         <Btn pressed={pressEdit}>
           <Pencil className={icon} />
-          {t('automation.edit')}
+          {t('automation:edit')}
         </Btn>
         <Btn variant="ghost" className="ml-auto">
           <Trash2 className={icon} />
@@ -504,7 +504,7 @@ export function Inspector({ which, pressEdit }: { which: 'brief' | 'alert'; pres
         </Btn>
       </div>
       <div className="mt-[14px]">
-        <Kicker className="mb-[5px]">{t('automation.latestRun')}</Kicker>
+        <Kicker className="mb-[5px]">{t('automation:latestRun')}</Kicker>
         {brief ? (
           <div
             className="rounded-[5px] border px-2 py-[7px]"
@@ -514,16 +514,16 @@ export function Inspector({ which, pressEdit }: { which: 'brief' | 'alert'; pres
               className="font-mono text-[5.5px] leading-none tabular-nums"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              {[t('automation.runCompleted'), B.moment(on(21, 8, 0)), B.took(252_000)].join(' · ')}
+              {[t('automation:runCompleted'), B.moment(on(21, 8, 0)), B.took(252_000)].join(' · ')}
             </div>
             <Excerpt>{BRIEF_EXCERPT}</Excerpt>
             <div className="mt-[5px] flex">
-              <LinkOut>{t('automation.openThread')}</LinkOut>
+              <LinkOut>{t('automation:openThread')}</LinkOut>
             </div>
           </div>
         ) : (
           <p className="text-[7px] leading-[1.55]" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('automation.noRunsForThis')}
+            {t('automation:noRunsForThis')}
           </p>
         )}
       </div>

@@ -1,6 +1,6 @@
 /**
  * ExperimentsPanel: the API serves each feature's English, and a locale shows
- * its own translation under `settings.featureCatalog.<key>` when it has one.
+ * its own translation under `settings:featureCatalog.<key>` when it has one.
  * A feature the locale has not translated still renders, in English. Features
  * are listed by category, a feature that needs another under it.
  */
@@ -147,9 +147,9 @@ describe('ExperimentsPanel', () => {
     h.features = [WAKEUPS];
     renderWithProviders(<ExperimentsPanel />);
 
-    expect(screen.getByText(i18n.t('settings.featureCatalog.wakeups.label'))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t('settings.featureCatalog.wakeups.description'))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t('settings.featureCatalog.wakeups.cost'))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t('settings:featureCatalog.wakeups.label'))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t('settings:featureCatalog.wakeups.description'))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t('settings:featureCatalog.wakeups.cost'))).toBeInTheDocument();
     expect(screen.getByText('默认开启')).toBeInTheDocument();
     expect(screen.queryByText(WAKEUPS.description)).not.toBeInTheDocument();
   });

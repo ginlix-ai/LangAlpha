@@ -58,7 +58,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
               srcDoc={srcDoc}
               sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
               className="html-fullscreen-frame"
-              title={title || t('filePanel.fullscreen')}
+              title={title || t('filePanel:fullscreen')}
               // A srcDoc bakes the theme in at build time, and this one is
               // built once when the widget mounts inline, while the dialog
               // creates a fresh document from it on every open. Between those

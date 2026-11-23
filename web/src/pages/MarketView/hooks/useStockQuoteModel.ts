@@ -173,11 +173,11 @@ export function deriveStockQuote({
  * and with nothing stated it reads delayed, never realtime.
  */
 export function quoteSessionText(t: TFunction, q: StockQuoteModel): string {
-  if (q.status === 'closed') return t('marketView.quote.closed');
-  if (q.phase === 'pre') return t('marketView.quote.preMarket');
-  if (q.phase === 'post') return t('marketView.quote.afterHours');
-  if (q.status === 'live') return t('marketView.quote.live');
-  return freshnessSpecText(t, q.quoteBadge) ?? t('marketView.quote.delayed');
+  if (q.status === 'closed') return t('marketView:quote.closed');
+  if (q.phase === 'pre') return t('marketView:quote.preMarket');
+  if (q.phase === 'post') return t('marketView:quote.afterHours');
+  if (q.status === 'live') return t('marketView:quote.live');
+  return freshnessSpecText(t, q.quoteBadge) ?? t('marketView:quote.delayed');
 }
 
 /** Where the quote comes from, in the app's language; "REST" when no provider is named. */

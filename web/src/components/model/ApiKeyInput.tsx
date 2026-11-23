@@ -71,7 +71,7 @@ export function ApiKeyInput({
     try {
       result = await onTest(provider, value)
     } catch {
-      result = { success: false, error: t("setup.testFailed") }
+      result = { success: false, error: t("setup:testFailed") }
     }
     setTest((prev) => (prev && prev.subject === tested
       ? { subject: tested, state: result.success ? "success" : "error", result }
@@ -91,7 +91,7 @@ export function ApiKeyInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onBlur={handleBlur}
-            placeholder={maskedKey || t("setup.pasteKeyPlaceholder")}
+            placeholder={maskedKey || t("setup:pasteKeyPlaceholder")}
             className="pr-12"
             style={
               hasError
@@ -111,7 +111,7 @@ export function ApiKeyInput({
             size="icon"
             className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8"
             onClick={() => setVisible((v) => !v)}
-            aria-label={visible ? t("setup.hideKey") : t("setup.showKey")}
+            aria-label={visible ? t("setup:hideKey") : t("setup:showKey")}
             tabIndex={0}
           >
             {visible ? (
@@ -130,7 +130,7 @@ export function ApiKeyInput({
             size="sm"
             disabled={testDisabled || testState === "loading" || !value}
             onClick={handleTest}
-            title={testDisabled ? t("setup.testUnavailable") : undefined}
+            title={testDisabled ? t("setup:testUnavailable") : undefined}
             className="shrink-0 self-start sm:self-auto h-10"
           >
             {testState === "loading" && (
@@ -138,7 +138,7 @@ export function ApiKeyInput({
                 <span aria-hidden="true" className="mr-1.5 shrink-0">
                   <Loader size={14} className="text-current" />
                 </span>
-                {t("setup.testing")}
+                {t("setup:testing")}
               </>
             )}
             {testState === "success" && (
@@ -147,10 +147,10 @@ export function ApiKeyInput({
                   className="h-3.5 w-3.5 mr-1.5"
                   style={{ color: "var(--color-success)" }}
                 />
-                <span style={{ color: "var(--color-success)" }}>{t("setup.testSuccess")}</span>
+                <span style={{ color: "var(--color-success)" }}>{t("setup:testSuccess")}</span>
               </>
             )}
-            {(testState === "error" || testState === "idle") && t("setup.testButton")}
+            {(testState === "error" || testState === "idle") && t("setup:testButton")}
           </Button>
         )}
       </div>
@@ -163,7 +163,7 @@ export function ApiKeyInput({
           className="text-xs"
           style={{ color: "var(--color-loss)" }}
         >
-          {t("setup.errorNoApiKey")}
+          {t("setup:errorNoApiKey")}
         </p>
       )}
 
@@ -172,8 +172,8 @@ export function ApiKeyInput({
         <p className="text-xs flex items-center gap-1" style={{ color: "var(--color-success)" }}>
           <span>
             {testResult.models_found != null && testResult.models_found > 0
-              ? t("setup.modelsFound", { count: testResult.models_found })
-              : t("setup.keyAccepted")}
+              ? t("setup:modelsFound", { count: testResult.models_found })
+              : t("setup:keyAccepted")}
           </span>
           {testResult.latency_ms != null && (
             <>
@@ -208,7 +208,7 @@ export function ApiKeyInput({
           type="url"
           value={baseUrl ?? ""}
           onChange={(e) => onBaseUrlChange?.(e.target.value)}
-          placeholder={t("setup.baseUrlPlaceholder")}
+          placeholder={t("setup:baseUrlPlaceholder")}
         />
       )}
     </div>

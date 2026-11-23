@@ -204,7 +204,7 @@ export function TurnFileCards({ files, entering = false, onOpenFile, onDownloadF
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => onOpenFile(file.path, file.workspaceId, file.location, { pin: true })}>
                           <PanelRight className="h-3.5 w-3.5" />
-                          {t('filePanel.openInNewTab')}
+                          {t('filePanel:openInNewTab')}
                         </DropdownMenuItem>
                         {onDownloadFile && (
                           <CardDownloadItem file={file} onDownloadFile={onDownloadFile} />

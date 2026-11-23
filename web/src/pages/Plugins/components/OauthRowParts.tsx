@@ -5,7 +5,7 @@ import { Loader } from '@/components/ui/loader';
 import { buttonSlot } from '@/components/ui/button-class';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { MetaText } from '@/components/mcp/McpPrimitives';
-import { canDisconnectOauth, isOauthBroken } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { canDisconnectOauth, isOauthBroken } from '@/pages/ChatAgent/components/mcp/oauthState';
 import type { McpOauthStatus } from '@/pages/ChatAgent/utils/api';
 import { connectBlock, type Brokerage } from '../brokerages';
 import { RowNote } from './RowNote';
@@ -69,7 +69,7 @@ export function VendorNotes({
     <>
       {block === 'shell-outdated' && (
         <RowNote icon={Monitor} id={blockedNoteId(rowKey)}>
-          {t('plugins.oauth.shellOutdatedNote')}
+          {t('plugins:oauth.shellOutdatedNote')}
         </RowNote>
       )}
       {block === 'native-only' && <NativeOnlyNote id={blockedNoteId(rowKey)} />}
@@ -79,7 +79,7 @@ export function VendorNotes({
         // that is a consequence and not a capability note -- the two sat at
         // the same tertiary grey, so the one with a cost read as the quieter.
         <RowNote icon={AlertTriangle} tone="warning">
-          {t('plugins.brokerages.exclusiveNote', { broker: vendor.label })}
+          {t('plugins:brokerages.exclusiveNote', { broker: vendor.label })}
         </RowNote>
       )}
     </>
@@ -100,7 +100,7 @@ export function ToolCountText({
 }) {
   const { t } = useTranslation();
   if (isOauthBroken(status) || typeof count !== 'number' || count <= 0) return null;
-  return <MetaText>{t('mcp.row.toolCount', { count })}</MetaText>;
+  return <MetaText>{t('mcp:row.toolCount', { count })}</MetaText>;
 }
 
 /**
@@ -217,7 +217,7 @@ export function ConnectButton({
       ) : size === 'cell' ? null : (
         <Link2 className={size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
       )}
-      {label ?? (status ? t('plugins.oauth.reconnect') : t('plugins.oauth.connect'))}
+      {label ?? (status ? t('plugins:oauth.reconnect') : t('plugins:oauth.connect'))}
     </button>
   );
 }
@@ -238,13 +238,13 @@ export function OauthMenuItems({
       {status === 'connected' && (
         <DropdownMenuItem onSelect={onRefreshSchemas}>
           <RefreshCw className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.oauth.refreshSchemas')}
+          {t('plugins:oauth.refreshSchemas')}
         </DropdownMenuItem>
       )}
       {canDisconnectOauth(status) && (
         <DropdownMenuItem onSelect={onDisconnect}>
           <Link2Off className="h-3.5 w-3.5 mr-2" />
-          {t('plugins.oauth.disconnect')}
+          {t('plugins:oauth.disconnect')}
         </DropdownMenuItem>
       )}
     </>

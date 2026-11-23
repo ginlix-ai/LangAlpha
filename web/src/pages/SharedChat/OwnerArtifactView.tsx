@@ -79,7 +79,7 @@ export default function OwnerArtifactView({ code, metadata }: {
   const openLink = (linked: string, fragment: string) => {
     ensureArtifact(workspaceId, linked).then(
       (artifact) => window.location.assign(fragment ? `${artifact.url}#${fragment}` : artifact.url),
-      () => toast({ description: t('publish.linkFailed'), variant: 'destructive' }),
+      () => toast({ description: t('publish:linkFailed'), variant: 'destructive' }),
     );
   };
   const [anchor] = useState(() => {
@@ -100,8 +100,8 @@ export default function OwnerArtifactView({ code, metadata }: {
         // The print fallback opens this page again, never the served URL,
         // which carries the grant.
         openUrl: shareLinkHref(code),
-        printHint: t('filePanel.pdfPrintHint'),
-        generatingHint: t('filePanel.pdfGenerating'),
+        printHint: t('filePanel:pdfPrintHint'),
+        generatingHint: t('filePanel:pdfGenerating'),
       });
     } finally {
       setPdfBusy(false);
@@ -118,8 +118,8 @@ export default function OwnerArtifactView({ code, metadata }: {
           <>
             <CommentTools tabId={VIEW_ID} workspaceId={workspaceId} path={path} ui={ui} variant="bar" modeDisabled={versionView.version !== null} />
             <ArtifactVersionPicker view={versionView} variant="bar" />
-            <ShareTopBarAction icon={RefreshCw} label={t('filePanel.reloadPage')} onClick={() => setReloads((n) => n + 1)} />
-            <ShareTopBarAction icon={FileDown} label={t('filePanel.saveAsPdf')} onClick={() => void savePdf()} disabled={pdfBusy} />
+            <ShareTopBarAction icon={RefreshCw} label={t('filePanel:reloadPage')} onClick={() => setReloads((n) => n + 1)} />
+            <ShareTopBarAction icon={FileDown} label={t('filePanel:saveAsPdf')} onClick={() => void savePdf()} disabled={pdfBusy} />
             <ShareTopBarAction icon={Link2} label={t('artifact.publish')} onClick={() => setPublishOpen(true)} />
           </>
         )}

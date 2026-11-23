@@ -23,7 +23,7 @@ export interface QuoteSourceInputs {
   chartFreshness?: Freshness | null;
 }
 
-/** Which `marketView.header.ws` phrase describes the socket. */
+/** Which `marketView:header.ws` phrase describes the socket. */
 function wsStatusKey(status: ConnectionStatus, hasData: boolean, level: DataLevel): string {
   if (status === 'connected') {
     if (!hasData) return 'connectedNoData';
@@ -46,7 +46,7 @@ export function useQuoteSourceLines({
   // lines exist. With nothing to state we never fall back to "Realtime".
   const quoteLine = [
     quoteSourceText(t, q),
-    freshnessSpecText(t, q.quoteBadge) ?? t('marketView.header.quoteUnknownTier'),
+    freshnessSpecText(t, q.quoteBadge) ?? t('marketView:header.quoteUnknownTier'),
     venueTime(q.asOf, symbol, locale, now),
   ].filter(Boolean).join(' · ');
   const chartParts = chartFreshness ? chartFreshnessParts(t, chartFreshness, symbol, locale, now) : null;
@@ -55,8 +55,8 @@ export function useQuoteSourceLines({
     : null;
 
   return [
-    `${t('marketView.header.quote')}: ${quoteLine}`,
-    ...(chartLine ? [`${t('marketView.header.chart')}: ${chartLine}`] : []),
-    t('marketView.header.ws.label', { status: t(`marketView.header.ws.${wsStatusKey(wsStatus, wsHasData, wsDataLevel)}`) }),
+    `${t('marketView:header.quote')}: ${quoteLine}`,
+    ...(chartLine ? [`${t('marketView:header.chart')}: ${chartLine}`] : []),
+    t('marketView:header.ws.label', { status: t(`marketView:header.ws.${wsStatusKey(wsStatus, wsHasData, wsDataLevel)}`) }),
   ];
 }

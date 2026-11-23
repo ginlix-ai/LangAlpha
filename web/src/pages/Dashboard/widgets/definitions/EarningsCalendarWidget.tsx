@@ -35,11 +35,11 @@ interface EarningsEntry {
 type BucketKey = 'today' | 'tomorrow' | 'week' | 'next' | 'later';
 
 const BUCKET_KEY: Record<BucketKey, string> = {
-  today: 'dashboard.widgets.earningsCalendar.bucket_today',
-  tomorrow: 'dashboard.widgets.earningsCalendar.bucket_tomorrow',
-  week: 'dashboard.widgets.earningsCalendar.bucket_thisWeek',
-  next: 'dashboard.widgets.earningsCalendar.bucket_nextWeek',
-  later: 'dashboard.widgets.earningsCalendar.bucket_later',
+  today: 'dashboard:widgets.earningsCalendar.bucket_today',
+  tomorrow: 'dashboard:widgets.earningsCalendar.bucket_tomorrow',
+  week: 'dashboard:widgets.earningsCalendar.bucket_thisWeek',
+  next: 'dashboard:widgets.earningsCalendar.bucket_nextWeek',
+  later: 'dashboard:widgets.earningsCalendar.bucket_later',
 };
 
 const WINDOW_DAYS: Record<NonNullable<EarningsConfig['window']>, number> = {
@@ -122,9 +122,9 @@ function EarningsRow({
   // they swap with locale; the others come from native Intl.DateTimeFormat.
   const raw = formatDateRight(item.date, bucket, locale);
   const label = raw === 'Today'
-    ? t('dashboard.widgets.earningsCalendar.bucket_today')
+    ? t('dashboard:widgets.earningsCalendar.bucket_today')
     : raw === 'Tomorrow'
-      ? t('dashboard.widgets.earningsCalendar.bucket_tomorrow')
+      ? t('dashboard:widgets.earningsCalendar.bucket_tomorrow')
       : raw;
   const session = sessionOf(item);
   const eps = epsOf(item);
@@ -142,7 +142,7 @@ function EarningsRow({
         <RowAttachButton instanceId={instanceId} rowId={`${item.symbol}-${item.date}`} />
       </td>
       <td className="term-num term-t2">
-        {eps != null ? t('dashboard.widgets.earningsCalendar.estEps', { value: formatMoney(eps, 'USD', locale) }) : ''}
+        {eps != null ? t('dashboard:widgets.earningsCalendar.estEps', { value: formatMoney(eps, 'USD', locale) }) : ''}
       </td>
     </tr>
   );
@@ -252,7 +252,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
       return {
         widget_type: 'calendar.earnings',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.earningsCalendar.title')} · ${upcoming.length}`,
+        label: `${t('dashboard:widgets.earningsCalendar.title')} · ${upcoming.length}`,
         description: `next ${windowDays}d`,
         captured_at: new Date().toISOString(),
         text,
@@ -278,7 +278,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
         widget_type: 'calendar.earnings/row',
         widget_id: `${instance.id}/${rowId}`,
         label: `${item.symbol} · ${item.date}`,
-        description: t('dashboard.widgets.earningsCalendar.title'),
+        description: t('dashboard:widgets.earningsCalendar.title'),
         captured_at: new Date().toISOString(),
         text,
         data: { row: { symbol: item.symbol, date: item.date, companyName: item.companyName, session, epsEstimated: eps } },
@@ -290,7 +290,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
     <div className="widget-term dash-fill">
       <WidgetCardMeta>
         {!(loading && upcoming.length === 0) && <span>{upcoming.length}</span>}
-        <span>{t('dashboard.widgets.earningsCalendar.windowLabel', { days: windowDays })}</span>
+        <span>{t('dashboard:widgets.earningsCalendar.windowLabel', { days: windowDays })}</span>
       </WidgetCardMeta>
       <div className="dash-scroll">
         {/* The skeleton crossfades to the list in place, holding the cell
@@ -315,8 +315,8 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             </table>
           ) : upcoming.length === 0 ? (
             <div className="dash-empty">
-              <span>{t('dashboard.widgets.earningsCalendar.empty')}</span>
-              <span>{t('dashboard.widgets.earningsCalendar.emptyHint', { days: windowDays })}</span>
+              <span>{t('dashboard:widgets.earningsCalendar.empty')}</span>
+              <span>{t('dashboard:widgets.earningsCalendar.emptyHint', { days: windowDays })}</span>
             </div>
           ) : (
             <table className="term-table dash-table">
@@ -347,9 +347,9 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
 
 registerWidget<EarningsConfig>({
   type: 'calendar.earnings',
-  titleKey: 'dashboard.widgets.earningsCalendar.title',
-  cardTitleKey: 'dashboard.widgets.earningsCalendar.header',
-  descriptionKey: 'dashboard.widgets.earningsCalendar.description',
+  titleKey: 'dashboard:widgets.earningsCalendar.title',
+  cardTitleKey: 'dashboard:widgets.earningsCalendar.header',
+  descriptionKey: 'dashboard:widgets.earningsCalendar.description',
   category: 'intel',
   icon: CalendarDays,
   component: EarningsCalendarWidget,

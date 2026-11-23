@@ -26,7 +26,7 @@ function CompanyProfileSettings({ config, onChange, onClose }: WidgetSettingsPro
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.companyProfile.symbol')}
+        label={t('dashboard:widgets.companyProfile.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -39,8 +39,8 @@ function CompanyProfileSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<CompanyProfileConfig>({
   type: 'tv.company-profile',
-  titleKey: 'dashboard.widgets.companyProfile.title',
-  descriptionKey: 'dashboard.widgets.companyProfile.description',
+  titleKey: 'dashboard:widgets.companyProfile.title',
+  descriptionKey: 'dashboard:widgets.companyProfile.description',
   category: 'markets',
   icon: Building2,
   component: CompanyProfileWidget,

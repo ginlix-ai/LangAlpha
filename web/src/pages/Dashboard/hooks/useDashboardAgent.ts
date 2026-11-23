@@ -24,9 +24,9 @@ export function useDashboardAgent(): { build: () => void; edit: (dashboard: Save
   const build = async () => {
     try {
       const workspaceId = await resolveChatWorkspace(queryClient, 'all');
-      navigate('/chat/t/__default__', { state: { workspaceId, draftMessage: t('customDashboard.buildDraft') } });
+      navigate('/chat/t/__default__', { state: { workspaceId, draftMessage: t('customDashboard:buildDraft') } });
     } catch {
-      toast({ variant: 'destructive', title: t('customDashboard.agentFailed') });
+      toast({ variant: 'destructive', title: t('customDashboard:agentFailed') });
     }
   };
 
@@ -35,13 +35,13 @@ export function useDashboardAgent(): { build: () => void; edit: (dashboard: Save
   // it is deleted, a new thread in its workspace, told which page by its path
   // or which app by its port.
   const edit = async (app: SavedDashboard) => {
-    const name = app.title || t('customDashboard.untitled');
+    const name = app.title || t('customDashboard:untitled');
     const threadGone = app.threadId
       ? await getThread(app.threadId).then(() => false, (err: unknown) => apiErrorStatus(err) === 404)
       : true;
     if (app.threadId && !threadGone) {
       navigate(`/chat/t/${app.threadId}`, {
-        state: { workspaceId: app.workspaceId, draftMessage: t('customDashboard.editDraft', { name }), draftAppend: true },
+        state: { workspaceId: app.workspaceId, draftMessage: t('customDashboard:editDraft', { name }), draftAppend: true },
       });
       return;
     }
@@ -52,11 +52,11 @@ export function useDashboardAgent(): { build: () => void; edit: (dashboard: Save
         queryFn: () => getShareLink(app.code),
       });
       const draftMessage = link.kind === 'file'
-        ? t('customDashboard.editDraftPath', { name, path: link.path })
-        : t('customDashboard.editDraftPort', { name, port: link.port });
+        ? t('customDashboard:editDraftPath', { name, path: link.path })
+        : t('customDashboard:editDraftPort', { name, port: link.port });
       navigate('/chat/t/__default__', { state: { workspaceId: link.workspace_id, draftMessage } });
     } catch {
-      toast({ variant: 'destructive', title: t('customDashboard.agentFailed') });
+      toast({ variant: 'destructive', title: t('customDashboard:agentFailed') });
     }
   };
 

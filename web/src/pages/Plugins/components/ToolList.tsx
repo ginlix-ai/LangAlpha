@@ -153,7 +153,7 @@ export function ToolList({
         <div className="flex items-center gap-2 flex-wrap">
           <SelectCheckbox
             state={allState}
-            label={t('plugins.detail.bulkSelectAllAria')}
+            label={t('plugins:detail.bulkSelectAllAria')}
             onToggle={() =>
               selection.onToggleMany(
                 movableShown.map((tool) => tool.name),
@@ -172,7 +172,7 @@ export function ToolList({
             className="text-xs hover:underline underline-offset-2"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('plugins.detail.bulkSelectAll', { count: movableShown.length })}
+            {t('plugins:detail.bulkSelectAll', { count: movableShown.length })}
           </button>
           {/* What ticking a box is for, said before anything is ticked. Once
               something is, the bar below carries the same sentence as an
@@ -182,7 +182,7 @@ export function ToolList({
               className="text-xs"
               style={{ color: 'var(--color-text-quaternary)' }}
             >
-              {t('plugins.detail.bulkSelectHint')}
+              {t('plugins:detail.bulkSelectHint')}
             </span>
           )}
         </div>
@@ -190,7 +190,7 @@ export function ToolList({
 
       {shown.length === 0 ? (
         <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.detail.searchEmpty')}
+          {t('plugins:detail.searchEmpty')}
         </p>
       ) : (
         <div className="flex flex-col gap-4">
@@ -244,7 +244,7 @@ function ToolPathLegend() {
   return (
     <div className="flex flex-col gap-1">
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('plugins.detail.pathLegendTitle')}
+        {t('plugins:detail.pathLegendTitle')}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
         {BINDING_PATHS.map((path) => (
@@ -272,7 +272,7 @@ function ToolFilter({
   onChange: (next: string) => void;
 }) {
   const { t } = useTranslation();
-  const label = t('plugins.detail.searchPlaceholder');
+  const label = t('plugins:detail.searchPlaceholder');
   return (
     <div
       className="relative rings-within owns-its-edge rounded-md"
@@ -298,7 +298,7 @@ function ToolFilter({
       {value && (
         <button
           type="button"
-          aria-label={t('plugins.detail.searchClear')}
+          aria-label={t('plugins:detail.searchClear')}
           onClick={() => onChange('')}
           className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-foreground/10"
           style={{ color: 'var(--color-text-tertiary)' }}
@@ -335,26 +335,26 @@ function sectionCopy(
       return { label: null, note: null, names: 'prose' };
     case 'group':
       return {
-        label: t(`plugins.brokerages.capabilities.${section.key}.label`),
+        label: t(`plugins:brokerages.capabilities.${section.key}.label`),
         note: null,
         names: 'chip',
       };
     case 'never':
       return {
-        label: t('plugins.brokerages.detail.neverAvailable'),
-        note: t('plugins.brokerages.detail.neverAvailableNote'),
+        label: t('plugins:brokerages.detail.neverAvailable'),
+        note: t('plugins:brokerages.detail.neverAvailableNote'),
         names: 'chip',
       };
     case 'unclassified':
       return {
-        label: t('plugins.brokerages.detail.unclassified'),
+        label: t('plugins:brokerages.detail.unclassified'),
         // "The agent can still call them" is only true of a connection there
         // is something to call with. With nothing connected the sentence
         // promised reach the page had just finished saying does not exist.
         note: t(
           settled
-            ? 'plugins.brokerages.detail.unclassifiedNote'
-            : 'plugins.brokerages.detail.unclassifiedNoteUnconnected',
+            ? 'plugins:brokerages.detail.unclassifiedNote'
+            : 'plugins:brokerages.detail.unclassifiedNoteUnconnected',
         ),
         names: 'chip',
       };
@@ -394,7 +394,7 @@ function ToolSectionBlock({
           {selection && names.length > 0 && (
             <SelectCheckbox
               state={state}
-              label={t('plugins.detail.bulkSelectGroupAria', { name: copy.label })}
+              label={t('plugins:detail.bulkSelectGroupAria', { name: copy.label })}
               onToggle={() => selection.onToggleMany(names, state !== 'all')}
             />
           )}
@@ -412,7 +412,7 @@ function ToolSectionBlock({
             {section.tools.length}
           </span>
           {section.declined && (
-            <TagBadge soft>{t('plugins.brokerages.detail.declined')}</TagBadge>
+            <TagBadge soft>{t('plugins:brokerages.detail.declined')}</TagBadge>
           )}
         </div>
       )}
@@ -498,7 +498,7 @@ function ToolRowCheckbox({
   return (
     <SelectCheckbox
       state={selection.selected.has(tool.name) ? 'all' : 'none'}
-      label={t('plugins.detail.bulkSelectToolAria', { name: tool.name })}
+      label={t('plugins:detail.bulkSelectToolAria', { name: tool.name })}
       onToggle={() => selection.onToggle(tool.name)}
     />
   );
@@ -567,17 +567,17 @@ function ToolBulkBar({
           className="text-xs font-medium"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {t('plugins.detail.bulkSelected', { count, total })}
+          {t('plugins:detail.bulkSelected', { count, total })}
         </span>
         {/* The verb the segments are missing. Without it three words sit in a
             bar beside a count and say nothing about what pressing one does. */}
         <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.detail.bulkRunAs')}
+          {t('plugins:detail.bulkRunAs')}
         </span>
         <SegmentedControl
           size="compact"
           value={value}
-          label={t('plugins.detail.bulkBindingAria')}
+          label={t('plugins:detail.bulkBindingAria')}
           disabled={busy}
           options={bindingOptions(t)}
           onChange={onApply}
@@ -589,7 +589,7 @@ function ToolBulkBar({
           className="px-1.5 py-0.5 text-xs rounded transition-colors hover:bg-foreground/10 disabled:opacity-50"
           style={{ color: 'var(--color-text-secondary)' }}
         >
-          {t('plugins.detail.bulkReset')}
+          {t('plugins:detail.bulkReset')}
         </button>
         <button
           type="button"
@@ -597,12 +597,12 @@ function ToolBulkBar({
           className="px-1.5 py-0.5 text-xs rounded transition-colors hover:bg-foreground/10"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {t('plugins.detail.bulkClear')}
+          {t('plugins:detail.bulkClear')}
         </button>
       </div>
       {skipped > 0 && (
         <p className="pt-1 text-xs" style={{ color: 'var(--color-text-quaternary)' }}>
-          {t('plugins.detail.bulkSkipped', { count: skipped })}
+          {t('plugins:detail.bulkSkipped', { count: skipped })}
         </p>
       )}
       {error && (

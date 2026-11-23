@@ -18,7 +18,7 @@ import { useTranslation } from 'react-i18next';
 const mockUseUser = useUser as Mock;
 const mockUseTranslation = useTranslation as unknown as Mock;
 
-type I18nStub = { language: string; changeLanguage: Mock; loadLanguages: Mock; hasResourceBundle: Mock };
+type I18nStub = { language: string; changeLanguage: Mock; loadNamespaces: Mock; hasResourceBundle: Mock; options: { ns: string[]; preload?: readonly string[] } };
 
 function makeI18n(language = 'en-US'): I18nStub {
   const stub: I18nStub = {
@@ -28,9 +28,10 @@ function makeI18n(language = 'en-US'): I18nStub {
       stub.language = lang;
       return Promise.resolve();
     }),
-    // switchLocale loads the catalog before switching; every catalog is in.
-    loadLanguages: vi.fn(() => Promise.resolve()),
+    // switchLocale loads the catalogs before switching; every catalog is in.
+    loadNamespaces: vi.fn(() => Promise.resolve()),
     hasResourceBundle: vi.fn(() => true),
+    options: { ns: ['translation'] },
   };
   return stub;
 }

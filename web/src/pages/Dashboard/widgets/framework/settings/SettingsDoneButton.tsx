@@ -24,7 +24,7 @@ export function SettingsDoneButton({ onClick, label }: Props) {
           outlineColor: 'var(--color-focus-ring)',
         }}
       >
-        {label ?? t('dashboard.widgets.settings.doneButton')}
+        {label ?? t('dashboard:widgets.settings.doneButton')}
       </button>
     </div>
   );

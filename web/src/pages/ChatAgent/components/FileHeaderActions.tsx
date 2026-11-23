@@ -140,7 +140,7 @@ function FileHeaderActions({
   const handleExportHtmlPdf = async () => {
     if (!selectedFile || pdfInFlight.current) return;
     if (!served.plainUrl) {
-      toast({ description: t('filePanel.pdfFailed') });
+      toast({ description: t('filePanel:pdfFailed') });
       return;
     }
     pdfInFlight.current = true;
@@ -149,8 +149,8 @@ function FileHeaderActions({
         filePath: selectedFile,
         servedUrl: served.plainUrl,
         openUrl: served.openUrl,
-        printHint: t('filePanel.pdfPrintHint'),
-        generatingHint: t('filePanel.pdfGenerating'),
+        printHint: t('filePanel:pdfPrintHint'),
+        generatingHint: t('filePanel:pdfGenerating'),
         scale: pdfScale,
         pageNumbers: pdfPageNumbers,
         branding: pdfBranding,
@@ -169,7 +169,7 @@ function FileHeaderActions({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast({ description: t('filePanel.copyFailed'), variant: 'destructive' });
+      toast({ description: t('filePanel:copyFailed'), variant: 'destructive' });
     }
   };
 
@@ -187,7 +187,7 @@ function FileHeaderActions({
         <button
           onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)}
           className="file-panel-icon-btn"
-          title={t('filePanel.undo')}
+          title={t('filePanel:undo')}
           disabled={!canUndo}
         >
           <Undo2 className="h-4 w-4" />
@@ -195,7 +195,7 @@ function FileHeaderActions({
         <button
           onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)}
           className="file-panel-icon-btn"
-          title={t('filePanel.redo')}
+          title={t('filePanel:redo')}
           disabled={!canRedo}
         >
           <Redo2 className="h-4 w-4" />
@@ -204,7 +204,7 @@ function FileHeaderActions({
           <button
             onClick={() => setShowDiff(d => !d)}
             className={`file-panel-icon-btn ${showDiff ? 'file-panel-icon-btn-active' : ''}`}
-            title={showDiff ? t('filePanel.hideDiff') : t('filePanel.showDiff')}
+            title={showDiff ? t('filePanel:hideDiff') : t('filePanel:showDiff')}
           >
             <FileDiff className="h-4 w-4" />
           </button>
@@ -212,7 +212,7 @@ function FileHeaderActions({
         <button
           onClick={onSave}
           className="file-panel-icon-btn"
-          title={t('filePanel.save')}
+          title={t('filePanel:save')}
           disabled={!hasUnsavedChanges || isSaving}
         >
           <Check className={`h-4 w-4 ${isSaving ? 'animate-pulse' : ''}`} />
@@ -220,7 +220,7 @@ function FileHeaderActions({
         <button
           onClick={onCancelEdit}
           className="file-panel-icon-btn"
-          title={t('filePanel.cancelEditing')}
+          title={t('filePanel:cancelEditing')}
         >
           <X className="h-4 w-4" />
         </button>
@@ -238,7 +238,7 @@ function FileHeaderActions({
     // browser shows no file. Without this the menu item is indistinguishable
     // from a dead one. A toast rather than an inline error, because the document
     // the reader is looking at is still fine and should stay on screen.
-    toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+    toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
   });
 
   const isMd = isMarkdownFile(selectedFile, fileMime);
@@ -253,11 +253,11 @@ function FileHeaderActions({
         <>
           <DropdownMenuItem onSelect={() => onOpenExportModal()}>
             <FileText className="h-3.5 w-3.5" />
-            {t('filePanel.downloadAsPdf')}
+            {t('filePanel:downloadAsPdf')}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
-            {t('filePanel.downloadAsMarkdown')}
+            {t('filePanel:downloadAsMarkdown')}
           </DropdownMenuItem>
         </>
       );
@@ -272,16 +272,16 @@ function FileHeaderActions({
         <>
           <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
-            {t('filePanel.download')}
+            {t('filePanel:download')}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void handleExportHtmlPdf()}>
             <FileDown className="h-3.5 w-3.5" />
-            {t('filePanel.saveAsPdf')}
+            {t('filePanel:saveAsPdf')}
           </DropdownMenuItem>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
               <Settings2 className="h-3.5 w-3.5" />
-              {t('filePanel.pdfOptions')}
+              {t('filePanel:pdfOptions')}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               <DropdownMenuItem
@@ -291,7 +291,7 @@ function FileHeaderActions({
                 }}
               >
                 <Check className={cn('h-3.5 w-3.5', !pdfBranding && 'invisible')} />
-                {t('filePanel.pdfBranding')}
+                {t('filePanel:pdfBranding')}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={(e) => {
@@ -300,10 +300,10 @@ function FileHeaderActions({
                 }}
               >
                 <Check className={cn('h-3.5 w-3.5', !pdfPageNumbers && 'invisible')} />
-                {t('filePanel.pdfPageNumbers')}
+                {t('filePanel:pdfPageNumbers')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>{t('filePanel.pdfScale')}</DropdownMenuLabel>
+              <DropdownMenuLabel>{t('filePanel:pdfScale')}</DropdownMenuLabel>
               {PDF_SCALE_CHOICES.map((scale) => (
                 <DropdownMenuItem
                   key={scale}
@@ -328,7 +328,7 @@ function FileHeaderActions({
         <>
           <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
-            {t('filePanel.download')}
+            {t('filePanel:download')}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={handleCopy}>
             {copied
@@ -336,8 +336,8 @@ function FileHeaderActions({
               : <Clipboard className="h-3.5 w-3.5" />
             }
             {copied
-              ? (t('filePanel.copiedToClipboard') ?? 'Copied!')
-              : (t('filePanel.copyToClipboard') ?? 'Copy to clipboard')
+              ? (t('filePanel:copiedToClipboard') ?? 'Copied!')
+              : (t('filePanel:copyToClipboard') ?? 'Copy to clipboard')
             }
           </DropdownMenuItem>
         </>
@@ -348,7 +348,7 @@ function FileHeaderActions({
     return (
       <DropdownMenuItem onSelect={download} disabled={downloadPending}>
         <Download className="h-3.5 w-3.5" />
-        {t('filePanel.download')}
+        {t('filePanel:download')}
       </DropdownMenuItem>
     );
   };
@@ -360,8 +360,8 @@ function FileHeaderActions({
         <button
           onClick={onToggleHtmlSource}
           className="file-panel-icon-btn"
-          title={htmlSource ? t('filePanel.viewPreview') : t('filePanel.viewSource')}
-          aria-label={htmlSource ? t('filePanel.viewPreview') : t('filePanel.viewSource')}
+          title={htmlSource ? t('filePanel:viewPreview') : t('filePanel:viewSource')}
+          aria-label={htmlSource ? t('filePanel:viewPreview') : t('filePanel:viewSource')}
         >
           {htmlSource ? <Eye className="h-4 w-4" /> : <Code2 className="h-4 w-4" />}
         </button>
@@ -390,8 +390,8 @@ function FileHeaderActions({
         <button
           onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}
           className="file-panel-icon-btn"
-          title={t('filePanel.openInNewTab')}
-          aria-label={t('filePanel.openInNewTab')}
+          title={t('filePanel:openInNewTab')}
+          aria-label={t('filePanel:openInNewTab')}
         >
           <ExternalLink className="h-4 w-4" />
         </button>
@@ -401,7 +401,7 @@ function FileHeaderActions({
           <DropdownMenuTrigger asChild>
             <button
               className="file-panel-icon-btn"
-              aria-label={t('filePanel.downloadOptions') ?? 'Download options'}
+              aria-label={t('filePanel:downloadOptions') ?? 'Download options'}
             >
               <Download className="h-4 w-4" />
             </button>
@@ -416,7 +416,7 @@ function FileHeaderActions({
         <button
           onClick={onStartEdit}
           className="file-panel-icon-btn"
-          title={t('filePanel.editFile')}
+          title={t('filePanel:editFile')}
         >
           <Pencil className="h-4 w-4" />
         </button>
@@ -478,11 +478,11 @@ function ArtifactMenu({ workspaceId, path, onPublish }: {
           <DropdownMenuItem
             onSelect={() => bind.mutate(
               { workspaceId, path, threadId: besideThreadId },
-              { onError: () => toast({ description: t('pageViewer.comments.bindFailed'), variant: 'destructive' }) },
+              { onError: () => toast({ description: t('pageViewer:comments.bindFailed'), variant: 'destructive' }) },
             )}
           >
             <Pin className="h-3.5 w-3.5" />
-            {t('pageViewer.comments.bindHere')}
+            {t('pageViewer:comments.bindHere')}
           </DropdownMenuItem>
         )}
         {bound && artifactId && (

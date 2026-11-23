@@ -68,8 +68,8 @@ describe('isOrphan', () => {
   });
 
   it('does not tell the user a running base stops when its stale row goes', () => {
-    expect(removalCopy(t, orphan, null, false).message).toBe('plugins.subagents.removeConfirm');
-    expect(removalCopy(t, stale, null, false).message).toBe('plugins.subagents.resetConfirmPlain');
+    expect(removalCopy(t, orphan, null, false).message).toBe('plugins:subagents.removeConfirm');
+    expect(removalCopy(t, stale, null, false).message).toBe('plugins:subagents.resetConfirmPlain');
   });
 });
 

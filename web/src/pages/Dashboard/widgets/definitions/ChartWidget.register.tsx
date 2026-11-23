@@ -25,8 +25,8 @@ const LazyChartSettings = lazy(() =>
 // render time via Suspense. The cast here keeps the registry signature stable.
 registerWidget<ChartConfig>({
   type: 'chart.symbol',
-  titleKey: 'dashboard.widgets.chart.title',
-  descriptionKey: 'dashboard.widgets.chart.description',
+  titleKey: 'dashboard:widgets.chart.title',
+  descriptionKey: 'dashboard:widgets.chart.description',
   category: 'markets',
   icon: CandlestickChart,
   component: LazyChartWidget as unknown as React.ComponentType<WidgetRenderProps<ChartConfig>>,

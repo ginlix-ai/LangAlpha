@@ -18,7 +18,7 @@ import { SetupNote, StepError, StepKicker, StepLoading } from '../answers/parts'
 import { useSetupFacts } from '../answers/useSetupFacts';
 import { ProgressList, ProgressStep } from '../answers/ProgressSteps';
 
-const T = 'setup.mac';
+const T = 'setup:mac';
 /** How often the tab reads the record while the app has setup. */
 const POLL_MS = 3000;
 
@@ -157,9 +157,9 @@ function MacHandoff() {
         </>
       )}
 
-      {saveFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+      {saveFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: () => void back(), disabled: isUpdating }}
+        back={{ label: t('setup:back'), onClick: () => void back(), disabled: isUpdating }}
         skip={{ label: t(`${T}.continueHere`), onClick: () => void continueHere(), disabled: isUpdating }}
       />
     </div>

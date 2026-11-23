@@ -116,7 +116,7 @@ function IndexCardBody({ index, date }: { index: IndexData; date: string }) {
             <YAxis domain={['dataMin', 'dataMax']} hide />
           </LineChart>
         ) : (
-          <span className="term-t3">{t('dashboard.widgets.marketsOverview.noChartData')}</span>
+          <span className="term-t3">{t('dashboard:widgets.marketsOverview.noChartData')}</span>
         )}
       </div>
     </>
@@ -228,7 +228,7 @@ function IndexStackWidget({ indices }: { indices: IndexData[] }) {
           <button
             key={i}
             onClick={() => goTo(i)}
-            aria-label={t('dashboard.widgets.marketsOverview.showIndex', { name: indices[i]?.name })}
+            aria-label={t('dashboard:widgets.marketsOverview.showIndex', { name: indices[i]?.name })}
             // Half of the 6px gap each side, so the dots' boxes meet and never
             // overlap. Down over the 16px between widgets and up only over the
             // 8px gap (30px, centered 4px low), since the card above opens.

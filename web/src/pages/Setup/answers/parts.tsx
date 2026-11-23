@@ -24,7 +24,7 @@ function answerTags(t: (key: string) => string, answers: SetupAnswers, inDesktop
   const models = answers.models === 'langalpha_models' && !isPlatformMode ? 'serverModels' : answers.models;
   const selfHostedComputer = inDesktopApp ? 'thisComputer' : 'serverComputer';
   const runsOn = answers.runsOn === 'cloud' && !isPlatformMode ? selfHostedComputer : answers.runsOn;
-  return [t(`setup.answers.tag.${models}`), t(`setup.answers.tag.${runsOn}`)];
+  return [t(`setup:answers.tag.${models}`), t(`setup:answers.tag.${runsOn}`)];
 }
 
 /**
@@ -38,7 +38,7 @@ export function AnswersStrip({ answers }: { answers: SetupAnswers }) {
   const { inDesktopApp } = useInDesktopApp();
   return (
     <div data-testid="setup-answers" className="shell-box mb-6 flex flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2.5 sm:mb-8">
-      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('setup.answers.fromYourAnswers')}</span>
+      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('setup:answers.fromYourAnswers')}</span>
       {answerTags(t, answers, inDesktopApp).map((tag) => (
         <span
           key={tag}
@@ -54,7 +54,7 @@ export function AnswersStrip({ answers }: { answers: SetupAnswers }) {
         onClick={change}
         className="tap-target text-xs underline underline-offset-2 transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary)"
       >
-        {t('setup.answers.change')}
+        {t('setup:answers.change')}
       </button>
     </div>
   );
@@ -201,8 +201,8 @@ export function StepLoadFailed({ onRetry, saving = false }: { onRetry: () => voi
   return (
     <div data-testid="setup-load-failed" className="py-10">
       <FlowFailure
-        title={t(saving ? 'setup.answers.saveFailed' : 'setup.answers.loadFailed')}
-        action={<RowButton onClick={onRetry}>{t('setup.answers.tryAgain')}</RowButton>}
+        title={t(saving ? 'setup:answers.saveFailed' : 'setup:answers.loadFailed')}
+        action={<RowButton onClick={onRetry}>{t('setup:answers.tryAgain')}</RowButton>}
       />
     </div>
   );

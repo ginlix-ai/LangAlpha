@@ -31,19 +31,19 @@ function CompanyFinancialsSettings({ config, onChange, onClose }: WidgetSettings
   return (
     <div className="space-y-4">
       <SymbolField
-        label={t('dashboard.widgets.companyFinancials.symbol')}
+        label={t('dashboard:widgets.companyFinancials.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
       />
       <EnumField
-        label={t('dashboard.widgets.companyFinancials.layout')}
+        label={t('dashboard:widgets.companyFinancials.layout')}
         value={config.displayMode ?? 'regular'}
         onChange={(v) => onChange({ displayMode: v as CompanyFinancialsConfig['displayMode'] })}
         options={[
-          { value: 'regular', label: t('dashboard.widgets.companyFinancials.layout_regular') },
-          { value: 'compact', label: t('dashboard.widgets.companyFinancials.layout_compact') },
-          { value: 'adaptive', label: t('dashboard.widgets.companyFinancials.layout_adaptive') },
+          { value: 'regular', label: t('dashboard:widgets.companyFinancials.layout_regular') },
+          { value: 'compact', label: t('dashboard:widgets.companyFinancials.layout_compact') },
+          { value: 'adaptive', label: t('dashboard:widgets.companyFinancials.layout_adaptive') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -54,8 +54,8 @@ function CompanyFinancialsSettings({ config, onChange, onClose }: WidgetSettings
 
 registerWidget<CompanyFinancialsConfig>({
   type: 'tv.company-financials',
-  titleKey: 'dashboard.widgets.companyFinancials.title',
-  descriptionKey: 'dashboard.widgets.companyFinancials.description',
+  titleKey: 'dashboard:widgets.companyFinancials.title',
+  descriptionKey: 'dashboard:widgets.companyFinancials.description',
   category: 'markets',
   icon: BarChart3,
   component: CompanyFinancialsWidget,

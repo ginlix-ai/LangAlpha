@@ -284,7 +284,7 @@ export default function Automations() {
     body = (
       <div className="automations-scroll">
         <div className="automations-frame">
-          <ListError>{t('automation.loadFailed')}</ListError>
+          <ListError>{t('automation:loadFailed')}</ListError>
         </div>
       </div>
     );
@@ -329,7 +329,7 @@ export default function Automations() {
         <div className="automations-frame">
           {formHost ? (
             <div className="automation-form-pane automations-zero-form">
-              <h2 className="title-font automation-form-title">{t('automation.newAutomation')}</h2>
+              <h2 className="title-font automation-form-title">{t('automation:newAutomation')}</h2>
               <AutomationInlineForm key={formHost.key} {...formHost.props} />
             </div>
           ) : (
@@ -374,9 +374,9 @@ export default function Automations() {
 
       <ConfirmDialog
         open={!!pendingLeave}
-        title={t('automation.discardDraftTitle')}
-        message={t('automation.discardDraftMessage')}
-        confirmLabel={t('automation.discardDraft')}
+        title={t('automation:discardDraftTitle')}
+        message={t('automation:discardDraftMessage')}
+        confirmLabel={t('automation:discardDraft')}
         onConfirm={() => {
           const proceed = pendingLeave;
           setPendingLeave(null);

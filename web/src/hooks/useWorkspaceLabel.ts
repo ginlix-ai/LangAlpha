@@ -33,7 +33,7 @@ export function workspaceText(t: TFn, workspace: LabelledWorkspace | null | unde
   return {
     name: workspace?.name ?? '',
     description: workspace?.description ?? '',
-    tag: t('dashboard.widgets.workspacePicker.tagWorkspace'),
+    tag: t('agents.widgets.tagWorkspace'),
   };
 }
 

@@ -9,7 +9,7 @@ export const TRADING_PERMISSION_ANCHOR = 'trading-permission';
 export const TRADING_PERMISSION_HREF = `/settings?tab=trading#${TRADING_PERMISSION_ANCHOR}`;
 
 /** The version of the agreement text this bundle shows
- *  (`settings.tradingPermission.agreement.*`), and the one opting in sends.
+ *  (`settings:tradingPermission.agreement.*`), and the one opting in sends.
  *  Bump it together with that copy. The server refuses any other version, so
  *  a tab still on an older bundle cannot accept text it never displayed. */
 export const TRADING_AGREEMENT_VERSION = 1;
@@ -35,27 +35,27 @@ interface TradingLevelInfo<L extends TradingLevel> {
  */
 export const TRADING_LEVEL_INFO: { readonly [L in TradingLevel]: TradingLevelInfo<L> } = {
   no_trading: {
-    labelKey: 'settings.tradingPermission.noTrading',
-    descriptionKey: 'settings.tradingPermission.noTradingDesc',
+    labelKey: 'settings:tradingPermission.noTrading',
+    descriptionKey: 'settings:tradingPermission.noTradingDesc',
     agreement: null,
     warning: false,
   },
   approve_each: {
-    labelKey: 'settings.tradingPermission.approveEach',
-    descriptionKey: 'settings.tradingPermission.approveEachDesc',
+    labelKey: 'settings:tradingPermission.approveEach',
+    descriptionKey: 'settings:tradingPermission.approveEachDesc',
     agreement: null,
     warning: false,
   },
   plan_first: {
-    labelKey: 'settings.tradingPermission.planFirst',
-    descriptionKey: 'settings.tradingPermission.planFirstDesc',
-    agreement: { descriptionKey: 'settings.tradingPermission.agreement.planFirst' },
+    labelKey: 'settings:tradingPermission.planFirst',
+    descriptionKey: 'settings:tradingPermission.planFirstDesc',
+    agreement: { descriptionKey: 'settings:tradingPermission.agreement.planFirst' },
     warning: false,
   },
   autonomous: {
-    labelKey: 'settings.tradingPermission.autonomous',
-    descriptionKey: 'settings.tradingPermission.autonomousDesc',
-    agreement: { descriptionKey: 'settings.tradingPermission.agreement.autonomous' },
+    labelKey: 'settings:tradingPermission.autonomous',
+    descriptionKey: 'settings:tradingPermission.autonomousDesc',
+    agreement: { descriptionKey: 'settings:tradingPermission.agreement.autonomous' },
     warning: true,
   },
 };

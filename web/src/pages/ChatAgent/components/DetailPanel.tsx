@@ -34,7 +34,7 @@ function DetailPanel({ toolCallProcess, onOpenFile, onOpenSubagentTask }: Detail
   const toolArgs = toolCallProcess.toolCall?.args;
   const isTask = isTaskTool(toolName);
   const displayName = isTask
-    ? t('toolArtifact.subagentTask')
+    ? t('toolArtifact:subagentTask')
     : getDisplayName(toolName, t, toolArgs, { record: toolCallProcess, root });
   const subagentType = isTask ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
   // Status only — a Task's reply exists from the moment it is dispatched, so
@@ -73,7 +73,7 @@ function DetailPanel({ toolCallProcess, onOpenFile, onOpenSubagentTask }: Detail
             {isFailed && (
               <XCircle
                 className="h-4 w-4 shrink-0"
-                aria-label={t('toolArtifact.a11y.toolCallFailed')}
+                aria-label={t('toolArtifact:a11y.toolCallFailed')}
                 style={{ color: 'var(--color-loss)' }}
               />
             )}

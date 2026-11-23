@@ -81,7 +81,7 @@ export function Cadence({ template: tpl }: { template: AutomationTemplate }) {
     return (
       <>
         <MeterMark />
-        <span className="automation-mono automations-cadence-sub">{t('automation.cadencePrice')}</span>
+        <span className="automation-mono automations-cadence-sub">{t('automation:cadencePrice')}</span>
       </>
     );
   }
@@ -90,7 +90,7 @@ export function Cadence({ template: tpl }: { template: AutomationTemplate }) {
     return (
       <>
         <OnceMark />
-        <span className="automation-mono automations-cadence-sub">{t('automation.cadenceOnce')}</span>
+        <span className="automation-mono automations-cadence-sub">{t('automation:cadenceOnce')}</span>
       </>
     );
   }
@@ -98,7 +98,7 @@ export function Cadence({ template: tpl }: { template: AutomationTemplate }) {
   return (
     <>
       <UnsetMark />
-      <span className="automation-mono automations-cadence-sub">{t('automation.cadenceBlank')}</span>
+      <span className="automation-mono automations-cadence-sub">{t('automation:cadenceBlank')}</span>
     </>
   );
 }

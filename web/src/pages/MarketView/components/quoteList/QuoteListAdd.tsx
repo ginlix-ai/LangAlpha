@@ -85,9 +85,9 @@ export function QuoteListAdd({ tab, watching, addToWatchlist, addHolding, onAdde
   };
 
   const status = loading && hits.length === 0
-    ? t('dashboard.addWatchlistDialog.searching')
+    ? t('dashboard:addWatchlistDialog.searching')
     : hits.length === 0 && query.trim()
-      ? t('dashboard.addWatchlistDialog.noResults')
+      ? t('dashboard:addWatchlistDialog.noResults')
       : null;
 
   return (
@@ -125,8 +125,8 @@ export function QuoteListAdd({ tab, watching, addToWatchlist, addHolding, onAdde
               aria-expanded={!status && hits.length > 0}
               aria-controls={listId}
               aria-activedescendant={!status && hits.length > 0 ? optionId(active) : undefined}
-              placeholder={t('marketView.quoteList.add.placeholder')}
-              aria-label={t('marketView.quoteList.add.placeholder')}
+              placeholder={t('marketView:quoteList.add.placeholder')}
+              aria-label={t('marketView:quoteList.add.placeholder')}
               spellCheck={false}
               autoComplete="off"
             />
@@ -135,7 +135,7 @@ export function QuoteListAdd({ tab, watching, addToWatchlist, addHolding, onAdde
             {status ? (
               <p className="quote-list-empty">{status}</p>
             ) : (
-              <ul id={listId} className="quote-list-rows" role="listbox" aria-label={t('marketView.quoteList.add.results')} aria-busy={loading}>
+              <ul id={listId} className="quote-list-rows" role="listbox" aria-label={t('marketView:quoteList.add.results')} aria-busy={loading}>
                 {hits.map((hit, i) => {
                   const watched = tab === 'watchlist' && isWatched(hit);
                   const exchange = exchangeOf(hit);
@@ -156,9 +156,9 @@ export function QuoteListAdd({ tab, watching, addToWatchlist, addHolding, onAdde
                           {exchange && <span className="quote-list-hit-exchange">{exchange}</span>}
                         </span>
                         {watched ? (
-                          <span className="quote-list-hit-done"><Check size={11} aria-hidden="true" />{t('marketView.quoteList.add.watching')}</span>
+                          <span className="quote-list-hit-done"><Check size={11} aria-hidden="true" />{t('marketView:quoteList.add.watching')}</span>
                         ) : tab === 'watchlist' ? (
-                          <span className="quote-list-hit-add">{t('marketView.quoteList.add.add')}</span>
+                          <span className="quote-list-hit-add">{t('marketView:quoteList.add.add')}</span>
                         ) : null}
                       </button>
                     </li>
@@ -189,7 +189,7 @@ function HoldingForm({ hit, pending, onBack, onSubmit }: HoldingFormProps): Reac
   const [error, setError] = useState<string | null>(null);
   const asksCurrency = asksHoldingCurrency(hit);
   const currency = asksCurrency ? typedCurrencyCode(typedCurrency) : holdingCurrency(hit);
-  const copy = (key: string, opts?: Record<string, string>) => t(`dashboard.addPortfolioDialog.${key}`, opts);
+  const copy = (key: string, opts?: Record<string, string>) => t(`dashboard:addPortfolioDialog.${key}`, opts);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -246,10 +246,10 @@ function HoldingForm({ hit, pending, onBack, onSubmit }: HoldingFormProps): Reac
       </div>
       {error && <p className="quote-list-form-error" role="alert">{error}</p>}
       <button type="submit" className="quote-list-form-submit" disabled={pending}>
-        {t('marketView.sidebar.addHolding')}
+        {t('marketView:sidebar.addHolding')}
       </button>
       <button type="button" className="quote-list-form-back tap-target" onClick={onBack}>
-        {t('marketView.quoteList.add.back')}
+        {t('marketView:quoteList.add.back')}
       </button>
     </form>
   );

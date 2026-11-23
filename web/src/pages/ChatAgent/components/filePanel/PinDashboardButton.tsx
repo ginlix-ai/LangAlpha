@@ -18,7 +18,7 @@ interface PinDashboardButtonProps {
  */
 export function PinDashboardButton({ pinned, onClick, pending = false, disabled }: PinDashboardButtonProps): React.ReactElement {
   const { t } = useTranslation();
-  const label = pinned ? t('customDashboard.isDashboard') : t('customDashboard.setAsDashboard');
+  const label = pinned ? t('customDashboard:isDashboard') : t('customDashboard:setAsDashboard');
   return (
     <button
       type="button"

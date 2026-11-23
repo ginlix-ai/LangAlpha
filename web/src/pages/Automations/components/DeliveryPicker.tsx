@@ -32,9 +32,9 @@ import {
 } from '../utils/delivery';
 
 const VIA_KEY: Record<DeliveryDefault['via'], string> = {
-  workspace: 'automation.deliveryViaWorkspace',
-  preferred: 'automation.deliveryViaPreferred',
-  dm: 'automation.deliveryViaDm',
+  workspace: 'automation:deliveryViaWorkspace',
+  preferred: 'automation:deliveryViaPreferred',
+  dm: 'automation:deliveryViaDm',
 };
 
 const HEADING = 'pb-1 font-mono text-[11px] font-normal text-(--color-text-tertiary)';
@@ -80,7 +80,7 @@ export function DeliveryProblems({ problems, nameOf }: { problems: DeliveryProbl
     <ul className="automation-delivery-problems" role="alert">
       {problems.map((p) => (
         <li key={`${p.entry}|${p.message}`}>
-          {t('automation.deliveryNamedProblem', { name: nameOf(p.entry), message: p.message })}
+          {t('automation:deliveryNamedProblem', { name: nameOf(p.entry), message: p.message })}
         </li>
       ))}
     </ul>
@@ -207,7 +207,7 @@ export default function DeliveryPicker({
                     <AriaButton className="automation-delivery-chip-label" isDisabled={setDefault.isPending}>
                       <span className="truncate">{label}</span>
                       {isDefault && (
-                        <Pin className="size-3 shrink-0" aria-label={t('automation.deliveryViaWorkspace')} />
+                        <Pin className="size-3 shrink-0" aria-label={t('automation:deliveryViaWorkspace')} />
                       )}
                       <ChevronDown className="size-3 shrink-0 opacity-60" aria-hidden="true" />
                     </AriaButton>
@@ -219,7 +219,7 @@ export default function DeliveryPicker({
                       >
                         {actions.map((action) => (
                           <MenuItem key={action} id={action} className={MENU_ITEM}>
-                            {t(action === 'use' ? 'automation.deliveryUseAsDefault' : 'automation.deliveryClearDefault')}
+                            {t(action === 'use' ? 'automation:deliveryUseAsDefault' : 'automation:deliveryClearDefault')}
                           </MenuItem>
                         ))}
                       </Menu>
@@ -233,7 +233,7 @@ export default function DeliveryPicker({
                 <button
                   type="button"
                   className="automation-delivery-chip-remove"
-                  aria-label={t('automation.deliveryRemove', { name: label })}
+                  aria-label={t('automation:deliveryRemove', { name: label })}
                   onClick={() => onChange(methods.filter((m) => m !== entry))}
                 >
                   <X className="size-3" aria-hidden="true" />
@@ -246,7 +246,7 @@ export default function DeliveryPicker({
 
       {apps.length === 0 ? (
         <p className="automation-form-readout mt-0">
-          {t('automation.deliveryNoApps')}
+          {t('automation:deliveryNoApps')}
           {/* A new tab or window, so the form being filled in stays put. */}
           {INTEGRATIONS_URL && (
             <>
@@ -257,7 +257,7 @@ export default function DeliveryPicker({
                 rel="noopener noreferrer"
                 className="underline underline-offset-2 hover:text-(--color-text-primary)"
               >
-                {t('automation.deliveryConnectApp')}
+                {t('automation:deliveryConnectApp')}
               </a>
             </>
           )}
@@ -272,7 +272,7 @@ export default function DeliveryPicker({
         >
           <SelectTrigger className="h-8 w-auto gap-1.5 px-2.5 text-[0.8125rem]">
             {/* The trigger always reads Add: what is picked shows as the chips. */}
-            <SelectValue>{() => t('automation.deliveryAdd')}</SelectValue>
+            <SelectValue>{() => t('automation:deliveryAdd')}</SelectValue>
           </SelectTrigger>
           <SelectPopover
             placement="bottom start"
@@ -283,8 +283,8 @@ export default function DeliveryPicker({
               {apps.map(([app, data], i) => {
                 const def = data.default;
                 const defaultLabel = def?.name
-                  ? t('automation.deliveryDefaultOptionLands', { name: def.name })
-                  : t('automation.deliveryDefaultOption');
+                  ? t('automation:deliveryDefaultOptionLands', { name: def.name })
+                  : t('automation:deliveryDefaultOption');
                 return (
                   <SelectSection
                     key={app}
@@ -317,7 +317,7 @@ export default function DeliveryPicker({
       {/* The service names what failed with a code, not words for the reader. */}
       {appErrors.map(([app]) => (
         <p key={app} className="automation-form-readout mt-0">
-          {t('automation.deliveryNamedProblem', { name: messagingAppName(app), message: t('automation.deliveryOptionsUnavailable') })}
+          {t('automation:deliveryNamedProblem', { name: messagingAppName(app), message: t('automation:deliveryOptionsUnavailable') })}
         </p>
       ))}
       {defaultError && (

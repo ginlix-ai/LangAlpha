@@ -116,7 +116,7 @@ export function priceAlertText(arrival: WakeupArrival, t: TFunction, locale: str
  */
 export function wakeupRowText(arrival: WakeupArrival, t: TFunction, locale: string, now: number, zone: string): string {
   const { notices } = arrival;
-  if (notices.length === 0) return t('toolArtifact.tool.scheduleWakeup');
+  if (notices.length === 0) return t('toolArtifact:tool.scheduleWakeup');
   const names = notices.map((n) => (n.kind === 'price' && n.price
     ? priceSentence(n, t, locale)
     : n.kind === 'order' ? orderText(n, t, locale) : noticeName(n, t, locale, now, zone)));

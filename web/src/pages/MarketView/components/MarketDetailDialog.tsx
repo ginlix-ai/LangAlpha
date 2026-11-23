@@ -39,7 +39,7 @@ export default function MarketDetailDialog({ payload, onClose, getToolCallProces
     const toolName = proc.toolName || '';
     const IconComponent = getToolIcon(toolName, proc.toolCall?.args, root);
     const displayName = isTaskTool(toolName)
-      ? t('toolArtifact.subagentTask')
+      ? t('toolArtifact:subagentTask')
       : getDisplayName(toolName, t, proc.toolCall?.args, { root });
     title = (
       <span className="flex items-center gap-2">
@@ -105,7 +105,7 @@ export default function MarketDetailDialog({ payload, onClose, getToolCallProces
           )}
           {payload?.type === 'toolcall' && !toolCallProcess && (
             <p className="px-6 py-10 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('toolArtifact.toolCallGoneDialog')}
+              {t('toolArtifact:toolCallGoneDialog')}
             </p>
           )}
           {payload?.type === 'preview' && (

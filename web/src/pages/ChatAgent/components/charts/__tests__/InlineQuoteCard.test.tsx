@@ -2,11 +2,11 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { InlineQuoteCard } from '../InlineQuoteCard';
-import enUS from '@/locales/en-US.json';
+import enToolArtifact from '@/locales/toolArtifact/en-US.json';
 
 // Drive the extended-hours label assertion off the real i18n value, not a
-// literal — the card now renders it via `toolArtifact.extendedHours.*`.
-const AFTER_HOURS_LONG = enUS.toolArtifact.extendedHours.afterHours.long;
+// literal — the card now renders it via `toolArtifact:extendedHours.*`.
+const AFTER_HOURS_LONG = enToolArtifact.extendedHours.afterHours.long;
 
 // Unified snapshot shape (snake_case) from the backend provider chain.
 // Neutral placeholder symbols and fabricated numbers only.

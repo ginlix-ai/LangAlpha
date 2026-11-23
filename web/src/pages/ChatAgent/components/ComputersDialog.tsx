@@ -75,13 +75,14 @@ import { folderMarkedOwner } from '../utils/sshLimit';
 import { computerNameTakenMessage } from '../utils/computerName';
 import { liveComputers, tunnelDown } from '../utils/computerStatus';
 import { pairedElsewhere } from './startFailure';
+import { withCopy } from '@/i18n';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 // Off the chat page's first load, since it carries the SSH setup. Preloadable,
 // so the panel fetches it as it opens and New computer renders at once rather
 // than suspending on its first open.
-const CreateComputerDialog = lazyWithMotion(() => import('./CreateComputerDialog'));
+const CreateComputerDialog = lazyWithMotion(withCopy(() => import('./CreateComputerDialog'), ['plugins']));
 // Off it for the same reason: it pairs a machine as New computer does.
 const ReconnectDialog = lazyWithMotion(() => import('./ReconnectDialog'));
 

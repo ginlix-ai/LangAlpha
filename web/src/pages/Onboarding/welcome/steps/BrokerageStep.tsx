@@ -84,7 +84,7 @@ export function BrokerageStep({
     <div className="@container">
       {listError ? (
         <LoadFailed
-          what={t(offersError ? 'plugins.loadFailed.brokerages' : 'plugins.loadFailed.mcp')}
+          what={t(offersError ? 'plugins:loadFailed.brokerages' : 'plugins:loadFailed.mcp')}
           error={listError}
           onRetry={() => {
             if (offersError) void brokers.refetchOffers();
@@ -249,7 +249,7 @@ function TradingPermissionPick({ onPreparing }: { onPreparing: (work: Promise<vo
   if (permission.data === undefined) return null;
   return (
     // Fades in when a broker switched back on here is the first connected.
-    <WizardSection title={t('settings.tradingPermission.title')} titleId={titleId} className="wizard-fade-in mt-10">
+    <WizardSection title={t('settings:tradingPermission.title')} titleId={titleId} className="wizard-fade-in mt-10">
       <p className="-mt-1.5 mb-3 text-[0.8125rem] text-(--color-text-secondary)">
         {t('onboarding.welcome.brokerage.permissionHelper')}
       </p>

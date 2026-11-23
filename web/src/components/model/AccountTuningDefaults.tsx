@@ -63,17 +63,17 @@ export function AccountTuningDefaults({
       {effortLevels.length > 0 && (
         <div className="flex flex-col gap-1.5">
           <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('settings.modelTuning.colEffort')}
+            {t('settings:modelTuning.colEffort')}
           </label>
           <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('settings.modelTuning.effortDesc')}
+            {t('settings:modelTuning.effortDesc')}
           </p>
           <Select
             value={account.reasoning_effort ?? ''}
             onChange={(e) => writeAccountDefault({ reasoning_effort: e.target.value || null })}
-            aria-label={t('settings.modelTuning.colEffort')}
+            aria-label={t('settings:modelTuning.colEffort')}
           >
-            <option value="">{t('settings.modelTuning.modelDefault')}</option>
+            <option value="">{t('settings:modelTuning.modelDefault')}</option>
             {effortLevels.map((lv) => (
               <option key={lv} value={lv}>{t(EFFORT_LABELS[lv])}</option>
             ))}
@@ -90,10 +90,10 @@ export function AccountTuningDefaults({
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1.5">
           <label htmlFor={coldId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('settings.modelTuning.coldCompaction')}
+            {t('settings:modelTuning.coldCompaction')}
           </label>
           <p id={`${coldId}-desc`} className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('settings.modelTuning.coldCompactionDesc')}
+            {t('settings:modelTuning.coldCompactionDesc')}
           </p>
         </div>
         <ToggleSwitch
@@ -107,14 +107,14 @@ export function AccountTuningDefaults({
 
       <div className="flex flex-col gap-1.5">
         <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-          {t('settings.modelTuning.colGuidance')}
+          {t('settings:modelTuning.colGuidance')}
         </label>
         <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('settings.modelTuning.guidanceDesc')}
+          {t('settings:modelTuning.guidanceDesc')}
         </p>
         <div
           role="radiogroup"
-          aria-label={t('settings.modelTuning.colGuidance')}
+          aria-label={t('settings:modelTuning.colGuidance')}
           className="flex flex-wrap gap-2"
         >
           {GUIDANCE_LEVELS.map((level) => {
@@ -145,7 +145,7 @@ export function AccountTuningDefaults({
             className="self-start text-xs underline-offset-2 hover:underline"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {t('settings.modelTuning.useModelDefault')}
+            {t('settings:modelTuning.useModelDefault')}
           </button>
         )}
       </div>

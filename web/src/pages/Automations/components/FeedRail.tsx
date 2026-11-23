@@ -68,7 +68,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
     <aside className="automations-rail">
       {attention.length > 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.groupAttention')}</h2>
+          <h2 className="automations-kicker">{t('automation:groupAttention')}</h2>
           {attention.map((a) => (
             <AttentionRow
               key={a.automation_id}
@@ -82,7 +82,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {upNext.length > 0 && (
         <section className="automations-rail-section automations-rail-schedule">
-          <h2 className="automations-kicker">{t('automation.upNext')}</h2>
+          <h2 className="automations-kicker">{t('automation:upNext')}</h2>
           {upNext.map((a) => (
             <div key={a.automation_id} className="automations-rail-row">
               <span className="automation-mono automations-rail-when" title={relativeTime(a.next_run_at, locale, now)}>
@@ -98,8 +98,8 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {upNext.length === 0 && watching.length === 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.upNext')}</h2>
-          <p className="automations-quiet-note">{t('automation.nothingScheduled')}</p>
+          <h2 className="automations-kicker">{t('automation:upNext')}</h2>
+          <p className="automations-quiet-note">{t('automation:nothingScheduled')}</p>
           <ul className="automations-rail-starters">
             {RECURRING_STARTERS.map((tpl) => (
               <li key={tpl.id}>
@@ -117,7 +117,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {watching.length > 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.groupWatching')}</h2>
+          <h2 className="automations-kicker">{t('automation:groupWatching')}</h2>
           {watching.map((a) => {
             const w = readings.get(a.automation_id);
             return (
@@ -134,7 +134,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
                 {/* A sentence, not a figure, so it takes the meter's line
                     rather than squeezing the name beside it. */}
                 {w && !w.reading && w.settled && !w.quoted && (
-                  <div className="automations-rail-sub">{t('automation.noQuote', { symbol: w.symbol })}</div>
+                  <div className="automations-rail-sub">{t('automation:noQuote', { symbol: w.symbol })}</div>
                 )}
               </div>
             );
@@ -143,7 +143,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
       )}
 
       <button type="button" className="automation-link self-start" onClick={onManage}>
-        {t('automation.manageAll', { count: automations.length })}
+        {t('automation:manageAll', { count: automations.length })}
         <ArrowRight className="h-3 w-3" />
       </button>
     </aside>
@@ -182,10 +182,10 @@ function AttentionRow({
   let quoted = false;
   switch (kind) {
     case 'key_rejected':
-      reason = t('automation.keyRejectedReason');
+      reason = t('automation:keyRejectedReason');
       break;
     case 'switched_off':
-      reason = t('automation.disabledAfter', { count: a.failure_count });
+      reason = t('automation:disabledAfter', { count: a.failure_count });
       break;
     case 'usage_limit':
     case 'claude_plan':
@@ -196,7 +196,7 @@ function AttentionRow({
       reason = last?.error_message || t(ui.labelKey);
       break;
     default:
-      reason = t('automation.lastRunFailedAgo', { when: relativeTime(last?.completed_at, locale, now) });
+      reason = t('automation:lastRunFailedAgo', { when: relativeTime(last?.completed_at, locale, now) });
   }
 
   return (
@@ -214,7 +214,7 @@ function AttentionRow({
         <div className="automations-rail-actions">
           {remedy === 'resume' ? (
             <HeaderButton variant="secondary" disabled={busy} onClick={() => resume.mutate(a.automation_id)}>
-              {t('automation.resume')}
+              {t('automation:resume')}
             </HeaderButton>
           ) : (
             <>
@@ -223,7 +223,7 @@ function AttentionRow({
               </HeaderButton>
               {canPause && (
                 <HeaderButton variant="secondary" disabled={busy} onClick={() => pause.mutate(a.automation_id)}>
-                  {t('automation.pause')}
+                  {t('automation:pause')}
                 </HeaderButton>
               )}
             </>
@@ -232,10 +232,10 @@ function AttentionRow({
             <HeaderButton
               variant="ghost"
               disabled={busy}
-              title={t('automation.dismissHint')}
+              title={t('automation:dismissHint')}
               onClick={() => dismiss.mutate({ automationId: a.automation_id, executionId: last.automation_execution_id })}
             >
-              {t('automation.dismiss')}
+              {t('automation:dismiss')}
             </HeaderButton>
           )}
           {links.length > 0 && (
@@ -251,7 +251,7 @@ function AttentionRow({
               className="automation-link automations-rail-thread"
               onClick={() => openThread(last.conversation_thread_id)}
             >
-              {t('automation.openThread')}
+              {t('automation:openThread')}
               <ArrowUpRight className="h-3 w-3" />
             </button>
           )}

@@ -48,11 +48,11 @@ export interface LayerElements {
 }
 
 const TYPE_KEYS: Record<Exclude<ElementKind, 'drawing'>, string> = {
-  series: 'marketView.layerExplain.types.series',
-  level: 'marketView.layerExplain.types.level',
-  alert: 'marketView.layerExplain.types.alert',
-  marker: 'marketView.layerExplain.types.marker',
-  regime: 'marketView.layerExplain.types.regime',
+  series: 'marketView:layerExplain.types.series',
+  level: 'marketView:layerExplain.types.level',
+  alert: 'marketView:layerExplain.types.alert',
+  marker: 'marketView:layerExplain.types.marker',
+  regime: 'marketView:layerExplain.types.regime',
 };
 
 /** What one element tells the registry: how the report names it and what its explain card shows. */

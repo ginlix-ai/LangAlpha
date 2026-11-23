@@ -97,7 +97,7 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
   const toolName = proc.toolName || '';
   const call = proc.toolCall ? { ...proc.toolCall } : undefined;
   const artifact = proc.toolCallResult?.artifact;
-  const title = isTaskTool(toolName) ? t('toolArtifact.subagentTask') : getCompletedRowTitle(toolName, call, t, { record: proc, root });
+  const title = isTaskTool(toolName) ? t('toolArtifact:subagentTask') : getCompletedRowTitle(toolName, call, t, { record: proc, root });
   if (toolName === 'send_message') {
     // The app's favicon names where it went; its name moves to the hint. A
     // send that did not go is marked as a failed call is.
@@ -126,7 +126,7 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
 function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | null | undefined, names: LaNames | undefined): TabReading {
   switch (tab.kind) {
     case 'empty':
-      return { name: t('filePanel.emptyTab'), Glyph: FolderOpen, detail: null };
+      return { name: t('filePanel:emptyTab'), Glyph: FolderOpen, detail: null };
     case 'file': {
       const slash = tab.path.lastIndexOf('/');
       return { name: tab.path.slice(slash + 1), Glyph: fileGlyph(tab.path), detail: slash > 0 ? tab.path.slice(0, slash) : null };
@@ -134,22 +134,22 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
     case 'settings':
       return { name: t('chat.workspaceSettings'), Glyph: Settings, detail: null };
     case 'memory':
-      return { name: t('filePanel.tabs.memory'), Glyph: BookMarked, detail: null };
+      return { name: t('filePanel:tabs.memory'), Glyph: BookMarked, detail: null };
     case 'memo':
-      return { name: t('filePanel.tabs.memo'), Glyph: ScrollText, detail: null };
+      return { name: t('filePanel:tabs.memo'), Glyph: ScrollText, detail: null };
     case 'status':
-      return { name: t('filePanel.tabs.status'), Glyph: Activity, detail: null };
+      return { name: t('filePanel:tabs.status'), Glyph: Activity, detail: null };
     case 'browser':
-      return { name: t('filePanel.browserTab'), Glyph: Globe, detail: null };
+      return { name: t('filePanel:browserTab'), Glyph: Globe, detail: null };
     case 'preview':
       return { name: tab.title || `:${tab.port}`, Glyph: LayoutDashboard, detail: [`:${tab.port}`, tab.previewPath].filter(Boolean).join(' ') };
     case 'chart':
-      return { name: tab.symbol, Glyph: CandlestickChart, detail: `${t('filePanel.chartTab')} · ${tab.timeframe}` };
+      return { name: tab.symbol, Glyph: CandlestickChart, detail: `${t('filePanel:chartTab')} · ${tab.timeframe}` };
     case 'tool': {
       // Named the way its row is, so the tab is found by what was clicked. A
       // record the transcript no longer holds leaves the tab with a plain name.
       const proc = source as ToolCallProcessRecord | undefined;
-      if (!proc) return { name: t('toolArtifact.toolCall'), Glyph: getToolIcon('', undefined), detail: null };
+      if (!proc) return { name: t('toolArtifact:toolCall'), Glyph: getToolIcon('', undefined), detail: null };
       const kept = toolReadings.get(proc);
       if (kept?.t === t && kept.root === root && kept.names === names) return kept.reading;
       const reading = readToolCall(proc, t, root, names);
@@ -157,7 +157,7 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
       return reading;
     }
     case 'sources':
-      return { name: t('filePanel.sourcesTab', { count: countDedupedSources(source as Record<string, ProvenanceRecord> | undefined) }), Glyph: BookOpen, detail: null };
+      return { name: t('filePanel:sourcesTab', { count: countDedupedSources(source as Record<string, ProvenanceRecord> | undefined) }), Glyph: BookOpen, detail: null };
   }
 }
 
@@ -173,7 +173,7 @@ function ArtifactUnreadDot({ path }: { path: string }): React.ReactElement | nul
   const root = useWorkspaceFolders()?.rootDir;
   const { data: artifact } = useArtifactByPath(workspaceId, path, { root });
   if (!artifact) return null;
-  const label = t('filePanel.pageUnread', { count: artifact.unread });
+  const label = t('filePanel:pageUnread', { count: artifact.unread });
   return (
     <AnimatePresence initial={false}>
       {artifact.unread > 0 && (
@@ -219,15 +219,15 @@ function TabMenuContent({ tabs, at, onClose, onCloseAutoFocus }: TabMenuProps): 
     // Escape closes the menu and nothing else: the panel's own Escape would
     // leave the tree's selection.
     <ContextMenuContent className="max-w-64" onEscapeKeyDown={(event) => event.stopPropagation()} onCloseAutoFocus={onCloseAutoFocus}>
-      <ContextMenuItem onSelect={() => onClose([tabs[at].id])}>{t('filePanel.tabMenu.close')}</ContextMenuItem>
+      <ContextMenuItem onSelect={() => onClose([tabs[at].id])}>{t('filePanel:tabMenu.close')}</ContextMenuItem>
       <ContextMenuItem disabled={tabs.length < 2} onSelect={() => onClose(tabIds(tabs.filter((_, i) => i !== at)))}>
-        {t('filePanel.tabMenu.closeOthers')}
+        {t('filePanel:tabMenu.closeOthers')}
       </ContextMenuItem>
       <ContextMenuItem disabled={at === tabs.length - 1} onSelect={() => onClose(tabIds(tabs.slice(at + 1)))}>
-        {t('filePanel.tabMenu.closeToRight')}
+        {t('filePanel:tabMenu.closeToRight')}
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => onClose(tabIds(tabs))}>{t('filePanel.tabMenu.closeAll')}</ContextMenuItem>
+      <ContextMenuItem onSelect={() => onClose(tabIds(tabs))}>{t('filePanel:tabMenu.closeAll')}</ContextMenuItem>
     </ContextMenuContent>
   );
 }
@@ -462,7 +462,7 @@ export function TabStrip({
       <div
         className="file-panel-tabs clips-focus-ring"
         role="tablist"
-        aria-label={t('filePanel.openFiles')}
+        aria-label={t('filePanel:openFiles')}
         ref={listRef}
         // A basis, not a floor: the row still yields when the strip has less
         // room than it held (the panel resized, a header button appeared), so
@@ -492,16 +492,16 @@ export function TabStrip({
               <Glyph className="h-3.5 w-3.5 shrink-0 file-panel-tab-glyph" />
               <span className="file-panel-tab-name">{name}</span>
               {failed && (
-                <XCircle className="h-3.5 w-3.5 shrink-0 file-panel-tab-failed" role="img" aria-label={t('toolArtifact.a11y.toolCallFailed')} />
+                <XCircle className="h-3.5 w-3.5 shrink-0 file-panel-tab-failed" role="img" aria-label={t('toolArtifact:a11y.toolCallFailed')} />
               )}
               {tab.kind === 'file' && hasChanged(tab.path) && (
-                <span className="file-panel-tab-dot" title={t('filePanel.changedSinceRead')} aria-hidden="true" />
+                <span className="file-panel-tab-dot" title={t('filePanel:changedSinceRead')} aria-hidden="true" />
               )}
               {tab.kind === 'file' && isHtmlFile(tab.path) && <ArtifactUnreadDot path={tab.path} />}
               <button
                 type="button"
                 className="file-panel-tab-close"
-                aria-label={t('filePanel.closeTab', { name })}
+                aria-label={t('filePanel:closeTab', { name })}
                 onClick={(e) => { e.stopPropagation(); if (menuTab !== tab.id) closeFrom(tab.id, e.detail === 0); }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
@@ -538,7 +538,7 @@ export function TabStrip({
       {onNewTab && (
         <ContextMenu onOpenChange={setNewTabMenuOpen}>
           <ContextMenuTrigger asChild disabled={!newTabMenu}>
-            <button type="button" onClick={() => { if (!newTabMenuOpen) onNewTab(); }} className="file-panel-icon-btn shrink-0" title={t('filePanel.newTab')} aria-label={t('filePanel.newTab')}>
+            <button type="button" onClick={() => { if (!newTabMenuOpen) onNewTab(); }} className="file-panel-icon-btn shrink-0" title={t('filePanel:newTab')} aria-label={t('filePanel:newTab')}>
               <Plus className="h-4 w-4" />
             </button>
           </ContextMenuTrigger>
@@ -555,21 +555,21 @@ export function TabStrip({
       <div className="file-panel-strip-right">
         {history && (
           <>
-            <button type="button" onClick={history.onBack ?? undefined} disabled={!history.onBack} className="file-panel-icon-btn" title={t('filePanel.back')} aria-label={t('filePanel.back')}>
+            <button type="button" onClick={history.onBack ?? undefined} disabled={!history.onBack} className="file-panel-icon-btn" title={t('filePanel:back')} aria-label={t('filePanel:back')}>
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <button type="button" onClick={history.onForward ?? undefined} disabled={!history.onForward} className="file-panel-icon-btn" title={t('filePanel.forward')} aria-label={t('filePanel.forward')}>
+            <button type="button" onClick={history.onForward ?? undefined} disabled={!history.onForward} className="file-panel-icon-btn" title={t('filePanel:forward')} aria-label={t('filePanel:forward')}>
               <ChevronRight className="h-4 w-4" />
             </button>
           </>
         )}
         {onOpenMemory && (
-          <button type="button" onClick={onOpenMemory} className="file-panel-icon-btn" title={t('filePanel.tabs.memory')} aria-label={t('filePanel.tabs.memory')}>
+          <button type="button" onClick={onOpenMemory} className="file-panel-icon-btn" title={t('filePanel:tabs.memory')} aria-label={t('filePanel:tabs.memory')}>
             <BookMarked className="h-4 w-4" />
           </button>
         )}
         {onOpenMemo && (
-          <button type="button" onClick={onOpenMemo} className="file-panel-icon-btn" title={t('filePanel.tabs.memo')} aria-label={t('filePanel.tabs.memo')}>
+          <button type="button" onClick={onOpenMemo} className="file-panel-icon-btn" title={t('filePanel:tabs.memo')} aria-label={t('filePanel:tabs.memo')}>
             <ScrollText className="h-4 w-4" />
           </button>
         )}
@@ -578,8 +578,8 @@ export function TabStrip({
             type="button"
             onClick={onToggleExpanded}
             className="file-panel-icon-btn"
-            title={expanded ? t('filePanel.collapsePanel') : t('filePanel.expandPanel')}
-            aria-label={expanded ? t('filePanel.collapsePanel') : t('filePanel.expandPanel')}
+            title={expanded ? t('filePanel:collapsePanel') : t('filePanel:expandPanel')}
+            aria-label={expanded ? t('filePanel:collapsePanel') : t('filePanel:expandPanel')}
           >
             {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </button>
@@ -593,8 +593,8 @@ export function TabStrip({
             onClick={onToggleTree}
             aria-pressed={treeOpen}
             className="file-panel-icon-btn"
-            title={t('filePanel.toggleTree')}
-            aria-label={t('filePanel.toggleTree')}
+            title={t('filePanel:toggleTree')}
+            aria-label={t('filePanel:toggleTree')}
           >
             <FolderTree className="h-4 w-4" />
           </button>
@@ -612,7 +612,7 @@ export function TabStrip({
             <PanelRight className="h-4 w-4" />
           </button>
         ) : (
-          <button type="button" onClick={() => onPanelClose()} className="file-panel-icon-btn" title={t('filePanel.close')} aria-label={t('filePanel.close')}>
+          <button type="button" onClick={() => onPanelClose()} className="file-panel-icon-btn" title={t('filePanel:close')} aria-label={t('filePanel:close')}>
             {backArrow ? <ArrowLeft className="h-4 w-4" /> : <X className="h-4 w-4" />}
           </button>
         ))}

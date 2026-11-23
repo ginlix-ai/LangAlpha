@@ -42,8 +42,8 @@ export default function HtmlActionBar({
           className="html-action-btn"
           onClick={onFullscreen}
           disabled={fullscreenDisabled}
-          title={isFullscreen ? t('filePanel.exitFullscreen') : t('filePanel.fullscreen')}
-          aria-label={isFullscreen ? t('filePanel.exitFullscreen') : t('filePanel.fullscreen')}
+          title={isFullscreen ? t('filePanel:exitFullscreen') : t('filePanel:fullscreen')}
+          aria-label={isFullscreen ? t('filePanel:exitFullscreen') : t('filePanel:fullscreen')}
         >
           {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>
@@ -53,8 +53,8 @@ export default function HtmlActionBar({
           type="button"
           className="html-action-btn"
           onClick={onOpenInNewTab}
-          title={t('filePanel.openInNewTab')}
-          aria-label={t('filePanel.openInNewTab')}
+          title={t('filePanel:openInNewTab')}
+          aria-label={t('filePanel:openInNewTab')}
         >
           <ExternalLink className="h-4 w-4" />
         </button>
@@ -65,8 +65,8 @@ export default function HtmlActionBar({
             <button
               type="button"
               className="html-action-btn"
-              title={t('filePanel.moreActions')}
-              aria-label={t('filePanel.moreActions')}
+              title={t('filePanel:moreActions')}
+              aria-label={t('filePanel:moreActions')}
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
@@ -75,13 +75,13 @@ export default function HtmlActionBar({
             {onDownload && (
               <DropdownMenuItem onSelect={() => onDownload()}>
                 <Download className="h-3.5 w-3.5" />
-                {t('filePanel.downloadAsHtml')}
+                {t('filePanel:downloadAsHtml')}
               </DropdownMenuItem>
             )}
             {onExportPdf && (
               <DropdownMenuItem onSelect={() => void onExportPdf()}>
                 <FileDown className="h-3.5 w-3.5" />
-                {t('filePanel.saveAsPdf')}
+                {t('filePanel:saveAsPdf')}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>

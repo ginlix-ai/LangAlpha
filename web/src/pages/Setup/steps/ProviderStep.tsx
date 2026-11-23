@@ -103,11 +103,11 @@ export default function ProviderStep() {
     <div>
       <WizardStepHeader
         titleId={headingId}
-        title={t('setup.providerTitle')}
+        title={t('setup:providerTitle')}
         helper={
-          list === 'oauth' ? t('setup.providerSubtitleOAuth')
-            : list === 'local' ? t('setup.providerSubtitleLocal')
-            : t('setup.providerSubtitleApiKey')
+          list === 'oauth' ? t('setup:providerSubtitleOAuth')
+            : list === 'local' ? t('setup:providerSubtitleLocal')
+            : t('setup:providerSubtitleApiKey')
         }
       />
       <div className="flex flex-col gap-4">
@@ -136,7 +136,7 @@ export default function ProviderStep() {
             {userCustomProviders.length > 0 && (
               <section className="flex flex-col gap-1">
                 <h4 className="px-3 text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
-                  {t('setup.yourProviders')}
+                  {t('setup:yourProviders')}
                 </h4>
                 <ProviderChoices
                   entries={userCustomProviders.map((cp) => ({ provider: cp.name, name: cp.name }))}
@@ -152,7 +152,7 @@ export default function ProviderStep() {
         {list === 'local' && (
           <>
             {localEntries.length === 0 ? (
-              <QuietNote>{t('setup.noProviders')}</QuietNote>
+              <QuietNote>{t('setup:noProviders')}</QuietNote>
             ) : (
               <ProviderChoices
                 entries={localEntries.map((e) => ({ provider: e.provider, name: e.display_name }))}
@@ -168,7 +168,7 @@ export default function ProviderStep() {
         )}
       </div>
 
-      <SetupFooter back={{ label: t('setup.back'), onClick: handleBack }} primary={null} />
+      <SetupFooter back={{ label: t('setup:back'), onClick: handleBack }} primary={null} />
     </div>
   );
 }

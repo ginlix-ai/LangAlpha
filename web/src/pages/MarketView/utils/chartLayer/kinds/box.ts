@@ -13,7 +13,7 @@ export interface BoxScene extends SceneBase {
 }
 
 export const box: DrawingKind<BoxDrawing, BoxScene> = {
-  nameKey: 'marketView.layerExplain.types.box',
+  nameKey: 'marketView:layerExplain.types.box',
   times: (d) => [d.p1.time, d.p2.time],
   anchors: (d) => [d.p1, d.p2],
   resolve(d, { base, P }) {

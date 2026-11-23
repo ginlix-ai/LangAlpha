@@ -219,9 +219,9 @@ describe('FileHeaderActions', () => {
 
   it('renders download dropdown for markdown file with PDF and Markdown options', () => {
     render(<FileHeaderActions {...defaultProps} />);
-    expect(screen.getByText('filePanel.downloadAsPdf')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:downloadAsPdf')).toBeInTheDocument();
     expect(
-      screen.getByText('filePanel.downloadAsMarkdown'),
+      screen.getByText('filePanel:downloadAsMarkdown'),
     ).toBeInTheDocument();
   });
 
@@ -233,7 +233,7 @@ describe('FileHeaderActions', () => {
         onOpenExportModal={onOpenExportModal}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.downloadAsPdf'));
+    fireEvent.click(screen.getByText('filePanel:downloadAsPdf'));
     expect(onOpenExportModal).toHaveBeenCalledTimes(1);
   });
 
@@ -245,7 +245,7 @@ describe('FileHeaderActions', () => {
         triggerDownloadFn={triggerDownloadFn}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.downloadAsMarkdown'));
+    fireEvent.click(screen.getByText('filePanel:downloadAsMarkdown'));
     expect(triggerDownloadFn).toHaveBeenCalledWith('ws-123', 'report.md');
   });
 
@@ -261,11 +261,11 @@ describe('FileHeaderActions', () => {
         triggerDownloadFn={triggerDownloadFn}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.downloadAsMarkdown'));
+    fireEvent.click(screen.getByText('filePanel:downloadAsMarkdown'));
 
     await waitFor(() => {
       expect(toast).toHaveBeenCalledWith({
-        description: 'filePanel.downloadFailed',
+        description: 'filePanel:downloadFailed',
         variant: 'destructive',
       });
     });
@@ -275,13 +275,13 @@ describe('FileHeaderActions', () => {
   it('renders edit button when canEdit is true', () => {
     render(<FileHeaderActions {...defaultProps} canEdit={true} />);
     expect(
-      screen.getByTitle('filePanel.editFile'),
+      screen.getByTitle('filePanel:editFile'),
     ).toBeInTheDocument();
   });
 
   it('does not render edit button when canEdit is false', () => {
     render(<FileHeaderActions {...defaultProps} canEdit={false} />);
-    expect(screen.queryByTitle('filePanel.editFile')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('filePanel:editFile')).not.toBeInTheDocument();
   });
 
   it('renders edit mode buttons when isEditing is true', () => {
@@ -292,10 +292,10 @@ describe('FileHeaderActions', () => {
         hasUnsavedChanges={true}
       />,
     );
-    expect(screen.getByTitle('filePanel.undo')).toBeInTheDocument();
-    expect(screen.getByTitle('filePanel.redo')).toBeInTheDocument();
-    expect(screen.getByTitle('filePanel.save')).toBeInTheDocument();
-    expect(screen.getByTitle('filePanel.cancelEditing')).toBeInTheDocument();
+    expect(screen.getByTitle('filePanel:undo')).toBeInTheDocument();
+    expect(screen.getByTitle('filePanel:redo')).toBeInTheDocument();
+    expect(screen.getByTitle('filePanel:save')).toBeInTheDocument();
+    expect(screen.getByTitle('filePanel:cancelEditing')).toBeInTheDocument();
   });
 
   it('renders Download and Copy to clipboard for non-markdown text file', () => {
@@ -306,9 +306,9 @@ describe('FileHeaderActions', () => {
         fileMime="text/plain"
       />,
     );
-    expect(screen.getByText('filePanel.download')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:download')).toBeInTheDocument();
     expect(
-      screen.getByText('filePanel.copyToClipboard'),
+      screen.getByText('filePanel:copyToClipboard'),
     ).toBeInTheDocument();
   });
 
@@ -320,10 +320,10 @@ describe('FileHeaderActions', () => {
         fileMime="text/html"
       />,
     );
-    expect(screen.getByText('filePanel.download')).toBeInTheDocument();
-    expect(screen.getByText('filePanel.saveAsPdf')).toBeInTheDocument();
-    expect(screen.queryByText('filePanel.copyToClipboard')).not.toBeInTheDocument();
-    expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
+    expect(screen.getByText('filePanel:download')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:saveAsPdf')).toBeInTheDocument();
+    expect(screen.queryByText('filePanel:copyToClipboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:downloadAsPdf')).not.toBeInTheDocument();
   });
 
   it('exports the server PDF (under a share\'s serve prefix) on Save as PDF', async () => {
@@ -336,14 +336,14 @@ describe('FileHeaderActions', () => {
         access={{ kind: 'share', servePrefix: '/api/v1/public/shared/tok-1/files/serve/' }}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    fireEvent.click(screen.getByText('filePanel:saveAsPdf'));
     await waitFor(() => {
       expect(exportServedPdfMock).toHaveBeenCalledWith({
         filePath: 'results/report.html',
         servedUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
         openUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
-        printHint: 'filePanel.pdfPrintHint',
-        generatingHint: 'filePanel.pdfGenerating',
+        printHint: 'filePanel:pdfPrintHint',
+        generatingHint: 'filePanel:pdfGenerating',
         scale: 1,
         pageNumbers: false,
         branding: true,
@@ -362,7 +362,7 @@ describe('FileHeaderActions', () => {
         fileMime="text/html"
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    fireEvent.click(screen.getByText('filePanel:saveAsPdf'));
     await waitFor(() => {
       expect(exportServedPdfMock).toHaveBeenCalledWith(expect.objectContaining({
         servedUrl: '/api/v1/wsfiles/g/grant-1/results/report.html',
@@ -380,11 +380,11 @@ describe('FileHeaderActions', () => {
         fileMime="text/html"
       />,
     );
-    expect(screen.getByText('filePanel.pdfOptions')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('filePanel.pdfBranding'));
-    fireEvent.click(screen.getByText('filePanel.pdfPageNumbers'));
+    expect(screen.getByText('filePanel:pdfOptions')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('filePanel:pdfBranding'));
+    fireEvent.click(screen.getByText('filePanel:pdfPageNumbers'));
     fireEvent.click(screen.getByText('80%'));
-    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    fireEvent.click(screen.getByText('filePanel:saveAsPdf'));
     await waitFor(() => {
       expect(exportServedPdfMock).toHaveBeenCalledWith(
         expect.objectContaining({ scale: 0.8, pageNumbers: true, branding: false }),
@@ -413,7 +413,7 @@ describe('FileHeaderActions', () => {
     expect(openPublish).toHaveBeenCalledWith('results/report.html');
     expect(screen.getByText('artifact.commentsGoNew')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /pageViewer\.comments\.bindHere/ }));
+    fireEvent.click(screen.getByRole('button', { name: /pageViewer:comments\.bindHere/ }));
     expect(bindMutate).toHaveBeenCalledWith(
       { workspaceId: 'ws-123', path: 'results/report.html', threadId: 'th-1' },
       expect.anything(),
@@ -427,7 +427,7 @@ describe('FileHeaderActions', () => {
     destinations = answerFor(true);
     render(besideChat(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" openPublish={vi.fn()} />));
     expect(screen.getByText('artifact.commentsGoHere')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /pageViewer\.comments\.bindHere/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /pageViewer:comments\.bindHere/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /artifact\.unbind/ }));
     expect(unbindMutate).toHaveBeenCalledWith('art-1', expect.anything());
     artifactRecord = null;
@@ -452,7 +452,7 @@ describe('FileHeaderActions', () => {
     expect(byPathAsks).not.toContainEqual({ workspaceId: 'ws-123', path: 'results/report.html' });
     fireEvent.click(screen.getByRole('button', { name: /artifact\.publishEllipsis/ }));
     expect(openPublish).toHaveBeenCalledWith('results/appendix.html');
-    fireEvent.click(screen.getByRole('button', { name: /pageViewer\.comments\.bindHere/ }));
+    fireEvent.click(screen.getByRole('button', { name: /pageViewer:comments\.bindHere/ }));
     expect(bindMutate).toHaveBeenLastCalledWith(
       { workspaceId: 'ws-123', path: 'results/appendix.html', threadId: 'th-1' },
       expect.anything(),
@@ -463,7 +463,7 @@ describe('FileHeaderActions', () => {
   it('offers no bind and says nothing of where comments go until the server has answered for the file', () => {
     artifactRecord = null;
     render(besideChat(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" openPublish={vi.fn()} />));
-    expect(screen.queryByRole('button', { name: /pageViewer\.comments\.bindHere/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /pageViewer:comments\.bindHere/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/artifact\.commentsGo/)).not.toBeInTheDocument();
   });
 
@@ -471,16 +471,16 @@ describe('FileHeaderActions', () => {
     const onToggleHtmlSource = vi.fn();
     const html = { selectedFile: 'results/report.html', fileMime: 'text/html', onToggleHtmlSource };
     const { rerender } = render(<FileHeaderActions {...defaultProps} {...html} />);
-    fireEvent.click(screen.getByRole('button', { name: 'filePanel.viewSource' }));
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel:viewSource' }));
     expect(onToggleHtmlSource).toHaveBeenCalledTimes(1);
 
     rerender(<FileHeaderActions {...defaultProps} {...html} htmlSource />);
-    expect(screen.getByRole('button', { name: 'filePanel.viewPreview' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'filePanel:viewPreview' })).toBeInTheDocument();
   });
 
   it('offers no source switch for a file that is not HTML', () => {
     render(<FileHeaderActions {...defaultProps} onToggleHtmlSource={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: 'filePanel.viewSource' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'filePanel:viewSource' })).not.toBeInTheDocument();
   });
 
   // The grant URL is the panel's to load and expires; a tab opened on it
@@ -488,7 +488,7 @@ describe('FileHeaderActions', () => {
   it("opens the owner's HTML file at its share page in a new tab", () => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
     render(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" fileMime="text/html" />);
-    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel:openInNewTab' }));
     expect(open).toHaveBeenCalledWith(
       '/a/abc123abc123',
       '_blank',
@@ -507,7 +507,7 @@ describe('FileHeaderActions', () => {
         access={{ kind: 'share', servePrefix: '/api/v1/public/shared/tok-1/files/serve/' }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel:openInNewTab' }));
     expect(open).toHaveBeenCalledWith(
       '/api/v1/public/shared/tok-1/files/serve/results/report.html',
       '_blank',
@@ -526,11 +526,11 @@ describe('FileHeaderActions', () => {
     const props = { ...defaultProps, selectedFile: 'results/report.html', fileMime: 'text/html', access: { kind: 'readOnly' } as PanelAccess };
     const { rerender } = render(<FileHeaderActions {...props} />);
     expect(ownedAsks.every((ws) => ws === null)).toBe(true);
-    expect(screen.queryByRole('button', { name: 'filePanel.openInNewTab' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'filePanel:openInNewTab' })).not.toBeInTheDocument();
 
     artifactRecord = { artifact_id: 'art-3', shared: false, bound_thread_id: null, url: '/a/sibling00001' };
     rerender(<FileHeaderActions {...props} fileContent="<p>again</p>" />);
-    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel:openInNewTab' }));
     expect(open).toHaveBeenCalledWith('/a/sibling00001', '_blank', 'noopener,noreferrer');
     expect(ownedAsks.every((ws) => ws === null)).toBe(true);
     artifactRecord = null;
@@ -545,12 +545,12 @@ describe('FileHeaderActions', () => {
         fileMime="image/png"
       />,
     );
-    expect(screen.getByText('filePanel.download')).toBeInTheDocument();
+    expect(screen.getByText('filePanel:download')).toBeInTheDocument();
     expect(
-      screen.queryByText('filePanel.downloadAsPdf'),
+      screen.queryByText('filePanel:downloadAsPdf'),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText('filePanel.copyToClipboard'),
+      screen.queryByText('filePanel:copyToClipboard'),
     ).not.toBeInTheDocument();
   });
 
@@ -573,12 +573,12 @@ describe('FileHeaderActions', () => {
       />,
     );
     expect(screen.queryByTestId('dropdown-menu')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('filePanel.downloadOptions')).not.toBeInTheDocument();
-    expect(screen.queryByText('filePanel.download')).not.toBeInTheDocument();
-    expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
-    expect(screen.queryByText('filePanel.saveAsPdf')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('filePanel:downloadOptions')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:download')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:downloadAsPdf')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:saveAsPdf')).not.toBeInTheDocument();
     // The edit affordance is a separate permission and is not swept up.
-    expect(screen.getByTitle('filePanel.editFile')).toBeInTheDocument();
+    expect(screen.getByTitle('filePanel:editFile')).toBeInTheDocument();
   });
 
   it('keeps the download menu when the prop is omitted', () => {
@@ -588,8 +588,8 @@ describe('FileHeaderActions', () => {
 
   it('does not render download dropdown when isEditing is true', () => {
     render(<FileHeaderActions {...defaultProps} isEditing={true} />);
-    expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
-    expect(screen.queryByText('filePanel.downloadAsMarkdown')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:downloadAsPdf')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel:downloadAsMarkdown')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dropdown-menu')).not.toBeInTheDocument();
   });
 
@@ -606,7 +606,7 @@ describe('FileHeaderActions', () => {
         readFileFullFn={readFileFullFn}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.copyToClipboard'));
+    fireEvent.click(screen.getByText('filePanel:copyToClipboard'));
 
     await waitFor(() => {
       expect(readFileFullFn).toHaveBeenCalledWith('ws-123', 'data.txt');
@@ -627,7 +627,7 @@ describe('FileHeaderActions', () => {
         readFileFullFn={readFileFullFn}
       />,
     );
-    fireEvent.click(screen.getByText('filePanel.copyToClipboard'));
+    fireEvent.click(screen.getByText('filePanel:copyToClipboard'));
 
     // Toast mock is called via the module mock — just verify no crash
     await waitFor(() => {

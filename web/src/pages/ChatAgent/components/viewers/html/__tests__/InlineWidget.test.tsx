@@ -110,17 +110,17 @@ describe('InlineWidget — hover action bar + fullscreen', () => {
 
   it('renders the overlay action bar (fullscreen, open, more menu)', () => {
     render(<InlineWidget html="<div>hi</div>" title="My widget" />);
-    expect(screen.getByLabelText('filePanel.fullscreen')).toBeInTheDocument();
-    expect(screen.getByLabelText('filePanel.openInNewTab')).toBeInTheDocument();
+    expect(screen.getByLabelText('filePanel:fullscreen')).toBeInTheDocument();
+    expect(screen.getByLabelText('filePanel:openInNewTab')).toBeInTheDocument();
     // Download/PDF are consolidated into the secondary "more" menu.
-    expect(screen.getByLabelText('filePanel.moreActions')).toBeInTheDocument();
+    expect(screen.getByLabelText('filePanel:moreActions')).toBeInTheDocument();
     expect(screen.queryByLabelText('filePanel.copySource')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('filePanel.downloadAsHtml')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('filePanel:downloadAsHtml')).not.toBeInTheDocument();
   });
 
   it('opens the fullscreen modal with a widget-fullscreen srcDoc iframe', () => {
     render(<InlineWidget html="<div>hi</div>" title="My widget" />);
-    fireEvent.click(screen.getByLabelText('filePanel.fullscreen'));
+    fireEvent.click(screen.getByLabelText('filePanel:fullscreen'));
     const frame = document.querySelector('iframe.html-fullscreen-frame') as HTMLIFrameElement;
     expect(frame).toBeTruthy();
     // Fullscreen variant uses a srcDoc (not a served src), scrollable body.
@@ -136,7 +136,7 @@ describe('InlineWidget — hover action bar + fullscreen', () => {
   // theme the thread was first rendered in.
   it('pushes the live theme into the fullscreen document when it loads', () => {
     render(<InlineWidget html="<div>hi</div>" title="My widget" />);
-    fireEvent.click(screen.getByLabelText('filePanel.fullscreen'));
+    fireEvent.click(screen.getByLabelText('filePanel:fullscreen'));
     const frame = document.querySelector('iframe.html-fullscreen-frame') as HTMLIFrameElement;
     const postMessage = vi.fn();
     Object.defineProperty(frame, 'contentWindow', { value: { postMessage }, configurable: true });
@@ -151,7 +151,7 @@ describe('InlineWidget — hover action bar + fullscreen', () => {
 
   it('opens a blob tab when open-in-new-tab is clicked', () => {
     render(<InlineWidget html="<div>hi</div>" />);
-    fireEvent.click(screen.getByLabelText('filePanel.openInNewTab'));
+    fireEvent.click(screen.getByLabelText('filePanel:openInNewTab'));
     expect(window.open).toHaveBeenCalledWith('blob:x', '_blank', 'noopener,noreferrer');
   });
 });

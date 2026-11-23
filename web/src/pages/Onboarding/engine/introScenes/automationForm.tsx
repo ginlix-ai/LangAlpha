@@ -136,9 +136,9 @@ export function TriggerChips({
 }) {
   const { t } = useTranslation();
   const kinds = [
-    { id: 'cron', label: t('automation.triggerSchedule') },
-    { id: 'once', label: t('automation.once') },
-    { id: 'price', label: t('automation.triggerPrice') },
+    { id: 'cron', label: t('automation:triggerSchedule') },
+    { id: 'once', label: t('automation:once') },
+    { id: 'price', label: t('automation:triggerPrice') },
   ] as const;
   return (
     <div className="flex gap-1">
@@ -257,7 +257,7 @@ export function MoreToggle({ open, summary }: { open: boolean; summary: string }
         className="inline-flex items-center gap-[2px] text-[7px] font-medium leading-[9px]"
         style={{ color: open ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
       >
-        {t('automation.moreOptions')}
+        {t('automation:moreOptions')}
         <ChevronRight
           className="h-[7px] w-[7px] transition-transform duration-fold"
           style={{ transform: open ? 'rotate(90deg)' : undefined }}
@@ -280,9 +280,9 @@ export function useSummary(): string {
   const { t } = useTranslation();
   return [
     t('agents.chiefOfStaff'),
-    t('automation.continueExisting'),
-    t('automation.noDelivery'),
-    t('automation.stopsAfter', { count: 3 }),
+    t('automation:continueExisting'),
+    t('automation:noDelivery'),
+    t('automation:stopsAfter', { count: 3 }),
   ].join(' · ');
 }
 

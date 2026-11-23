@@ -70,10 +70,10 @@ export function OutputFormatRanking({ ranking, onChange, labelledBy }: OutputFor
             onClick={() => onChange(null)}
             className="underline underline-offset-2 hover:text-(--color-text-primary)"
           >
-            {t('settings.outputFormatReset')}
+            {t('settings:outputFormatReset')}
           </button>
         ) : (
-          t('settings.outputFormatDecides')
+          t('settings:outputFormatDecides')
         )}
       </p>
     </div>
@@ -89,7 +89,7 @@ function RankedFormat({ format, rank, ranked, onUp, onDown }: {
 }) {
   const { t } = useTranslation();
   const { listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: format });
-  const name = t(`settings.outputFormatOption.${format}.title`);
+  const name = t(`settings:outputFormatOption.${format}.title`);
   const step = 'flex h-7 w-7 items-center justify-center rounded-md text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:pointer-events-none disabled:opacity-30';
   return (
     <li
@@ -107,7 +107,7 @@ function RankedFormat({ format, rank, ranked, onUp, onDown }: {
         {...listeners}
         aria-hidden
         className="flex h-7 w-5 shrink-0 cursor-grab touch-none items-center justify-center text-(--color-text-quaternary) active:cursor-grabbing"
-        title={t('settings.outputFormatDrag', { name })}
+        title={t('settings:outputFormatDrag', { name })}
       >
         <GripVertical className="h-4 w-4" />
       </span>
@@ -120,11 +120,11 @@ function RankedFormat({ format, rank, ranked, onUp, onDown }: {
       <span className="min-w-0 flex-1">
         <span className="block text-[0.8125rem] font-medium" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
         <span className="mt-0.5 block text-xs leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t(`settings.outputFormatOption.${format}.desc`)}
+          {t(`settings:outputFormatOption.${format}.desc`)}
         </span>
       </span>
       <span className="flex shrink-0 flex-col sm:flex-row">
-        <button type="button" className={step} disabled={!onUp} onClick={onUp} aria-label={t('settings.outputFormatMoveUp', { name })}>
+        <button type="button" className={step} disabled={!onUp} onClick={onUp} aria-label={t('settings:outputFormatMoveUp', { name })}>
           <ChevronUp className="h-4 w-4" />
         </button>
         <button
@@ -132,7 +132,7 @@ function RankedFormat({ format, rank, ranked, onUp, onDown }: {
           className={step}
           disabled={!onDown}
           onClick={onDown}
-          aria-label={t('settings.outputFormatMoveDown', { name })}
+          aria-label={t('settings:outputFormatMoveDown', { name })}
           data-search-focus={rank === 1 ? '' : undefined}
         >
           <ChevronDown className="h-4 w-4" />

@@ -57,10 +57,10 @@ const ACTION_ICON: Record<CardAction, LucideIcon> = {
 };
 
 const ACTION_LABEL: Record<CardAction, string> = {
-  keepNote: 'pageViewer.comments.keepNote',
-  sendNow: 'pageViewer.comments.sendNow',
-  addToQueue: 'pageViewer.comments.addToQueue',
-  reopen: 'pageViewer.comments.reopen',
+  keepNote: 'pageViewer:comments.keepNote',
+  sendNow: 'pageViewer:comments.sendNow',
+  addToQueue: 'pageViewer:comments.addToQueue',
+  reopen: 'pageViewer:comments.reopen',
   delete: 'common.delete',
 };
 
@@ -69,9 +69,9 @@ const ACTION_LABEL: Record<CardAction, string> = {
  * sent comment says so through the agent's mark beside it.
  */
 const STATE_LABEL: Partial<Record<PinState, string>> = {
-  queued: 'pageViewer.comments.tagQueued',
-  note: 'pageViewer.comments.tagNote',
-  resolved: 'pageViewer.comments.tagResolved',
+  queued: 'pageViewer:comments.tagQueued',
+  note: 'pageViewer:comments.tagNote',
+  resolved: 'pageViewer:comments.tagResolved',
 };
 
 /**
@@ -209,8 +209,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
   const who = (
     <>
       <PinBadge number={comment.number} state={state} working={working} unread={unread} />
-      <span className="sr-only">{t('pageViewer.comments.pinLabel', { number: comment.number })}</span>
-      {unread && <span className="sr-only">{t('pageViewer.comments.unreadLabel')}</span>}
+      <span className="sr-only">{t('pageViewer:comments.pinLabel', { number: comment.number })}</span>
+      {unread && <span className="sr-only">{t('pageViewer:comments.unreadLabel')}</span>}
       <span className="min-w-0 truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
         {writerName(t, comment.messages[0], me)}
       </span>
@@ -218,14 +218,14 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
         {relativeTime(comment.created_at, locale, now)}
       </time>
       {reached && (
-        <span role="img" aria-label={t('pageViewer.comments.sentToAgent')} title={t('pageViewer.comments.sentToAgent')} className="inline-flex" style={{ color: 'var(--color-accent-primary)' }}>
+        <span role="img" aria-label={t('pageViewer:comments.sentToAgent')} title={t('pageViewer:comments.sentToAgent')} className="inline-flex" style={{ color: 'var(--color-accent-primary)' }}>
           <AgentMark className="h-3.5 w-3.5" />
         </span>
       )}
       {STATE_LABEL[state] && <span className="sr-only">{t(STATE_LABEL[state])}</span>}
       {/* Said folded or open: a list read top to bottom should not hide which
           comments the file has moved out from under. */}
-      {outdated && <span className="page-comment-outdated shrink-0">{t('pageViewer.comments.outdated')}</span>}
+      {outdated && <span className="page-comment-outdated shrink-0">{t('pageViewer:comments.outdated')}</span>}
     </>
   );
 
@@ -244,8 +244,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
             type="button"
             className="page-comment-icon-btn"
             disabled={busy}
-            aria-label={resolved ? t('pageViewer.comments.reopen') : t('pageViewer.comments.resolve')}
-            title={resolved ? t('pageViewer.comments.reopen') : t('pageViewer.comments.resolve')}
+            aria-label={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
+            title={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
             onClick={() => void run(() => actions.setStatus(comment, resolved ? 'open' : 'resolved'))}
           >
             <InPlaceSwap scale swapped={resolved} from={<Check className="h-[15px] w-[15px]" />} to={<RotateCcw className="h-3.5 w-3.5" />} />
@@ -255,8 +255,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
               <button
                 type="button"
                 className="page-comment-icon-btn"
-                aria-label={t('pageViewer.comments.more')}
-                title={t('pageViewer.comments.more')}
+                aria-label={t('pageViewer:comments.more')}
+                title={t('pageViewer:comments.more')}
               >
                 <MoreHorizontal className="h-[15px] w-[15px]" />
               </button>
@@ -307,13 +307,13 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
                   onSend={sendRoute ? sendNow : null}
                 />
               ) : away ? (
-                <ThreadLink id={away.id} label={away.label} text={t('pageViewer.comments.sentTo', { thread: away.label })} />
+                <ThreadLink id={away.id} label={away.label} text={t('pageViewer:comments.sentTo', { thread: away.label })} />
               ) : null}
             </SwapCell>
           </Disclosure>
           <Disclosure open={refusal !== null}>
             <p role="alert" className="page-comment-card-over pt-1 text-xs leading-[1.4]" style={{ color: 'var(--color-icon-danger)' }}>
-              {shownRefusal && t('pageViewer.comments.notSent', { reason: shownRefusal })}
+              {shownRefusal && t('pageViewer:comments.notSent', { reason: shownRefusal })}
             </p>
           </Disclosure>
           <Disclosure open={!open && news !== null}>
@@ -327,7 +327,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
                   <AgentMark className="h-2.5 w-2.5" />
                 </span>
                 <span className="shrink-0 font-medium whitespace-nowrap" style={{ color: 'var(--color-text-primary)' }}>
-                  {resolved ? t('pageViewer.comments.newReplyResolved') : t('pageViewer.comments.newReply')}
+                  {resolved ? t('pageViewer:comments.newReplyResolved') : t('pageViewer:comments.newReply')}
                 </span>
                 <span className="min-w-0 truncate">{oneLine(flattenMarkdown(news.body), NEWS_LIMIT)}</span>
               </p>
@@ -355,7 +355,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
                 <PresenceFold key="working" appear className="pt-2.5">
                   <div className="flex items-center gap-2 pl-[27px] text-xs">
                     <Loader size={12} style={{ color: 'var(--color-accent-primary)' }} />
-                    <TextShimmer as="span" className="text-xs">{t('pageViewer.comments.working')}</TextShimmer>
+                    <TextShimmer as="span" className="text-xs">{t('pageViewer:comments.working')}</TextShimmer>
                   </div>
                 </PresenceFold>
               )}
@@ -370,7 +370,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
             mode={REPLY}
             value={reply}
             onChange={setReply}
-            placeholder={resolved ? t('pageViewer.comments.replyToReopen') : t('pageViewer.comments.replyPlaceholder')}
+            placeholder={resolved ? t('pageViewer:comments.replyToReopen') : t('pageViewer:comments.replyPlaceholder')}
             canQueue={queueRoute !== null}
             canSend={sendRoute !== null}
             onSubmit={async (intent) => {
@@ -386,7 +386,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
       <Disclosure open={confirming}>
         <div className="page-comment-card-over flex items-center gap-1.5 pt-2">
           <span className="min-w-0 flex-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            {t('pageViewer.comments.deleteConfirm')}
+            {t('pageViewer:comments.deleteConfirm')}
           </span>
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy} onClick={() => setConfirming(false)}>
             {t('common.cancel')}
@@ -408,7 +408,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
       </Disclosure>
       {failed && (
         <p role="alert" className="page-comment-card-over pt-1.5 text-xs" style={{ color: 'var(--color-icon-danger)' }}>
-          {t('pageViewer.comments.saveFailed')}
+          {t('pageViewer:comments.saveFailed')}
         </p>
       )}
     </div>
@@ -445,11 +445,11 @@ function QueuedRow({ comment, besideThreadId, pending, onSend }: {
     : null;
   return (
     <>
-      <span className="page-comment-queued-tag shrink-0">{t('pageViewer.comments.tagQueued')}</span>
+      <span className="page-comment-queued-tag shrink-0">{t('pageViewer:comments.tagQueued')}</span>
       {thread && label ? (
-        <ThreadLink id={thread} label={label} text={t('pageViewer.comments.forThread', { thread: label })} />
+        <ThreadLink id={thread} label={label} text={t('pageViewer:comments.forThread', { thread: label })} />
       ) : thread ? (
-        <span className="truncate" style={{ color: 'var(--color-text-secondary)' }}>{t('pageViewer.comments.forThisThread')}</span>
+        <span className="truncate" style={{ color: 'var(--color-text-secondary)' }}>{t('pageViewer:comments.forThisThread')}</span>
       ) : null}
       <Button
         type="button"
@@ -467,13 +467,13 @@ function QueuedRow({ comment, besideThreadId, pending, onSend }: {
           from={(
             <>
               <ArrowUp className="h-3 w-3" aria-hidden />
-              {t('pageViewer.comments.sendNow')}
+              {t('pageViewer:comments.sendNow')}
             </>
           )}
           to={(
             <>
               <SendingGlyph on={pending} />
-              {t('pageViewer.comments.sending')}
+              {t('pageViewer:comments.sending')}
             </>
           )}
         />
@@ -499,7 +499,7 @@ function Reply({ message, me, locale, now }: { message: ArtifactCommentMessage; 
           </span>
         )}
         <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
-          {agent ? t('pageViewer.comments.agent') : writerName(t, message, me)}
+          {agent ? t('pageViewer:comments.agent') : writerName(t, message, me)}
         </span>
         <time className="whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }} dateTime={message.created_at}>
           {relativeTime(message.created_at, locale, now)}

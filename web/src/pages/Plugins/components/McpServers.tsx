@@ -135,23 +135,23 @@ export function McpServers() {
     // confirms first, and stays up if the delete fails, to retry or cancel.
     confirmBeforeDelete: true,
     onSaveWarnings: (warnings) =>
-      toast({ title: t('plugins.servers.warningTitle'), description: warnings.join('\n') }),
+      toast({ title: t('plugins:servers.warningTitle'), description: warnings.join('\n') }),
     onCreated: ({ name, toolCount }) => {
       markJustAdded('server', name);
       toastConnectorAdded({ name, toolCount, onOpen: () => detail.open(name), t });
     },
     onToggleWarnings: (warnings) =>
-      toast({ title: t('plugins.servers.enabledWithWarnings'), description: warnings.join('\n') }),
+      toast({ title: t('plugins:servers.enabledWithWarnings'), description: warnings.join('\n') }),
     onToggleError: (err) =>
       toast({
         variant: 'destructive',
-        title: t('plugins.servers.toggleFailed'),
+        title: t('plugins:servers.toggleFailed'),
         description: formatApiErrorDetail(err),
       }),
     onDeleteError: (err) =>
       toast({
         variant: 'destructive',
-        title: t('plugins.servers.deleteFailed'),
+        title: t('plugins:servers.deleteFailed'),
         description: formatApiErrorDetail(err),
       }),
     pendingFor: (server, editing) =>
@@ -246,7 +246,7 @@ export function McpServers() {
     } catch (err) {
       toast({
         variant: 'destructive',
-        title: t('plugins.servers.toggleFailed'),
+        title: t('plugins:servers.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
     } finally {
@@ -298,11 +298,11 @@ export function McpServers() {
   const removeConfirm = deletingName && (
     <div className={detailData ? 'connector-confirm-aside' : 'connector-confirm'}>
       <ConfirmStrip
-        message={t('plugins.connectorsPage.removeConfirm', { server: deletingName })}
+        message={t('plugins:connectorsPage.removeConfirm', { server: deletingName })}
         confirmLabel={
-          deleteMutation.isPending ? t('common.loading') : t('plugins.connectorsPage.remove')
+          deleteMutation.isPending ? t('common.loading') : t('plugins:connectorsPage.remove')
         }
-        cancelLabel={t('plugins.servers.deleteConfirmNo')}
+        cancelLabel={t('plugins:servers.deleteConfirmNo')}
         pending={deleteMutation.isPending}
         onConfirm={confirmDelete}
         onCancel={cancelDelete}
@@ -321,10 +321,10 @@ export function McpServers() {
       className="pf-named"
       title={group.plugin}
       count={group.servers.length}
-      note={group.pluginOff ? t('plugins.connectorsPage.pluginOff') : undefined}
+      note={group.pluginOff ? t('plugins:connectorsPage.pluginOff') : undefined}
       action={
         <SectionLink onClick={() => openDetail({ kind: 'plugin', name: group.plugin })}>
-          {t('plugins.connectorsPage.openPlugin')}
+          {t('plugins:connectorsPage.openPlugin')}
         </SectionLink>
       }
     >
@@ -338,7 +338,7 @@ export function McpServers() {
   // a word when it is close.
   const capNote =
     maxServers > 0 && servers.length >= Math.floor(maxServers * 0.8)
-      ? t('plugins.connectorsPage.capUsed', { used: servers.length, max: maxServers })
+      ? t('plugins:connectorsPage.capUsed', { used: servers.length, max: maxServers })
       : undefined;
 
   // One line for every held-back row, where the user looks for their own.
@@ -362,9 +362,9 @@ export function McpServers() {
     // place a connector added by URL or command would go.
     ownBody = (
       <p className="connector-quiet">
-        {t('plugins.connectorsPage.empty')}
+        {t('plugins:connectorsPage.empty')}
         <button type="button" onClick={addServer}>
-          {t('plugins.connectorsPage.addOne')}
+          {t('plugins:connectorsPage.addOne')}
         </button>
       </p>
     );
@@ -373,7 +373,7 @@ export function McpServers() {
   // What ships with the app is another query: it stays whatever the user's
   // own list says, loading or failed.
   const builtinSection = groups.builtins.length > 0 && (
-    <SurfaceSection title={t('plugins.connectorsPage.builtIn')} count={groups.builtins.length}>
+    <SurfaceSection title={t('plugins:connectorsPage.builtIn')} count={groups.builtins.length}>
       <SurfaceGrid {...list.fold(GROUP_ROWS, groups.builtins.map((s) => s.name))}>
         {groups.builtins.map((server) => (
           <CellModeProvider
@@ -413,14 +413,14 @@ export function McpServers() {
           {registryUnavailable && (
             <RetryNote
               id={REGISTRY_NOTE_ID}
-              text={t('plugins.oauth.registryUnavailableNote')}
+              text={t('plugins:oauth.registryUnavailableNote')}
               onRetry={() => void refetchBrokerages()}
             />
           )}
           {/* Without a notice a failed load reads as "this build ships
               nothing", while the user's own groups render fine beside it. */}
           {!!builtinError && (
-            <RetryNote text={t('plugins.mcp.builtinLoadFailed')} onRetry={() => void refetchBuiltins()} />
+            <RetryNote text={t('plugins:mcp.builtinLoadFailed')} onRetry={() => void refetchBuiltins()} />
           )}
         </div>
       )}
@@ -428,8 +428,8 @@ export function McpServers() {
       <PluginListFrame
         list={list}
         query={catalogQuery}
-        loadFailed={t('plugins.loadFailed.mcp')}
-        noun={t('plugins.filter.nounConnectors')}
+        loadFailed={t('plugins:loadFailed.mcp')}
+        noun={t('plugins:filter.nounConnectors')}
         catalogScope="connectors"
         bulk={bulk}
         hidden={!!detailData}
@@ -446,7 +446,7 @@ export function McpServers() {
 
         {groups.attention.length > 0 && (
           <SurfaceSection
-            title={t('plugins.connectorsPage.needsAttention')}
+            title={t('plugins:connectorsPage.needsAttention')}
             count={groups.attention.length}
             attention
           >
@@ -461,7 +461,7 @@ export function McpServers() {
 
         {ownBody && (
           <SurfaceSection
-            title={t('plugins.connectorsPage.addedByYou')}
+            title={t('plugins:connectorsPage.addedByYou')}
             count={groups.own.length}
             note={capNote}
           >

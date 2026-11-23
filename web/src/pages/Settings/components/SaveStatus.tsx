@@ -8,7 +8,7 @@ export function SaveStatus({ status }: { status: 'idle' | 'saving' | 'saved' | '
     ? [t('common.saving'), 'var(--color-text-tertiary)']
     : status === 'saved'
       ? [t('common.saved'), 'var(--color-success)']
-      : [t('settings.failedToSaveSettings'), 'var(--color-loss)'];
+      : [t('settings:failedToSaveSettings'), 'var(--color-loss)'];
   return (
     <span role="status" className="text-xs shrink-0" style={{ color }}>
       {text}

@@ -11,7 +11,7 @@ export interface LabelScene extends SceneBase {
 }
 
 export const label: DrawingKind<LabelDrawing, LabelScene> = {
-  nameKey: 'marketView.layerExplain.types.label',
+  nameKey: 'marketView:layerExplain.types.label',
   times: (d) => [d.at.time],
   anchors: (d) => [d.at],
   resolve(d, { base, P }) {

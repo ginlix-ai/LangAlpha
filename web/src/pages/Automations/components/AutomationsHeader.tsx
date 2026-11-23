@@ -30,12 +30,12 @@ export default function AutomationsHeader({ automations, loading = false, view, 
   const census = useMemo(() => {
     const { running, scheduled, watching, paused, off, attention } = automationCensus(automations);
     const parts: string[] = [];
-    if (running) parts.push(t('automation.censusRunning', { count: running }));
-    if (scheduled) parts.push(t('automation.censusScheduled', { count: scheduled }));
-    if (watching) parts.push(t('automation.censusWatching', { count: watching }));
-    if (paused) parts.push(t('automation.censusPaused', { count: paused }));
-    if (off) parts.push(t('automation.censusOff', { count: off }));
-    if (attention) parts.push(t('automation.censusAttention', { count: attention }));
+    if (running) parts.push(t('automation:censusRunning', { count: running }));
+    if (scheduled) parts.push(t('automation:censusScheduled', { count: scheduled }));
+    if (watching) parts.push(t('automation:censusWatching', { count: watching }));
+    if (paused) parts.push(t('automation:censusPaused', { count: paused }));
+    if (off) parts.push(t('automation:censusOff', { count: off }));
+    if (attention) parts.push(t('automation:censusAttention', { count: attention }));
     return parts;
   }, [automations, t]);
 
@@ -46,13 +46,13 @@ export default function AutomationsHeader({ automations, loading = false, view, 
   return (
     <header className="automations-header">
       <div className="min-w-0">
-        <h1 className="title-font automations-title">{t('automation.automations')}</h1>
+        <h1 className="title-font automations-title">{t('automation:automations')}</h1>
         {loading ? (
           <p className="automation-mono automations-census"><SkeletonBar className="w-28" /></p>
         ) : census.length > 0 ? (
           <p className="automation-mono automations-census">{census.join(' · ')}</p>
         ) : (
-          <p className="automations-tagline">{t('automation.tagline')}</p>
+          <p className="automations-tagline">{t('automation:tagline')}</p>
         )}
       </div>
       {!empty && (
@@ -60,10 +60,10 @@ export default function AutomationsHeader({ automations, loading = false, view, 
           <SegmentedControl<AutomationsView>
             value={view}
             onChange={onViewChange}
-            label={t('automation.viewLabel')}
+            label={t('automation:viewLabel')}
             options={[
-              { value: 'feed', label: t('automation.viewFeed') },
-              { value: 'manage', label: t('automation.viewManage') },
+              { value: 'feed', label: t('automation:viewFeed') },
+              { value: 'manage', label: t('automation:viewManage') },
             ]}
           />
           <NewAutomationMenu onPick={onNew} />

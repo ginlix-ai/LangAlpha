@@ -34,31 +34,31 @@ function CryptoHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProp
   return (
     <div className="space-y-4">
       <EnumField
-        label={t('dashboard.widgets.cryptoHeatmap.dataSource')}
+        label={t('dashboard:widgets.cryptoHeatmap.dataSource')}
         value={config.dataSource ?? 'Crypto'}
         onChange={(v) => onChange({ dataSource: v })}
         options={[
-          { value: 'Crypto', label: t('dashboard.widgets.cryptoHeatmap.dataSource_all') },
-          { value: 'CryptoMarkets', label: t('dashboard.widgets.cryptoHeatmap.dataSource_markets') },
+          { value: 'Crypto', label: t('dashboard:widgets.cryptoHeatmap.dataSource_all') },
+          { value: 'CryptoMarkets', label: t('dashboard:widgets.cryptoHeatmap.dataSource_markets') },
         ]}
       />
       <EnumField
-        label={t('dashboard.widgets.cryptoHeatmap.cellSize')}
+        label={t('dashboard:widgets.cryptoHeatmap.cellSize')}
         value={config.blockSize ?? 'market_cap_calc'}
         onChange={(v) => onChange({ blockSize: v })}
         options={[
-          { value: 'market_cap_calc', label: t('dashboard.widgets.cryptoHeatmap.cellSize_marketCap') },
-          { value: '24h_vol_cmc', label: t('dashboard.widgets.cryptoHeatmap.cellSize_volume24') },
+          { value: 'market_cap_calc', label: t('dashboard:widgets.cryptoHeatmap.cellSize_marketCap') },
+          { value: '24h_vol_cmc', label: t('dashboard:widgets.cryptoHeatmap.cellSize_volume24') },
         ]}
       />
       <EnumField
-        label={t('dashboard.widgets.cryptoHeatmap.cellColor')}
+        label={t('dashboard:widgets.cryptoHeatmap.cellColor')}
         value={config.blockColor ?? '24h_close_change|5'}
         onChange={(v) => onChange({ blockColor: v })}
         options={[
-          { value: '24h_close_change|5', label: t('dashboard.widgets.cryptoHeatmap.cellColor_change24') },
-          { value: 'Perf.W', label: t('dashboard.widgets.cryptoHeatmap.cellColor_change1w') },
-          { value: 'Perf.1M', label: t('dashboard.widgets.cryptoHeatmap.cellColor_change1m') },
+          { value: '24h_close_change|5', label: t('dashboard:widgets.cryptoHeatmap.cellColor_change24') },
+          { value: 'Perf.W', label: t('dashboard:widgets.cryptoHeatmap.cellColor_change1w') },
+          { value: 'Perf.1M', label: t('dashboard:widgets.cryptoHeatmap.cellColor_change1m') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -69,8 +69,8 @@ function CryptoHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProp
 
 registerWidget<CryptoHeatmapConfig>({
   type: 'tv.crypto-heatmap',
-  titleKey: 'dashboard.widgets.cryptoHeatmap.title',
-  descriptionKey: 'dashboard.widgets.cryptoHeatmap.description',
+  titleKey: 'dashboard:widgets.cryptoHeatmap.title',
+  descriptionKey: 'dashboard:widgets.cryptoHeatmap.description',
   category: 'markets',
   icon: Bitcoin,
   component: CryptoHeatmapWidget,

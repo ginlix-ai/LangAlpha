@@ -44,7 +44,7 @@ it('says an expired sign-in on the welcome flow it started from', () => {
     owner: 'welcome',
     server: 'ibkr',
     outcome: 'failed',
-    reasonKey: 'plugins.oauth.callbackError.invalid_state',
+    reasonKey: 'plugins:oauth.callbackError.invalid_state',
   });
 });
 

@@ -27,7 +27,7 @@ function AutoApproveRow({ settingKey, setting }: { settingKey: AutoApproveKey; s
 export function AutoApproveSettings() {
   const { t } = useTranslation();
   return (
-    <SettingsGroup title={t('settings.approvals')} description={t('settings.approvalsDesc')}>
+    <SettingsGroup title={t('settings:approvals')} description={t('settings:approvalsDesc')}>
       {ROWS.map((row) => <AutoApproveRow key={row.key} settingKey={row.key} setting={row.setting} />)}
     </SettingsGroup>
   );

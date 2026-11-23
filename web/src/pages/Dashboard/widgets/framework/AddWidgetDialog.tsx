@@ -18,28 +18,28 @@ type CategoryMeta = { labelKey: string; blurbKey: string; order: number };
 
 const CATEGORY_META: Record<WidgetCategory, CategoryMeta> = {
   markets: {
-    labelKey: 'dashboard.widgets.addDialog.category.marketsLabel',
-    blurbKey: 'dashboard.widgets.addDialog.category.marketsBlurb',
+    labelKey: 'dashboard:widgets.addDialog.category.marketsLabel',
+    blurbKey: 'dashboard:widgets.addDialog.category.marketsBlurb',
     order: 1,
   },
   intel: {
-    labelKey: 'dashboard.widgets.addDialog.category.intelligenceLabel',
-    blurbKey: 'dashboard.widgets.addDialog.category.intelligenceBlurb',
+    labelKey: 'dashboard:widgets.addDialog.category.intelligenceLabel',
+    blurbKey: 'dashboard:widgets.addDialog.category.intelligenceBlurb',
     order: 2,
   },
   personal: {
-    labelKey: 'dashboard.widgets.addDialog.category.personalLabel',
-    blurbKey: 'dashboard.widgets.addDialog.category.personalBlurb',
+    labelKey: 'dashboard:widgets.addDialog.category.personalLabel',
+    blurbKey: 'dashboard:widgets.addDialog.category.personalBlurb',
     order: 3,
   },
   agent: {
-    labelKey: 'dashboard.widgets.addDialog.category.agentLabel',
-    blurbKey: 'dashboard.widgets.addDialog.category.agentBlurb',
+    labelKey: 'dashboard:widgets.addDialog.category.agentLabel',
+    blurbKey: 'dashboard:widgets.addDialog.category.agentBlurb',
     order: 4,
   },
   workspace: {
-    labelKey: 'dashboard.widgets.addDialog.category.workspaceLabel',
-    blurbKey: 'dashboard.widgets.addDialog.category.workspaceBlurb',
+    labelKey: 'dashboard:widgets.addDialog.category.workspaceLabel',
+    blurbKey: 'dashboard:widgets.addDialog.category.workspaceBlurb',
     order: 5,
   },
 };
@@ -155,14 +155,14 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
         onKeyDown={handleKey}
       >
         <aside className="dash-gallery-nav">
-          <div className="dash-gallery-eyebrow term-t3">{t('dashboard.widgets.addDialog.eyebrow')}</div>
-          <DialogTitle className="dash-gallery-h">{t('dashboard.widgets.addDialog.title')}</DialogTitle>
+          <div className="dash-gallery-eyebrow term-t3">{t('dashboard:widgets.addDialog.eyebrow')}</div>
+          <DialogTitle className="dash-gallery-h">{t('dashboard:widgets.addDialog.title')}</DialogTitle>
           <input
             type="text"
             autoFocus
             className="dash-gallery-search"
-            aria-label={t('dashboard.widgets.addDialog.searchPlaceholder')}
-            placeholder={t('dashboard.widgets.addDialog.searchPlaceholder')}
+            aria-label={t('dashboard:widgets.addDialog.searchPlaceholder')}
+            placeholder={t('dashboard:widgets.addDialog.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -188,23 +188,23 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
         <div className="dash-gallery-main">
           <div className="dash-gallery-head">
             <span className="dash-gallery-title">
-              {searchActive ? t('dashboard.widgets.addDialog.results') : categoryLabel(activeCat)}
+              {searchActive ? t('dashboard:widgets.addDialog.results') : categoryLabel(activeCat)}
             </span>
             <DialogDescription className="dash-gallery-blurb term-t3">
               {searchActive
-                ? t('dashboard.widgets.addDialog.resultCount', { count: matches?.length ?? 0, search })
+                ? t('dashboard:widgets.addDialog.resultCount', { count: matches?.length ?? 0, search })
                 : CATEGORY_META[activeCat]?.blurbKey
                   ? t(CATEGORY_META[activeCat].blurbKey)
                   : ''}
             </DialogDescription>
             <span className="term-push term-t3 whitespace-nowrap">
-              {t('dashboard.widgets.addDialog.totalCount', { count: allWidgets.length })}
+              {t('dashboard:widgets.addDialog.totalCount', { count: allWidgets.length })}
             </span>
             <button
               type="button"
               onClick={() => onOpenChange(false)}
               className="dash-window-x self-center"
-              aria-label={t('dashboard.widgets.addDialog.closeAria')}
+              aria-label={t('dashboard:widgets.addDialog.closeAria')}
             >
               <X size={16} />
             </button>
@@ -215,7 +215,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
               <div className="dash-gallery-grid">
                 {(matches ?? []).map(cardFor)}
                 {(matches?.length ?? 0) === 0 && (
-                  <div className="dash-gallery-empty term-t3">{t('dashboard.widgets.addDialog.noMatches')}</div>
+                  <div className="dash-gallery-empty term-t3">{t('dashboard:widgets.addDialog.noMatches')}</div>
                 )}
               </div>
             ) : (
@@ -235,12 +235,12 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
           <div className="dash-gallery-foot">
             <span className="term-t3">
               <Trans
-                i18nKey="dashboard.widgets.addDialog.hintAddSentence"
+                i18nKey="dashboard:widgets.addDialog.hintAddSentence"
                 components={{ enter: <span className="dash-gallery-key">↵</span> }}
               />
             </span>
             <button type="button" className="dash-gallery-btn term-push" onClick={() => onOpenChange(false)}>
-              {t('dashboard.widgets.addDialog.cancel')}
+              {t('dashboard:widgets.addDialog.cancel')}
             </button>
             <button
               type="button"
@@ -249,8 +249,8 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
               onClick={() => selectedDef && !selectedDisabled && handleAdd(selectedDef.type)}
             >
               {selectedDef && !selectedDisabled
-                ? t('dashboard.widgets.addDialog.addNamed', { title: t(selectedDef.titleKey) })
-                : t('dashboard.widgets.addDialog.addWidget')}
+                ? t('dashboard:widgets.addDialog.addNamed', { title: t(selectedDef.titleKey) })
+                : t('dashboard:widgets.addDialog.addWidget')}
             </button>
           </div>
         </div>
@@ -290,15 +290,15 @@ function WidgetTile({ def, disabled, selected, onSelect, onAdd }: WidgetTileProp
           <span className="term-bracket" aria-hidden="true">]</span>
         </span>
         <span className="term-card-sub">
-          {def.singleton ? t('dashboard.widgets.addDialog.badgeSingleton') : t('dashboard.widgets.addDialog.badgeMulti')}
+          {def.singleton ? t('dashboard:widgets.addDialog.badgeSingleton') : t('dashboard:widgets.addDialog.badgeMulti')}
         </span>
         <span className="term-card-meta">{`${w}w × ${h}h`}</span>
       </span>
       {def.descriptionKey && <span className="dash-gallery-desc">{t(def.descriptionKey)}</span>}
       <span className="dash-gallery-tags">
-        {def.source === 'tradingview' && <TermTag>{t('dashboard.widgets.addDialog.badgeTradingView')}</TermTag>}
-        {def.settingsComponent && <TermTag>{t('dashboard.widgets.addDialog.tagSettings')}</TermTag>}
-        {disabled && <TermTag>{t('dashboard.widgets.addDialog.tagOnDashboard')}</TermTag>}
+        {def.source === 'tradingview' && <TermTag>{t('dashboard:widgets.addDialog.badgeTradingView')}</TermTag>}
+        {def.settingsComponent && <TermTag>{t('dashboard:widgets.addDialog.tagSettings')}</TermTag>}
+        {disabled && <TermTag>{t('dashboard:widgets.addDialog.tagOnDashboard')}</TermTag>}
       </span>
     </button>
   );

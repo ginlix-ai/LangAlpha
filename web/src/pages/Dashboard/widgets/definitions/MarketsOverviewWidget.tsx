@@ -48,7 +48,7 @@ function MarketsOverviewWidget({ instance }: WidgetRenderProps<MarketsOverviewCo
       return {
         widget_type: 'markets.overview',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.marketsOverview.title')} · ${rows.length}`,
+        label: `${t('dashboard:widgets.marketsOverview.title')} · ${rows.length}`,
         description: rows.length ? `${rows.length} ${rows.length === 1 ? 'index' : 'indices'}` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -83,8 +83,8 @@ function MarketsOverviewWidget({ instance }: WidgetRenderProps<MarketsOverviewCo
 
 registerWidget<MarketsOverviewConfig>({
   type: 'markets.overview',
-  titleKey: 'dashboard.widgets.marketsOverview.title',
-  descriptionKey: 'dashboard.widgets.marketsOverview.description',
+  titleKey: 'dashboard:widgets.marketsOverview.title',
+  descriptionKey: 'dashboard:widgets.marketsOverview.description',
   category: 'markets',
   icon: LineChart,
   component: MarketsOverviewWidget,

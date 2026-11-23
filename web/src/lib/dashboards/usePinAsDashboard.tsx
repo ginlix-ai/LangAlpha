@@ -18,10 +18,10 @@ function usePinnedToast(): (name: string) => void {
   const navigate = useNavigate();
   return (name) =>
     toast({
-      description: t('customDashboard.pinned', { name }),
+      description: t('customDashboard:pinned', { name }),
       action: (
-        <ToastAction altText={t('customDashboard.view')} onClick={() => navigate('/dashboard')}>
-          {t('customDashboard.view')}
+        <ToastAction altText={t('customDashboard:view')} onClick={() => navigate('/dashboard')}>
+          {t('customDashboard:view')}
         </ToastAction>
       ),
     });
@@ -116,7 +116,7 @@ export function usePinPageAsDashboard(
     } catch (err) {
       // The release this pin called off (a page removed moments ago) still has to happen.
       if (artifactId) releaseCopy(qc, artifactId);
-      toast({ variant: 'destructive', title: t('customDashboard.keepFailed'), description: apiErrorReason(err) ?? undefined });
+      toast({ variant: 'destructive', title: t('customDashboard:keepFailed'), description: apiErrorReason(err) ?? undefined });
     } finally {
       setPending(false);
     }

@@ -33,7 +33,7 @@ export function isBundled(plugin: SourceShape): boolean {
  * The enable switch is deliberately NOT one of these. A bundle has no row to
  * carry a flag, but that is a storage detail the page has no business
  * knowing: the answer is stored as the absence of a disable instead, and the
- * switch works the same from here. See `plugins.card.disabledState`.
+ * switch works the same from here. See `plugins:card.disabledState`.
  */
 export function hasLifecycle(plugin: SourceShape): boolean {
   return !isBundled(plugin);
@@ -41,10 +41,10 @@ export function hasLifecycle(plugin: SourceShape): boolean {
 
 /** The i18n key for how this package got here. */
 export function sourceLabelKey(plugin: SourceShape): string {
-  if (isBundled(plugin)) return 'plugins.card.sourceBundled';
+  if (isBundled(plugin)) return 'plugins:card.sourceBundled';
   return plugin.source_type === 'zip'
-    ? 'plugins.card.sourceZip'
-    : 'plugins.card.sourceRemote';
+    ? 'plugins:card.sourceZip'
+    : 'plugins:card.sourceRemote';
 }
 
 /**

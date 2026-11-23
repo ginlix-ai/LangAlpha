@@ -56,7 +56,7 @@ export function DiscoverCard({
   } else if (plugin && !plugin.enabled) {
     trailing = <CellState state="off" />;
   } else {
-    trailing = <CellState state="on" label={t('plugins.discover.installed')} />;
+    trailing = <CellState state="on" label={t('plugins:discover.installed')} />;
   }
 
   return (

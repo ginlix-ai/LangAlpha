@@ -29,7 +29,7 @@ interface CachedInsight {
 
 function InsightBriefWidget({ instance }: WidgetRenderProps<InsightBriefConfig>) {
   const { t } = useTranslation();
-  const titleKey = 'dashboard.widgets.insightBrief.title';
+  const titleKey = 'dashboard:widgets.insightBrief.title';
   useWidgetContextExport(instance.id, {
     full: (): WidgetContextSnapshot => {
       const cached = (getCachedInsights() as CachedInsight[] | null) ?? [];
@@ -95,9 +95,9 @@ function InsightBriefWidget({ instance }: WidgetRenderProps<InsightBriefConfig>)
 
 registerWidget<InsightBriefConfig>({
   type: 'insight.brief',
-  titleKey: 'dashboard.widgets.insightBrief.title',
-  cardTitleKey: 'dashboard.widgets.insightBrief.cardTitle',
-  descriptionKey: 'dashboard.widgets.insightBrief.description',
+  titleKey: 'dashboard:widgets.insightBrief.title',
+  cardTitleKey: 'dashboard:widgets.insightBrief.cardTitle',
+  descriptionKey: 'dashboard:widgets.insightBrief.description',
   category: 'intel',
   icon: Sparkles,
   component: InsightBriefWidget,

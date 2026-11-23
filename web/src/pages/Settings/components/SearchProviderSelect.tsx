@@ -27,7 +27,7 @@ export function SearchProviderSelect({ id, defaultLabel, optionLabel }: {
       onChange={(e) => { void write(searchProviderPatch(e.target.value, catalog)); }}
       disabled={!providers.some(([, p]) => tierAllows(p.min_tier))}
     >
-      <option value="">{defaultLabel ?? t('settings.searchProviderDefault')}</option>
+      <option value="">{defaultLabel ?? t('settings:searchProviderDefault')}</option>
       {providers.map(([value, p]) => (
         <option key={value} value={value} disabled={!tierAllows(p.min_tier)}>
           {optionLabel ? optionLabel(value, p.display_name) : p.display_name}

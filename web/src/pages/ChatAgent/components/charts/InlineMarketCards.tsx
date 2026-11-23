@@ -29,7 +29,7 @@ export function IndexTable({ rows }: { rows: IndexRow[] }): React.ReactElement {
       columns={[
         {
           key: 'name',
-          label: t('toolArtifact.termHead.name'),
+          label: t('toolArtifact:termHead.name'),
           fill: 'clip',
           cell: (row) => (
             <>
@@ -42,8 +42,8 @@ export function IndexTable({ rows }: { rows: IndexRow[] }): React.ReactElement {
             </>
           ),
         },
-        { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (row) => (row.last != null ? grouped2(row.last, locale) : '') },
-        { key: 'change', label: t('toolArtifact.termHead.change'), num: true, cell: (row) => <TermChange value={row.changePct} /> },
+        { key: 'last', label: t('toolArtifact:termHead.last'), num: true, cell: (row) => (row.last != null ? grouped2(row.last, locale) : '') },
+        { key: 'change', label: t('toolArtifact:termHead.change'), num: true, cell: (row) => <TermChange value={row.changePct} /> },
       ]}
     />
   );
@@ -57,7 +57,7 @@ export function InlineMarketIndicesCard({ artifact, onClick, meta }: DatedCardPr
   const rows = indexRows(artifact);
   if (!rows.length) return null;
   return (
-    <TermCard title={t('toolArtifact.marketIndices')} meta={[meta, indexFreshness(rows)]} onClick={onClick}>
+    <TermCard title={t('toolArtifact:marketIndices')} meta={[meta, indexFreshness(rows)]} onClick={onClick}>
       <IndexTable rows={rows} />
     </TermCard>
   );
@@ -68,7 +68,7 @@ export function InlineSectorPerformanceCard({ artifact, onClick, meta }: DatedCa
   const rows = sectorRows(artifact);
   if (!rows.length) return null;
   return (
-    <TermCard title={t('toolArtifact.sectorPerformance')} meta={meta} onClick={onClick}>
+    <TermCard title={t('toolArtifact:sectorPerformance')} meta={meta} onClick={onClick}>
       <TermBars rows={rows} />
     </TermCard>
   );
@@ -98,20 +98,20 @@ export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps)
   const sectorDayLabel =
     sectorDay &&
     (sectorsForming
-      ? t('toolArtifact.sessionInProgress', { day: formatCalendarDay(sectorDay, locale) })
+      ? t('toolArtifact:sessionInProgress', { day: formatCalendarDay(sectorDay, locale) })
       : formatCalendarDay(sectorDay, locale));
   const dayMeta =
     day &&
     (requested
-      ? t('toolArtifact.overviewFallbackDay', { day: formatCalendarDay(day, locale), requested: formatCalendarDay(requested, locale) })
+      ? t('toolArtifact:overviewFallbackDay', { day: formatCalendarDay(day, locale), requested: formatCalendarDay(requested, locale) })
       : formatCalendarDay(day, locale));
 
   if (indices.length && sectors.length) {
     return (
-      <TermCard title={t('toolArtifact.marketIndices')} meta={[dayMeta, indexFreshness(indices)]} onClick={onClick}>
+      <TermCard title={t('toolArtifact:marketIndices')} meta={[dayMeta, indexFreshness(indices)]} onClick={onClick}>
         <IndexTable rows={indices} />
         <TermDivider>
-          {t('toolArtifact.sectorPerformance')}
+          {t('toolArtifact:sectorPerformance')}
           {sectorDayLabel && (sectorDay !== day || sectorsForming) && ` · ${sectorDayLabel}`}
         </TermDivider>
         <TermBars rows={sectors} />
@@ -128,5 +128,5 @@ export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps)
   }
 
   // Error / degenerate path (e.g. unknown region): keep the call visible.
-  return <TermCard title={t('toolArtifact.marketOverview')} sub={text(artifact.region)?.toUpperCase()} meta={dayMeta} onClick={onClick} />;
+  return <TermCard title={t('toolArtifact:marketOverview')} sub={text(artifact.region)?.toUpperCase()} meta={dayMeta} onClick={onClick} />;
 }

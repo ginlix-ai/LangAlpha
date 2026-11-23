@@ -277,9 +277,9 @@ describe('validateForm', () => {
 
   it('asks for a moment, then for one still ahead', () => {
     const once: FormState = { ...PLACED, trigger_type: 'once' };
-    expect(validateForm(once, now)).toEqual({ messageKey: 'automation.onceHint', section: 'when' });
+    expect(validateForm(once, now)).toEqual({ messageKey: 'automation:onceHint', section: 'when' });
     expect(validateForm({ ...once, next_run_at: '2026-10-28T11:00:00Z' }, now)).toEqual({
-      messageKey: 'automation.oncePassed',
+      messageKey: 'automation:oncePassed',
       section: 'when',
     });
     expect(validateForm({ ...once, next_run_at: '2026-10-28T13:00:00Z' }, now)).toBeNull();
@@ -294,22 +294,22 @@ describe('validateForm', () => {
   it("leaves an edit's untouched one-time moment alone, even a past one", () => {
     const ran: FormState = { ...PLACED, trigger_type: 'once', next_run_at: '' };
     expect(validateForm({ ...ran, name: 'Renamed' }, now, ran)).toBeNull();
-    expect(validateForm({ ...ran, next_run_at: '2026-10-28T11:00:00Z' }, now, ran)?.messageKey).toBe('automation.oncePassed');
+    expect(validateForm({ ...ran, next_run_at: '2026-10-28T11:00:00Z' }, now, ran)?.messageKey).toBe('automation:oncePassed');
   });
 
   it('holds a price trigger to what the server accepts', () => {
     const ok = priceForm({ price_symbol: 'AAPL', price_value: '150' });
     expect(validateForm(ok, now)).toBeNull();
     expect(validateForm({ ...ok, price_symbol: '^spx' }, now)).toBeNull();
-    expect(validateForm({ ...ok, price_symbol: '' }, now)?.messageKey).toBe('automation.priceSymbolInvalid');
-    expect(validateForm({ ...ok, price_symbol: 'TOOLONGSYMB' }, now)?.messageKey).toBe('automation.priceSymbolInvalid');
-    expect(validateForm({ ...ok, price_value: '0' }, now)?.messageKey).toBe('automation.priceValuePositive');
-    expect(validateForm({ ...ok, price_value: '-5' }, now)?.messageKey).toBe('automation.priceValuePositive');
-    expect(validateForm({ ...ok, price_value: '' }, now)?.messageKey).toBe('automation.priceValuePositive');
+    expect(validateForm({ ...ok, price_symbol: '' }, now)?.messageKey).toBe('automation:priceSymbolInvalid');
+    expect(validateForm({ ...ok, price_symbol: 'TOOLONGSYMB' }, now)?.messageKey).toBe('automation:priceSymbolInvalid');
+    expect(validateForm({ ...ok, price_value: '0' }, now)?.messageKey).toBe('automation:priceValuePositive');
+    expect(validateForm({ ...ok, price_value: '-5' }, now)?.messageKey).toBe('automation:priceValuePositive');
+    expect(validateForm({ ...ok, price_value: '' }, now)?.messageKey).toBe('automation:priceValuePositive');
   });
 
   it('refuses an instruction whose {symbol} nothing fills', () => {
-    const unfilled = { messageKey: 'automation.instructionSymbolUnfilled', section: 'instruction' };
+    const unfilled = { messageKey: 'automation:instructionSymbolUnfilled', section: 'instruction' };
     // The earnings template runs once, and a one-time trigger has no symbol.
     const earnings = { ...applyTemplate('earnings_watch', en), place: 'ws-1', next_run_at: '2026-10-28T13:00:00Z' };
     expect(validateForm(earnings, now)).toEqual(unfilled);
@@ -325,7 +325,7 @@ describe('validateForm', () => {
     expect(validateForm({ ...recurring, price_cooldown_minutes: '' }, now)).toBeNull();
     expect(validateForm({ ...recurring, price_cooldown_minutes: '240' }, now)).toBeNull();
     expect(validateForm({ ...recurring, price_cooldown_minutes: '60' }, now)).toEqual({
-      messageKey: 'automation.cooldownTooShort',
+      messageKey: 'automation:cooldownTooShort',
       section: 'more',
     });
   });
@@ -340,8 +340,8 @@ describe('validateForm', () => {
     expect(saved('1e3')).toEqual({ mode: 'recurring', cooldown_seconds: 60_000 });
     expect(validateForm(withCooldown(' 300 '), now)).toBeNull();
     expect(saved(' 300 ')).toEqual({ mode: 'recurring', cooldown_seconds: 18_000 });
-    expect(validateForm(withCooldown('239'), now)?.messageKey).toBe('automation.cooldownTooShort');
-    expect(validateForm(withCooldown('240.7'), now)?.messageKey).toBe('automation.cooldownTooShort');
+    expect(validateForm(withCooldown('239'), now)?.messageKey).toBe('automation:cooldownTooShort');
+    expect(validateForm(withCooldown('240.7'), now)?.messageKey).toBe('automation:cooldownTooShort');
   });
 });
 

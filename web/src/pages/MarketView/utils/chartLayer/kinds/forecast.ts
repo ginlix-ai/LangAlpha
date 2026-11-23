@@ -47,7 +47,7 @@ export function forecastVerdict(origin: IP, target: IP, bars: Pick<PaintContext,
 }
 
 export const forecast: DrawingKind<ForecastDrawing, ForecastScene> = {
-  nameKey: 'marketView.layerExplain.types.forecast',
+  nameKey: 'marketView:layerExplain.types.forecast',
   times: (d) => [d.origin.time, d.target.time],
   anchors: (d) => [d.origin, d.target],
   alwaysExplained: true,

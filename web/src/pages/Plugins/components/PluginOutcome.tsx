@@ -183,7 +183,7 @@ export function usePluginOutcome(
             className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
             style={primary}
           >
-            {t('plugins.install.openPlugin')}
+            {t('plugins:install.openPlugin')}
           </button>
         )}
       </div>
@@ -207,7 +207,7 @@ export function PluginOutcome({
   return (
     <PluginDialog
       title={title}
-      subtitle={t('plugins.install.stepReport')}
+      subtitle={t('plugins:install.stepReport')}
       dismissable={!view.upgrading}
       onClose={actions.onDone}
       footer={view.footer}

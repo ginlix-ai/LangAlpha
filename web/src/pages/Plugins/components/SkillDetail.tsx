@@ -80,7 +80,7 @@ export function SkillDetail({
   const wsId = skillScopeId(skill);
   // A workspace's own skill runs nowhere else, so removing it is that
   // workspace's loss alone; the account-tier copy said every workspace.
-  const hereName = workspaceName ?? t('plugins.skillsPage.thisWorkspace');
+  const hereName = workspaceName ?? t('plugins:skillsPage.thisWorkspace');
   const pluginOwned = isPluginOwned(skill);
   const pluginName = skill.plugin_name;
   const confirmingRemove =
@@ -88,14 +88,14 @@ export function SkillDetail({
 
   const source =
     skill.origin === 'workspace'
-      ? t('plugins.skillsPage.oneWorkspace')
+      ? t('plugins:skillsPage.oneWorkspace')
       : plugin
         ? sourceLabel(t, plugin, catalogPlugins)
         : skill.origin === 'platform'
-          ? t('plugins.skillsPage.builtIn')
+          ? t('plugins:skillsPage.builtIn')
           : pluginOwned
-            ? t('plugins.skillsPage.fromCatalog')
-            : t('plugins.skillsPage.addedByYou');
+            ? t('plugins:skillsPage.fromCatalog')
+            : t('plugins:skillsPage.addedByYou');
 
   const scope =
     skill.origin === 'workspace' && wsId ? (
@@ -107,7 +107,7 @@ export function SkillDetail({
         moveToAllBlockedReason={
           // The move 409s on the known destination collision, so a shadowing
           // row is not offered a move that is certain to fail.
-          skill.shadows_inherited ? t('plugins.scope.moveShadowBlocked') : null
+          skill.shadows_inherited ? t('plugins:scope.moveShadowBlocked') : null
         }
         onMove={(to) => void actions.move(skill, to)}
       />
@@ -123,7 +123,7 @@ export function SkillDetail({
         moveBlockedReason={
           // A package's skills live at the account tier; moving one into a
           // workspace would detach it from its owner as a side effect.
-          pluginOwned ? t('plugins.scope.movePluginBlocked', { plugin: skill.plugin_name }) : null
+          pluginOwned ? t('plugins:scope.movePluginBlocked', { plugin: skill.plugin_name }) : null
         }
         onSetWorkspaceDisabled={(id, disabled) => void actions.setWorkspaceDisabled(skill, id, disabled)}
         onMove={
@@ -150,11 +150,11 @@ export function SkillDetail({
       <ConfirmStrip
         message={
           wsId
-            ? t('plugins.skillsPage.removeConfirmIn', { skill: skill.name, workspace: hereName })
-            : t('plugins.skillsPage.removeConfirm', { skill: skill.name })
+            ? t('plugins:skillsPage.removeConfirmIn', { skill: skill.name, workspace: hereName })
+            : t('plugins:skillsPage.removeConfirm', { skill: skill.name })
         }
-        confirmLabel={actions.deletePending ? t('common.loading') : t('plugins.skillsPage.removeYes')}
-        cancelLabel={t('plugins.skills.deleteConfirmNo')}
+        confirmLabel={actions.deletePending ? t('common.loading') : t('plugins:skillsPage.removeYes')}
+        cancelLabel={t('plugins:skills.deleteConfirmNo')}
         pending={actions.deletePending}
         onConfirm={() => void actions.confirmDelete()}
         onCancel={actions.cancelDelete}
@@ -166,20 +166,20 @@ export function SkillDetail({
           icon={<Trash2 />}
           onClick={() => actions.requestDelete(skill.name, wsId)}
         >
-          {t('plugins.skillsPage.removeNamed', { skill: skill.name })}
+          {t('plugins:skillsPage.removeNamed', { skill: skill.name })}
         </PageButton>
         <p className="pp-note">
           {wsId
-            ? t('plugins.skillsPage.removeNoteIn', { workspace: hereName })
-            : t('plugins.skillsPage.removeNote')}
+            ? t('plugins:skillsPage.removeNoteIn', { workspace: hereName })
+            : t('plugins:skillsPage.removeNote')}
         </p>
       </div>
     )
   ) : (
     <p className="pp-note">
       {pluginOwned && skill.origin !== 'platform'
-        ? t('plugins.skillsPage.pluginNote', { plugin: skill.plugin_name })
-        : t('plugins.skillsPage.builtinNote')}
+        ? t('plugins:skillsPage.pluginNote', { plugin: skill.plugin_name })
+        : t('plugins:skillsPage.builtinNote')}
     </p>
   );
 
@@ -187,7 +187,7 @@ export function SkillDetail({
     pluginName && plugin ? (
       <span key="plugin">
         <Trans
-          i18nKey="plugins.skillsPage.fromPlugin"
+          i18nKey="plugins:skillsPage.fromPlugin"
           values={{ plugin: skill.plugin_name }}
           // Not `link`: the parser reads that as the void HTML element and
           // drops the name it wraps, leaving an empty button.
@@ -208,11 +208,11 @@ export function SkillDetail({
     <span key="source">
       {/* A bare workspace name reads as a tag; this says it runs nowhere else. */}
       {skill.origin === 'workspace' && workspaceName
-        ? t('plugins.skillsPage.workspaceNote', { name: workspaceName })
+        ? t('plugins:skillsPage.workspaceNote', { name: workspaceName })
         : source}
     </span>,
-    isPluginSuppressed(skill) ? <span key="off">{t('plugins.skillsPage.pluginOff')}</span> : null,
-    lockedByUserTier ? <span key="locked">{t('plugins.skills.userDisabledBadge')}</span> : null,
+    isPluginSuppressed(skill) ? <span key="off">{t('plugins:skillsPage.pluginOff')}</span> : null,
+    lockedByUserTier ? <span key="locked">{t('plugins:skills.userDisabledBadge')}</span> : null,
   ];
 
   return (
@@ -240,11 +240,11 @@ export function SkillDetail({
       aside={
         <>
           {files.length > 1 && (
-            <DetailAsideBlock title={t('plugins.skillsPage.files')}>
+            <DetailAsideBlock title={t('plugins:skillsPage.files')}>
               <SkillFiles files={files} selected={file} onSelect={setFile} />
             </DetailAsideBlock>
           )}
-          <DetailAsideBlock title={t('plugins.skillsPage.command')}>
+          <DetailAsideBlock title={t('plugins:skillsPage.command')}>
             {skill.command ? (
               <CommandBox
                 // A save lands as a new command; the box closes on it.
@@ -255,10 +255,10 @@ export function SkillDetail({
                 onSave={(next) => void actions.saveCommand(skill, next)}
               />
             ) : (
-              <p className="pp-note">{t('plugins.skillsPage.noCommand')}</p>
+              <p className="pp-note">{t('plugins:skillsPage.noCommand')}</p>
             )}
           </DetailAsideBlock>
-          <DetailAsideBlock title={t('plugins.skillsPage.workspacesTitle')}>{scope}</DetailAsideBlock>
+          <DetailAsideBlock title={t('plugins:skillsPage.workspacesTitle')}>{scope}</DetailAsideBlock>
           {skill.origin === 'user' && !pluginOwned && libraryOn && (
             <DetailAsideBlock title={t('organization.library.sectionLabel')}>
               <LibraryPublishRow
@@ -269,16 +269,16 @@ export function SkillDetail({
               />
             </DetailAsideBlock>
           )}
-          <DetailAsideBlock title={t('plugins.detail.info')}>
+          <DetailAsideBlock title={t('plugins:detail.info')}>
             <DetailFacts
               items={[
-                [t('plugins.skillsPage.plugin'), pluginFact],
-                [t('plugins.detail.sourceLabel'), source],
-                [t('plugins.detail.author'), plugin?.author ?? null],
-                [t('plugins.detail.version'), plugin?.version ?? null],
-                [t('plugins.detail.tools'), skill.tools.length > 0 ? skill.tools.join(', ') : null],
-                [t('plugins.detail.size'), skill.size_bytes > 0 ? formatBytes(skill.size_bytes, locale) : null],
-                [t('plugins.detail.updated'), skill.updated_at ? mediumDate(new Date(skill.updated_at), locale) : null],
+                [t('plugins:skillsPage.plugin'), pluginFact],
+                [t('plugins:detail.sourceLabel'), source],
+                [t('plugins:detail.author'), plugin?.author ?? null],
+                [t('plugins:detail.version'), plugin?.version ?? null],
+                [t('plugins:detail.tools'), skill.tools.length > 0 ? skill.tools.join(', ') : null],
+                [t('plugins:detail.size'), skill.size_bytes > 0 ? formatBytes(skill.size_bytes, locale) : null],
+                [t('plugins:detail.updated'), skill.updated_at ? mediumDate(new Date(skill.updated_at), locale) : null],
               ]}
             />
           </DetailAsideBlock>
@@ -344,13 +344,13 @@ function CommandBox({
             type="button"
             onClick={() => setEditing(true)}
             disabled={saving}
-            aria-label={t('plugins.skillsPage.commandEdit')}
-            title={t('plugins.skillsPage.commandEdit')}
+            aria-label={t('plugins:skillsPage.commandEdit')}
+            title={t('plugins:skillsPage.commandEdit')}
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
         </div>
-        <p className="pp-note">{t('plugins.skillsPage.commandNote')}</p>
+        <p className="pp-note">{t('plugins:skillsPage.commandNote')}</p>
       </>
     );
   }
@@ -371,7 +371,7 @@ function CommandBox({
             }
           }}
           spellCheck={false}
-          aria-label={t('plugins.skills.commandInputAria')}
+          aria-label={t('plugins:skills.commandInputAria')}
         />
         <button type="button" onClick={save} aria-label={t('common.save')} title={t('common.save')}>
           <Check className="h-3.5 w-3.5" />
@@ -380,7 +380,7 @@ function CommandBox({
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <p className="pp-note">{t('plugins.skillsPage.commandResetNote')}</p>
+      <p className="pp-note">{t('plugins:skillsPage.commandResetNote')}</p>
     </>
   );
 }

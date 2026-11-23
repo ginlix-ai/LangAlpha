@@ -40,10 +40,10 @@ export type AutomationGroup = 'attention' | 'scheduled' | 'watching' | 'finished
 export const GROUP_ORDER: readonly AutomationGroup[] = ['attention', 'scheduled', 'watching', 'finished'];
 
 export const GROUP_LABEL_KEY: Record<AutomationGroup, string> = {
-  attention: 'automation.groupAttention',
-  scheduled: 'automation.groupScheduled',
-  watching: 'automation.groupWatching',
-  finished: 'automation.groupFinished',
+  attention: 'automation:groupAttention',
+  scheduled: 'automation:groupScheduled',
+  watching: 'automation:groupWatching',
+  finished: 'automation:groupFinished',
 };
 
 /**
@@ -180,19 +180,19 @@ export interface StatusUi {
 const DANGER = 'var(--color-icon-danger)';
 
 const STATE_UI: Record<AutomationState, StatusUi> = {
-  waiting: { labelKey: 'automation.stateWaiting', Icon: Clock, color: 'var(--color-accent-primary)' },
-  running: { labelKey: 'automation.stateRunning', Icon: null, live: true, color: 'var(--color-accent-primary)' },
-  key_rejected: { labelKey: 'automation.stateKeyRejected', Icon: AlertCircle, color: DANGER, danger: true },
-  switched_off: { labelKey: 'automation.stateDisabled', Icon: AlertCircle, color: DANGER, danger: true },
-  usage_limit: { labelKey: 'automation.stateUsageLimit', Icon: AlertCircle, color: DANGER, danger: true },
-  claude_plan: { labelKey: 'automation.stateClaudePlan', Icon: AlertCircle, color: DANGER, danger: true },
-  plan_limit: { labelKey: 'automation.statePlanLimit', Icon: AlertCircle, color: DANGER, danger: true },
-  failed: { labelKey: 'automation.stateLastRunFailed', Icon: AlertCircle, color: DANGER, danger: true },
-  paused: { labelKey: 'automation.statePaused', Icon: Pause, color: 'var(--color-text-tertiary)' },
-  off: { labelKey: 'automation.stateDisabled', Icon: Pause, color: 'var(--color-text-tertiary)' },
-  finished: { labelKey: 'automation.stateFinished', Icon: null, color: 'var(--color-text-tertiary)' },
-  watching: { labelKey: 'automation.stateWatching', Icon: null, color: 'var(--color-text-tertiary)' },
-  scheduled: { labelKey: 'automation.stateScheduled', Icon: null, color: 'var(--color-text-tertiary)' },
+  waiting: { labelKey: 'automation:stateWaiting', Icon: Clock, color: 'var(--color-accent-primary)' },
+  running: { labelKey: 'automation:stateRunning', Icon: null, live: true, color: 'var(--color-accent-primary)' },
+  key_rejected: { labelKey: 'automation:stateKeyRejected', Icon: AlertCircle, color: DANGER, danger: true },
+  switched_off: { labelKey: 'automation:stateDisabled', Icon: AlertCircle, color: DANGER, danger: true },
+  usage_limit: { labelKey: 'automation:stateUsageLimit', Icon: AlertCircle, color: DANGER, danger: true },
+  claude_plan: { labelKey: 'automation:stateClaudePlan', Icon: AlertCircle, color: DANGER, danger: true },
+  plan_limit: { labelKey: 'automation:statePlanLimit', Icon: AlertCircle, color: DANGER, danger: true },
+  failed: { labelKey: 'automation:stateLastRunFailed', Icon: AlertCircle, color: DANGER, danger: true },
+  paused: { labelKey: 'automation:statePaused', Icon: Pause, color: 'var(--color-text-tertiary)' },
+  off: { labelKey: 'automation:stateDisabled', Icon: Pause, color: 'var(--color-text-tertiary)' },
+  finished: { labelKey: 'automation:stateFinished', Icon: null, color: 'var(--color-text-tertiary)' },
+  watching: { labelKey: 'automation:stateWatching', Icon: null, color: 'var(--color-text-tertiary)' },
+  scheduled: { labelKey: 'automation:stateScheduled', Icon: null, color: 'var(--color-text-tertiary)' },
 };
 
 /** An automation's state, as the kicker and the row glyph read it. */
@@ -292,34 +292,34 @@ export function rowTrailing(a: Automation, group: AutomationGroup): RowTrailing 
 }
 
 const RUN_STATUS_UI: Record<ExecutionStatus, StatusUi> = {
-  pending: { labelKey: 'automation.runQueued', Icon: null, live: true, color: 'var(--color-accent-primary)' },
-  waiting: { labelKey: 'automation.runWaiting', Icon: Clock, color: 'var(--color-accent-primary)' },
-  running: { labelKey: 'automation.runRunning', Icon: null, live: true, color: 'var(--color-accent-primary)' },
-  completed: { labelKey: 'automation.runCompleted', Icon: null, color: 'var(--color-text-secondary)' },
-  failed: { labelKey: 'automation.runFailed', Icon: AlertCircle, color: DANGER, danger: true },
-  timeout: { labelKey: 'automation.runTimedOut', Icon: AlertCircle, color: DANGER, danger: true },
-  skipped: { labelKey: 'automation.runSkipped', Icon: null, color: 'var(--color-text-tertiary)' },
+  pending: { labelKey: 'automation:runQueued', Icon: null, live: true, color: 'var(--color-accent-primary)' },
+  waiting: { labelKey: 'automation:runWaiting', Icon: Clock, color: 'var(--color-accent-primary)' },
+  running: { labelKey: 'automation:runRunning', Icon: null, live: true, color: 'var(--color-accent-primary)' },
+  completed: { labelKey: 'automation:runCompleted', Icon: null, color: 'var(--color-text-secondary)' },
+  failed: { labelKey: 'automation:runFailed', Icon: AlertCircle, color: DANGER, danger: true },
+  timeout: { labelKey: 'automation:runTimedOut', Icon: AlertCircle, color: DANGER, danger: true },
+  skipped: { labelKey: 'automation:runSkipped', Icon: null, color: 'var(--color-text-tertiary)' },
 };
 
 /** A status this build has no word for: a newer server's, read by a tab that
  *  predates it, which is why the API keeps the column an open string. */
-const UNKNOWN_RUN_UI: StatusUi = { labelKey: 'automation.runUnknown', Icon: null, color: 'var(--color-text-tertiary)' };
+const UNKNOWN_RUN_UI: StatusUi = { labelKey: 'automation:runUnknown', Icon: null, color: 'var(--color-text-tertiary)' };
 
 /** The line a skipped run carries when the reader did not skip it. Both
  *  tables name every reason the server writes, a test holds them to its
  *  Literals, and null is a reason with nothing to add. */
 const SKIP_REASON_NOTE: Record<SkipReason, string | null> = {
   user: null,
-  thread_busy: 'automation.skippedThreadBusy',
-  interrupted: 'automation.skippedInterrupted',
-  computer_unreachable: 'automation.skippedComputerUnreachable',
+  thread_busy: 'automation:skippedThreadBusy',
+  interrupted: 'automation:skippedInterrupted',
+  computer_unreachable: 'automation:skippedComputerUnreachable',
 };
 
 /** The line a waiting run carries, by what it waits for. A run from a server
  *  that names no reason waits for its thread, the only wait there was. */
 const WAIT_REASON_NOTE: Record<WaitReason, string> = {
-  thread_busy: 'automation.waitingNote',
-  computer_unreachable: 'automation.waitingForComputerNote',
+  thread_busy: 'automation:waitingNote',
+  computer_unreachable: 'automation:waitingForComputerNote',
 };
 
 /** The line a failed run carries when the failure was not the automation's.
@@ -330,8 +330,8 @@ const FAILURE_REASON_NOTE: Record<FailureReason, string | null> = {
   claude_plan: null,
   plan_limit: null,
   provider_auth: null,
-  server_error: 'automation.failedServerError',
-  interrupted: 'automation.failedInterrupted',
+  server_error: 'automation:failedServerError',
+  interrupted: 'automation:failedInterrupted',
 };
 
 /** One run as the feed entry, the latest report and the history row read it.

@@ -222,7 +222,7 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
     return (
       <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
         <span style={{ color: 'var(--color-text-tertiary)', fontSize: '0.875rem' }}>
-          {t('marketView.chatPanel.noWorkspacePrompt')}
+          {t('marketView:chatPanel.noWorkspacePrompt')}
         </span>
       </div>
     );
@@ -738,7 +738,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   };
 
   // Session title: first user message text (truncated) or fallback to "New chat".
-  const newChatLabel = t('marketView.chatHistory.newChat');
+  const newChatLabel = t('marketView:chatHistory.newChat');
   const activeTitle = useMemo(() => {
     if (!threadId || threadId === '__default__') return newChatLabel;
     const firstUser = (messages as unknown as Array<Record<string, unknown>>).find(
@@ -777,13 +777,13 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           <button
             type="button"
             onClick={handleOpenInChat}
-            title={t('marketView.chatPanel.openInChat')}
+            title={t('marketView:chatPanel.openInChat')}
             style={headerBtnStyle}
             onMouseEnter={headerBtnHover}
             onMouseLeave={headerBtnLeave}
           >
             <MessageSquare style={{ width: 13, height: 13 }} />
-            {t('marketView.chatPanel.openInChat')}
+            {t('marketView:chatPanel.openInChat')}
           </button>
         ) : onReturnToChat ? (
           <button
@@ -794,7 +794,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
             onMouseLeave={headerBtnLeave}
           >
             <ArrowLeft style={{ width: 13, height: 13 }} />
-            {t('marketView.chatPanel.returnToChat')}
+            {t('marketView:chatPanel.returnToChat')}
           </button>
         ) : null}
       </div>
@@ -808,7 +808,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           <div className="market-chat-empty-state" style={{ height: '100%' }}>
             <LogoLoading size={60} color="var(--color-accent-overlay)" />
             <p className="market-chat-empty-text" style={{ marginTop: 16 }}>
-              {t('marketView.chatPanel.startConversation')}
+              {t('marketView:chatPanel.startConversation')}
             </p>
             {messageError && (
               <div style={{ margin: '16px 24px 0', maxWidth: '100%', width: '100%' }}>
@@ -940,7 +940,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         placeholder={
           wasStopped && !isLoading && !pendingInterrupt
             ? t('chat.placeholderStopped')
-            : (placeholder ?? t('marketView.chatPanel.defaultPlaceholder'))
+            : (placeholder ?? t('marketView:chatPanel.defaultPlaceholder'))
         }
         threadModels={threadModels}
         tokenUsage={tokenUsage}

@@ -68,8 +68,8 @@ export function SecretRow({
           onClick={onToggleReveal}
           disabled={revealing}
           className="vault-icon-btn"
-          aria-label={revealed ? t('vault.hideValue') : t('vault.revealValue')}
-          title={revealed ? t('vault.hideValue') : t('vault.revealValue')}
+          aria-label={revealed ? t('vault:hideValue') : t('vault:revealValue')}
+          title={revealed ? t('vault:hideValue') : t('vault:revealValue')}
         >
           {revealing ? (
             <Loader size={14} className="text-current" />
@@ -83,8 +83,8 @@ export function SecretRow({
           type="button"
           onClick={onEdit}
           className="vault-icon-btn"
-          aria-label={t('vault.edit')}
-          title={t('vault.edit')}
+          aria-label={t('vault:edit')}
+          title={t('vault:edit')}
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
@@ -92,9 +92,9 @@ export function SecretRow({
           type="button"
           onClick={onRequestDelete}
           className={cn('vault-icon-btn', confirmingDelete && 'is-armed')}
-          aria-label={t('vault.delete')}
+          aria-label={t('vault:delete')}
           aria-expanded={confirmingDelete}
-          title={t('vault.delete')}
+          title={t('vault:delete')}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -114,9 +114,9 @@ function SecretReaders({ readers }: { readers: readonly string[] }) {
   const listId = useId();
 
   const { key, values } = readersSentence(readers, {
-    none: 'vault.readers.none',
-    one: 'vault.readers.one',
-    many: 'vault.readers.many',
+    none: 'vault:readers.none',
+    one: 'vault:readers.one',
+    many: 'vault:readers.many',
   });
   const href = (name: string) => detailHref({ kind: 'server', name });
   if (readers.length < 2) {

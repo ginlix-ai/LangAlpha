@@ -22,10 +22,10 @@ import { TimeInput, TimeSlotList } from './TimeField';
 import './DateTimePicker.css';
 
 const PICK_LABEL_KEY: Record<QuickPickId, string> = {
-  inAnHour: 'automation.quickInAnHour',
-  tomorrowMorning: 'automation.quickTomorrowMorning',
-  beforeOpen: 'automation.quickBeforeOpen',
-  afterClose: 'automation.quickAfterClose',
+  inAnHour: 'automation:quickInAnHour',
+  tomorrowMorning: 'automation:quickTomorrowMorning',
+  beforeOpen: 'automation:quickBeforeOpen',
+  afterClose: 'automation:quickAfterClose',
 };
 
 interface DateTimePickerProps {
@@ -103,10 +103,10 @@ export default function DateTimePicker({ value, onChange, timeZone, labelledBy }
         aria-labelledby={labelledBy ? `${labelledBy} ${valueId}` : undefined}
       >
         <CalendarDays aria-hidden="true" />
-        <span id={valueId}>{at ? formatMoment(at, locale, timeZone) : t('automation.pickMoment')}</span>
+        <span id={valueId}>{at ? formatMoment(at, locale, timeZone) : t('automation:pickMoment')}</span>
       </Button>
       <Popover placement="bottom start" offset={6} containerPadding={16} className="automation-moment-popover">
-        <PopoverDialog aria-label={t('automation.pickMoment')} className="p-0">
+        <PopoverDialog aria-label={t('automation:pickMoment')} className="p-0">
           <div className="automation-moment-picks">
             {quickPicks(now, timeZone).map((p) => (
               <button
@@ -135,7 +135,7 @@ export default function DateTimePicker({ value, onChange, timeZone, labelledBy }
               autoFocus
               className="automation-calendar"
             >
-              <CalendarHeading previousLabel={t('automation.prevMonth')} nextLabel={t('automation.nextMonth')} />
+              <CalendarHeading previousLabel={t('automation:prevMonth')} nextLabel={t('automation:nextMonth')} />
               <CalendarGrid>
                 <CalendarGridHeader>{(day) => <CalendarHeaderCell>{day}</CalendarHeaderCell>}</CalendarGridHeader>
                 <CalendarGridBody>{(date) => <CalendarCell date={date} />}</CalendarGridBody>
@@ -146,8 +146,8 @@ export default function DateTimePicker({ value, onChange, timeZone, labelledBy }
                 value={atTime}
                 onCommit={pickTime}
                 onEnter={() => setOpen(false)}
-                placeholder={t('automation.time')}
-                aria-label={t('automation.time')}
+                placeholder={t('automation:time')}
+                aria-label={t('automation:time')}
               />
               <TimeSlotList value={atTime} min={slotFloor} onPick={pickTime} />
             </div>

@@ -42,29 +42,29 @@ function EconomicMapSettings({ config, onChange, onClose }: WidgetSettingsProps<
   return (
     <div className="space-y-4">
       <EnumField
-        label={t('dashboard.widgets.economicMap.region')}
+        label={t('dashboard:widgets.economicMap.region')}
         value={config.region ?? 'global'}
         onChange={(v) => onChange({ region: v as EconomicMapConfig['region'] })}
         options={[
-          { value: 'global', label: t('dashboard.widgets.economicMap.region_global') },
-          { value: 'north-america', label: t('dashboard.widgets.economicMap.region_northAmerica') },
-          { value: 'south-america', label: t('dashboard.widgets.economicMap.region_southAmerica') },
-          { value: 'europe', label: t('dashboard.widgets.economicMap.region_europe') },
-          { value: 'asia', label: t('dashboard.widgets.economicMap.region_asia') },
-          { value: 'africa', label: t('dashboard.widgets.economicMap.region_africa') },
-          { value: 'oceania', label: t('dashboard.widgets.economicMap.region_oceania') },
+          { value: 'global', label: t('dashboard:widgets.economicMap.region_global') },
+          { value: 'north-america', label: t('dashboard:widgets.economicMap.region_northAmerica') },
+          { value: 'south-america', label: t('dashboard:widgets.economicMap.region_southAmerica') },
+          { value: 'europe', label: t('dashboard:widgets.economicMap.region_europe') },
+          { value: 'asia', label: t('dashboard:widgets.economicMap.region_asia') },
+          { value: 'africa', label: t('dashboard:widgets.economicMap.region_africa') },
+          { value: 'oceania', label: t('dashboard:widgets.economicMap.region_oceania') },
         ]}
       />
       <EnumField
-        label={t('dashboard.widgets.economicMap.metric')}
+        label={t('dashboard:widgets.economicMap.metric')}
         value={config.metric ?? 'gdp'}
         onChange={(v) => onChange({ metric: v as EconomicMapConfig['metric'] })}
         options={[
-          { value: 'gdp', label: t('dashboard.widgets.economicMap.metric_gdp') },
-          { value: 'iryy', label: t('dashboard.widgets.economicMap.metric_inflation') },
-          { value: 'intr', label: t('dashboard.widgets.economicMap.metric_interest') },
-          { value: 'ur', label: t('dashboard.widgets.economicMap.metric_unemployment') },
-          { value: 'gdg', label: t('dashboard.widgets.economicMap.metric_debtGdp') },
+          { value: 'gdp', label: t('dashboard:widgets.economicMap.metric_gdp') },
+          { value: 'iryy', label: t('dashboard:widgets.economicMap.metric_inflation') },
+          { value: 'intr', label: t('dashboard:widgets.economicMap.metric_interest') },
+          { value: 'ur', label: t('dashboard:widgets.economicMap.metric_unemployment') },
+          { value: 'gdg', label: t('dashboard:widgets.economicMap.metric_debtGdp') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -75,8 +75,8 @@ function EconomicMapSettings({ config, onChange, onClose }: WidgetSettingsProps<
 
 registerWidget<EconomicMapConfig>({
   type: 'tv.economic-map',
-  titleKey: 'dashboard.widgets.economicMap.title',
-  descriptionKey: 'dashboard.widgets.economicMap.description',
+  titleKey: 'dashboard:widgets.economicMap.title',
+  descriptionKey: 'dashboard:widgets.economicMap.description',
   category: 'markets',
   icon: Globe,
   component: EconomicMapWidget,

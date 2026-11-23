@@ -77,7 +77,7 @@ export function useThisMacPairing({ runsOn, onPaired, held = false }: {
   if (add.isError) {
     error = createRefusalMessage(add.error, t, 'standard');
   } else if (phase.kind === 'failed') {
-    error = phase.timedOut ? t('setup.thisMac.timeout') : phase.message ?? t('computer.remoteControl.failed');
+    error = phase.timedOut ? t('setup:thisMac.timeout') : phase.message ?? t('computer.remoteControl.failed');
   } else if (phase.kind === 'insecure') {
     error = t('computer.remoteControl.insecure');
   } else if (unsupported) {
@@ -122,9 +122,9 @@ export type ThisMacPairing = ReturnType<typeof useThisMacPairing>;
 
 /** The page's title for a stage. */
 export function pairingTitleKey(stage: PairStage): string {
-  if (stage === 'paired') return 'setup.thisMac.paired.title';
-  if (stage === 'ask' || stage === 'confirm') return 'setup.thisMac.ask.title';
-  return 'setup.thisMac.pairing.title';
+  if (stage === 'paired') return 'setup:thisMac.paired.title';
+  if (stage === 'ask' || stage === 'confirm') return 'setup:thisMac.ask.title';
+  return 'setup:thisMac.pairing.title';
 }
 
 /**
@@ -137,14 +137,14 @@ export function pairingLead(
   home: HomeOutcome | null,
 ): { key: string; name?: string } | null {
   if (stage === 'paired') {
-    if (home?.kind === 'here') return { key: 'setup.thisMac.paired.home' };
+    if (home?.kind === 'here') return { key: 'setup:thisMac.paired.home' };
     if (home?.kind === 'moving') {
       return home.fromMachine
-        ? { key: 'setup.thisMac.paired.homeMovingFromMachine', name: home.fromMachine }
-        : { key: 'setup.thisMac.paired.homeMoving' };
+        ? { key: 'setup:thisMac.paired.homeMovingFromMachine', name: home.fromMachine }
+        : { key: 'setup:thisMac.paired.homeMoving' };
     }
     return null;
   }
-  if (stage === 'ask' || stage === 'confirm') return { key: runsOn === 'cloud' ? 'setup.thisMac.ask.lead' : 'setup.thisMac.ask.leadHome' };
-  return { key: 'setup.thisMac.pairing.lead' };
+  if (stage === 'ask' || stage === 'confirm') return { key: runsOn === 'cloud' ? 'setup:thisMac.ask.lead' : 'setup:thisMac.ask.leadHome' };
+  return { key: 'setup:thisMac.pairing.lead' };
 }

@@ -159,18 +159,18 @@ export interface BindingPath {
 export const BINDING_PATHS: readonly BindingPath[] = [
   {
     binding: 'ptc',
-    label: 'plugins.detail.binding_ptc',
-    desc: 'plugins.detail.pathLegendPtc',
+    label: 'plugins:detail.binding_ptc',
+    desc: 'plugins:detail.pathLegendPtc',
   },
   {
     binding: 'direct',
-    label: 'plugins.detail.binding_direct',
-    desc: 'plugins.detail.pathLegendDirect',
+    label: 'plugins:detail.binding_direct',
+    desc: 'plugins:detail.pathLegendDirect',
   },
   {
     binding: 'both',
-    label: 'plugins.detail.binding_both',
-    desc: 'plugins.detail.pathLegendBoth',
+    label: 'plugins:detail.binding_both',
+    desc: 'plugins:detail.pathLegendBoth',
   },
 ];
 

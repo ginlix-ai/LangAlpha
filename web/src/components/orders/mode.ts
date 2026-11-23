@@ -11,9 +11,9 @@ import type { OrderMode } from '@/types/orders';
  * else than the order it produced.
  */
 export const ORDER_MODE_KEY: Record<OrderMode, string> = {
-  live: 'plugins.detail.orderModeLive',
-  paper: 'plugins.detail.orderModePaper',
-  staged: 'plugins.detail.orderModeStaged',
+  live: 'plugins:detail.orderModeLive',
+  paper: 'plugins:detail.orderModePaper',
+  staged: 'plugins:detail.orderModeStaged',
 };
 
 export const ORDER_MODES: readonly OrderMode[] = ['live', 'paper', 'staged'] as const;

@@ -31,7 +31,7 @@ export function pathLabelSides(pts: readonly IP[]): ('above' | 'below')[] {
 }
 
 export const path: DrawingKind<PathDrawing, PathScene> = {
-  nameKey: 'marketView.layerExplain.types.path',
+  nameKey: 'marketView:layerExplain.types.path',
   times: (d) => d.points.map((pt) => pt.time),
   anchors: (d) => d.points,
   resolve(d, { base, P }) {

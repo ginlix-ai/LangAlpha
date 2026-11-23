@@ -27,6 +27,7 @@ import { isThreadRemoved } from '@/lib/deletedThreads';
 import { useAccount } from '@/hooks/useAccount';
 import type { SharedWorkspaceEntry } from '@/types/sharedWorkspaces';
 import type { SharedNavRow } from './sharedNavRows';
+import { withCopy } from '@/i18n';
 import { MountOnceOpen } from '@/components/MountOnceOpen';
 import './NavigationPanel.css';
 
@@ -34,7 +35,7 @@ import './NavigationPanel.css';
 const MembersDialog = lazy(() => import('@/components/sharedWorkspaces/MembersDialog').then((m) => ({ default: m.MembersDialog })));
 // Lazy for the same reason: it opens only from a thread's menu, and its panel
 // brings the share-link and artifact code with it.
-const ShareThreadDialog = lazy(() => import('./ShareThreadDialog'));
+const ShareThreadDialog = lazy(withCopy(() => import('./ShareThreadDialog'), ['filePanel']));
 
 interface NavigationPanelProps {
   /** Whether this panel's host ChatView is the visible one. Up to 5 ChatViews

@@ -35,8 +35,8 @@ export function threadLabel(
   thread: Pick<ArtifactThread, 'thread_id' | 'title'> | { thread_id: string; title: string | null },
   besideThreadId: string | null,
 ): string {
-  if (thread.thread_id === besideThreadId) return t('pageViewer.comments.thisThread');
-  return thread.title?.trim() || t('pageViewer.comments.untitledThread');
+  if (thread.thread_id === besideThreadId) return t('pageViewer:comments.thisThread');
+  return thread.title?.trim() || t('pageViewer:comments.untitledThread');
 }
 
 /**
@@ -104,7 +104,7 @@ export function commentDestinations(
       if (thread?.usable) add({ threadId: thread.thread_id }, threadLabel(t, thread, besideThreadId), isDefault);
     };
     if (destinations.default.thread) addThread(destinations.default.thread, true);
-    else add({ newThreadIn: destinations.default.workspace_id }, t('pageViewer.comments.newThread'), true);
+    else add({ newThreadIn: destinations.default.workspace_id }, t('pageViewer:comments.newThread'), true);
     addThread(destinations.beside);
     addThread(destinations.bound);
   }

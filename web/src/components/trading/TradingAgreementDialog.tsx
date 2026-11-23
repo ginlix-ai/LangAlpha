@@ -43,8 +43,8 @@ export function TradingAgreementDialog({
   const primaryLabel = pending
     ? t('common.saving')
     : outdated
-      ? t('settings.tradingPermission.agreement.reload')
-      : t('settings.tradingPermission.agreement.agree');
+      ? t('settings:tradingPermission.agreement.reload')
+      : t('settings:tradingPermission.agreement.agree');
 
   const footer = (
     <div className="flex items-center justify-end gap-2">
@@ -75,7 +75,7 @@ export function TradingAgreementDialog({
   return (
     <ModalShell
       labelId={titleId}
-      title={t('settings.tradingPermission.agreement.title')}
+      title={t('settings:tradingPermission.agreement.title')}
       subtitle={t(info.labelKey)}
       onClose={onCancel}
       closeDisabled={pending}
@@ -85,7 +85,7 @@ export function TradingAgreementDialog({
         <p>{t(info.agreement.descriptionKey)}</p>
         <p>
           <Trans
-            i18nKey="settings.tradingPermission.agreement.common"
+            i18nKey="settings:tradingPermission.agreement.common"
             components={{
               orders: (
                 <Link
@@ -106,7 +106,7 @@ export function TradingAgreementDialog({
             className="mt-0.5 h-4 w-4 shrink-0"
             style={{ color: 'var(--color-warning)' }}
           />
-          <span>{t('settings.tradingPermission.agreement.changed')}</span>
+          <span>{t('settings:tradingPermission.agreement.changed')}</span>
         </p>
       ) : (
         <CheckboxChoice
@@ -118,7 +118,7 @@ export function TradingAgreementDialog({
           className="items-start gap-2.5 rounded-md text-sm"
         >
           <span style={{ color: 'var(--color-text-primary)' }}>
-            {t('settings.tradingPermission.agreement.checkbox')}
+            {t('settings:tradingPermission.agreement.checkbox')}
           </span>
         </CheckboxChoice>
       )}

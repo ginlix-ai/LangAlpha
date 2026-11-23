@@ -26,8 +26,8 @@ export function SymbolSwitcher({ symbol, onPick }: SymbolSwitcherProps): React.R
         <button
           type="button"
           className="stock-symbol stock-symbol-btn"
-          title={t('marketView.symbolSearch.changeSymbol')}
-          aria-label={t('marketView.symbolSearch.switchSymbol', { symbol })}
+          title={t('marketView:symbolSearch.changeSymbol')}
+          aria-label={t('marketView:symbolSearch.switchSymbol', { symbol })}
         >
           {symbol}
           <ChevronDown size={14} aria-hidden="true" />

@@ -10,7 +10,7 @@ function WidgetFallback() {
       className="h-full w-full flex items-center justify-center text-[0.6875rem]"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
-      {t('dashboard.widgets.common.loading')}
+      {t('dashboard:widgets.common.loading')}
     </div>
   );
 }
@@ -24,7 +24,7 @@ function WidgetErrorFallback({ widgetType }: { widgetType: string }) {
       className="h-full w-full flex flex-col items-center justify-center px-3 py-2 text-center gap-1"
       style={{ color: 'var(--color-text-tertiary)', fontSize: '0.6875rem', lineHeight: 1.4 }}
     >
-      <span style={{ fontWeight: 500 }}>{t('dashboard.widgets.frame.errorBoundary')}</span>
+      <span style={{ fontWeight: 500 }}>{t('dashboard:widgets.frame.errorBoundary')}</span>
       <span style={{ opacity: 0.75 }}>{widgetType}</span>
     </div>
   );

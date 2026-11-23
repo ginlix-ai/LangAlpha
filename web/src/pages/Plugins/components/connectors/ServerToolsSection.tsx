@@ -74,7 +74,7 @@ export function ServerToolsSection({
       {/* Before the tools, because it decides which of them are reachable, and
           because it is what someone opened a broker's detail to find out. */}
       {brokerage && groups.length > 0 && (
-        <DetailSection title={t('plugins.brokerages.detail.capabilities')}>
+        <DetailSection title={t('plugins:brokerages.detail.capabilities')}>
           <CapabilityList groups={groups} granted={granted} />
         </DetailSection>
       )}
@@ -82,7 +82,7 @@ export function ServerToolsSection({
       {/* The row-wide switches are a broker's alone: only its tools belong to
           capability groups, and only a broker has orders to gate. */}
       {brokerage && catalog && (
-        <DetailSection title={t('plugins.detail.toolAccess')}>
+        <DetailSection title={t('plugins:detail.toolAccess')}>
           <div className="flex flex-col gap-3">
             <ToolAccessSwitches
               catalog={catalog}
@@ -98,7 +98,7 @@ export function ServerToolsSection({
               </p>
             )}
             <p className="text-xs" style={{ color: 'var(--color-text-quaternary)' }}>
-              {t('plugins.detail.toolAccessNote')}
+              {t('plugins:detail.toolAccessNote')}
             </p>
           </div>
         </DetailSection>
@@ -107,7 +107,7 @@ export function ServerToolsSection({
       {/* A brokerage with no row yet has no tools to list. */}
       {(catalog || builtin) && (
         <DetailSection
-          title={t('plugins.detail.tools')}
+          title={t('plugins:detail.tools')}
           count={toolsQuery.data?.tools.length || undefined}
           action={
             onRefresh && (
@@ -119,7 +119,7 @@ export function ServerToolsSection({
                 aria-busy={refreshing}
               >
                 <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} aria-hidden />
-                {t('plugins.oauth.refreshSchemas')}
+                {t('plugins:oauth.refreshSchemas')}
               </button>
             )
           }
@@ -135,19 +135,19 @@ export function ServerToolsSection({
             // Distinct from the empty case below: a failed request wants a
             // retry, where "no tools yet" tells the user to wait.
             <p className="text-xs" style={{ color: 'var(--color-loss)' }}>
-              {t('plugins.detail.toolsFailed')}
+              {t('plugins:detail.toolsFailed')}
             </p>
           ) : builtinTools.data?.connected === false ? (
             // This worker has no snapshot, because its startup connect failed
             // and a frozen registry is never repaired. "No tools" here would
             // report one process's gap as the server's shape.
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('plugins.detail.toolsUnavailable')}
+              {t('plugins:detail.toolsUnavailable')}
             </p>
           ) : !toolsQuery.data || toolsQuery.data.tools.length === 0 ? (
             <div className="connector-empty-box">
               <List className="h-3.5 w-3.5" aria-hidden />
-              {signInFirst ? t('plugins.connectorsPage.toolsAfterSignIn') : t('plugins.detail.toolsEmpty')}
+              {signInFirst ? t('plugins:connectorsPage.toolsAfterSignIn') : t('plugins:detail.toolsEmpty')}
             </div>
           ) : (
             /* A brokerage publishes one flat list of up to 88 tools, and reading
@@ -165,7 +165,7 @@ export function ServerToolsSection({
             >
               {toolsQuery.data.discovered_at && (
                 <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-quaternary)' }}>
-                  {t('plugins.detail.discovered', {
+                  {t('plugins:detail.discovered', {
                     date: mediumDate(new Date(toolsQuery.data.discovered_at), locale),
                   })}
                 </span>

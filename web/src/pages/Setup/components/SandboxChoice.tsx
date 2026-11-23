@@ -19,10 +19,10 @@ import { DOCKER_INSTALL_URL, keyFieldKey, vendorName } from '../utils/vendors';
 import { KeyField } from './KeyField';
 
 const GROUP_COPY: Readonly<Record<string, { labelKey: string; descKey: string }>> = {
-  core: { labelKey: 'setup.computer.groupCore', descKey: 'setup.computer.groupCoreDesc' },
-  browsing: { labelKey: 'setup.computer.groupBrowsing', descKey: 'setup.computer.groupBrowsingDesc' },
-  documents: { labelKey: 'setup.computer.groupDocuments', descKey: 'setup.computer.groupDocumentsDesc' },
-  chromium: { labelKey: 'setup.computer.groupChromium', descKey: 'setup.computer.groupChromiumDesc' },
+  core: { labelKey: 'setup:computer.groupCore', descKey: 'setup:computer.groupCoreDesc' },
+  browsing: { labelKey: 'setup:computer.groupBrowsing', descKey: 'setup:computer.groupBrowsingDesc' },
+  documents: { labelKey: 'setup:computer.groupDocuments', descKey: 'setup:computer.groupDocumentsDesc' },
+  chromium: { labelKey: 'setup:computer.groupChromium', descKey: 'setup:computer.groupChromiumDesc' },
 };
 
 function InstallGroups({ groups, onToggle }: { groups: readonly InstallGroup[]; onToggle: (id: string) => void }) {
@@ -33,8 +33,8 @@ function InstallGroups({ groups, onToggle }: { groups: readonly InstallGroup[]; 
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p className="text-[0.8125rem] font-medium text-(--color-text-primary)">{t('setup.computer.installTitle')}</p>
-        <p className="mt-0.5 text-xs leading-snug text-(--color-text-tertiary)">{t('setup.computer.installHelp')}</p>
+        <p className="text-[0.8125rem] font-medium text-(--color-text-primary)">{t('setup:computer.installTitle')}</p>
+        <p className="mt-0.5 text-xs leading-snug text-(--color-text-tertiary)">{t('setup:computer.installHelp')}</p>
       </div>
       <ul className="flex flex-col gap-3">
         {groups.map((group) => {
@@ -46,7 +46,7 @@ function InstallGroups({ groups, onToggle }: { groups: readonly InstallGroup[]; 
                 <span className="block text-[0.8125rem] text-(--color-text-primary)">
                   {name}
                   {group.required && (
-                    <span className="ml-2 text-xs text-(--color-text-tertiary)">{t('setup.computer.required')}</span>
+                    <span className="ml-2 text-xs text-(--color-text-tertiary)">{t('setup:computer.required')}</span>
                   )}
                 </span>
                 {copy && (
@@ -54,7 +54,7 @@ function InstallGroups({ groups, onToggle }: { groups: readonly InstallGroup[]; 
                 )}
                 {group.download_mb != null && group.disk_mb != null && (
                   <span className="mt-0.5 block text-xs tabular-nums text-(--color-text-tertiary)">
-                    {t('setup.computer.groupSize', { download: size(group.download_mb), disk: size(group.disk_mb) })}
+                    {t('setup:computer.groupSize', { download: size(group.download_mb), disk: size(group.disk_mb) })}
                   </span>
                 )}
               </span>
@@ -71,7 +71,7 @@ function InstallGroups({ groups, onToggle }: { groups: readonly InstallGroup[]; 
       </ul>
       {total && (
         <p className="text-xs tabular-nums text-(--color-text-secondary)">
-          {t('setup.computer.installTotal', { download: size(total.downloadMb), disk: size(total.diskMb) })}
+          {t('setup:computer.installTotal', { download: size(total.downloadMb), disk: size(total.diskMb) })}
         </p>
       )}
     </div>
@@ -89,7 +89,7 @@ function DockerNotOffered() {
   const { t } = useTranslation();
   return (
     <div className={PANEL}>
-      <p className="text-xs leading-snug text-(--color-text-secondary)">{t('setup.computer.dockerNotOffered')}</p>
+      <p className="text-xs leading-snug text-(--color-text-secondary)">{t('setup:computer.dockerNotOffered')}</p>
     </div>
   );
 }
@@ -103,7 +103,7 @@ function DockerMissing() {
   return (
     <div className={PANEL}>
       <p role="status" className="text-xs leading-snug text-(--color-text-secondary)">
-        {asked && !rechecking ? t('setup.computer.dockerStillDown') : t('setup.computer.dockerMissing')}
+        {asked && !rechecking ? t('setup:computer.dockerStillDown') : t('setup:computer.dockerMissing')}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <Button
@@ -122,7 +122,7 @@ function DockerMissing() {
               <Loader size={14} className="text-current" />
             </span>
           )}
-          {t('setup.computer.dockerCheck')}
+          {t('setup:computer.dockerCheck')}
         </Button>
         <a
           href={DOCKER_INSTALL_URL}
@@ -130,7 +130,7 @@ function DockerMissing() {
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 px-2 text-[0.8125rem] text-(--color-text-secondary) hover:text-(--color-text-primary)"
         >
-          {t('setup.computer.dockerInstall')}
+          {t('setup:computer.dockerInstall')}
           <ExternalLink aria-hidden="true" className="h-3 w-3" />
         </a>
       </div>
@@ -162,7 +162,7 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
   if (status.sandbox.provider_source === 'environment') {
     return (
       <p className="text-sm text-(--color-text-secondary)">
-        {t('setup.computer.environment', { provider: providerLabel(status.sandbox.provider, t) })}
+        {t('setup:computer.environment', { provider: providerLabel(status.sandbox.provider, t) })}
       </p>
     );
   }
@@ -176,13 +176,13 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
           checked={draft.card === 'local'}
           onSelect={draft.pickCard}
           mark={<AnswerTile><Laptop aria-hidden="true" strokeWidth={1.5} /></AnswerTile>}
-          title={t('setup.computer.localTitle')}
+          title={t('setup:computer.localTitle')}
           detail={
             <>
-              {t('setup.computer.localDesc')}
+              {t('setup:computer.localDesc')}
               <span className={cn(NOTE, 'text-(--color-warning)')}>
                 <TriangleAlert aria-hidden="true" className="mt-px h-3.5 w-3.5 shrink-0" />
-                {t('setup.computer.localWarning')}
+                {t('setup:computer.localWarning')}
               </span>
             </>
           }
@@ -203,14 +203,14 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
         onSelect={draft.pickCard}
         disabled={!dockerAvailable}
         mark={<AnswerTile><Box aria-hidden="true" strokeWidth={1.5} /></AnswerTile>}
-        title={t('setup.computer.dockerTitle')}
+        title={t('setup:computer.dockerTitle')}
         detail={
           <>
-            {t('setup.computer.dockerDesc')}
+            {t('setup:computer.dockerDesc')}
             {dockerAvailable && (
               <span className={cn(NOTE, 'items-center text-(--color-text-secondary)')}>
                 <CircleCheck aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-(--color-success)" />
-                {t('setup.computer.dockerFound')}
+                {t('setup:computer.dockerFound')}
               </span>
             )}
           </>
@@ -224,11 +224,11 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
         checked={draft.card === 'cloud'}
         onSelect={draft.pickCard}
         mark={<AnswerTile><Cloud aria-hidden="true" strokeWidth={1.5} /></AnswerTile>}
-        title={t('setup.computer.cloudTitle')}
+        title={t('setup:computer.cloudTitle')}
         detail={
           <>
-            {t('setup.computer.cloudDesc')}
-            <span className={NOTE}>{t('setup.computer.cloudReach')}</span>
+            {t('setup:computer.cloudDesc')}
+            <span className={NOTE}>{t('setup:computer.cloudReach')}</span>
           </>
         }
         panel={
@@ -236,7 +236,7 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
             <div className={cn(PANEL, 'flex flex-col gap-3')}>
               <div className="self-start">
                 <SegmentedControl<CloudKind>
-                  label={t('setup.computer.cloudVendor')}
+                  label={t('setup:computer.cloudVendor')}
                   value={draft.cloudKind}
                   onChange={draft.pickCloudKind}
                   options={CLOUD_KINDS.map((kind) => ({ value: kind, label: vendorName(kind, t) }))}
@@ -246,10 +246,10 @@ export function SandboxChoice({ status, draft, labelledBy }: SandboxChoiceProps)
                 <KeyField
                   key={keyFieldKey(cloudKey)}
                   setupKey={cloudKey}
-                  label={t('setup.computer.cloudKey', { vendor: cloudName })}
+                  label={t('setup:computer.cloudKey', { vendor: cloudName })}
                   draft={draft.keyDrafts[cloudKey.name] ?? ''}
                   onDraft={(value) => draft.setKeyDraft(cloudKey.name, value)}
-                  error={draft.keyMissing ? t('setup.computer.cloudKeyMissing', { vendor: cloudName }) : null}
+                  error={draft.keyMissing ? t('setup:computer.cloudKeyMissing', { vendor: cloudName }) : null}
                 />
               )}
             </div>

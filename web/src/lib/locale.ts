@@ -41,21 +41,34 @@ export function setLocaleCookie(locale: string): void {
   document.cookie = attrs.join('; ');
 }
 
-type LocaleSwitcher = Pick<I18n, 'loadLanguages' | 'hasResourceBundle' | 'changeLanguage'>;
+type LocaleSwitcher = Pick<I18n, 'language' | 'loadNamespaces' | 'hasResourceBundle' | 'changeLanguage' | 'options'>;
 
 let requested: string | null = null;
 
 /**
- * Switch the app's language once its catalog is in. Catalogs load on demand
- * (i18n.ts), and i18next's own changeLanguage switches even when that load
- * fails, repainting every string as its raw key. So a failed catalog keeps the
- * current language, and lib/staleBuild.tsx offers the reload that fixes it.
- * The latest call wins, so a slow catalog cannot land over a later choice.
+ * Switch the app's language once its catalogs are in: the main one and every
+ * namespace in use. Catalogs load on demand (i18n.ts), and i18next's own
+ * changeLanguage switches even when that load fails, repainting every string
+ * as its raw key. So a failed catalog keeps the current language, and
+ * lib/staleBuild.tsx offers the reload that fixes it. The latest call wins,
+ * so a slow catalog cannot land over a later choice.
  */
 export async function switchLocale(i18n: LocaleSwitcher, locale: Locale): Promise<void> {
   requested = locale;
-  await i18n.loadLanguages(locale);
-  if (requested !== locale || !i18n.hasResourceBundle(locale, 'translation')) return;
+  // i18next loads each namespace for the active language and for every one in
+  // `preload`, a list its loadLanguages only ever adds to. Holding it to the
+  // target makes this load fetch what that language lacks, read again what
+  // failed, and wait on what a lazy page has on its way; and once the switch is
+  // over, a later page fetches its copy in one language, not in every one this
+  // tab has shown.
+  i18n.options.preload = [locale];
+  const inUse = [i18n.options.ns ?? 'translation'].flat();
+  await i18n.loadNamespaces(inUse);
+  if (requested !== locale) return;
+  if (!inUse.every((ns) => i18n.hasResourceBundle(locale, ns))) {
+    i18n.options.preload = [i18n.language];
+    return;
+  }
   await i18n.changeLanguage(locale);
 }
 

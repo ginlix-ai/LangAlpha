@@ -34,9 +34,9 @@ export function MarketLink({ symbol, inline = false }: { symbol: string | undefi
     e.stopPropagation();
     open(target);
   };
-  if (!inline) return <TermLink onClick={handleClick}>{t('toolArtifact.openInMarketView')}</TermLink>;
+  if (!inline) return <TermLink onClick={handleClick}>{t('toolArtifact:openInMarketView')}</TermLink>;
   return (
-    <button type="button" className="term-sym-link" title={t('toolArtifact.openInMarketView')} onClick={handleClick}>
+    <button type="button" className="term-sym-link" title={t('toolArtifact:openInMarketView')} onClick={handleClick}>
       <TickerLogo symbol={target} />
       <span>{symbol}</span>
       <ArrowUpRight className="term-link-mark" aria-hidden="true" />

@@ -17,7 +17,7 @@ export function TradingViewAttribution() {
       target="_blank"
       rel="noopener noreferrer"
     >
-      {t('dashboard.widgets.tvAttribution.powered')}
+      {t('dashboard:widgets.tvAttribution.powered')}
     </a>
   );
 }

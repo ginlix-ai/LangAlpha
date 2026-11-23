@@ -8,7 +8,7 @@ export function useSaveFailedToast() {
   const { t } = useTranslation();
   const { toast } = useToast();
   return () => {
-    toast({ variant: 'destructive', title: t('common.error'), description: t('settings.failedToSaveSettings') });
+    toast({ variant: 'destructive', title: t('common.error'), description: t('settings:failedToSaveSettings') });
   };
 }
 

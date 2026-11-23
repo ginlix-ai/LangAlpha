@@ -108,17 +108,17 @@ export function BulkActionBar({
         ref={barRef}
         className="bulk-bar"
         role="toolbar"
-        aria-label={t('plugins.bulk.barLabel')}
+        aria-label={t('plugins:bulk.barLabel')}
         data-testid="bulk-action-bar"
       >
         {running ? (
           <span className="bulk-bar-status">
             <Loader size={14} className="text-current" />
-            {t('plugins.bulk.progress', { done: progress.done, total: progress.total })}
+            {t('plugins:bulk.progress', { done: progress.done, total: progress.total })}
           </span>
         ) : count === 0 ? (
           <>
-            <span className="bulk-bar-status">{t('plugins.bulk.pickRows')}</span>
+            <span className="bulk-bar-status">{t('plugins:bulk.pickRows')}</span>
             {exit}
           </>
         ) : confirming ? (
@@ -143,7 +143,7 @@ export function BulkActionBar({
           </>
         ) : (
           <>
-            <span className="bulk-bar-count">{t('plugins.bulk.selected', { count })}</span>
+            <span className="bulk-bar-count">{t('plugins:bulk.selected', { count })}</span>
             <div className="bulk-bar-actions">
               {actions.map((action) => (
                 <button

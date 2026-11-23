@@ -96,7 +96,7 @@ describe('the "To:" menu', () => {
     }), BESIDE);
     expect(choices.map((c) => [c.key, c.isDefault, c.label])).toEqual([
       ['thread:th-maker', true, 'T th-maker'],
-      [`thread:${BESIDE}`, false, 'pageViewer.comments.thisThread'],
+      [`thread:${BESIDE}`, false, 'pageViewer:comments.thisThread'],
     ]);
   });
 

@@ -83,7 +83,7 @@ function WorkspaceTile({
               letterSpacing: '-0.005em',
             }}
           >
-            {text.name || t('dashboard.widgets.workspacePicker.untitled')}
+            {text.name || t('dashboard:widgets.workspacePicker.untitled')}
           </span>
         </div>
         <ArrowUpRight
@@ -104,7 +104,7 @@ function WorkspaceTile({
             className="text-[0.7188rem] italic"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
           >
-            {t('dashboard.widgets.workspacePicker.noDescription')}
+            {t('dashboard:widgets.workspacePicker.noDescription')}
           </div>
         )}
         {relative ? (
@@ -132,7 +132,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
   useWidgetContextExport(instance.id, {
     full: () => {
       const tableRows = workspaces.map((ws) => ({
-        name: ws.name || t('dashboard.widgets.workspacePicker.untitled'),
+        name: ws.name || t('dashboard:widgets.workspacePicker.untitled'),
         status: ws.status ?? 'workspace',
         // Newlines in descriptions would corrupt the single-row markdown table;
         // collapse them to spaces here. Pipe-escaping is handled by serializeRowsToMarkdown.
@@ -153,7 +153,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
       return {
         widget_type: 'workspace.picker',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.workspacePicker.title')} · ${workspaces.length}`,
+        label: `${t('dashboard:widgets.workspacePicker.title')} · ${workspaces.length}`,
         description: workspaces.length
           ? `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'}`
           : 'empty',
@@ -184,7 +184,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
           }}
           className="dash-link widget-drag-cancel"
         >
-          {t('dashboard.widgets.workspacePicker.viewAll')}
+          {t('dashboard:widgets.workspacePicker.viewAll')}
           <ArrowUpRight className="h-3 w-3" />
         </button>
       </WidgetCardMeta>
@@ -212,7 +212,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
                 className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {t('dashboard.widgets.workspacePicker.empty')}
+                {t('dashboard:widgets.workspacePicker.empty')}
               </div>
               <button
                 type="button"
@@ -223,7 +223,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
                 className="text-[0.6875rem] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                {t('dashboard.widgets.workspacePicker.emptyCta')}
+                {t('dashboard:widgets.workspacePicker.emptyCta')}
               </button>
             </div>
           </div>
@@ -249,9 +249,9 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
 
 registerWidget<WorkspacePickerConfig>({
   type: 'workspace.picker',
-  titleKey: 'dashboard.widgets.workspacePicker.title',
-  cardTitleKey: 'dashboard.widgets.workspacePicker.header',
-  descriptionKey: 'dashboard.widgets.workspacePicker.description',
+  titleKey: 'dashboard:widgets.workspacePicker.title',
+  cardTitleKey: 'dashboard:widgets.workspacePicker.header',
+  descriptionKey: 'dashboard:widgets.workspacePicker.description',
   category: 'workspace',
   icon: LayoutGrid,
   component: WorkspacePickerWidget,

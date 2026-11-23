@@ -9,7 +9,7 @@
  * vendor, and whether this build can start a connect against one at all.
  */
 import { canBeginMcpOAuth, isDesktopShell } from '@/lib/desktop';
-import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/oauthState';
 import type {
   Brokerage,
   CapabilityGroup,

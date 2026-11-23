@@ -22,10 +22,10 @@ import {
 } from './sections';
 
 const SEARCH_PLACEHOLDER_KEYS: Record<AddSection, string> = {
-  plugins: 'plugins.shell.search.plugins',
-  mcp: 'plugins.shell.search.mcp',
-  skills: 'plugins.shell.search.skills',
-  subagents: 'plugins.shell.search.subagents',
+  plugins: 'plugins:shell.search.plugins',
+  mcp: 'plugins:shell.search.mcp',
+  skills: 'plugins:shell.search.skills',
+  subagents: 'plugins:shell.search.subagents',
 };
 
 /**
@@ -78,7 +78,7 @@ export function PageHeader({
           <SearchField
             value={query}
             placeholder={t(
-              view === 'discover' ? 'plugins.shell.search.catalog' : SEARCH_PLACEHOLDER_KEYS[section],
+              view === 'discover' ? 'plugins:shell.search.catalog' : SEARCH_PLACEHOLDER_KEYS[section],
             )}
             onChange={onQueryChange}
           />
@@ -87,7 +87,7 @@ export function PageHeader({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <HeaderButton variant="primary" icon={Plus} className="plugins-head-add">
-                {t('plugins.addMenu.add')}
+                {t('plugins:addMenu.add')}
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </HeaderButton>
             </DropdownMenuTrigger>
@@ -99,7 +99,7 @@ export function PageHeader({
                 <>
                   <DropdownMenuItem onSelect={() => onViewChange('discover')}>
                     <Compass className="h-3.5 w-3.5" />
-                    {t('plugins.addMenu.browseCatalog')}
+                    {t('plugins:addMenu.browseCatalog')}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
@@ -143,11 +143,11 @@ function ViewSwitch({
 }) {
   const { t } = useTranslation();
   const options: { value: SectionView; label: string }[] = [
-    { value: 'yours', label: t('plugins.shell.view.yours') },
-    { value: 'discover', label: t('plugins.shell.view.discover') },
+    { value: 'yours', label: t('plugins:shell.view.yours') },
+    { value: 'discover', label: t('plugins:shell.view.discover') },
   ];
   return (
-    <div role="group" aria-label={t('plugins.shell.view.label')} data-slot="segmented" className="plugins-view">
+    <div role="group" aria-label={t('plugins:shell.view.label')} data-slot="segmented" className="plugins-view">
       {options.map((option) => (
         <button
           key={option.value}
@@ -217,7 +217,7 @@ function SearchField({
         <button
           type="button"
           className="plugins-search-clear"
-          aria-label={t('plugins.shell.search.clear')}
+          aria-label={t('plugins:shell.search.clear')}
           // Keeps focus in the field, so the cleared draft is the one shown.
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => set('')}

@@ -21,7 +21,7 @@ import type { Automation, MarketMovers, OptionRow, OptionsChain } from './cardRe
 
 // ─── The market's session ───────────────────────────────────────────
 
-/** The fallback for a status with no `toolArtifact.marketStatus.*` key. */
+/** The fallback for a status with no `toolArtifact:marketStatus.*` key. */
 const MARKET_STATUS_LABELS: Record<string, string> = {
   early_trading: 'Pre-Market',
   open: 'Regular',
@@ -32,7 +32,7 @@ const MARKET_STATUS_LABELS: Record<string, string> = {
 /** A session's badge word; an unknown status stays raw. */
 export function marketStatusLabel(t: TFunction, status: string | undefined): string {
   if (!status) return '';
-  return t(`toolArtifact.marketStatus.${status}`, MARKET_STATUS_LABELS[status] || status);
+  return t(`toolArtifact:marketStatus.${status}`, MARKET_STATUS_LABELS[status] || status);
 }
 
 /**
@@ -42,7 +42,7 @@ export function marketStatusLabel(t: TFunction, status: string | undefined): str
  */
 export function extendedHoursLabel(t: TFunction, status: string | undefined, variant: 'long' | 'short'): string {
   const session = status === 'early_trading' ? 'preMarket' : 'afterHours';
-  return t(`toolArtifact.extendedHours.${session}.${variant}`);
+  return t(`toolArtifact:extendedHours.${session}.${variant}`);
 }
 
 // ─── Figures ────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ const retrievedFormat = createDateFormatter({
 
 /** When the tool fetched the rows, in the reader's clock: the tooltip on the edge. */
 export function retrievedTitle(t: TFunction, asOfTs: number | undefined, locale: string): string | undefined {
-  return asOfTs != null ? t('toolArtifact.retrievedAt', { time: retrievedFormat(asOfTs, locale) }) : undefined;
+  return asOfTs != null ? t('toolArtifact:retrievedAt', { time: retrievedFormat(asOfTs, locale) }) : undefined;
 }
 
 // ─── Options chains and movers ──────────────────────────────────────
@@ -94,16 +94,16 @@ export function optionsEdge(
   // With no underlying the title already says options; `CALLS` alone says it
   // on a short edge. The catalog phrases both, since zh says it in one word.
   let sub: string | undefined;
-  if (type) sub = short || !chain.underlying ? t(`toolArtifact.optionTypes.${type}`) : t(`toolArtifact.optionsOfType.${type}`);
-  else if (chain.underlying) sub = t('toolArtifact.options');
+  if (type) sub = short || !chain.underlying ? t(`toolArtifact:optionTypes.${type}`) : t(`toolArtifact:optionsOfType.${type}`);
+  else if (chain.underlying) sub = t('toolArtifact:options');
   const { expiries } = chain;
   const date = expiries.length > 1
     ? formatCalendarDayRange(expiries[0], expiries[expiries.length - 1], locale)
     : expiries.length ? formatCalendarDay(expiries[0], locale) : undefined;
   return {
-    title: chain.underlying ?? t('toolArtifact.optionsChain'),
+    title: chain.underlying ?? t('toolArtifact:optionsChain'),
     sub,
-    expiry: date && !(short && expiries.length > 1) ? t('toolArtifact.expiresOn', { date }) : undefined,
+    expiry: date && !(short && expiries.length > 1) ? t('toolArtifact:expiresOn', { date }) : undefined,
     // The regular session is the default reading, as on a quote.
     status: chain.status && chain.status !== 'open' ? marketStatusLabel(t, chain.status) : undefined,
   };
@@ -112,7 +112,7 @@ export function optionsEdge(
 /** A stale contract's tooltip: no trade this session, and when the feed showed its last one. */
 export function staleOptionTitle(t: TFunction, row: OptionRow): string | undefined {
   if (!row.stale) return undefined;
-  return t('toolArtifact.staleOption', { time: (row.updated ?? '').slice(0, 16) });
+  return t('toolArtifact:staleOption', { time: (row.updated ?? '').slice(0, 16) });
 }
 
 /** A row's expiry in its column: the day alone when every expiry shares a year, since the edge names it. */
@@ -123,9 +123,9 @@ export function expiryLabeler(expiries: readonly string[], locale: string): (day
 
 /** `Top Gainers`, `Top Losers`, or `Market Movers` for a call that named neither. */
 export function moversTitle(t: TFunction, direction: MarketMovers['direction']): string {
-  if (direction === 'gainers') return t('toolArtifact.topGainers');
-  if (direction === 'losers') return t('toolArtifact.topLosers');
-  return t('toolArtifact.marketMovers');
+  if (direction === 'gainers') return t('toolArtifact:topGainers');
+  if (direction === 'losers') return t('toolArtifact:topLosers');
+  return t('toolArtifact:marketMovers');
 }
 
 // ─── Company overview ───────────────────────────────────────────────
@@ -155,9 +155,9 @@ export function itemNumber(item: string): string {
 // ─── Automations: the card and its panel ────────────────────────────
 
 const TRIGGER_KIND_KEYS: Record<string, string> = {
-  cron: 'toolArtifact.recurring',
-  once: 'toolArtifact.oneTime',
-  price: 'toolArtifact.priceTrigger',
+  cron: 'toolArtifact:recurring',
+  once: 'toolArtifact:oneTime',
+  price: 'toolArtifact:priceTrigger',
 };
 
 /** The kind of trigger in a word, or undefined for one the catalog has no word for. */

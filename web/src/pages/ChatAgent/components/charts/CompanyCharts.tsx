@@ -80,7 +80,7 @@ export const PerformanceBarChart = memo(function PerformanceBarChart({ performan
   if (chartData.length === 0) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.pricePerformance')}>
+    <ChartFrame title={t('toolArtifact:pricePerformance')}>
       <BarChart responsive width="100%" height={180} data={chartData} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={skin.grid} vertical={false} />
         <XAxis
@@ -115,14 +115,14 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
     if (!ratings) return { chartData: [], total: 0 };
     const cd = ratingCounts(ratings)
       .filter((d) => d.value > 0)
-      .map((d) => ({ ...d, name: t(`toolArtifact.ratings.${d.key}`) }));
+      .map((d) => ({ ...d, name: t(`toolArtifact:ratings.${d.key}`) }));
     return { chartData: cd, total: cd.reduce((s, d) => s + d.value, 0) };
   }, [ratings, t]);
 
   if (!ratings || chartData.length === 0) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.analystRatings')}>
+    <ChartFrame title={t('toolArtifact:analystRatings')}>
       <div style={{ position: 'relative' }}>
         <PieChart responsive width="100%" height={200}>
           <Pie
@@ -155,7 +155,7 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
           <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-primary)', textTransform: 'uppercase' }}>
             {(ratings.consensus as string) || ''}
           </div>
-          <div style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>{t('toolArtifact.nRatings', { count: total })}</div>
+          <div style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>{t('toolArtifact:nRatings', { count: total })}</div>
         </div>
       </div>
     </ChartFrame>
@@ -217,10 +217,10 @@ export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ reven
   };
 
   return (
-    <ChartFrame title={t('toolArtifact.revenueBreakdown')}>
+    <ChartFrame title={t('toolArtifact:revenueBreakdown')}>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        {hasProduct && renderPie(buildPieData(revenueByProduct), t('toolArtifact.byProduct'))}
-        {hasGeo && renderPie(buildPieData(revenueByGeo), t('toolArtifact.byGeography'))}
+        {hasProduct && renderPie(buildPieData(revenueByProduct), t('toolArtifact:byProduct'))}
+        {hasGeo && renderPie(buildPieData(revenueByGeo), t('toolArtifact:byGeography'))}
       </div>
     </ChartFrame>
   );
@@ -242,15 +242,15 @@ export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data,
   if (!data?.length) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.quarterlyRevenue')}>
+    <ChartFrame title={t('toolArtifact:quarterlyRevenue')}>
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={skin.grid} vertical={false} />
         <XAxis dataKey="period" tick={{ ...skin.tick, fontSize: 10 }} axisLine={{ stroke: skin.axis }} />
         <YAxis width="auto" tick={skin.tick} axisLine={{ stroke: skin.axis }} tickFormatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />
         <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={skin.legend} />
-        <Bar dataKey="revenue" name={t('toolArtifact.revenue')} fill={skin.primary} radius={skin.bar} />
-        <Bar dataKey="netIncome" name={t('toolArtifact.netIncome')} fill={GREEN} radius={skin.bar} />
+        <Bar dataKey="revenue" name={t('toolArtifact:revenue')} fill={skin.primary} radius={skin.bar} />
+        <Bar dataKey="netIncome" name={t('toolArtifact:netIncome')} fill={GREEN} radius={skin.bar} />
       </BarChart>
     </ChartFrame>
   );
@@ -275,16 +275,16 @@ export const MarginsChart = memo(function MarginsChart({ data }: Pick<ChartArray
   if (!data?.length) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.profitMargins')}>
+    <ChartFrame title={t('toolArtifact:profitMargins')}>
       <LineChart responsive width="100%" height={220} data={chartData} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={skin.grid} vertical={false} />
         <XAxis dataKey="period" tick={{ ...skin.tick, fontSize: 10 }} axisLine={{ stroke: skin.axis }} />
         <YAxis width="auto" tick={skin.tick} axisLine={{ stroke: skin.axis }} tickFormatter={(v: number) => `${v.toFixed(0)}%`} />
         <Tooltip content={<DarkTooltip formatter={(v: number) => `${v?.toFixed(1)}%`} />} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={skin.legend} />
-        <Line type="monotone" dataKey="grossMargin" name={t('toolArtifact.grossMargin')} stroke={skin.primary} strokeWidth={2} dot={{ r: 3 }} connectNulls />
-        <Line type="monotone" dataKey="operatingMargin" name={t('toolArtifact.operatingMargin')} stroke={AMBER} strokeWidth={2} dot={{ r: 3 }} connectNulls />
-        <Line type="monotone" dataKey="netMargin" name={t('toolArtifact.netMargin')} stroke={GREEN} strokeWidth={2} dot={{ r: 3 }} connectNulls />
+        <Line type="monotone" dataKey="grossMargin" name={t('toolArtifact:grossMargin')} stroke={skin.primary} strokeWidth={2} dot={{ r: 3 }} connectNulls />
+        <Line type="monotone" dataKey="operatingMargin" name={t('toolArtifact:operatingMargin')} stroke={AMBER} strokeWidth={2} dot={{ r: 3 }} connectNulls />
+        <Line type="monotone" dataKey="netMargin" name={t('toolArtifact:netMargin')} stroke={GREEN} strokeWidth={2} dot={{ r: 3 }} connectNulls />
       </LineChart>
     </ChartFrame>
   );
@@ -299,15 +299,15 @@ export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data,
   if (!data?.length) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.epsActualVsEstimate')}>
+    <ChartFrame title={t('toolArtifact:epsActualVsEstimate')}>
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={skin.grid} vertical={false} />
         <XAxis dataKey="period" tick={{ ...skin.tick, fontSize: 10 }} axisLine={{ stroke: skin.axis }} />
         <YAxis width="auto" tick={skin.tick} axisLine={{ stroke: skin.axis }} tickFormatter={(v: number) => formatMoney(v, currency, locale)} />
         <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale)} />} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={skin.legend} />
-        <Bar dataKey="epsActual" name={t('toolArtifact.epsActual')} fill={GREEN} radius={skin.bar} />
-        <Bar dataKey="epsEstimate" name={t('toolArtifact.epsEstimate')} fill="var(--color-icon-muted)" radius={skin.bar} />
+        <Bar dataKey="epsActual" name={t('toolArtifact:epsActual')} fill={GREEN} radius={skin.bar} />
+        <Bar dataKey="epsEstimate" name={t('toolArtifact:epsEstimate')} fill="var(--color-icon-muted)" radius={skin.bar} />
       </BarChart>
     </ChartFrame>
   );
@@ -322,7 +322,7 @@ export const CashFlowChart = memo(function CashFlowChart({ data, currency }: Cha
   if (!data?.length) return null;
 
   return (
-    <ChartFrame title={t('toolArtifact.cashFlowQuarterly')}>
+    <ChartFrame title={t('toolArtifact:cashFlowQuarterly')}>
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={skin.grid} vertical={false} />
         <XAxis dataKey="period" tick={{ ...skin.tick, fontSize: 10 }} axisLine={{ stroke: skin.axis }} />
@@ -330,9 +330,9 @@ export const CashFlowChart = memo(function CashFlowChart({ data, currency }: Cha
         <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={skin.legend} />
         <ReferenceLine y={0} stroke={skin.axis} />
-        <Bar dataKey="operatingCashFlow" name={t('toolArtifact.operatingCF')} fill={skin.primary} radius={skin.bar} />
-        <Bar dataKey="capitalExpenditure" name={t('toolArtifact.capEx')} fill={RED} radius={skin.bar} />
-        <Bar dataKey="freeCashFlow" name={t('toolArtifact.freeCF')} fill={GREEN} radius={skin.bar} />
+        <Bar dataKey="operatingCashFlow" name={t('toolArtifact:operatingCF')} fill={skin.primary} radius={skin.bar} />
+        <Bar dataKey="capitalExpenditure" name={t('toolArtifact:capEx')} fill={RED} radius={skin.bar} />
+        <Bar dataKey="freeCashFlow" name={t('toolArtifact:freeCF')} fill={GREEN} radius={skin.bar} />
       </BarChart>
     </ChartFrame>
   );

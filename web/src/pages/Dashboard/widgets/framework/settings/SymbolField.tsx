@@ -29,7 +29,7 @@ export function SymbolField({ label, value, onChange, placeholder, helper }: Pro
           const trimmed = e.target.value.trim();
           if (trimmed !== e.target.value) onChange(trimmed);
         }}
-        placeholder={placeholder ?? t('dashboard.widgets.settings.symbolFieldPlaceholder')}
+        placeholder={placeholder ?? t('dashboard:widgets.settings.symbolFieldPlaceholder')}
         className="dash-form-input dash-form-figure border"
         style={{ textTransform: 'uppercase' }}
       />

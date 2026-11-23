@@ -30,17 +30,17 @@ const PANEL_SHOWN = { opacity: 1, scale: 1, y: 0, transition: TWEEN.quick };
 const PANEL_GONE = { opacity: 0, scale: 0.98, y: -2, transition: TWEEN.exit };
 
 const EMPTY_LABEL: Record<ListFilter, string> = {
-  open: 'pageViewer.comments.emptyOpen',
-  unread: 'pageViewer.comments.emptyUnread',
-  resolved: 'pageViewer.comments.emptyResolved',
-  all: 'pageViewer.comments.emptyAll',
+  open: 'pageViewer:comments.emptyOpen',
+  unread: 'pageViewer:comments.emptyUnread',
+  resolved: 'pageViewer:comments.emptyResolved',
+  all: 'pageViewer:comments.emptyAll',
 };
 
 const FILTER_LABEL: Record<ListFilter, string> = {
-  open: 'pageViewer.comments.filterOpen',
-  unread: 'pageViewer.comments.filterUnread',
-  resolved: 'pageViewer.comments.filterResolved',
-  all: 'pageViewer.comments.filterAll',
+  open: 'pageViewer:comments.filterOpen',
+  unread: 'pageViewer:comments.filterUnread',
+  resolved: 'pageViewer:comments.filterResolved',
+  all: 'pageViewer:comments.filterAll',
 };
 
 interface CommentListProps {
@@ -116,7 +116,7 @@ export function CommentList({
   const body = empty ? (
     <div className="grid gap-0.5 px-1.5 py-3.5 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
       <p>{t(EMPTY_LABEL[filter])}</p>
-      {showsDraft(filter) && <p>{t('pageViewer.comments.emptyHint')}</p>}
+      {showsDraft(filter) && <p>{t('pageViewer:comments.emptyHint')}</p>}
     </div>
   ) : (
     // A comment that comes or goes while the list shows (written, resolved,
@@ -146,14 +146,14 @@ export function CommentList({
   return (
     <motion.aside
       className="page-comments-panel shadow-lg"
-      aria-label={t('pageViewer.comments.listTitle')}
+      aria-label={t('pageViewer:comments.listTitle')}
       initial={PANEL_HIDDEN}
       animate={PANEL_SHOWN}
       exit={PANEL_GONE}
     >
       <div className="flex items-center gap-0.5 pt-[9px] pr-2 pb-1.5 pl-3.5">
         <h3 className="mr-auto flex min-w-0 items-baseline gap-1.5 text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-          <span className="title-font truncate">{t('pageViewer.comments.listTitle')}</span>
+          <span className="title-font truncate">{t('pageViewer:comments.listTitle')}</span>
           <SwapCell swapKey={filter === 'open' ? null : filter} className="shrink-0">
             <span className="text-xs font-normal" style={{ color: 'var(--color-text-tertiary)' }}>
               {t(FILTER_LABEL[filter])}
@@ -165,8 +165,8 @@ export function CommentList({
             <button
               type="button"
               className="page-comment-icon-btn shrink-0"
-              aria-label={t('pageViewer.comments.filterLabel')}
-              title={t('pageViewer.comments.filterLabel')}
+              aria-label={t('pageViewer:comments.filterLabel')}
+              title={t('pageViewer:comments.filterLabel')}
             >
               <FilterIcon className="h-[15px] w-[15px]" />
             </button>
@@ -189,7 +189,7 @@ export function CommentList({
             {/* Its icon takes the checks' column, so every label starts at one x. */}
             <DropdownMenuItem disabled={counts.unread === 0} onSelect={onMarkAllRead}>
               <CheckCheck className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              {t('pageViewer.comments.markAllRead')}
+              {t('pageViewer:comments.markAllRead')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

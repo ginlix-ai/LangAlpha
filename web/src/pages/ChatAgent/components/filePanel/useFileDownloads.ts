@@ -36,7 +36,7 @@ export function useFileDownloads({ workspaceId, triggerDownloadFn, workspaceStat
   const downloadQuietly = useCallback((path: string) => {
     void triggerDownloadFn(workspaceId, path).catch((err: unknown) => {
       console.error('[FilePanel] Download failed:', err);
-      toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+      toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
     });
   }, [triggerDownloadFn, workspaceId, t]);
 
@@ -47,7 +47,7 @@ export function useFileDownloads({ workspaceId, triggerDownloadFn, workspaceStat
         await triggerDownloadFn(workspaceId, path);
       } catch (err) {
         console.error('[FilePanel] Download failed:', err);
-        toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+        toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
         return;
       }
     }

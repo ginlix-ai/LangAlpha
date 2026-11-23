@@ -160,8 +160,8 @@ function UseForm() {
 
   return (
     <div>
-      <WizardStepHeader titleId={headingId} title={t('setup.answers.use.title')} helper={t('setup.answers.use.lead')} />
-      <WizardSection title={t('setup.answers.use.modelsLabel')} titleId={modelsId} className="mt-0">
+      <WizardStepHeader titleId={headingId} title={t('setup:answers.use.title')} helper={t('setup:answers.use.lead')} />
+      <WizardSection title={t('setup:answers.use.modelsLabel')} titleId={modelsId} className="mt-0">
         <div role="radiogroup" aria-labelledby={modelsId} className="flex flex-col gap-2">
           {claudeCode && (
             <AnswerOption
@@ -170,8 +170,8 @@ function UseForm() {
               checked={pickedModels === 'claude_code'}
               onSelect={setModels}
               mark={<AnswerTile><BrandMark name="Claude Code" art={llmProviderArt(CLAUDE_CODE)} className="h-5 w-5" /></AnswerTile>}
-              title={t('setup.answers.use.claudeCode')}
-              detail={t('setup.answers.use.claudeCodeDesc')}
+              title={t('setup:answers.use.claudeCode')}
+              detail={t('setup:answers.use.claudeCodeDesc')}
             />
           )}
           <AnswerOption
@@ -180,8 +180,8 @@ function UseForm() {
             checked={pickedModels === 'subscription_or_key'}
             onSelect={setModels}
             mark={<MarkStack />}
-            title={t('setup.answers.use.subscription')}
-            detail={<MarkRow label={t('setup.answers.use.subscriptionDesc')} more={t('setup.answers.use.anyKey')} />}
+            title={t('setup:answers.use.subscription')}
+            detail={<MarkRow label={t('setup:answers.use.subscriptionDesc')} more={t('setup:answers.use.anyKey')} />}
           />
           {serverModels && (
             <AnswerOption
@@ -190,13 +190,13 @@ function UseForm() {
               checked={pickedModels === 'langalpha_models'}
               onSelect={setModels}
               mark={<AnswerTile><Server aria-hidden="true" strokeWidth={1.5} /></AnswerTile>}
-              title={t('setup.answers.use.serverModels')}
-              detail={t('setup.answers.use.serverModelsDesc')}
+              title={t('setup:answers.use.serverModels')}
+              detail={t('setup:answers.use.serverModelsDesc')}
             />
           )}
         </div>
       </WizardSection>
-      <WizardSection title={t('setup.answers.use.whereLabel')} titleId={whereId}>
+      <WizardSection title={t('setup:answers.use.whereLabel')} titleId={whereId}>
         <div role="radiogroup" aria-labelledby={whereId} className="flex flex-col gap-2">
           <AnswerOption
             name={whereId}
@@ -204,19 +204,19 @@ function UseForm() {
             checked={pickedRunsOn === 'cloud'}
             onSelect={setRunsOn}
             mark={<AnswerTile>{inDesktopApp ? <Laptop aria-hidden="true" strokeWidth={1.5} /> : <Cloud aria-hidden="true" strokeWidth={1.5} />}</AnswerTile>}
-            title={t(inDesktopApp ? 'setup.answers.use.thisComputer' : 'setup.answers.use.serverComputer')}
-            detail={t(inDesktopApp ? 'setup.answers.use.thisComputerDesc' : 'setup.answers.use.serverComputerDesc')}
+            title={t(inDesktopApp ? 'setup:answers.use.thisComputer' : 'setup:answers.use.serverComputer')}
+            detail={t(inDesktopApp ? 'setup:answers.use.thisComputerDesc' : 'setup:answers.use.serverComputerDesc')}
           />
           {inDesktopApp && (
             <SetupNote icon={<Cloud />}>
-              {t('setup.answers.use.hostedPitch')}
+              {t('setup:answers.use.hostedPitch')}
               <span className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-                <PitchLink href={DESKTOP_DOWNLOAD_URL}>{t('setup.answers.use.hostedApp')}</PitchLink>
-                <PitchLink href={HOSTED_OR_SELF_HOSTED_URL}>{t('setup.answers.use.hostedCompare')}</PitchLink>
+                <PitchLink href={DESKTOP_DOWNLOAD_URL}>{t('setup:answers.use.hostedApp')}</PitchLink>
+                <PitchLink href={HOSTED_OR_SELF_HOSTED_URL}>{t('setup:answers.use.hostedCompare')}</PitchLink>
               </span>
             </SetupNote>
           )}
-          {pickedRunsOn === 'cloud' && homeOnMac && <SetupNote>{t('setup.answers.use.homeStays')}</SetupNote>}
+          {pickedRunsOn === 'cloud' && homeOnMac && <SetupNote>{t('setup:answers.use.homeStays')}</SetupNote>}
           {(ownOffered || savedRunsOn === 'own_computer') && (
             <AnswerOption
               name={whereId}
@@ -224,16 +224,16 @@ function UseForm() {
               checked={pickedRunsOn === 'own_computer'}
               onSelect={setRunsOn}
               mark={<AnswerTile><Laptop aria-hidden="true" strokeWidth={1.5} /></AnswerTile>}
-              title={t('setup.answers.use.own')}
-              detail={t('setup.answers.use.ownDesc')}
+              title={t('setup:answers.use.own')}
+              detail={t('setup:answers.use.ownDesc')}
             />
           )}
         </div>
       </WizardSection>
-      {failed && <StepError>{t('setup.answers.use.saveFailed')}</StepError>}
+      {failed && <StepError>{t('setup:answers.use.saveFailed')}</StepError>}
       <SetupFooter
         primary={{
-          label: t('setup.continue'),
+          label: t('setup:continue'),
           onClick: submit,
           disabled: isLoading || !pickedModels || !pickedRunsOn || isUpdating,
           busy: isUpdating,

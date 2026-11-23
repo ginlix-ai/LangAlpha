@@ -26,37 +26,37 @@ interface PillMeta {
 
 const STATUS_META: Record<McpStatus, PillMeta> = {
   connected: {
-    labelKey: 'mcp.status.connected',
+    labelKey: 'mcp:status.connected',
     color: 'var(--color-profit)',
     bg: 'var(--color-profit-soft)',
     icon: CheckCircle2,
   },
   error: {
-    labelKey: 'mcp.status.error',
+    labelKey: 'mcp:status.error',
     color: 'var(--color-loss)',
     bg: 'var(--color-loss-soft)',
     icon: AlertCircle,
   },
   needs_secret: {
-    labelKey: 'mcp.status.needsSecret',
+    labelKey: 'mcp:status.needsSecret',
     color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: KeyRound,
   },
   pending: {
-    labelKey: 'mcp.status.pending',
+    labelKey: 'mcp:status.pending',
     color: 'var(--color-text-tertiary)',
     bg: 'var(--color-bg-tag)',
     icon: Clock,
   },
   disabled: {
-    labelKey: 'mcp.status.disabled',
+    labelKey: 'mcp:status.disabled',
     color: 'var(--color-text-tertiary)',
     bg: 'var(--color-bg-tag)',
     icon: MinusCircle,
   },
   unknown: {
-    labelKey: 'mcp.status.unknown',
+    labelKey: 'mcp:status.unknown',
     color: 'var(--color-text-tertiary)',
     bg: 'var(--color-bg-tag)',
     icon: HelpCircle,
@@ -80,7 +80,7 @@ export function McpStatusPill({ status, enabled }: McpStatusPillProps) {
       label={t(meta.labelKey)}
       color={meta.color}
       bg={meta.bg}
-      title={effective === 'pending' ? t('mcp.status.pendingHint') : undefined}
+      title={effective === 'pending' ? t('mcp:status.pendingHint') : undefined}
       testid={`mcp-status-${effective}`}
     />
   );
@@ -88,25 +88,25 @@ export function McpStatusPill({ status, enabled }: McpStatusPillProps) {
 
 const OAUTH_META: Record<McpOauthStatus, PillMeta> = {
   connected: {
-    labelKey: 'plugins.oauth.connected',
+    labelKey: 'plugins:oauth.connected',
     color: 'var(--color-profit)',
     bg: 'var(--color-profit-soft)',
     icon: CheckCircle2,
   },
   needs_reauth: {
-    labelKey: 'plugins.oauth.needsReauth',
+    labelKey: 'plugins:oauth.needsReauth',
     color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: AlertCircle,
   },
   refresh_ambiguous: {
-    labelKey: 'plugins.oauth.refreshAmbiguous',
+    labelKey: 'plugins:oauth.refreshAmbiguous',
     color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: AlertCircle,
   },
   revoked: {
-    labelKey: 'plugins.oauth.revoked',
+    labelKey: 'plugins:oauth.revoked',
     color: 'var(--color-text-tertiary)',
     bg: 'var(--color-bg-tag)',
     icon: MinusCircle,

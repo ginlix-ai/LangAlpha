@@ -20,20 +20,21 @@ import { mustChooseComputer } from './utils/sandboxChoice';
 import { isPlatformMode } from '@/config/hostMode';
 import { ONBOARDING_USE_URL } from '@/config/supportLinks';
 import React from 'react';
+import { withCopy } from '@/i18n';
 
 const MethodStep = React.lazy(() => import('./steps/MethodStep'));
 const ProviderStep = React.lazy(() => import('./steps/ProviderStep'));
 const ConnectStep = React.lazy(() => import('./steps/ConnectStep'));
-const ClaudeCodeStep = React.lazy(() => import('./steps/ClaudeCodeStep'));
+const ClaudeCodeStep = React.lazy(withCopy(() => import('./steps/ClaudeCodeStep'), ['filePanel', 'settings']));
 const ModelPickStep = React.lazy(() => import('./steps/ModelPickStep'));
-const DefaultsStep = React.lazy(() => import('./steps/DefaultsStep'));
-const DoneStep = React.lazy(() => import('./steps/DoneStep'));
+const DefaultsStep = React.lazy(withCopy(() => import('./steps/DefaultsStep'), ['settings']));
+const DoneStep = React.lazy(withCopy(() => import('./steps/DoneStep'), ['settings']));
 const UseStep = React.lazy(() => import('./steps/UseStep'));
-const ServerStep = React.lazy(() => import('./steps/ServerStep'));
-const ComputerStep = React.lazy(() => import('./steps/ComputerStep'));
+const ServerStep = React.lazy(withCopy(() => import('./steps/ServerStep'), ['settings']));
+const ComputerStep = React.lazy(withCopy(() => import('./steps/ComputerStep'), ['filePanel']));
 const SshStep = React.lazy(() => import('./steps/SshStep'));
 const ModelStep = React.lazy(() => import('./steps/ModelStep'));
-const DefaultStep = React.lazy(() => import('./steps/DefaultStep'));
+const DefaultStep = React.lazy(withCopy(() => import('./steps/DefaultStep'), ['settings']));
 // The Mac route's pages.
 const MacHandoffStep = React.lazy(() => import('./mac/MacHandoffStep'));
 const ThisMacStep = React.lazy(() => import('./mac/ThisMacStep'));
@@ -140,8 +141,8 @@ export default function SetupWizard() {
   const held = factsFailed && (page ? page.rail === 'answers' && page.step !== 'use' : true);
   const answerRail: AnswerRailStep[] = [...(isPlatformMode ? [] : ['use' as const]), ...(rail.length ? rail : (['computer', 'model', 'default'] as const))];
   const stepperLabels = answerStep
-    ? answerRail.map((k) => t(`setup.answers.rail.${k}`))
-    : STEPPER_KEYS.map((k) => t(`setup.${k}`));
+    ? answerRail.map((k) => t(`setup:answers.rail.${k}`))
+    : STEPPER_KEYS.map((k) => t(`setup:${k}`));
   // A page whose step is not on this account's rail lights no step.
   const current = answerStep ? answerRail.indexOf(answerStep) : place?.index ?? 0;
   const dot = answerStep ? current : place?.dot ?? 0;
@@ -182,11 +183,11 @@ export default function SetupWizard() {
       stepKey={stepKey}
       stepIndex={Math.max(0, current)}
       progress={
-        <WizardProgress steps={stepperLabels} current={dot} label={t('setup.progressLabel')} />
+        <WizardProgress steps={stepperLabels} current={dot} label={t('setup:progressLabel')} />
       }
       // Shown when the user already has model access configured, or when
       // another page sent them here and expects them back.
-      exit={showExit ? <WizardExit label={t('setup.exitSetup', 'Exit setup')} onClick={handleExit} /> : undefined}
+      exit={showExit ? <WizardExit label={t('setup:exitSetup', 'Exit setup')} onClick={handleExit} /> : undefined}
       footer={<div ref={setFooterSlot} />}
     >
       <SetupFooterSlot value={footerSlot}>
@@ -203,7 +204,7 @@ export default function SetupWizard() {
       {securityNote && (
         <p className="mt-8 flex items-center gap-1.5 text-xs text-(--color-text-tertiary)">
           <Shield aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-          <span>{t('setup.securityNote')}</span>
+          <span>{t('setup:securityNote')}</span>
         </p>
       )}
     </WizardShell>

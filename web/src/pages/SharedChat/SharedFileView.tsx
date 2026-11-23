@@ -87,7 +87,7 @@ export default function SharedFileView({ code, metadata }: SharedFileViewProps):
       await downloadServedFile(buildServeUrl(frameBase, path), name);
     } catch (err) {
       console.error('[SharedFileView] Download failed:', err);
-      toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+      toast({ description: t('filePanel:downloadFailed'), variant: 'destructive' });
     } finally {
       setBusy(false);
     }
@@ -97,7 +97,7 @@ export default function SharedFileView({ code, metadata }: SharedFileViewProps):
     <div className="share-page">
       <ShareTopBar
         name={name}
-        actions={<ShareTopBarAction icon={Download} label={t('filePanel.download')} onClick={() => void download()} disabled={busy} />}
+        actions={<ShareTopBarAction icon={Download} label={t('filePanel:download')} onClick={() => void download()} disabled={busy} />}
       />
       <div className="share-content">
         {/* Scoped by the code, not the prefix: an owner's grant renews under a

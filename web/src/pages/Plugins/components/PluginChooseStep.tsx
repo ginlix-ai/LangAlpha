@@ -52,7 +52,7 @@ export function PluginChooseStep({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('plugins.install.chooseHint', { count: candidates.length })}
+        {t('plugins:install.chooseHint', { count: candidates.length })}
       </p>
 
       <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">

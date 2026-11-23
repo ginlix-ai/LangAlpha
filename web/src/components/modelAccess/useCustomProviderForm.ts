@@ -18,8 +18,8 @@ import { slugifyProviderName } from './slugifyModelName';
 
 /** Why the endpoint's list is not shown, as one line under the key. */
 const UNAVAILABLE_NOTE: Record<string, string> = {
-  unauthorized: 'setup.endpointModels.unauthorized',
-  unreachable: 'setup.endpointModels.unreachable',
+  unauthorized: 'setup:endpointModels.unauthorized',
+  unreachable: 'setup:endpointModels.unreachable',
 };
 
 const ENTERED_URL = /^https?:\/\/\S+$/i;
@@ -86,9 +86,9 @@ export function useCustomProviderForm() {
   // A base URL the server refuses to call is a 400 saying why.
   const refused = apiErrorStatus(endpoint.error) === 400 ? apiErrorDetail(endpoint.error) : null;
   const unavailable = endpoint.isError
-    ? typeof refused === 'string' ? refused : t('setup.endpointModels.noList')
+    ? typeof refused === 'string' ? refused : t('setup:endpointModels.noList')
     : listing?.status === 'unavailable'
-      ? t(UNAVAILABLE_NOTE[listing.reason ?? ''] ?? 'setup.endpointModels.noList')
+      ? t(UNAVAILABLE_NOTE[listing.reason ?? ''] ?? 'setup:endpointModels.noList')
       : null;
 
   const manualEntry = showManual ? manual.toEntry(slug) : null;
@@ -98,7 +98,7 @@ export function useCustomProviderForm() {
 
   const save = async (): Promise<string | null> => {
     if (!canSave) {
-      setError(t('setup.errorFillFields'));
+      setError(t('setup:errorFillFields'));
       return null;
     }
     setSaving(true);
@@ -162,7 +162,7 @@ export function useCustomProviderForm() {
       }
       const detail = apiErrorDetail(e);
       const invalid = apiValidationErrors(e).map((v) => v.message).join('; ');
-      setError((typeof detail === 'string' && detail) || invalid || (e instanceof Error && e.message) || t('setup.errorSaveProvider'));
+      setError((typeof detail === 'string' && detail) || invalid || (e instanceof Error && e.message) || t('setup:errorSaveProvider'));
       setSaving(false);
       return null;
     }

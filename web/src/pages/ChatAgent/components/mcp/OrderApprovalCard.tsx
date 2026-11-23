@@ -91,7 +91,7 @@ export function OrderApprovalCard({
   const argsTable = (
     <ArgsTable
       args={data.args || {}}
-      emptyLabel={t('toolArtifact.directTool.noArguments')}
+      emptyLabel={t('toolArtifact:directTool.noArguments')}
       hideEmpty
     />
   );
@@ -124,7 +124,7 @@ export function OrderApprovalCard({
     // now, so it names that rather than asking.
     <StatusPill
       icon={MinusCircle}
-      label={t('toolArtifact.directTool.orderApproval.notAnswered')}
+      label={t('toolArtifact:directTool.orderApproval.notAnswered')}
       color="var(--color-text-tertiary)"
       bg="var(--color-bg-tag)"
       testid="order-status-unanswered"
@@ -155,8 +155,8 @@ export function OrderApprovalCard({
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
                   maxLength={200}
-                  placeholder={t('toolArtifact.directTool.orderApproval.reasonPlaceholder')}
-                  aria-label={t('toolArtifact.directTool.orderApproval.reasonPlaceholder')}
+                  placeholder={t('toolArtifact:directTool.orderApproval.reasonPlaceholder')}
+                  aria-label={t('toolArtifact:directTool.orderApproval.reasonPlaceholder')}
                   className="flex-1 min-w-40 text-sm px-3 py-1.5 rounded-md bg-transparent"
                   style={{ border: '1px solid var(--color-border-muted)', color: 'var(--color-text-primary)' }}
                 />
@@ -171,7 +171,7 @@ export function OrderApprovalCard({
                   style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
                 >
                   <X className="h-3.5 w-3.5" />
-                  {t('toolArtifact.directTool.reject')}
+                  {t('toolArtifact:directTool.reject')}
                 </button>
                 <button
                   type="button"
@@ -184,7 +184,7 @@ export function OrderApprovalCard({
                   style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
                   <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-                  {t('toolArtifact.directTool.approve')}
+                  {t('toolArtifact:directTool.approve')}
                 </button>
               </div>
             ) : null
@@ -226,8 +226,8 @@ function SettledOrderStep({
 }): React.ReactElement {
   const { t } = useTranslation();
   const verb = approved
-    ? t('toolArtifact.directTool.orderApproval.approved')
-    : t('toolArtifact.directTool.orderApproval.rejected');
+    ? t('toolArtifact:directTool.orderApproval.approved')
+    : t('toolArtifact:directTool.orderApproval.rejected');
   const step = (
     <SettledStep
       verdict={approved ? 'approved' : 'rejected'}
@@ -272,7 +272,7 @@ function IncompleteNotice(): React.ReactElement {
       data-testid="order-incomplete"
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-[3px]" aria-hidden="true" />
-      <span>{t('toolArtifact.directTool.orderApproval.incomplete')}</span>
+      <span>{t('toolArtifact:directTool.orderApproval.incomplete')}</span>
     </p>
   );
 }
@@ -301,7 +301,7 @@ function ArgsDisclosure({
         aria-expanded={open}
       >
         <FoldChevron open={open} className="h-3 w-3" />
-        {t('toolArtifact.directTool.orderApproval.arguments')}
+        {t('toolArtifact:directTool.orderApproval.arguments')}
       </button>
       <Disclosure open={open} className="pt-2 pl-4">
         {children}

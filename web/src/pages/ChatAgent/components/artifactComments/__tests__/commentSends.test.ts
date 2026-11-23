@@ -82,10 +82,10 @@ describe('queuedBatches', () => {
 
 describe('refusalReason', () => {
   it('says a gone comment in the reader\'s words, a conflict as the server put it, and anything else as where it still is', () => {
-    expect(refusalReason(t, new CommentSendRefused('x', 'comments_unavailable', 409), true)).toBe('pageViewer.comments.notSentUnavailable');
+    expect(refusalReason(t, new CommentSendRefused('x', 'comments_unavailable', 409), true)).toBe('pageViewer:comments.notSentUnavailable');
     expect(refusalReason(t, new CommentSendRefused('The agent is stopping.', 'stopping', 409), true)).toBe('The agent is stopping.');
-    expect(refusalReason(t, new CommentSendRefused('Failed to fetch', null, null), true)).toBe('pageViewer.comments.notSentQueued');
-    expect(refusalReason(t, new Error('Failed to fetch'), false)).toBe('pageViewer.comments.notSentNote');
+    expect(refusalReason(t, new CommentSendRefused('Failed to fetch', null, null), true)).toBe('pageViewer:comments.notSentQueued');
+    expect(refusalReason(t, new Error('Failed to fetch'), false)).toBe('pageViewer:comments.notSentNote');
   });
 });
 

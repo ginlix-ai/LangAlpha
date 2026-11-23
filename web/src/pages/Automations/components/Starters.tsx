@@ -17,7 +17,7 @@ export default function Starters({ onPick }: { onPick: (id: TemplateId) => void 
   const { t } = useTranslation();
   return (
     <div className="automations-zero">
-      <h2 className="automations-kicker">{t('automation.startFrom')}</h2>
+      <h2 className="automations-kicker">{t('automation:startFrom')}</h2>
       <ul className="automations-ledger">
         {STARTERS.map((tpl) => (
           <li key={tpl.id}>
@@ -35,7 +35,7 @@ export default function Starters({ onPick }: { onPick: (id: TemplateId) => void 
         ))}
       </ul>
       <div className="automations-zero-field dot-grid">
-        <p>{t('automation.feedWillFill')}</p>
+        <p>{t('automation:feedWillFill')}</p>
       </div>
     </div>
   );

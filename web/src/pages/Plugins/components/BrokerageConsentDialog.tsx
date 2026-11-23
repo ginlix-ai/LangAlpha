@@ -76,7 +76,7 @@ export function BrokerageConsentDialog({
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
-        {t('plugins.servers.deleteConfirmNo')}
+        {t('plugins:servers.deleteConfirmNo')}
       </button>
       <button
         type="button"
@@ -89,15 +89,15 @@ export function BrokerageConsentDialog({
           backgroundColor: 'var(--color-btn-primary-bg)',
         }}
       >
-        {pending ? t('common.loading') : t('plugins.oauth.connect')}
+        {pending ? t('common.loading') : t('plugins:oauth.connect')}
       </button>
     </div>
   );
 
   return (
     <PluginDialog
-      title={t('plugins.brokerages.consent.title', { server: label })}
-      subtitle={t('plugins.brokerages.consent.subtitle')}
+      title={t('plugins:brokerages.consent.title', { server: label })}
+      subtitle={t('plugins:brokerages.consent.subtitle')}
       onClose={onCancel}
       // The connect is running and the page is about to leave for the vendor;
       // closing here would strand a flow this dialog can no longer stop.
@@ -107,14 +107,14 @@ export function BrokerageConsentDialog({
       <div className="flex flex-col gap-4">
         {vendor?.exclusive_connection && (
           <RowNote icon={AlertTriangle} tone="warning">
-            {t('plugins.brokerages.exclusiveWarning')}
+            {t('plugins:brokerages.exclusiveWarning')}
           </RowNote>
         )}
 
         {groups.length > 0 && (
           <ul className="flex flex-col gap-3">
             {groups.map((group) => {
-              const groupLabel = t(`plugins.brokerages.capabilities.${group.key}.label`);
+              const groupLabel = t(`plugins:brokerages.capabilities.${group.key}.label`);
               return (
                 <li key={group.key} className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -133,7 +133,7 @@ export function BrokerageConsentDialog({
                       className="text-xs mt-0.5"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
-                      {t(`plugins.brokerages.capabilities.${group.key}.desc`)}
+                      {t(`plugins:brokerages.capabilities.${group.key}.desc`)}
                     </p>
                     {/* Why this switch moves another: ticking it ticks what it
                         needs, and unticking that unticks this. */}
@@ -142,7 +142,7 @@ export function BrokerageConsentDialog({
                         className="text-xs mt-0.5"
                         style={{ color: 'var(--color-text-tertiary)' }}
                       >
-                        {t(`plugins.brokerages.capabilities.${group.key}.needs`)}
+                        {t(`plugins:brokerages.capabilities.${group.key}.needs`)}
                       </p>
                     )}
                   </div>
@@ -161,7 +161,7 @@ export function BrokerageConsentDialog({
         )}
 
         <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.brokerages.consent.footnote')}
+          {t('plugins:brokerages.consent.footnote')}
         </p>
 
       </div>

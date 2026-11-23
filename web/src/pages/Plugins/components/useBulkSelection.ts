@@ -152,20 +152,20 @@ export function useBulkRunner(
         const names = (items: BulkTarget[]) => {
           const shown = items.slice(0, NAMED).map((item) => item.name);
           if (items.length > NAMED) {
-            shown.push(t('plugins.bulk.moreNames', { count: items.length - NAMED }));
+            shown.push(t('plugins:bulk.moreNames', { count: items.length - NAMED }));
           }
           return formatList(shown, locale);
         };
         // Titled by what happened: what changed when anything did, otherwise
         // what could not be done to all of them.
         const done = result.ok.length > 0;
-        const what = t(`plugins.bulk.noun.${opts.noun}`, {
+        const what = t(`plugins:bulk.noun.${opts.noun}`, {
           count: done ? result.ok.length : targets.length,
         });
         const lines: string[] = done && opts.outcome ? opts.outcome(results) : [];
         if (refused.length > 0) {
           lines.push(
-            t('plugins.bulk.needSignIn', {
+            t('plugins:bulk.needSignIn', {
               count: refused.length,
               names: names(refused.map((r) => r.item)),
             }),
@@ -173,7 +173,7 @@ export function useBulkRunner(
         }
         if (failed.length > 0) {
           lines.push(
-            t(done ? 'plugins.bulk.failedNamed' : 'plugins.bulk.failedReason', {
+            t(done ? 'plugins:bulk.failedNamed' : 'plugins:bulk.failedReason', {
               names: names(failed.map((f) => f.item)),
               reason: formatApiErrorDetail(failed[0].error),
             }),
@@ -187,7 +187,7 @@ export function useBulkRunner(
           // says the opposite of its own title; the failure line names the
           // row and the reason, which is what the user acts on.
           variant: !done && failed.length > 0 ? 'destructive' : undefined,
-          title: t(done ? `plugins.bulk.done.${opts.verb}` : `plugins.bulk.notDone.${opts.verb}`, {
+          title: t(done ? `plugins:bulk.done.${opts.verb}` : `plugins:bulk.notDone.${opts.verb}`, {
             what,
           }),
           description:
@@ -200,8 +200,8 @@ export function useBulkRunner(
             firstRefused && signIn
               ? createElement(
                   ToastAction,
-                  { altText: t('plugins.oauth.signIn'), onClick: () => signIn(firstRefused) },
-                  t('plugins.oauth.signIn'),
+                  { altText: t('plugins:oauth.signIn'), onClick: () => signIn(firstRefused) },
+                  t('plugins:oauth.signIn'),
                 )
               : undefined,
           // Names take longer to read than a count.

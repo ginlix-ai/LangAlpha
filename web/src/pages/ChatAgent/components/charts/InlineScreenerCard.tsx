@@ -14,14 +14,14 @@ const MAX_FILTER_CHIPS = 4;
 
 // The producer's filter names (screener.py) that the catalog already words.
 const FILTER_LABEL_KEYS: Record<string, string> = {
-  Sector: 'toolArtifact.sector',
-  Industry: 'toolArtifact.industry',
-  Exchange: 'toolArtifact.exchange',
-  Country: 'toolArtifact.country',
-  'Mkt Cap': 'toolArtifact.mktCap',
-  Price: 'toolArtifact.price',
-  Vol: 'toolArtifact.vol',
-  Beta: 'toolArtifact.beta',
+  Sector: 'toolArtifact:sector',
+  Industry: 'toolArtifact:industry',
+  Exchange: 'toolArtifact:exchange',
+  Country: 'toolArtifact:country',
+  'Mkt Cap': 'toolArtifact:mktCap',
+  Price: 'toolArtifact:price',
+  Vol: 'toolArtifact:vol',
+  Beta: 'toolArtifact:beta',
 };
 
 /**
@@ -49,7 +49,7 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
   if (!rows.length) return null;
 
   return (
-    <TermCard title={t('toolArtifact.stockScreener')} meta={t('toolArtifact.nResults', { count })} onClick={onClick}>
+    <TermCard title={t('toolArtifact:stockScreener')} meta={t('toolArtifact:nResults', { count })} onClick={onClick}>
       {filters.length > 0 && (
         <div className="term-chips term-filters">
           {filters.slice(0, MAX_FILTER_CHIPS).map(([name, value]) => (
@@ -64,16 +64,16 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
         rows={rows}
         limit={MAX_INLINE_ROWS}
         total={count}
-        more={(n) => t('toolArtifact.nMoreStocks', { count: n })}
+        more={(n) => t('toolArtifact:nMoreStocks', { count: n })}
         rowKey={(r, i) => r.symbol ?? i}
         columns={[
           // Without the name column, the symbol takes the spare width.
-          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'clip', className: 'term-code term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
-          { key: 'name', label: t('toolArtifact.termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow, cell: (r) => r.name },
-          { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale, { upTo: quotePlaces(r.symbol, { currency: r.currency, price: r.price }) }) : '') },
+          { key: 'sym', label: t('toolArtifact:termHead.sym'), fill: 'clip', className: 'term-code term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
+          { key: 'name', label: t('toolArtifact:termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow, cell: (r) => r.name },
+          { key: 'last', label: t('toolArtifact:termHead.last'), num: true, cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale, { upTo: quotePlaces(r.symbol, { currency: r.currency, price: r.price }) }) : '') },
           {
             key: 'mktCap',
-            label: t('toolArtifact.termHead.mktCap'),
+            label: t('toolArtifact:termHead.mktCap'),
             num: true,
             className: 'term-t2',
             // As the panel prints it: two decimals keep 4.53T and 4.48T apart.
@@ -81,7 +81,7 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
           },
           {
             key: 'change',
-            label: t('toolArtifact.termHead.change'),
+            label: t('toolArtifact:termHead.change'),
             num: true,
             // FMP's screen carries no change at all; a column blank on every row says nothing.
             show: rows.slice(0, MAX_INLINE_ROWS).some((r) => r.changePct != null),

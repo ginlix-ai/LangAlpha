@@ -40,12 +40,12 @@ export function DirectToolResultView({ result }: { result: DirectToolResult }): 
   const { t } = useTranslation();
   switch (result.kind) {
     case 'refused':
-      return <Notice icon={Ban} title={t('toolArtifact.directTool.refused')} body={result.reason} />;
+      return <Notice icon={Ban} title={t('toolArtifact:directTool.refused')} body={result.reason} />;
     case 'rejected':
       return (
         <Notice
           icon={XCircle}
-          title={t('toolArtifact.directTool.rejected')}
+          title={t('toolArtifact:directTool.rejected')}
           body={directToolRejectionReason(result.reason) || undefined}
         />
       );
@@ -72,7 +72,7 @@ export function DirectToolResultView({ result }: { result: DirectToolResult }): 
     case 'text':
       return <pre className="term-direct-text">{result.text}</pre>;
     case 'empty':
-      return <div className="term-t3">{t('toolArtifact.noResultContent')}</div>;
+      return <div className="term-t3">{t('toolArtifact:noResultContent')}</div>;
   }
 }
 
@@ -137,13 +137,13 @@ export function DirectToolDetail({
 
       {/* ArgsTable and JsonTree are the approval cards' too; here they take
           the panel's inks. */}
-      <TermCard title={t('toolArtifact.input')}>
+      <TermCard title={t('toolArtifact:input')}>
         <div className="term-direct-body">
-          <ArgsTable args={args || {}} emptyLabel={t('toolArtifact.directTool.noArguments')} />
+          <ArgsTable args={args || {}} emptyLabel={t('toolArtifact:directTool.noArguments')} />
         </div>
       </TermCard>
 
-      <TermCard title={t('toolArtifact.output')} meta={copyText ? <TermCopy text={copyText} /> : undefined}>
+      <TermCard title={t('toolArtifact:output')} meta={copyText ? <TermCopy text={copyText} /> : undefined}>
         <div className="term-direct-body">
           <DirectToolResultView result={result} />
         </div>

@@ -117,7 +117,7 @@ export function useScopeBulk<T>(
   // rather than running an empty fan-out and reporting "0 succeeded".
   function runScope(scopeTargets: BulkTarget[]) {
     if (scopeTargets.length === 0) {
-      toast({ title: t('plugins.bulk.noChanges') });
+      toast({ title: t('plugins:bulk.noChanges') });
       return;
     }
     adapter.run(scopeTargets);

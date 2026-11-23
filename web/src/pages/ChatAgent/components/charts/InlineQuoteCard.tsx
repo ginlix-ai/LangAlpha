@@ -96,10 +96,10 @@ function QuoteHero({
       >
         {hasRange(d) && (
           <div className="term-line term-range-line">
-            <span className="term-t3 term-label">{t('toolArtifact.low')}</span>
+            <span className="term-t3 term-label">{t('toolArtifact:low')}</span>
             <span>{money(d.low)}</span>
             <TermRange low={d.low} high={d.high} value={d.price} fill />
-            <span className="term-t3 term-label">{t('toolArtifact.high')}</span>
+            <span className="term-t3 term-label">{t('toolArtifact:high')}</span>
             <span>{money(d.high)}</span>
           </div>
         )}
@@ -163,7 +163,7 @@ function QuoteTable({
   const columns: Array<TermColumn<QuoteDisplay>> = [
     {
       key: 'sym',
-      label: t('toolArtifact.termHead.sym'),
+      label: t('toolArtifact:termHead.sym'),
       fill: 'clip',
       className: 'term-code',
       cell: (d) => {
@@ -184,7 +184,7 @@ function QuoteTable({
     },
     {
       key: 'name',
-      label: t('toolArtifact.termHead.name'),
+      label: t('toolArtifact:termHead.name'),
       fill: 'clip',
       className: 'term-t3',
       show: showName,
@@ -192,7 +192,7 @@ function QuoteTable({
     },
     {
       key: 'ext',
-      label: oneSession ? extendedHoursLabel(t, extRows[0]?.status, 'long') : t('toolArtifact.termHead.extended'),
+      label: oneSession ? extendedHoursLabel(t, extRows[0]?.status, 'long') : t('toolArtifact:termHead.extended'),
       num: true,
       className: 'term-t3',
       show: showExt,
@@ -212,14 +212,14 @@ function QuoteTable({
     },
     {
       key: 'range',
-      label: t('toolArtifact.termHead.dayRange'),
+      label: t('toolArtifact:termHead.dayRange'),
       num: true,
       show: !narrow && displays.some(hasRange),
       cell: (d) => <TermRange low={d.low} high={d.high} value={d.price} />,
     },
     {
       key: 'asOf',
-      label: t('toolArtifact.termHead.asOf'),
+      label: t('toolArtifact:termHead.asOf'),
       num: true,
       className: 'term-t3',
       show: showStamps,
@@ -227,17 +227,17 @@ function QuoteTable({
       title: (d) => {
         const stamp = stampOf(d);
         if (!stamp) return undefined;
-        return d.printed ? localTitle(asOfTs, locale) : t('toolArtifact.retrievedAt', { time: stamp });
+        return d.printed ? localTitle(asOfTs, locale) : t('toolArtifact:retrievedAt', { time: stamp });
       },
       cell: stampOf,
     },
-    { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (d) => (d.price != null ? money(d.price, d) : '') },
-    { key: 'change', label: t('toolArtifact.termHead.change'), num: true, cell: (d) => <TermChange value={d.changePct} /> },
+    { key: 'last', label: t('toolArtifact:termHead.last'), num: true, cell: (d) => (d.price != null ? money(d.price, d) : '') },
+    { key: 'change', label: t('toolArtifact:termHead.change'), num: true, cell: (d) => <TermChange value={d.changePct} /> },
   ];
 
   return (
     <TermCard
-      title={allLive ? t('toolArtifact.liveQuotes') : t('toolArtifact.quotes')}
+      title={allLive ? t('toolArtifact:liveQuotes') : t('toolArtifact:quotes')}
       meta={[
         sharedTag && statusTag(sharedTag),
         common && <FreshnessBadge key="fresh" tier={common.tier} freshness={common.freshness} source={common.source} />,

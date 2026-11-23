@@ -53,9 +53,9 @@ export function pluginReach(
 
 export function pluginReachText(t: TFunction, reach: PluginReach): string {
   if (reach.kind === 'same') return reachText(t, reach.reach);
-  if (reach.by === 'connector') return t('plugins.pluginsPage.reachVariesConnector');
-  if (reach.by === 'skill') return t('plugins.pluginsPage.reachVariesSkill');
-  return t('plugins.pluginsPage.reachVariesBoth');
+  if (reach.by === 'connector') return t('plugins:pluginsPage.reachVariesConnector');
+  if (reach.by === 'skill') return t('plugins:pluginsPage.reachVariesSkill');
+  return t('plugins:pluginsPage.reachVariesBoth');
 }
 
 /**

@@ -142,7 +142,7 @@ export function useApiKeyForm(option: KeyOption, configured: readonly Configured
     try {
       return await testApiKey(option.provider, key, baseUrl.trim() || undefined);
     } catch (err) {
-      return { success: false, error: refusalText(err, t('setup.testFailed')) };
+      return { success: false, error: refusalText(err, t('setup:testFailed')) };
     }
   };
 
@@ -183,7 +183,7 @@ export function ApiKeyFormFields({ form }: { form: ApiKeyFormState }) {
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <label htmlFor={baseUrlId} className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('setup.baseUrlLabel')}
+            {t('setup:baseUrlLabel')}
             <span className="ml-1.5 font-normal">· {t(getApiFormatKey(option.sdk, option.use_response_api), { sdk: option.sdk })}</span>
           </label>
           {defaultUrl && baseUrl !== defaultUrl && (
@@ -193,7 +193,7 @@ export function ApiKeyFormFields({ form }: { form: ApiKeyFormState }) {
               className="text-xs underline underline-offset-2 hover:opacity-80"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              {t('setup.resetToDefault')}
+              {t('setup:resetToDefault')}
             </button>
           )}
         </div>
@@ -206,20 +206,20 @@ export function ApiKeyFormFields({ form }: { form: ApiKeyFormState }) {
           className="font-mono text-xs"
         />
         {proxied ? (
-          <UnverifiedNote>{t('setup.proxyUnverifiedBody', { provider: entry.group_display_name ?? entry.display_name })}</UnverifiedNote>
+          <UnverifiedNote>{t('setup:proxyUnverifiedBody', { provider: entry.group_display_name ?? entry.display_name })}</UnverifiedNote>
         ) : defaultUrl && baseUrl.trim() && baseUrl.trim() !== defaultUrl && (
           <p className="text-xs" style={{ color: 'var(--color-warning)' }}>
-            {t('setup.customUrlWarning', { url: defaultUrl })}
+            {t('setup:customUrlWarning', { url: defaultUrl })}
           </p>
         )}
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor={keyId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-          {t('setup.providerApiKey', { provider: entry.display_name })}
+          {t('setup:providerApiKey', { provider: entry.display_name })}
           {local && (
             <span className="ml-1.5 text-xs font-normal" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('setup.optional')}
+              {t('setup:optional')}
             </span>
           )}
         </label>

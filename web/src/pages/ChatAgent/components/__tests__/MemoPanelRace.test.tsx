@@ -212,7 +212,7 @@ describe('MemoPanel — cache-refetch race (Fix #5)', () => {
     // Banner must NOT appear while we're still fetching the fresh list.
     await waitFor(() => {
       expect(
-        screen.queryByText('memoPanel.notFound'),
+        screen.queryByText('memoPanel:notFound'),
       ).not.toBeInTheDocument();
     });
 
@@ -258,7 +258,7 @@ describe('MemoPanel — cache-refetch race (Fix #5)', () => {
       expect(screen.getByTestId('markdown-content')).toBeInTheDocument(),
     );
     expect(
-      screen.queryByText(/memoPanel\.notFound/),
+      screen.queryByText(/memoPanel:notFound/),
     ).not.toBeInTheDocument();
   });
 });
@@ -383,7 +383,7 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
     // Open the entry, enter edit mode, dirty the buffer.
     await user.click(await screen.findByText('note.md'));
     await screen.findByTestId('markdown-content');
-    await user.click(screen.getByTitle('memoPanel.actions.edit'));
+    await user.click(screen.getByTitle('memoPanel:actions.edit'));
     const textarea = await screen.findByDisplayValue('old content');
     await user.type(textarea, ' + my unsaved work');
 
@@ -444,14 +444,14 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
 
     await user.click(await screen.findByText('note.md'));
     await screen.findByTestId('markdown-content');
-    await user.click(screen.getByTitle('memoPanel.actions.edit'));
+    await user.click(screen.getByTitle('memoPanel:actions.edit'));
     const textarea = await screen.findByDisplayValue('old content');
     await user.type(textarea, ' dirty');
 
     rerender(<MemoPanel targetKey="" onTargetHandled={() => {}} />);
 
     // The discard-confirm dialog opens; click the destructive Discard button.
-    const discardBtn = await screen.findByRole('button', { name: 'memoPanel.discardEdits' });
+    const discardBtn = await screen.findByRole('button', { name: 'memoPanel:discardEdits' });
     await user.click(discardBtn);
 
     // Back on the list view (no editor mounted).
@@ -488,7 +488,7 @@ describe('MemoPanel — not-found banner clears on key-set change (Fix #9)', () 
     );
 
     await waitFor(() =>
-      expect(screen.getByText(/memoPanel\.notFound/)).toBeInTheDocument(),
+      expect(screen.getByText(/memoPanel:notFound/)).toBeInTheDocument(),
     );
 
     // Same length, different membership: drop a.md, add b.md.
@@ -510,7 +510,7 @@ describe('MemoPanel — not-found banner clears on key-set change (Fix #9)', () 
 
     await waitFor(() =>
       expect(
-        screen.queryByText(/memoPanel\.notFound/),
+        screen.queryByText(/memoPanel:notFound/),
       ).not.toBeInTheDocument(),
     );
   });

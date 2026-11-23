@@ -29,20 +29,20 @@ type NewsFeedSource = 'top' | 'market' | 'portfolio' | 'watchlist';
 type NewsFeedConfig = { source?: NewsFeedSource; limit?: number };
 
 const SOURCE_KEY: Record<NewsFeedSource, string> = {
-  top: 'dashboard.widgets.newsFeed.tab_top',
-  market: 'dashboard.widgets.newsFeed.tab_market',
-  portfolio: 'dashboard.widgets.newsFeed.tab_portfolio',
-  watchlist: 'dashboard.widgets.newsFeed.tab_watchlist',
+  top: 'dashboard:widgets.newsFeed.tab_top',
+  market: 'dashboard:widgets.newsFeed.tab_market',
+  portfolio: 'dashboard:widgets.newsFeed.tab_portfolio',
+  watchlist: 'dashboard:widgets.newsFeed.tab_watchlist',
 };
 
 const SOURCES: NewsFeedSource[] = ['top', 'market', 'portfolio', 'watchlist'];
 
 const DATE_RANGES: { key: NewsDateRange; labelKey: string }[] = [
-  { key: 'all', labelKey: 'dashboard.widgets.newsFeed.range_all' },
-  { key: '1h', labelKey: 'dashboard.widgets.newsFeed.range_1h' },
-  { key: '6h', labelKey: 'dashboard.widgets.newsFeed.range_6h' },
-  { key: '24h', labelKey: 'dashboard.widgets.newsFeed.range_24h' },
-  { key: '7d', labelKey: 'dashboard.widgets.newsFeed.range_7d' },
+  { key: 'all', labelKey: 'dashboard:widgets.newsFeed.range_all' },
+  { key: '1h', labelKey: 'dashboard:widgets.newsFeed.range_1h' },
+  { key: '6h', labelKey: 'dashboard:widgets.newsFeed.range_6h' },
+  { key: '24h', labelKey: 'dashboard:widgets.newsFeed.range_24h' },
+  { key: '7d', labelKey: 'dashboard:widgets.newsFeed.range_7d' },
 ];
 
 interface NewsItem {
@@ -233,7 +233,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
       return {
         widget_type: 'news.feed',
         widget_id: instance.id,
-        label: t('dashboard.widgets.newsFeed.title') + ` · ${t(SOURCE_KEY[activeTab])}`,
+        label: t('dashboard:widgets.newsFeed.title') + ` · ${t(SOURCE_KEY[activeTab])}`,
         description: `${newsItems.length} headline${newsItems.length === 1 ? '' : 's'}`,
         captured_at: new Date().toISOString(),
         text,
@@ -285,8 +285,8 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             <Search size={10} aria-hidden="true" />
             <input
               type="text"
-              aria-label={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
-              placeholder={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
+              aria-label={t('dashboard:widgets.newsFeed.tickerPlaceholder')}
+              placeholder={t('dashboard:widgets.newsFeed.tickerPlaceholder')}
               value={tickerFilter}
               onChange={(e) => setTickerFilter(e.target.value)}
             />
@@ -295,7 +295,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 type="button"
                 onClick={() => setTickerFilter('')}
                 className="inline-flex"
-                aria-label={t('dashboard.widgets.newsFeed.clearTicker')}
+                aria-label={t('dashboard:widgets.newsFeed.clearTicker')}
               >
                 <X size={10} />
               </button>
@@ -320,11 +320,11 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             <select
               value={sourceFilter}
               onChange={(e) => setSourceFilter(e.target.value)}
-              aria-label={t('dashboard.widgets.newsFeed.sourceLabel')}
+              aria-label={t('dashboard:widgets.newsFeed.sourceLabel')}
               className="dash-field"
               data-set={sourceFilter !== 'all' ? '' : undefined}
             >
-              <option value="all">{t('dashboard.widgets.newsFeed.allSources')}</option>
+              <option value="all">{t('dashboard:widgets.newsFeed.allSources')}</option>
               {sourceOptions.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -343,7 +343,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 setSourceFilter('all');
               }}
             >
-              {t('dashboard.widgets.newsFeed.clear')}
+              {t('dashboard:widgets.newsFeed.clear')}
             </button>
           ) : null}
         </div>
@@ -375,12 +375,12 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             <div className="dash-empty">
               <span>
                 {hasFilters
-                  ? t('dashboard.widgets.newsFeed.emptyFiltered')
+                  ? t('dashboard:widgets.newsFeed.emptyFiltered')
                   : activeTab === 'market'
-                    ? t('dashboard.widgets.newsFeed.emptyMarket')
+                    ? t('dashboard:widgets.newsFeed.emptyMarket')
                     : activeTab === 'top'
-                      ? t('dashboard.widgets.newsFeed.emptyTop')
-                      : t('dashboard.widgets.newsFeed.emptyAddTo', { label: t(SOURCE_KEY[activeTab]).toLowerCase() })}
+                      ? t('dashboard:widgets.newsFeed.emptyTop')
+                      : t('dashboard:widgets.newsFeed.emptyAddTo', { label: t(SOURCE_KEY[activeTab]).toLowerCase() })}
               </span>
             </div>
           ) : (
@@ -433,9 +433,9 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
 
 registerWidget<NewsFeedConfig>({
   type: 'news.feed',
-  titleKey: 'dashboard.widgets.newsFeed.title',
-  cardTitleKey: 'dashboard.widgets.newsFeed.cardTitle',
-  descriptionKey: 'dashboard.widgets.newsFeed.description',
+  titleKey: 'dashboard:widgets.newsFeed.title',
+  cardTitleKey: 'dashboard:widgets.newsFeed.cardTitle',
+  descriptionKey: 'dashboard:widgets.newsFeed.description',
   category: 'intel',
   icon: Newspaper,
   component: NewsFeedWidget,

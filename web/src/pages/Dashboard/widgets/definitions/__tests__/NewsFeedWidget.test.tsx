@@ -103,7 +103,7 @@ describe('NewsFeedWidget', () => {
     expect(screen.getByText('Recent story')).toBeInTheDocument();
     expect(screen.getByText('Old story')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('dashboard.widgets.newsFeed.range_1h'));
+    fireEvent.click(screen.getByText('dashboard:widgets.newsFeed.range_1h'));
     expect(screen.getByText('Recent story')).toBeInTheDocument();
     expect(screen.queryByText('Old story')).not.toBeInTheDocument();
   });

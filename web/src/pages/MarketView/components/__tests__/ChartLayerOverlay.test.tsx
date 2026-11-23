@@ -15,7 +15,7 @@ const ELEMENTS = new Map<string, LayerElementInfo>([[KEY, {
   ref: { layerId: 'l0', layerTitle: 'Layer 0', kind: 'drawing', note: 'Support from the March low', anchors: [] },
   color: '#e9954a',
   label: 'Support',
-  typeKey: 'marketView.layerExplain.types.level',
+  typeKey: 'marketView:layerExplain.types.level',
   layerSummary: null,
   symbol: 'NVDA',
   timeframe: '1day',

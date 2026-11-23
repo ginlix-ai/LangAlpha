@@ -16,7 +16,7 @@ import { RowButton, SetupNote } from '../answers/parts';
 import { ProgressList, ProgressStep, type ProgressState } from '../answers/ProgressSteps';
 import type { PairStage, ThisMacPairing } from './useThisMacPairing';
 
-const T = 'setup.thisMac';
+const T = 'setup:thisMac';
 
 /** Where the Login Items and pairing steps stand at each stage past the ask. */
 const STEP_STATES: Record<Exclude<PairStage, 'ask' | 'confirm'>, { login: ProgressState; pair: ProgressState }> = {

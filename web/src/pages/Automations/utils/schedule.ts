@@ -25,8 +25,8 @@ export function scheduleLine(a: Automation, t: TFunction, homeZone: string, loca
   let line: string;
   if (a.trigger_type === 'once') {
     const at = onceAt(a);
-    if (!at) return t('automation.once');
-    line = t('automation.onceAt', { when: formatDateTimeShort(at, locale, a.timezone) });
+    if (!at) return t('automation:once');
+    line = t('automation:onceAt', { when: formatDateTimeShort(at, locale, a.timezone) });
   } else {
     line = cronToHuman(a.cron_expression ?? '', t, locale);
   }
@@ -36,27 +36,27 @@ export function scheduleLine(a: Automation, t: TFunction, homeZone: string, loca
 /** The inspector's sentence: the schedule, then the next occurrence. */
 export function scheduleSentence(a: Automation, t: TFunction, locale: string, now: number): string {
   if (a.trigger_type === 'price') {
-    return t('automation.sentenceWatching', {
+    return t('automation:sentenceWatching', {
       condition: formatPriceTrigger(a.trigger_config, t),
       retrigger: formatRetriggerMode(a.trigger_config, t),
     });
   }
   if (a.trigger_type === 'once') {
     const at = onceAt(a);
-    if (!at) return t('automation.once');
-    const key = a.status === 'completed' || !a.next_run_at ? 'automation.sentenceRanOnce' : 'automation.sentenceOnce';
+    if (!at) return t('automation:once');
+    const key = a.status === 'completed' || !a.next_run_at ? 'automation:sentenceRanOnce' : 'automation:sentenceOnce';
     return t(key, { when: formatDateTimeShort(at, locale, a.timezone), zone: formatTimezoneName(a.timezone, locale) });
   }
-  const schedule = t('automation.sentenceRecurring', {
+  const schedule = t('automation:sentenceRecurring', {
     schedule: cronToHuman(a.cron_expression ?? '', t, locale),
     zone: formatTimezoneName(a.timezone, locale),
   });
   // Only a live schedule has a next run to name: a row switched off under an
   // earlier build can still hold a slot that will never fire.
   if (!a.next_run_at || a.status === 'paused' || a.status === 'disabled') return schedule;
-  return t('automation.sentenceThen', {
+  return t('automation:sentenceThen', {
     first: schedule,
-    then: t('automation.sentenceNextRun', {
+    then: t('automation:sentenceNextRun', {
       when: formatUpcoming(a.next_run_at, locale, now, a.timezone),
       relative: relativeTime(a.next_run_at, locale, now),
     }),

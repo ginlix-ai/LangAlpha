@@ -31,26 +31,26 @@ export function OptionsChainPanel({ data, toolArgs }: PanelProps): React.ReactEl
   const columns: Array<SortColumn<OptionRow> & { wide?: boolean }> = [
     // The row's name: kept when every contract shares it, unlike the type
     // and the expiry, which the edge says once.
-    { key: 'strike', label: t('toolArtifact.termHead.strike'), value: (r) => r.strike, cell: (r) => money(r.strike!), className: 'term-strong', fill: 'grow', keep: true },
-    { key: 'expiry', label: t('toolArtifact.expiration'), value: (r) => r.expiry, cell: (r) => expiryOf(r.expiry), className: 'term-t2', fill: 'grow' },
+    { key: 'strike', label: t('toolArtifact:termHead.strike'), value: (r) => r.strike, cell: (r) => money(r.strike!), className: 'term-strong', fill: 'grow', keep: true },
+    { key: 'expiry', label: t('toolArtifact:expiration'), value: (r) => r.expiry, cell: (r) => expiryOf(r.expiry), className: 'term-t2', fill: 'grow' },
     {
-      key: 'type', label: t('toolArtifact.termHead.type'), value: (r) => r.type, className: 'term-t2', fill: 'grow',
-      cell: (r) => <span className="term-label">{t(`toolArtifact.optionType.${r.type}`)}</span>,
+      key: 'type', label: t('toolArtifact:termHead.type'), value: (r) => r.type, className: 'term-t2', fill: 'grow',
+      cell: (r) => <span className="term-label">{t(`toolArtifact:optionType.${r.type}`)}</span>,
     },
     // The machine's name for the contract, which the terms before it spell
     // out: it sits where a screen puts a company's name, quiet, and the first
     // to give way.
-    { key: 'ticker', label: t('toolArtifact.contract'), value: (r) => r.ticker, className: 'term-t3 term-code', fill: 'clip', wide: true },
-    { key: 'last', label: t('toolArtifact.price'), num: true, value: (r) => r.last, title: staleTitle, cell: (r) => stale(r, money(r.last!)) },
+    { key: 'ticker', label: t('toolArtifact:contract'), value: (r) => r.ticker, className: 'term-t3 term-code', fill: 'clip', wide: true },
+    { key: 'last', label: t('toolArtifact:price'), num: true, value: (r) => r.last, title: staleTitle, cell: (r) => stale(r, money(r.last!)) },
     {
-      key: 'change', label: t('toolArtifact.change'), num: true, className: 'term-t2', value: (r) => r.change, wide: true, title: staleTitle,
+      key: 'change', label: t('toolArtifact:change'), num: true, className: 'term-t2', value: (r) => r.change, wide: true, title: staleTitle,
       cell: (r) => stale(r, formatMoney(r.change!, chain.currency, locale, { signed: true, decimals: moneyPlaces(r.change) })),
     },
-    { key: 'changePct', label: t('toolArtifact.changePct'), num: true, value: (r) => r.changePct, title: staleTitle, cell: (r) => stale(r, <TermChange value={r.changePct} />) },
-    { key: 'volume', label: t('toolArtifact.volume'), num: true, className: 'term-t2', value: (r) => r.volume, title: staleTitle, cell: (r) => stale(r, integer(r.volume!, locale)) },
+    { key: 'changePct', label: t('toolArtifact:changePct'), num: true, value: (r) => r.changePct, title: staleTitle, cell: (r) => stale(r, <TermChange value={r.changePct} />) },
+    { key: 'volume', label: t('toolArtifact:volume'), num: true, className: 'term-t2', value: (r) => r.volume, title: staleTitle, cell: (r) => stale(r, integer(r.volume!, locale)) },
     // Where the price sits in the day's range, when the day has one.
     {
-      key: 'range', label: t('toolArtifact.termHead.dayRange'), num: true, wide: true,
+      key: 'range', label: t('toolArtifact:termHead.dayRange'), num: true, wide: true,
       value: (r) => (r.low != null && r.high != null && r.high > r.low ? r.high - r.low : undefined),
       title: staleTitle,
       cell: (r) => stale(r, <TermRange low={r.low} high={r.high} value={r.last} />),
@@ -80,18 +80,18 @@ export function MarketMoversPanel({ data, toolArgs }: PanelProps): React.ReactEl
     formatMoney(n, row.currency, locale, { signed, decimals: moneyPlaces(n) });
 
   const columns: Array<SortColumn<MoverRow>> = [
-    { key: 'symbol', label: t('toolArtifact.symbol'), value: (r) => r.symbol, cell: (r) => <MarketLink symbol={r.symbol} inline />, className: 'term-strong', fill: 'grow' },
-    { key: 'name', label: t('toolArtifact.company'), value: (r) => r.name, className: 'term-t3', fill: 'clip' },
-    { key: 'price', label: t('toolArtifact.price'), num: true, value: (r) => r.price, cell: (r) => money(r.price!, r) },
-    { key: 'change', label: t('toolArtifact.change'), num: true, className: 'term-t2', value: (r) => r.change, cell: (r) => money(r.change!, r, true) },
-    { key: 'changePct', label: t('toolArtifact.changePct'), num: true, value: (r) => r.changePct, cell: (r) => <TermChange value={r.changePct} /> },
-    { key: 'volume', label: t('toolArtifact.volume'), num: true, className: 'term-t2', value: (r) => r.volume, cell: (r) => compactNumberFixed2(r.volume!, locale) },
+    { key: 'symbol', label: t('toolArtifact:symbol'), value: (r) => r.symbol, cell: (r) => <MarketLink symbol={r.symbol} inline />, className: 'term-strong', fill: 'grow' },
+    { key: 'name', label: t('toolArtifact:company'), value: (r) => r.name, className: 'term-t3', fill: 'clip' },
+    { key: 'price', label: t('toolArtifact:price'), num: true, value: (r) => r.price, cell: (r) => money(r.price!, r) },
+    { key: 'change', label: t('toolArtifact:change'), num: true, className: 'term-t2', value: (r) => r.change, cell: (r) => money(r.change!, r, true) },
+    { key: 'changePct', label: t('toolArtifact:changePct'), num: true, value: (r) => r.changePct, cell: (r) => <TermChange value={r.changePct} /> },
+    { key: 'volume', label: t('toolArtifact:volume'), num: true, className: 'term-t2', value: (r) => r.volume, cell: (r) => compactNumberFixed2(r.volume!, locale) },
   ];
 
   return (
     <TermCard
       title={moversTitle(t, direction)}
-      meta={t('toolArtifact.nResults', { count: rows.length })}
+      meta={t('toolArtifact:nResults', { count: rows.length })}
       metaTitle={retrievedTitle(t, asOfTs, locale)}
     >
       <SortTable rows={rows} columns={columns} rowKey={(r, i) => r.symbol || i} />

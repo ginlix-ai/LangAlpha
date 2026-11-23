@@ -9,8 +9,8 @@ import { TermTable } from './TermTable';
 const MAX_INLINE_8K = 3;
 
 const FILING_KIND_KEY: Record<string, string> = {
-  '10-K': 'toolArtifact.annualReport',
-  '10-Q': 'toolArtifact.quarterlyReport',
+  '10-K': 'toolArtifact:annualReport',
+  '10-Q': 'toolArtifact:quarterlyReport',
 };
 
 export function InlineSecFilingCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
@@ -40,35 +40,35 @@ function InlinePeriodicCard({
       title={filing.symbol}
       symbol={filing.symbol}
       sub={sub}
-      meta={filingDate && t('toolArtifact.filedOn', { date: filingDate })}
+      meta={filingDate && t('toolArtifact:filedOn', { date: filingDate })}
       onClick={onClick}
     >
       <TermKV
         cols={narrow ? 2 : 3}
         pairs={[
-          !!periodEnd && [t('toolArtifact.periodEnd'), periodEnd],
-          !!cik && [t('toolArtifact.cik'), cik],
-          sections != null && [t('toolArtifact.sections'), String(sections)],
+          !!periodEnd && [t('toolArtifact:periodEnd'), periodEnd],
+          !!cik && [t('toolArtifact:cik'), cik],
+          sections != null && [t('toolArtifact:sections'), String(sections)],
           earningsCall && [
-            t('toolArtifact.earningsCall'),
+            t('toolArtifact:earningsCall'),
             // Half a phone's width holds the label or the word, not both.
             narrow ? (
               <span
                 key="included"
                 role="img"
-                aria-label={t('toolArtifact.included')}
-                title={t('toolArtifact.included')}
+                aria-label={t('toolArtifact:included')}
+                title={t('toolArtifact:included')}
                 className="term-yes"
               >
                 ✓
               </span>
             ) : (
-              t('toolArtifact.included')
+              t('toolArtifact:included')
             ),
           ],
-          recent8Ks != null && [t('toolArtifact.recent8Ks'), String(recent8Ks)],
+          recent8Ks != null && [t('toolArtifact:recent8Ks'), String(recent8Ks)],
           !!sourceUrl && [
-            t('toolArtifact.source'),
+            t('toolArtifact:source'),
             <a
               key="edgar"
               className="term-out"
@@ -76,9 +76,9 @@ function InlinePeriodicCard({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              title={t('toolArtifact.viewOnEdgar')}
+              title={t('toolArtifact:viewOnEdgar')}
             >
-              {t('toolArtifact.edgarLink')}
+              {t('toolArtifact:edgarLink')}
             </a>,
           ],
         ]}
@@ -122,33 +122,33 @@ function Inline8KCard({
 }): React.ReactElement {
   const { t } = useTranslation();
   const sub = filing.days
-    ? `${t('toolArtifact.8kFilings')} · ${t('toolArtifact.nDays', { count: filing.days })}`
-    : t('toolArtifact.8kFilings');
+    ? `${t('toolArtifact:8kFilings')} · ${t('toolArtifact:nDays', { count: filing.days })}`
+    : t('toolArtifact:8kFilings');
 
   return (
-    <TermCard title={filing.symbol} symbol={filing.symbol} sub={sub} meta={t('toolArtifact.filingCount', { count: filing.count })} onClick={onClick}>
+    <TermCard title={filing.symbol} symbol={filing.symbol} sub={sub} meta={t('toolArtifact:filingCount', { count: filing.count })} onClick={onClick}>
       <TermTable<CurrentReport>
         rows={filing.filings}
         limit={MAX_INLINE_8K}
         total={filing.count}
-        more={(n) => t('toolArtifact.nMoreFilings', { count: n })}
+        more={(n) => t('toolArtifact:nMoreFilings', { count: n })}
         rowKey={(_, i) => i}
         columns={[
-          { key: 'filed', label: t('toolArtifact.termHead.filed'), cell: (f) => f.filingDate },
+          { key: 'filed', label: t('toolArtifact:termHead.filed'), cell: (f) => f.filingDate },
           {
             key: 'items',
-            label: t('toolArtifact.termHead.items'),
+            label: t('toolArtifact:termHead.items'),
             fill: 'clip',
             title: (f) => f.items.map((item, j) => (f.descs[j] ? `${item}: ${f.descs[j]}` : item)).join('\n'),
             cell: (f) => <FilingItems items={f.items} descs={f.descs} />,
           },
           {
             key: 'press',
-            label: t('toolArtifact.termHead.press'),
+            label: t('toolArtifact:termHead.press'),
             num: true,
             cell: (f) =>
               f.pressRelease ? (
-                <span className="term-yes">{t('toolArtifact.pressReleaseShort')}</span>
+                <span className="term-yes">{t('toolArtifact:pressReleaseShort')}</span>
               ) : (
                 <span className="term-t3" aria-hidden="true">·</span>
               ),

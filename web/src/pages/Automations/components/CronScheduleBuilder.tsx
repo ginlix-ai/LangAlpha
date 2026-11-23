@@ -16,11 +16,11 @@ import OptionSelect, { type Option } from './OptionSelect';
 import TimeField from './TimeField';
 
 const FREQUENCIES: Option<Frequency>[] = [
-  { value: 'days', labelKey: 'automation.freqDays' },
-  { value: 'minutes', labelKey: 'automation.freqMinutes' },
-  { value: 'hourly', labelKey: 'automation.freqHourly' },
-  { value: 'monthly', labelKey: 'automation.freqMonthly' },
-  { value: 'custom', labelKey: 'automation.freqCustom' },
+  { value: 'days', labelKey: 'automation:freqDays' },
+  { value: 'minutes', labelKey: 'automation:freqMinutes' },
+  { value: 'hourly', labelKey: 'automation:freqHourly' },
+  { value: 'monthly', labelKey: 'automation:freqMonthly' },
+  { value: 'custom', labelKey: 'automation:freqCustom' },
 ];
 
 const MINUTE_STEPS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
@@ -29,13 +29,13 @@ const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 // ── Day picker ────────────────────────────────────────────
 
 const DAY_NAME_KEYS = [
-  'automation.dayMon',
-  'automation.dayTue',
-  'automation.dayWed',
-  'automation.dayThu',
-  'automation.dayFri',
-  'automation.daySat',
-  'automation.daySun',
+  'automation:dayMon',
+  'automation:dayTue',
+  'automation:dayWed',
+  'automation:dayThu',
+  'automation:dayFri',
+  'automation:daySat',
+  'automation:daySun',
 ];
 
 /** Any set of weekdays, one press each. The last day left on stays on: a
@@ -46,7 +46,7 @@ function DayPicker({ days, onChange }: { days: boolean[]; onChange: (days: boole
   const initials = weekdayInitials(locale);
   const count = days.filter(Boolean).length;
   return (
-    <div className="automation-day-picker" role="group" aria-label={t('automation.freqDays')}>
+    <div className="automation-day-picker" role="group" aria-label={t('automation:freqDays')}>
       {initials.map((initial, i) => (
         <button
           key={i}
@@ -126,10 +126,10 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
         {state.kind === 'minutes' && (
           <div className="flex items-center gap-2">
             <span className="automation-form-joiner">
-              {t('automation.every')}
+              {t('automation:every')}
             </span>
             <Select
-              aria-label={t('automation.intervalMinutes')}
+              aria-label={t('automation:intervalMinutes')}
               selectedKey={state.interval}
               onSelectionChange={(k) => {
                 if (typeof k === 'number') update({ interval: k });
@@ -146,7 +146,7 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
               </SelectPopover>
             </Select>
             <span className="automation-form-joiner">
-              {t('automation.minutes')}
+              {t('automation:minutes')}
             </span>
           </div>
         )}
@@ -155,10 +155,10 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
         {state.kind === 'hourly' && (
           <div className="flex items-center gap-2">
             <span className="automation-form-joiner">
-              {t('automation.atMinute')}
+              {t('automation:atMinute')}
             </span>
             <Select
-              aria-label={t('automation.atMinute')}
+              aria-label={t('automation:atMinute')}
               selectedKey={state.minute}
               onSelectionChange={(k) => {
                 if (typeof k === 'number') update({ minute: k });
@@ -181,10 +181,10 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
         {state.kind === 'monthly' && (
           <div className="flex items-center gap-2">
             <span className="automation-form-joiner">
-              {t('automation.onDay')}
+              {t('automation:onDay')}
             </span>
             <Select
-              aria-label={t('automation.onDay')}
+              aria-label={t('automation:onDay')}
               selectedKey={state.dayOfMonth}
               onSelectionChange={(k) => {
                 if (k === 'L' || typeof k === 'number') update({ dayOfMonth: k });
@@ -196,9 +196,9 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
                 <SelectListBox>
                   {/* A day of the month is a phrase, not a bare number: Chinese writes "1 日". */}
                   {MONTH_DAYS.map((d) => (
-                    <SelectItem key={d} id={d}>{t('automation.monthDay', { day: d })}</SelectItem>
+                    <SelectItem key={d} id={d}>{t('automation:monthDay', { day: d })}</SelectItem>
                   ))}
-                  <SelectItem id="L">{t('automation.lastDay')}</SelectItem>
+                  <SelectItem id="L">{t('automation:lastDay')}</SelectItem>
                 </SelectListBox>
               </SelectPopover>
             </Select>
@@ -209,12 +209,12 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
         {needsTime && (
           <div className="flex items-center gap-2">
             <span className="automation-form-joiner">
-              {t('automation.atTime')}
+              {t('automation:atTime')}
             </span>
             <TimeField
               value={{ hour: state.hour, minute: state.minute }}
               onChange={(time) => update(time)}
-              aria-label={t('automation.time')}
+              aria-label={t('automation:time')}
               className="w-32"
             />
           </div>
@@ -222,7 +222,7 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
 
         {zone && needsZone && (
           <div className="flex items-center gap-2">
-            <span className="automation-form-joiner">{t('automation.inZone')}</span>
+            <span className="automation-form-joiner">{t('automation:inZone')}</span>
             {zone}
           </div>
         )}
@@ -234,7 +234,7 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
           that lack one, so say so and point at the option that does not. */}
       {state.kind === 'monthly' && typeof state.dayOfMonth === 'number' && state.dayOfMonth > 28 && (
         <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('automation.skipsShortMonths', { day: state.dayOfMonth })}
+          {t('automation:skipsShortMonths', { day: state.dayOfMonth })}
         </span>
       )}
 
@@ -246,12 +246,12 @@ export default function CronScheduleBuilder({ value, onChange, zone, labelledBy 
             onChange={(e) => update({ raw: e.target.value })}
             placeholder="*/30 * * * *"
             required
-            aria-label={t('automation.freqCustom')}
+            aria-label={t('automation:freqCustom')}
             aria-describedby={helpId}
             className="font-mono"
           />
           <span id={helpId} className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('automation.cronHelp')}
+            {t('automation:cronHelp')}
           </span>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { registerAuthReset } from '@/lib/authResets';
 import type { ResolvedConnect } from './hooks/useMcpOauthActions';
+import { withCopy } from '@/i18n';
 
 /**
  * The question a connect raises before the vendor's page, held where the one
@@ -59,7 +60,7 @@ export function useConnectQuestion(): ConnectQuestion | null {
 }
 
 /** The dialog that answers, in its own chunk: most sessions never ask. */
-export const loadConnectConsent = () => import('./components/ConnectConsent');
+export const loadConnectConsent = withCopy(() => import('./components/ConnectConsent'), ['mcp', 'plugins']);
 
 /** Warm the dialog's chunk, so a question opens on the click that raised it. */
 export function preloadConnectConsent(): void {

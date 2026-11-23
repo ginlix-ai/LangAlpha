@@ -388,7 +388,7 @@ export default function CommentLayer({
     : openComment
       ? {
           key: `card:${openComment.comment_id}`,
-          label: t('pageViewer.comments.cardTitle', { number: openComment.number }),
+          label: t('pageViewer:comments.cardTitle', { number: openComment.number }),
           of: { kind: 'card', id: openComment.comment_id },
         }
       : null;
@@ -442,7 +442,7 @@ export default function CommentLayer({
       <CommentComposer
         value={box.text}
         onChange={(text) => dispatch({ type: 'write', text })}
-        placeholder={t('pageViewer.comments.placeholder')}
+        placeholder={t('pageViewer:comments.placeholder')}
         canQueue={sending.draftRoute('queue') !== null}
         canSend={sending.draftRoute('send') !== null}
         onSubmit={saveDraft}
@@ -497,10 +497,10 @@ export default function CommentLayer({
                   type="button"
                   className="page-comments-hint-exit tap-target"
                   onClick={exitMode}
-                  aria-label={t('pageViewer.comments.exitModeLabel')}
+                  aria-label={t('pageViewer:comments.exitModeLabel')}
                   aria-keyshortcuts="Escape"
                 >
-                  {t('pageViewer.comments.exitMode')}
+                  {t('pageViewer:comments.exitMode')}
                   <kbd aria-hidden>Esc</kbd>
                 </button>
               </div>
@@ -523,7 +523,7 @@ export default function CommentLayer({
                   quote={heading.quote}
                   tag={!draftHere
                     ? basename(box.listed.draft.path)
-                    : draftRect ? null : t('pageViewer.comments.outdated')}
+                    : draftRect ? null : t('pageViewer:comments.outdated')}
                   onLeave={leaveDraft}
                   onEscape={escapeDraft}
                 >
@@ -581,13 +581,13 @@ export default function CommentLayer({
  */
 function ModeHint({ takesParts, adding, hint }: { takesParts: boolean; adding: boolean; hint?: string }): React.ReactElement {
   const { t } = useTranslation();
-  const plain = hint ?? t('pageViewer.comments.modeHint');
+  const plain = hint ?? t('pageViewer:comments.modeHint');
   if (!takesParts) return <>{plain}</>;
-  if (adding) return <>{t('pageViewer.comments.modeHintAdding')}</>;
+  if (adding) return <>{t('pageViewer:comments.modeHintAdding')}</>;
   return (
     <>
       <span className="pointer-coarse:hidden">
-        {t('pageViewer.comments.modeHintParts', { key: ADD_KEY_LABEL })}
+        {t('pageViewer:comments.modeHintParts', { key: ADD_KEY_LABEL })}
       </span>
       <span className="hidden pointer-coarse:inline">{plain}</span>
     </>

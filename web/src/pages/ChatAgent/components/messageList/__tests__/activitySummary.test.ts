@@ -30,7 +30,7 @@ describe('summarizeCompletedItems', () => {
 
     const label = summarizeCompletedItems(items, t, { countFailures: true }) ?? '';
 
-    expect(label).toMatch(/ toolArtifact\.andMore · toolArtifact\.categoryCount\.failed:1$/);
+    expect(label).toMatch(/ toolArtifact:andMore · toolArtifact:categoryCount\.failed:1$/);
   });
 
   // An `la` step manages workspaces and threads; it ran no code of the agent's.
@@ -40,6 +40,6 @@ describe('summarizeCompletedItems', () => {
 
     const label = summarizeCompletedItems([la, own], t) ?? '';
 
-    expect(label).toBe('ToolArtifact.categoryCount.code:1 · toolArtifact.categoryCount.generic:1');
+    expect(label).toBe('ToolArtifact:categoryCount.code:1 · toolArtifact:categoryCount.generic:1');
   });
 });

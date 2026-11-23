@@ -168,7 +168,7 @@ function RemoveRowButton({ onClick, label }: { onClick: () => void; label?: stri
       onClick={onClick}
       className="p-1.5 rounded hover:bg-foreground/10 self-start shrink-0"
       style={{ color: 'var(--color-text-tertiary)' }}
-      aria-label={label ?? t('mcp.modal.removeEntry')}
+      aria-label={label ?? t('mcp:modal.removeEntry')}
     >
       <Trash2 className="h-3.5 w-3.5" />
     </button>
@@ -207,7 +207,7 @@ export function ArgsEditor({
                 type="text"
                 value={arg}
                 onChange={(e) => onChange(args.map((x, j) => (j === i ? e.target.value : x)))}
-                placeholder={t('mcp.modal.argPlaceholder')}
+                placeholder={t('mcp:modal.argPlaceholder')}
                 aria-invalid={flagged || undefined}
                 className="flex-1 min-w-0 px-2 py-1 text-xs rounded bg-transparent font-mono"
                 style={flagged ? { ...fieldStyle, border: '1px solid var(--color-loss)' } : fieldStyle}
@@ -215,18 +215,18 @@ export function ArgsEditor({
               />
               <RemoveRowButton
                 onClick={() => onChange(args.filter((_, j) => j !== i))}
-                label={t('mcp.modal.removeArg')}
+                label={t('mcp:modal.removeArg')}
               />
             </div>
             {flagged && (
               <p className="text-[0.6875rem]" style={problemStyle} data-testid={`mcp-arg-problem-${i}`}>
-                {t('mcp.modal.placeholderArg')}
+                {t('mcp:modal.placeholderArg')}
               </p>
             )}
           </div>
         );
       })}
-      <AddRowButton label={t('mcp.modal.addArg')} onClick={() => onChange([...args, ''])} />
+      <AddRowButton label={t('mcp:modal.addArg')} onClick={() => onChange([...args, ''])} />
     </div>
   );
 }
@@ -268,12 +268,12 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
               onSettle={onSettle}
               value={row.inner}
               onChange={(inner) => update(i, { inner })}
-              label={headerRowName(row) || t('mcp.modal.headerChoiceLabel')}
+              label={headerRowName(row) || t('mcp:modal.headerChoiceLabel')}
               suggestedName={suggestedSecretName(
                 serverName,
                 choice.scheme ? choice.scheme.toUpperCase() : headerRowName(row),
               )}
-              problem={standIns?.has(row.id) ? t('mcp.modal.placeholderValue') : null}
+              problem={standIns?.has(row.id) ? t('mcp:modal.placeholderValue') : null}
               lead={
                 <>
                   <select
@@ -284,14 +284,14 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
                       // the way a half-typed value is.
                       onSettle?.();
                     }}
-                    aria-label={t('mcp.modal.headerChoiceLabel')}
+                    aria-label={t('mcp:modal.headerChoiceLabel')}
                     data-testid={`mcp-header-choice-${i}`}
                     className={`${fieldClass} flex-1 sm:flex-none sm:w-51`}
                     style={fieldStyle}
                   >
                     {HEADER_CHOICES.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.id === 'custom' ? t('mcp.modal.headerCustom') : choiceLabel(c)}
+                        {c.id === 'custom' ? t('mcp:modal.headerCustom') : choiceLabel(c)}
                       </option>
                     ))}
                   </select>
@@ -302,7 +302,7 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
                       onChange={(e) => update(i, { customName: e.target.value })}
                       onBlur={onSettle}
                       placeholder={keyPlaceholder}
-                      aria-label={t('mcp.modal.headerCustomPlaceholder')}
+                      aria-label={t('mcp:modal.headerCustomPlaceholder')}
                       data-testid={`mcp-header-name-${i}`}
                       className={`${fieldClass} flex-1 sm:flex-none sm:w-32`}
                       style={fieldStyle}
@@ -325,8 +325,8 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
                     style={{ color: 'var(--color-text-tertiary)' }}
                     data-testid={`mcp-header-preview-${i}`}
                   >
-                    {t('mcp.modal.headerSends', {
-                      line: headerPreview(row, t('mcp.modal.headerHiddenValue')),
+                    {t('mcp:modal.headerSends', {
+                      line: headerPreview(row, t('mcp:modal.headerHiddenValue')),
                     })}
                   </p>
                 )
@@ -335,7 +335,7 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
           );
         })}
         <AddRowButton
-          label={t('mcp.modal.addHeader')}
+          label={t('mcp:modal.addHeader')}
           onClick={() => onChange([...rows, newHeaderRow()])}
         />
       </div>
@@ -355,14 +355,14 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
           onChange={(value) => update(i, { value })}
           label={row.key || keyPlaceholder}
           suggestedName={suggestedSecretName(serverName, row.key)}
-          problem={standIns?.has(row.id) ? t('mcp.modal.placeholderValue') : null}
+          problem={standIns?.has(row.id) ? t('mcp:modal.placeholderValue') : null}
           lead={
             <input
               type="text"
               value={row.key}
               onChange={(e) => update(i, { key: e.target.value })}
               placeholder={keyPlaceholder}
-              aria-label={t('mcp.modal.envKeyLabel')}
+              aria-label={t('mcp:modal.envKeyLabel')}
               className={`${fieldClass} flex-1 sm:flex-none sm:w-51`}
               style={fieldStyle}
             />
@@ -371,7 +371,7 @@ export function KeyValueEditor(props: KeyValueEditorProps) {
         />
       ))}
       <AddRowButton
-        label={t('mcp.modal.addEnv')}
+        label={t('mcp:modal.addEnv')}
         onClick={() => onChange([...rows, { id: nextRowId(), key: '', value: '' }])}
       />
     </div>

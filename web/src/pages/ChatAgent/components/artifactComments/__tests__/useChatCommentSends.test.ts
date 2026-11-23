@@ -181,7 +181,7 @@ describe('useChatCommentSends: a send to the chat beside', () => {
     const send = sendAll(result, [comment('c1')]);
     await act(async () => { await send.done; });
     expect(chat).toHaveLength(1);
-    expect(send.outcome()).toEqual([[null, 'pageViewer.comments.notSentQueued']]);
+    expect(send.outcome()).toEqual([[null, 'pageViewer:comments.notSentQueued']]);
     expect(result.current.sends.get('c1')).toBeUndefined();
   });
 
@@ -194,7 +194,7 @@ describe('useChatCommentSends: a send to the chat beside', () => {
       await queuedStill.done;
     });
     expect(fetchRows).toHaveBeenCalledWith(expect.anything(), 'a1');
-    expect(queuedStill.outcome()).toEqual([[null, 'pageViewer.comments.notSentQueued']]);
+    expect(queuedStill.outcome()).toEqual([[null, 'pageViewer:comments.notSentQueued']]);
     expect(result.current.sends.get('c1')).toBeUndefined();
 
     fetchRows.mockResolvedValueOnce([comment('c1', { delivery: 'sent', thread_id: 't1' })]);

@@ -47,7 +47,7 @@ export function ImageFile({ src, alt, comments, onOpen }: {
           content={frame}
           strategy={strategy}
           target={comments}
-          modeHint={t('pageViewer.comments.modeHintImage')}
+          modeHint={t('pageViewer:comments.modeHintImage')}
           pictures={pictures}
           // The box drawn stays in view.
           keepSpotClear

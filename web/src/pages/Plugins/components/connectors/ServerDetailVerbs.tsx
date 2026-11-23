@@ -46,7 +46,7 @@ export function serverDetailVerbs(
       style={{ color: 'var(--color-text-secondary)' }}
     >
       <Receipt className="h-3 w-3" />
-      {t('plugins.detail.viewOrders')}
+      {t('plugins:detail.viewOrders')}
     </Link>
   );
   if (brokerage && (orders || reconnect)) {
@@ -62,10 +62,10 @@ export function serverDetailVerbs(
   if (owned && plugin) {
     verbs.push(
       <button key="plugin" type="button" {...buttonSlot('outline')} className="connector-btn is-full" onClick={() => onOpenPlugin(plugin)}>
-        {t('plugins.connectorsPage.openPluginButton', { plugin })}
+        {t('plugins:connectorsPage.openPluginButton', { plugin })}
       </button>,
       <p key="owned" className="connector-aside-note" style={{ marginTop: 0 }}>
-        {t('plugins.connectorsPage.pluginOwnedNote', { plugin })}
+        {t('plugins:connectorsPage.pluginOwnedNote', { plugin })}
       </p>,
     );
   }
@@ -77,7 +77,7 @@ export function serverDetailVerbs(
         {remove && (
           <button type="button" {...buttonSlot('outline', 'danger')} className="connector-btn" onClick={onRemove}>
             <Trash2 className="h-3.5 w-3.5" />
-            {t('plugins.connectorsPage.remove')}
+            {t('plugins:connectorsPage.remove')}
           </button>
         )}
       </div>,
@@ -88,14 +88,14 @@ export function serverDetailVerbs(
   if (owned && edit && plugin) {
     verbs.push(
       <p key="detach" className="connector-aside-note" style={{ marginTop: 0 }}>
-        {t('plugins.connectorsPage.editDetaches', { plugin })}
+        {t('plugins:connectorsPage.editDetaches', { plugin })}
       </p>,
     );
   }
   if (builtin) {
     verbs.push(
       <p key="builtin" className="connector-aside-note" style={{ marginTop: 0 }}>
-        {t('plugins.connectorsPage.builtinNote')}
+        {t('plugins:connectorsPage.builtinNote')}
       </p>,
     );
   }

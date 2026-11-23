@@ -16,7 +16,7 @@ import { afterThisMac, safeThen, type ThisMacOutcome } from './macRoute';
 import { ThisMacPairingBody } from './ThisMacPairing';
 import { pairingLead, pairingTitleKey, useThisMacPairing } from './useThisMacPairing';
 
-const T = 'setup.thisMac';
+const T = 'setup:thisMac';
 
 /**
  * /setup/this-mac, in the Mac app: "Use this Mac with LangAlpha?", asked
@@ -146,15 +146,15 @@ function ThisMacPrompt({ runsOn, account, busy, saveFailed, onAnswer, onPaired }
       <StepKicker>{t(`${T}.kicker`)}</StepKicker>
       <WizardStepHeader titleId={headingId} title={t(pairingTitleKey(stage))} helper={lead ? t(lead.key, { name: lead.name }) : undefined} />
       <ThisMacPairingBody pairing={pairing} account={account} />
-      {saveFailed && <StepError>{t('setup.answers.saveFailed')}</StepError>}
+      {saveFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
         back={stage === 'ask' || stage === 'confirm' || stage === 'failed' ? notNow : null}
         primary={
           stage === 'ask' || stage === 'confirm'
-            ? { label: t('setup.answers.computer.pairThisMac'), onClick: pair, disabled: stage === 'confirm', busy: stage === 'confirm' }
+            ? { label: t('setup:answers.computer.pairThisMac'), onClick: pair, disabled: stage === 'confirm', busy: stage === 'confirm' }
             : stage === 'failed'
               ? { label: t('computer.remoteControl.tryAgain'), onClick: retry }
-              : { label: t('setup.continue'), onClick: () => onAnswer('paired'), disabled: stage !== 'paired' || busy, busy }
+              : { label: t('setup:continue'), onClick: () => onAnswer('paired'), disabled: stage !== 'paired' || busy, busy }
         }
       />
     </div>

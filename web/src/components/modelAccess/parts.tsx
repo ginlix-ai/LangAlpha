@@ -226,7 +226,7 @@ export function UnverifiedNote({ children }: { children: React.ReactNode }) {
     <div role="note" className="flex gap-2.5 rounded-lg px-3 py-2.5" style={{ background: 'var(--color-warning-soft)' }}>
       <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" style={{ color: 'var(--color-warning)' }} />
       <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
-        <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('setup.customUnverifiedTitle')}</span>{' '}
+        <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('setup:customUnverifiedTitle')}</span>{' '}
         {children}
       </p>
     </div>
@@ -351,13 +351,13 @@ export function ModalityChips({
         className="text-[0.625rem] uppercase tracking-wider"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
-        {t('setup.capabilities', { defaultValue: 'Capabilities' })}:
+        {t('setup:capabilities', { defaultValue: 'Capabilities' })}:
       </span>
       <span
         className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
         style={{ background: 'var(--color-bg-tag)', color: 'var(--color-text-secondary)' }}
       >
-        {t('setup.modalityText')}
+        {t('setup:modalityText')}
       </span>
       {EXTRA_MODALITIES.map((mod) => {
         const on = active.has(mod);
@@ -374,7 +374,7 @@ export function ModalityChips({
               border: `1px solid ${on ? 'var(--color-text-primary)' : 'var(--color-border-default)'}`,
             }}
           >
-            <span>{mod === 'image' ? t('setup.modalityImage') : t('setup.modalityPdf')}</span>
+            <span>{mod === 'image' ? t('setup:modalityImage') : t('setup:modalityPdf')}</span>
           </button>
         );
       })}

@@ -18,10 +18,11 @@ import { isValidUuid } from './utils/uuid';
 import ChatView from './components/ChatView';
 import ComputersDialogHost from './components/ComputersDialogHost';
 import { useCloseComputersOnLeave } from './hooks/computerPanelStore';
+import { withCopy } from '@/i18n';
 import './ChatAgent.css';
 
 const WorkspaceGallery = React.lazy(() => import('./components/WorkspaceGallery'));
-const ThreadGallery = React.lazy(() => import('./components/ThreadGallery'));
+const ThreadGallery = React.lazy(withCopy(() => import('./components/ThreadGallery'), ['publish', 'vault']));
 
 // Cache key format used by useChatViewCache — `${workspaceId}-${threadId}`.
 // Only needed by cache.updateKey() calls; the resolvingRef below is keyed by

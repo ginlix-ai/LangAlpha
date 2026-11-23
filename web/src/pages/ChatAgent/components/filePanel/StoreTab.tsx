@@ -1,10 +1,11 @@
 import React, { Suspense, useCallback } from 'react';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { PanelTarget } from './types';
+import { withCopy } from '@/i18n';
 
 const MemoryPanel = React.lazy(() => import('../MemoryPanel'));
-const MemoPanel = React.lazy(() => import('../MemoPanel'));
-const StatusPanel = React.lazy(() => import('../StatusPanel'));
+const MemoPanel = React.lazy(withCopy(() => import('../MemoPanel'), ['memoPanel']));
+const StatusPanel = React.lazy(withCopy(() => import('../StatusPanel'), ['automation']));
 
 interface StoreTabProps {
   kind: 'memory' | 'memo' | 'status';

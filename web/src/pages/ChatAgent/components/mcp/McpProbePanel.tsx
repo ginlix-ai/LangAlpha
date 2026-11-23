@@ -70,7 +70,7 @@ export function McpProbePanel({ result, probing, canCheck, onCheck, pending = nu
         role="status"
       >
         <Loader size={14} className="text-current" />
-        {t('mcp.probe.checking')}
+        {t('mcp:probe.checking')}
       </div>
     );
   }
@@ -87,10 +87,10 @@ export function McpProbePanel({ result, probing, canCheck, onCheck, pending = nu
         <div className="flex items-start gap-2 min-w-0" style={{ color: 'var(--color-text-secondary)' }}>
           <KeyRound className="h-3.5 w-3.5 shrink-0 mt-0.5" />
           <span className="wrap-break-word">
-            {pending === 'keyAdded' ? t('mcp.probe.keyAdded') : t('mcp.probe.keyHeld')}
+            {pending === 'keyAdded' ? t('mcp:probe.keyAdded') : t('mcp:probe.keyHeld')}
           </span>
         </div>
-        <div className="shrink-0">{checkButton(t('mcp.probe.checkNow'), 'primary')}</div>
+        <div className="shrink-0">{checkButton(t('mcp:probe.checkNow'), 'primary')}</div>
       </div>
     );
   }
@@ -116,7 +116,7 @@ export function McpProbePanel({ result, probing, canCheck, onCheck, pending = nu
             {t(verdictMessageKey(result), { names: (result.missing_secrets ?? []).join(', ') })}
           </span>
         </div>
-        <div className="shrink-0">{checkButton(t('mcp.probe.recheck'))}</div>
+        <div className="shrink-0">{checkButton(t('mcp:probe.recheck'))}</div>
       </div>
 
       {detailLine && (
@@ -135,7 +135,7 @@ export function McpProbePanel({ result, probing, canCheck, onCheck, pending = nu
           aria-expanded={toolsOpen}
           className="self-start ml-5"
         >
-          {toolsOpen ? t('mcp.probe.hideTools') : t('mcp.probe.showTools')}
+          {toolsOpen ? t('mcp:probe.hideTools') : t('mcp:probe.showTools')}
         </McpQuietButton>
       )}
       <Disclosure open={toolsOpen && tools.length > 0}>

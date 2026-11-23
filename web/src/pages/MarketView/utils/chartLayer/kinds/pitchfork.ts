@@ -37,7 +37,7 @@ function geom(p: Painter, d: PitchforkScene) {
 }
 
 export const pitchfork: DrawingKind<PitchforkDrawing, PitchforkScene> = {
-  nameKey: 'marketView.layerExplain.types.pitchfork',
+  nameKey: 'marketView:layerExplain.types.pitchfork',
   times: (d) => [d.p1.time, d.p2.time, d.p3.time],
   anchors: (d) => [d.p1, d.p2, d.p3],
   resolve(d, { base, P }) {

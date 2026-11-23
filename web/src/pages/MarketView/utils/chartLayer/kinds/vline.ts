@@ -12,7 +12,7 @@ export interface VLineScene extends SceneBase {
 }
 
 export const vline: DrawingKind<VLineDrawing, VLineScene> = {
-  nameKey: 'marketView.layerExplain.types.vline',
+  nameKey: 'marketView:layerExplain.types.vline',
   times: (d) => [d.time],
   anchors: (d) => [{ time: d.time, price: NaN }],
   resolve(d, { base, grid }) {

@@ -11,20 +11,20 @@ export function VaultUsageNote() {
   return (
     <>
       <section className="detail-aside-block">
-        <h3>{t('vault.usage.title')}</h3>
-        <p className="accounts-aside-text">{t('vault.usage.lead')}</p>
+        <h3>{t('vault:usage.title')}</h3>
+        <p className="accounts-aside-text">{t('vault:usage.lead')}</p>
         <pre className="accounts-aside-snippet">{SNIPPET}</pre>
       </section>
       <section className="detail-aside-block">
-        <h3>{t('vault.security.title')}</h3>
+        <h3>{t('vault:security.title')}</h3>
         <ul className="accounts-aside-list">
-          <li>{t('vault.security.encrypted')}</li>
+          <li>{t('vault:security.encrypted')}</li>
           <li>
-            <Trans i18nKey="vault.security.agent" values={{ call: 'vault.get()' }} components={{ code: CODE }} />
+            <Trans i18nKey="vault:security.agent" values={{ call: 'vault.get()' }} components={{ code: CODE }} />
           </li>
-          <li>{t('vault.security.leakScan')}</li>
+          <li>{t('vault:security.leakScan')}</li>
           <li>
-            <Trans i18nKey="vault.security.store" values={{ module: 'vault' }} components={{ code: CODE }} />
+            <Trans i18nKey="vault:security.store" values={{ module: 'vault' }} components={{ code: CODE }} />
           </li>
         </ul>
       </section>

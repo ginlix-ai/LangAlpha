@@ -156,9 +156,9 @@ export function VaultSecretPicker({
   const usageLine = (users: readonly string[] | undefined) => {
     if (!users) return '';
     const { key, values } = readersSentence(users, {
-      none: 'mcp.secret.unused',
-      one: 'mcp.secret.usedByOne',
-      many: 'mcp.secret.usedBy',
+      none: 'mcp:secret.unused',
+      one: 'mcp:secret.usedByOne',
+      many: 'mcp:secret.usedBy',
     });
     return t(key, values);
   };
@@ -177,8 +177,8 @@ export function VaultSecretPicker({
           style={{
             color: selectedRef !== null ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
           }}
-          aria-label={t('mcp.secret.fromVault')}
-          title={t('mcp.secret.fromVault')}
+          aria-label={t('mcp:secret.fromVault')}
+          title={t('mcp:secret.fromVault')}
           data-testid="vault-key-menu"
         >
           <KeyRound className="h-3.5 w-3.5" />
@@ -204,8 +204,8 @@ export function VaultSecretPicker({
             onKeyDown={(e) => {
               if (e.key !== 'Escape' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') e.stopPropagation();
             }}
-            placeholder={t('mcp.secret.filter')}
-            aria-label={t('mcp.secret.filter')}
+            placeholder={t('mcp:secret.filter')}
+            aria-label={t('mcp:secret.filter')}
             className="w-full mb-1 px-2 py-1 text-xs rounded bg-transparent"
             style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
             autoComplete="off"
@@ -227,7 +227,7 @@ export function VaultSecretPicker({
                 </span>
                 {n === suggested && (
                   <span className="ml-auto shrink-0 text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t('mcp.secret.suggested')}
+                    {t('mcp:secret.suggested')}
                   </span>
                 )}
               </span>
@@ -239,13 +239,13 @@ export function VaultSecretPicker({
         })}
         {needle && shown.length === 0 && (
           <p className="px-2.5 py-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('mcp.secret.noMatch')}
+            {t('mcp:secret.noMatch')}
           </p>
         )}
         {keys.names.length > 0 && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={startNew} className="text-xs" data-testid="vault-key-new">
           <Plus className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
-          {t('mcp.secret.newKey')}
+          {t('mcp:secret.newKey')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -269,7 +269,7 @@ export function VaultSecretPicker({
                 onClick={() => onChange('')}
                 className="ml-auto p-0.5 rounded hover:bg-foreground/10"
                 style={{ color: 'var(--color-text-tertiary)' }}
-                aria-label={t('mcp.secret.clear')}
+                aria-label={t('mcp:secret.clear')}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -281,12 +281,12 @@ export function VaultSecretPicker({
               onChange={onChange}
               visible={revealed}
               onToggleVisible={() => setRevealed((v) => !v)}
-              labels={{ show: t('mcp.secret.showValue'), hide: t('mcp.secret.hideValue') }}
+              labels={{ show: t('mcp:secret.showValue'), hide: t('mcp:secret.hideValue') }}
               onBlur={onSettle}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') onSettle?.();
               }}
-              placeholder={t('mcp.secret.valuePlaceholder')}
+              placeholder={t('mcp:secret.valuePlaceholder')}
               aria-label={label}
               aria-invalid={problem ? true : undefined}
               wrapperClassName="flex-1 min-w-0"
@@ -313,14 +313,14 @@ export function VaultSecretPicker({
           className="self-start"
           icon={<KeyRound className="h-3 w-3" />}
         >
-          {t('mcp.secret.saveOffer')}
+          {t('mcp:secret.saveOffer')}
         </McpQuietButton>
       )}
 
       <Disclosure open={saveOpen && selectedRef === null} className="flex flex-col gap-1 pt-1">
         <div className="flex flex-col gap-1">
           <label htmlFor={saveNameId} className="text-[0.6875rem]" style={{ color: 'var(--color-text-secondary)' }}>
-            {t('mcp.secret.saveAs')}
+            {t('mcp:secret.saveAs')}
           </label>
           <div className="flex flex-wrap gap-1.5 items-center">
             <input
@@ -346,7 +346,7 @@ export function VaultSecretPicker({
               icon={saving ? <Loader size={12} className="text-current" /> : undefined}
               data-testid="vault-save"
             >
-              {nameTaken ? t('mcp.secret.replace') : t('mcp.secret.save')}
+              {nameTaken ? t('mcp:secret.replace') : t('mcp:secret.save')}
             </McpQuietButton>
             <McpQuietButton size="md" onClick={() => setSaveOpen(false)}>
               {t('common.cancel')}
@@ -355,13 +355,13 @@ export function VaultSecretPicker({
           {nameTaken && (
             <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }} data-testid="vault-save-taken">
               {takenUsers?.length
-                ? t('mcp.secret.replaceUsed', { name, count: takenUsers.length })
-                : t('mcp.secret.replaceUnused', { name })}
+                ? t('mcp:secret.replaceUsed', { name, count: takenUsers.length })
+                : t('mcp:secret.replaceUnused', { name })}
             </p>
           )}
           {!value && (
             <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('mcp.secret.pasteFirst')}
+              {t('mcp:secret.pasteFirst')}
             </p>
           )}
           {saveError && (

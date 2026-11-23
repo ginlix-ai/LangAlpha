@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useBfcacheRestore } from '@/hooks/useBfcacheRestore';
 import { CONNECTS_KEY } from '../hooks/useConnectLanding';
+import { withCopy } from '@/i18n';
 
 /** Whether this landing can have anything to say, judged without loading
  *  what reads it: a callback's answer, or a connect this tab sent out. */
@@ -27,7 +28,7 @@ export function ConnectLandingHost() {
   const navigate = useNavigate();
   const land = () => {
     if (!mayHaveLanded()) return;
-    void import('../connectLanding').then(
+    void withCopy(() => import('../connectLanding'), ['plugins'])().then(
       (m) => m.landConnectReturn({ t, navigate }),
       // A chunk that fails here is the app's stale-build recovery's to take.
       () => {},

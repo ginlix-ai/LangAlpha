@@ -1,0 +1,71 @@
+{
+  "title": "备忘文档",
+  "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区 Agent 都可读取。",
+  "uploadButton": "上传",
+  "uploadHint": "支持 Markdown、TXT、CSV、JSON、PDF · 单文件不超过 5 MB",
+  "dragOverlayText": "松开鼠标以上传文件",
+  "refresh": "刷新",
+  "selectMode": "批量选择",
+  "selectedCount_other": "已选 {{count}} 项",
+  "deleteSelected": "删除所选",
+  "backToList": "返回列表",
+  "unsavedDiscardConfirm": "您有未保存的备忘修改。确定放弃吗？",
+  "discardEditTitle": "放弃未保存的修改？",
+  "discardEdits": "放弃",
+  "loading": "加载中…",
+  "loadingList": "正在加载备忘文档…",
+  "uploading": "上传中…",
+  "columns": {
+    "name": "名称",
+    "type": "类型",
+    "size": "大小",
+    "status": "状态",
+    "description": "描述",
+    "uploaded": "上传时间"
+  },
+  "status": {
+    "pending": "生成中…",
+    "ready": "已就绪",
+    "failed": "生成失败"
+  },
+  "actions": {
+    "view": "查看",
+    "download": "下载原件",
+    "edit": "编辑",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "regenerate": "重新生成"
+  },
+  "empty": {
+    "title": "暂无备忘文档",
+    "hint": "将文件拖到此处，或点击“上传”添加第一份文档。"
+  },
+  "errors": {
+    "fileTooLarge": "文件过大（{{size}} MB），最大支持 5 MB。",
+    "unsupportedType": "不支持的文件类型。可接受格式：.md、.txt、.csv、.json、.pdf。",
+    "uploadFailed": "上传失败",
+    "readFailed": "读取备忘文档失败",
+    "saveFailed": "保存失败",
+    "deleteFailed": "删除失败",
+    "downloadFailed": "下载失败",
+    "regenerateFailed": "重新生成失败",
+    "loadFailed": "备忘文档加载失败",
+    "bulkDeleteFailed": "{{count}} 个备忘文档删除失败：{{first}}"
+  },
+  "notFound": "备忘文档 “{{key}}” 已不存在，已显示全部备忘。",
+  "dismissNotFound": "关闭",
+  "confirm": {
+    "deleteTitle": "删除备忘文档",
+    "deleteBody": "确定永久删除 “{{name}}” 吗？此操作无法撤销。",
+    "bulkDeleteTitle": "删除所选备忘文档",
+    "bulkDeleteBody": "确定永久删除 {{count}} 个备忘文档吗？此操作无法撤销。",
+    "deleteConfirm": "删除",
+    "deleteCancel": "取消"
+  },
+  "source": {
+    "sandbox": "沙箱"
+  },
+  "metadataFailed": "摘要生成失败，点击“重新生成”再试一次。",
+  "pdfFallback": "当前浏览器无法内嵌显示此 PDF。"
+}

@@ -27,9 +27,9 @@ type RecentThreadsConfig = { workspaceId?: 'all' | 'current' | string; limit?: n
 type BucketKey = 'today' | 'week' | 'older';
 
 const BUCKET_KEY: Record<BucketKey, string> = {
-  today: 'dashboard.widgets.recentThreads.bucket_today',
-  week: 'dashboard.widgets.recentThreads.bucket_thisWeek',
-  older: 'dashboard.widgets.recentThreads.bucket_older',
+  today: 'dashboard:widgets.recentThreads.bucket_today',
+  week: 'dashboard:widgets.recentThreads.bucket_thisWeek',
+  older: 'dashboard:widgets.recentThreads.bucket_older',
 };
 
 function bucketFor(date: Date, now: number): BucketKey {
@@ -75,7 +75,7 @@ function ThreadRow({
   const locale = useLocale();
   const title =
     threadName(thread) ||
-    t('dashboard.widgets.recentThreads.untitled');
+    t('dashboard:widgets.recentThreads.untitled');
   const updated = thread.updated_at ? new Date(thread.updated_at) : null;
   const timeStr = updated ? formatThreadTime(updated, bucket, locale) : '';
 
@@ -274,7 +274,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
         return {
           title:
             threadName(th) ||
-            t('dashboard.widgets.recentThreads.untitled'),
+            t('dashboard:widgets.recentThreads.untitled'),
           workspace: isHomeWorkspace(ws) ? label(ws) : ws?.name ?? '',
           when: th.updated_at ?? '',
           thread_id: th.thread_id,
@@ -296,7 +296,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
       return {
         widget_type: 'threads.recent',
         widget_id: instance.id,
-        label: `${t('dashboard.widgets.recentThreads.title')} · ${threads.length}`,
+        label: `${t('dashboard:widgets.recentThreads.title')} · ${threads.length}`,
         description: threads.length ? `${threads.length} thread${threads.length === 1 ? '' : 's'}` : 'empty',
         captured_at: new Date().toISOString(),
         text,
@@ -310,7 +310,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
       const ws = wsId ? workspaceMap.get(wsId) : undefined;
       const title =
         threadName(th) ||
-        t('dashboard.widgets.recentThreads.untitled');
+        t('dashboard:widgets.recentThreads.untitled');
       const lines: string[] = [`**${title}**`];
       if (ws?.name) lines.push(`Workspace: ${ws.name}`);
       if (th.updated_at) lines.push(`Last active: ${th.updated_at}`);
@@ -324,7 +324,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
         widget_type: 'threads.recent/row',
         widget_id: `${instance.id}/${rowId}`,
         label: title,
-        description: ws?.name ?? t('dashboard.widgets.recentThreads.title'),
+        description: ws?.name ?? t('dashboard:widgets.recentThreads.title'),
         captured_at: new Date().toISOString(),
         text,
         data: {
@@ -358,7 +358,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
           }}
           className="dash-link widget-drag-cancel"
         >
-          {t('dashboard.widgets.recentThreads.viewAll')}
+          {t('dashboard:widgets.recentThreads.viewAll')}
           <ArrowUpRight className="h-3 w-3" />
         </button>
       </WidgetCardMeta>
@@ -389,13 +389,13 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
                 className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {t('dashboard.widgets.recentThreads.empty')}
+                {t('dashboard:widgets.recentThreads.empty')}
               </div>
               <div
                 className="text-[0.6875rem]"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                {t('dashboard.widgets.recentThreads.emptyHint')}
+                {t('dashboard:widgets.recentThreads.emptyHint')}
               </div>
             </div>
           </div>
@@ -413,9 +413,9 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
 
 registerWidget<RecentThreadsConfig>({
   type: 'threads.recent',
-  titleKey: 'dashboard.widgets.recentThreads.title',
-  cardTitleKey: 'dashboard.widgets.recentThreads.header',
-  descriptionKey: 'dashboard.widgets.recentThreads.description',
+  titleKey: 'dashboard:widgets.recentThreads.title',
+  cardTitleKey: 'dashboard:widgets.recentThreads.header',
+  descriptionKey: 'dashboard:widgets.recentThreads.description',
   category: 'workspace',
   icon: MessagesSquare,
   component: RecentThreadsWidget,

@@ -137,20 +137,20 @@ function TickerTapeSettings({ config, onChange, onClose }: WidgetSettingsProps<T
   return (
     <div className="space-y-4">
       <SymbolListField
-        label={t('dashboard.widgets.tickerTape.symbols')}
+        label={t('dashboard:widgets.tickerTape.symbols')}
         value={displayedSymbols}
         onChange={(next) => onChange({ symbols: next })}
-        placeholder={t('dashboard.widgets.tickerTape.symbolsPlaceholder')}
-        helper={t('dashboard.widgets.tickerTape.symbolsHelper')}
+        placeholder={t('dashboard:widgets.tickerTape.symbolsPlaceholder')}
+        helper={t('dashboard:widgets.tickerTape.symbolsHelper')}
       />
       <EnumField
-        label={t('dashboard.widgets.tickerTape.displayMode')}
+        label={t('dashboard:widgets.tickerTape.displayMode')}
         value={config.displayMode ?? 'adaptive'}
         onChange={(v) => onChange({ displayMode: v as TickerTapeConfig['displayMode'] })}
         options={[
-          { value: 'adaptive', label: t('dashboard.widgets.tickerTape.displayMode_adaptive') },
-          { value: 'regular', label: t('dashboard.widgets.tickerTape.displayMode_regular') },
-          { value: 'compact', label: t('dashboard.widgets.tickerTape.displayMode_compact') },
+          { value: 'adaptive', label: t('dashboard:widgets.tickerTape.displayMode_adaptive') },
+          { value: 'regular', label: t('dashboard:widgets.tickerTape.displayMode_regular') },
+          { value: 'compact', label: t('dashboard:widgets.tickerTape.displayMode_compact') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -161,8 +161,8 @@ function TickerTapeSettings({ config, onChange, onClose }: WidgetSettingsProps<T
 
 registerWidget<TickerTapeConfig>({
   type: 'tv.ticker-tape',
-  titleKey: 'dashboard.widgets.tickerTape.title',
-  descriptionKey: 'dashboard.widgets.tickerTape.description',
+  titleKey: 'dashboard:widgets.tickerTape.title',
+  descriptionKey: 'dashboard:widgets.tickerTape.description',
   category: 'markets',
   icon: Activity,
   component: TickerTapeWidget,

@@ -17,8 +17,8 @@ export function EmptyTab({ canUpload }: EmptyTabProps): React.ReactElement {
   return (
     <div className="file-panel-empty-tab">
       <FolderOpen className="h-8 w-8" style={{ color: 'var(--color-text-tertiary)' }} />
-      <span className="file-panel-empty-tab-title">{t('filePanel.openFile')}</span>
-      {canUpload && <span className="file-panel-empty-tab-hint">{t('filePanel.dropToUploadHint')}</span>}
+      <span className="file-panel-empty-tab-title">{t('filePanel:openFile')}</span>
+      {canUpload && <span className="file-panel-empty-tab-hint">{t('filePanel:dropToUploadHint')}</span>}
     </div>
   );
 }

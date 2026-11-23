@@ -3,13 +3,14 @@ import { clientOs, type ClientOs } from '@/lib/clientOs';
 import { focusWithoutRing } from '@/lib/inputModality';
 import { PREFIXES } from './prefixes';
 import type { Kind } from './types';
+import { withCopy } from '@/i18n';
 
 // Off the entry chunk: nothing of the palette is needed until it opens. A
 // palette whose code cannot load (offline, or a deploy removed it, which
 // index.html's preload listener reports) closes again rather than taking the
 // app down with it, and the next open asks for the code afresh: a lazy
 // component keeps whatever its one load gave it, so a new one is made.
-const loadPalette = () => import('./CommandPalette');
+const loadPalette = withCopy(() => import('./CommandPalette'), ['marketView', 'settings', 'setup']);
 interface PaletteProps {
   open: boolean;
   onClose: () => void;

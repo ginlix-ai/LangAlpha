@@ -52,13 +52,13 @@ export function DashboardPaletteField() {
   return (
     <PaletteSearchField
       start={{ kind: 'tickers' }}
-      aria-label={t('dashboard.searchLabel')}
+      aria-label={t('dashboard:searchLabel')}
       className={`${FIELD_CLASS} text-left`}
       style={fieldStyle(false)}
     >
       <Search className="dashboard-search-icon" style={{ color: 'var(--color-icon-muted)' }} />
       <span className="dashboard-search-input dashboard-search-button-text">
-        <span className="dashboard-search-placeholder">{t('dashboard.searchPlaceholder')}</span>
+        <span className="dashboard-search-placeholder">{t('dashboard:searchPlaceholder')}</span>
       </span>
       <SlashBadge />
     </PaletteSearchField>
@@ -129,8 +129,8 @@ export function DashboardSymbolField() {
         <input
           ref={searchInputRef}
           type="text"
-          aria-label={t('dashboard.searchLabel')}
-          placeholder={t('dashboard.searchPlaceholder')}
+          aria-label={t('dashboard:searchLabel')}
+          placeholder={t('dashboard:searchPlaceholder')}
           value={searchValue}
           onChange={(e) => { setSearchValue(e.target.value); setShowDropdown(e.target.value.trim() !== ''); }}
           onFocus={() => {
@@ -152,11 +152,11 @@ export function DashboardSymbolField() {
         <div data-slot="menu" className="dashboard-search-dropdown">
           {searchLoading && searchResults.length === 0 ? (
             <div className="dashboard-search-dropdown-item dashboard-search-dropdown-loading">
-              {t('dashboard.searching')}
+              {t('dashboard:searching')}
             </div>
           ) : searchResults.length === 0 ? (
             <div className="dashboard-search-dropdown-item dashboard-search-dropdown-empty">
-              {t('dashboard.noResults')}
+              {t('dashboard:noResults')}
             </div>
           ) : (
             searchResults.map((stock, index) => {

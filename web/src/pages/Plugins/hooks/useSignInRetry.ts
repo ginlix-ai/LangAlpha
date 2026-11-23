@@ -9,7 +9,7 @@ import { spendConnectLanding, useConnectLanding } from './useConnectLanding';
 
 /** Two sentences as one line: a space between them in English, none in Chinese. */
 function joined(t: TFunction, first: string, second: string): string {
-  return t('plugins.signin.joined', { first, second });
+  return t('plugins:signin.joined', { first, second });
 }
 
 /** What a form reopened after a sign-in says about it. */
@@ -38,7 +38,7 @@ export function useSignInRetry(
     const { draft, outcome } = taken;
     if (outcome === 'denied') {
       reopen(draft.retry, {
-        note: t(`plugins.signin.deniedLine.${pendingIntent(draft.retry.kind)}`, { label: draft.label }),
+        note: t(`plugins:signin.deniedLine.${pendingIntent(draft.retry.kind)}`, { label: draft.label }),
       });
     } else if (outcome === 'failed') {
       const [reason, detail] = signInFailureParts(t, taken.reasonKey, taken.detail);
@@ -71,7 +71,7 @@ export function useWizardSignInRetry(open: () => void): {
   const { t } = useTranslation();
   const [initial, setInitial] = useState<WizardReopen>();
   useSignInRetry(['plugin', 'plugin_upload'], true, (retry, said) => {
-    const again = retry.kind === 'plugin_upload' ? t('plugins.signin.chooseFileAgain') : null;
+    const again = retry.kind === 'plugin_upload' ? t('plugins:signin.chooseFileAgain') : null;
     const join = (line: string | undefined) => (line && again ? joined(t, line, again) : (line ?? null));
     setInitial({
       source: retry.kind === 'plugin' ? { url: retry.sourceUrl } : null,

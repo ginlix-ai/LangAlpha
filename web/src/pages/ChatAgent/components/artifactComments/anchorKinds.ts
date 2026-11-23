@@ -44,24 +44,24 @@ function blockName(block: { lines?: string; label?: string; quote?: string }): s
 
 /** A block named by nothing in the file (a line outside any function) is named by its lines: "On line 6", "On lines 6-8". */
 function onLines(t: TFunction, lines: string): string {
-  return lines.includes('-') ? t('pageViewer.comments.onLines', { lines }) : t('pageViewer.comments.onLine', { line: lines });
+  return lines.includes('-') ? t('pageViewer:comments.onLines', { lines }) : t('pageViewer:comments.onLine', { line: lines });
 }
 
 /** An area by its size, the composer's header: "Selected area · 3 elements". */
 export function areaTitle(t: TFunction, anchor: Pick<ArtifactCommentAnchor, 'count' | 'elements'>): string {
-  return t('pageViewer.comments.areaTitle', { count: anchor.count ?? anchor.elements?.length ?? 0 });
+  return t('pageViewer:comments.areaTitle', { count: anchor.count ?? anchor.elements?.length ?? 0 });
 }
 
 /** One box or point by itself, as a draft's heading and a card's spot line name it. */
 function regionPhrase(t: TFunction, a: RegionAnchor): string {
-  if (a.boxes.length > 1) return t('pageViewer.comments.partsTitle', { count: a.boxes.length });
+  if (a.boxes.length > 1) return t('pageViewer:comments.partsTitle', { count: a.boxes.length });
   const [box] = a.boxes as [ArtifactCommentRegionBox];
-  if (box.w === 0) return t('pageViewer.comments.onPoint');
-  return box.page ? t('pageViewer.comments.onBoxOnPage', { page: box.page }) : t('pageViewer.comments.onBox');
+  if (box.w === 0) return t('pageViewer:comments.onPoint');
+  return box.page ? t('pageViewer:comments.onBoxOnPage', { page: box.page }) : t('pageViewer:comments.onBox');
 }
 
-const onLabel = (t: TFunction, label: string) => t('pageViewer.comments.onLabel', { label });
-const onElement = (t: TFunction) => t('pageViewer.comments.onElement');
+const onLabel = (t: TFunction, label: string) => t('pageViewer:comments.onLabel', { label });
+const onElement = (t: TFunction) => t('pageViewer:comments.onElement');
 
 /** A spot named by its label where it has one, else as `unnamed` names it. */
 function byLabel<A extends { label?: string }>(unnamed: (t: TFunction, anchor: A) => string) {
@@ -87,10 +87,10 @@ const KINDS = {
     partEntries: () => null,
     partLabels: () => null,
     heading: (t, a) => ({
-      label: a.label ? onLabel(t, a.label) : a.page ? t('pageViewer.comments.onPage', { page: a.page }) : t('pageViewer.comments.onText'),
+      label: a.label ? onLabel(t, a.label) : a.page ? t('pageViewer:comments.onPage', { page: a.page }) : t('pageViewer:comments.onText'),
       quote: a.quote ? t('chat.artifactComments.message.quote', { quote: a.quote }) : null,
     }),
-    phrase: (t, a) => (a.quote ? t('pageViewer.comments.onQuote', { quote: oneLine(a.quote, 36) }) : t('pageViewer.comments.onText')),
+    phrase: (t, a) => (a.quote ? t('pageViewer:comments.onQuote', { quote: oneLine(a.quote, 36) }) : t('pageViewer:comments.onText')),
     outline: 'words',
   },
   block: {
@@ -105,7 +105,7 @@ const KINDS = {
     partEntries: (a) => (a.elements.length >= 2 && a.count === a.elements.length ? a.elements : null),
     partLabels: (a) => a.elements.map((e) => (e.lines ? blockName(e) : (e.label ?? e.quote ?? e.path ?? ''))),
     heading: (t, a) => ({
-      label: listsEvery(a) ? t('pageViewer.comments.partsTitle', { count: a.elements.length }) : areaTitle(t, a),
+      label: listsEvery(a) ? t('pageViewer:comments.partsTitle', { count: a.elements.length }) : areaTitle(t, a),
       quote: a.label ?? null,
     }),
     outline: 'list',
@@ -127,8 +127,8 @@ const KINDS = {
     partEntries: (a) => a.boxes,
     partLabels: (a, t) => a.boxes.map((b, i) => {
       const n = i + 1;
-      if (b.w === 0) return t('pageViewer.comments.partPoint', { n });
-      return b.page ? t('pageViewer.comments.partBoxOnPage', { n, page: b.page }) : t('pageViewer.comments.partBox', { n });
+      if (b.w === 0) return t('pageViewer:comments.partPoint', { n });
+      return b.page ? t('pageViewer:comments.partBoxOnPage', { n, page: b.page }) : t('pageViewer:comments.partBox', { n });
     }),
     heading: (t, a) => ({ label: regionPhrase(t, a), quote: null }),
     phrase: regionPhrase,

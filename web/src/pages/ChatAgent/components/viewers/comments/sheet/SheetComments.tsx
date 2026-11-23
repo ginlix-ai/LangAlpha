@@ -53,7 +53,7 @@ export function SheetComments({ grid, view, tabOf = noTab, reveal = noReveal, ta
         content={grid}
         strategy={strategy}
         target={target}
-        modeHint={t('pageViewer.comments.modeHintCells')}
+        modeHint={t('pageViewer:comments.modeHintCells')}
       />
     </>
   );

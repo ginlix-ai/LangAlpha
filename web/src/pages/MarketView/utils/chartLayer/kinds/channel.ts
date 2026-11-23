@@ -41,7 +41,7 @@ function geom(p: Painter, d: ChannelScene) {
 }
 
 export const channel: DrawingKind<ChannelDrawing, ChannelScene> = {
-  nameKey: 'marketView.layerExplain.types.channel',
+  nameKey: 'marketView:layerExplain.types.channel',
   times: (d) => [d.p1.time, d.p2.time, d.p3.time],
   anchors: (d) => [d.p1, d.p2, d.p3],
   resolve(d, { base, P }) {

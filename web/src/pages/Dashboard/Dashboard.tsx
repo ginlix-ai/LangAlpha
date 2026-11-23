@@ -224,7 +224,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
               color: 'var(--color-btn-primary-text)',
             }}
           >
-            <Plus size={12} /> {t('dashboard.widgets.shell.addWidget')}
+            <Plus size={12} /> {t('dashboard:widgets.shell.addWidget')}
           </button>
           <button
             type="button"
@@ -232,7 +232,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            <Layers size={12} /> {t('dashboard.widgets.shell.presets')}
+            <Layers size={12} /> {t('dashboard:widgets.shell.presets')}
           </button>
           <button
             type="button"
@@ -240,7 +240,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            <RotateCcw size={12} /> {t('dashboard.widgets.shell.reset')}
+            <RotateCcw size={12} /> {t('dashboard:widgets.shell.reset')}
           </button>
           <div className="w-px h-5 mx-0.5" style={{ backgroundColor: 'var(--color-border-muted)' }} />
           <button
@@ -249,7 +249,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            <X size={12} /> {t('dashboard.widgets.shell.done')}
+            <X size={12} /> {t('dashboard:widgets.shell.done')}
           </button>
         </div>
       )}
@@ -258,9 +258,9 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
       <ConfirmDialog
         surface="page"
         open={resetConfirmOpen}
-        title={t('dashboard.widgets.shell.resetTitle')}
-        message={t('dashboard.widgets.shell.resetMessage')}
-        confirmLabel={t('dashboard.widgets.shell.resetConfirm')}
+        title={t('dashboard:widgets.shell.resetTitle')}
+        message={t('dashboard:widgets.shell.resetMessage')}
+        confirmLabel={t('dashboard:widgets.shell.resetConfirm')}
         onConfirm={() => {
           setSettingsFor(null);
           resetToDefault();
@@ -300,7 +300,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
                 {settingsDef?.titleKey ? t(settingsDef.titleKey) : ''}
               </DialogTitle>
             </DialogHeader>
-            <FormCard title={t('dashboard.widgets.frame.settingsTitle')}>
+            <FormCard title={t('dashboard:widgets.frame.settingsTitle')}>
               <SettingsComp
                 config={settingsInstance.config}
                 onChange={(patch: Partial<unknown>) => {
@@ -335,7 +335,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
         open={modals.deleteConfirm.open}
         title={modals.deleteConfirm.title}
         message={modals.deleteConfirm.message}
-        confirmLabel={t('dashboard.widgets.shell.deleteConfirm')}
+        confirmLabel={t('dashboard:widgets.shell.deleteConfirm')}
         onConfirm={modals.runDeleteConfirm}
         onOpenChange={(open) => !open && modals.cancelDeleteConfirm()}
       />
@@ -345,7 +345,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
         <DialogContent className="dash-form sm:max-w-sm">
           <DialogHeader className="text-left">
             <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-              {t('dashboard.widgets.shell.editHolding')}
+              {t('dashboard:widgets.shell.editHolding')}
               {/* The symbol is the card's title; the dialog's name says it too. */}
               <span className="sr-only"> {portfolio.editRow?.symbol ?? ''}</span>
             </DialogTitle>
@@ -361,12 +361,12 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
               }}
             >
               <label className="block">
-                <span className="term-label dash-form-label">{t('dashboard.widgets.shell.quantityLabel')}</span>
+                <span className="term-label dash-form-label">{t('dashboard:widgets.shell.quantityLabel')}</span>
                 <Input
                   type="number"
                   min="0"
                   step="any"
-                  placeholder={t('dashboard.widgets.shell.quantityPlaceholder')}
+                  placeholder={t('dashboard:widgets.shell.quantityPlaceholder')}
                   value={portfolio.editForm.quantity ?? ''}
                   onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, quantity: e.target.value })}
                   className="dash-form-input dash-form-figure border"
@@ -375,8 +375,8 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
               <label className="block">
                 <span className="term-label dash-form-label">
                   {portfolio.editRow?.costCurrency
-                    ? t('dashboard.widgets.shell.averageCostIn', { currency: portfolio.editRow.costCurrency })
-                    : t('dashboard.widgets.shell.averageCostLabel')}
+                    ? t('dashboard:widgets.shell.averageCostIn', { currency: portfolio.editRow.costCurrency })
+                    : t('dashboard:widgets.shell.averageCostLabel')}
                 </span>
                 <Input
                   type="number"
@@ -384,8 +384,8 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
                   step="any"
                   placeholder={
                     isMinorUnitListingInMajor(portfolio.editRow?.symbol, portfolio.editRow?.costCurrency)
-                      ? t('dashboard.widgets.shell.averageCostPlaceholderMinorUnit')
-                      : t('dashboard.widgets.shell.averageCostPlaceholder')
+                      ? t('dashboard:widgets.shell.averageCostPlaceholderMinorUnit')
+                      : t('dashboard:widgets.shell.averageCostPlaceholder')
                   }
                   value={portfolio.editForm.averageCost ?? ''}
                   onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, averageCost: e.target.value })}
@@ -393,9 +393,9 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
                 />
               </label>
               <label className="block">
-                <span className="term-label dash-form-label">{t('dashboard.widgets.shell.notesLabel')}</span>
+                <span className="term-label dash-form-label">{t('dashboard:widgets.shell.notesLabel')}</span>
                 <Input
-                  placeholder={t('dashboard.widgets.shell.notesPlaceholder')}
+                  placeholder={t('dashboard:widgets.shell.notesPlaceholder')}
                   value={portfolio.editForm.notes ?? ''}
                   onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, notes: e.target.value })}
                   className="dash-form-input border"
@@ -410,7 +410,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
               className="px-3 py-1.5 rounded text-sm border hover:bg-foreground/10"
               style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
             >
-              {t('dashboard.widgets.shell.cancel')}
+              {t('dashboard:widgets.shell.cancel')}
             </button>
             <button
               type="button"
@@ -418,7 +418,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
               className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90"
               style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
-              {t('dashboard.widgets.shell.save')}
+              {t('dashboard:widgets.shell.save')}
             </button>
           </div>
         </DialogContent>

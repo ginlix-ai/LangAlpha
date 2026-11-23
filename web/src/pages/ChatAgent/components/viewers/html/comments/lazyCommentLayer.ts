@@ -1,4 +1,5 @@
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
+import { withCopy } from '@/i18n';
 
 /**
  * The comment layer over an owner's HTML file, loaded apart from the viewer.
@@ -7,4 +8,4 @@ import { lazyWithMotion } from '@/lib/lazyWithMotion';
  * seam, so the layer's motion reaches framer with the reader's
  * reduced-motion setting.
  */
-export const LazyCommentLayer = lazyWithMotion(() => import('./CommentLayer'));
+export const LazyCommentLayer = lazyWithMotion(withCopy(() => import('./CommentLayer'), ['filePanel', 'pageViewer']));

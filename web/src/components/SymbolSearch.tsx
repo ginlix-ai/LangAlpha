@@ -67,8 +67,8 @@ export function SymbolSearch({ onPick }: SymbolSearchProps): React.ReactElement 
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={t('marketView.symbolSearch.placeholder')}
-          aria-label={t('marketView.symbolSearch.placeholder')}
+          placeholder={t('marketView:symbolSearch.placeholder')}
+          aria-label={t('marketView:symbolSearch.placeholder')}
           role="combobox"
           aria-expanded={listOpen}
           aria-controls={listId}
@@ -100,7 +100,7 @@ export function SymbolSearch({ onPick }: SymbolSearchProps): React.ReactElement 
           ))}
           {hits.length === 0 && !loading && (
             <li role="presentation" className="symbol-search-none">
-              {typedTicker ? t('marketView.symbolSearch.openTyped', { symbol: typedTicker }) : t('marketView.symbolSearch.noMatches')}
+              {typedTicker ? t('marketView:symbolSearch.openTyped', { symbol: typedTicker }) : t('marketView:symbolSearch.noMatches')}
             </li>
           )}
         </ul>
