@@ -221,6 +221,30 @@ FEATURES: dict[str, FeatureSpec] = {
             ),
         ),
     ),
+    "drive": FeatureSpec(
+        key="drive",
+        label="Drive",
+        description=(
+            "A folder of your own files that you and your agent both read and "
+            "edit, from any workspace. Earlier versions of text and other small "
+            "files are kept, and deleted files wait in the trash for up to 14 days."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.TOOLS,
+        preview=True,
+        guide=FeatureGuide(
+            on_if=(
+                "you keep notes, reference files or templates you want the agent "
+                "to use across all your workspaces."
+            ),
+            off_if="your files belong to one workspace each.",
+            good_to_know=(
+                "The agent may change these files at any time. Each change shows "
+                "who made it, and an earlier version can be restored while it is kept."
+            ),
+        ),
+    ),
     "wakeups": FeatureSpec(
         key="wakeups",
         label="Wakeups",

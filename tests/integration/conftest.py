@@ -343,6 +343,10 @@ async def _reset_ginlix_singleton():
 
 # Tables in dependency (FK) order -- children first so TRUNCATE CASCADE is safe
 _ALL_TABLES = [
+    "drive_versions",
+    "drive_contents",
+    "drive_entries",
+    "drive_spaces",
     "platform_secret_rollouts",
     "automation_executions",
     "automations",

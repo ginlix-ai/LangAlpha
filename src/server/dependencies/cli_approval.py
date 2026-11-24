@@ -174,11 +174,18 @@ def _ask(
 Builder = Callable[[CliCall | None], Awaitable[Ask | None]]
 
 
+def held_for_approval(principal: Principal) -> bool:
+    """Whether the caller is a computer's token, which the user approves for
+    (a signed-in person and a person's own CLI login are not): the one test,
+    for a route that refuses such a caller instead of asking."""
+    return principal.computer_id is not None
+
+
 async def gate(request: Request, principal: Principal, build: Builder) -> None:
     """Return once the user approved what ``build`` asks, taking the
     approval; raise otherwise. Only a computer's token is held, and ``build``
     answering None asks nothing."""
-    if principal.computer_id is None:
+    if not held_for_approval(principal):
         return
     call = computer_call(request.scope)
     ask = await _built(build, call)

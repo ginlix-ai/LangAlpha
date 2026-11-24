@@ -1609,3 +1609,9 @@ async def test_a_run_now_names_the_computer_it_was_checked_to_run_on(
     )
 
     assert checked == computer
+
+
+def test_only_a_computers_token_is_held_for_approval():
+    assert cli_approval.held_for_approval(TOKEN)
+    assert not cli_approval.held_for_approval(SESSION)
+    assert not cli_approval.held_for_approval(PAT)

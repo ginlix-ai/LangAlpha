@@ -20,11 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any
 
 from ptc_agent.agent.backends import ReadOnlyStoreError
-from ptc_agent.agent.backends.langgraph_store import compile_grep, grep_texts
+from ptc_agent.agent.backends.text_grep import PageGrep, compile_grep, grep_texts
 from ptc_agent.agent.backends.results import GrepAnswer
 from ptc_agent.core.paths import THREAD_DIR_NAME, SandboxLayout, WorkspaceLayout
 from src.server.database.thread_transcripts import ON_COMPUTER, Scope, own_thread
@@ -176,7 +176,9 @@ class TranscriptFiles(_ReadOnlyFiles):
         return None if found is None else await _read_window(found[0], offset, limit)
 
     async def aglob_paths(self, pattern: str, path: str = ".") -> list[str]:
-        return [self._absolute(f) for f in await self._listed(self.root_prefix)]
+        # The default start is the whole route, as every other route reads it.
+        start = self.root_prefix if path == "." else path
+        return [self._absolute(f) for f in await self._listed(start)]
 
     async def _contents(self, files: list[Any]) -> dict[Any, bytes]:
         """The bytes of ``files``: those their rows hold in one round trip,
@@ -216,46 +218,44 @@ class TranscriptFiles(_ReadOnlyFiles):
         searches: Callable[[str], bool] | None = None,
         **_: Any,
     ) -> list[Any]:
-        compiled = compile_grep(pattern, case_insensitive)
         cap = head_limit
         if output_mode == "content":
             cap = _MAX_LINES if cap is None else min(cap, _MAX_LINES)
         if cap is not None and cap <= 0:
             return []
+        search = PageGrep(
+            pattern,
+            case_insensitive=case_insensitive,
+            output_mode=output_mode,
+            show_line_numbers=show_line_numbers,
+            limit=cap,
+        )
         listed = await self._listed(path, newest_first=True)
         if searches is not None:
             # Off the loop: a long filter costs about its length per file.
             listed = await asyncio.to_thread(self._searched, listed, searches)
         taken = _within(listed, _SEARCH_BYTES)
-        batches: list[list[Any]] = [[]]
-        size = 0
-        for f in taken:
-            if batches[-1] and size + f.byte_len > _BATCH_BYTES:
-                batches.append([])
-                size = 0
-            batches[-1].append(f)
-            size += f.byte_len
-        found: list[Any] = []
-        for batch in batches:
-            if not batch:
-                continue
-            held = await self._contents(batch)
-            # Decoded in the worker thread, as the search reads them.
-            texts = ((self._absolute(f), held[f].decode(errors="replace")) for f in batch if f in held)
-            found.extend(
-                await asyncio.to_thread(
-                    grep_texts,
-                    texts,
-                    compiled,
-                    output_mode,
-                    show_line_numbers=show_line_numbers,
-                    cut_long_lines=True,
-                    max_lines=None if cap is None else cap - len(found),
-                )
-            )
-            if cap is not None and len(found) >= cap:
-                found = found[:cap]
-                break
+
+        def batches() -> Iterator[list[Any]]:
+            batch: list[Any] = []
+            size = 0
+            for f in taken:
+                if batch and size + f.byte_len > _BATCH_BYTES:
+                    yield batch
+                    batch, size = [], 0
+                batch.append(f)
+                size += f.byte_len
+            if batch:
+                yield batch
+
+        async def pages() -> AsyncIterator[list[tuple[str, bytes]]]:
+            # Fetched a batch at a time, a few blobs at once.
+            for batch in batches():
+                held = await self._contents(batch)
+                yield [(self._absolute(f), held[f]) for f in batch if f in held]
+
+        await search.search(pages())
+        found = search.found
         where = path.rstrip("/")
         if cap is not None and len(found) >= cap:
             # A page the Grep's own limit filled needs no note.

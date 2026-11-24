@@ -40,7 +40,7 @@ MESSAGE = (
 
 
 def _gated() -> set:
-    from src.server.app import livefs
+    from src.server.app import drive_mount, livefs
 
     return {
         api.get_current_user_id,
@@ -50,6 +50,7 @@ def _gated() -> set:
         api.get_stamp_auth,
         get_principal,
         livefs._caller,
+        drive_mount._caller,
     }
 
 
@@ -383,7 +384,7 @@ async def test_the_file_mount_closes_with_the_account():
 
     stack, _ = _deployment(SUSPENDED)
     with stack, patch(
-        "src.server.app.livefs.authenticate",
+        "src.server.services.livefs.tokens.authenticate",
         AsyncMock(return_value=LivefsIdentity("c-1", "u", "/root")),
     ):
         transport = httpx.ASGITransport(app=app)

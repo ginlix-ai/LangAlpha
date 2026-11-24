@@ -24,6 +24,7 @@ limited.
 from __future__ import annotations
 
 import logging
+import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -52,6 +53,12 @@ KIND = core.Kind(
     ttl=timedelta(hours=1),
     client=lambda: cache.client(),
 )
+
+
+#: The Drive mount's requests: the livefs token, counted against a rate of
+#: its own per computer so one mount's traffic never spends the other's. Its
+#: daemon paces itself as a whole at the same pace as livefs's.
+DRIVE = dataclasses.replace(KIND, rate_key="drive-rate")
 
 MintedToken = core.Minted
 
@@ -121,7 +128,9 @@ def _identity(computer_id: str, who: list[str]) -> LivefsIdentity:
     return LivefsIdentity(computer_id, user_id, root_dir)
 
 
-async def authenticate(authorization: str | None) -> LivefsIdentity:
+async def authenticate(
+    authorization: str | None, *, kind: core.Kind | None = None
+) -> LivefsIdentity:
     """Who a request acts for, counted against its computer's rate.
 
     Raises ``LivefsAuthError`` for a token that is not live, and
@@ -131,7 +140,9 @@ async def authenticate(authorization: str | None) -> LivefsIdentity:
     computer_id, digest = _presented(authorization)
     try:
         admitted = await core.admit(
-            KIND,
+            # Read at the call, not bound at definition: KIND is the file
+            # mount's, and whoever replaces it means every later request.
+            kind or KIND,
             computer_id,
             digest,
             lambda: db.load_token(computer_id),

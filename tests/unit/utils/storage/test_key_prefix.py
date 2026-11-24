@@ -13,14 +13,14 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from src.utils.storage import key_prefix, oss_uploader, s3_compatible
+from src.utils.storage import key_prefix, oss_uploader, s3_client, s3_compatible
 
 KEY = "blobs/u1/" + "a" * 64
 
 
 @pytest.fixture
 def s3(monkeypatch):
-    cfg = s3_compatible.StorageConfig
+    cfg = s3_client.StorageConfig
     monkeypatch.setattr(cfg, "ACCESS_KEY_ID", "test")
     monkeypatch.setattr(cfg, "SECRET_ACCESS_KEY", "test")
     monkeypatch.setattr(cfg, "BUCKET_NAME", "bucket")
@@ -28,14 +28,14 @@ def s3(monkeypatch):
     monkeypatch.setattr(cfg, "ENDPOINT_URL", "https://store.example.com")
     monkeypatch.setattr(cfg, "ADDRESSING_STYLE", "path")
     monkeypatch.setattr(cfg, "PUBLIC_URL_BASE", "https://assets.example.com")
-    s3_compatible._reset_client_for_test()
+    s3_client._reset_client_for_test()
     yield
-    s3_compatible._reset_client_for_test()
+    s3_client._reset_client_for_test()
 
 
 def _set_prefix(monkeypatch, value: str) -> None:
     monkeypatch.setattr(key_prefix, "KEY_PREFIX", value)
-    monkeypatch.setattr(s3_compatible, "KEY_PREFIX", value)
+    monkeypatch.setattr(s3_client, "KEY_PREFIX", value)
 
 
 @pytest.mark.parametrize(
@@ -72,7 +72,7 @@ def _sent_path(client, call):
 
 def test_every_call_and_presigned_link_lands_under_the_prefix(monkeypatch, s3):
     _set_prefix(monkeypatch, "staging/")
-    client = s3_compatible._get_client()
+    client = s3_client._get_client()
 
     for call in (
         lambda c: c.head_object(Bucket="bucket", Key=KEY),
@@ -89,7 +89,7 @@ def test_every_call_and_presigned_link_lands_under_the_prefix(monkeypatch, s3):
 
 def test_unset_prefix_leaves_keys_untouched(monkeypatch, s3):
     _set_prefix(monkeypatch, "")
-    client = s3_compatible._get_client()
+    client = s3_client._get_client()
 
     assert _sent_path(client, lambda c: c.head_object(Bucket="bucket", Key=KEY)) == f"/{KEY}"
     url = client.generate_presigned_url("get_object", Params={"Bucket": "bucket", "Key": KEY})

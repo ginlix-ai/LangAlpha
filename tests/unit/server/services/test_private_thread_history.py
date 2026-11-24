@@ -23,7 +23,8 @@ from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import aexport_transcript, shell_reads_transcripts
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.core.sandbox.livefs_mount import TranscriptReach
-from ptc_agent.core.paths import SandboxLayout, resolve_agent_path, virtual_agent_path
+from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.path_fold import resolve_agent_path, virtual_agent_path
 from src.server.database import thread_transcripts as db
 from src.server.database.conversation import thread_reach
 from src.server.database.shared_workspaces import HOLDER_PREFIX

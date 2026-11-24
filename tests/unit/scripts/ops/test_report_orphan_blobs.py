@@ -17,6 +17,7 @@ _EXISTS_BLOB = "EXISTS (SELECT 1 FROM workspace_files f JOIN workspaces w ON w.w
 _EXISTS_PACK = "EXISTS (SELECT 1 FROM workspace_files f JOIN workspaces w ON w.workspace_id = f.workspace_id WHERE f.pack_sha256 = b.sha256 AND w.user_id = b.user_id)"
 _EXISTS_TRANSCRIPT = "EXISTS (SELECT 1 FROM thread_transcript_files t WHERE t.sha256 = b.sha256 AND t.user_id = b.user_id)"
 _EXISTS_ARTIFACT = "EXISTS (SELECT 1 FROM artifact_version_files a WHERE a.sha256 = b.sha256 AND a.user_id = b.user_id)"
+_EXISTS_DRIVE = "EXISTS (SELECT 1 FROM drive_contents d WHERE d.blob_user_id = b.user_id AND d.sha256 = b.sha256)"
 
 
 def _evaluate(
@@ -26,6 +27,7 @@ def _evaluate(
     pack_ref: bool,
     transcript_ref: bool = False,
     artifact_ref: bool = False,
+    drive_ref: bool = False,
 ) -> bool:
     """Read the predicate as a boolean expression over its EXISTS clauses."""
     expr = (
@@ -33,6 +35,7 @@ def _evaluate(
         .replace(_EXISTS_PACK, str(pack_ref))
         .replace(_EXISTS_TRANSCRIPT, str(transcript_ref))
         .replace(_EXISTS_ARTIFACT, str(artifact_ref))
+        .replace(_EXISTS_DRIVE, str(drive_ref))
     )
     assert "EXISTS" not in expr, f"unsubstituted subquery in {expr!r}"
     for sql_op, py_op in (("NOT", "not"), (" OR ", " or "), (" AND ", " and ")):
@@ -41,8 +44,9 @@ def _evaluate(
 
 
 def test_orphan_predicate_is_the_negation_of_referenced():
-    for refs in itertools.product([True, False], repeat=4):
-        flags = dict(zip(("blob_ref", "pack_ref", "transcript_ref", "artifact_ref"), refs))
+    names = ("blob_ref", "pack_ref", "transcript_ref", "artifact_ref", "drive_ref")
+    for refs in itertools.product([True, False], repeat=len(names)):
+        flags = dict(zip(names, refs))
         referenced = _evaluate(REFERENCED_SQL, **flags)
         orphan = _evaluate(_ORPHAN_PREDICATE, **flags)
         assert orphan is not referenced, refs
@@ -77,3 +81,9 @@ def test_referenced_predicate_covers_published_artifact_versions():
     assert _evaluate(
         REFERENCED_SQL, blob_ref=False, pack_ref=False, artifact_ref=True
     )
+
+
+def test_referenced_predicate_covers_drive_files():
+    """A Drive file's bytes have no workspace file behind them; without its
+    clause the sweep condemns every Drive binary a week after it was saved."""
+    assert _evaluate(REFERENCED_SQL, blob_ref=False, pack_ref=False, drive_ref=True)

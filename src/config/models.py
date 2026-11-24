@@ -595,6 +595,105 @@ class SharedWorkspacesConfig(BaseModel):
     )
 
 
+class DriveHistoryConfig(BaseModel):
+    """Which old versions of a file the Drive keeps. Text held in the database
+    keeps every version; other bytes are kept for a while, and a copy too
+    large to keep is not a version once a save replaces it."""
+
+    max_bytes: int | None = Field(
+        default=100 * 1024 * 1024,
+        ge=1,
+        description=(
+            "A replaced copy this size or larger is not kept as a version; "
+            "null keeps every size"
+        ),
+    )
+    keep_days: int | None = Field(
+        default=30,
+        ge=1,
+        description="Days an old version of a file not held as text is kept; null for no age limit",
+    )
+    keep_max: int | None = Field(
+        default=10,
+        ge=0,
+        description="Old versions per file kept, besides text; null for no count limit",
+    )
+    replaced_grace_seconds: int = Field(
+        default=3600,
+        ge=0,
+        description=(
+            "Seconds the bytes of a copy that is not kept stay readable by "
+            "their digest, for a reader already holding them, before they are freed"
+        ),
+    )
+
+
+class DriveConfig(BaseModel):
+    """Limits on the Drive (the on/off flag lives in the features registry)."""
+
+    history: DriveHistoryConfig = Field(default_factory=DriveHistoryConfig)
+
+    max_file_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Largest file the Drive keeps; unset, a file may be as large as the "
+            "space's allowance when object storage takes uploads in parts"
+        ),
+    )
+    max_request_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Largest file one request carries whole in a worker's memory: a "
+            "plain save, the file mount's save and the agent's own save"
+        ),
+    )
+    max_file_bytes_in_database: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Largest binary file when no object storage is configured, since "
+            "the database then holds its bytes"
+        ),
+    )
+    max_space_bytes: int = Field(
+        default=5 * 1024 * 1024 * 1024,
+        ge=0,
+        description=(
+            "Bytes one space's live files may keep with object storage, their "
+            "old versions included; the trash is not counted. A personal "
+            "space whose owner the deployment's account service gives an "
+            "allowance takes that instead"
+        ),
+    )
+    max_space_bytes_in_database: int = Field(
+        default=512 * 1024 * 1024,
+        ge=0,
+        description=(
+            "Bytes one space's live files may keep when no object storage is "
+            "configured, whatever allowance the account service gives, since "
+            "the database then holds them"
+        ),
+    )
+    max_entries: int = Field(
+        default=100_000,
+        ge=1,
+        description="Files and folders one space may hold, the trash included",
+    )
+    trash_days: int = Field(
+        default=14, ge=1, description="Days a trashed entry is kept before it is purged"
+    )
+    trash_max_ratio: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Bytes the trash alone may keep, as a multiple of the space's "
+            "allowance; past it the oldest trashed items are purged early"
+        ),
+    )
+
+
 class PromptConfig(BaseModel):
     """Deployment-wide prompt settings."""
 
@@ -682,6 +781,7 @@ class InfrastructureConfig(BaseModel):
     shared_workspaces: SharedWorkspacesConfig = Field(
         default_factory=SharedWorkspacesConfig
     )
+    drive: DriveConfig = Field(default_factory=DriveConfig)
 
     # SSE Event Logging
     sse_event_log_enabled: bool = Field(default=True, description="Enable SSE event logging")

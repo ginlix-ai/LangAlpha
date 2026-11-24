@@ -124,6 +124,8 @@ async def call_context(computer_id: str, call_id: str | None) -> CallContext | N
         workspace_id=filed.get("workspace_id"),
         thread_id=filed.get("thread_id"),
         timezone=filed.get("timezone"),
+        run_id=filed.get("run_id"),
+        agent=filed.get("agent"),
     )
 
 
@@ -151,8 +153,8 @@ async def record(
     call_id: str | None,
     outcome: dict[str, Any],
     context: CallContext | None = None,
-) -> None:
-    """File one outcome for its call. ``context`` is the filing the save ran
+) -> bool:
+    """File one outcome for its call; whether it was filed. ``context`` is the filing the save ran
     for, as its caller read it: a second read could find it expired and hand
     the report to whichever conversation runs next. None reads it here.
 
@@ -161,7 +163,7 @@ async def record(
     request."""
     client = cache.client()
     if client is None:
-        return
+        return False
     if context is None:
         context = await call_context(computer_id, call_id)
     if context is None:
@@ -174,14 +176,16 @@ async def record(
                 _RECORD, 3, out_key, done_key, late_key,
                 payload, _CALL_TTL_S, _LATE_TTL_S, _LATE_CAP, _CALL_CAP,
             )
-            return
+            return True
         async with client.pipeline(transaction=True) as pipe:
             pipe.rpush(late_key, payload)
             pipe.ltrim(late_key, -_LATE_CAP, -1)
             pipe.expire(late_key, _LATE_TTL_S)
             await pipe.execute()
+        return True
     except Exception:
         logger.warning("livefs outcome not recorded", exc_info=True)
+        return False
 
 
 async def throttled(computer_id: str, call_id: str) -> None:

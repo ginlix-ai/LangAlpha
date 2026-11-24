@@ -1,4 +1,4 @@
-"""Tests for src/utils/storage/s3_compatible.py timeout config."""
+"""Tests for the S3 client's timeout config (src/utils/storage/s3_client.py)."""
 
 from __future__ import annotations
 
@@ -10,9 +10,18 @@ import pytest
 
 def _reload_module():
     """Reimport the module so env-var-derived class attributes refresh."""
-    import src.utils.storage.s3_compatible as mod
+    import src.utils.storage.s3_client as mod
     importlib.reload(mod)
     return mod
+
+
+def _reload_ops():
+    """Reimport the operations after the client so they bind its fresh config."""
+    import src.utils.storage.s3_compatible as ops
+
+    _reload_module()
+    importlib.reload(ops)
+    return ops
 
 
 @pytest.fixture(autouse=True)
@@ -132,15 +141,17 @@ def _patch_put_object_to_raise(mod, exc):
 
     fake_client = MagicMock()
     fake_client.put_object.side_effect = exc
-    mod._reset_client_for_test()
-    return patch.object(mod.boto3, "client", return_value=fake_client)
+    import src.utils.storage.s3_client as clients
+
+    clients._reset_client_for_test()
+    return patch.object(clients.boto3, "client", return_value=fake_client)
 
 
 def test_upload_bytes_returns_false_on_connect_timeout():
     """Boto ConnectTimeoutError is caught inside upload_bytes (returns False)."""
     from botocore.exceptions import ConnectTimeoutError
 
-    mod = _reload_module()
+    mod = _reload_ops()
     err = ConnectTimeoutError(endpoint_url="https://r2.example/")
     with _patch_put_object_to_raise(mod, err):
         # Force a configured state so upload_bytes doesn't short-circuit.
@@ -152,7 +163,7 @@ def test_upload_bytes_returns_false_on_read_timeout():
     """Boto ReadTimeoutError is caught inside upload_bytes (returns False)."""
     from botocore.exceptions import ReadTimeoutError
 
-    mod = _reload_module()
+    mod = _reload_ops()
     err = ReadTimeoutError(endpoint_url="https://r2.example/")
     with _patch_put_object_to_raise(mod, err):
         with patch.object(mod.StorageConfig, "BUCKET_NAME", "test-bucket"):

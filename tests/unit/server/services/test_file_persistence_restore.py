@@ -158,6 +158,18 @@ def _synced(*names: str, collisions: tuple[str, ...] = ()) -> dict:
 
 @pytest.mark.asyncio
 @patch("src.server.services.persistence.restore.get_files_for_workspace", new_callable=AsyncMock)
+async def test_a_restore_never_asks_for_rows_under_the_drive(mock_get, no_runtime):
+    """CR153: every server-held folder is left out, the Drive's as much as the file mount's."""
+    mock_get.return_value = []
+    await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
+    await restore._folder_keeps_backed_up_files("ws-1", _mock_sandbox(), LAYOUT, None)
+    asked = [c.kwargs["outside"] for c in mock_get.await_args_list if "outside" in c.kwargs]
+    assert len(asked) >= 2
+    assert all(SandboxLayout.DRIVE_DIR in outside for outside in asked)
+
+
+@pytest.mark.asyncio
+@patch("src.server.services.persistence.restore.get_files_for_workspace", new_callable=AsyncMock)
 async def test_relayed_files_are_staged_then_placed_by_the_runtime(mock_get, no_runtime):
     """Nothing is uploaded to its final path. Each file goes to a scan-excluded
     staging name, and one runtime op verifies it against the manifest, moves it

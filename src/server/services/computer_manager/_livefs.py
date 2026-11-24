@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from ptc_agent.core.sandbox.livefs_runtime.protocol import MountError
 
 if TYPE_CHECKING:
+    from src.server.services.livefs.drive_mount import DriveMount
     from src.server.services.livefs.mount import Handle, LinkState, MountState
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,7 @@ _T = TypeVar("_T")
 
 
 class LivefsMixin:
-    @staticmethod
-    def _file_calls(computer_id: Any, user_id: str | None, sandbox: Any) -> None:
+    def _file_calls(self, computer_id: Any, user_id: str | None, sandbox: Any) -> None:
         """Hand ``sandbox`` the filing of who each command runs for, beside
         the mount or the history it is handed: a save through the mount
         reads it, and so does a call the ``la`` CLI makes, which names its
@@ -45,6 +45,30 @@ class LivefsMixin:
             if user_id and platform_accounts_configured()
             else None
         )
+        try:
+            self._hand_drive(computer_id, user_id, sandbox)
+        except Exception:
+            # The Drive's view costs the Drive, never the acquire.
+            logger.warning("drive handle not set for computer %s", computer_id, exc_info=True)
+
+    def _hand_drive(self, computer_id: Any, user_id: str | None, sandbox: Any) -> DriveMount:
+        """``sandbox``'s view of the Drive mount, which the tools ask before
+        a command or file call names the Drive: kept while the computer and
+        owner are the same, made anew for another."""
+        from src.server.services.livefs.drive_mount import DriveMount
+
+        handle = getattr(sandbox, "drive", None)
+        if isinstance(handle, DriveMount) and handle.owned_by(computer_id, user_id):
+            return handle
+        handle = DriveMount(
+            sandbox,
+            str(computer_id),
+            user_id,
+            self._livefs_provider(sandbox),
+            self._machine(str(computer_id)).drive,
+        )
+        sandbox.drive = handle
+        return handle
 
     def _livefs_provider(self, sandbox: Any) -> str:
         provider = getattr(getattr(sandbox, "config", None), "sandbox", None)
@@ -85,6 +109,10 @@ class LivefsMixin:
         if state.mounted:
             # A turn's path keeps a token that only runs low; this replaces it.
             self._renew_livefs_soon(computer_id, user_id, sandbox)
+            if state.started:
+                # A daemon started afresh most often means the sandbox
+                # restarted, taking the Drive's daemon with it.
+                self._drive_soon(computer_id, user_id, sandbox, force=True)
         return state
 
     def _livefs_link(
@@ -111,9 +139,26 @@ class LivefsMixin:
             # Links into a mount that never runs would only dangle, and laying
             # them takes root the machine need not grant.
             return
-        self._machine(str(computer_id)).livefs.link_soon(
-            sandbox, workspace_id, self._livefs_link(computer_id, user_id, sandbox)
-        )
+        tracker = self._machine(str(computer_id)).livefs
+        tracker.link_soon(sandbox, workspace_id, self._livefs_link(computer_id, user_id, sandbox))
+        self._keep_drive(computer_id, user_id, sandbox)
+
+    def _keep_drive(self, computer_id: Any, user_id: str | None, sandbox: Any) -> None:
+        """``_drive_soon`` while the file mount serves, whose token the Drive
+        uses."""
+        if self._machine(str(computer_id)).livefs.serving(sandbox):
+            self._drive_soon(computer_id, user_id, sandbox)
+
+    def _drive_soon(
+        self, computer_id: Any, user_id: str | None, sandbox: Any, *, force: bool = False
+    ) -> None:
+        """Bring the Drive mount to what is due beside a serving file mount,
+        off the turn's path: up and linked with the feature on, down with it
+        off. Its failures stay its own (``livefs.drive_mount.converge``)."""
+        try:
+            self._hand_drive(computer_id, user_id, sandbox).converge_soon(force=force)
+        except Exception:
+            logger.warning("drive mount not scheduled for computer %s", computer_id, exc_info=True)
 
     def _livefs_handle(self, computer_id: Any, user_id: str | None, sandbox: Any) -> Handle:
         from src.server.services.livefs import mount as livefs
@@ -345,6 +390,9 @@ class LivefsMixin:
         from src.server.services.livefs import mount as livefs
 
         await livefs.revoke(computer_id)
+        from src.server.services.livefs import drive_mount
+
+        await drive_mount.forget(str(computer_id))
         machine = self._machine_if_known(str(computer_id))
         if machine is not None:
             machine.livefs.forget()

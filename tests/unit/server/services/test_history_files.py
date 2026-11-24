@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ptc_agent.agent.backends import ReadOnlyStoreError
-from ptc_agent.agent.backends.langgraph_store import UnsupportedPattern, compile_grep, grep_texts
+from ptc_agent.agent.backends.text_grep import UnsupportedPattern, compile_grep, grep_texts
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.grep_render import GREP_LINE_CHARS, GrepLine
 from src.server.database import thread_transcripts as db

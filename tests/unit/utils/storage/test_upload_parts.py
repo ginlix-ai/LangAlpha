@@ -17,7 +17,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 import src.utils.storage as storage
-from src.utils.storage import s3_compatible
+from src.utils.storage import key_prefix, s3_client, s3_compatible
 
 BUCKET = "test-bucket"
 KEY = "uploads/user-1/00000000-0000-4000-8000-000000000001"
@@ -27,7 +27,7 @@ MiB = 1024 * 1024
 
 @pytest.fixture(autouse=True)
 def _bucket():
-    with patch.object(s3_compatible.StorageConfig, "BUCKET_NAME", BUCKET):
+    with patch.object(s3_client.StorageConfig, "BUCKET_NAME", BUCKET):
         yield
 
 
@@ -239,3 +239,59 @@ def _probe(**env: str) -> str:
 def test_browser_uploads_are_off_until_the_operator_sets_them():
     assert _probe() == "False False"
     assert _probe(STORAGE_BROWSER_UPLOADS="true") == "True True"
+
+
+def test_a_copy_too_large_for_the_fixed_part_still_fits_the_stores_parts():
+    """A 3 TiB copy at 256 MiB a part needs 12,288 parts; the store takes 10,000."""
+    size = 3 * 1024 * 1024 * MiB
+    client = MagicMock()
+    client.create_multipart_upload.return_value = {"UploadId": STORE_ID}
+    client.upload_part_copy.return_value = {"CopyPartResult": {"ETag": "e"}}
+    with patch.object(s3_compatible, "_get_client", return_value=client):
+        assert s3_compatible.copy_object("src", KEY, size)
+
+    ranges = sorted(
+        tuple(
+            int(n)
+            for n in c.kwargs["CopySourceRange"].removeprefix("bytes=").split("-")
+        )
+        for c in client.upload_part_copy.call_args_list
+    )
+    assert len(ranges) <= 10_000
+    assert ranges[0][0] == 0 and ranges[-1][1] == size - 1
+    assert all(b[0] == a[1] + 1 for a, b in zip(ranges, ranges[1:]))
+    assert max(end - start + 1 for start, end in ranges) <= 5 * 1024 * MiB
+
+
+def _rule(days: int, prefix: str | None = None, status: str = "Enabled") -> dict:
+    rule = {"Status": status, "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": days}}
+    if prefix is not None:
+        rule["Filter"] = {"Prefix": prefix}
+    return rule
+
+
+@pytest.mark.parametrize(
+    ("rules", "kept"),
+    [
+        ([_rule(7)], True),
+        ([_rule(1)], False),
+        ([_rule(10), _rule(1)], False),
+        ([_rule(10, "uploads/")], True),
+        ([_rule(1, "uploads/"), _rule(10)], False),
+        ([_rule(1, "tmp/"), _rule(10)], True),
+        ([_rule(1, "tmp/")], False),
+        ([_rule(10, status="Disabled")], False),
+    ],
+    ids=["seven", "one", "shortest-wins", "on-uploads", "uploads-short", "elsewhere-short", "elsewhere-only", "disabled"],
+)
+def test_a_cleanup_rule_counts_for_drive_uploads_only_if_it_waits_long_enough(rules, kept):
+    """CR144: a one-day rule would abort a Drive upload a person may still resume."""
+    client = MagicMock()
+    client.get_bucket_lifecycle_configuration.return_value = {"Rules": rules}
+    with (
+        patch.object(s3_compatible, "_get_client", return_value=client),
+        patch.object(key_prefix, "KEY_PREFIX", ""),
+    ):
+        assert s3_compatible.has_multipart_cleanup_rule(min_days=7, prefix="uploads/") is kept
+        # Without the bounds, any enabled rule still counts, as before.
+        assert s3_compatible.has_multipart_cleanup_rule() is any(r["Status"] == "Enabled" for r in rules)

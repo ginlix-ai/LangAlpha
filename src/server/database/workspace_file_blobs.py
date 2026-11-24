@@ -54,6 +54,9 @@ import functools
 import hashlib
 import logging
 from concurrent.futures import Executor
+from datetime import datetime
+
+from psycopg.rows import tuple_row
 
 from src.server.database.blob_keys import (
     BLOB_CONTENT_TYPE,
@@ -69,6 +72,7 @@ from src.server.database.blob_keys import (
 from src.server.database.pool import get_db_connection
 from src.server.database.session_lock import await_settled, release_session_lock
 from src.utils.storage import (
+    copy_object as _storage_copy_object,
     delete_object as _storage_delete_object,
     get_bytes as _storage_get_bytes,
     get_bytes_range as _storage_get_bytes_range,
@@ -85,6 +89,9 @@ __all__ = [
     "GC_GRACE_DAYS",
     "GC_REAP_BATCH",
     "blob_key",
+    "blob_size",
+    "release_blob",
+    "store_blob_by_copy",
     "condemn_orphan_blobs",
     "fetch_blob",
     "fetch_blob_range",
@@ -163,6 +170,71 @@ async def store_blob(user_id: str, sha256: str, data: bytes) -> None:
         # a manifest row against, so deleting it here could strand that row.
         msg = f"Blob registry insert failed for {key}"
         raise BlobUploadError(msg) from e
+
+
+async def store_blob_by_copy(user_id: str, sha256: str, src_key: str, size: int) -> datetime:
+    """``store_blob`` for bytes already in the store under ``src_key`` (an
+    upload in parts, read back and hashed by the server): copied inside the
+    store, in the same order, claim before copy before row. The row's
+    ``last_referenced_at`` as this left it, for ``release_blob``."""
+    key = blob_key(user_id, sha256)
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(CLAIM_SQL, (user_id, [sha256]))
+    except Exception as e:
+        raise BlobUploadError(f"Blob claim failed for {key}") from e
+    if not await asyncio.to_thread(_storage_copy_object, src_key, key, size):
+        raise BlobUploadError(f"Blob copy failed for {key} ({size} bytes)")
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor(row_factory=tuple_row) as cur:
+                await cur.execute(
+                    REGISTER_SQL + " RETURNING last_referenced_at", (user_id, sha256, size)
+                )
+                row = await cur.fetchone()
+    except Exception as e:
+        # As in store_blob: the object is durable and stays.
+        raise BlobUploadError(f"Blob registry insert failed for {key}") from e
+    return row[0]
+
+
+async def release_blob(user_id: str, sha256: str, stamp: datetime) -> bool:
+    """Let go of a blob its writer registered and then had no use for (the
+    save it was for was refused): condemn it now rather than wait out
+    ``GC_GRACE_DAYS``; whether it was condemned.
+
+    Nothing is deleted here. Another writer may be putting the same bytes
+    under the same key at this moment (``store_blob`` uploads before it
+    registers), so only the sweep's protocol may delete: a writer that wants
+    the digest claims the condemned row or registers over it, and the reap
+    deletes only what is still condemned after its grace. Only while nothing
+    has touched the row since (``last_referenced_at`` still ``stamp``) and
+    nothing references it.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE workspace_file_blobs b SET condemned_at = NOW()"
+                " WHERE b.user_id = %s AND b.sha256 = %s"
+                " AND b.condemned_at IS NULL AND b.last_referenced_at = %s"
+                f" AND NOT {REFERENCED_SQL}",
+                (user_id, sha256, stamp),
+            )
+            return cur.rowcount == 1
+
+
+async def blob_size(user_id: str, sha256: str) -> int | None:
+    """The length the registry records for a live ``sha256`` of the user."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT byte_len FROM workspace_file_blobs WHERE user_id = %s"
+                " AND sha256 = %s AND condemned_at IS NULL",
+                (user_id, sha256),
+            )
+            row = await cur.fetchone()
+    return None if row is None else int(row[0])
 
 
 async def store_blobs(

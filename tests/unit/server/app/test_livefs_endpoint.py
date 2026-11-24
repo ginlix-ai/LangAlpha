@@ -259,6 +259,8 @@ async def test_a_read_leaves_gzip_and_any_cdn_its_body_and_strong_etag(client, t
         ("/api/v1/livefs/read", True),
         ("/api/v1/livefs/list", True),
         ("/api/v1/workspaces/w/files/download", True),
+        ("/api/v1/drive/personal/content", True),
+        ("/api/v1/drive/personal/entries", False),
         ("/api/v1/livefsx/read", False),
         ("/api/v1/threads", False),
     ],
@@ -809,7 +811,8 @@ async def test_a_throttled_request_runs_nothing_and_its_command_is_told(client, 
     only EAGAIN."""
     identity = tokens.LivefsIdentity(COMPUTER, USER, ROOT)
     throttle = AsyncMock(side_effect=tokens.LivefsThrottled(identity, 3))
-    monkeypatch.setattr(livefs_app, "authenticate", throttle)
+    real = tokens.authenticate
+    monkeypatch.setattr(tokens, "authenticate", throttle)
     noted = AsyncMock()
     monkeypatch.setattr(outcomes, "throttled", noted)
 
@@ -818,5 +821,5 @@ async def test_a_throttled_request_runs_nothing_and_its_command_is_told(client, 
     assert resp.status_code == 429
     assert resp.headers["retry-after"] == "3"
     noted.assert_awaited_once_with(COMPUTER, CALL)
-    monkeypatch.setattr(livefs_app, "authenticate", tokens.authenticate)
+    monkeypatch.setattr(tokens, "authenticate", real)
     assert (await _read(client, NOTES)).status_code == 404

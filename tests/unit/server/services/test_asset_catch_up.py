@@ -1373,6 +1373,32 @@ class TestAnAttachOnATurn(_Base):
             seen.browser.assert_awaited_once()
             assert seen.overlay.await_args.kwargs["later"] is False
 
+    @pytest.mark.parametrize("serving", [True, False])
+    async def test_a_turn_whose_mount_owes_nothing_still_asks_the_drive(self, serving):
+        # The Drive's setting can change while the file mount serves and is
+        # linked, so the turn's acquire is what brings it up or takes it down.
+        manager = _make_manager()
+        session = _turn_session()
+        drive = MagicMock()
+
+        with (
+            patch.object(manager, "_drive_soon", drive),
+            patch.object(
+                manager._machine("comp-1").livefs, "serving", MagicMock(return_value=serving)
+            ),
+        ):
+            seen, patched = await self._attach(
+                manager, session, later=False, overlay=AsyncMock(return_value=True)
+            )
+            with patched:
+                pass
+
+        seen.keep_mount.assert_not_awaited()
+        if serving:
+            drive.assert_called_once_with("comp-1", "user-1", session.sandbox)
+        else:
+            drive.assert_not_called()
+
     async def test_an_attach_cut_short_before_its_work_began_records_nothing(self):
         manager = _make_manager()
         session = _turn_session()

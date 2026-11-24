@@ -15,6 +15,7 @@ from ptc_agent.core.sandbox.browser_runtime.protocol import Choices
 from ptc_agent.core.sandbox.providers import provider_class
 from ptc_agent.core.sandbox.runtime import SandboxProvider
 from ptc_agent.core.session import Session
+from src.server.services.livefs.drive_mount import DriveRuns
 from src.server.services.livefs.tracker import MountTracker
 
 if TYPE_CHECKING:
@@ -286,6 +287,8 @@ class MachineState:
     # WorkspaceToolView. Execution context, dropped with the session.
     tool_views: OrderedDict[str, WorkspaceToolView] = field(default_factory=OrderedDict)
     livefs: MountTracker = field(default_factory=MountTracker)
+    # The Drive mount's converge in flight on this worker.
+    drive: DriveRuns = field(default_factory=DriveRuns)
     # The background restore and transcript sync of the sandbox in the slot.
     bring_up: Optional["BringUp"] = None
     # The asset catch-ups still running for each workspace, in the order they
