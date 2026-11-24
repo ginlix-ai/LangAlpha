@@ -395,7 +395,7 @@ jobs:
           # executables from another, under one version.
           if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
             ref=$(gh api "repos/$REPO/git/ref/tags/$tag" \
-              --jq '.object.type + " " + .object.sha' 2>/dev/null || echo '')
+              --jq '.object.type + " " + .object.sha' 2>"$RUNNER_TEMP/tagref.err" || echo '')
             at=${ref#* }
             # An annotated tag resolves to a tag object, and its SHA is not the
             # commit's. Every signed tag is annotated, so a maintainer who cuts
@@ -421,7 +421,20 @@ jobs:
               exit 1
             fi
             if [ "$at" != "$SHA" ]; then
-              echo "::error::$tag is on $at, not $SHA. Move the tag deliberately or pick a new version."
+              # A draft whose tag is confirmed absent was left by a run that
+              # stopped before publishing: unseen and pinned to nothing yet, so
+              # deleting it is the way to cut it again from here. A release that
+              # was public keeps its tag through a redraft, and deleting it would
+              # leave that tag behind; a lookup that failed says neither.
+              if [ -z "$ref" ] && grep -q 'HTTP 404' "$RUNNER_TEMP/tagref.err" \
+                && [ "$(gh release view "$tag" --repo "$REPO" --json isDraft --jq '.isDraft')" = true ]; then
+                echo "::error::$tag is an unpublished draft cut from $at, not $SHA. Delete the draft (gh release delete $tag) and run again. If that run already put this version's archives in the feed, other bytes under the same names are refused there, so pick a new version instead."
+              elif [ -z "$ref" ]; then
+                cat "$RUNNER_TEMP/tagref.err"
+                echo "::error::$tag was cut from $at, not $SHA, and its tag could not be read to tell whether it was ever published. Check it before deleting anything."
+              else
+                echo "::error::$tag is on $at, not $SHA. Move the tag deliberately or pick a new version."
+              fi
               exit 1
             fi
           else
