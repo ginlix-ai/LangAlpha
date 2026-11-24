@@ -237,6 +237,7 @@ class PTCAgent:
         role: AgentRole = "analyst",
         channels_enabled: bool = False,
         claude_code: bool = False,
+        langalpha_doc_enabled: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -253,6 +254,9 @@ class PTCAgent:
         the user at a time. ``user_memory_enabled`` and ``user_data_enabled``
         are ``IdentityGates.prompt_vars``: a shared workspace's prompt points
         at no memory tier or data of one member's, since none is there.
+        ``langalpha_doc_enabled`` follows the user's switch for that skill,
+        as ``order_skill`` does: its section names files only a workspace
+        with the skill holds.
         """
         loader = get_loader()
         return loader.get_system_prompt(
@@ -284,6 +288,7 @@ class PTCAgent:
             role=role,
             channels_enabled=channels_enabled,
             claude_code=claude_code,
+            langalpha_doc_enabled=langalpha_doc_enabled,
         )
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
@@ -796,6 +801,9 @@ class PTCAgent:
         # still does: a user who turned it off, or the plugin that ships it,
         # gets neither the tools nor the prompt line naming them.
         chart_annotation = "chart-annotation" in skill_registry
+        # Its prompt section names the skill's pages, which a build without
+        # skills, or a user who switched the skill off, has no copy of.
+        langalpha_doc = self.config.skills.enabled and "langalpha-doc" in skill_registry
         # Subagents never bind the annotation tools (see where they are
         # appended), so neither their manifest nor a preload may offer the
         # guide to them.
@@ -1051,6 +1059,7 @@ class PTCAgent:
             role=role,
             channels_enabled=gates.channels,
             claude_code=claude_code,
+            langalpha_doc_enabled=langalpha_doc,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).

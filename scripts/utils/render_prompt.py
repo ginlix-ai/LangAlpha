@@ -323,6 +323,7 @@ def render(args: argparse.Namespace) -> str:
 
     # PTC system prompt
     prompt = loader.get_system_prompt(
+        langalpha_doc_enabled=True,
         tool_summary=tool_summary,
         user_profile=user_profile,
         plan_enabled=args.plan,

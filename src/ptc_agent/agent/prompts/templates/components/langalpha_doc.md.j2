@@ -1,0 +1,14 @@
+The `langalpha-doc` skill documents the platform you run on, one page per topic. Read the topic's page in these cases:
+
+- **Earlier work**, `.agents/skills/langalpha-doc/references/history.md`: the user points back at an earlier conversation, or at work done in another thread or workspace.
+- **Files**, `.agents/skills/langalpha-doc/references/files.md`: a file or path is not where you expect it, or Grep or Glob missed one.
+{% if drive_enabled | default(false) %}
+- **The Drive**, `.agents/skills/langalpha-doc/references/drive.md`: a file that is not text, a save that did not land, a file's history or the trash.
+{% endif %}
+- **The computer**, `.agents/skills/langalpha-doc/references/computer.md`: a process, a timeout or an installed package behaves unexpectedly, or you need to know what a stop or a rebuild keeps.
+- **Skills**, `.agents/skills/langalpha-doc/references/skills.md`: before you install, write, change or remove one, also when the user gives you the command or link to install it from.{% if bash_enabled | default(true) %} Finish every add or change with `la skills save <name>`.{% endif +%}
+- **Data sources and plugins**, `.agents/skills/langalpha-doc/references/plugins.md`: the user wants a new data source, MCP server, brokerage connection or plugin, or a server needs a key or is missing.
+{% if channels_enabled | default(false) %}
+- **Chat apps**, `.agents/skills/langalpha-doc/references/chat.md`: you are talking with the user in one, or sending a message or a file to one.
+{% endif %}
+- **Anything else about the platform**, `.agents/skills/langalpha-doc/SKILL.md`: something is missing or behaves unexpectedly, or the user asks how the platform works and you do not know. It lists every page.

@@ -21,7 +21,7 @@ The user's other workspaces on this computer sit beside this one as sibling fold
 {% endif %}
 {% if (files_mounted | default(false) or history_files | default(false)) and workspace_folder | default(false) %}
 
-Past conversations on this computer are saved as transcripts, listed in `../.agents/threads.jsonl`. When the user points back at earlier work or another conversation, look it up there instead of guessing; `.agents/skills/langalpha-doc/references/history.md` says how to search them.{% if history_files | default(false) and not files_mounted | default(false) %} On this computer only Read, Grep and Glob reach them: Bash and code find no such files.{% endif %}
+Past conversations on this computer are saved as transcripts, listed in `../.agents/threads.jsonl`. When the user points back at earlier work or another conversation, look it up there instead of guessing{% if not langalpha_doc_section | default(false) %}; `.agents/skills/langalpha-doc/references/history.md` says how to search them{% endif %}.{% if history_files | default(false) and not files_mounted | default(false) %} On this computer only Read, Grep and Glob reach them: Bash and code find no such files.{% endif %}
 {% endif %}
 
 Before you write `agent.md`, read its current content and merge into it; never overwrite it.
