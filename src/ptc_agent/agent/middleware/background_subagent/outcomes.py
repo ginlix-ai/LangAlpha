@@ -90,7 +90,7 @@ class Outcome:
         apart from one by its error type, which offers it back for resume."""
         return cls(
             status="cancelled",
-            error="paused by a routine deployment",
+            error="paused by a restart",
             error_type=RESTART_STOP_ERROR_TYPE,
         )
 

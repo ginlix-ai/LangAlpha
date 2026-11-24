@@ -229,7 +229,7 @@ async def _compose_missing_reply(registry, task_id: str, run: dict | None) -> st
             )
         if is_restart_stop(failure):
             return (
-                f"Task-{task_id} was paused by a routine deployment before it "
+                f"Task-{task_id} was paused by a restart before it "
                 f"finished; no result was produced. Its prior work is preserved. "
                 f'Resume it with Task(action="resume", task_id="{task_id}") if '
                 f"the work is still needed."

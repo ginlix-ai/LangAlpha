@@ -328,7 +328,7 @@ async def test_a_task_a_restart_stopped_reads_as_resumable_from_the_ledger():
 
     result, _ = await tool.coroutine(task_id="k7Xm2p")
 
-    assert "paused by a routine deployment" in result
+    assert "paused by a restart" in result
     assert 'Task(action="resume", task_id="k7Xm2p")' in result
     assert "cannot be resumed" not in result
 
