@@ -344,11 +344,10 @@ class WorkspaceManager(ComputerManager):
         if sandbox is None or sandbox.runtime is None or computer is None:
             raise RuntimeError(f"Computer {computer_id} has no sandbox to run on")
         runtime = sandbox.runtime
-        # A catch-up a turn left running on this worker syncs what the whole
-        # computer shares, so a command from its root waits it out, as this
-        # waited for the start that sync was part of.
-        for workspace_id in list(self._machine(computer_id).catch_ups):
-            await sandbox.assets.wait(workspace_id, timeout=None)
+        # A command from the computer's root reads every folder there, so it
+        # waits out whatever a turn left running on this worker for any of
+        # them, as this waited for the start that work was part of.
+        await sandbox.assets.wait_all(timeout=None)
         binding = self._binding_from_computer("", computer)
         await self._keep_computer_tokens(computer_id, user_id, sandbox)
         await self._settle_folders(computer_id, runtime, root=binding.root_dir)

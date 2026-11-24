@@ -306,6 +306,11 @@ class TurnComputers:
         computer_id = str(row["computer_id"])
         own = computer_id == self._own
         session = self._own_session if own else await self._wake(computer_id, _label(row))
+        if not own and session.sandbox is not None:
+            # Every call, not only the one that woke it: a turn on that
+            # computer can start a sync between two of this turn's calls
+            # there, and the gate this turn's tools wait at is Home's.
+            await session.sandbox.assets.wait_all()
         folders = await get_computer_folders(computer_id)
         target = ComputerTarget(
             computer_id=computer_id,

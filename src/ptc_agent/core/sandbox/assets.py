@@ -12,7 +12,7 @@ import shlex
 import time
 from secrets import token_hex
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -147,6 +147,19 @@ async def _read_vault_digest(sandbox: "PTCSandbox") -> str | None:
     return _VAULT_UNREADABLE
 
 
+def _vault_is_behind(vault_secrets: Mapping[str, str] | None, on_disk: str | None) -> bool:
+    """Whether the root vault file holds other content than ``vault_secrets``."""
+    if vault_secrets is None:
+        return False
+    # No file rather than an empty one, so vault.list_names() is [].
+    wanted = (
+        hashlib.sha256(_canonical_vault_json(vault_secrets)).hexdigest()
+        if vault_secrets
+        else None
+    )
+    return on_disk != wanted
+
+
 async def _publish_changed_vault(
     sandbox: "PTCSandbox",
     vault_secrets: Mapping[str, str] | None,
@@ -157,13 +170,10 @@ async def _publish_changed_vault(
     ``None`` is a caller with nothing to say about the vault. ``on_disk`` is
     :func:`_read_vault_digest`'s answer.
     """
-    if vault_secrets is None:
+    if not _vault_is_behind(vault_secrets, on_disk):
         return False
+    assert vault_secrets is not None
     content = _canonical_vault_json(vault_secrets)
-    # No file rather than an empty one, so vault.list_names() is [].
-    wanted = hashlib.sha256(content).hexdigest() if vault_secrets else None
-    if on_disk == wanted:
-        return False
     assert sandbox.runtime is not None
     path = sandbox.layout.vault_secrets
     if vault_secrets:
@@ -814,8 +824,9 @@ async def sync_sandbox_assets(
     if user_skill_dir:
         skill_dirs = list(skill_dirs or []) + [user_skill_dir]
 
-    async with _tool_sync_context(
-        sandbox, mcp_registry=mcp_registry, mcp_servers=mcp_servers
+    async with (
+        _tool_sync_context(sandbox, mcp_registry=mcp_registry, mcp_servers=mcp_servers),
+        AsyncExitStack() as writing,
     ):
         await sandbox.ensure_sandbox_ready()
 
@@ -884,6 +895,9 @@ async def sync_sandbox_assets(
             first_layout,
             known_layout_version or 0,
         )
+        if remote_layout < CURRENT_LAYOUT_VERSION:
+            # A migration moves every workspace's folder.
+            writing.callback(sandbox.assets.hold_computer())
         layout_version = await run_layout_migrations(
             sandbox.runtime,
             sandbox._work_dir,
@@ -895,6 +909,9 @@ async def sync_sandbox_assets(
         # Only stamp after every migration succeeds; failure leaves the old
         # manifest intact so the next acquisition retries the move.
         local_manifest["layout_version"] = layout_version
+        if _vault_is_behind(vault_secrets, vault_on_disk):
+            # The vault file is every workspace's as well.
+            writing.callback(sandbox.assets.hold_computer())
         await _publish_changed_vault(sandbox, vault_secrets, vault_on_disk)
 
         # 3. Determine which modules changed (pure CPU). An unreadable manifest
@@ -952,6 +969,12 @@ async def sync_sandbox_assets(
             # hash can carry. Fall through: every upload below is a no-op with
             # nothing changed, and the manifest write at the end records the
             # new version.
+
+        # From here the sync writes: packages, server files, the shared tool
+        # wrappers and client, and skills are what every workspace on the
+        # computer imports, so all of them wait until it is through, however
+        # it ends.
+        writing.callback(sandbox.assets.hold_computer())
 
         refreshed: list[str] = []
         skill_collisions: set[str] = set()

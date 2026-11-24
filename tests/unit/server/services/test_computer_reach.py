@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from ptc_agent.agent.tools.computer_reach import ComputerTarget, ComputerUnreachable
 from ptc_agent.core.project_context import MachinePaths, ProjectContext, current_project, project_bound
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.services import computer_reach
@@ -248,6 +249,32 @@ async def test_another_computer_is_reached_at_its_root_with_its_folders_as_sibli
 
 
 @pytest.mark.asyncio
+async def test_every_call_on_another_computer_waits_at_that_computers_gate():
+    """Not only the call that woke it: a turn there can start a sync between
+    two of this turn's calls, and this turn's own gate is Home's."""
+    gate = AssetGate()
+    sandbox = SimpleNamespace(
+        assets=gate, runtime=None, sandbox_id=None, files_as_command_user=False
+    )
+    session = SimpleNamespace(sandbox=sandbox)
+    manager = _manager(session)
+    # Still up, so the second call reuses the first one's wake.
+    manager.cached_session_for_computer = lambda row: session
+    turn = TurnComputers(USER, HOME_ID, OWN)
+    await _reach(manager, "Studio Mac", turn=turn)
+
+    # A workspace's own catch-up there counts: the call reads every folder.
+    release = gate.hold("ws-on-the-mac")
+    calling = asyncio.ensure_future(_reach(manager, "Studio Mac", turn=turn))
+    await asyncio.sleep(0.01)
+    assert not calling.done()
+
+    release()
+    assert isinstance(await asyncio.wait_for(calling, 1), ComputerTarget)
+    manager.reach_computer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_the_turn_collects_the_other_computers_its_calls_ran_on():
     """The turn's end backs them up: no turn of their own sweeps what a call wrote."""
     touched: set[str] = set()
@@ -444,6 +471,7 @@ def _machine(root, files=None, home=None, *, files_as_command_user=True, config_
         uploaded={},
         files_as_command_user=files_as_command_user,
         sandbox_id=None,
+        assets=AssetGate(),
     )
     sandbox.config = SimpleNamespace(
         filesystem=SimpleNamespace(
