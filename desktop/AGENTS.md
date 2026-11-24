@@ -798,16 +798,16 @@ without the other is a silent no-op.
 A bundled OSS build updates like any other, through `DESKTOP_UPDATE_FEED`, with the zip
 at about the size of the installer and migrations run by the launch that follows.
 
-The workflow in this repository builds the OSS edition unsigned and with no feed.
-That is what makes it useful to a fork: it takes no credentials and needs no
-setup, and its signing and feed steps activate on their own if a fork ever
-supplies them. It is not what cuts the published releases. Those come from a
-separate pipeline that holds the signing certificates and the key to the feed
-host, builds both editions, and consumes this directory without living in it,
-because a public repository is the wrong place to keep a credential that can
-replace the binary every installed app runs. Both editions are the same source,
-so a change here reaches both, and `scripts/` is shared: nothing under it is dead
-code merely because this repository's own workflow does not call it.
+The workflow in this repository (`.github/workflows/desktop-release.yml`) builds
+and publishes the OSS edition. What it signs, notarizes and publishes to comes from
+its `desktop-release` environment, whose secrets and variables the workflow's header
+lists, so the environment's branch rule and required review stand between any other
+workflow and those credentials. Each part is optional: without a certificate the
+builds are unsigned, without a feed they never update themselves, and the notes it
+writes say which. That is what keeps it useful to a fork, which sets whichever it has.
+The hosted edition is released separately from this same source, so a change here
+reaches both, and `scripts/` is shared: nothing under it is dead code merely because
+this repository's own workflow does not call it.
 
 **The two editions cannot share a feed.** electron-builder names a manifest for
 the channel and nothing else, so two editions publishing to one feed root both

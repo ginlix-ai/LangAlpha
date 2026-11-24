@@ -27,6 +27,23 @@ describe('packaging the backend', () => {
     assert.equal(localRequirementsRemoved(text), 'aiohttp==3.0 \\\n    --hash=sha256:abc')
   })
 
+  test('each library beside Postgres ships a pinned license text that THIRD-PARTY.md names', async () => {
+    const { PG_LIBRARIES, thirdPartyNotes } = await load()
+    for (const platform of ['darwin', 'linux']) {
+      const notes = thirdPartyNotes({ platform, pythonVersion: '3.13.0' })
+      assert.match(notes, /`pg\/COPYRIGHT`/)
+      assert.ok(PG_LIBRARIES[platform].length > 0, platform)
+      for (const { name, version, text, license, source } of PG_LIBRARIES[platform]) {
+        assert.ok(notes.includes(`${name} ${version} (`), `${platform}: ${name}`)
+        assert.ok(notes.includes(`\`pg/licenses/${text.file}\``), `${platform}: ${text.file}`)
+        assert.match(text.sha256, /^[0-9a-f]{64}$/, `${platform}: ${name}`)
+        // A tag, a commit or a release file, never a branch that moves.
+        assert.doesNotMatch(text.url, /githubusercontent\.com\/[^/]+\/[^/]+\/(main|master|HEAD)\//, `${platform}: ${name}`)
+        if (license.startsWith('LGPL')) assert.ok(source && notes.includes(source), `${platform}: ${name} names its source`)
+      }
+    }
+  })
+
   test('native code is told apart by its bytes', async () => {
     const { nativeKind } = await load()
     const dir = tempRoot()
@@ -137,7 +154,10 @@ describe('packaging the backend', () => {
     fs.mkdirSync(packed, { recursive: true })
     fs.mkdirSync(path.join(contents, 'MacOS'))
     fs.writeFileSync(path.join(packed, 'run.py'), 'print(1)\n')
+    fs.writeFileSync(path.join(contents, 'Info.plist'), '<dict>\n\t<key>CFBundleExecutable</key>\n\t<string>LangAlpha</string>\n</dict>\n')
     fs.writeFileSync(path.join(contents, 'MacOS', 'LangAlpha'), thinArm)
+    // The remote control helper beside it is universal by design.
+    fs.writeFileSync(path.join(contents, 'MacOS', 'langalpha-helper'), universal)
     assert.equal(verifyPackedTrees([packed], tree, { platform: 'darwin', arch: 'arm64' }), 1)
     fs.writeFileSync(path.join(contents, 'MacOS', 'LangAlpha'), universal)
     assert.throws(() => verifyPackedTrees([packed], tree, { platform: 'darwin', arch: 'arm64' }), /the app around .* is not arm64/)

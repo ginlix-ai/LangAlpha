@@ -54,8 +54,8 @@ export const MACOS_MIN = '13.5'
  * EnterpriseDB's own signed builds, the ones postgresql.org links for macOS, and
  * its Linux ones are built in that project's public CI. pgcrypto is included,
  * which the first migration needs. The package is Apache-2.0; what it carries is
- * under the PostgreSQL License, and the licenses of the libraries beside it are
- * in THIRD-PARTY.md at the top of the tree.
+ * under the PostgreSQL License, and the libraries beside it are under their own,
+ * listed in `PG_LIBRARIES`.
  *
  * Both macOS archives hold universal binaries, thinned below. Both sums are
  * pinned because a jar's name says nothing about what is in it.
@@ -71,6 +71,127 @@ const POSTGRES = {
   },
   // The license asks that its notice go with every copy, and the archives carry none.
   copyright: { tag: 'REL_18_6', sha256: '3d6af92ff8a4c2cdf69afb1cf44edea727922f5cd0cf8b5f72b11cdecac8fdfd' },
+}
+
+const github = (repo, ref, file) => `https://raw.githubusercontent.com/${repo}/${ref}/${file}`
+
+// One text for both, the same bytes gettext 0.26 carries. From the release
+// tarball through GNU's mirror redirector, since Savannah's git browser and the
+// main FTP host each time out often enough to fail a build; the pin holds
+// whichever mirror answers to the release.
+const LGPL_21 = {
+  file: 'lgpl-2.1.txt',
+  url: 'https://ftpmirror.gnu.org/libiconv/libiconv-1.19.tar.gz',
+  sha256: '88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6',
+  member: 'libiconv-1.19/COPYING.LIB',
+}
+
+/**
+ * What the archives carry in `pg/lib` besides Postgres's own libraries, and the
+ * license text each one's binaries must ship with. Versions are read from the
+ * binaries and the builds behind them: EnterpriseDB's `server/packages-osx.txt`
+ * at the time of the macOS build, and the Ubuntu 18.04 packages zonky's Linux
+ * build copies in. Both macOS archives are one build, as are both Linux ones.
+ *
+ * Each text comes from a release tag, a commit or a release tarball (`member`
+ * names the file in it), pinned like everything else here. The libraries a
+ * Postgres module links but the archives leave out, libcurl and libxslt on
+ * macOS, are not shipped, so their modules do not load and owe nothing.
+ */
+export const PG_LIBRARIES = {
+  darwin: [
+    {
+      name: 'OpenSSL', version: '3.5.7', libs: ['libcrypto', 'libssl'], license: 'Apache-2.0',
+      text: { file: 'openssl.txt', url: github('openssl/openssl', 'openssl-3.5.7', 'LICENSE.txt'), sha256: '7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a' },
+    },
+    {
+      name: 'MIT Kerberos', version: '1.22.2', libs: ['libgssapi_krb5', 'libkrb5', 'libk5crypto', 'libkrb5support', 'libcom_err'], license: 'MIT, with the other notices in its file',
+      text: { file: 'kerberos.txt', url: github('krb5/krb5', 'krb5-1.22.2-final', 'NOTICE'), sha256: 'd37fcb886de2ad1c602f61c99c6893bcbd9a1949f54d9a6bb40d191204eb605e' },
+    },
+    {
+      name: 'ICU', version: '77.1', libs: ['libicudata', 'libicui18n', 'libicuuc'], license: 'Unicode-3.0, with the other notices in its file',
+      text: { file: 'icu.txt', url: github('unicode-org/icu', 'release-77-1', 'LICENSE'), sha256: '451167c55c0fa447cc2d5632714f5e3c567fe4f1e1badefab2c1333852198aca' },
+    },
+    {
+      // GNOME's GitHub mirror, since its GitLab turns away clients that are not browsers.
+      name: 'libxml2', version: '2.15.3', libs: ['libxml2'], license: 'MIT',
+      text: { file: 'libxml2.txt', url: github('GNOME/libxml2', 'v2.15.3', 'Copyright'), sha256: '5d4873884a890122a4b9b20ad56ac6f7da1d796a5bfcf04a427970ac96217626' },
+    },
+    {
+      name: 'zlib', version: '1.3.2', libs: ['libz'], license: 'Zlib',
+      text: { file: 'zlib.txt', url: github('madler/zlib', 'v1.3.2', 'LICENSE'), sha256: 'e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2' },
+    },
+    {
+      name: 'Zstandard', version: '1.5.7', libs: ['libzstd'], license: 'BSD-3-Clause',
+      text: { file: 'zstd.txt', url: github('facebook/zstd', 'v1.5.7', 'LICENSE'), sha256: '7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8' },
+    },
+    {
+      name: 'LZ4', version: '1.10.0', libs: ['liblz4'], license: 'BSD-2-Clause',
+      text: { file: 'lz4.txt', url: github('lz4/lz4', 'v1.10.0', 'lib/LICENSE'), sha256: '8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c' },
+    },
+    {
+      // Released only as tarballs, from the maintainer's site.
+      name: 'libedit', version: '20260512-3.1', libs: ['libedit'], license: 'BSD-3-Clause',
+      text: {
+        file: 'libedit.txt',
+        url: 'https://thrysoee.dk/editline/libedit-20260512-3.1.tar.gz',
+        sha256: '432d5e7ea8b0116dd39f2eca7bc11d0eed77faa6b77ea526ace89907c23ea4a0',
+        member: 'libedit-20260512-3.1/COPYING',
+      },
+    },
+    {
+      // The copyright line is in the sources' headers, not in the license file.
+      name: 'libuuid from e2fsprogs', version: '1.47.4', libs: ['libuuid'], license: 'BSD-3-Clause',
+      note: "Copyright (C) 1996-1999 Theodore Ts'o.",
+      text: { file: 'libuuid.txt', url: github('tytso/e2fsprogs', 'v1.47.4', 'lib/uuid/COPYING'), sha256: '9b718a9460fed5952466421235bc79eb49d4e9eacc920d7a9dd6285ab8fd6c6d' },
+    },
+    {
+      name: 'GNU libiconv', version: '1.19', libs: ['libiconv'], license: 'LGPL-2.1-or-later', text: LGPL_21,
+      source: 'https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz',
+    },
+    {
+      name: 'GNU gettext', version: '0.26', libs: ['libintl'], license: 'LGPL-2.1-or-later', text: LGPL_21,
+      source: 'https://ftp.gnu.org/gnu/gettext/gettext-0.26.tar.gz',
+    },
+  ],
+  linux: [
+    {
+      name: 'OpenSSL', version: '1.1.1', libs: ['libcrypto', 'libssl'], license: 'OpenSSL and SSLeay',
+      note: 'This product includes software developed by the OpenSSL Project for use in the OpenSSL Toolkit (http://www.openssl.org/), and cryptographic software written by Eric Young (eay@cryptsoft.com).',
+      text: { file: 'openssl.txt', url: github('openssl/openssl', 'OpenSSL_1_1_1', 'LICENSE'), sha256: '350c7817af2ef980d3f3922bc5e0bb6a9d9f6cc21e784a699bcd2a31c74a84b1' },
+    },
+    {
+      name: 'ICU', version: '60.2', libs: ['libicudata', 'libicui18n', 'libicuuc'], license: 'Unicode-DFS-2016, with the other notices in its file',
+      text: { file: 'icu.txt', url: github('unicode-org/icu', 'release-60-2', 'icu4c/LICENSE'), sha256: '24c771ce37201a3ab604852e47d10d21595d0493269dd6c8a5e567e998e18c00' },
+    },
+    {
+      name: 'libxml2', version: '2.9.4', libs: ['libxml2'], license: 'MIT',
+      text: { file: 'libxml2.txt', url: github('GNOME/libxml2', 'v2.9.4', 'Copyright'), sha256: 'c5c63674f8a83c4d2e385d96d1c670a03cb871ba2927755467017317878574bd' },
+    },
+    {
+      name: 'libxslt', version: '1.1.29', libs: ['libxslt'], license: 'MIT',
+      text: { file: 'libxslt.txt', url: github('GNOME/libxslt', 'v1.1.29', 'Copyright'), sha256: '7e48e290b6bfccc2ec1b297023a1d77f2fd87417f71fbb9f50aabef40a851819' },
+    },
+    {
+      // This release kept its license in the README.
+      name: 'zlib', version: '1.2.11', libs: ['libz'], license: 'Zlib',
+      text: { file: 'zlib.txt', url: github('madler/zlib', 'v1.2.11', 'README'), sha256: '7960b6b1cc63e619abb77acaea5427159605afee8c8b362664f4effc7d7f7d15' },
+    },
+    {
+      name: 'liblzma from XZ Utils', version: '5.2.2', libs: ['liblzma'], license: 'public domain',
+      text: { file: 'xz.txt', url: github('tukaani-project/xz', 'v5.2.2', 'COPYING'), sha256: 'c4f8e14fafe458d84808a4cd8b69f94673ebe2bf8fc992291629a69ac12218f8' },
+    },
+    {
+      // Upstream's own server is gone; Debian's pool keeps the original tarball, byte for byte.
+      name: 'OSSP uuid', version: '1.6.2', libs: ['libossp-uuid'], license: 'MIT-style',
+      text: {
+        file: 'ossp-uuid.txt',
+        url: 'https://deb.debian.org/debian/pool/main/o/ossp-uuid/ossp-uuid_1.6.2.orig.tar.gz',
+        sha256: '11a615225baa5f8bb686824423f50e4427acd3f70d394765bdff32801f0fd5b0',
+        member: 'uuid-1.6.2/README',
+      },
+    },
+  ],
 }
 
 /** BSD-licensed, and built here because the project publishes no macOS binaries. */
@@ -422,12 +543,34 @@ async function stagePostgres({ tree, platform, arch, cacheDir, work }) {
   const { tag, sha256: wanted } = POSTGRES.copyright
   const notice = await fetchPinned(`https://raw.githubusercontent.com/postgres/postgres/${tag}/COPYRIGHT`, wanted, cacheDir, `postgres-${tag}-COPYRIGHT`)
   copyFileSync(notice, path.join(prefix, 'COPYRIGHT'))
+  await stagePgLicenses({ prefix, platform, cacheDir, work })
 
   if (platform === 'darwin') {
     const before = sizeOf(prefix)
     thinMachO(prefix, arch)
     collapseCopies(path.join(prefix, 'lib'))
     log(`postgres: ${MB(before)} to ${MB(sizeOf(prefix))}`)
+  }
+}
+
+/** The libraries' licenses ask that a binary copy carry them, and the archives carry none. */
+async function stagePgLicenses({ prefix, platform, cacheDir, work }) {
+  const dir = path.join(prefix, 'licenses')
+  mkdirSync(dir, { recursive: true })
+  for (const { text } of PG_LIBRARIES[platform]) {
+    const target = path.join(dir, text.file)
+    if (existsSync(target)) continue
+    // Named by its sum, since the same file name holds another text for another platform.
+    const name = `${text.sha256.slice(0, 16)}-${path.basename(new URL(text.url).pathname)}`
+    const file = await fetchPinned(text.url, text.sha256, cacheDir, name)
+    if (!text.member) {
+      copyFileSync(file, target)
+      continue
+    }
+    const unpacked = path.join(work, 'licenses')
+    mkdirSync(unpacked, { recursive: true })
+    run('tar', ['-xzf', file, '-C', unpacked, text.member])
+    copyFileSync(path.join(unpacked, text.member), target)
   }
 }
 
@@ -514,17 +657,27 @@ function migrationsDigest(app) {
   return hash.digest('hex')
 }
 
-function writeNotices(tree, pythonVersion) {
-  writeFileSync(path.join(tree, 'THIRD-PARTY.md'), `# Bundled software
+function writeNotices(tree, platform, pythonVersion) {
+  writeFileSync(path.join(tree, 'THIRD-PARTY.md'), thirdPartyNotes({ platform, pythonVersion }))
+}
+
+export function thirdPartyNotes({ platform, pythonVersion }) {
+  const libraries = PG_LIBRARIES[platform].map(({ name, version, libs, license, note, text, source }) => {
+    const said = [`  - ${name} ${version} (${libs.map((lib) => `\`${lib}\``).join(', ')}): ${license}, \`pg/licenses/${text.file}\`.`]
+    if (note) said.push(note)
+    // What LGPL asks of a library shipped as a binary and linked dynamically.
+    if (source) said.push(`Linked dynamically, so it can be replaced; its source is at ${source}.`)
+    return said.join(' ')
+  })
+  return `# Bundled software
 
 - CPython ${pythonVersion}, python-build-standalone: PSF-2.0. \`python/\`, with the packages in
   \`python/lib/python${PYTHON_MINOR}/site-packages\` under their own licenses, each in its \`.dist-info\`.
 - PostgreSQL ${POSTGRES.version}: PostgreSQL License, its notice in \`pg/COPYRIGHT\`. \`pg/\`, packaged by zonkyio/embedded-postgres-binaries
-  (Apache-2.0). The libraries in \`pg/lib\`: OpenSSL (Apache-2.0), ICU (Unicode-3.0), MIT Kerberos (MIT),
-  libxml2 (MIT), zlib (Zlib), zstd (BSD-3-Clause), LZ4 (BSD-2-Clause), libedit (BSD-3-Clause),
-  libiconv and gettext (LGPL-2.1, dynamically linked).
+  (Apache-2.0). The other libraries in \`pg/lib\`, each with its license text in \`pg/licenses\`:
+${libraries.join('\n')}
 - Valkey ${VALKEY.version}: BSD-3-Clause, its notice in \`valkey/COPYING\`. \`valkey/\`, built from the project's source tag.
-`)
+`
 }
 
 /**
@@ -564,9 +717,21 @@ export function bundleConfigEdits({ tree, hostArch, feed, platform = process.pla
  * installs fine and fails on first launch. Throws on the first problem and
  * returns the file count.
  */
-/** The native executables of the app that holds a packed tree: `Contents/MacOS`, or an unpacked Linux app's top level. */
+/**
+ * The executables of the app that holds a packed tree which must match its
+ * architecture: on macOS the one `Info.plist` launches, on Linux the native files
+ * at an unpacked app's top level. Beside the Mac one, the remote control helper
+ * is universal on purpose and runs on either architecture whatever the backend is.
+ */
 function appExecutables(packedTree, platform) {
-  const top = platform === 'darwin' ? path.join(packedTree, '..', '..', 'MacOS') : path.join(packedTree, '..', '..')
+  if (platform === 'darwin') {
+    const contents = path.join(packedTree, '..', '..')
+    const plist = existsSync(path.join(contents, 'Info.plist')) ? readFileSync(path.join(contents, 'Info.plist'), 'utf8') : ''
+    const name = /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]
+    if (!name) throw new Error(`the app around ${packedTree} names no executable in its Info.plist`)
+    return [path.join(contents, 'MacOS', name)]
+  }
+  const top = path.join(packedTree, '..', '..')
   if (!existsSync(top)) return []
   return readdirSync(top)
     .map((entry) => path.join(top, entry))
@@ -663,7 +828,7 @@ export async function bundleBackend({ out, cacheDir = process.env.DESKTOP_BUNDLE
     if (process.env.DESKTOP_BUNDLE_NO_BYTECODE !== '1') {
       compileBytecode(python, tree, [path.join(tree, 'python', 'lib', `python${PYTHON_MINOR}`), path.join(app, 'src'), path.join(app, 'plugins'), path.join(app, 'mcp_servers')])
     }
-    writeNotices(tree, version)
+    writeNotices(tree, platform, version)
     writeFileSync(path.join(tree, 'manifest.json'), `${JSON.stringify({
       bundle: 1,
       platform,

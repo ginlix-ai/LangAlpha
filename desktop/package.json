@@ -26,6 +26,7 @@
   "devDependencies": {
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
+    "graceful-fs": "4.2.11",
     "sharp": "^0.33.5"
   }
 }
