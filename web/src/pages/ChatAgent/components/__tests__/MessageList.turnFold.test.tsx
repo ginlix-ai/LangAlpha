@@ -11,6 +11,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
+import { act } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import MessageList from '../MessageList';
 import { MessageActionsProvider } from '../messageList/MessageActionsContext';
@@ -434,5 +435,144 @@ describe('turn fold — which of a turn\'s texts read as its answer', () => {
     ], { userQuestions: { 'q-1': { question: 'Which one?', options: [], interruptId: 'q-1', status: 'answered' } } }));
 
     expect(getByText('Your profile is empty, so I prepared three starting points.')).toBeInTheDocument();
+  });
+});
+
+describe('turn fold — a turn the thread holds before any work', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 24, 0, 20, s));
+  const history: Msg[] = [
+    { id: 'u0', role: 'user', content: 'earlier', contentType: 'text', timestamp: at(0), isStreaming: false },
+    {
+      id: 'a0', role: 'assistant', content: 'reply', contentType: 'text', timestamp: at(1), isStreaming: false,
+      completedAt: at(5).getTime(), contentSegments: [{ type: 'text', content: 'reply', order: 0 }],
+      reasoningProcesses: {}, toolCallProcesses: {},
+    },
+  ];
+  const ask: Msg = { id: 'u1', role: 'user', content: 'what now', contentType: 'text', timestamp: at(30), isStreaming: false };
+  const reply = (segments: Msg[]): Msg => ({
+    id: 'a1', role: 'assistant', content: '', contentType: 'text', timestamp: at(31), isStreaming: true,
+    contentSegments: segments, reasoningProcesses: {}, toolCallProcesses: {},
+  });
+  const render = (messages: Msg[], holding: boolean) => renderWithProviders(
+    <MessageActionsProvider actions={{}}>
+      <MessageList messages={messages as MessageRecord[]} isLoading holding={holding} />
+    </MessageActionsProvider>,
+  );
+  const sentWords = (container: HTMLElement) =>
+    container.querySelector('[data-message-id="u1"]')?.textContent ?? '';
+
+  it('draws its message pending, with no row and no dots, until the hold ends', () => {
+    const messages = [...history, ask, reply([])];
+    const { container, rerender } = render(messages, true);
+    expect(foldState(container)).toBeNull();
+    expect(container.querySelector('[data-testid="streaming-indicator"]')).toBeNull();
+    expect(container.querySelector('[data-message-id="u1"] .text-shimmer, [data-message-id="u1"] [class*="shimmer"]')).not.toBeNull();
+    expect(sentWords(container)).toContain('what now');
+
+    rerender(
+      <MessageActionsProvider actions={{}}>
+        <MessageList messages={messages as MessageRecord[]} isLoading holding={false} />
+      </MessageActionsProvider>,
+    );
+    expect(foldState(container)).toBe('live');
+    expect(container.querySelector('[data-testid="streaming-indicator"]')).not.toBeNull();
+  });
+
+  it('draws the hold\'s line above the message it holds', () => {
+    const { container } = renderWithProviders(
+      <MessageActionsProvider actions={{}}>
+        <MessageList messages={[...history, ask, reply([])] as MessageRecord[]} isLoading holding holdLine={<div data-testid="hold-line" />} />
+      </MessageActionsProvider>,
+    );
+    const line = container.querySelector('[data-testid="hold-line"]')!;
+    const sent = container.querySelector('[data-message-id="u1"]')!;
+    expect(line.compareDocumentPosition(sent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('[data-message-id="u0"]')!.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('draws the hold\'s line above a report that opens the turn', () => {
+    const report: Msg = { ...ask, provenance: { kind: 'task_report', id: 't1' } };
+    const { container } = renderWithProviders(
+      <MessageActionsProvider actions={{}}>
+        <MessageList messages={[...history, report, reply([])] as MessageRecord[]} isLoading holding holdLine={<div data-testid="hold-line" />} />
+      </MessageActionsProvider>,
+    );
+    expect(container.querySelector('[data-testid="hold-line"]')).not.toBeNull();
+  });
+});
+
+describe('turn fold — a compaction ahead of the turn\'s work', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 24, 0, 21, s));
+  const compacted = { type: 'notification', content: 'Compacted from 214 messages', detail: 'summary', order: 0, context: true };
+  const turn = (segments: Msg[], tools: Msg = {}): Msg[] => [
+    { id: 'u0', role: 'user', content: 'ask', contentType: 'text', timestamp: at(0), isStreaming: false },
+    {
+      id: 'a0', role: 'assistant', content: '', contentType: 'text', timestamp: at(1), isStreaming: false,
+      completedAt: at(40).getTime(), contentSegments: segments, reasoningProcesses: {}, toolCallProcesses: tools,
+    },
+  ];
+  const divider = (container: HTMLElement) =>
+    [...container.querySelectorAll('span')].filter((el) => el.textContent === 'Compacted from 214 messages');
+  const follows = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it('sits above the turn\'s message, and stays when the turn folds', () => {
+    const { container } = renderList(turn(
+      [compacted, { type: 'tool_call', order: 1, toolCallId: 'tc-0' }, { type: 'text', content: 'answer', order: 2 }],
+      { 'tc-0': { toolName: 'WebSearch', toolCall: { args: {} }, isInProgress: false, isComplete: true, isFailed: false } },
+    ));
+    expect(foldState(container)).toBe('collapsed');
+    const shown = divider(container);
+    expect(shown).toHaveLength(1);
+    expect(follows(shown[0], container.querySelector('[data-message-id="u0"]')!)).toBe(true);
+  });
+
+  it('leaves a turn with nothing else to fold unfolded', () => {
+    const { container } = renderList(turn([compacted, { type: 'text', content: 'answer', order: 1 }]));
+    expect(foldState(container)).toBeNull();
+    expect(divider(container)).toHaveLength(1);
+  });
+
+  it('sits above a report that opens the turn', () => {
+    const [ask, answer] = turn([compacted, { type: 'text', content: 'answer', order: 1 }]);
+    const { container } = renderList([{ ...ask, provenance: { kind: 'task_report', id: 't1' } }, answer]);
+    expect(divider(container)).toHaveLength(1);
+  });
+
+  it('sits above the send a turn was admitted on, after one it refused on the same turn', () => {
+    const [ask, answer] = turn([compacted, { type: 'text', content: 'answer', order: 1 }]);
+    const { container } = renderList([
+      { ...ask, id: 'u-refused', turnIndex: 0 },
+      { ...answer, id: 'a-refused', turnIndex: 0, contentSegments: [{ type: 'text', content: 'refused', order: 0 }] },
+      { ...ask, turnIndex: 0, timestamp: at(50) },
+      { ...answer, turnIndex: 0, timestamp: at(51) },
+    ]);
+    const shown = divider(container);
+    expect(shown).toHaveLength(1);
+    expect(follows(shown[0], container.querySelector('[data-message-id="u0"]')!)).toBe(true);
+    expect(follows(container.querySelector('[data-message-id="a-refused"]')!, shown[0])).toBe(true);
+  });
+
+  it('stays in the turn after a call the list hides', () => {
+    const { container } = renderList(turn(
+      [{ type: 'tool_call', order: 0, toolCallId: 'tc-0' }, { ...compacted, order: 1 }, { type: 'text', content: 'answer', order: 2 }],
+      { 'tc-0': { toolName: 'TodoWrite', toolCall: { args: {} }, isInProgress: false, isComplete: true, isFailed: false } },
+    ));
+    // It folds with the turn's work, and opened, it shows below the message.
+    expect(foldState(container)).toBe('collapsed');
+    expect(divider(container)).toHaveLength(0);
+    act(() => container.querySelector<HTMLButtonElement>('[data-turn-fold] button[aria-expanded]')!.click());
+    const shown = divider(container);
+    expect(shown).toHaveLength(1);
+    expect(follows(container.querySelector('[data-message-id="u0"]')!, shown[0])).toBe(true);
+  });
+
+  it('stays in the turn, and folds with it, after the turn has worked', () => {
+    const { container } = renderList(turn([
+      { type: 'text', content: 'Looking', order: 0 },
+      { ...compacted, order: 1 },
+      { type: 'text', content: 'answer', order: 2 },
+    ]));
+    expect(foldState(container)).toBe('collapsed');
+    expect(divider(container)).toHaveLength(0);
   });
 });

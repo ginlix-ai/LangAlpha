@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import { TranscriptStatus } from '../chatView/TranscriptStatus';
+import { compactionOf } from '../chatView/compaction';
 
 vi.mock('../QueuedAutomationNotice', () => ({ QueuedAutomationNotice: () => null }));
 
@@ -13,8 +14,8 @@ function renderStatus(props: { turnHeld: string | null; workspaceStarting?: fals
       retired={null}
       turnStatus={{ workspaceStarting: props.workspaceStarting ?? false, turnHeld: props.turnHeld, cliQueue: null }}
       model={props.model ?? null}
-      isCompacting={false}
-      compactionTokens={null}
+      // As the view passes it: a send held behind a compaction is that compaction.
+      compaction={compactionOf(false, null, props.turnHeld)}
       queuedSend={false}
       threadId="thread-1"
       active
@@ -23,9 +24,9 @@ function renderStatus(props: { turnHeld: string | null; workspaceStarting?: fals
 }
 
 describe('TranscriptStatus – turn held line', () => {
-  it('compact reuses the compacting copy', () => {
+  it('compact is said once, as the compaction it waits behind', () => {
     renderStatus({ turnHeld: 'compact' });
-    expect(screen.getByText('Compacting conversation...')).toBeInTheDocument();
+    expect(screen.getAllByText('Compacting conversation...')).toHaveLength(1);
   });
 
   it('handoff names the previous model', () => {

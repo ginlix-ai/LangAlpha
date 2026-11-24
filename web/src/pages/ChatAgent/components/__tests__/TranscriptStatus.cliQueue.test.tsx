@@ -17,8 +17,7 @@ function renderStatus(cliQueue: CliQueueWait | null) {
       retired={null}
       turnStatus={{ workspaceStarting: false, turnHeld: null, cliQueue }}
       model={null}
-      isCompacting={false}
-      compactionTokens={null}
+      compaction={null}
       queuedSend={false}
       threadId="thread-1"
       active

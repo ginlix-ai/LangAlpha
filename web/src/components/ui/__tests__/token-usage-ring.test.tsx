@@ -257,6 +257,15 @@ describe('TokenUsageRing with a summary due', () => {
     expect(within(panel).queryByRole('button', { name: /Skip|Undo/ })).toBeNull();
   });
 
+  it('after a compaction, reads compacted, unless a summary is still due', async () => {
+    const compacted = { ...USAGE, lastInput: 0, lastCached: null, total: 0, compacted: true };
+    const { unmount } = renderWithProviders(<TokenUsageRing tokenUsage={compacted} threadId={THREAD} />, { queryClient: client() });
+    expect(screen.getByRole('button', { name: /compacted/ })).toBeTruthy();
+    unmount();
+    const panel = await openDue(hint('cold'), compacted);
+    expect(panel.textContent).toContain(LINE);
+  });
+
   it('shows with no window counted, and the panel is the summary alone', async () => {
     const panel = await openDue(hint('rebuild'), null);
     expect(panel.textContent).toContain(LINE);

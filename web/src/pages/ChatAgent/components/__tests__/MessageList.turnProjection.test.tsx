@@ -15,7 +15,7 @@ import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
 import MessageList from '../MessageList';
 import { MessageActionsProvider, type MessageActions } from '../messageList/MessageActionsContext';
-import { computeReplyEnds, computeTurnTails, newestTurn, projectTurns } from '../messageList/turnProjection';
+import { computeReplyEnds, computeTurnTails, newestTurn, newestTurnUnstarted, projectTurns } from '../messageList/turnProjection';
 import { visibleProjection } from '../messageList/contentProjection';
 import type { MessageRecord } from '../messageList/types';
 
@@ -545,5 +545,33 @@ describe('MessageList: a failed turn', () => {
     );
     expect(prose(container)).toEqual([]);
     expect(getAllByText('chat.errorInternalHeadline')).toHaveLength(1);
+  });
+});
+
+describe('turnProjection — whether the newest turn has started work', () => {
+  const ask = { role: 'user', content: 'ask' };
+  const reply = (contentSegments: { type: string; context?: boolean }[], extra = {}) => ({ role: 'assistant', contentSegments, ...extra });
+
+  it('reads a reply with nothing, or only context notices, as not started', () => {
+    expect(newestTurnUnstarted([ask, reply([])])).toBe(true);
+    expect(newestTurnUnstarted([ask, reply([{ type: 'notification', context: true }])])).toBe(true);
+  });
+
+  it('reads any other notice as the turn under way, as the head drawn above it does', () => {
+    expect(newestTurnUnstarted([ask, reply([{ type: 'notification' }])])).toBe(false);
+  });
+
+  it('reads any work, or a call being written, as started', () => {
+    expect(newestTurnUnstarted([ask, reply([{ type: 'text' }])])).toBe(false);
+    expect(newestTurnUnstarted([ask, reply([{ type: 'reasoning' }])])).toBe(false);
+    expect(newestTurnUnstarted([ask, reply([], { pendingToolCallChunks: { c: {} } })])).toBe(false);
+  });
+
+  it('needs a reply of the newest turn, not the one before', () => {
+    expect(newestTurnUnstarted([ask, reply([{ type: 'text' }]), ask])).toBe(false);
+    // A steer sent into the turn is not its opener.
+    expect(newestTurnUnstarted([ask, reply([]), { role: 'user', steering: true }])).toBe(true);
+    // Nor is a send parked behind the compaction.
+    expect(newestTurnUnstarted([ask, reply([]), { role: 'user', queued: true }])).toBe(true);
   });
 });
