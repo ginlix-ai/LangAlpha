@@ -478,9 +478,16 @@ def _build_command(args_path: str) -> str:
 
 
 async def install_tool_modules(
-    sandbox: "PTCSandbox", *, project: ProjectContext, tool_version: str | None = None
+    sandbox: "PTCSandbox",
+    *,
+    project: ProjectContext,
+    mcp_registry: Any,
+    tool_version: str | None = None,
 ) -> None:
     """Publish this workspace's wrappers and reconcile the computer's union.
+
+    ``mcp_registry`` is the workspace's own, handed in by its sync: the
+    sandbox's is the session's, which a sibling's connector install reassigns.
 
     Two round trips: one batch upload of everything this workspace generates,
     then one in-sandbox pass that merges the claim ledger, prunes what lost its
@@ -497,9 +504,9 @@ async def install_tool_modules(
         s.name: is_untrusted_server(s) for s in sandbox.config.mcp.servers
     }
 
-    assert sandbox.mcp_registry is not None
+    assert mcp_registry is not None
     assert sandbox.runtime is not None
-    tools_by_server = sandbox.mcp_registry.get_all_tools()
+    tools_by_server = mcp_registry.get_all_tools()
     server_names = sorted(tools_by_server)
 
     uploads: list[tuple[bytes, str]] = []
@@ -523,7 +530,7 @@ async def install_tool_modules(
     # not from the workspace, and a worker that did reach it may have installed
     # it; the reconcile leaves whatever the sandbox holds for it.
     unreached = (
-        getattr(builtin_registry_of(sandbox.mcp_registry), "failed_builtin_remote", None)
+        getattr(builtin_registry_of(mcp_registry), "failed_builtin_remote", None)
         or {}
     )
     held = sorted(

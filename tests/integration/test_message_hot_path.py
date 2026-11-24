@@ -358,7 +358,8 @@ class TestColdWarmSessionPath:
         from ptc_agent.core.project_context import ProjectContext
 
         await initial.sandbox._install_tool_modules(
-            project=ProjectContext(ws_id, binding.dir_name or "")
+            project=ProjectContext(ws_id, binding.dir_name or ""),
+            mcp_registry=initial.sandbox.mcp_registry,
         )
         assert not await initial.sandbox.workspace_overlay_missing(
             workspace_id=ws_id, dir_name=binding.dir_name

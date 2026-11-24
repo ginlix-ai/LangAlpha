@@ -1251,10 +1251,14 @@ class PTCSandbox:
         return await _mcp_setup._upload_discovery_client(self, extra_servers)
 
     async def _install_tool_modules(
-        self, *, project: ProjectContext, tool_version: str | None = None
+        self,
+        *,
+        project: ProjectContext,
+        mcp_registry: MCPRegistry,
+        tool_version: str | None = None,
     ) -> None:
         return await _tool_overlay.install_tool_modules(
-            self, project=project, tool_version=tool_version
+            self, project=project, mcp_registry=mcp_registry, tool_version=tool_version
         )
 
     async def workspace_overlay_missing(

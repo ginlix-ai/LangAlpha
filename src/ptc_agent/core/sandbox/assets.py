@@ -63,6 +63,17 @@ _ASSET_SYNC_CONTEXT: ContextVar[
     tuple[Any, tuple[Any, ...] | None, Mapping[str, str] | None] | None
 ] = ContextVar("asset_sync_context", default=None)
 
+#: The connector registry the running sync publishes. Its own, not
+#: ``sandbox.mcp_registry``: that one is the session's, which a sibling
+#: workspace's connector install reassigns while this sync awaits.
+_SYNC_REGISTRY: ContextVar[Any] = ContextVar("sync_registry", default=None)
+
+
+def sync_registry(sandbox: "PTCSandbox") -> Any:
+    """The registry a sync reads: its own inside one, else the sandbox's."""
+    bound = _SYNC_REGISTRY.get()
+    return bound if bound is not None else sandbox.mcp_registry
+
 
 @contextmanager
 def asset_sync_context(
@@ -92,16 +103,16 @@ async def _tool_sync_context(
     mcp_servers: tuple[Any, ...] | None = None,
 ) -> AsyncIterator[None]:
     async with sandbox._tool_refresh_lock:
-        previous_registry = sandbox.mcp_registry
         previous_servers = sandbox.config.mcp.servers
-        if mcp_registry is not None:
-            sandbox.mcp_registry = mcp_registry
+        bound = _SYNC_REGISTRY.set(
+            mcp_registry if mcp_registry is not None else sandbox.mcp_registry
+        )
         if mcp_servers is not None:
             sandbox.config.mcp.servers = list(mcp_servers)
         try:
             yield
         finally:
-            sandbox.mcp_registry = previous_registry
+            _SYNC_REGISTRY.reset(bound)
             sandbox.config.mcp.servers = previous_servers
 
 
@@ -192,9 +203,10 @@ def _compute_tool_schema_hash(sandbox: "PTCSandbox") -> str:
     Captures tool names + input schemas so that adding/removing/modifying
     a tool on a running MCP server is detected even if the .py file is unchanged.
     """
-    if not sandbox.mcp_registry:
+    registry = sync_registry(sandbox)
+    if not registry:
         return ""
-    all_tools = sandbox.mcp_registry.get_all_tools()
+    all_tools = registry.get_all_tools()
     parts: list[str] = []
     for server_name in sorted(all_tools):
         for tool in sorted(all_tools[server_name], key=lambda t: t.name):
@@ -858,7 +870,7 @@ async def sync_sandbox_assets(
         # The shared manifest may describe a sibling that discovered identical
         # tools first. Only this project's completed install satisfies its sync.
         claimed = union_ledger.get("tool_versions", {}).get(project.claim)
-        overlay_due = sandbox.mcp_registry is not None and (
+        overlay_due = sync_registry(sandbox) is not None and (
             rebuild_overlay or bool(project.dir_name and claimed != tool_version)
         )
         _mark_sync("manifest")
@@ -1022,7 +1034,9 @@ async def sync_sandbox_assets(
             if on_progress:
                 on_progress("Regenerating tool modules...")
             await sandbox._install_tool_modules(
-                project=project, tool_version=tool_version
+                project=project,
+                tool_version=tool_version,
+                mcp_registry=sync_registry(sandbox),
             )
             refreshed.append("tool_modules")
             _mark_sync("tool_modules")
