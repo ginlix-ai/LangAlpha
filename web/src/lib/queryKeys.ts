@@ -16,6 +16,8 @@ export const queryKeys = {
     all:         ['user'],
     me:          () => [...queryKeys.user.all, 'me'],
     preferences: () => [...queryKeys.user.all, 'preferences'],
+    // What a restart of the server would pause, asked as the update panel opens.
+    runningWork: () => [...queryKeys.user.all, 'running-work'],
     apiKeys:     () => [...queryKeys.user.all, 'api-keys'],
     claudeCodeCustody: () => [...queryKeys.user.all, 'claude-code-custody'],
     // Its own entry, not part of preferences: the server keeps it apart so the

@@ -477,3 +477,167 @@ html.desktop-mac .sidebar-history {
 @media (max-width: 767px) {
   .sidebar { display: none; }
 }
+
+/* ---- The desktop app's update (AppUpdate.tsx) ----
+   Shown only once there is an update to take, so the accent marks the one
+   thing in the sidebar that is waiting on the person. */
+.sidebar-update-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-accent-soft);
+  /* The account row sits 4px below, so the touch box keeps to that. */
+  --tap-target-h: 36px;
+  color: var(--color-accent-light);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: filter var(--motion-quick) var(--ease-out);
+}
+
+.sidebar-update-row:hover,
+.sidebar-update-rail:hover {
+  filter: brightness(1.12);
+}
+
+.sidebar-update-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-accent-primary);
+  color: var(--color-text-on-accent);
+  flex-shrink: 0;
+}
+
+.sidebar-update-icon svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 3;
+}
+
+.sidebar-update-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-update-version {
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  flex-shrink: 0;
+}
+
+.sidebar-update-rail {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: 10px;
+  background: var(--color-accent-soft);
+  cursor: pointer;
+}
+
+.sidebar-update-rail .sidebar-update-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.app-update-title {
+  font-size: 0.84375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.app-update-sub {
+  margin-top: 2px;
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+
+.app-update-link {
+  color: var(--color-accent-light);
+  text-decoration: none;
+}
+
+.app-update-link:hover {
+  text-decoration: underline;
+}
+
+.app-update-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 10px 0 12px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--color-border-muted);
+  list-style: none;
+}
+
+.app-update-line {
+  display: flex;
+  gap: 8px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+}
+
+.app-update-line::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.app-update-line--running::before {
+  background: var(--color-accent-primary);
+}
+
+.app-update-line b {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.app-update-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.app-update-btn {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid var(--color-border-elevated);
+  border-radius: 7px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-update-btn--primary {
+  border-color: transparent;
+  background: var(--color-accent-primary);
+  color: var(--color-text-on-accent);
+}
+
+.app-update-foot {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}

@@ -10,6 +10,7 @@ import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
 import type { NavWorkspace } from '@/pages/ChatAgent/hooks/useNavigationData';
 import AccountMenu from './AccountMenu';
+import AppUpdate from './AppUpdate';
 import { draftKeys } from '@/lib/composerDrafts';
 import { DraftPencil } from '@/components/ui/draft-mark';
 import { useChatRoute } from './useChatRoute';
@@ -225,6 +226,7 @@ function AppSidebar({ hidden, width, onWidthChange, peek, panelRef }: AppSidebar
       <GettingStartedGate />
 
       <div className="sidebar-panel-bottom">
+        <AppUpdate variant="row" />
         <AccountMenu />
       </div>
 
