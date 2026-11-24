@@ -1,0 +1,296 @@
+name: Desktop Build
+
+# Builds the open-source edition of the desktop app on every platform and leaves
+# the installers, the updater's archives and its manifests as artifacts. The two
+# workflows that ship it call this one and publish what it built:
+# desktop-release.yml a versioned release, desktop-nightly.yml each night's build
+# of main.
+#
+# On macOS and Linux it carries its own stack: Python and the backend, the web
+# app, Postgres and Valkey, built by desktop/scripts/bundle-backend.mjs, so it works
+# with no server to run. The first launch offers that or the address of a stack the
+# person already runs. Windows builds carry no stack and only ask for that address.
+# DESKTOP_BUNDLE_BACKEND=0 on the build step gives the thin build everywhere.
+#
+# What a build needs beyond the source comes from the environment the caller
+# names, so it reaches only these jobs, and only on the branches and with the
+# approvals that environment allows:
+#   secrets  MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD   the Developer ID that signs macOS
+#            APPLE_API_KEY_P8, APPLE_API_KEY_ID,  an App Store Connect key that
+#            APPLE_API_ISSUER, APPLE_TEAM_ID      notarizes it
+#            WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD   a Windows certificate, if any
+#   vars     DESKTOP_UPDATE_FEED                  the URL the update feed is served at
+# Each part works without the others. With no certificate the builds are unsigned;
+# with no feed they never update themselves.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.4.0, 0.4.0-rc.1, 0.4.1-nightly.202611250700). Empty keeps package.json's."
+        type: string
+        default: ""
+      ref:
+        description: "Commit to build. Empty builds the caller's."
+        type: string
+        default: ""
+      environment:
+        description: "Environment holding the signing secrets and the feed's address"
+        type: string
+        required: true
+    outputs:
+      version:
+        description: "The trimmed version, empty when package.json's was kept"
+        value: ${{ jobs.resolve.outputs.version }}
+      channel:
+        description: "The update channel the version publishes to: latest, nightly, rc..."
+        value: ${{ jobs.resolve.outputs.channel }}
+
+# Read only, so the build runners, which install dependencies and run
+# electron-builder (the third-party code in this workflow), cannot reach the
+# repository or its releases with the checkout's own token.
+permissions:
+  contents: read
+
+jobs:
+  # Ahead of the matrix, so a bad combination costs one runner-second rather than
+  # four builds that only fail at the upload.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      # The trimmed version: every later job reads it from here, never from the input.
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - name: Check the version and name its update channel
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          # Trimmed rather than tested as `!= ''`: a dispatch field holding a
+          # single space passes the expression form.
+          version=$(printf '%s' "$VERSION" | tr -d '[:space:]')
+          # It becomes a feed object name, a URL path segment and a git tag.
+          if [ -n "$version" ] && ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::'$version' is not a version like 0.4.0 or 0.4.0-rc.1"
+            exit 1
+          fi
+          # electron-builder names each update manifest after the channel it
+          # reads off the version's prerelease tag: 0.4.0 writes latest-mac.yml,
+          # 0.4.0-rc.1 writes rc-mac.yml. Everything below that collects or
+          # uploads a manifest asks for this name. Parameter expansion, not
+          # `expr`, which exits 1 on an empty match under `bash -e`.
+          channel=latest
+          case "$version" in *-*) pre=${version#*-}; channel=${pre%%.*} ;; esac
+          # A prerelease named `latest` would land on the stable channel.
+          if [ "$channel" = latest ] && [ "$version" != "${version%%-*}" ]; then
+            echo "::error::'$version' would publish to the stable channel; name its prerelease otherwise, like 0.4.0-rc.1"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    # The signing and notarization secrets and the feed's address. Every build
+    # needs the address, so it is on every platform's job.
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # A bundled build holds native code for one architecture and is built on a
+        # runner of that architecture, so each Mac gets a runner of its own.
+        # ubuntu-22.04 rather than latest: Valkey is compiled here, and it then runs
+        # on any glibc at least as new as the one it was built against.
+        os: [macos-15, macos-15-intel, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    # Valkey, the web build and a tree of over a gigabyte to compress and sign.
+    timeout-minutes: 120
+    # Declared once for the whole job. It selects what gets built and, through
+    # electron-builder.yml's per-edition `directories.output`, where the
+    # artifacts land, so the steps below read it rather than spelling the edition
+    # again beside a path that has to agree with it.
+    env:
+      DESKTOP_EDITION: oss
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+
+    steps:
+      # `contents: read` bounds what the token can do; this stops it being
+      # written into .git/config at all, where anything this job installs and
+      # runs could read it. Nothing here pushes.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # A commit, not the v6 tag: that tag still points at a release without
+      # pnpm 12 support.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          # Reads the pin from `packageManager`, so CI runs the pnpm the lockfile
+          # was written by without a second copy of the version to keep in sync.
+          package_json_file: desktop/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Pinned, because it decides which Python build comes out: uv knows a fixed
+      # table of them per release. bundle-backend.mjs refuses any other on CI.
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        if: runner.os != 'Windows'
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # What the bundler downloads, never what it compiles. fetchPinned hashes each
+      # file against its pin on every run, so a cache hit that is anything else is
+      # discarded and downloaded again.
+      - uses: actions/cache@v4
+        if: runner.os != 'Windows'
+        with:
+          path: desktop/dist/bundle-cache
+          key: desktop-bundle-${{ matrix.os }}-${{ hashFiles('desktop/scripts/bundle-backend.mjs') }}
+
+      - name: Stamp version
+        if: needs.resolve.outputs.version != ''
+        # Through `env`, never interpolated into the script body: an expression
+        # is substituted into the text before bash parses it, so a dispatch
+        # input would be read as shell in a step that carries signing secrets.
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: pnpm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      # Remote control's helper, which scripts/build.mjs puts inside the Mac app
+      # and electron-builder signs with it. DESKTOP_REQUIRE_HELPER below makes
+      # its absence fail the build rather than ship the app without it.
+      - name: Build the remote control helper
+        if: runner.os == 'macOS'
+        working-directory: helper
+        run: |
+          rustup toolchain install
+          scripts/build-macos.sh
+
+      # notarytool takes the App Store Connect key as a file: @electron/notarize
+      # passes APPLE_API_KEY straight to `notarytool --key`, whose contract is a
+      # path. Under RUNNER_TEMP, outside the tree electron-builder packages, so no
+      # `files` glob can sweep it into the app. With no key the build falls
+      # through to Apple ID sign-in, or to none, which scripts/build.mjs reports.
+      - name: Write the App Store Connect key
+        if: runner.os == 'macOS'
+        env:
+          KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$KEY_P8" ]; then
+            echo "no APPLE_API_KEY_P8; notarization falls back to Apple ID sign-in, or none"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/asc-api-key.p8"
+          printf '%s' "$KEY_P8" > "$key"
+          chmod 600 "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+
+      # hdiutil cannot detach the disk image it has just written while Spotlight
+      # is indexing it ("Resource busy"), and an image of over a gigabyte keeps
+      # it busy long enough to fail a build now and then.
+      - name: Keep Spotlight off the disk images
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off
+
+      - name: Build
+        env:
+          DESKTOP_REQUIRE_HELPER: ${{ runner.os == 'macOS' && '1' || '' }}
+          # Empty without a feed, and then the build carries no updater address.
+          # Left out of an unsigned Mac build too: macOS applies an update only to
+          # a signed app, so that build would download updates it cannot install
+          # and could never be updated into a signed one.
+          DESKTOP_UPDATE_FEED: ${{ (runner.os != 'macOS' || secrets.MAC_CSC_LINK != '') && vars.DESKTOP_UPDATE_FEED || '' }}
+          # electron-builder picks these up automatically. Absent, it produces an
+          # unsigned build and says so.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # Apple ID sign-in is checked first, so setting both retires the API
+          # key (APPLE_API_KEY is the path the step above exported). Leave the
+          # Apple ID secrets unset while the key is the credential in use.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run dist
+
+      # The packaged app started the way a first launch starts it: the bundled
+      # database, cache and server, then the setup status and the web app asked
+      # for (src/stack/smoke.js). It is the one check that runs what the package
+      # carries, so a binary that will not load stops the release here. The
+      # script finds the app for the platform and skips a package with no stack:
+      # Windows, or a thin build.
+      - name: Launch the packaged app
+        run: scripts/smoke-packaged.sh "$RUNNER_TEMP/smoke"
+
+      # A bundled installer is hundreds of megabytes, and this is where it shows.
+      - name: Report installer sizes
+        run: |
+          {
+            echo "### Installers on ${{ matrix.os }}"
+            find "dist/$DESKTOP_EDITION" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+              -exec du -h {} \;
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Asked of Gatekeeper itself, the way a downloaded copy is judged. A signed
+      # build it would refuse, say one whose notarization did not take, fails
+      # here: shipping it would refuse to open for everyone, with the same
+      # message an unsigned app gets. An unsigned build only reports.
+      - name: Check what Gatekeeper makes of it
+        if: runner.os == 'macOS'
+        env:
+          SIGNED: ${{ secrets.MAC_CSC_LINK != '' }}
+        run: |
+          out="dist/$DESKTOP_EDITION"
+          app=$(find "$out" -maxdepth 2 -name "*.app" -print -quit)
+          dmg=$(find "$out" -maxdepth 1 -name "*.dmg" -print -quit)
+          codesign -dv "$app" 2>&1 | head -5 || true
+          if [ "$SIGNED" != true ]; then
+            echo "::warning::unsigned build; macOS will ask people to allow it in Privacy & Security"
+            exit 0
+          fi
+          spctl -a -vv -t exec "$app"
+          xcrun stapler validate "$app"
+          spctl -a -vv -t open --context context:primary-signature "$dmg"
+
+      # "This build cannot update itself" is not something to learn from a user.
+      - name: Report the update manifest
+        continue-on-error: true
+        env:
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
+        run: |
+          ls "dist/$DESKTOP_EDITION/$CHANNEL"*.yml >/dev/null 2>&1 \
+            && echo "::notice::update manifests: $(cd "dist/$DESKTOP_EDITION" && ls "$CHANNEL"*.yml | tr '\n' ' ')" \
+            || echo "::warning::no update manifest; builds from this run cannot update themselves"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langalpha-desktop-${{ env.DESKTOP_EDITION }}-${{ matrix.os }}
+          retention-days: 14
+          if-no-files-found: error
+          # The .blockmap files are not cosmetic: electron-updater reads them to
+          # fetch only the changed blocks of an archive. Missing, it downloads the
+          # whole thing on every release.
+          path: |
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.dmg
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.zip
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.exe
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.AppImage
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.deb
+            desktop/dist/${{ env.DESKTOP_EDITION }}/${{ needs.resolve.outputs.channel }}*.yml
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.blockmap
