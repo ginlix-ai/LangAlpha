@@ -44,6 +44,7 @@ from fastapi.responses import StreamingResponse
 
 from src.server.database.conversation import get_thread_lifecycle_rows
 from src.server.database.conversation.viewer_threads import shared_lifecycle_rows
+from src.server.database.runs.running_work import count_running
 from src.server.services import cli_approvals, vendor_terms
 from src.server.services.shared_workspaces.feed import REACH_EVENT, SharedFeed
 from src.server.services.thread_lifecycle import project_lifecycle
@@ -136,6 +137,14 @@ async def _pending_vendor_terms(user_id: str) -> list[str]:
     except Exception as exc:
         logger.warning("thread-feed vendor terms read failed (user=%s): %s", user_id, exc)
         return []
+
+
+@router.get("/running-work")
+async def running_work(x_user_id: CurrentUserId) -> dict[str, int]:
+    """What a restart of this server would pause for the user: running turns,
+    background subagent tasks, and commands on a computer of this machine's
+    own, which stop with it. The desktop app shows it before an update."""
+    return await count_running(x_user_id)
 
 
 @router.get("/thread-events")
