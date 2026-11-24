@@ -468,6 +468,13 @@ jobs:
           REPO: ${{ github.repository }}
         run: bash "$RUNNER_TEMP/attach.sh"
 
+      # A Python of its own: the runner's moves with the image, and a pinned
+      # PyYAML stops having a wheel for it the day it does.
+      - uses: actions/setup-python@v5
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        with:
+          python-version: '3.13'
+
       # A step of its own, so the package it installs never runs beside the feed's
       # write key.
       - name: Gather the feed
@@ -483,10 +490,8 @@ jobs:
           # build. Same-named manifests are merged into the one a single build of
           # both architectures writes, x64 first, since the top-level `path` is
           # what an updater that predates per-architecture entries reads.
-          # A venv of its own: the runner's Python is externally managed (PEP 668).
-          python3 -m venv "$RUNNER_TEMP/feedpy"
-          "$RUNNER_TEMP/feedpy/bin/pip" install --quiet --only-binary=:all: pyyaml==6.0.2
-          "$RUNNER_TEMP/feedpy/bin/python" - <<'PY'
+          python -m pip install --quiet --only-binary=:all: pyyaml==6.0.3
+          python - <<'PY'
           import glob, os, sys, urllib.error, urllib.request, yaml
           def order(v):
               main, _, pre = v.partition("-")
