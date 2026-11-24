@@ -12,10 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ptc_agent.core.sandbox.asset_gate import AssetGate
+from ptc_agent.core.sandbox.livefs_runtime.protocol import MountError
 from ptc_agent.core.sandbox.migration import CURRENT_LAYOUT_VERSION
 from ptc_agent.core.sandbox.runtime import SandboxGoneError
 from src.server.services.computer_manager import _catch_up
 from src.server.services.computer_manager._types import MachineState
+from src.server.services.livefs.mount import MountState
 from tests.unit.server.services.test_computer_manager import (
     _LIFECYCLE,
     _Base,
@@ -855,41 +857,38 @@ class TestASyncOwedFromItsHandOver(_Base):
 class TestASyncBesideATurn(_Base):
     async def _sync(self, manager, **kwargs):
         sandbox = MagicMock()
+
+        async def beside(_computer_id, _user_id, _sandbox, sync, **_kwargs):
+            return await sync
+
         with (
-            patch.object(manager, "_sync_project_assets", AsyncMock(return_value="synced")) as alone,
-            patch.object(manager, "_livefs_beside", AsyncMock(return_value="synced")) as beside,
-            patch.object(manager, "_keep_livefs", AsyncMock()) as mount,
+            patch.object(manager, "_sync_project_assets", AsyncMock(return_value="synced")) as sync,
+            patch.object(manager, "_livefs_beside", AsyncMock(side_effect=beside)) as mount,
         ):
-            self.order: list[str] = []
-            alone.side_effect = lambda *_, **__: self.order.append("sync") or "synced"
-            mount.side_effect = lambda *_, **__: self.order.append("mount")
             got = await manager._sync_sandbox_assets(
                 _current_binding(), "user-1", sandbox, reusing_sandbox=True, **kwargs
             )
         assert got == "synced"
-        return alone, beside, mount
+        # No turn waits for the mount, so every sync starts it beside itself.
+        mount.assert_awaited_once()
+        return sync
 
-    async def test_it_moves_no_folders_and_asks_for_the_mount_only_after(self):
+    async def test_it_moves_no_folders(self):
         manager = _make_manager()
 
-        alone, beside, mount = await self._sync(manager, later=True, rebuild_overlay=True)
+        sync = await self._sync(manager, later=True, rebuild_overlay=True)
 
-        beside.assert_not_awaited()
-        assert alone.await_args.kwargs == {
+        assert sync.call_args.kwargs == {
             "rebuild_overlay": True,
             "known_layout_version": CURRENT_LAYOUT_VERSION,
         }
-        mount.assert_awaited_once()
-        assert self.order == ["sync", "mount"]
 
-    async def test_any_other_sync_brings_the_mount_up_beside_it(self):
+    async def test_any_other_sync_may_move_them(self):
         manager = _make_manager()
 
-        alone, beside, mount = await self._sync(manager)
+        sync = await self._sync(manager)
 
-        beside.assert_awaited_once()
-        assert "known_layout_version" not in alone.call_args.kwargs
-        mount.assert_not_awaited()
+        assert sync.call_args.kwargs["known_layout_version"] is None
 
 
 @pytest.mark.asyncio
@@ -1216,13 +1215,26 @@ class TestAnAttachOnATurn(_Base):
     KEY = ("ws-a", "sandbox-abc")
 
     async def _attach(
-        self, manager, session, *, later, overlay, links=None, restored=True, mount_owed=False
+        self,
+        manager,
+        session,
+        *,
+        later,
+        overlay,
+        links=None,
+        restored=True,
+        mount_owed=False,
+        start_trusted=False,
     ):
         links = links or AsyncMock(return_value=True)
         restore = AsyncMock(return_value=restored)
         keep_mount = AsyncMock()
+        browser = AsyncMock()
+        hand_ahead = MagicMock()
         patches = (
-            ("_keep_browser_settings", AsyncMock()),
+            ("_keep_browser_settings", browser),
+            ("_livefs_start_trusted", MagicMock(return_value=start_trusted)),
+            ("_hand_livefs_ahead", hand_ahead),
             ("_ensure_workspace_dirs", AsyncMock()),
             ("_maybe_restore_files", restore),
             ("_load_livefs", AsyncMock()),
@@ -1244,6 +1256,8 @@ class TestAnAttachOnATurn(_Base):
                 overlay=overlay,
                 restore=restore,
                 keep_mount=keep_mount,
+                browser=browser,
+                hand_ahead=hand_ahead,
             )
             yield_.returned_ahead = bool(running) and not any(t.done() for t in running)
             yield_.finish = lambda: asyncio.gather(*running, return_exceptions=True)
@@ -1270,6 +1284,82 @@ class TestAnAttachOnATurn(_Base):
         assert self.KEY in manager._projects_attached
         assert seen.overlay.await_args.kwargs["later"] is True
 
+    async def test_a_turn_hands_a_mount_start_it_trusts_to_a_catch_up_of_its_own(self):
+        """Behind the attach, in the order handed over, and the sandbox is
+        handed the mount ahead of it."""
+        manager = _make_manager()
+        session = _turn_session()
+        released = asyncio.Event()
+
+        seen, patched = await self._attach(
+            manager,
+            session,
+            later=True,
+            overlay=_held_until(released, True),
+            mount_owed=True,
+            start_trusted=True,
+        )
+        with patched:
+            assert seen.returned_ahead
+            attach, start = seen.running
+            seen.hand_ahead.assert_called_once_with("comp-1", "user-1", session.sandbox, start)
+            await _yield()
+            seen.keep_mount.assert_not_awaited()
+            released.set()
+            await seen.finish()
+
+        assert attach.done()
+        seen.browser.assert_awaited_once()
+        seen.keep_mount.assert_awaited_once_with("comp-1", "user-1", session.sandbox, "ws-a")
+
+    async def test_a_turn_waits_for_a_mount_start_it_does_not_trust(self):
+        """The attach is still handed over, but the prompt then says what the
+        start answered rather than taking it to serve."""
+        manager = _make_manager()
+        session = _turn_session()
+        released = asyncio.Event()
+
+        seen, patched = await self._attach(
+            manager,
+            session,
+            later=True,
+            overlay=_held_until(released, True),
+            mount_owed=True,
+        )
+        with patched:
+            assert seen.returned_ahead and len(seen.running) == 1
+            seen.keep_mount.assert_awaited_once_with(
+                "comp-1", "user-1", session.sandbox, "ws-a"
+            )
+            seen.hand_ahead.assert_not_called()
+            released.set()
+            await seen.finish()
+
+    @pytest.mark.parametrize(
+        ("case", "trusted"),
+        [
+            ("due", True),
+            ("failed", False),
+            ("serving", False),
+            ("never-mounts", False),
+            ("no-user", False),
+        ],
+    )
+    async def test_a_start_is_trusted_where_one_is_due_and_none_failed(self, case, trusted):
+        manager = _make_manager()
+        sandbox = SimpleNamespace(
+            mounts_livefs=case != "never-mounts", sandbox_id="sandbox-abc", livefs=None
+        )
+        seen = manager._machine("comp-1").livefs
+        if case == "failed":
+            seen.saw(sandbox, MountState(False, error=MountError.UNREACHABLE))
+        if case == "serving":
+            sandbox.livefs = object()
+            seen.saw(sandbox, MountState(True))
+        user = None if case == "no-user" else "user-1"
+
+        assert manager._livefs_start_trusted("comp-1", user, sandbox) is trusted
+
     async def test_an_attach_that_did_not_ask_finishes_before_it_returns(self):
         manager = _make_manager()
         session = _turn_session()
@@ -1280,6 +1370,7 @@ class TestAnAttachOnATurn(_Base):
         with patched:
             assert seen.running == []
             seen.links.assert_awaited_once()
+            seen.browser.assert_awaited_once()
             assert seen.overlay.await_args.kwargs["later"] is False
 
     async def test_an_attach_cut_short_before_its_work_began_records_nothing(self):

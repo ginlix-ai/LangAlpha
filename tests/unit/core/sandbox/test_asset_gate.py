@@ -82,7 +82,8 @@ async def test_a_wait_with_no_timeout_ends_only_by_the_release():
     assert not waiting.done()
 
     release()
-    assert await asyncio.wait_for(waiting, 1) >= 0.02
+    # Above zero only: the wait's own clock starts once its task first runs.
+    assert await asyncio.wait_for(waiting, 1) > 0
 
 
 async def test_a_hold_on_the_computer_holds_every_workspace_until_its_release():

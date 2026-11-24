@@ -62,7 +62,7 @@ from .envelope import (
     render_stamp,
 )
 from .epoch import BaselineEpoch, Observations, advance_epoch
-from .frozen_prompt import FrozenPromptMiddleware
+from .frozen_prompt import FrozenPromptMiddleware, prompt_says_mounted
 from .harness_blocks import HARNESS_BLOCKS, HarnessBlock
 from .state import STATE_BASELINE
 from .surface import (
@@ -76,6 +76,7 @@ from .tail import RowCarrierMiddleware
 from .templates import render_template
 from .turn import (
     ELAPSED_MIN_GAP,
+    FILE_MOUNT_ROW_KIND,
     NON_CHANGE_ROW_KINDS,
     NOTICE_ROW_KINDS,
     SUBAGENTS_ROW_KIND,
@@ -98,6 +99,7 @@ __all__ = [
     "ENVELOPE_HARD_CAP_TOKENS",
     "ENVELOPE_OPEN",
     "ENVELOPE_STEADY_TOKENS",
+    "FILE_MOUNT_ROW_KIND",
     "HARNESS_BLOCKS",
     "KNOWN_SURFACES",
     "NON_CHANGE_ROW_KINDS",
@@ -141,6 +143,7 @@ __all__ = [
     "last_stated",
     "may_hold_breakpoint",
     "parse_surface",
+    "prompt_says_mounted",
     "render_diff",
     "render_template",
     "render_stamp",

@@ -22,6 +22,7 @@ worker's own.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import time
@@ -80,6 +81,14 @@ class MountTracker:
         # The last ``serve`` answer, and when to ask again after a failed one.
         self._seen: MountState | None = None
         self._retry_at = 0.0
+        # The sandbox whose last start this worker asked for answered not
+        # serving. Kept through a stop, which leaves the sandbox what it was.
+        self._failed_on: str | None = None
+        # Pending from when a turn hands the mount's start off its path until
+        # a start answers for good or the work handed over ends: the last of
+        # it, where several turns handed theirs.
+        self._start: asyncio.Future[None] | None = None
+        self._start_work: set[asyncio.Future[Any]] = set()
         # The folders seen linked (None in it: the computer's own); None
         # until a link answers. A failed link holds off asking again until
         # ``_link_retry_at`` for the folders it failed for, or every folder
@@ -107,6 +116,7 @@ class MountTracker:
         # The backoffs and the probe time answer for what was seen, so they
         # go with it.
         self._seen, self._linked, self._link_held = None, None, None
+        self._start_over()
         self._retry_at = self._link_retry_at = self._renew_at = 0.0
         self._probed_at = -math.inf
 
@@ -129,6 +139,9 @@ class MountTracker:
             if seen is None or not seen.mounted or seen.expires_at != view.expires_at:
                 self._seen = view.state()
             self._retry_at = 0.0
+            self._failed_on = None
+            # Another worker's start answered for the one handed here.
+            self._start_over()
         elif seen is not None and seen.mounted:
             # Found down, stopped or replaced since: a serve asks the sandbox.
             self._seen = view.state()
@@ -146,6 +159,9 @@ class MountTracker:
             self._retry_at = now + _RETRY_S[MountError.BUSY]
             return
         self._seen = state
+        self._failed_on = None if state.mounted else self._sandbox_id
+        if state.settled:
+            self._start_over()
         if state.mounted:
             self._retry_at = 0.0
         else:
@@ -198,6 +214,48 @@ class MountTracker:
             and self._sandbox_id == sandbox_id(sandbox)
             and getattr(sandbox, "livefs", None) is not None
         )
+
+    def start_handed(self, sandbox: Any, work: asyncio.Future[Any]) -> None:
+        """A turn on ``sandbox`` handed ``work``, which starts the mount, off
+        its path, taking the start to serve. Until one answers for good, or
+        ``work`` ends, the mount is ``starting``: readers wait (``started``)
+        and nobody is told it serves or does not."""
+        self._on(sandbox)
+        if self._start is None:
+            self._start = asyncio.get_running_loop().create_future()
+        self._start_work.add(work)
+        work.add_done_callback(functools.partial(self._work_over, self._start))
+
+    def _work_over(self, start: asyncio.Future[None], work: asyncio.Future[Any]) -> None:
+        # Its own start only: a later one is another turn's to end.
+        if self._start is not start:
+            return
+        self._start_work.discard(work)
+        if not self._start_work:
+            self._start_over()
+
+    def _start_over(self) -> None:
+        start, self._start = self._start, None
+        self._start_work = set()
+        if start is not None and not start.done():
+            start.set_result(None)
+
+    def starting(self) -> bool:
+        """Whether a start handed off a turn's path is still to answer."""
+        return self._start is not None
+
+    async def started(self) -> None:
+        """Wait out a start still to answer. A cancelled wait leaves it
+        pending, as other readers wait on it too."""
+        while (start := self._start) is not None:
+            await asyncio.wait([start])
+
+    def failed(self, sandbox: Any) -> bool:
+        """Whether the last start this worker asked of ``sandbox`` answered
+        not serving, with none seen serving there since, a stop between them
+        or not. The next start is then waited for, where a first one is taken
+        to serve."""
+        return self._failed_on is not None and self._failed_on == sandbox_id(sandbox)
 
     def serves(self, sandbox: Any, workspace_id: str | None) -> bool:
         """Whether the mount serves ``workspace_id``'s folder on ``sandbox``

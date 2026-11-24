@@ -75,6 +75,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
     direct_tool_middleware,
     direct_tool_summary,
 )
+from ptc_agent.agent.middleware.file_mount_notice import FileMountNoticeMiddleware
 from ptc_agent.agent.middleware.order_governance import OrderLedger, places_order
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
@@ -1483,6 +1484,11 @@ class PTCAgent:
                 PatchToolCallsMiddleware(),
                 context.turn,
                 context.baseline,
+                # After the baseline, whose epoch holds what the prompt says
+                # of the mount.
+                FileMountNoticeMiddleware(
+                    sandbox, files_mounted=files_mounted, waits_for_start=claude_code
+                ),
                 notes_rows,
                 # Market watch (main agent only): writes the <market-watch>
                 # price stamp into history as a row while a watched venue is

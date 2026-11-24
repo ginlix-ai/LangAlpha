@@ -293,7 +293,20 @@ class WorkspaceManager(ComputerManager):
             # and an idle computer's token is left to run out, so this is
             # what has one in place before the turn's code runs. A read of
             # the row when the token has time left.
-            await self._keep_computer_tokens(binding.computer_id, user_id, session.sandbox)
+            computer_id, sandbox = binding.computer_id, session.sandbox
+            if self._catches_up_later(binding, session, assets_later):
+                # Only what the agent runs on the computer reads them, and a
+                # mint asks another service, which a turn's first model call
+                # need not wait on. After a stop the sync's own keep, beside
+                # it, is most often the one that writes them.
+                self._catch_up_soon(
+                    binding,
+                    session,
+                    lambda: self._keep_computer_tokens(computer_id, user_id, sandbox),
+                    what="tokens",
+                )
+            else:
+                await self._keep_computer_tokens(computer_id, user_id, sandbox)
             await self._settle_folders(
                 binding.computer_id, runtime, root=binding.root_dir, own_run_id=run_id
             )

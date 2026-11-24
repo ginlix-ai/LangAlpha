@@ -78,11 +78,10 @@ class LivefsMixin:
         # A settle holding the folders asked nothing, so whatever the sandbox
         # was handed stands.
         if sandbox is not None and state.error != MountError.BUSY:
-            sandbox.livefs = (
-                self._livefs_handle(computer_id, user_id, sandbox)
-                if state.mounted
-                else None
-            )
+            if state.mounted:
+                sandbox.livefs = self._livefs_handle(computer_id, user_id, sandbox)
+            else:
+                self._take_livefs_back(computer_id, sandbox)
         if state.mounted:
             # A turn's path keeps a token that only runs low; this replaces it.
             self._renew_livefs_soon(computer_id, user_id, sandbox)
@@ -156,7 +155,7 @@ class LivefsMixin:
             return
         serving = self._machine(str(computer_id)).livefs.load(sandbox, view)
         if not view.serving:
-            sandbox.livefs = None
+            self._take_livefs_back(computer_id, sandbox)
         elif serving and user_id and getattr(sandbox, "livefs", None) is None:
             sandbox.livefs = self._livefs_handle(computer_id, user_id, sandbox)
 
@@ -192,14 +191,62 @@ class LivefsMixin:
             or tracker.renewal_owed(sandbox)
         )
 
+    def _take_livefs_back(self, computer_id: Any, sandbox: Any) -> None:
+        """Take the mount from ``sandbox``, unless a start it was handed ahead
+        of is still to answer: what a turn was told then stands for as long
+        as it may prove true, and the hand-off's end settles it."""
+        if not self._machine(str(computer_id)).livefs.starting():
+            sandbox.livefs = None
+
+    def _livefs_start_trusted(
+        self, computer_id: Any, user_id: str | None, sandbox: Any
+    ) -> bool:
+        """Whether the mount on ``sandbox`` is due a start a turn takes to
+        serve without waiting for it: the machine mounts, and no start this
+        worker asked of it failed. After a failure the turn waits for the
+        next start, so its prompt says what is so. One worker's memory of
+        one sandbox, kept through a stop: the notice corrects a prompt
+        another worker got wrong (``FileMountNoticeMiddleware``)."""
+        tracker = self._machine(str(computer_id)).livefs
+        return bool(
+            user_id
+            and sandbox.mounts_livefs
+            and tracker.serve_due(sandbox)
+            and not tracker.serving(sandbox)
+            and not tracker.failed(sandbox)
+        )
+
+    def _hand_livefs_ahead(
+        self,
+        computer_id: Any,
+        user_id: str | None,
+        sandbox: Any,
+        start: asyncio.Future[Any],
+    ) -> None:
+        """Hand ``sandbox`` the mount ahead of ``start``, the work a turn
+        handed over that starts it. The turn's prompt and its history's
+        pointers at the transcripts then take the mount to serve, and
+        whatever reads through it waits for the start (``Handle.ready``). A
+        start that ends without a mount takes it back."""
+        tracker = self._machine(str(computer_id)).livefs
+        tracker.start_handed(sandbox, start)
+        sandbox.livefs = self._livefs_handle(computer_id, user_id, sandbox)
+
+        def settle(_start: asyncio.Future[Any]) -> None:
+            if not tracker.serving(sandbox):
+                self._take_livefs_back(computer_id, sandbox)
+
+        # After the tracker's own callback, which ends the start.
+        start.add_done_callback(settle)
+
     async def _keep_livefs(
         self, computer_id: Any, user_id: str | None, sandbox: Any, workspace_id: str
     ) -> None:
-        """A warm turn's share of the mount. A mount not serving is waited
-        for, since the prompt the turn builds says whether the files are
-        mounted. A token running low or gone and a folder not linked yet are
-        seen to off its path, and a command waits for what it needs of them
-        (``Handle.ready``)."""
+        """An acquire's share of the mount. A mount not serving is started
+        and waited for here; a turn's acquire hands this over where it trusts
+        the start (``_livefs_start_trusted``). A token running low or gone
+        and a folder not linked yet are seen to off its path, and a command
+        waits for what it needs of them (``Handle.ready``)."""
         if sandbox is None or not user_id:
             return
         tracker = self._machine(str(computer_id)).livefs

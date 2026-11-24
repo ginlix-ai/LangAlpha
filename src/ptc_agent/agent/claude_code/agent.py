@@ -41,6 +41,7 @@ from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, 
 from ptc_agent.agent.middleware import ask_user
 from ptc_agent.agent.middleware.background_subagent.event_capture import SubagentEventCaptureMiddleware
 from ptc_agent.agent.middleware.credit_gate import CreditGateMiddleware
+from ptc_agent.agent.middleware.file_mount_notice import FileMountNoticeMiddleware
 from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddleware, places_order
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.middleware.wakeups import WakeupCancelNoticeMiddleware
@@ -55,7 +56,7 @@ from src.tools.wakeups import quiet
 #: for has to be one ``waits_for_user`` holds, or the credit gate's.
 _HOLDS = (CreditGateMiddleware, OrderGovernanceMiddleware, StandingApprovalMiddleware)
 #: The middleware whose model-call hooks write rows the turn opens with.
-_OPENING_ROWS = (WakeupCancelNoticeMiddleware,)
+_OPENING_ROWS = (WakeupCancelNoticeMiddleware, FileMountNoticeMiddleware)
 
 
 def waits_for_user(orders: frozenset[str]):

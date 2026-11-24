@@ -32,7 +32,7 @@ SINGLE_ACCOUNT_TOKEN_SITES: Counter[tuple[str, str]] = Counter({
     ("src/server/services/computer_manager/_machines.py", "_build_machine_session"): 2,
     ("src/server/services/computer_manager/_provisioning.py", "_recover_sandbox"): 1,
     ("src/server/services/computer_manager/_provisioning.py", "_sync_project_assets"): 1,
-    ("src/server/services/workspace_manager.py", "get_session_for_workspace"): 1,
+    ("src/server/services/workspace_manager.py", "get_session_for_workspace"): 2,
     ("src/server/services/workspace_manager.py", "reach_computer"): 1,
 })
 

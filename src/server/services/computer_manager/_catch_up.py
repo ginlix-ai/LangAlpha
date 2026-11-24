@@ -1,11 +1,12 @@
 """Seam: what a computer still owes a workspace once its turn has started.
 
-A chat turn's first model call needs the computer up, its files in place and
-the file mount answered for. It does not need the asset sync (tool modules,
-internal packages, shared skills), the tool overlay or the skill links, which
-only what the agent then runs on the computer reads. An acquire made for a
-turn hands those to a catch-up here and returns; the sandbox's ``AssetGate``
-holds the turn's calls on the computer until the catch-up ends. Every other
+A chat turn's first model call needs the computer up and its files in place.
+It does not need the asset sync (tool modules, internal packages, shared
+skills), the tool overlay, the skill links, the browser settings, the
+computer's tokens or the file mount's start, which only what the agent then
+runs on the computer reads. An acquire made for a turn hands those to a
+catch-up here and returns; the sandbox's ``AssetGate`` holds the turn's calls
+on the computer until the catch-up ends. Every other
 acquire awaits the same work (``_run_or_catch_up``).
 
 One file of the ComputerManager split; see the package __init__.
@@ -252,9 +253,10 @@ class CatchUpMixin:
         *,
         what: str,
         attach_key: tuple[str, str | None] | None = None,
-    ) -> None:
+    ) -> asyncio.Task:
         """Run ``work`` off the acquire's path, holding ``binding``'s
         workspace's calls on the computer until it ends, however it ends.
+        Returns its task, which ends however the work does.
 
         Catch-ups for one workspace run in the order they were handed over.
         A failure opens the gate like a success: the call then runs on the
@@ -344,6 +346,7 @@ class CatchUpMixin:
                 del machine.catch_ups[workspace_id]
 
         task.add_done_callback(_done)
+        return task
 
     async def _stop_catch_ups(
         self, computer_id: str, *, workspace_id: str | None = None
