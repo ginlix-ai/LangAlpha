@@ -1281,6 +1281,47 @@ def _serving(sandbox: _Sandbox, *linked: str, minutes_left: float = 59) -> Mount
     return seen
 
 
+def test_a_tracker_holds_a_failed_start_until_the_mount_is_seen_serving():
+    """A turn waits for the start after a failed one (``_livefs_start_trusted``)."""
+    sandbox, seen = _Sandbox(), MountTracker()
+    assert not seen.failed(sandbox)
+
+    seen.saw(sandbox, MountState(False, error=MountError.INSTALLING))
+    assert seen.failed(sandbox)
+    # Folders moving asked nothing of the mount, so what was seen stands.
+    seen.saw(sandbox, MountState(False, error=MountError.BUSY))
+    assert seen.failed(sandbox)
+    assert not seen.failed(_Sandbox(sandbox_id="sb-other"))
+
+    seen.saw(sandbox, _up())
+    assert not seen.failed(sandbox)
+
+
+def test_a_failed_start_is_forgotten_once_another_worker_served():
+    sandbox, down = _Sandbox(), MountState(False, error=MountError.UNREACHABLE)
+    seen = MountTracker()
+    seen.saw(sandbox, down)
+    seen.load(sandbox, mount.MountView(True, _in(59), frozenset()))
+    assert not seen.failed(sandbox)
+
+    seen.saw(sandbox, down)
+    seen.load(sandbox, mount.MountView(False, None, frozenset()))
+    assert seen.failed(sandbox)
+
+
+def test_a_failed_start_outlasts_a_stop_of_the_same_sandbox():
+    """A machine whose mount never serves fails again at every wake, so a
+    wake after the first waits for the answer its new threads' prompts state."""
+    sandbox, seen = _Sandbox(), MountTracker()
+    seen.saw(sandbox, MountState(False, error=MountError.UNSUPPORTED))
+    seen.forget()
+
+    assert seen.failed(sandbox)
+    assert not seen.failed(_Sandbox(sandbox_id="sb-other"))
+    seen.saw(sandbox, _up())
+    assert not seen.failed(sandbox)
+
+
 def _handle(
     seen: MountTracker,
     sandbox: _Sandbox,
@@ -1297,6 +1338,182 @@ def _handle(
         link=link or AsyncMock(return_value=LinkState()),
         renew=renew or AsyncMock(return_value=None),
     )
+
+
+# -- a start a turn did not wait for -------------------------------------------
+
+
+async def _yield(times: int = 5) -> None:
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
+def _handed_ahead(manager, sandbox: _Sandbox) -> asyncio.Future:
+    """The mount handed to ``sandbox`` ahead of a start still to answer."""
+    work = asyncio.get_running_loop().create_future()
+    manager._hand_livefs_ahead(COMPUTER, USER, sandbox, work)
+    return work
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_handed_the_mount_ahead_of_its_start_holds_it_until_one_serves(clock):
+    manager, sandbox = _manager(), _Sandbox()
+    work = _handed_ahead(manager, sandbox)
+
+    assert sandbox.livefs is not None and sandbox.livefs.serving is None
+    await _served(manager, sandbox, _up())
+
+    assert sandbox.livefs.serving is True
+    assert not _seen(manager).starting()
+    work.set_result(None)
+    await _yield()
+    assert sandbox.livefs is not None
+
+
+@pytest.mark.parametrize(
+    ("answer", "kept"),
+    [
+        # A sync is still replacing the daemon's code: it is asked once more.
+        (MountState(False, error=MountError.STALE_CODE), True),
+        (MountState(False, reason="exec lost"), True),
+        (MountState(False, reason="folders are moving", error=MountError.BUSY), True),
+        (MountState(False, error=MountError.UNREACHABLE), False),
+        (MountState(False, error=MountError.INSTALLING), False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_an_answer_that_would_not_change_takes_the_mount_back_mid_start(
+    clock, answer, kept
+):
+    """Until then what the turn was told stands: history's pointers at the
+    transcripts would otherwise change between two calls of one turn."""
+    manager, sandbox = _manager(), _Sandbox()
+    work = _handed_ahead(manager, sandbox)
+
+    await _served(manager, sandbox, answer)
+
+    assert (sandbox.livefs is not None) is kept
+    assert _seen(manager).starting() is kept
+    # However the work ends, a start that never served leaves no mount handed.
+    work.cancel()
+    await _yield()
+    assert sandbox.livefs is None and not _seen(manager).starting()
+
+
+@pytest.mark.asyncio
+async def test_the_rows_saying_it_is_down_do_not_take_back_a_mount_still_starting(
+    clock, monkeypatch
+):
+    """Another turn on the computer reads them while the start is on its way."""
+    manager, sandbox = _manager(), _Sandbox()
+    work = _handed_ahead(manager, sandbox)
+    rows = mount.MountView(False, None, frozenset())
+    monkeypatch.setattr(mount, "view", AsyncMock(return_value=rows))
+
+    await manager._load_livefs(COMPUTER, USER, sandbox)
+    assert sandbox.livefs is not None
+
+    work.set_result(None)
+    await _yield()
+    await manager._load_livefs(COMPUTER, USER, sandbox)
+    assert sandbox.livefs is None
+
+
+@pytest.mark.asyncio
+async def test_a_command_waits_for_a_start_still_to_answer(clock):
+    manager, sandbox = _manager(), _Sandbox()
+    work = _handed_ahead(manager, sandbox)
+    handle = sandbox.livefs
+
+    asking = asyncio.create_task(handle.ready(WS_A))
+    await _yield()
+    assert not asking.done()
+
+    await _served(manager, sandbox, _up())
+    await _linked(manager, sandbox, _links(WS_A))
+    assert await asking is True
+    work.set_result(None)
+
+
+@pytest.mark.asyncio
+async def test_a_command_whose_awaited_start_failed_finds_no_mount(clock):
+    manager, sandbox = _manager(), _Sandbox()
+    _handed_ahead(manager, sandbox)
+    asking = asyncio.create_task(sandbox.livefs.ready(WS_A))
+    await _yield()
+
+    await _served(manager, sandbox, MountState(False, error=MountError.UNREACHABLE))
+
+    assert await asking is False
+    assert sandbox.livefs is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_turns_work_ending_does_not_end_a_later_start(clock):
+    """Each handed work ends only the start it was handed for."""
+    manager, sandbox = _manager(), _Sandbox()
+    first = _handed_ahead(manager, sandbox)
+    await _served(manager, sandbox, MountState(False, error=MountError.UNREACHABLE))
+    seen = _seen(manager)
+    assert not seen.starting()
+
+    later = asyncio.get_running_loop().create_future()
+    seen.start_handed(sandbox, later)
+    first.set_result(None)
+    await _yield()
+
+    assert seen.starting()
+    later.set_result(None)
+    await _yield()
+    assert not seen.starting()
+
+
+@pytest.mark.asyncio
+async def test_a_start_two_turns_handed_ends_with_the_last_of_their_work(clock):
+    """One workspace's catch-up ending, as when it is deleted mid-start, says
+    nothing of the start the other's is still to make."""
+    manager, sandbox = _manager(), _Sandbox()
+    first, second = _handed_ahead(manager, sandbox), _handed_ahead(manager, sandbox)
+
+    first.cancel()
+    await _yield()
+    assert _seen(manager).starting() and sandbox.livefs is not None
+
+    second.set_result(None)
+    await _yield()
+    assert not _seen(manager).starting() and sandbox.livefs is None
+
+
+@pytest.mark.asyncio
+async def test_rows_saying_another_worker_served_end_a_start_still_to_answer(
+    clock, monkeypatch
+):
+    """Nothing here asks a mount the rows say serves, so no answer would."""
+    manager, sandbox = _manager(), _Sandbox()
+    work = _handed_ahead(manager, sandbox)
+    rows = mount.MountView(True, _in(59), frozenset())
+    monkeypatch.setattr(mount, "view", AsyncMock(return_value=rows))
+
+    await manager._load_livefs(COMPUTER, USER, sandbox)
+
+    assert not _seen(manager).starting()
+    assert sandbox.livefs.serving is True
+    work.set_result(None)
+    await _yield()
+    assert sandbox.livefs is not None
+
+
+@pytest.mark.asyncio
+async def test_a_machine_forgotten_mid_start_lets_its_waiters_go(clock):
+    manager, sandbox = _manager(), _Sandbox()
+    _handed_ahead(manager, sandbox)
+    seen = _seen(manager)
+    waiting = asyncio.create_task(seen.started())
+    await _yield()
+
+    seen.forget()
+
+    await asyncio.wait_for(waiting, 1)
 
 
 def _serve_recorded(seen: MountTracker, sandbox: _Sandbox, state: MountState) -> AsyncMock:

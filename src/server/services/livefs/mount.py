@@ -523,10 +523,12 @@ async def renew(
 
 
 class Handle:
-    """The serving mount as the file tools see it (``MountHandle``), on the
-    worker running the turn. Execution context only: ``serve``, ``link`` and
-    ``renew`` go through the manager to the functions here, whose locks,
-    rows and daemon state are the truth, and each lands in ``tracker``.
+    """The mount as the file tools see it (``MountHandle``), on the worker
+    running the turn: serving, or handed ahead of a start a turn did not wait
+    for (``LivefsMixin._hand_livefs_ahead``). Execution context only:
+    ``serve``, ``link`` and ``renew`` go through the manager to the functions
+    here, whose locks, rows and daemon state are the truth, and each lands in
+    ``tracker``.
     ``serve(adopt=False)`` asks the sandbox whatever the rows say."""
 
     def __init__(
@@ -546,8 +548,17 @@ class Handle:
         self._link = link
         self._renew = renew
 
+    @property
+    def serving(self) -> bool | None:
+        tracker = self._tracker
+        return None if tracker.starting() else tracker.serving(self._sandbox)
+
+    async def started(self) -> None:
+        await self._tracker.started()
+
     async def ready(self, workspace_id: str | None = None) -> bool:
         tracker, sandbox = self._tracker, self._sandbox
+        await tracker.started()
         await tracker.keep_token(self._serve, self._renew)
         if not tracker.serves(sandbox, workspace_id):
             # Links still going in, or a folder whose links a backoff held off

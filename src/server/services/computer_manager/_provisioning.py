@@ -3,6 +3,7 @@
 One file of the ComputerManager split; see the package __init__."""
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -217,23 +218,7 @@ class ProvisioningMixin:
         file mount comes up beside the sync when due.
 
         ``later`` is a sync a catch-up runs beside a turn. It moves no
-        folders, which that turn is reading (``known_layout_version``), and
-        starts no mount beside it, since the turn's acquire saw to the mount
-        its prompt answers for; a start this sync stood in the way of is
-        asked once more after it."""
-        if later:
-            synced = await self._sync_project_assets(
-                binding,
-                user_id,
-                sandbox,
-                reusing_sandbox,
-                rebuild_overlay=rebuild_overlay,
-                known_layout_version=binding.layout_version,
-            )
-            await self._keep_livefs(
-                binding.computer_id, user_id, sandbox, binding.workspace_id
-            )
-            return synced
+        folders, which that turn is reading (``known_layout_version``)."""
         return await self._livefs_beside(
             binding.computer_id,
             user_id,
@@ -244,6 +229,7 @@ class ProvisioningMixin:
                 sandbox,
                 reusing_sandbox,
                 rebuild_overlay=rebuild_overlay,
+                known_layout_version=binding.layout_version if later else None,
             ),
             workspace_id=binding.workspace_id,
         )
@@ -1282,10 +1268,11 @@ class ProvisioningMixin:
         sandbox = getattr(session, "sandbox", None)
         if sandbox is None:
             return
-        # Every acquire, warm ones included: most run no sync, and a save that
-        # did not reach the machine waits for this. Free once it has them.
-        await self._keep_browser_settings(binding, sandbox)
         workspace_id = binding.workspace_id
+        # Only what the agent runs on the computer reads the browser settings,
+        # the overlay, the links and the mount, so a turn's acquire hands
+        # them over.
+        later = self._catches_up_later(binding, session, assets_later)
         # Before the overlay can end the attach, which does not end the turn:
         # a restart the reconnect found is recorded and a serving mount handed.
         await self._load_livefs(binding.computer_id, user_id, sandbox)
@@ -1297,20 +1284,40 @@ class ProvisioningMixin:
             if self._attached(binding, (workspace_id, self._session_sandbox_id(session)))
             else await self._restore_and_claim(binding, session)
         )
-        # Only what the agent runs on the computer reads the overlay and the
-        # links, so a turn's acquire hands them over and goes on to the mount,
-        # which its prompt answers for.
-        later = self._catches_up_later(binding, session, assets_later)
-        await self._run_or_catch_up(
-            binding,
-            session,
-            lambda: self._attach_overlay_and_skills(
+
+        async def attach() -> bool:
+            # Every acquire, warm ones included: most run no sync, and a save
+            # that did not reach the machine waits for this. Free once it
+            # has them.
+            await self._keep_browser_settings(binding, sandbox)
+            return await self._attach_overlay_and_skills(
                 binding, session, user_id=user_id, links=attach_key is not None, later=later
-            ),
-            later=later,
-            what="attach",
-            attach_key=attach_key,
+            )
+
+        await self._run_or_catch_up(
+            binding, session, attach, later=later, what="attach", attach_key=attach_key
         )
+        keep_mount = functools.partial(self._keep_livefs_if_owed, binding, user_id, sandbox)
+        if later and self._livefs_start_trusted(binding.computer_id, user_id, sandbox):
+            # Behind the attach and any sync before it, whose own start of
+            # the mount (``_livefs_beside``) is most often the one that
+            # answers: the daemon's code ships with the sync, so this one
+            # asks only once that code is in place.
+            self._hand_livefs_ahead(
+                binding.computer_id,
+                user_id,
+                sandbox,
+                self._catch_up_soon(binding, session, keep_mount, what="mount"),
+            )
+        else:
+            await keep_mount()
+
+    async def _keep_livefs_if_owed(
+        self, binding: ComputerBinding, user_id: str | None, sandbox: Any
+    ) -> None:
+        """``_keep_livefs`` for an attach, when it has anything to ask of the
+        mount, under the workspace's owner where the caller named no user."""
+        workspace_id = binding.workspace_id
         if not self._livefs_owed(binding.computer_id, workspace_id, sandbox):
             return
         if not user_id:
