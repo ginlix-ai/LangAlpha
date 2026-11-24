@@ -21,7 +21,10 @@ from src.observability import (
 from src.observability.tracing import hash_id as _obs_hash_id
 from src.observability.tracing import safe_aspan
 
-from src.server.database.computer import get_computer_for_workspace
+from src.server.database.computer import (
+    get_computer_for_workspace,
+    observed_layout_version,
+)
 from src.server.database.workspace import (
     get_workspace as db_get_workspace,
     get_workspace_identity as db_get_workspace_identity,
@@ -68,6 +71,7 @@ class SessionCacheMixin:
             files_backup=computer.get("files_backup", True) is not False,
             user_id=str(computer["user_id"]) if computer.get("user_id") else None,
             browser=browser_settings.read(computer),
+            layout_version=observed_layout_version(computer),
         )
 
     async def resolve_binding(

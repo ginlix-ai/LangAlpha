@@ -12,7 +12,7 @@ import shlex
 import time
 from secrets import token_hex
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -63,6 +63,17 @@ _ASSET_SYNC_CONTEXT: ContextVar[
     tuple[Any, tuple[Any, ...] | None, Mapping[str, str] | None] | None
 ] = ContextVar("asset_sync_context", default=None)
 
+#: The connector registry the running sync publishes. Its own, not
+#: ``sandbox.mcp_registry``: that one is the session's, which a sibling
+#: workspace's connector install reassigns while this sync awaits.
+_SYNC_REGISTRY: ContextVar[Any] = ContextVar("sync_registry", default=None)
+
+
+def sync_registry(sandbox: "PTCSandbox") -> Any:
+    """The registry a sync reads: its own inside one, else the sandbox's."""
+    bound = _SYNC_REGISTRY.get()
+    return bound if bound is not None else sandbox.mcp_registry
+
 
 @contextmanager
 def asset_sync_context(
@@ -92,16 +103,16 @@ async def _tool_sync_context(
     mcp_servers: tuple[Any, ...] | None = None,
 ) -> AsyncIterator[None]:
     async with sandbox._tool_refresh_lock:
-        previous_registry = sandbox.mcp_registry
         previous_servers = sandbox.config.mcp.servers
-        if mcp_registry is not None:
-            sandbox.mcp_registry = mcp_registry
+        bound = _SYNC_REGISTRY.set(
+            mcp_registry if mcp_registry is not None else sandbox.mcp_registry
+        )
         if mcp_servers is not None:
             sandbox.config.mcp.servers = list(mcp_servers)
         try:
             yield
         finally:
-            sandbox.mcp_registry = previous_registry
+            _SYNC_REGISTRY.reset(bound)
             sandbox.config.mcp.servers = previous_servers
 
 
@@ -136,6 +147,19 @@ async def _read_vault_digest(sandbox: "PTCSandbox") -> str | None:
     return _VAULT_UNREADABLE
 
 
+def _vault_is_behind(vault_secrets: Mapping[str, str] | None, on_disk: str | None) -> bool:
+    """Whether the root vault file holds other content than ``vault_secrets``."""
+    if vault_secrets is None:
+        return False
+    # No file rather than an empty one, so vault.list_names() is [].
+    wanted = (
+        hashlib.sha256(_canonical_vault_json(vault_secrets)).hexdigest()
+        if vault_secrets
+        else None
+    )
+    return on_disk != wanted
+
+
 async def _publish_changed_vault(
     sandbox: "PTCSandbox",
     vault_secrets: Mapping[str, str] | None,
@@ -146,13 +170,10 @@ async def _publish_changed_vault(
     ``None`` is a caller with nothing to say about the vault. ``on_disk`` is
     :func:`_read_vault_digest`'s answer.
     """
-    if vault_secrets is None:
+    if not _vault_is_behind(vault_secrets, on_disk):
         return False
+    assert vault_secrets is not None
     content = _canonical_vault_json(vault_secrets)
-    # No file rather than an empty one, so vault.list_names() is [].
-    wanted = hashlib.sha256(content).hexdigest() if vault_secrets else None
-    if on_disk == wanted:
-        return False
     assert sandbox.runtime is not None
     path = sandbox.layout.vault_secrets
     if vault_secrets:
@@ -192,9 +213,10 @@ def _compute_tool_schema_hash(sandbox: "PTCSandbox") -> str:
     Captures tool names + input schemas so that adding/removing/modifying
     a tool on a running MCP server is detected even if the .py file is unchanged.
     """
-    if not sandbox.mcp_registry:
+    registry = sync_registry(sandbox)
+    if not registry:
         return ""
-    all_tools = sandbox.mcp_registry.get_all_tools()
+    all_tools = registry.get_all_tools()
     parts: list[str] = []
     for server_name in sorted(all_tools):
         for tool in sorted(all_tools[server_name], key=lambda t: t.name):
@@ -729,6 +751,7 @@ async def sync_sandbox_assets(
     reusing_sandbox: bool = False,
     force_refresh: bool = False,
     rebuild_overlay: bool = False,
+    known_layout_version: int | None = None,
     project: ProjectContext | None = None,
     root_owner_dir_name: str | None = None,
     workspace_dir_names: tuple[str, ...] = (),
@@ -763,6 +786,12 @@ async def sync_sandbox_assets(
         rebuild_overlay: Build this project's tool overlay again whatever the
             ledger says of it, for one whose generated config is gone or
             damaged. The computer-wide modules still follow the manifest.
+        known_layout_version: The layout the host's own record says this
+            computer is at. No migration from below it runs, whatever the
+            manifest says or fails to say: a sync that runs beside a turn
+            must not move the folders the turn reads. A floor, not a refusal
+            to sync: a computer that lost its manifest would otherwise go
+            unsynced on every turn.
         project: Which project this sync is for, carrying its id and its
             folder on the computer. None is a machine with no project on
             it yet, which still owns the root. The folder travels here and
@@ -795,8 +824,9 @@ async def sync_sandbox_assets(
     if user_skill_dir:
         skill_dirs = list(skill_dirs or []) + [user_skill_dir]
 
-    async with _tool_sync_context(
-        sandbox, mcp_registry=mcp_registry, mcp_servers=mcp_servers
+    async with (
+        _tool_sync_context(sandbox, mcp_registry=mcp_registry, mcp_servers=mcp_servers),
+        AsyncExitStack() as writing,
     ):
         await sandbox.ensure_sandbox_ready()
 
@@ -851,7 +881,7 @@ async def sync_sandbox_assets(
         # The shared manifest may describe a sibling that discovered identical
         # tools first. Only this project's completed install satisfies its sync.
         claimed = union_ledger.get("tool_versions", {}).get(project.claim)
-        overlay_due = sandbox.mcp_registry is not None and (
+        overlay_due = sync_registry(sandbox) is not None and (
             rebuild_overlay or bool(project.dir_name and claimed != tool_version)
         )
         _mark_sync("manifest")
@@ -861,8 +891,13 @@ async def sync_sandbox_assets(
         # v1, so a failed first manifest write cannot replay old moves.
         first_layout = type(sandbox.provider).first_layout_version
         remote_layout = max(
-            (remote_manifest or {}).get("layout_version", 1), first_layout
+            (remote_manifest or {}).get("layout_version", 1),
+            first_layout,
+            known_layout_version or 0,
         )
+        if remote_layout < CURRENT_LAYOUT_VERSION:
+            # A migration moves every workspace's folder.
+            writing.callback(sandbox.assets.hold_computer())
         layout_version = await run_layout_migrations(
             sandbox.runtime,
             sandbox._work_dir,
@@ -874,6 +909,9 @@ async def sync_sandbox_assets(
         # Only stamp after every migration succeeds; failure leaves the old
         # manifest intact so the next acquisition retries the move.
         local_manifest["layout_version"] = layout_version
+        if _vault_is_behind(vault_secrets, vault_on_disk):
+            # The vault file is every workspace's as well.
+            writing.callback(sandbox.assets.hold_computer())
         await _publish_changed_vault(sandbox, vault_secrets, vault_on_disk)
 
         # 3. Determine which modules changed (pure CPU). An unreadable manifest
@@ -931,6 +969,12 @@ async def sync_sandbox_assets(
             # hash can carry. Fall through: every upload below is a no-op with
             # nothing changed, and the manifest write at the end records the
             # new version.
+
+        # From here the sync writes: packages, server files, the shared tool
+        # wrappers and client, and skills are what every workspace on the
+        # computer imports, so all of them wait until it is through, however
+        # it ends.
+        writing.callback(sandbox.assets.hold_computer())
 
         refreshed: list[str] = []
         skill_collisions: set[str] = set()
@@ -1013,7 +1057,9 @@ async def sync_sandbox_assets(
             if on_progress:
                 on_progress("Regenerating tool modules...")
             await sandbox._install_tool_modules(
-                project=project, tool_version=tool_version
+                project=project,
+                tool_version=tool_version,
+                mcp_registry=sync_registry(sandbox),
             )
             refreshed.append("tool_modules")
             _mark_sync("tool_modules")

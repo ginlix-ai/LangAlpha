@@ -89,6 +89,13 @@ end
 return 0
 """
 
+_EXTEND_LOCK_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('pexpire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
 # Write the first ARGV[3] of KEYS[2..] and delete the rest, only while the
 # counter at KEYS[1] reads ARGV[1] (absent reads 0), renewing the counter's TTL
 # to ARGV[2] when it exists. ARGV then holds a value and a TTL per key written.
@@ -608,6 +615,20 @@ class RedisCacheClient:
         except Exception as e:
             self._log_error(f"Lock release error for {key}", e)
             self.stats["errors"] += 1
+
+    async def extend_lock(self, key: str, token: str, ttl_ms: int) -> bool:
+        """Push a held lock's expiry out, only while this caller still owns
+        it. False when it is no longer theirs or Redis cannot answer, so a
+        holder that renews stops there."""
+        if not self.enabled or not self.client:
+            return False
+
+        try:
+            return bool(await self.client.eval(_EXTEND_LOCK_LUA, 1, key, token, ttl_ms))
+        except Exception as e:
+            self._log_error(f"Lock extend error for {key}", e)
+            self.stats["errors"] += 1
+            return False
 
     async def claim(self, key: str, value: str | bytes) -> bool:
         """Delete ``key`` only while it still holds ``value``: True when this

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from src.server.models.computer import ComputerStatus
 
 from src.server.services.computer_manager import ComputerBinding, MachineTarget
@@ -115,6 +116,7 @@ def _make_session(*, version=None, summary=None, config_owner="ws"):
     # Must match _make_workspace's sandbox_id: every cached return validates the
     # session's binding against the row before handing it out.
     session.sandbox.sandbox_id = "sb-1"
+    session.sandbox.assets = AssetGate()
     session.sandbox.is_ready = MagicMock(return_value=True)
     session.sandbox.has_failed = MagicMock(return_value=False)
     session.sandbox.ensure_sandbox_ready = AsyncMock()

@@ -585,8 +585,9 @@ async def test_an_attach_whose_tool_overlay_fails_still_reads_the_rows(
     rows, monkeypatch, lost
 ):
     """The overlay failing ends the attach, not the turn: the turn's
-    commands still get the mount the rows say serves, and a restart its
-    reconnect found is recorded for every other worker."""
+    commands still get the mount the rows say serves, a restart its
+    reconnect found is recorded for every other worker, and the mount that
+    restart took down is asked for again."""
     box = _Box()
     await _serving_everywhere(rows, box, _worker())
     worker, sandbox = _worker(), _Sandbox(box, lost=lost)
@@ -601,7 +602,7 @@ async def test_an_attach_whose_tool_overlay_fails_still_reads_the_rows(
         user_id=USER,
     )
 
-    keep.assert_not_awaited()
+    assert keep.await_count == int(lost)
     assert box.actions == ["start", "link"]
     if lost:
         assert rows.row().served_by is None and sandbox.livefs is None
@@ -610,12 +611,13 @@ async def test_an_attach_whose_tool_overlay_fails_still_reads_the_rows(
 
 
 @pytest.mark.asyncio
-async def test_an_attach_ending_early_takes_back_a_mount_the_rows_say_is_down(
+async def test_an_attach_whose_overlay_fails_brings_back_a_mount_the_rows_say_is_down(
     rows, monkeypatch
 ):
     """This worker's warm sandbox object was handed the mount on an earlier
-    turn, and a restart was recorded since. An attach that ends before any
-    serve must not leave the turn's prompt saying the files are mounted."""
+    turn, and a restart was recorded since. An attach whose overlay is still
+    missing goes on to the mount check, so the turn's prompt says the files
+    are mounted only once a mount serves them again."""
     box = _Box()
     worker = _worker()
     (sandbox,) = await _serving_everywhere(rows, box, worker)
@@ -630,8 +632,6 @@ async def test_an_attach_ending_early_takes_back_a_mount_the_rows_say_is_down(
         user_id=USER,
     )
 
-    assert sandbox.livefs is None
-    await _turn(worker, sandbox, WS_A)
     assert box.actions == ["start", "link", "start"]
     assert box.daemon_up and await sandbox.livefs.ready(WS_A)
 

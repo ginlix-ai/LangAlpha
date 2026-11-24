@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ptc_agent.core.sandbox._shared import REPLACE_UNLESS_NEWER_SCRIPT
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from src.server.database import computer_data_tokens as db
 from src.server.services import data_token_sweep, data_tokens
 from src.server.services.data_token_sweep import DataTokenSweeper
@@ -864,7 +865,7 @@ class TestTheAcquireKeepsTheToken:
         async def in_use(_workspace_id):
             yield
 
-        session = SimpleNamespace(sandbox=SimpleNamespace(runtime=object()))
+        session = SimpleNamespace(sandbox=SimpleNamespace(runtime=object(), assets=AssetGate()))
         binding = SimpleNamespace(
             computer_id=COMPUTER_ID, root_dir="/home/workspace", dir_name=None, user_id=USER_ID
         )

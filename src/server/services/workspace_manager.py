@@ -65,6 +65,7 @@ from src.server.services.computer_errors import (
     Retirement,
 )
 from src.server.services.computer_manager import ComputerManager
+from src.server.services.computer_manager._sync_turn import wait_for_sync
 from src.server.services.account import refuse_machine_use
 from src.server.services.computer_manager._types import (
     MachineTarget,
@@ -224,6 +225,8 @@ class WorkspaceManager(ComputerManager):
         skills_signature: str | None = None,
         run_id: str | None = None,
         _attempt: int = 0,
+        *,
+        assets_later: bool = False,
     ) -> Session:
         """Get or restart the session for the machine a workspace runs on.
 
@@ -256,6 +259,12 @@ class WorkspaceManager(ComputerManager):
                 a warm sandbox converges on skill changes. None (file routes,
                 ``/start``) keeps today's behavior: transitions still sync
                 unconditionally, only the warm compare is skipped.
+            assets_later: Return ahead of the computer's asset sync and skill
+                links, which then run as a catch-up while the sandbox's
+                ``AssetGate`` holds whatever the caller runs on the computer.
+                For a chat turn, whose first model call needs neither. Any
+                other caller gets a session whose computer is synced, and
+                waits out a catch-up a turn left running on this worker.
 
         Returns:
             Initialized Session instance.
@@ -275,6 +284,7 @@ class WorkspaceManager(ComputerManager):
             on_state_observed=on_state_observed,
             skills_signature=skills_signature,
             _attempt=_attempt,
+            assets_later=assets_later,
         )
         runtime = getattr(getattr(session, "sandbox", None), "runtime", None)
         if runtime is not None:
@@ -305,11 +315,19 @@ class WorkspaceManager(ComputerManager):
                 # sibling's folder and only that sibling's tool overlay. What
                 # the folder is given (connectors, skills, the file mount) is
                 # the computer's owner's, never the caller's.
-                await self._ensure_project_attached(binding, session, user_id=binding.user_id)
+                await self._ensure_project_attached(
+                    binding, session, user_id=binding.user_id, assets_later=assets_later
+                )
         except WorkspaceFolderMoving as e:
             raise SandboxTransientError(
                 "This workspace's folder is being moved. Try again in a moment."
             ) from e
+        if not assets_later and session.sandbox is not None:
+            # A catch-up a turn left running on this worker, waited out at the
+            # gate that turn's own calls wait at. To its end, as this caller
+            # waited for the sync on its own path: each catch-up is bounded
+            # by its deadline, and several queued outlast a call's wait.
+            await session.sandbox.assets.wait(workspace_id, timeout=None)
         return session
 
     async def reach_computer(self, computer_id: str, *, user_id: str) -> Session:
@@ -327,6 +345,10 @@ class WorkspaceManager(ComputerManager):
         if sandbox is None or sandbox.runtime is None or computer is None:
             raise RuntimeError(f"Computer {computer_id} has no sandbox to run on")
         runtime = sandbox.runtime
+        # A command from the computer's root reads every folder there, so it
+        # waits out whatever a turn left running on this worker for any of
+        # them, as this waited for the start that work was part of.
+        await sandbox.assets.wait_all(timeout=None)
         binding = self._binding_from_computer("", computer)
         await self._keep_computer_tokens(computer_id, user_id, sandbox)
         await self._settle_folders(computer_id, runtime, root=binding.root_dir)
@@ -512,6 +534,11 @@ class WorkspaceManager(ComputerManager):
             from src.server.services.commands.control import end_workspace_commands
 
             await end_workspace_commands(workspace_id)
+            # And an asset catch-up a turn that has ended left running, which
+            # writes the overlay and the skill links into the same folder.
+            await self._stop_catch_ups(computer_id, workspace_id=workspace_id)
+            # One this worker cannot cancel is given a short while to end.
+            await wait_for_sync(computer_id)
 
             try:
                 # The project's last mirror sync, before anything on the

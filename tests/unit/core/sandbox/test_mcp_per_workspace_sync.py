@@ -31,6 +31,7 @@ from ptc_agent.config.core import (
 )
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.project_context import ProjectContext
+from ptc_agent.core.sandbox.assets import asset_sync_context
 from ptc_agent.core.sandbox.providers._image_recipe import builtin_mcp_packages
 from ptc_agent.core.sandbox.runtime import ExecResult, SandboxRuntime
 from ptc_agent.core.sandbox.tool_overlay import (
@@ -530,23 +531,47 @@ class TestWarmSandboxOAuthBinding:
         sandbox.mcp_registry.get_all_tools = MagicMock(return_value=self.TOOLS)
         return sandbox
 
-    async def _sync(self, sandbox, remote_manifest):
+    async def _sync(
+        self, sandbox, remote_manifest, *, mid_sync=None, installing=None, migrating=None
+    ):
         """Drive the real sync against a sandbox already holding
         ``remote_manifest``, with every upload/exec seam stubbed."""
         sandbox._wait_ready = AsyncMock()
-        sandbox.ensure_sandbox_ready = AsyncMock()
+        sandbox.ensure_sandbox_ready = AsyncMock(side_effect=mid_sync)
         sandbox._prune_disabled_tool_modules = AsyncMock()
         sandbox._read_unified_manifest = AsyncMock(return_value=remote_manifest)
-        sandbox._install_tool_modules = AsyncMock()
+        sandbox._install_tool_modules = AsyncMock(side_effect=installing)
         sandbox._start_internal_mcp_servers = AsyncMock()
         sandbox._write_unified_manifest = AsyncMock()
         sandbox._cleanup_legacy_manifests = AsyncMock()
         sandbox._upload_mcp_server_files_impl = AsyncMock()
         sandbox._upload_internal_packages = AsyncMock()
+
+        async def no_move(_runtime, _work_dir, remote_layout, **_):
+            return remote_layout
+
         with patch(
-            "ptc_agent.core.sandbox.assets.run_layout_migrations", AsyncMock()
+            "ptc_agent.core.sandbox.assets.run_layout_migrations", migrating or no_move
         ):
             return await sandbox.sync_sandbox_assets(reusing_sandbox=True)
+
+    @pytest.mark.asyncio
+    async def test_a_registry_a_sibling_installs_mid_sync_is_neither_published_nor_undone(self):
+        """A sibling workspace's connector install reassigns the sandbox's
+        registry under no lock, while this workspace's sync awaits."""
+        pre_connect = await self._sandbox()._compute_sandbox_manifest()
+        bound = self._sandbox(oauth_connection_id="conn-1")
+        own, siblings = bound.mcp_registry, MagicMock()
+        siblings.get_all_tools = MagicMock(return_value={})
+
+        async def sibling_installs():
+            bound.mcp_registry = siblings
+
+        with asset_sync_context(mcp_registry=own, mcp_servers=None, vault_secrets=None):
+            await self._sync(bound, pre_connect, mid_sync=sibling_installs)
+
+        assert bound._install_tool_modules.await_args.kwargs["mcp_registry"] is own
+        assert bound.mcp_registry is siblings
 
     @pytest.mark.asyncio
     async def test_binding_flip_regenerates_the_client(self):
@@ -575,6 +600,103 @@ class TestWarmSandboxOAuthBinding:
 
         assert result.refreshed_modules == []
         same._install_tool_modules.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_writes_holds_every_workspace_until_it_ends(self):
+        """The wrappers and client it replaces are what a sibling workspace's
+        commands import, so the sibling's calls wait at the gate meanwhile."""
+        pre_connect = await self._sandbox()._compute_sandbox_manifest()
+        bound = self._sandbox(oauth_connection_id="conn-1")
+        settled_mid_write: list[bool] = []
+
+        async def installing(**_):
+            settled_mid_write.append(bound.assets.settled("a-sibling"))
+
+        await self._sync(bound, pre_connect, installing=installing)
+
+        assert settled_mid_write == [False]
+        assert bound.assets.settled("a-sibling")
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_fails_mid_write_lets_every_workspace_go(self):
+        pre_connect = await self._sandbox()._compute_sandbox_manifest()
+        bound = self._sandbox(oauth_connection_id="conn-1")
+
+        async def refused(**_):
+            raise RuntimeError("install refused")
+
+        with pytest.raises(RuntimeError, match="install refused"):
+            await self._sync(bound, pre_connect, installing=refused)
+
+        assert bound.assets.settled("a-sibling")
+
+    @pytest.mark.asyncio
+    async def test_a_sync_with_nothing_to_write_holds_no_workspace(self):
+        """Most syncs compare and return, and a sibling pays nothing for them."""
+        settled = await self._sandbox(
+            oauth_connection_id="conn-1"
+        )._compute_sandbox_manifest()
+        same = self._sandbox(oauth_connection_id="conn-1")
+        same.assets.hold_computer = MagicMock(wraps=same.assets.hold_computer)
+
+        await self._sync(same, settled)
+
+        same.assets.hold_computer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_only_rewrites_the_vault_holds_every_workspace_for_it(self):
+        """The vault file is one for the whole computer, and it is written
+        before the sync knows whether any module changed."""
+        settled = await self._sandbox(
+            oauth_connection_id="conn-1"
+        )._compute_sandbox_manifest()
+        same = self._sandbox(oauth_connection_id="conn-1")
+        same.runtime = MagicMock()
+        settled_mid_upload: list[bool] = []
+
+        async def upload(call, *_args, **_kwargs):
+            if call is same.runtime.upload_file:
+                settled_mid_upload.append(same.assets.settled("a-sibling"))
+
+        same._runtime_call = AsyncMock(side_effect=upload)
+        with (
+            patch(
+                "ptc_agent.core.sandbox.assets._read_vault_digest",
+                AsyncMock(return_value=None),
+            ),
+            asset_sync_context(
+                mcp_registry=same.mcp_registry,
+                mcp_servers=None,
+                vault_secrets={"KEY": "value"},
+            ),
+        ):
+            result = await self._sync(same, settled)
+
+        assert result.refreshed_modules == []
+        assert settled_mid_upload == [False]
+        assert same.assets.settled("a-sibling")
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_owes_a_layout_migration_holds_every_workspace_for_it(self):
+        """The migration moves the folders the workspaces work in, before the
+        sync has compared a single module."""
+        from ptc_agent.core.sandbox.migration import CURRENT_LAYOUT_VERSION
+
+        behind = {
+            **await self._sandbox(oauth_connection_id="conn-1")._compute_sandbox_manifest(),
+            "layout_version": CURRENT_LAYOUT_VERSION - 1,
+        }
+        same = self._sandbox(oauth_connection_id="conn-1")
+        settled_mid_move: list[bool] = []
+
+        async def migrating(_runtime, _work_dir, _remote_layout, **_):
+            settled_mid_move.append(same.assets.settled("a-sibling"))
+            return CURRENT_LAYOUT_VERSION
+
+        await self._sync(same, behind, migrating=migrating)
+
+        assert settled_mid_move == [False]
+        assert same.assets.settled("a-sibling")
 
 
 class TestInternalPackagesUpload:
@@ -728,6 +850,7 @@ class TestWorkspaceOverlayGate:
         sandbox._install_tool_modules.assert_awaited_once_with(
             project=ProjectContext(self.WORKSPACE, self.DIR),
             tool_version=version,
+            mcp_registry=sandbox.mcp_registry,
         )
 
     @pytest.mark.asyncio
@@ -1064,7 +1187,9 @@ class TestStaleDocSweep:
         """The args file the host uploads for the in-sandbox pass."""
         sandbox = self._sandbox(tools)
         await install_tool_modules(
-            sandbox, project=ProjectContext("ws-broker", self.DIR)
+            sandbox,
+            project=ProjectContext("ws-broker", self.DIR),
+            mcp_registry=sandbox.mcp_registry,
         )
         uploads = sandbox._runtime_call.await_args_list[0].args[1]
         blob = next(body for body, path in uploads if ".union_args." in path)
@@ -1099,7 +1224,11 @@ class TestStaleDocSweep:
         ]
         sandbox.mcp_registry.failed_builtin_remote = {"market": "down", "news": "down"}
 
-        await install_tool_modules(sandbox, project=ProjectContext("ws-broker", self.DIR))
+        await install_tool_modules(
+            sandbox,
+            project=ProjectContext("ws-broker", self.DIR),
+            mcp_registry=sandbox.mcp_registry,
+        )
 
         uploads = sandbox._runtime_call.await_args_list[0].args[1]
         args = json.loads(next(body for body, path in uploads if ".union_args." in path))
@@ -1146,7 +1275,9 @@ class TestStaleDocSweep:
         )
         with pytest.raises(ToolOverlayError, match="cannot remove"):
             await install_tool_modules(
-                sandbox, project=ProjectContext("ws-broker", self.DIR)
+                sandbox,
+                project=ProjectContext("ws-broker", self.DIR),
+                mcp_registry=sandbox.mcp_registry,
             )
 
     def test_a_path_another_writer_took_is_not_a_failure(

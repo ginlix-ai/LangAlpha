@@ -246,18 +246,22 @@ def sandbox_launcher(
     sandbox: PTCSandbox, *, identity: str, credential: TokenStore, env: dict[str, str] | None = None,
     plan: PlanLog | None = None,
     cli_slot: Callable[[float], contextlib.AbstractAsyncContextManager[None]] | None = None,
-    slot_wait_s: float = CLI_SLOT_WAIT_S,
+    slot_wait_s: float = CLI_SLOT_WAIT_S, workspace_id: str | None = None,
 ) -> SSHLauncher:
     """The launcher of a turn in ``sandbox``, a cloud computer's, signed in with
     what ``credential`` holds as the run starts; it reads no token file
     there. ``env`` is for a test endpoint, and ``plan`` keeps the plan
     behind a stored token (``SSHLauncher.plan``). ``cli_slot`` holds one of
-    the CLIs the computer runs at once as each starts, within ``slot_wait_s``."""
+    the CLIs the computer runs at once as each starts, within ``slot_wait_s``.
+    The CLI reads the skills and tool modules of ``workspace_id`` off the
+    computer itself, past the tool middleware, so its connection waits here
+    for an asset sync still running beside the turn."""
     link: SandboxLink | None = None
 
     async def connect() -> SandboxLink:
         nonlocal link
         await sandbox.wait_ready()
+        await sandbox.assets.wait(workspace_id)
         if link is None or link.runtime is not sandbox.runtime:
             link = SandboxLink(sandbox.runtime)
         return link

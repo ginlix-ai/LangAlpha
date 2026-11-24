@@ -232,6 +232,31 @@ class TestAMissingStampOnAMachineBornLater:
         assert migrate.await_args.args[2] == 1
 
 
+class TestASyncBesideATurnNeverMigrates:
+    """The host's record of the computer's layout floors the one the manifest
+    says, so a sync run while a turn reads the folders moves none of them."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manifest_layout", [None, 3], ids=["no-manifest", "older-manifest"])
+    async def test_a_known_current_layout_outranks_the_manifest(self, manifest_layout):
+        sandbox = _make_sandbox()
+        sandbox._read_unified_manifest = AsyncMock(
+            return_value=None
+            if manifest_layout is None
+            else await _settled_manifest(sandbox, layout_version=manifest_layout)
+        )
+        migrate = AsyncMock(side_effect=lambda _rt, _wd, version, **_kw: version)
+
+        with patch("ptc_agent.core.sandbox.assets.run_layout_migrations", migrate):
+            await sandbox.sync_sandbox_assets(
+                reusing_sandbox=True,
+                project=PROJECT,
+                known_layout_version=CURRENT_LAYOUT_VERSION,
+            )
+
+        assert migrate.await_args.args[2] >= CURRENT_LAYOUT_VERSION
+
+
 VAULT_FILE = f"{WORK_DIR}/_internal/.vault_secrets.json"
 
 

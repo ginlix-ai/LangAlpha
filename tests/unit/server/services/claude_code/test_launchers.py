@@ -3,6 +3,7 @@ machine with the token kept there (or the saved one, relayed where the
 server may); anywhere else on the backend with the saved token. Picked by
 the server, which hands it to the agent build."""
 
+import asyncio
 import contextlib
 import re
 from dataclasses import asdict, replace
@@ -17,6 +18,7 @@ from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.sandbox_launcher import SandboxLink
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core import claude_code_managed
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from ptc_agent.agent.claude_code.machine_token import token_name
 from ptc_agent.config.agent import Admitted
@@ -37,6 +39,7 @@ def _ssh_sandbox():
     sandbox.provider = MagicMock(spec=SSHProvider)
     sandbox.working_dir = "/home/me/langalpha"
     sandbox.wait_ready = AsyncMock()
+    sandbox.assets = AssetGate()
     sandbox.runtime.link = AsyncMock(return_value="the-link")
     return sandbox
 
@@ -351,6 +354,7 @@ async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_i
     sandbox = MagicMock()
     sandbox.working_dir = "/home/workspace"
     sandbox.wait_ready = AsyncMock()
+    sandbox.assets = AssetGate()
     launcher = turn_launcher(
         sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(hosted="api_key"),
     )
@@ -390,7 +394,7 @@ async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_c
     monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox")
     monkeypatch.setattr(launchers, "computer_cli_slot", full)
     sandbox = SimpleNamespace(
-        provider=MagicMock(), wait_ready=AsyncMock(),
+        provider=MagicMock(), wait_ready=AsyncMock(), assets=AssetGate(),
         runtime=SimpleNamespace(open_stream=AsyncMock(), exec=AsyncMock()), working_dir="/home/workspace",
     )
     launcher = turn_launcher(
@@ -595,3 +599,50 @@ def test_a_turns_cli_holds_one_of_the_computers_it_runs_on_and_a_checks_none(pic
                              admitted=admitted)
     assert (launcher.cli_slot.func, launcher.cli_slot.args) == (computer_cli_slot, (CID,))
     assert check_launcher(MagicMock(), "user-1", token_name(CID)).cli_slot is None
+
+
+async def _held_until_released(sandbox, link, reached):
+    release = sandbox.assets.hold("ws-1")
+    dialing = asyncio.create_task(link())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not dialing.done() and not reached()
+    release()
+    return await asyncio.wait_for(dialing, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_own_computers_cli_dials_only_once_the_workspaces_assets_have_settled():
+    sandbox = _ssh_sandbox()
+    launcher = turn_launcher(
+        sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(saved=None),
+    )
+
+    link = await _held_until_released(sandbox, launcher.machine.link, lambda: sandbox.runtime.link.await_count > 0)
+
+    assert link == "the-link"
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_computers_cli_in_its_sandbox_connects_only_once_the_workspaces_assets_have_settled(monkeypatch):
+    from src.server.services.claude_code import launchers
+
+    monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox")
+    sandbox = MagicMock()
+    sandbox.working_dir = "/home/workspace"
+    sandbox.wait_ready = AsyncMock()
+    sandbox.assets = AssetGate()
+    launcher = turn_launcher(
+        sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(hosted="api_key"),
+    )
+    built: list[object] = []
+    real = SandboxLink
+
+    def _building(runtime):
+        built.append(runtime)
+        return real(runtime)
+
+    with patch("ptc_agent.agent.claude_code.sandbox_launcher.SandboxLink", _building):
+        link = await _held_until_released(sandbox, launcher.machine.link, lambda: bool(built))
+
+    assert isinstance(link, SandboxLink) and link.runtime is sandbox.runtime

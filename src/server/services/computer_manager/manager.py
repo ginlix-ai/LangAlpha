@@ -14,6 +14,7 @@ from src.server.services.workspace_entitlements import WorkspaceEntitlementsMixi
 
 from src.server.services.computer_manager._types import MachineState
 from src.server.services.computer_manager._bringup import BringUpMixin
+from src.server.services.computer_manager._catch_up import CatchUpMixin
 from src.server.services.computer_manager._machine_backup import MachineBackupMixin
 from src.server.services.computer_manager._folders import FolderSettleMixin
 from src.server.services.computer_manager._lifecycle import SessionLifecycleMixin
@@ -38,6 +39,7 @@ class ComputerManager(
     ProvisioningMixin,
     LivefsMixin,
     BringUpMixin,
+    CatchUpMixin,
     FolderSettleMixin,
     MachineBackupMixin,
     McpSecretsMixin,
@@ -188,6 +190,9 @@ class ComputerManager(
             task.cancel()
         self._mcp_discovery_tasks.clear()
 
+        # Before the providers they call through are closed.
+        for computer_id in list(self._machines):
+            await self._stop_catch_ups(computer_id)
         await self.drop_cached_providers()
 
         # Shutdown must leave machines running: this drops what this worker

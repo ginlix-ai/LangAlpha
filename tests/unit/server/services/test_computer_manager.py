@@ -19,6 +19,7 @@ from unittest.mock import call as mock_call
 import pytest
 
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig
+from ptc_agent.core.sandbox.asset_gate import AssetGate
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from src.server.database.workspace_folders import WorkspaceFolderMoving
 from src.server.services.computer_errors import (
@@ -131,6 +132,7 @@ def _make_session():
     session._initialized = True
     session.sandbox = MagicMock()
     session.sandbox.sandbox_id = "sandbox-abc"
+    session.sandbox.assets = AssetGate()
     return session
 
 
@@ -3086,6 +3088,47 @@ class TestBareMachine(_Base):
         assert backup.await_args_list[0].kwargs["expected_sandbox_id"] == "sandbox-abc"
 
     @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.LocalRunExecutor")
+    @patch(f"{_MACHINES}.update_computer_status")
+    @patch(f"{_MACHINES}.get_computer")
+    @patch(f"{_LIFECYCLE}.get_computer")
+    async def test_a_stop_waits_for_syncs_under_its_heartbeat(
+        self, mock_lifecycle_get, mock_machines_get, mock_status, mock_executor
+    ):
+        """An acquire waiting on this stop reverts a claim it finds with no
+        heartbeat, and the wait for a sync can outlast its patience."""
+        from contextlib import asynccontextmanager
+
+        manager = _make_manager()
+        computer = _make_computer(status="running", provider_ref="sandbox-abc")
+        mock_lifecycle_get.return_value = computer
+        mock_machines_get.return_value = computer
+        mock_status.return_value = {**computer, "status": "stopping"}
+        mock_executor.get_instance.return_value = MagicMock(
+            has_active_tasks_for_computer=AsyncMock(return_value=False)
+        )
+        events: list[str] = []
+
+        @asynccontextmanager
+        async def heartbeat(_computer_id):
+            events.append("heartbeat")
+            yield
+            events.append("heartbeat ended")
+
+        manager._stop_catch_ups = AsyncMock(side_effect=lambda *_: events.append("catch-ups"))
+        manager._finish_claimed_stop = AsyncMock(side_effect=lambda *_, **__: events.append("stop"))
+        with (
+            patch(f"{_LIFECYCLE}.computer_stop_heartbeat", heartbeat),
+            patch(
+                f"{_LIFECYCLE}.wait_for_sync",
+                AsyncMock(side_effect=lambda *_: events.append("syncs")),
+            ),
+        ):
+            await manager._stop_machine("comp-1")
+
+        assert events == ["heartbeat", "catch-ups", "syncs", "stop", "heartbeat ended"]
+
+    @pytest.mark.asyncio
     @patch(f"{_MACHINE_BACKUP}.get_live_workspace_ids_for_computer")
     @patch(f"{_LIFECYCLE}.LocalRunExecutor")
     @patch(f"{_MACHINES}.update_computer_status")
@@ -3269,6 +3312,7 @@ class TestWorkspaceFacade(_Base):
             on_state_observed=None,
             skills_signature=None,
             _attempt=0,
+            assets_later=False,
         )
         binding, got = manager._ensure_project_attached.await_args.args
         assert binding.workspace_id == "ws-a"
@@ -3312,7 +3356,7 @@ class TestWorkspaceFacade(_Base):
         async def settle(_computer_id, _runtime, **_kw):
             events.append("settle")
 
-        async def attach(binding, _session, *, user_id=None):
+        async def attach(binding, _session, *, user_id=None, assets_later=False):
             events.append(f"attach {binding.dir_name}")
 
         manager._acquire_session = AsyncMock(return_value=session)
@@ -3381,6 +3425,23 @@ class TestShutdown(_Base):
 
         assert manager._machines == {}
         assert manager._session_computer == {}
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    async def test_shutdown_stops_the_catch_ups_this_worker_runs(self, mock_session_mgr):
+        """Before the providers they call through are closed."""
+        mock_session_mgr.stop_all = AsyncMock()
+        manager = _make_manager()
+        running = asyncio.create_task(asyncio.Event().wait())
+        manager._machine("comp-1").catch_ups["ws-a"] = [running]
+        closed_after: list[bool] = []
+        manager.drop_cached_providers = AsyncMock(
+            side_effect=lambda: closed_after.append(running.cancelled())
+        )
+
+        await manager.shutdown()
+
+        assert closed_after == [True]
 
 
 # ---------------------------------------------------------------------------
