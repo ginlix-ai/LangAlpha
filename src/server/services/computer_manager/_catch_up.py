@@ -2,11 +2,11 @@
 
 A chat turn's first model call needs the computer up and its files in place.
 It does not need the asset sync (tool modules, internal packages, shared
-skills), the tool overlay, the skill links, the browser settings or the file
-mount's start, which only what the agent then runs on the computer reads. An
-acquire made for a turn hands those to a catch-up here and returns; the
-sandbox's ``AssetGate`` holds the turn's calls on the computer until the
-catch-up ends. Every other
+skills), the tool overlay, the skill links, the browser settings, the
+computer's tokens or the file mount's start, which only what the agent then
+runs on the computer reads. An acquire made for a turn hands those to a
+catch-up here and returns; the sandbox's ``AssetGate`` holds the turn's calls
+on the computer until the catch-up ends. Every other
 acquire awaits the same work (``_run_or_catch_up``).
 
 One file of the ComputerManager split; see the package __init__.
