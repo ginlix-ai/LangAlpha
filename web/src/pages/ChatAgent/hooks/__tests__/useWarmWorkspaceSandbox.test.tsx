@@ -21,6 +21,9 @@ vi.mock('@/api/client', () => {
 
 vi.mock('@/lib/supabase', () => ({ supabase: null }));
 
+const route = vi.hoisted(() => ({ kind: 'done' }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: route.kind }) }));
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { api } from '@/api/client';
@@ -146,6 +149,7 @@ let detail: Record<string, unknown> = {};
 const detailGets = () => mockGet.mock.calls.filter(([url]) => url === '/api/v1/workspaces/ws-1');
 
 beforeEach(() => {
+  route.kind = 'done';
   detail = { workspace_id: 'ws-1', status: 'stopped' };
   mockGet.mockReset().mockImplementation(async () => ({ data: detail }));
   mockPost.mockReset().mockResolvedValue({
@@ -169,6 +173,26 @@ describe('useWarmWorkspaceSandbox', () => {
       wrapper: wrapper(qc),
     });
 
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true&reason=workspace_open');
+    });
+  });
+
+  it('starts nothing while the live onboarding route is still read, then warms', async () => {
+    const qc = makeClient();
+    const { fetchMock } = makeMockSSEStream();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    route.kind = 'loading';
+
+    const { rerender } = renderHook(() => useWarmWorkspaceSandbox('ws-1'), {
+      wrapper: wrapper(qc),
+    });
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    await new Promise((res) => setTimeout(res, 20));
+    expect(mockPost).not.toHaveBeenCalled();
+
+    route.kind = 'done';
+    rerender();
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true&reason=workspace_open');
     });

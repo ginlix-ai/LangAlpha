@@ -129,6 +129,16 @@ describe('checkForNewBuild', () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
+  it('reads the entry past a module script the edge put ahead of it', async () => {
+    const beacon = document.createElement('script');
+    beacon.type = 'module';
+    beacon.src = 'https://static.cloudflareinsights.com/beacon.min.js';
+    document.head.prepend(beacon);
+    vi.stubGlobal('fetch', respond({ build: 'index-CURRENT.js' }));
+    await checkForNewBuild();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
   it('stays quiet on an HTML answer even when its body parses as JSON', async () => {
     // A miss that fell through to the SPA shell answers 200 text/html. The
     // body deliberately parses here: a version.json that only checked the

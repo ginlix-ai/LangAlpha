@@ -15,6 +15,9 @@ import { WarmHome } from '@/components/WarmHome';
 import { renderWithProviders } from '@/test/utils';
 import type { Computer } from '@/types/api';
 
+// The account's setup still runs on its answers.
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: 'answers' }) }));
+
 const shell = vi.hoisted(() => ({
   mac: true,
   remote: true,
@@ -124,7 +127,7 @@ function macRow(filesBackup: boolean): Partial<Computer> {
 function draw() {
   return renderWithProviders(
     <ThisMacFirstRunGate>
-      <WarmHome setupRunning />
+      <WarmHome />
       <div data-testid="app" />
     </ThisMacFirstRunGate>,
   );

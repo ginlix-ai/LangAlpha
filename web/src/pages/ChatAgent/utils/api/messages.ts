@@ -359,22 +359,7 @@ export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
   [key: string]: unknown;
 };
 
-/**
- * Get the current status of a workflow for a thread
- * @param {string} threadId - The thread ID to check
- * @param {number} [options.timeout] - Bound the read; the shared API client sets none
- * @returns {Promise<WorkflowStatusResponse>} Workflow status with can_reconnect, status, etc.
- */
-export async function getWorkflowStatus(
-  threadId: string,
-  options: { timeout?: number } = {},
-): Promise<WorkflowStatusResponse> {
-  if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.get(`/api/v1/threads/${threadId}/status`, { timeout: options.timeout });
-  return data;
-}
-
-/** Cheap report-back-only slice of {@link getWorkflowStatus}. */
+/** Cheap report-back-only slice of the thread's status (`getWorkflowStatus`). */
 export interface ReportBackStatusResponse extends ThreadReportBackStatus {
   thread_id: string;
 }

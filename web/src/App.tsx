@@ -14,7 +14,7 @@ import { useAuth } from './contexts/AuthContext';
 import { useIsMobile } from './hooks/useIsMobile';
 import { useSyncAppearance } from './hooks/useAppearance';
 import { useLocale } from './hooks/useLocale';
-import { useOnboardingRoute } from './hooks/useOnboardingRoute';
+import { useShellOnboardingRoute } from './hooks/useOnboardingRoute';
 import { setupSkipped } from './hooks/useSetupGate';
 import { shellTarget } from './pages/Setup/answers/gate';
 import { canAddThisMac, isDesktopShell } from './lib/desktop';
@@ -245,7 +245,7 @@ function AuthenticatedShell() {
   const location = useLocation();
   const onWelcome = location.pathname === WELCOME_PATH;
   const hideTabBar = isMobile && location.pathname.startsWith('/chat/t/');
-  const onboarding = useOnboardingRoute();
+  const onboarding = useShellOnboardingRoute();
 
   // A new build is taken on a switch between sections, never inside one: chat
   // keeps every thread it has opened mounted, with its unsent message, while
@@ -289,8 +289,8 @@ function AuthenticatedShell() {
   // navigations mount their lazy component directly.
   useEffect(() => {
     if (window.location.pathname === WELCOME_PATH) void Welcome.preload();
-    else preloadRouteChunk(window.location.pathname);
-  }, []);
+    else preloadRouteChunk(window.location.pathname, queryClient);
+  }, [queryClient]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
@@ -381,7 +381,7 @@ function AuthenticatedShell() {
       <ThreadLifecycleFeed />
       {/* One prompt at a time: the agent's command requests first, then vendor terms. */}
       <CliApprovalHost fallback={(held) => <VendorTermsHost held={held} />} />
-      <WarmHome setupRunning={onboarding.kind === 'answers'} />
+      <WarmHome />
       {onWelcome ? (
         // Full screen and none of the app's chrome: the flow is the page.
         // The hosts below stay, since a brokerage connect it starts asks for

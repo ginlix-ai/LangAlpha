@@ -349,7 +349,7 @@ export function WelcomeFlow({
   useEffect(() => {
     if (mode !== 'new') return;
     void queryClient.prefetchQuery(marketBriefQuery);
-    preloadRouteChunk('/chat/t/__default__');
+    preloadRouteChunk('/chat/t/__default__', queryClient);
     let live = true;
     void queryClient.ensureQueryData(homeWorkspaceQuery(queryClient)).then(
       (home) => (live ? warmWorkspace(home.workspace_id, queryClient, 'onboarding') : undefined),

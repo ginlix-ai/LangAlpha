@@ -81,7 +81,7 @@ export function cachedComputer(queryClient: QueryClient, computerId: string | nu
  * status frame names its outcome, so the list re-reads itself while any row
  * has one in progress. Observers share the timer: every fetch resets them all.
  */
-function computersList() {
+export function computersList() {
   return queryOptions({
     queryKey: queryKeys.computers.lists(),
     queryFn: () => getComputers(),

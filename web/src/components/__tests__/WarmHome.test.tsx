@@ -27,8 +27,17 @@ vi.mock('@/hooks/useServerSetup', async (importOriginal) => ({
   readSetupStatusForWarm: setupStatus.readSetupStatusForWarm,
 }));
 
+const route = vi.hoisted(() => ({ kind: 'done' as string }));
+vi.mock('@/hooks/useOnboardingRoute', () => ({ useOnboardingRoute: () => ({ kind: route.kind }) }));
+
 import { skipSetup } from '@/hooks/useSetupGate';
 import { REWARM_AFTER_MS, WarmHome } from '../WarmHome';
+
+/** WarmHome on an account whose live route still runs setup, or is done. */
+function warmHome(setupRunning: boolean) {
+  route.kind = setupRunning ? 'answers' : 'done';
+  return <WarmHome />;
+}
 
 let now = 0;
 
@@ -72,7 +81,7 @@ describe('WarmHome while the account\'s setup runs on its answers', () => {
     let answer: (status: { needs_setup: boolean }) => void = () => {};
     setupStatus.readSetupStatusForWarm.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
     const queryClient = clientWithHome();
-    renderWithProviders(<WarmHome setupRunning />, { queryClient });
+    renderWithProviders(warmHome(true), { queryClient });
 
     await tap();
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
@@ -83,7 +92,7 @@ describe('WarmHome while the account\'s setup runs on its answers', () => {
 
   it('starts nothing when the setup step is still owed, and asks again next time', async () => {
     setupStatus.readSetupStatusForWarm.mockResolvedValue({ needs_setup: true });
-    renderWithProviders(<WarmHome setupRunning />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(true), { queryClient: clientWithHome() });
 
     await tap();
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
@@ -94,14 +103,14 @@ describe('WarmHome while the account\'s setup runs on its answers', () => {
   it('goes on once the user has exited setup', async () => {
     setupStatus.readSetupStatusForWarm.mockResolvedValue({ needs_setup: true });
     skipSetup();
-    renderWithProviders(<WarmHome setupRunning />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(true), { queryClient: clientWithHome() });
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it('goes on when the reads ran out, so the app is not stuck', async () => {
     setupStatus.readSetupStatusForWarm.mockResolvedValue(null);
-    renderWithProviders(<WarmHome setupRunning />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(true), { queryClient: clientWithHome() });
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalledTimes(1);
   });
@@ -111,16 +120,25 @@ describe('WarmHome for an account past setup on a server not set up', () => {
   it('warms without asking, since the gate never sends the account to the step', async () => {
     setupStatus.readSetupStatusForWarm.mockResolvedValue({ needs_setup: true });
     const queryClient = clientWithHome();
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient });
+    renderWithProviders(warmHome(false), { queryClient });
     await tap();
     expect(setupStatus.readSetupStatusForWarm).not.toHaveBeenCalled();
     expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', queryClient, 'input');
   });
 
+  it('asks while the live route is still read, since a remembered "done" can be stale', async () => {
+    setupStatus.readSetupStatusForWarm.mockResolvedValue({ needs_setup: true });
+    route.kind = 'loading';
+    renderWithProviders(<WarmHome />, { queryClient: clientWithHome() });
+    await tap();
+    expect(setupStatus.readSetupStatusForWarm).toHaveBeenCalledTimes(1);
+    expect(warm.warmWorkspace).not.toHaveBeenCalled();
+  });
+
   it('holds once the account is in setup again', async () => {
     setupStatus.readSetupStatusForWarm.mockResolvedValue({ needs_setup: true });
-    const { rerender } = renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
-    rerender(<WarmHome setupRunning />);
+    const { rerender } = renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
+    rerender(warmHome(true));
     await tap();
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
   });
@@ -129,7 +147,7 @@ describe('WarmHome for an account past setup on a server not set up', () => {
 describe('WarmHome', () => {
   it('waits for a click before warming Home', async () => {
     const queryClient = clientWithHome();
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient });
+    renderWithProviders(warmHome(false), { queryClient });
     await act(async () => {});
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
 
@@ -143,7 +161,7 @@ describe('WarmHome', () => {
     api.getHomeWorkspace.mockImplementationOnce(
       () => new Promise((resolve) => { resolveHome = resolve; }),
     );
-    renderWithProviders(<WarmHome setupRunning={false} />);
+    renderWithProviders(warmHome(false));
     await act(async () => {});
     expect(api.getHomeWorkspace).not.toHaveBeenCalled();
 
@@ -157,7 +175,7 @@ describe('WarmHome', () => {
 
   it('retries a failed lookup on the next interaction', async () => {
     api.getHomeWorkspace.mockRejectedValueOnce(new Error('offline'));
-    renderWithProviders(<WarmHome setupRunning={false} />);
+    renderWithProviders(warmHome(false));
 
     await tap();
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
@@ -172,7 +190,7 @@ describe('WarmHome', () => {
     api.getHomeWorkspace.mockImplementationOnce(
       () => new Promise((resolve) => { resolveHome = resolve; }),
     );
-    const { unmount } = renderWithProviders(<WarmHome setupRunning={false} />);
+    const { unmount } = renderWithProviders(warmHome(false));
     await tap();
 
     unmount();
@@ -181,7 +199,7 @@ describe('WarmHome', () => {
   });
 
   it('counts a key press, but not a modifier on its own', async () => {
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
 
     await press('Meta');
     await press('Shift');
@@ -192,7 +210,7 @@ describe('WarmHome', () => {
   });
 
   it('counts a click that a component stops from bubbling', async () => {
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
     const button = document.body.appendChild(document.createElement('button'));
     button.addEventListener('pointerdown', (event) => event.stopPropagation());
 
@@ -201,7 +219,7 @@ describe('WarmHome', () => {
   });
 
   it('warms again only once the last warm is old enough', async () => {
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalledTimes(1);
 
@@ -220,7 +238,7 @@ describe('WarmHome', () => {
   });
 
   it('warms nothing on a power control, and waits as long after one as after a warm', async () => {
-    renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
+    renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
     const stop = document.body.appendChild(document.createElement('button'));
     stop.setAttribute('data-computer-power', '');
     const icon = stop.appendChild(document.createElement('span'));
@@ -246,7 +264,7 @@ describe('WarmHome', () => {
     api.getHomeWorkspace.mockImplementationOnce(
       () => new Promise((resolve) => { resolveHome = resolve; }),
     );
-    renderWithProviders(<WarmHome setupRunning={false} />);
+    renderWithProviders(warmHome(false));
     const stop = document.body.appendChild(document.createElement('button'));
     stop.setAttribute('data-computer-power', '');
 
@@ -261,7 +279,7 @@ describe('WarmHome', () => {
     api.getHomeWorkspace.mockImplementationOnce(
       () => new Promise((_resolve, reject) => { failHome = reject; }),
     );
-    renderWithProviders(<WarmHome setupRunning={false} />);
+    renderWithProviders(warmHome(false));
     const stop = document.body.appendChild(document.createElement('button'));
     stop.setAttribute('data-computer-power', '');
 
@@ -273,7 +291,7 @@ describe('WarmHome', () => {
   });
 
   it('stops listening once unmounted', async () => {
-    const { unmount } = renderWithProviders(<WarmHome setupRunning={false} />, { queryClient: clientWithHome() });
+    const { unmount } = renderWithProviders(warmHome(false), { queryClient: clientWithHome() });
 
     unmount();
     await tap();

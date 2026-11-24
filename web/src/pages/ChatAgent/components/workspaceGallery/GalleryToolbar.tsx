@@ -37,10 +37,7 @@ import { ComputerChip } from './ComputerChip';
 import { DiskPercent } from './DiskPercent';
 import { buttonSlot } from '@/components/ui/button-class';
 
-export type GallerySort = 'activity' | 'name' | 'custom';
-
-/** The sort menu's options, in its order. */
-export const GALLERY_SORTS: readonly GallerySort[] = ['activity', 'name', 'custom'];
+import { GALLERY_SORTS, type GallerySort } from './gallerySort';
 
 /** The filter's value for every computer. */
 export const ALL_COMPUTERS = 'all';

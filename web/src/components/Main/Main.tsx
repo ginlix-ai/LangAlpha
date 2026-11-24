@@ -1,5 +1,6 @@
 import { Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router';
+import type { QueryClient } from '@tanstack/react-query';
 import PageLoading from '@/components/PageLoading/PageLoading';
 import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -14,6 +15,7 @@ import type { AppSection } from '@/lib/appRoutes';
 import { whenIdle } from '@/lib/whenIdle';
 import { usePreferencesSync } from '@/lib/preferencesChannel';
 import { withCopy } from '@/i18n';
+import { preloadChatRoute } from '@/pages/ChatAgent/routePrefetch';
 
 const pluginsChunk = withCopy(() => import('../../pages/Plugins/Plugins'), ['mcp', 'plugins', 'settings', 'vault']);
 
@@ -85,10 +87,11 @@ const routePreloads = {
  * shell can warm the target route while the /users/me gate is still
  * resolving instead of serializing the two network legs. Unknown segments
  * warm the dashboard chunk (the catch-all redirect's target). */
-export function preloadRouteChunk(pathname: string): void {
+export function preloadRouteChunk(pathname: string, queryClient: QueryClient): void {
   const chunkFor: Record<string, () => Promise<unknown>> = routePreloads;
   const segment = pathname.split('/')[1] || 'dashboard';
   void (chunkFor[segment] ?? routePreloads.dashboard)();
+  if (segment === 'chat') preloadChatRoute(pathname, queryClient);
 }
 
 // Warmed in the order the rail lists them, the likeliest next stops first.

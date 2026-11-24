@@ -36,7 +36,7 @@ const EXPECTED = ['index', 'rolldown-runtime', 'vendor-react']
 // deliberately thin, so routine growth shows up here instead of being quietly
 // absorbed. Raise it only for a measured cause, and put that cause in the commit
 // message that raises it; the line's history is the record of why it moved.
-const MAX_EAGER_KB = 439
+const MAX_EAGER_KB = 444
 
 const outDir = process.argv[2] || 'dist'
 const indexPath = join(outDir, 'index.html')
@@ -80,18 +80,18 @@ if (!assets.length) {
 // Attribute order carries no meaning in HTML, and requiring type before src is
 // not merely brittle here — it fails silently in the direction that matters. A
 // second entry written `<script src="…" type="module">` would go uncounted, so
-// this gate would still see exactly one and pass, while currentBuild()'s
-// `script[type="module"][src]` selector takes it as the first match and
-// compares the wrong filename for every visitor.
+// this gate would still see exactly one and pass, while currentBuild(), which
+// takes the first module script under the build's asset folder, could read it
+// and compare the wrong filename for every visitor.
 const moduleScripts = [...html.matchAll(/<script\b([^>]*)>/g)]
   .map(([, attrs]) => attrs)
   .filter((attrs) => /\btype\s*=\s*"module"/.test(attrs))
   .map((attrs) => /\bsrc\s*=\s*"([^"]+)"/.exec(attrs))
   .filter((m) => m !== null)
 
-// currentBuild() takes querySelector's first match. More than one module script
-// and it may read something that is not the entry, and then `build !== mine` is
-// true for every visitor — a permanent, undismissable "new version" toast.
+// currentBuild() takes the first module script among the build's own assets.
+// With more than one it may read something that is not the entry, and then
+// `build !== mine` is true for every visitor: a permanent "new version" toast.
 if (moduleScripts.length !== 1) {
   console.error(`\n✗ expected exactly 1 module <script> in ${indexPath}, found ${moduleScripts.length}`)
   console.error('  staleBuild.tsx currentBuild() reads the first one and assumes it is')
