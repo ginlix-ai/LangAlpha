@@ -335,6 +335,26 @@ async def publish_thread_tuning(
     await publish_user_event(user_id, event)
 
 
+async def publish_thread_compacted(
+    *,
+    user_id: Optional[str],
+    thread_id: str,
+    workspace_id: Optional[str],
+    original_message_count: int,
+    summary_text: str,
+    shared_org: Optional[str] = None,
+) -> None:
+    """A summary written while the thread sat idle: no stream carries it, so
+    a tab with the thread open learns of it only from this event or its next
+    load, which would leave the old context showing as current meanwhile."""
+    event = build_lifecycle_event(
+        type="thread_compacted", thread_id=thread_id, workspace_id=workspace_id
+    )
+    event["original_message_count"] = original_message_count
+    event["summary_text"] = summary_text
+    await publish_user_event(user_id, event, shared_org=shared_org)
+
+
 async def publish_thread_deleted(
     *,
     user_id: Optional[str],

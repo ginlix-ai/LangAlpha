@@ -272,3 +272,23 @@ async def test_a_write_whose_pointer_did_not_advance_is_discarded(fence):
         await _install(_agent(written=False), {"messages": []}, ROW, THREAD)
 
     assert skip.value.reason == "moved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("org", [None, "org-1"])
+async def test_an_installed_summary_reaches_the_tabs_that_show_the_thread(monkeypatch, org):
+    """The owner's tabs, or in a shared workspace every member's, through
+    the organization's channel."""
+    from src.server.handlers.thread_maintenance import SummaryWrite
+
+    publish = AsyncMock()
+    monkeypatch.setattr("src.server.services.thread_lifecycle_feed.publish_thread_compacted", publish)
+    monkeypatch.setattr("src.server.services.shared_workspaces.access.shared_org_of", AsyncMock(return_value=org))
+    write = SummaryWrite({}, {"original_message_count": 214}, "the summary")
+
+    await handler._announce(ROW, SimpleNamespace(meta={"workspace_id": "ws-1"}), write)
+
+    publish.assert_awaited_once_with(
+        user_id="u-1", thread_id="t-1", workspace_id="ws-1",
+        original_message_count=214, summary_text="the summary", shared_org=org,
+    )
