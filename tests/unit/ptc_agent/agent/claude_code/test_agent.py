@@ -249,7 +249,8 @@ def _built(*, saved: str | None = None, **kwargs) -> ClaudeCodeGraph:
 def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
     """Claude Code takes the hooks that write the turn's rows, inject
     requested skills and freeze the baseline, in the stack's order, then the
-    plan's, which clears a plan an earlier request left."""
+    plan's, which clears a plan an earlier request left, then the rows a
+    langalpha turn writes before a model call: the file mount's notice."""
     graph = _built()
     edges = {a: b for a, b in graph.graph.builder.edges}
     path, node = [], "__start__"
@@ -257,7 +258,8 @@ def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
         node = edges[node]
         path.append(node)
     assert path == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent",
-                    "BaselineContextMiddleware.before_agent", "PlanStateMiddleware.before_agent", "resume"]
+                    "BaselineContextMiddleware.before_agent", "PlanStateMiddleware.before_agent",
+                    "FileMountNoticeMiddleware.before_model", "resume"]
     assert graph.turn(_RUN)._baseline.__self__.__class__.__name__ == "BaselineContextMiddleware"
     assert "AskUserQuestion" in {t.name for t in graph.turn(_RUN).spec.tools}
     assert {"Task", "TaskOutput"} <= {t.name for t in graph.turn(_RUN).spec.tools}

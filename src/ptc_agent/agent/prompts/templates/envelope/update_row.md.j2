@@ -122,7 +122,13 @@
    carries; its text is empty and every word is here. It names no tool, since
    a row outlives the tool list it was written under, and it compares nothing
    with a frozen block, so it has no paragraph explaining one: the next such
-   row is simply the later word. A kind this template has no words for
+   row is simply the later word.
+
+   A `file_mount` row (`turn.FILE_MOUNT_ROW_KIND`) says the file mount was
+   found not serving under a prompt that says it serves, or serves again,
+   which `provenance.serving` carries; its text is empty and every word is
+   here (`middleware/file_mount_notice.py`). It is the later word the same
+   way. A kind this template has no words for
    keeps the labelled form, so a new kind reads as unlabelled rather than as
    prose that quietly describes the wrong thing.
 
@@ -136,6 +142,12 @@
 The user turned subagents off for this thread. Do the work yourself rather than delegating it: starting, resuming, or redirecting a subagent will be refused until the user turns them back on. Subagents already running keep going, and their results can still be collected.
 {% else %}
 The user turned subagents back on for this thread. Delegate to them when it helps.
+{% endif %}
+{% elif update.kind == "file_mount" %}
+{% if update.provenance.get("serving") is false %}
+The file mount is not serving on this computer for now. Bash and code cannot open the files kept on the server (memory, memos, profile, automations, workflows); use Read, Edit and Write for them. Transcripts of past conversations are out of reach until it serves again.
+{% else %}
+The file mount is serving again on this computer.
 {% endif %}
 {% else %}
 {% set writer = update.provenance.get("writer") if update.provenance is mapping else none %}

@@ -57,6 +57,13 @@ from ptc_agent.agent.prompts import release
 logger = logging.getLogger(__name__)
 
 
+def prompt_says_mounted(state: Any, built: bool) -> bool:
+    """What the prompt sent says of the file mount: the epoch's word, or the
+    built prompt's for a thread whose epoch has stored none."""
+    frozen = BaselineEpoch.from_state(state_get(state, STATE_BASELINE)).files_mounted
+    return built if frozen is None else frozen
+
+
 class FrozenPromptMiddleware(AgentMiddleware):
     """Send the static prompt with the epoch's ``files_mounted``.
 
@@ -76,11 +83,8 @@ class FrozenPromptMiddleware(AgentMiddleware):
         self._rendered: dict[bool, str] = {}
 
     def _frozen_prompt(self, request: ModelRequest) -> str | None:
-        epoch = BaselineEpoch.from_state(
-            state_get(getattr(request, "state", None), STATE_BASELINE)
-        )
-        frozen = epoch.files_mounted
-        if frozen is None or frozen == self._built:
+        frozen = prompt_says_mounted(getattr(request, "state", None), self._built)
+        if frozen == self._built:
             return None
         if frozen not in self._rendered:
             self._rendered[frozen] = self._render(frozen)

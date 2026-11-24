@@ -152,7 +152,7 @@ def test_without_the_scratchpad_its_rows_stay_out_of_the_calls(machine):
 
     assert "NotesDueMiddleware" not in names
     at = names.index("NotesOffMiddleware")
-    assert names[at - 1] == "BaselineContextMiddleware"
+    assert names[at - 2 : at] == ["BaselineContextMiddleware", "FileMountNoticeMiddleware"]
     assert names[at + 1] == "RowCarrierMiddleware"
 
 
