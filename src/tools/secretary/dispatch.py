@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import uuid
+from typing import NamedTuple
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -36,9 +37,9 @@ _THREAD_BUSY = (
     "again or stop it, or you can start a new thread with workspace_id."
 )
 _THREAD_BUSY_MODEL = (
-    "That thread is mid-turn, and a model applies only from the start of a "
-    "turn, so this was not sent. Wait for the turn to end and hand it off "
-    "again, or start a new thread with workspace_id."
+    "That thread is mid-turn, and a model or effort applies only from the "
+    "start of a turn, so this was not sent. Wait for the turn to end and hand "
+    "it off again, or start a new thread with workspace_id."
 )
 _REFUSED = "The analyst's thread refused this hand-off: {message}"
 
@@ -122,6 +123,40 @@ def _unknown_dispatch_command(
     )
 
 
+class _RunsAt(NamedTuple):
+    """The model a dispatched turn resolved to and the level it sends, None
+    for a model with no levels, as the endpoint's reply names them."""
+
+    model: str | None
+    effort: str | None
+
+    @classmethod
+    def of_reply(cls, body: dict) -> "_RunsAt | None":
+        # A turn the endpoint started names its level. A retransmit adopting
+        # a run already started, and a body lost after its 200, name none,
+        # and then nothing is known.
+        if "reasoning_effort" not in body:
+            return None
+        return cls(body.get("llm_model"), body.get("reasoning_effort"))
+
+
+def _effort_result(asked: str, runs_at: _RunsAt | None) -> dict:
+    """The effort for the result: the level the turn runs at, with a note
+    where that is not the one ``asked``. Where the reply was lost only the
+    level asked is known, and it is named as that, since the model may lack
+    it."""
+    from src.llms.model_identity import model_label
+    from src.llms.reasoning import effort_shortfall
+
+    if runs_at is None:
+        return {"effort_asked": asked}
+    note = effort_shortfall(model_label(runs_at.model) or "its model", asked, runs_at.effort)
+    return {
+        **({"effort": runs_at.effort} if runs_at.effort else {}),
+        **({"effort_note": note} if note else {}),
+    }
+
+
 async def _unreachable_computer(workspace_id: str) -> str | None:
     """The workspace's computer, named for the agent, while it is a machine
     of the user's own that can't be reached, else None. A read that fails is
@@ -165,6 +200,7 @@ async def dispatch(
     tool_call_id: str,
     preapproved: bool = False,
     model: str | None = None,
+    effort: str | None = None,
 ) -> Command:
     """Start ``question`` as a background turn of a workspace's own agent.
 
@@ -173,7 +209,9 @@ async def dispatch(
     refused: a turn there is the dispatcher again, not the agent of the
     workspace it meant. A ``preapproved`` hand-off, one the user approved in
     advance, starts without asking. A named ``model`` is the turn's and stays
-    the thread's; the server refuses one the user cannot run.
+    the thread's; the server refuses one the user cannot run. A named
+    ``effort`` is this turn's alone, and the result says the level the turn
+    runs at where the model has no such level.
     """
     import aiohttp
 
@@ -268,6 +306,7 @@ async def dispatch(
                 "question": question,
                 "report_back": report_back,
                 "model": model,
+                "effort": effort,
                 "tool_call_id": tool_call_id,
             },
         )
@@ -295,6 +334,8 @@ async def dispatch(
         }
         if model:
             handed_to["model"] = model
+        if effort:
+            handed_to["effort"] = effort
         if is_continuation:
             handed_to["thread_id"] = thread_id
 
@@ -334,6 +375,7 @@ async def dispatch(
             *,
             steered: bool = False,
             steer_id: str | None = None,
+            runs_at: _RunsAt | None = None,
         ) -> Command:
             # The card for a pre-approved hand-off is drawn from this result,
             # since no approval request carried the workspace's name.
@@ -347,6 +389,8 @@ async def dispatch(
             }
             if model:
                 result["model"] = model
+            if effort:
+                result.update(_effort_result(effort, runs_at))
             if steered:
                 result["note"] = (
                     "The analyst is mid-turn: it takes this in before its next "
@@ -377,6 +421,7 @@ async def dispatch(
         run_id: str | None = None
         steered = False
         steer_id: str | None = None
+        runs_at: _RunsAt | None = None
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -406,6 +451,8 @@ async def dispatch(
                         # Only when named: an absent model keeps the
                         # thread's own, or the user's default.
                         **({"llm_model": model} if model else {}),
+                        # This turn's alone: a later turn runs the thread's.
+                        **({"reasoning_effort": effort} if effort else {}),
                     },
                     headers={
                         "X-Service-Token": service_token,
@@ -428,7 +475,7 @@ async def dispatch(
                             # retries into the same 409. One naming a model
                             # rides only a turn running on it.
                             return error_command(
-                                _THREAD_BUSY_MODEL if model else _THREAD_BUSY,
+                                _THREAD_BUSY_MODEL if model or effort else _THREAD_BUSY,
                                 tool_call_id,
                                 **handed_to,
                             )
@@ -483,6 +530,7 @@ async def dispatch(
                             run_id = body.get("run_id")
                             steered = body.get("status") == "steered"
                             steer_id = body.get("steer_id") if steered else None
+                            runs_at = _RunsAt.of_reply(body)
         except asyncio.CancelledError:
             # Cancellation mid-exchange (the dispatching turn cancelled, worker
             # shutdown) is as ambiguous as a lost response: the endpoint may
@@ -550,4 +598,4 @@ async def dispatch(
             )
 
         slot.commit()
-        return dispatched(run_id, steered=steered, steer_id=steer_id)
+        return dispatched(run_id, steered=steered, steer_id=steer_id, runs_at=runs_at)

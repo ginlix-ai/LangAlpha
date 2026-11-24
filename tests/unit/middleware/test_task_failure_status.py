@@ -27,6 +27,7 @@ from ptc_agent.agent.middleware.background_subagent.spawn import (
     SpawnStoppedError,
     TaskRunRefused,
 )
+from ptc_agent.config.agent import TaskAsk
 
 
 class _RefusingMiddleware:
@@ -54,6 +55,7 @@ async def test_a_refused_task_launch_is_stamped_an_error():
         prompt="p",
         tool_call_id="call-1",
         current_run_id="run-1",
+        ask=TaskAsk(),
     )
 
     assert message.content.startswith("Error: could not start ")

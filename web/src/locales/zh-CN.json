@@ -1318,6 +1318,7 @@
       "handOffTo": "交给<ws> {{name}} 的</ws>分析师",
       "handOffToAnalyst": "交给分析师",
       "onModel": "使用 {{model}}",
+      "atEffort": "推理强度：{{effort}}",
       "waitingForYou": "等待你确认",
       "briefMore": "阅读完整任务说明",
       "briefLess": "收起",

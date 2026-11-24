@@ -46,8 +46,7 @@ def client_label(client: Any, name: str | None = None) -> str:
     captured elsewhere may not be; ``name`` stands in for a client the factory
     never built.
     """
-    metadata = getattr(client, "metadata", None) or {}
-    return model_label(catalog_model(client) or name, metadata.get("reasoning_effort"))
+    return model_label(catalog_model(client) or name, client_effort(client))
 
 
 def catalog_model(client: Any) -> str | None:
@@ -55,6 +54,16 @@ def catalog_model(client: Any) -> str | None:
     None for a client the factory never built."""
     metadata = getattr(client, "metadata", None)
     value = metadata.get("manifest_model") if isinstance(metadata, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def client_effort(client: Any) -> str | None:
+    """The reasoning level a built client sends, as ``LLM.get_llm()`` stamped
+    it: stepped down from the request where the model's ladder is shorter, so
+    what runs rather than what was asked. None for a model with no levels or a
+    client the factory never built."""
+    metadata = getattr(client, "metadata", None)
+    value = metadata.get("reasoning_effort") if isinstance(metadata, dict) else None
     return value if isinstance(value, str) and value else None
 
 

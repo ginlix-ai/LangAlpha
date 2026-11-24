@@ -429,6 +429,9 @@ export interface PTCAgentProposalState {
   /** The model the hand-off names for its turn; absent when it runs the
    *  thread's own or the user's default. */
   model?: string | null;
+  /** The effort the hand-off names for its turn; absent when it runs at the
+   *  thread's own. */
+  effort?: string | null;
   /** Approved, but the dispatch failed (`utils/dispatchResult.ts`). */
   dispatch_failed?: boolean;
   /** With `dispatch_failed`: the failure left it unknown whether the run

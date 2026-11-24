@@ -209,7 +209,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         the way out so no writer is stranded behind it. ``acquire_fence=False``
         is for a caller already holding it for its own arbitration (resume).
         The run is admitted on the model its Task named (``runs_on``), else
-        on its type's.
+        on its type's, and records what the Task asked for (``ask``).
         """
         if acquire_fence and self.namespace_owner is not None:
             if not await self._acquire_task_ns(task.task_id):
@@ -225,8 +225,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             if task.runs_on is not None
             else self.run_on.get(task.subagent_type, RunOn())
         )
-        if task.runs_on is None and task.named_own:
-            run_on = replace(run_on, model_override=task.named_own)
+        if task.ask is not None:
+            run_on = replace(run_on, ask=task.ask)
         if (
             cause == "resume"
             and run_on.claude_code is not None

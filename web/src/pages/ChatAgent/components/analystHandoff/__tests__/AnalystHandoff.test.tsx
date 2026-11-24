@@ -201,6 +201,17 @@ describe('A hand-off: awaiting an answer', () => {
     renderPending();
     expect(screen.queryByText('chat.ptcCard.onModel')).toBeNull();
   });
+
+  it('names the effort a hand-off asks for beside its model', () => {
+    const { unmount } = renderWithProviders(
+      <Handoff proposal={{ status: 'pending', question: 'Q', report_back: true, model: 'gpt-6.1-terra', effort: 'max' }} />,
+    );
+    expect(screen.getByText('chat.ptcCard.onModel · chat.ptcCard.atEffort')).toBeInTheDocument();
+    unmount();
+
+    renderWithProviders(<Handoff proposal={{ status: 'pending', question: 'Q', report_back: true, effort: 'high' }} />);
+    expect(screen.getByText('chat.ptcCard.atEffort')).toBeInTheDocument();
+  });
 });
 
 describe('A hand-off: a handed-off run', () => {

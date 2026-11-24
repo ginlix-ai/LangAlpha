@@ -52,6 +52,7 @@ from ptc_agent.agent.state import DeltaAgentState
 from ptc_agent.config.agent import Admitted, RunOn, SubagentModel, TaskModel
 from src.llms.claude_code import ClaudeCodeTarget
 from src.llms.llm import narrow_prompt_cache_key
+from src.llms.reasoning import DelegatedEffort
 from src.observability.langsmith_tracer import with_run_tracer
 from src.tools.turn_tool import input_schema
 from src.utils.concurrency import iterate_until
@@ -193,6 +194,7 @@ Args:
     action: "init" (new task, default), "update" (instruct a running task), "resume" (continue a completed or stopped task from its checkpoint, with its prior context intact)
     task_id: The target task's short alphanumeric ID. Required for "update" and "resume".
     model: Run this task on another model instead of the subagent's own, named as in `la models list`. Pass it only when the user asks for a model or a skill's procedure names one. On resume, omitted keeps the model the task last ran on.
+    effort: How much work the subagent puts in: low, medium, high, xhigh or max. More than thinking: lower levels make fewer tool calls, keep to what was asked and may skip a search or a check; higher ones explore further, verify their work and persist longer, at more time and cost. Omitted, it runs at its own. Low to high covers most work, and medium is a good default where the model offers it; xhigh only when a task needs more than high gives. Frontier models offer every level; some open models, DeepSeek among them, have no medium. A level the model lacks runs at the next one below, and the reply says which. On resume, omitted keeps the effort the task last ran at.
 
 Returns:
     A task ID immediately, not the subagent's work. The subagent runs
@@ -780,6 +782,10 @@ def _create_task_tool(
             str | None,
             "A model name from `la models list`; only when the user asks for one or a skill's procedure names one.",
         ] = None,
+        effort: Annotated[
+            DelegatedEffort | None,
+            "How much work the subagent puts in; omitted, its own effort on init and the last run's on resume.",
+        ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
     ) -> str | ToolMessage | Command:
         # Resolve subagent_type based on action
@@ -882,6 +888,10 @@ def _create_task_tool(
         model: Annotated[
             str | None,
             "A model name from `la models list`; only when the user asks for one or a skill's procedure names one.",
+        ] = None,
+        effort: Annotated[
+            DelegatedEffort | None,
+            "How much work the subagent puts in; omitted, its own effort on init and the last run's on resume.",
         ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
     ) -> str | ToolMessage | Command:
@@ -1125,12 +1135,13 @@ class SubAgentMiddleware(AgentMiddleware):
             build=partial(self._build_graph, claude_code=claude_code),
             checkpointer=checkpointer,
         )
-        # A task's graph on a model its call names, built once per type and
-        # model. This middleware is built per turn, on the turn's worker, so
-        # these are that turn's execution context and nothing else reads them.
+        # A task's graph on a model or effort its call names, built once per
+        # type, model and effort. This middleware is built per turn, on the
+        # turn's worker, so these are that turn's execution context and
+        # nothing else reads them.
         self._compile_on = compile_on
         self._claude_code_on = claude_code_on
-        self._model_graphs: dict[tuple[str, str, Admitted | None], Runnable] = {}
+        self._model_graphs: dict[tuple[str, str, str | None, Admitted | None], Runnable] = {}
         task_tool = _create_task_tool(
             subagent_graphs=self.subagent_graphs,
             task_description=task_description,
@@ -1143,7 +1154,7 @@ class SubAgentMiddleware(AgentMiddleware):
     def _graph_on(self, subagent_type: str, on: TaskModel) -> Runnable:
         # Where Claude Code was placed too: two Tasks resolving at once can be
         # placed apart, and the graph keeps the computer it was built for.
-        key = (subagent_type, on.name, on.claude_code)
+        key = (subagent_type, on.name, on.effort, on.claude_code)
         if key not in self._model_graphs:
             claude_code = (
                 self._claude_code_on(on.claude_code)

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from ptc_agent.config.agent import Admitted, CredentialSource, TaskModel, TaskModelRefused
+from ptc_agent.config.agent import Admitted, CredentialSource, TaskAsk, TaskModel, TaskModelRefused
 from src.server.services.llm import task_model as tm
 from src.server.services.llm import user_models
 from src.server.services.llm.clients import ResolvedClient
@@ -128,7 +128,7 @@ def _gate(world, *, config=None, **overrides):
 
 
 async def _resolve(world, name, subagent_type="research", **kwargs):
-    return await _gate(world, **kwargs).resolve(name, subagent_type)
+    return await _gate(world, **kwargs).resolve(TaskAsk(name), subagent_type)
 
 
 @pytest.mark.asyncio
@@ -246,8 +246,8 @@ async def test_a_subagents_own_set_effort_applies_on_the_model_its_task_names(wo
     """Its set effort is the user's choice for that subagent, whatever serves it."""
     gate = _gate(world)
 
-    await gate.resolve("other-model", "desk")
-    await gate.resolve("other-model", "research")
+    await gate.resolve(TaskAsk("other-model"), "desk")
+    await gate.resolve(TaskAsk("other-model"), "research")
 
     assert [kwargs["reasoning_effort"] for _, kwargs in world.client_calls] == ["minimal", "high"]
 
@@ -256,8 +256,8 @@ async def test_a_subagents_own_set_effort_applies_on_the_model_its_task_names(wo
 async def test_a_resolved_model_is_kept_for_the_turn_by_type_and_name(world):
     gate = _gate(world)
 
-    first = await gate.resolve("other-model", "research")
-    again = await gate.resolve("other-model", "research")
+    first = await gate.resolve(TaskAsk("other-model"), "research")
+    again = await gate.resolve(TaskAsk("other-model"), "research")
 
     assert first is again
     assert len(world.client_calls) == 1
@@ -283,10 +283,24 @@ async def test_a_subagents_own_model_needs_no_model_of_its_own(world, subagent_t
 
 
 @pytest.mark.asyncio
-async def test_a_model_kept_from_the_last_run_resolves_though_it_is_the_subagents_own(world):
-    resolved = await _gate(world).resolve("turn-model", "research", keep=True)
+async def test_an_effort_alone_resolves_the_subagents_own_model_at_it(world):
+    resolved = await _gate(world).resolve(TaskAsk(effort="low"), "research")
 
-    assert resolved.name == "turn-model"
+    assert (resolved.name, resolved.effort) == ("turn-model", "low")
+    ((_, kwargs),) = world.client_calls
+    assert kwargs["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_an_effort_alone_runs_the_subagents_own_model_whatever_the_plan(world):
+    """The turn admitted its own model already, a deployment's pin past the
+    user's plan included."""
+    world.on_plan.clear()
+
+    resolved = await _gate(world).resolve(TaskAsk(effort="low"), "desk")
+
+    assert (resolved.name, resolved.effort) == ("pinned-model", "low")
+    assert world.refreshes == 0
 
 
 @pytest.mark.asyncio
@@ -360,8 +374,8 @@ async def test_claude_code_placement_is_read_once_per_turn(world):
     world.placement = "Claude Code is off for your account."
     gate = _gate(world)
 
-    await gate.resolve("cc-row", "research")
-    await gate.resolve("cc-row", "research")
+    await gate.resolve(TaskAsk("cc-row"), "research")
+    await gate.resolve(TaskAsk("cc-row"), "research")
 
     assert world.placement_reads == 1
 
@@ -371,9 +385,9 @@ async def test_a_placement_that_could_not_be_read_is_read_again(world):
     world.placement = tm.PLACEMENT_UNREAD
     gate = _gate(world)
 
-    await gate.resolve("cc-row", "research")
+    await gate.resolve(TaskAsk("cc-row"), "research")
     world.placement = Admitted(hosted="saved_token")
-    resolved = await gate.resolve("cc-row", "research")
+    resolved = await gate.resolve(TaskAsk("cc-row"), "research")
 
     assert world.placement_reads == 2
     assert resolved.claude_code == Admitted(hosted="saved_token")

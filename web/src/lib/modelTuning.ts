@@ -7,32 +7,8 @@
  */
 import type { CompactionProfileName, NativeCompactionKind } from '@/hooks/useAllModels';
 
-export const EFFORT_LABELS: Record<string, string> = {
-  none: 'chat.modelSelector.effortNone',
-  minimal: 'chat.modelSelector.effortMinimal',
-  low: 'chat.modelSelector.effortLow',
-  medium: 'chat.modelSelector.effortMedium',
-  high: 'chat.modelSelector.effortHigh',
-  xhigh: 'chat.modelSelector.effortXhigh',
-  max: 'chat.modelSelector.effortMax',
-};
-
-/** Weakest first — the order a ladder is drawn in, whatever subset a model honors. */
-export const EFFORT_ORDER: readonly string[] = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-];
-
-/** The trigger pill and its measure twin must render the same string, so both
- *  resolve the label through here rather than building the key by hand. */
-export function effortLabelFor(t: (key: string) => string, level: string | null): string | null {
-  return level && EFFORT_LABELS[level] ? t(EFFORT_LABELS[level]) : null;
-}
+export { EFFORT_LABELS, EFFORT_ORDER, effortLabelFor } from './effortLabels';
+import { EFFORT_LABELS, EFFORT_ORDER } from './effortLabels';
 
 /** The levels the composer's model picker lists: those it has a word for. */
 export function tuningMenuLevels(efforts: readonly string[]): string[] {

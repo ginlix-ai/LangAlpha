@@ -248,6 +248,7 @@ export function projectHistoryInterrupt(
                 question: proposalData.question ?? '',
                 report_back: proposalData.report_back ?? true,
                 model: proposalData.model ?? null,
+                effort: proposalData.effort ?? null,
                 interruptId: event.interrupt_id,
                 tool_call_id: proposalData.tool_call_id,
                 status: 'pending',

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import ToolMessage
 
-from ptc_agent.config.agent import Admitted, RunOn, TaskModel, TaskModelRefused
+from ptc_agent.config.agent import Admitted, RunOn, TaskAsk, TaskModel, TaskModelRefused
 from tests.unit.middleware.test_subagent_run_ledger_admission import (
     FakeLedger,
     FakeOwner,
@@ -28,17 +28,16 @@ def _task_model(name="other-model", *, claude_code=None, model=None):
 
 
 class _Gate:
-    """``resolve`` answers from ``answers`` by name, None for a name it lacks
-    (the subagent's own model), and records what it was asked."""
+    """``resolve`` answers from ``answers`` by the model asked for, None for
+    one it lacks (the subagent's own model), and records what it was asked."""
 
     def __init__(self, answers: dict) -> None:
         self.answers = answers
         self.asked: list[tuple[str, str]] = []
 
-    async def resolve(self, name, subagent_type, *, keep=False):
-        self.asked.append((name, subagent_type))
-        self.kept = keep
-        return self.answers.get(name)
+    async def resolve(self, ask, subagent_type):
+        self.asked.append((ask.model, subagent_type))
+        return self.answers.get(ask.model)
 
 
 def _gated(mw, answers: dict) -> _Gate:
@@ -201,7 +200,7 @@ async def test_an_update_naming_a_model_is_refused():
     )
 
     assert (result.content, result.status) == (
-        "Error: model applies to init and resume; a running task keeps its model.", "error",
+        "Error: model and effort apply to init and resume; a running task keeps both.", "error",
     )
 
 
@@ -279,9 +278,9 @@ async def test_a_second_resume_while_the_first_resolves_its_model_is_refused():
     replies: list = []
 
     class _Reentrant(_Gate):
-        async def resolve(self, name, subagent_type, *, keep=False):
+        async def resolve(self, ask, subagent_type):
             replies.append(await mw.awrap_tool_call(_resume(task, "tc-3"), _ok_handler))
-            return await super().resolve(name, subagent_type, keep=keep)
+            return await super().resolve(ask, subagent_type)
 
     mw.task_models = _Reentrant({"other-model": _task_model()})
 
@@ -340,17 +339,51 @@ async def test_a_resume_naming_no_model_runs_on_the_one_it_last_ran_on():
 
 
 @pytest.mark.asyncio
-async def test_a_resume_carrying_its_model_over_keeps_it_while_it_is_the_subagents_own_and_one_naming_it_does_not():
-    carried = _middleware(FakeOwner(), _LedgerWithLatest("other-model", admit="run-uuid-next"))
-    named = _middleware(FakeOwner(), _LedgerWithLatest("other-model", admit="run-uuid-next"))
-    for mw, args in ((carried, {}), (named, {"model": "other-model"})):
-        task = await _register_settled_task(mw)
-        mw.registry.write_task_meta = AsyncMock()
-        _gated(mw, {"other-model": _task_model()})
-        await mw.awrap_tool_call(_resume(task, **args), _ok_handler)
-        await task.asyncio_task
+async def test_a_resume_carrying_over_its_subagents_own_model_runs_its_graph_and_records_it():
+    """Recorded again, a later resume stays on it once the subagent's own
+    model moves with the chat's."""
+    ledger = _LedgerWithLatest("own-model", admit="run-uuid-next")
+    seen, result = await _resumed_args(ledger, {})
 
-    assert (carried.task_models.kept, named.task_models.kept) == (True, False)
+    assert seen == [None]
+    assert ledger.started[0]["model_override"] == "own-model"
+    assert "- Model:" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_a_task_naming_only_an_effort_records_no_model():
+    """Its model stays the subagent's own, free to follow the chat's on a
+    later resume."""
+    ledger = FakeLedger(admit="run-1")
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+    _gated(mw, {None: _task_model("own-model")})
+
+    await mw.awrap_tool_call(
+        _request({"description": "d", "prompt": "p", "effort": "high"}), _ok_handler
+    )
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    started = ledger.started[0]
+    assert "model_override" not in started
+    assert started["effort_override"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_with_no_ledger_a_resume_naming_nothing_keeps_the_effort_its_task_was_given():
+    mw = _middleware(FakeOwner(), None)
+    task = await _register_settled_task(mw)
+    task.ask = TaskAsk(effort="high")
+    asked: list[TaskAsk] = []
+
+    async def resolve(ask, subagent_type):
+        asked.append(ask)
+
+    mw.task_models = SimpleNamespace(resolve=resolve)
+
+    await mw.awrap_tool_call(_resume(task), _ok_handler)
+
+    assert asked == [TaskAsk(effort="high")]
 
 
 @pytest.mark.asyncio

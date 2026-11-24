@@ -116,10 +116,15 @@ def steer_allowed(
     added to the running one cannot do) and a non-steerable caller (an
     automation's instruction is a turn of its own) meet a running peer with a
     409 instead. A hand-off naming a model rides only a turn running on it
-    (``wait_or_steer``'s ``on_model``).
+    (``wait_or_steer``'s ``on_model``), and one naming an effort none, since
+    a running turn keeps the effort it started at.
     """
     if dispatched:
-        return steerable and _is_agent_hand_off(request)
+        return (
+            steerable
+            and _is_agent_hand_off(request)
+            and request.reasoning_effort is None
+        )
     is_fork = request.fork_from_turn is not None and bool(request.checkpoint_id)
     return (
         steerable
