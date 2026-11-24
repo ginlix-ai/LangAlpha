@@ -12,7 +12,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from ptc_agent.core.paths import grep_working_dir, resolve_agent_path
+from ptc_agent.core.paths import grep_working_dir
+from ptc_agent.core.path_fold import resolve_agent_path
 from ptc_agent.core.sandbox import files
 from ptc_agent.core.sandbox.files import agrep_content
 

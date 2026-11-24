@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -10,6 +11,7 @@ import select
 import threading
 import time
 import urllib.parse
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from .protocol import CALL_HEADER, PREFIX, Refusal, code_of
@@ -63,6 +65,22 @@ ERRNO = {
 
 def fail(code: int) -> OSError:
     return OSError(code, os.strerror(code))
+
+
+_tls: Any = None
+_tls_lock = threading.Lock()
+
+
+def tls_context() -> Any:
+    """One TLS context for every connection the daemon opens: loading the CA
+    store costs about as much CPU as a handshake."""
+    global _tls
+    with _tls_lock:
+        if _tls is None:
+            import ssl
+
+            _tls = ssl.create_default_context()
+        return _tls
 
 
 def error_for(status: int, data: bytes) -> OSError:
@@ -120,14 +138,20 @@ class Remote:
         *,
         rate: float = RATE_PER_S,
         burst: int = BURST,
+        pacer: Remote | None = None,
+        pool_size: int = POOL_SIZE,
     ) -> None:
+        """``pacer``: another ``Remote`` whose pace this one keeps too, so
+        clients that differ only in their timeouts share one rate.
+        ``pool_size``: idle connections kept, as many as run at once."""
         self._config_path = config_path
+        self._pool_size = pool_size
+        self._pacer = pacer
         self._timeout = timeout
         self._config: dict = {}
         self._mtime: int | None = None
         self._lock = threading.Lock()
         self._idle: list[_Conn] = []
-        self._tls: Any = None
         self._rate = rate
         self._burst = float(burst)
         self._tokens = float(burst)
@@ -156,16 +180,8 @@ class Remote:
 
         parts = urllib.parse.urlsplit(base)
         if parts.scheme == "https":
-            with self._lock:
-                if self._tls is None:
-                    import ssl
-
-                    # Loading the CA store costs about as much CPU as the
-                    # handshake itself, so every connection shares one.
-                    self._tls = ssl.create_default_context()
-                tls = self._tls
             conn = http.client.HTTPSConnection(
-                parts.hostname, parts.port, timeout=self._timeout, context=tls
+                parts.hostname, parts.port, timeout=self._timeout, context=tls_context()
             )
         else:
             conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=self._timeout)
@@ -198,7 +214,7 @@ class Remote:
             if (
                 conn.http.sock is not None
                 and conn.base == self._config.get("base_url")
-                and len(self._idle) < POOL_SIZE
+                and len(self._idle) < self._pool_size
             ):
                 self._idle.append(conn)
                 return
@@ -209,6 +225,9 @@ class Remote:
     def _pace(self) -> None:
         """Take a token, waiting for one to come due. Each caller reserves
         the next, so a burst is spread in arrival order."""
+        if self._pacer is not None:
+            self._pacer._pace()
+            return
         with self._lock:
             now = time.monotonic()
             self._tokens = min(self._burst, self._tokens + (now - self._stamp) * self._rate)
@@ -218,13 +237,9 @@ class Remote:
         if wait > 0:
             time.sleep(wait)
 
-    @staticmethod
-    def _throttled_for(resp: http.client.HTTPResponse) -> float:
-        try:
-            after = float(resp.getheader("Retry-After", "1"))
-        except (TypeError, ValueError):
-            after = 1.0
-        return min(max(after, 0.0), 1.0) + random.uniform(0.0, 0.2)
+    @classmethod
+    def _throttled_for(cls, resp: http.client.HTTPResponse) -> float:
+        return cls.throttle_wait(resp.getheader("Retry-After"))
 
     # --- requests -------------------------------------------------------
 
@@ -243,6 +258,38 @@ class Remote:
             raise _Failed(timeout=True) from None
         except (OSError, http.client.HTTPException):
             raise _Failed(timeout=False) from None
+
+    @contextlib.contextmanager
+    def stream(
+        self, method: str, action: str, params: dict, *, body: bytes = b"", headers: dict | None = None
+    ) -> Iterator[http.client.HTTPResponse]:
+        """One request whose answer is read as it arrives, on a connection of
+        its own that is closed after. Never sent again: a caller that wants
+        what a cut-short answer left out asks for it."""
+        import http.client
+
+        try:
+            config = self._load()
+        except (OSError, ValueError):
+            raise fail(errno.EIO) from None
+        self._pace()
+        conn = self._open(config["base_url"])
+        sent = {"Authorization": f"Bearer {config['token']}", "User-Agent": USER_AGENT, **(headers or {})}
+        url = f"{conn.prefix}{PREFIX}/{action}?{urllib.parse.urlencode(params)}"
+        resp = None
+        try:
+            try:
+                conn.http.request(method, url, body=body, headers=sent)
+                resp = conn.http.getresponse()
+            except (OSError, http.client.HTTPException):
+                raise fail(errno.EIO) from None
+            yield resp
+        finally:
+            # An answer marked to close is detached from its connection, so
+            # closing the connection alone leaves its socket open.
+            if resp is not None:
+                resp.close()
+            conn.http.close()
 
     def request(
         self,
@@ -305,9 +352,36 @@ class Remote:
                     self._mtime = None
                 continue
             # Refused before any handler runs, so a retried save cannot land twice.
-            if resp.status == 429 and throttled < THROTTLE_BUDGET_S:
+            # A 429 carrying a code is a handler's refusal (too many uploads):
+            # the answer, not a pace.
+            if resp.status == 429 and throttled < THROTTLE_BUDGET_S and code_of(data) is None:
                 wait = self._throttled_for(resp)
                 time.sleep(wait)
                 throttled += wait
                 continue
             return resp.status, resp, data
+
+    def prepared(self, action: str, params: dict) -> tuple[str, dict]:
+        """The URL and headers of a GET sent on another pool (a ranged read),
+        paced with this one's requests."""
+        try:
+            config = self._load()
+        except (OSError, ValueError):
+            raise fail(errno.EIO) from None
+        self._pace()
+        base = config["base_url"].rstrip("/")
+        headers = {"Authorization": f"Bearer {config['token']}", "User-Agent": USER_AGENT}
+        return f"{base}{PREFIX}/{action}?{urllib.parse.urlencode(params)}", headers
+
+    def reload(self) -> None:
+        """Read the token file again on the next request (a 401)."""
+        with self._lock:
+            self._mtime = None
+
+    @staticmethod
+    def throttle_wait(retry_after: str | None) -> float:
+        try:
+            after = float(retry_after or "1")
+        except (TypeError, ValueError):
+            after = 1.0
+        return min(max(after, 0.0), 1.0) + random.uniform(0.0, 0.2)

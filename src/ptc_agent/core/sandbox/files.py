@@ -34,6 +34,7 @@ from ptc_agent.core.paths import (
 )
 from ptc_agent.core.sandbox import path_locks as _path_locks
 from ptc_agent.core.sandbox.grep_render import render_grep_json
+from ptc_agent.core.sandbox.livefs_runtime.drive_protocol import MOUNT as DRIVE_MOUNT
 from ptc_agent.core.sandbox.livefs_runtime.protocol import MOUNT
 from ptc_agent.core.sandbox.path_resolution import held_back, rg_excluded
 from ptc_agent.core.sandbox.retry import RetryPolicy
@@ -801,7 +802,8 @@ async def aglob_files(
             "search_path": search_path,
             "excluded_dirs": excluded_dirs,
             "history_children": history_children,
-            "mount": MOUNT,
+            # The file mount and the Drive's: server-held, a request per stat.
+            "mounts": [MOUNT, DRIVE_MOUNT],
             "denied": list(held_back()),
         }
         cmd = (

@@ -28,9 +28,9 @@ from ptc_agent.core.paths import (
     SANDBOX_ROOTS,
     SandboxLayout,
     WorkspaceLayout,
-    resolve_agent_path,
     workspace_root,
 )
+from ptc_agent.core.path_fold import resolve_agent_path
 from ptc_agent.core.project_context import (
     ProjectContext,
     current_project,
@@ -77,6 +77,7 @@ EXPECTED_ABSOLUTE = {
     "memo_user": "/home/workspace/.agents/user/memo",
     "user_profile": "/home/workspace/.agents/user/profile",
     "workflows": "/home/workspace/.agents/workflows",
+    "drive": "/home/workspace/.agents/drive",
     "system": "/home/workspace/.system",
     "system_code": "/home/workspace/.system/code",
     "system_trace": "/home/workspace/.system/trace",
@@ -115,6 +116,7 @@ EXPECTED_RELATIVE = {
     "USER_AGENTS_DIR": ".agents/user/agents",
     "CHANNELS_DIR": ".agents/user/channels",
     "WORKFLOWS_DIR": ".agents/workflows",
+    "DRIVE_DIR": ".agents/drive",
     "TMP_DIR": ".agents/tmp",
     "SYSTEM_DIR": ".system",
     "SYSTEM_CODE_DIR": ".system/code",
@@ -777,6 +779,9 @@ class TestTraversalContainment:
             "/home/workspace/alpha-a1b2/.agents/user/profile/portfolio.json",
             "/.agents/user/profile/portfolio.json",
             ".agents/user/profile/portfolio.json",
+            # Collapsed into the folder, then folded as its absolute spelling.
+            "data/../.agents/user/profile/portfolio.json",
+            "/data/../.agents/user/profile/portfolio.json",
         ],
     )
     def test_a_folders_link_into_the_user_tier_names_the_computers(self, spelling):
