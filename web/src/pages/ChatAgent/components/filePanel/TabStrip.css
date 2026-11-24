@@ -181,6 +181,11 @@
   flex-shrink: 0;
   margin-left: auto;
 }
+/* The strip's buttons stand as tall as a tab and beside one, so they take its
+   corner rather than the panel's smaller icon-button one. */
+.file-panel-tabstrip .file-panel-icon-btn {
+  border-radius: var(--cs-radius-control, var(--radius));
+}
 
 /* ====== Mobile responsive ====== */
 @media (max-width: 767px) {
