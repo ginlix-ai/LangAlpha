@@ -55,6 +55,17 @@ jobs:
             echo "::error::publish needs a version. The tag is desktop-oss-v<version>, so an empty one creates the tag 'desktop-oss-v'."
             exit 1
           fi
+          # The nightly channel is desktop-nightly.yml's: a release on it would
+          # replace the nightly's manifests without moving the tag the nightly's
+          # commit order is checked against.
+          version=$(printf '%s' "$VERSION" | tr -d '[:space:]')
+          case "$version" in
+            *-*) pre=${version#*-}
+              if [ "$PUBLISH" = true ] && [ "${pre%%.*}" = nightly ]; then
+                echo "::error::'$version' would publish to the nightly channel, which only desktop-nightly.yml publishes to; name its prerelease otherwise, like 0.4.0-rc.1"
+                exit 1
+              fi ;;
+          esac
 
   build:
     needs: check
@@ -86,6 +97,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # A stable version outranks every nightly below it, so an install on the
+      # nightly channel that picked Stable takes this build. It must then carry
+      # everything the nightly did: an older backend cannot run on a database the
+      # nightly has migrated. Checked here, holding the feed, because a nightly
+      # can publish while this run waits for approval or builds.
+      - name: Check the release is at or past the nightly
+        if: needs.build.outputs.channel == 'latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Empty only when there never was a nightly; a lookup that fails, or a
+          # nightly tag gone while the feed still serves a nightly, stops here.
+          nightly=$(bash desktop/scripts/nightly-refs.sh nightly)
+          [ -n "$nightly" ] || exit 0
+          status=$(gh api "repos/$REPO/compare/$nightly...$SHA" --jq '.status' 2>/dev/null) || status=''
+          case "$status" in
+            ahead|identical) echo "  at or past the nightly at ${nightly:0:10}" ;;
+            *) echo "::error::$SHA is not at or past the nightly at $nightly ($status). Release from a commit that includes it."; exit 1 ;;
+          esac
 
       - uses: actions/download-artifact@v4
         with:
@@ -147,7 +180,7 @@ jobs:
               fi
             elif grep -q 'HTTP 404' "$RUNNER_TEMP/tagref.err" \
               && [ "$(gh release view "$tag" --repo "$REPO" --json isDraft --jq '.isDraft' 2>/dev/null)" = true ]; then
-              # A draft has no tag ref: GitHub creates it on publish. That is the
+              # A draft has no tag ref until this run tags it below. That is the
               # state a run that failed after `create` leaves behind, and reruns
               # of it are what --clobber below is for. The draft records the
               # commit it was cut from, which answers the same question. Only
@@ -238,6 +271,29 @@ jobs:
         run: |
           python -m pip install --quiet --only-binary=:all: pyyaml==6.0.3
           python desktop/scripts/feed-gather.py
+
+      # The tag ahead of the manifests, though the release stays a draft until
+      # the feed is through: the newest stable tag is what desktop-nightly.yml
+      # names its builds above and checks its commit against, so a release that
+      # stops after reaching the feed must already count. The draft step above
+      # has refused a tag on another commit.
+      - name: Tag the release
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          tag="desktop-oss-v${VERSION}"
+          at=$(bash desktop/scripts/nightly-refs.sh commit "$tag")
+          if [ -z "$at" ]; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA" --jq '.ref'
+          elif [ "$at" != "$SHA" ]; then
+            # A tag left with no release is not one the draft step checks, and
+            # creating the draft on it does not move it.
+            echo "::error::$tag is on $at, not $SHA. Move the tag deliberately or pick a new version."
+            exit 1
+          fi
 
       # Before the release is published, because the manifest is what tells an installed app a
       # build exists: published ahead of the archives it names, every app would
