@@ -23,8 +23,9 @@ export function parse(argv: readonly string[], flags: Flags): Parsed {
 }
 
 /** A command's parsed arguments. The type parameters are the names its spec
- *  declares, so a handler cannot read a flag or operand it never declared. */
-export class Args<F extends string = string, O extends string = string> {
+ *  declares, so a handler cannot read a flag or operand it never declared, nor
+ *  read an optional operand as one that is always there. */
+export class Args<F extends string = string, O extends string = string, P extends string = string> {
   constructor(
     private readonly values: Map<string, string | number | true>,
     private readonly operands: Map<string, string>,
@@ -46,5 +47,10 @@ export class Args<F extends string = string, O extends string = string> {
 
   op(name: O): string {
     return this.operands.get(name)!;
+  }
+
+  /** An operand the command declares optional (``name?``), when given. */
+  opt(name: P): string | undefined {
+    return this.operands.get(name);
   }
 }
