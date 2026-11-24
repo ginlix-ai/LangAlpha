@@ -324,6 +324,7 @@ function loadShell({ platform, ...options } = {}) {
 
 function loadShellAs({
   edition = 'oss', appOrigin, platformOrigin, serverUrl = null, loginPath, settings, ready: readyApp = false,
+  buildConfig,
 } = {}) {
   if (edition === 'saas') {
     fs.writeFileSync(BUILD_CONFIG, JSON.stringify({
@@ -333,6 +334,9 @@ function loadShellAs({
       pairingOrigin: 'https://api.example.com',
       ...(loginPath ? { loginPath } : {}),
     }))
+  } else if (buildConfig) {
+    // What a packaged OSS build carries beside the committed defaults.
+    fs.writeFileSync(BUILD_CONFIG, JSON.stringify({ edition: 'oss', ...buildConfig }))
   } else {
     fs.rmSync(BUILD_CONFIG, { force: true })
   }
