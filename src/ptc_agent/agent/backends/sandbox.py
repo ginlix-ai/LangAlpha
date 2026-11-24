@@ -46,7 +46,8 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.results import EditTextResult
-from ptc_agent.core.paths import langalpha_config_dir, on_file_mount, resolve_agent_path
+from ptc_agent.core.paths import langalpha_config_dir
+from ptc_agent.core.path_fold import on_file_mount, resolve_agent_path
 from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.grep_render import GrepLine
@@ -514,6 +515,11 @@ class SandboxBackend(SandboxBackendProtocol):
                 return FileUploadResponse(path=path, error=f"write_failed: {exc}")
 
         return await asyncio.gather(*[_upload_one(p, c) for p, c in files])
+
+    async def adownload_file_bytes_capped(
+        self, filepath: str, cap: Callable[[bytes], int]
+    ) -> bytes | None:
+        return await self.sandbox.adownload_file_bytes_capped(self.normalize_path(filepath), cap)
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a shell command in the sandbox.

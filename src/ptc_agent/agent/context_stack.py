@@ -153,7 +153,7 @@ class SubagentContext:
 
     timezone: str | None = None
     preferred_market: str | None = None
-    #: Memory tiers only: a subagent gets no memo pointer.
+    #: Memory tiers.
     sources: BaselineSources | None = None
     skills: BlockReader | None = None
     #: The thread's scratchpad folder; each task writes a folder inside it.

@@ -54,7 +54,6 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
 )
 from ptc_agent.agent.middleware.thinking_binding import holds_bound_thinking
 from ptc_agent.agent.middleware.runtime_context.epoch import (
-    MEMO_DISPLAY_CAP,
     MEMORY_TIERS,
     OTHER_COMPUTERS,
     BaselineEpoch,
@@ -93,11 +92,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
 )
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.agent.tools.context_file_policy import AGENT_MD, MEMORY_INDEX
-from ptc_agent.core.paths import (
-    MEMO_INDEX_FILENAME,
-    MEMO_USER_DIR,
-    MEMORY_INDEX_FILENAME,
-)
+from ptc_agent.core.paths import MEMORY_INDEX_FILENAME
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +130,6 @@ def _retained_change_rows(state: Any) -> tuple[str, ...]:
 # A store or sandbox read at the turn boundary must not stall the turn.
 _READ_TIMEOUT_S = 2.0
 
-# One past the display cap, so a count at the ceiling can still be told apart
-# from one above it.
-_COUNT_QUERY_LIMIT = MEMO_DISPLAY_CAP + 1
-
 # A long-running thread that never compacts would otherwise accumulate durable
 # rows forever, each one measured from a baseline that drifted further from the
 # truth. Folding the drift back into the block after this many rows keeps the
@@ -174,15 +165,6 @@ class MemoryTierSource:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoSource:
-    """The memo catalog: where the count is read from, and where memos live."""
-
-    namespace_factory: NamespaceFactory
-    display_path: str = f"{MEMO_USER_DIR}/"
-    index_key: str = MEMO_INDEX_FILENAME
-
-
-@dataclass(frozen=True, slots=True)
 class BaselineSources:
     """The store-backed tiers the baseline reads at the turn boundary.
 
@@ -195,7 +177,6 @@ class BaselineSources:
     store_cache: Any | None = None
     memory: dict[str, MemoryTierSource] = field(default_factory=dict)
     index_key: str = MEMORY_INDEX_FILENAME
-    memo: MemoSource | None = None
 
 
 class BaselineContextMiddleware(AgentMiddleware):
@@ -206,7 +187,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             agent.md tier entirely.
         workspace: The workspace as its row had it at agent build, or None
             when that read did not answer.
-        sources: Store-backed tiers to read (memory, memo). None reads neither.
+        sources: Store-backed memory tiers to read. None reads none.
         blocks: Harness-authored text this build states, keyed by read kind
             (see :data:`BlockReader`). A kind with no reader is a block this
             build does not have, which renders nothing and files no row.
@@ -300,7 +281,6 @@ class BaselineContextMiddleware(AgentMiddleware):
             if resolved.store is not None
             else {}
         )
-        self._memo = resolved.memo if resolved.store is not None else None
         self._blocks: dict[str, BlockReader] = {
             kind: reader
             for kind, reader in (blocks or {}).items()
@@ -354,7 +334,7 @@ class BaselineContextMiddleware(AgentMiddleware):
 
         Frozen into the epoch rather than re-read per turn, so the block stays
         byte-identical for the epoch; a change underneath it arrives as a
-        `profile_changed` row instead, the same way a memo count does.
+        `profile_changed` row instead.
         """
         return ProfileSnapshot(
             user_profile=dict(self._user_profile),
@@ -423,13 +403,9 @@ class BaselineContextMiddleware(AgentMiddleware):
     async def read_observations(self, state: Any) -> Observations:
         """Everything one turn boundary reads, in one pass.
 
-        The file sources and the memo count are gathered together because they
-        answer to the same deadline and neither depends on the other; the
-        profile and the compaction fingerprint are already in hand.
+        The profile and the compaction fingerprint are already in hand.
         """
-        reads, memo_count = await asyncio.gather(
-            self._read_sources(state), self._memo_count()
-        )
+        reads = await self._read_sources(state)
         event = state_get(state, "_summarization_event")
         summary = event.get("summary_message") if isinstance(event, dict) else None
         sent = note_sent(messages_in_view(state), getattr(summary, "id", None))
@@ -439,9 +415,6 @@ class BaselineContextMiddleware(AgentMiddleware):
             identity=self._identity(),
             profile=self._profile_snapshot(),
             reads=tuple(reads),
-            memo_configured=self._memo is not None,
-            memo_count=memo_count,
-            memo_path=self._memo.display_path if self._memo is not None else "",
             compaction=compaction_fingerprint(event),
             rebuild_after_updates=self._rebuild_after_updates,
             retained_rows=_retained_change_rows(state),
@@ -574,38 +547,6 @@ class BaselineContextMiddleware(AgentMiddleware):
             read.provenance["modified_at"] = value["modified_at"]
         return read
 
-    async def _memo_count(self) -> int | None:
-        """Memos in the user's namespace, or None when the read did not answer."""
-        if self._memo is None:
-            return None
-        try:
-            namespace = self._memo.namespace_factory()
-        except Exception:  # noqa: BLE001
-            logger.warning("[Baseline] memo namespace resolution failed", exc_info=True)
-            return None
-        index_key = self._memo.index_key
-        try:
-            catalog = await asyncio.wait_for(
-                self._store_cache.aget(self._store, namespace, index_key)
-                if self._store_cache is not None
-                else self._store.aget(namespace, index_key),
-                timeout=self._read_timeout_s,
-            )
-            if catalog is not None and isinstance(catalog.value, dict):
-                count = catalog.value.get("memo_count")
-                if isinstance(count, int) and count >= 0:
-                    return count
-            results = await asyncio.wait_for(
-                self._store.asearch(namespace, limit=_COUNT_QUERY_LIMIT, offset=0),
-                timeout=self._read_timeout_s,
-            )
-        except Exception:  # noqa: BLE001 - a memo count is never worth a turn
-            logger.warning("[Baseline] memo count read failed", exc_info=True)
-            return None
-        if not results:
-            return 0
-        return sum(1 for item in results if item.key != index_key)
-
     # -- rendering ----------------------------------------------------------
 
     def _render_block(self, epoch: BaselineEpoch) -> str:
@@ -681,6 +622,7 @@ class BaselineContextMiddleware(AgentMiddleware):
                 guidance=guidance,
             )
 
+        # Only an epoch frozen before memos stopped being announced holds one.
         if epoch.memo is not None and epoch.memo.display:
             parts[SECTION_MEMO] = (
                 f'<memo-index count="{epoch.memo.display}" path="{epoch.memo.path}"/>'

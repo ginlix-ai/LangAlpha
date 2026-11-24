@@ -41,6 +41,10 @@ defaults:
   # the runtime-context baseline; the static prompt component describes it)
   memo_enabled: true
 
+  # The user's Drive (agent reads and writes it, and looks when a task
+  # needs it). Off unless the build has the Drive route.
+  drive_enabled: false
+
   # Gates the main agent's own steering in the shared user_profile component:
   # the profile files, the HTML-deliverable format, and the automations and
   # subagents folders. The baseline renders it true for the main agent and

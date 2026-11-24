@@ -2,7 +2,7 @@
 
 Three surfaces, split by how long the content lives.
 ``BaselineContextMiddleware`` freezes the per-thread baseline (agent.md, the
-memory indices, the memo pointer, identity, and the harness-authored blocks
+memory indices, identity, and the harness-authored blocks
 in ``harness_blocks.py``) into ``runtime_baseline`` at the turn
 boundary and re-renders it byte-identically as a system block on every call. Everything that is true for one turn is a durable row written once into
 ``messages`` (``durable.py``) so it keeps its place in time: the turn's own
@@ -20,7 +20,6 @@ from .baseline import (
     BaselineContextMiddleware,
     BaselineSources,
     BlockReader,
-    MemoSource,
     MemoryTierSource,
 )
 from .carrier import (
@@ -122,7 +121,6 @@ __all__ = [
     "FrozenPromptMiddleware",
     "HarnessBlock",
     "HomeAway",
-    "MemoSource",
     "MemoryTierSource",
     "Observations",
     "PinSite",

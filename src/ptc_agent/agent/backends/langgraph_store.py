@@ -5,21 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fnmatch
-import itertools
 import re
 import weakref
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-import re2
 import structlog
 from langgraph.store.base import BaseStore
 
-from ptc_agent.agent.backends.results import EditTextResult
+from ptc_agent.agent.backends.results import EditTextResult, RouteRefused
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
-from ptc_agent.core.sandbox.grep_render import _GREP_WINDOWS_PER_LINE, GREP_LINE_CHARS, GrepLine, cut_grep_line
+from ptc_agent.agent.backends.text_grep import compile_grep, grep_texts
 from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
@@ -38,11 +36,11 @@ class InvalidStoreKeyError(ValueError):
     """Raised for malformed store keys."""
 
 
-class StoreContentTooLargeError(ValueError):
+class StoreContentTooLargeError(RouteRefused, ValueError):
     """Raised when a write would exceed ``MAX_CONTENT_BYTES``."""
 
 
-class StoreContentInvalidError(ValueError):
+class StoreContentInvalidError(RouteRefused, ValueError):
     """Raised for text the store cannot hold."""
 
 
@@ -55,7 +53,7 @@ class StoreListingIncomplete(RuntimeError):
     """A namespace walk ended early, so absence cannot be concluded from it."""
 
 
-class ReadOnlyStoreError(PermissionError):
+class ReadOnlyStoreError(RouteRefused, PermissionError):
     """Raised when ``awrite_text`` is called against a read-only tier.
 
     Carries a tier-specific message (e.g. "Memo is user-managed. Ask the user
@@ -171,115 +169,6 @@ def workspace_memory_namespace(user_id: str, workspace_id: str) -> tuple[str, ..
 
 def memo_namespace(user_id: str) -> tuple[str, ...]:
     return (store_label(user_id), "memos")
-
-
-_REFUSED_NOTE = (
-    "[Grep did not search {path}: its files are searched with RE2, which "
-    "refuses this pattern ({reason}). Grep that path again without that "
-    "syntax to search them.]"
-)
-
-
-class UnsupportedPattern(ValueError):
-    """A Grep pattern RE2 refuses, such as one with ``(?x)``, which rg runs.
-
-    Raised rather than answered with no matches, which would read as nothing
-    there: the search answers with ``note`` instead."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-    def note(self, path: str) -> str:
-        return _REFUSED_NOTE.format(path=path, reason=self.reason)
-
-
-def compile_grep(pattern: str, case_insensitive: bool) -> Any:
-    """``pattern`` compiled for ``grep_texts``; raises ``UnsupportedPattern``
-    for one RE2 refuses.
-
-    RE2 matches in time linear in the line and lets go of the GIL while it
-    does, where ``re`` can take seconds over one long line (``.*x`` over a
-    JSONL event) and holds the event loop throughout, even from a thread.
-    Its ``\\w``, ``\\d``, ``\\s`` and ``\\b`` are ASCII only, unlike rg's."""
-    options = re2.Options()
-    options.case_sensitive = not case_insensitive
-    # Otherwise each pattern it refuses is logged to stderr.
-    options.log_errors = False
-    try:
-        return re2.compile(pattern, options=options)
-    except re2.error as e:
-        reason = e.args[0] if e.args else "unsupported syntax"
-        if isinstance(reason, bytes):
-            reason = reason.decode(errors="replace")
-        raise UnsupportedPattern(str(reason)) from None
-
-
-
-def _cut(line: str, matches: Iterator[Any]) -> str:
-    """A long line cut as rg's output is cut. The cut takes bytes, as rg
-    reports them, but only places the first few matches; the others are only
-    counted, so a pattern that matches everywhere holds no list of them."""
-    placed = [
-        (len(line[: m.start()].encode()), len(line[: m.end()].encode()))
-        for m in itertools.islice(matches, _GREP_WINDOWS_PER_LINE)
-    ]
-    rest = sum(1 for _ in matches)
-    return cut_grep_line(line.encode(), placed, total=len(placed) + rest)
-
-
-def grep_texts(
-    texts: Iterable[tuple[str, str]],
-    compiled: Any,
-    output_mode: str,
-    *,
-    show_line_numbers: bool,
-    head_limit: int | None = None,
-    offset: int = 0,
-    cut_long_lines: bool = False,
-    max_lines: int | None = None,
-) -> list[Any]:
-    """Grep over files held in memory as (path, content), answered in the
-    sandbox grep's output modes, ``compiled`` by ``compile_grep``.
-
-    ``cut_long_lines`` cuts a long line to windows around its matches, as
-    the sandbox's are cut, and a content search stops at ``max_lines``."""
-    files: list[str] = []
-    lines: list[str] = []
-    counts: list[tuple[str, int]] = []
-    full = False
-    for path, content in texts:
-        found = 0
-        for number, line in enumerate(content.splitlines(), start=1):
-            if output_mode != "content":
-                if compiled.search(line) is None:
-                    continue
-                found += 1
-                if output_mode != "count":
-                    # One line lists the file.
-                    break
-                continue
-            matches = compiled.finditer(line)
-            first = next(matches, None)
-            if first is None:
-                continue
-            found += 1
-            text = line
-            if cut_long_lines and len(line) > GREP_LINE_CHARS:
-                text = _cut(line, itertools.chain([first], matches))
-            prefix = f"{path}:{number}:" if show_line_numbers else f"{path}:"
-            lines.append(GrepLine(prefix + text, path))
-            full = max_lines is not None and len(lines) >= max_lines
-            if full:
-                break
-        if found:
-            files.append(path)
-            counts.append((path, found))
-        if full:
-            break
-    selected: list[Any] = {"content": lines, "count": counts}.get(output_mode, files)
-    start = max(0, offset)
-    return selected[start : None if head_limit is None else start + head_limit]
 
 
 class StoreBackend:

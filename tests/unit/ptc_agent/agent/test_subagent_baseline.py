@@ -55,14 +55,14 @@ def _context(*, memory_index: str | None = None, scratchpad: str | None = FOLDER
     )
 
 
-def _compile(context=None, profile=PROFILE, sandbox=None, **fields):
+def _compile(context=None, profile=PROFILE, sandbox=None, drive=False, **fields):
     fields.setdefault("tools", ["execute_code", "filesystem", "bash"])
     defn = SubagentDefinition(
         name="helper", description="d", role_prompt="Do the task.", **fields
     )
     tool_sets = {name: [SimpleNamespace(name=name)] for name in ("execute_code", "filesystem", "bash", "web_search")}
     return SubagentCompiler(
-        sandbox=sandbox, tool_sets=tool_sets, user_profile=profile, context=context
+        sandbox=sandbox, tool_sets=tool_sets, user_profile=profile, context=context, drive=drive
     ).compile(defn)
 
 
@@ -164,6 +164,56 @@ class TestBaseline:
             ))
         assert "- [Style](style.md) terse" in text
         assert ("cannot be opened" not in text) is opens
+
+    @pytest.mark.parametrize(
+        ("tools", "shown"),
+        [
+            (["execute_code", "bash"], False),
+            (["bash"], False),
+            (["execute_code"], False),
+            (["filesystem"], True),
+            (["execute_code", "filesystem", "bash"], True),
+        ],
+    )
+    def test_the_drive_is_stated_only_to_a_subagent_with_the_file_tools(self, tools, shown):
+        # Its section says to Read, Write, Edit, Glob and Grep it, and the
+        # Drive is not on the file mount, so a mount up does not stand in.
+        sandbox = SimpleNamespace(livefs=object())
+        on = _compile(_context(), sandbox=sandbox, tools=tools, drive=True)
+        off = _compile(_context(), sandbox=sandbox, tools=tools, drive=False)
+        assert ("<drive_system>" in on["system_prompt"]) is shown
+        assert "<drive_system>" not in off["system_prompt"]
+
+    def test_no_render_carries_a_drive_block(self):
+        # The agent looks in the Drive when a task needs it; nothing hands it
+        # a map, so neither the main agent nor a subagent has one to read.
+        from ptc_agent.agent.middleware.runtime_context.baseline import BLOCK_KINDS
+        from ptc_agent.agent.prompts import init_loader
+
+        main = init_loader().get_system_prompt(drive_enabled=True)
+        with _in_task():
+            compiled = _compile(_context(), sandbox=SimpleNamespace(livefs=object()), drive=True)
+            text = baseline_text(compiled)
+        assert "<drive_system>" in main and "<drive " not in main
+        assert "<drive_system>" in compiled["system_prompt"]
+        assert "<drive " not in compiled["system_prompt"] and "<drive " not in text
+        assert "drive" not in BLOCK_KINDS
+
+    def test_the_memos_ride_the_drive_section_on_the_main_agent_alone(self):
+        # One section, never both: with the Drive on, the memos are its bullet.
+        from ptc_agent.agent.prompts import init_loader
+
+        memo_bullet = "- The user's memos, documents they wrote or uploaded"
+        loader = init_loader()
+        on = loader.get_system_prompt(drive_enabled=True, memo_enabled=True)
+        off = loader.get_system_prompt(drive_enabled=False, memo_enabled=True)
+        no_memo = loader.get_system_prompt(drive_enabled=True, memo_enabled=False)
+        sub = _compile(_context(), sandbox=SimpleNamespace(livefs=object()), drive=True)
+        assert memo_bullet in on and "<memo_system>" not in on
+        assert "<memo_system>" in off and memo_bullet not in off
+        assert memo_bullet not in no_memo and "<memo_system>" not in no_memo
+        assert "<drive_system>" in sub["system_prompt"]
+        assert memo_bullet not in sub["system_prompt"]
 
     def test_memory_switched_off_reads_no_index(self):
         with _in_task():

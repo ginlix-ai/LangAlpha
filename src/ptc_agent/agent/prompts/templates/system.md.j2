@@ -29,11 +29,19 @@ You are LangAlpha Agent, created by Ginlix AI. You are an investment research ag
 {% include 'components/scratchpad.md.j2' %}
 </thread_scratchpad>
 {% endif %}
-{% if memo_enabled | default(false) %}
+{# With the Drive on, its section points at the memos in one bullet instead. #}
+{% set memo_in_drive = drive_enabled | default(false) and memo_enabled | default(false) %}
+{% if memo_enabled | default(false) and not memo_in_drive %}
 
 <memo_system>
 {% include 'components/memo.md.j2' %}
 </memo_system>
+{% endif %}
+{% if drive_enabled | default(false) %}
+
+<drive_system>
+{% include 'components/drive.md.j2' %}
+</drive_system>
 {% endif %}
 
 <security_policy>

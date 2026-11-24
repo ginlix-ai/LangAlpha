@@ -115,6 +115,7 @@ def _tool_gates(defn: SubagentDefinition, *, market_watch: bool) -> dict[str, bo
         "chart_annotation_enabled": False,
         "finance_enabled": "finance" in bound,
         "web_enabled": "web_search" in bound,
+        "bash_enabled": "bash" in bound,
     }
 
 
@@ -142,12 +143,16 @@ class SubagentCompiler:
         sandbox_tools: Callable[[frozenset[str]], list[Any]] | None = None,
         context: SubagentContext | None = None,
         prompt_vars: Mapping[str, bool] | None = None,
+        drive: bool = False,
     ) -> None:
         self._sandbox = sandbox
         # What the prompts may point at of the person's own
         # (``IdentityGates.prompt_vars``); a bare build leaves the templates'
         # defaults, which point at all of it.
         self._prompt_vars = dict(prompt_vars or {})
+        # Whether the build has the Drive route, which a subagent's prompt
+        # names only to one with the file tools.
+        self._drive = drive
         # What each subagent's runtime-context baseline is built from. Without
         # it (bare and test construction) a subagent gets no baseline, and its
         # prompt says nothing that would point at one.
@@ -246,7 +251,13 @@ class SubagentCompiler:
                 guidance=guidance,
                 model=self._model_label(definition, resolved),
             )
-        sections.update(held, security_policy=runs_code)
+        sections.update(
+            held,
+            security_policy=runs_code,
+            # The section tells it to use the file tools; the Drive is not on
+            # the file mount that lets code and shell stand in for memory.
+            drive_system=self._drive and "filesystem" in bound,
+        )
         result: dict[str, Any] = {
             "name": definition.name,
             "description": definition.description,

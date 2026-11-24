@@ -42,3 +42,15 @@ class GrepAnswer(list):
     def __init__(self, entries: Iterable[Any] = (), notes: Iterable[str] = ()) -> None:
         super().__init__(entries)
         self.notes = tuple(notes)
+
+
+class RouteRefused(Exception):
+    """A file call a route refused for a reason it words for the agent (the
+    file is read-only, too large, holds what the store cannot, or failed a
+    check), which the file tools answer as ``ERROR: <text>``."""
+
+
+class RouteUnavailable(Exception):
+    """A route that could not answer a Glob or Grep. The search answers with
+    what the rest found and this as a note naming what it left out, rather
+    than failing whole for one server-held folder."""

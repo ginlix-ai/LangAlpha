@@ -21,6 +21,12 @@
 {% include 'subagents/memory.md.j2' %}
 </memory_system>
 {% endif %}
+{% if section_drive_system | default(false) %}
+
+<drive_system>
+{% include 'components/drive.md.j2' %}
+</drive_system>
+{% endif %}
 {% if section_thread_scratchpad | default(false) %}
 
 <thread_scratchpad>

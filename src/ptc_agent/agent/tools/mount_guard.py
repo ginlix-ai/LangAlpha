@@ -9,9 +9,13 @@ import structlog
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
-from ptc_agent.core.sandbox import livefs_mount
+from ptc_agent.core.sandbox import drive_mount, livefs_mount
 
 logger = structlog.get_logger(__name__)
+
+#: How long a command naming the Drive waits for a start under way.
+DRIVE_WAIT_S = 8.0
+
 
 
 async def run_guarded(
@@ -26,6 +30,7 @@ async def run_guarded(
     file_tools_only: tuple[str, ...] = (),
     file_tools_error: str = "",
     file_tools_errors: Mapping[str, str] | None = None,
+    config: Mapping[str, Any] | None = None,
     **blocked_fields: Any,
 ) -> tuple[str, dict[str, Any]]:
     """Refuse ``text`` if it names a directory only the file tools reach,
@@ -53,6 +58,8 @@ async def run_guarded(
 
         logger.warning("Protected path access blocked", **blocked_fields)
         return BLOCKED_RESPONSE, {"mcp_trace": []}
+    if call_context is not None:
+        call_context = call_context.for_call(config)
     mount = await backend.settled_livefs(
         call_context.workspace_id if call_context is not None else None
     )
@@ -61,26 +68,32 @@ async def run_guarded(
         logger.info(blocked_event, tree=tree, **blocked_fields)
         error = memory_error if tree == "memory" else files_error.format(dir=tree)
         return error, {"mcp_trace": []}
+    sandbox = backend.sandbox
+    drive = getattr(sandbox, "drive", None) or drive_mount.NO_DRIVE
+    # A sandbox the host handed no view of the Drive (a machine outside the
+    # product's acquire) keeps ``.agents/drive`` as a folder like any other.
+    if drive is not drive_mount.NO_DRIVE and drive_mount.names_drive(text):
+        # As for the file mount unserved: a command writing there now would
+        # make plain folders the Drive never sees and a backup skips.
+        refusal = drive_mount.drive_refusal(await drive.on_disk(wait_s=DRIVE_WAIT_S))
+        if refusal is not None:
+            logger.info(blocked_event, tree="drive", **blocked_fields)
+            return refusal, {"mcp_trace": []}
 
-    async def run_as(call_id: str | None) -> tuple[str, dict[str, Any]]:
-        text, artifact = await run(call_id)
-        return await _with_paid_calls(backend, call_id, text, artifact)
+    async def run_tagged(call_id: str | None) -> tuple[str, dict[str, Any]]:
+        output, artifact = await run(call_id)
+        # Where provenance collects the sources the relay held under the call
+        # (``ProvenanceMiddleware``, which strips it).
+        if call_id is not None and isinstance(artifact, dict):
+            artifact[RELAY_CALL_KEY] = call_id
+        return output, artifact
 
-    return await livefs_mount.through_mount(
-        mount, backend.sandbox.call_filer, call_context, run_as
+    return await livefs_mount.run_call(
+        run_tagged,
+        command=text,
+        mount=mount,
+        drive=drive,
+        filer=sandbox.call_filer,
+        context=call_context,
+        paid_calls=getattr(sandbox, "paid_calls", None),
     )
-
-
-async def _with_paid_calls(
-    backend: SandboxBackend, call_id: str | None, text: str, artifact: dict[str, Any]
-) -> tuple[str, dict[str, Any]]:
-    """Add what the command's paid relay calls cost to its output, and leave
-    its call id on the artifact, where provenance collects the sources the
-    relay held under it (``ProvenanceMiddleware``, which strips it)."""
-    if call_id is None:
-        return text, artifact
-    if isinstance(artifact, dict):
-        artifact[RELAY_CALL_KEY] = call_id
-    paid_calls = getattr(backend.sandbox, "paid_calls", None)
-    charged = await paid_calls(call_id) if paid_calls is not None else ""
-    return (f"{text}\n\n{charged}" if charged else text), artifact

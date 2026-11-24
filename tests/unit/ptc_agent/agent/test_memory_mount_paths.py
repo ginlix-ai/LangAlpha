@@ -188,13 +188,14 @@ class TestOtherRoutesStayOnTheComputer:
     @pytest.mark.parametrize(
         ("gate", "expected"),
         [
-            ("memo", {f"{ROOT}/{MEMO_USER_DIR}/"}),
+            ("memo", {f"{ROOT}/{MEMO_USER_DIR}/", f"{ROOT}/.agents/drive/"}),
             (
                 "user_data",
                 {
                     f"{ROOT}/.agents/user/profile/",
                     f"{ROOT}/.agents/user/automations/",
                     f"{ROOT}/.agents/user/agents/",
+                    f"{ROOT}/.agents/drive/",
                 },
             ),
         ],

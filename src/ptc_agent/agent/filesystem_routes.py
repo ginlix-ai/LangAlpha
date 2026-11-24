@@ -31,6 +31,7 @@ from ptc_agent.agent.backends import (
 )
 from ptc_agent.agent.backends.automations import AutomationsBackend
 from ptc_agent.agent.backends.channels import ChannelsBackend
+from ptc_agent.agent.backends.drive import DriveAbsent, DriveRoute, drive_service
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
 from ptc_agent.agent.backends.subagents import SubagentsBackend
 from ptc_agent.agent.backends.user_data import UserDataBackend
@@ -39,11 +40,9 @@ from ptc_agent.agent.middleware.background_subagent.workflow.prebuilt import (
 )
 from ptc_agent.agent.middleware.runtime_context import (
     BaselineSources,
-    MemoSource,
     MemoryTierSource,
 )
 from ptc_agent.core.paths import (
-    MEMO_INDEX_FILENAME,
     MEMO_USER_DIR,
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
@@ -87,6 +86,8 @@ class IdentityGates:
     # The user's chat-app settings, for the file tools only: the mount never
     # asks for them, so they are no mount tier.
     channels: bool = False
+    # The user's Drive, when they have the feature on.
+    drive: bool = False
 
     @property
     def memory(self) -> bool:
@@ -109,6 +110,7 @@ def resolve_identity_gates(
     workspace_id: str | None,
     disable_subagents: bool,
     channels: bool = False,
+    drive: bool = False,
 ) -> IdentityGates:
     from src.config.settings import get_workflow_orchestration_config
 
@@ -118,7 +120,7 @@ def resolve_identity_gates(
         # A shared workspace: its computer and its memory are a holder's,
         # which has no person behind it. Only the workspace's own memory is
         # there; nothing of any one member's (their memory, memos, profile
-        # and automation files, workflows, chat-app settings) is.
+        # and automation files, workflows, chat-app settings, Drive) is.
         return IdentityGates(
             user_memory=False,
             workspace_memory=identified and bool(workspace_id),
@@ -146,6 +148,8 @@ def resolve_identity_gates(
         workflow_tool=workflow and not disable_subagents,
         # Asked for by a build whose deployment has the channel gateway.
         channels=channels and bool(user_id),
+        # Asked for by a build whose user has the feature on.
+        drive=drive and bool(user_id),
     )
 
 
@@ -193,8 +197,9 @@ def build_filesystem_backend(
 
     Returns the backend the filesystem tools should see, and the store-tier
     sources the runtime-context baseline reads at the turn boundary (the
-    memory namespaces and the memo catalog), one value because they are all
-    derived from the same gate resolution and namespace closures.
+    memory namespaces), one value
+    because they are all derived from the same gate resolution and namespace
+    closures.
 
     ``layout`` is the turn's workspace folder, which the workspace memory
     mount hangs off. Omitted, the workspace owns the computer root.
@@ -209,9 +214,14 @@ def build_filesystem_backend(
         or gates.user_data
         or gates.workflow
         or gates.channels
+        or gates.drive
         or history_routes
     ):
-        return backend, None
+        # Nothing to route but the Drive's refusal.
+        drive_prefix = f"{backend.computer_root.rstrip('/')}/{SandboxLayout.DRIVE_DIR}/"
+        return CompositeFilesystemBackend(
+            sandbox=backend, routes=[DriveAbsent(root_prefix=drive_prefix)]
+        ), None
 
     # One cache per agent (≈ per request). Shared by every memory/memo
     # backend route and the baseline's turn-boundary read, so a turn pays
@@ -237,7 +247,6 @@ def build_filesystem_backend(
     routes: list[Any] = list(history_routes)
     user_namespace_factory: NamespaceFactory | None = None
     workspace_namespace_factory: NamespaceFactory | None = None
-    memo_namespace_factory: NamespaceFactory | None = None
 
     if gates.user_memory:
 
@@ -276,7 +285,6 @@ def build_filesystem_backend(
         def _memo_namespace() -> tuple[str, ...]:
             return memo_namespace(user_id)
 
-        memo_namespace_factory = _memo_namespace
         routes.append(
             StoreBackend(
                 store=store,
@@ -340,8 +348,21 @@ def build_filesystem_backend(
             )
         )
 
-    if not routes:
-        return backend, None
+    drive_prefix = f"{sandbox_root}/{SandboxLayout.DRIVE_DIR}/"
+    if gates.drive:
+        assert user_id is not None
+        routes.append(
+            DriveRoute(
+                service=drive_service(),
+                user_id=user_id,
+                sandbox_backend=backend,
+                root_prefix=drive_prefix,
+                call=call,
+            )
+        )
+    else:
+        # A write here would make a real folder where the Drive's link goes.
+        routes.append(DriveAbsent(root_prefix=drive_prefix))
 
     # A tier the gates left without a namespace has nowhere to read from, so
     # it is left out rather than carried as a source that always fails.
@@ -364,15 +385,6 @@ def build_filesystem_backend(
         for tier, (factory, display) in tier_factories.items()
         if factory is not None
     }
-    memo_source = (
-        MemoSource(
-            namespace_factory=memo_namespace_factory,
-            display_path=f"{MEMO_USER_DIR}/",
-            index_key=MEMO_INDEX_FILENAME,
-        )
-        if gates.memo and memo_namespace_factory is not None
-        else None
-    )
 
     return (
         CompositeFilesystemBackend(sandbox=backend, routes=routes),
@@ -381,6 +393,5 @@ def build_filesystem_backend(
             store_cache=store_cache,
             memory=memory_tiers,
             index_key=MEMORY_INDEX_FILENAME,
-            memo=memo_source,
         ),
     )

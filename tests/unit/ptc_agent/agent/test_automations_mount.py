@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+from dataclasses import replace
 import pytest
 
 from ptc_agent.agent.backends import db_json_route
@@ -238,7 +239,8 @@ class TestWithTheMount:
 
         assert record.await_count == background
         (_, call_id, context), run, report = backend.mount.events
-        assert call_id and context == CONTEXT
+        # Filed as this call runs it: the main agent, outside any run here.
+        assert call_id and context == replace(CONTEXT, agent="main")
         assert run == ("run", call_id) and report == ("report", call_id)
         # The mount is asked for the folder the command runs in.
         assert backend.asked_for == [CONTEXT.workspace_id]
@@ -251,7 +253,7 @@ class TestWithTheMount:
         await tool.ainvoke({"code": f"print(open({FILE_PATH!r}).read())"})
 
         (_, call_id, context), run, report = backend.mount.events
-        assert call_id and context == CONTEXT
+        assert call_id and context == replace(CONTEXT, agent="main")
         assert run == ("run", call_id) and report == ("report", call_id)
         # The mount is asked for the folder the command runs in.
         assert backend.asked_for == [CONTEXT.workspace_id]

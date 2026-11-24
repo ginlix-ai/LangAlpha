@@ -31,12 +31,8 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langchain_core.tools.base import _get_runnable_config_param
 from pydantic import Field, create_model
 
-from ptc_agent.core.paths import (
-    THREAD_INDEX,
-    SandboxLayout,
-    WorkspaceLayout,
-    on_file_mount,
-)
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
+from ptc_agent.core.path_fold import THREAD_INDEX, on_file_mount
 from ptc_agent.core.project_context import ProjectContext, project_bound
 from ptc_agent.core.sandbox.livefs_runtime.protocol import GENERATIONS, MOUNT
 from src.observability import stamp_tool_channel, stamp_tool_provider

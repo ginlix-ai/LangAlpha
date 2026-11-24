@@ -36,9 +36,15 @@ from typing import Any, ClassVar, Literal, NamedTuple
 import psycopg
 import structlog
 
-from ptc_agent.agent.backends.langgraph_store import ReadOnlyStoreError, compile_grep, grep_texts, lock_for_namespace
+from ptc_agent.agent.backends.langgraph_store import ReadOnlyStoreError, lock_for_namespace
+from ptc_agent.agent.backends.text_grep import compile_grep, grep_texts
 from ptc_agent.agent.backends.read_window import shows_whole_file
-from ptc_agent.agent.backends.results import EditTextResult, WriteTextResult
+from ptc_agent.agent.backends.results import (
+    EditTextResult,
+    RouteRefused,
+    RouteUnavailable,
+    WriteTextResult,
+)
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.core.paths import logged_path
 from ptc_agent.core.sandbox.livefs_mount import CallContext
@@ -74,7 +80,7 @@ ErrorType = Literal[
 
 
 @dataclass
-class UserDataValidationError(Exception):
+class UserDataValidationError(RouteRefused):
     """Raised when a write payload fails parse / schema / version / constraint checks.
 
     The backend's `awrite_text` surfaces the `message` verbatim to the agent's
@@ -879,9 +885,13 @@ class DbJsonRoute:
             return []
         try:
             names = await self.names(self._user_id)
-        except Exception:
+        except Exception as e:
             logger.exception("db json route listing failed", path=self._root_prefix)
-            names = []
+            shown = self.virtualize_path(self._root_prefix.rstrip("/")).lstrip("/")
+            raise RouteUnavailable(
+                f"[{shown} could not be listed just now, so none of its files are "
+                "listed here. Search it again shortly.]"
+            ) from e
         out: list[str] = []
         for filename in sorted([README_FILE, *names]):
             absolute = self._absolute(filename)

@@ -222,6 +222,7 @@ class PTCAgent:
         memo_enabled: bool = True,
         user_memory_enabled: bool = True,
         user_data_enabled: bool = True,
+        drive_enabled: bool = False,
         plan_enabled: bool = False,
         crawl_enabled: bool = False,
         scratchpad_enabled: bool = False,
@@ -269,6 +270,7 @@ class PTCAgent:
             memo_enabled=memo_enabled,
             user_memory_enabled=user_memory_enabled,
             user_data_enabled=user_data_enabled,
+            drive_enabled=drive_enabled,
             market_watch_enabled=self.config.feature_enabled("market_watch"),
             plan_enabled=plan_enabled,
             crawl_enabled=crawl_enabled,
@@ -450,6 +452,7 @@ class PTCAgent:
             workspace_id=workspace_id_for_memory,
             disable_subagents=disable_subagents,
             channels=messaging_enabled(),
+            drive=self.config.feature_enabled("drive"),
         )
         if store is not None and not gates.memory:
             logger.warning(
@@ -894,6 +897,7 @@ class PTCAgent:
                 model=turn.label,
                 prompt_vars=gates.prompt_vars(),
                 shared=not own_data,
+                drive=gates.drive,
             )
             subagents = create_subagents(turn_roster(self.config.subagents), compiler, role)
             subagents.extend(additional_subagents or [])
@@ -1029,6 +1033,7 @@ class PTCAgent:
             memory_enabled=gates.memory,
             memo_enabled=gates.memo,
             **gates.prompt_vars(),
+            drive_enabled=gates.drive,
             plan_enabled=plan_on,
             crawl_enabled=bool(crawl_tools),
             scratchpad_enabled=scratchpad is not None,
@@ -1124,7 +1129,9 @@ class PTCAgent:
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]
 
-        multimodal_read = MultimodalMiddleware(sandbox=sandbox, computers=reach)
+        # Through the file tools' backend, so a file a route holds (the
+        # Drive's) is read from where the Read tool read it.
+        multimodal_read = MultimodalMiddleware(sandbox=filesystem_backend, computers=reach)
 
         # Placed before (outer to) model_resilience so sandbox images are
         # captured once, on the final response only — not per retry attempt.
@@ -1194,8 +1201,8 @@ class PTCAgent:
         ]
 
         # The turn row, the per-thread baseline and the row carrier, wired
-        # for the main agent: the baseline is agent.md, the memory indices, the
-        # memo pointer and the user's identity + steering. A subagent's
+        # for the main agent: the baseline is agent.md, the memory indices and
+        # the user's identity + steering. A subagent's
         # baseline is its definition's (SubagentContext): the profile, its
         # roster, skills and scratchpad, and memory when its switch is on.
         # Where each of the three has to sit is on ContextMiddleware.

@@ -44,14 +44,8 @@ from ptc_agent.agent.tools.computer_reach import (
     while_in_use,
 )
 from ptc_agent.agent.tools.utils import mark_sandbox_raised
-from ptc_agent.core.paths import (
-    BACKUP_EXCLUDE_AGENT_SUBDIRS,
-    BACKUP_EXCLUDE_DIRS,
-    THREAD_INDEX,
-    SandboxLayout,
-    lexical_path,
-    logged_path,
-)
+from ptc_agent.core.paths import BACKUP_EXCLUDE_DIRS, SandboxLayout, lexical_path, logged_path
+from ptc_agent.core.path_fold import BACKUP_EXCLUDE_AGENT_SUBDIRS, THREAD_INDEX
 from ptc_agent.core.project_context import project_bound
 from src.observability.private_errors import failure
 
