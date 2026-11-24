@@ -46,7 +46,8 @@ import ShareUnavailable from './ShareUnavailable';
 import type { TextSegment } from '@/types/chat';
 import { isTaskAgentId } from '../ChatAgent/utils/agentId';
 import type { FileLocation } from '../ChatAgent/utils/fileLocation';
-import { computeAgentArtifactRouting, computerFolders, type ComputerFolders } from '../ChatAgent/utils/agentPaths';
+import { computeAgentArtifactRouting } from '../ChatAgent/utils/agentArtifactRouting';
+import { computerFolders, type ComputerFolders } from '../ChatAgent/utils/agentPaths';
 import { collectRecentWritePaths, downloadTarget, type TurnMessage } from '../ChatAgent/utils/fileRefResolver';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { DispatchStatusProvider } from '../ChatAgent/hooks/usePTCDispatchStatus';
@@ -445,7 +446,8 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
   const handleOpenFile = useCallback((filePath: string, _workspaceId?: string, location?: FileLocation, opts?: { pin?: boolean }) => {
     if (!canBrowseFiles) return;
     setShowFilePanel(true);
-    const dir = computeAgentArtifactRouting(filePath, undefined, folders).targetDirectory;
+    const dest = computeAgentArtifactRouting(filePath, undefined, folders);
+    const dir = dest.kind === 'panel' && 'dir' in dest.target ? dest.target.dir : null;
     // The panel reads a request off the counter rather than off a changed
     // string, so the same folder clicked twice arrives twice here too.
     const seq = ++filePanelTargetSeq.current;

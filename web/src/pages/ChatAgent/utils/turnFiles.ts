@@ -10,6 +10,7 @@
 import { assistantText } from '../components/messageList/messageText';
 import type { MessageRecord } from '../components/messageList/types';
 import { fileKind, isFilePath, isImagePath, parseWsPath } from './filePaths';
+import { AGENT_PATH_TRAITS } from './agentPathTraits';
 import {
   classifyAgentPath,
   folderWorkspacePath,
@@ -119,7 +120,7 @@ function openablePath(path: string): boolean {
     && !path.startsWith('../')
     && fileKind(path) !== null
     && !isSystemPath(path)
-    && classifyAgentPath(path).kind === 'file'
+    && AGENT_PATH_TRAITS[classifyAgentPath(path).kind].panelFile
   );
 }
 

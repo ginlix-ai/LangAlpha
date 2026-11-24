@@ -22,8 +22,9 @@ export type FlagSpecs = Readonly<Record<string, FlagSpec>>;
 
 export interface CommandSpec {
   words: readonly string[];
-  /** All required, in order; a last one ending in ``...`` takes the rest of
-   *  the words, joined, so a message needs no quotes. */
+  /** In order; a last one ending in ``...`` takes the rest of the words,
+   *  joined, so a message needs no quotes. All are required but a last one
+   *  ending in ``?``, which may be left out. */
   operands?: readonly string[];
   flags?: FlagSpecs;
 }
@@ -113,8 +114,10 @@ export function bind(command: CommandSpec, parsed: Parsed): Map<string, string> 
   const operands = new Map<string, string>();
   specs.forEach((spec, i) => {
     const rest = spec.endsWith("...");
-    const name = rest ? spec.slice(0, -3) : spec;
+    const optional = spec.endsWith("?");
+    const name = rest ? spec.slice(0, -3) : optional ? spec.slice(0, -1) : spec;
     const value = rest ? parsed.operands.slice(i).join(" ").trim() : parsed.operands[i];
+    if (!value && optional) return;
     if (!value) throw new GrammarError(`Missing <${name}>`);
     operands.set(name, value);
   });
@@ -196,5 +199,18 @@ export const LA_COMMANDS: readonly CommandSpec[] = [
   {"words":["automations","pause"],"operands":["id"],"flags":{}},
   {"words":["automations","resume"],"operands":["id"],"flags":{}},
   {"words":["automations","delete"],"operands":["id"],"flags":{"yes":{"type":"bool","short":"y"}}},
+  {"words":["drive","ls"],"operands":["path?"],"flags":{"recursive":{"type":"bool","short":"r"},"space":{"type":"string"}}},
+  {"words":["drive","cat"],"operands":["path"],"flags":{"rev":{"type":"int"},"space":{"type":"string"}}},
+  {"words":["drive","get"],"operands":["path"],"flags":{"output":{"type":"string","short":"o"},"rev":{"type":"int"},"force":{"type":"bool"},"space":{"type":"string"}}},
+  {"words":["drive","put"],"operands":["file","path"],"flags":{"note":{"type":"string"},"new":{"type":"bool"},"if-match":{"type":"string"},"space":{"type":"string"}}},
+  {"words":["drive","mkdir"],"operands":["path"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","mv"],"operands":["from","to"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","rm"],"operands":["path"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","history","clear"],"operands":["path"],"flags":{"before":{"type":"int"},"space":{"type":"string"}}},
+  {"words":["drive","history"],"operands":["path"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","usage"],"operands":[],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","restore"],"operands":["path"],"flags":{"rev":{"type":"int","required":true},"space":{"type":"string"}}},
+  {"words":["drive","trash","restore"],"operands":["trash_id"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","trash"],"operands":[],"flags":{"space":{"type":"string"}}},
   {"words":["models","list"],"operands":[],"flags":{}},
 ];

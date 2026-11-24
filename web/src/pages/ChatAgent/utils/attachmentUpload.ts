@@ -17,11 +17,11 @@ import {
   beginUnlessAborted,
   canceled,
   relayProgress,
-  runDirectUpload,
+  runPartUpload,
   UploadRefusedError,
   whileOpen,
   type UploadProgress,
-} from './partUpload';
+} from '@/lib/partUpload';
 import { stagedFilesOf, type AttachmentMeta } from './fileUpload';
 
 export interface AttachmentUploadOptions {
@@ -67,15 +67,15 @@ export async function uploadAttachment(
   const id = begun.attachment_id;
   const routes = {
     cancel: () => deleteAttachment(id),
-    cancelOnUnload: (headers: Record<string, string>) => deleteAttachmentOnUnload(id, headers),
-  };
+    lifetime: { kind: 'page', cancelOnUnload: (headers: Record<string, string>) => deleteAttachmentOnUnload(id, headers) },
+  } as const;
   const status = begun.mode === 'direct'
-    ? await runDirectUpload(
+    ? await runPartUpload(
       file,
-      begun.part_count,
+      { count: begun.part_count, size: begun.part_size },
       {
         ...routes,
-        sign: (numbers, partSignal) => signAttachmentParts(id, numbers, partSignal),
+        parts: { kind: 'signed', sign: (numbers, partSignal) => signAttachmentParts(id, numbers, partSignal) },
         complete: (s) => completeAttachment(id, s),
       },
       { onProgress, signal },

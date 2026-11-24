@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, type ReactNode } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router';
 import type { QueryClient } from '@tanstack/react-query';
 import PageLoading from '@/components/PageLoading/PageLoading';
@@ -39,6 +39,9 @@ const routeChunks = {
   ]),
   orders: withCopy(() => import('../../pages/Orders/Orders'), ['mcp', 'orders', 'plugins', 'toolArtifact']),
   library: withCopy(() => import('../../pages/Library/Library'), ['mcp']),
+  drive: withCopy(() => import('../../pages/Drive/Drive'), [
+    'drive', 'filePanel', 'mcp', 'pageViewer', 'toolArtifact',
+  ]),
   plugins: pluginsChunk,
   settings: withCopy(() => import('../../pages/Settings/Settings'), [
     'filePanel', 'marketView', 'pageViewer', 'settings', 'setup',
@@ -55,14 +58,17 @@ const NewsDetailPage = preloadableLazy(routeChunks.news);
 const Automations = lazyWithMotion(routeChunks.automations);
 const Orders = lazyWithMotion(routeChunks.orders);
 const Library = lazyWithMotion(routeChunks.library);
+const Drive = lazyWithMotion(routeChunks.drive);
 
-/** /library exists only where the organization library is on for the account;
- *  anywhere else it is an unknown address and goes where every unknown one
- *  goes. */
-function LibraryRoute() {
+/**
+ * A page that exists only where its feature is on for the user: the
+ * organization library, the Drive. Anywhere else its address is unknown and
+ * goes where every unknown one goes.
+ */
+function FeatureRoute({ feature, children }: { feature: string; children: ReactNode }) {
   const { data, isPending } = useFeatures();
   if (isPending) return <PageLoading variant="pane" />;
-  return isFeatureEnabled(data, 'org_library') ? <Library /> : <Navigate to="/dashboard" replace />;
+  return isFeatureEnabled(data, feature) ? children : <Navigate to="/dashboard" replace />;
 }
 const Plugins = lazyWithMotion(routeChunks.plugins);
 const Settings = lazyWithMotion(routeChunks.settings);
@@ -78,6 +84,7 @@ const routePreloads = {
   automations: Automations.preload,
   orders: Orders.preload,
   library: Library.preload,
+  drive: Drive.preload,
   plugins: Plugins.preload,
   settings: Settings.preload,
   connectors: Plugins.preload,
@@ -164,7 +171,8 @@ function Main() {
           <Route path="/market" element={<MarketView />} />
           <Route path="/automations" element={<Automations />} />
           <Route path="/orders" element={<Orders />} />
-          <Route path="/library" element={<LibraryRoute />} />
+          <Route path="/library" element={<FeatureRoute feature="org_library"><Library /></FeatureRoute>} />
+          <Route path="/drive" element={<FeatureRoute feature="drive"><Drive /></FeatureRoute>} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/connectors" element={<LegacyConnectorsRedirect />} />
           <Route path="/settings" element={<Settings />} />

@@ -24,6 +24,11 @@ export const THREADS_DIR = '.agents/threads';
 export const LARGE_TOOL_RESULTS_DIR = '.agents/large_tool_results';
 export const AGENTS_DIR = '.agents';
 export const INTERNAL_DIR = '_internal';
+export const DRIVE_DIR = '.agents/drive';
+
+/** The personal space's folder under DRIVE_DIR; the Drive has one
+ *  folder there per space the user reaches. */
+export const DRIVE_PERSONAL = 'personal';
 
 /** The agent's own notes file at the workspace root: runtime context
  *  the model reads every turn, never a deliverable. */

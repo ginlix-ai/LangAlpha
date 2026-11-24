@@ -8,7 +8,7 @@ vi.mock('../../../utils/workspaceUpload', async (importOriginal) => {
 });
 
 import { ApiError } from '@/api/client';
-import { UploadSendError } from '../../../utils/partUpload';
+import { UploadSendError } from '@/lib/partUpload';
 import { uploadToWorkspace, type WorkspaceUploadOptions } from '../../../utils/workspaceUpload';
 import { NOT_AWAY } from '../useComputerAway';
 import { useFileUpload } from '../useFileUpload';

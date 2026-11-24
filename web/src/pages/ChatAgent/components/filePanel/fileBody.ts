@@ -51,49 +51,74 @@ export interface FileBody {
   truncated: boolean;
   /** Where the bytes came from: a backup may be older than the file. */
   from: ReadFrom;
+  /** The token of a text body's bytes where its source names one: an edit made over it saves against it. */
+  version?: string | null;
 }
 
 /** The adapter-resolved readers — never the api imports directly, so a share keeps working. */
 export interface BodyReaders {
   readFile: (workspaceId: string, path: string) => Promise<TextRead>;
-  readFileFull: (workspaceId: string, path: string) => Promise<Pick<TextRead, 'content' | 'from'>>;
+  readFileFull: (workspaceId: string, path: string) => Promise<Pick<TextRead, 'content' | 'from' | 'version'>>;
   downloadFileAsArrayBuffer: (workspaceId: string, path: string) => Promise<BytesRead>;
   /** Left out, a PDF downloads whole. */
   openRanged?: (workspaceId: string, path: string) => Promise<OpenedRead>;
 }
 
+/**
+ * One file's readers, already bound to where it lives: a workspace path, or
+ * a Drive entry and version. The body reader needs only these and the name
+ * that picks the viewer.
+ */
+export interface FileReaders {
+  /** The text, paginated where the source caps a read. */
+  readText: () => Promise<TextRead>;
+  /** The whole text, for an HTML document's source. */
+  readFull: () => Promise<Pick<TextRead, 'content' | 'from' | 'version'>>;
+  readBytes: () => Promise<BytesRead>;
+  /** Left out, a PDF downloads whole. */
+  openRanged?: () => Promise<OpenedRead>;
+}
+
+/** A workspace file's readers, bound to its workspace and path. */
+export function bindReaders(readers: BodyReaders, workspaceId: string, path: string): FileReaders {
+  const { openRanged } = readers;
+  return {
+    readText: () => readers.readFile(workspaceId, path),
+    readFull: () => readers.readFileFull(workspaceId, path),
+    readBytes: () => readers.downloadFileAsArrayBuffer(workspaceId, path),
+    ...(openRanged && { openRanged: () => openRanged(workspaceId, path) }),
+  };
+}
+
 const EMPTY: Omit<FileBody, 'mode' | 'mime'> = { content: null, buffer: null, truncated: false, from: LIVE };
 
-export async function readFileBody(
-  readers: BodyReaders,
-  workspaceId: string,
-  path: string,
-): Promise<FileBody> {
-  const mode = bodyMode(path);
+/** Reads a file's bytes in the shape the viewer its `name` picks wants them. */
+export async function readFileBody(file: FileReaders, name: string): Promise<FileBody> {
+  const mode = bodyMode(name);
   switch (mode) {
     case 'none':
       return { mode, mime: null, ...EMPTY };
     case 'image': {
-      const { buffer, from } = await readers.downloadFileAsArrayBuffer(workspaceId, path);
+      const { buffer, from } = await file.readBytes();
       return { mode, mime: 'image', content: null, buffer, truncated: false, from };
     }
     case 'buffer': {
-      if (getFileExtension(path) === 'pdf' && readers.openRanged) {
+      if (getFileExtension(name) === 'pdf' && file.openRanged) {
         // pdf.js reads a PDF by range, so a large one opens from its first slice.
-        const opened = await readers.openRanged(workspaceId, path);
+        const opened = await file.openRanged();
         return 'ranged' in opened
           ? { mode, mime: 'pdf', content: null, buffer: null, ranged: opened.ranged, truncated: false, from: opened.from }
           : { mode, mime: 'pdf', content: null, buffer: opened.buffer, truncated: false, from: opened.from };
       }
-      const { buffer, from } = await readers.downloadFileAsArrayBuffer(workspaceId, path);
-      return { mode, mime: getFileExtension(path) === 'pdf' ? 'pdf' : 'excel', content: null, buffer, truncated: false, from };
+      const { buffer, from } = await file.readBytes();
+      return { mode, mime: getFileExtension(name) === 'pdf' ? 'pdf' : 'excel', content: null, buffer, truncated: false, from };
     }
     case 'html': {
-      const data = await readers.readFileFull(workspaceId, path);
-      return { mode, mime: 'text/html', content: data.content, buffer: null, truncated: false, from: data.from };
+      const data = await file.readFull();
+      return { mode, mime: 'text/html', content: data.content, buffer: null, truncated: false, from: data.from, version: data.version };
     }
     default: {
-      const data = await readers.readFile(workspaceId, path);
+      const data = await file.readText();
       return {
         mode,
         mime: data.mime || 'text/plain',
@@ -101,6 +126,7 @@ export async function readFileBody(
         buffer: null,
         truncated: !!data.truncated,
         from: data.from,
+        version: data.version,
       };
     }
   }

@@ -43,7 +43,7 @@ import {
   signWorkspaceUploadParts,
   uploadWorkspaceFile,
 } from '../api/files';
-import { PART_IDLE_MS, PART_SLOTS, SIGN_DEADLINE_MS, UploadSendError, type UploadProgress } from '../partUpload';
+import { PART_IDLE_MS, PART_SLOTS, SIGN_DEADLINE_MS, UploadSendError, type UploadProgress } from '@/lib/partUpload';
 import { uploadToWorkspace } from '../workspaceUpload';
 
 const begin = beginWorkspaceUpload as Mock;
@@ -154,7 +154,7 @@ describe('uploadToWorkspace', () => {
     expect(complete).toHaveBeenCalledTimes(1);
     expect(status).toHaveBeenCalledTimes(2);
     expect(seen.at(-1)).toEqual({ phase: 'saving' });
-    expect(seen).toContainEqual({ phase: 'sending', percent: 100 });
+    expect(seen).toContainEqual({ phase: 'sending', percent: 100, loaded: 40 });
     expect(cancel).not.toHaveBeenCalled();
   });
 

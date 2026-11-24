@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
+import { cn } from '@/lib/utils';
 import Markdown from '../Markdown';
 import ImageLightbox from '../ImageLightbox';
 import DocumentErrorBoundary from '../viewers/DocumentErrorBoundary';
@@ -50,7 +51,12 @@ export interface FileViewerProps {
   /** A save of this file is being prepared. */
   downloadState?: DownloadState;
 
-  workspaceId: string;
+  /**
+   * The workspace whose server serves an HTML file as a page. Only HTML reads
+   * it; a viewer with none (a share's file, a Drive file) shows HTML as its
+   * source, and every other document the same either way.
+   */
+  workspaceId?: string;
   onAnchorLink: (fragment: string) => void;
 
   // The panel's own surface. A viewer outside it (a shared file's page) has
@@ -82,6 +88,8 @@ export interface FileViewerProps {
   htmlArtifact?: HtmlArtifactView | null;
   /** The owner's comments on a file a viewer in the app draws (Markdown, code, PDF, a sheet). Left out, the file shows alone. */
   comments?: ViewerCommentsTarget | null;
+  /** Added to the padded box prose, code and an image read in, so a host can give them a reading width. */
+  proseClassName?: string;
 }
 
 /** The open file, rendered by whichever viewer its bytes belong to. */
@@ -128,7 +136,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className={cn('p-4', props.proseClassName)}>
         <div className="flex items-center justify-center py-12">
           <Loader size={20} className="text-(--color-text-tertiary)" />
         </div>
@@ -201,7 +209,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
     );
   }
 
-  if (viewer === 'html') {
+  if (viewer === 'html' && props.workspaceId !== undefined) {
     return (
       <Suspense fallback={<DocumentLoadingFallback />}>
         <DocumentErrorBoundary onFailedChange={props.onDocumentFailed} fallback={<DocumentErrorFallback onDownload={props.onDownloadInFallback} downloadState={props.downloadState} />}>
@@ -225,7 +233,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
   if (isEditing) return editor;
 
   return (
-    <div className="p-4">
+    <div className={cn('p-4', props.proseClassName)}>
       {viewer === 'image' && imageUrl ? (
         <>
           <ImageFile src={imageUrl} alt={fileName} comments={comments} onOpen={() => setLightboxOpen(true)} />
@@ -242,7 +250,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
           onOpenFile={props.onViewerLink}
           onAnchorLink={props.onAnchorLink}
         />
-      ) : viewer === 'code' && body?.content != null ? (
+      ) : (viewer === 'code' || viewer === 'html') && body?.content != null ? (
         <CodeFile content={body.content} language={EXT_TO_LANG[ext] || 'text'} lineRange={lineRange} comments={comments} />
       ) : (
         <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel:emptyFile')}</p>

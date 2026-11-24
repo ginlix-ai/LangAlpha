@@ -22,7 +22,7 @@ vi.mock('@/api/client', async (importOriginal) => {
 });
 
 import { api, ApiError, type TransferProgress } from '@/api/client';
-import { PART_IDLE_MS, UploadSendError } from '../../partUpload';
+import { PART_IDLE_MS, UploadSendError } from '@/lib/partUpload';
 import { RELAY_ANSWER_MS, sendAttachmentContent } from '../attachments';
 
 const post = api.post as Mock;

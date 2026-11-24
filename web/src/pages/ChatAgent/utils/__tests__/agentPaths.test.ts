@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
+import { computeAgentArtifactRouting } from '../agentArtifactRouting';
 import {
   MEMORY_WORKSPACE_DIR,
   USER_DATA_FILES,
   classifyAgentPath,
-  computeAgentArtifactRouting,
   computerFolders,
   isAgentNotesPath,
   isSubagentFilePath,
@@ -409,33 +409,24 @@ describe('classifyAgentPath', () => {
 });
 
 describe('computeAgentArtifactRouting: user data', () => {
-  it('routes portfolio.json to the Files tab and clears the workspace id', () => {
-    const r = computeAgentArtifactRouting('.agents/user/profile/portfolio.json');
-    expect(r.targetFile).toBe('.agents/user/profile/portfolio.json');
-    expect(r.clearWorkspaceId).toBe(true);
-    // Mutually exclusive with memory/memo targets
-    expect(r.targetMemoryKey).toBeNull();
-    expect(r.targetMemoKey).toBeNull();
+  const userFile = (path: string) => ({ kind: 'panel', target: { kind: 'file', path }, workspaceId: null });
+
+  it('routes portfolio.json to the Files tab in no workspace', () => {
+    expect(computeAgentArtifactRouting('.agents/user/profile/portfolio.json')).toEqual(userFile('.agents/user/profile/portfolio.json'));
   });
 
-  it('does not set setWorkspaceId for user-scoped profile paths', () => {
-    const r = computeAgentArtifactRouting('.agents/user/profile/watchlist.json', 'ws-A');
-    // The profile is global to the user; ignore caller-supplied wsid.
-    expect(r.setWorkspaceId).toBeNull();
-    expect(r.clearWorkspaceId).toBe(true);
+  it('ignores a caller wsid for user-scoped profile paths', () => {
+    // The profile is global to the user.
+    expect(computeAgentArtifactRouting('.agents/user/profile/watchlist.json', 'ws-A')).toEqual(userFile('.agents/user/profile/watchlist.json'));
   });
 
   it('routes an automation file to the Files tab as user-scoped, ignoring a caller wsid', () => {
-    const r = computeAgentArtifactRouting('.agents/user/automations/morning-brief.json', 'ws-A');
-    expect(r.targetFile).toBe('.agents/user/automations/morning-brief.json');
-    expect(r.setWorkspaceId).toBeNull();
-    expect(r.clearWorkspaceId).toBe(true);
+    expect(computeAgentArtifactRouting('.agents/user/automations/morning-brief.json', 'ws-A'))
+      .toEqual(userFile('.agents/user/automations/morning-brief.json'));
   });
 
   it('ignores an embedded __wsref__ id too', () => {
-    const r = computeAgentArtifactRouting('__wsref__/ws-7/.agents/user/profile/portfolio.json');
-    expect(r.setWorkspaceId).toBeNull();
-    expect(r.clearWorkspaceId).toBe(true);
+    expect(computeAgentArtifactRouting('__wsref__/ws-7/.agents/user/profile/portfolio.json')).toMatchObject({ workspaceId: null });
   });
 });
 
@@ -588,46 +579,43 @@ describe('computeAgentArtifactRouting: a renamed workspace', () => {
   const route = (raw: string) => computeAgentArtifactRouting(raw, undefined, own('Research', ['research-ab12', 'older']));
 
   it('folds a path an older turn wrote under a former folder', () => {
-    expect(route('/home/workspace/research-ab12/report.md')).toMatchObject({ targetFile: 'report.md' });
-    expect(route('file:///home/workspace/older/results/q3.csv')).toMatchObject({ targetFile: 'results/q3.csv' });
-    expect(route('/home/workspace/research-ab12/results/')).toMatchObject({ targetFile: null, targetDirectory: 'results' });
-    expect(route('/home/workspace/research-ab12/')).toMatchObject({ targetFile: null, targetDirectory: '' });
+    expect(route('/home/workspace/research-ab12/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
+    expect(route('file:///home/workspace/older/results/q3.csv')).toMatchObject({ target: { kind: 'file', path: 'results/q3.csv' } });
+    expect(route('/home/workspace/research-ab12/results/')).toMatchObject({ target: { kind: 'file', dir: 'results' } });
+    expect(route('/home/workspace/research-ab12/')).toMatchObject({ target: { kind: 'file', dir: '' } });
   });
 
   it('still folds the current folder', () => {
-    expect(route('/home/workspace/Research/report.md')).toMatchObject({ targetFile: 'report.md' });
+    expect(route('/home/workspace/Research/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
   });
 
   it('routes a former folder\'s store paths to their own tabs', () => {
-    expect(route(`/home/workspace/research-ab12/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({
-      targetMemoryKey: 'risk.md',
-      targetMemoryTier: 'workspace',
-    });
+    expect(route(`/home/workspace/research-ab12/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({ target: { kind: 'memory', key: 'risk.md', tier: 'workspace' } });
   });
 
   it('leaves relative paths and other folders alone', () => {
-    expect(route('research-ab12/report.md')).toMatchObject({ targetFile: 'research-ab12/report.md' });
-    expect(route('/home/workspace/other/report.md')).toMatchObject({ targetFile: '/home/workspace/other/report.md' });
+    expect(route('research-ab12/report.md')).toMatchObject({ target: { kind: 'file', path: 'research-ab12/report.md' } });
+    expect(route('/home/workspace/other/report.md')).toMatchObject({ target: { kind: 'file', path: '/home/workspace/other/report.md' } });
   });
 
   it('folds one folder, not a subfolder that shares a former name', () => {
-    expect(route('/home/workspace/Research/research-ab12/x.md')).toMatchObject({ targetFile: 'research-ab12/x.md' });
+    expect(route('/home/workspace/Research/research-ab12/x.md')).toMatchObject({ target: { kind: 'file', path: 'research-ab12/x.md' } });
   });
 
   it('matches a former folder by its name key and the current one exactly, as the server does', () => {
-    expect(route('/home/workspace/RESEARCH-AB12/report.md')).toMatchObject({ targetFile: 'report.md' });
-    expect(route('/home/workspace/RESEARCH/report.md')).toMatchObject({ targetFile: '/home/workspace/RESEARCH/report.md' });
+    expect(route('/home/workspace/RESEARCH-AB12/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
+    expect(route('/home/workspace/RESEARCH/report.md')).toMatchObject({ target: { kind: 'file', path: '/home/workspace/RESEARCH/report.md' } });
     const renamed = (raw: string) => computeAgentArtifactRouting(raw, undefined, own('Weg', ['Straße']));
-    expect(renamed('/home/workspace/STRASSE/plan.md')).toMatchObject({ targetFile: 'plan.md' });
+    expect(renamed('/home/workspace/STRASSE/plan.md')).toMatchObject({ target: { kind: 'file', path: 'plan.md' } });
   });
 
   it('keeps a folder casefold tells apart from the former one', () => {
     const dotless = (raw: string) => computeAgentArtifactRouting(raw, undefined, own('Now', ['\u0131']));
-    expect(dotless('/home/workspace/\u0131/report.md')).toMatchObject({ targetFile: 'report.md' });
-    expect(dotless('/home/workspace/i/report.md')).toMatchObject({ targetFile: '/home/workspace/i/report.md' });
-    expect(dotless('/home/workspace/I/report.md')).toMatchObject({ targetFile: '/home/workspace/I/report.md' });
+    expect(dotless('/home/workspace/\u0131/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
+    expect(dotless('/home/workspace/i/report.md')).toMatchObject({ target: { kind: 'file', path: '/home/workspace/i/report.md' } });
+    expect(dotless('/home/workspace/I/report.md')).toMatchObject({ target: { kind: 'file', path: '/home/workspace/I/report.md' } });
     const cherokee = (raw: string) => computeAgentArtifactRouting(raw, undefined, own('Now', ['\u13a0']));
-    expect(cherokee('/home/workspace/\uab70/report.md')).toMatchObject({ targetFile: 'report.md' });
+    expect(cherokee('/home/workspace/\uab70/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
   });
 });
 
@@ -806,18 +794,18 @@ describe('a computer root of its own', () => {
 
   it('routes a path through the own folder from the workspace root', () => {
     expect(computeAgentArtifactRouting(`${ROOT}/AAPL/results/q3.csv`, undefined, folders))
-      .toMatchObject({ targetFile: 'results/q3.csv' });
+      .toMatchObject({ target: { kind: 'file', path: 'results/q3.csv' } });
     expect(computeAgentArtifactRouting(`${ROOT}/apple-old/report.md`, undefined, folders))
-      .toMatchObject({ targetFile: 'report.md' });
+      .toMatchObject({ target: { kind: 'file', path: 'report.md' } });
     expect(computeAgentArtifactRouting(`${ROOT}/AAPL/${MEMORY_WORKSPACE_DIR}/risk.md`, undefined, folders))
-      .toMatchObject({ targetMemoryKey: 'risk.md', targetMemoryTier: 'workspace' });
+      .toMatchObject({ target: { kind: 'memory', key: 'risk.md', tier: 'workspace' } });
   });
 
   it('opens a sibling\'s folder in that workspace', () => {
     expect(folderWorkspacePath(parseAgentHref(`${ROOT}/NVDA/a%20b.md`, ROOT), folders))
       .toEqual({ workspaceId: 'ws-nvda', path: 'a b.md' });
     expect(computeAgentArtifactRouting(`${ROOT}/NVDA/report.md`, undefined, folders))
-      .toMatchObject({ targetFile: 'report.md', setWorkspaceId: 'ws-nvda' });
+      .toMatchObject({ target: { kind: 'file', path: 'report.md' }, workspaceId: 'ws-nvda' });
   });
 
   it('classifies the stores under it', () => {
@@ -855,7 +843,7 @@ describe('a root the workspace has moved off', () => {
     const read = computerFolders(viewed, [], machines('/srv/here'));
     expect(read?.otherRoots).toEqual([OLD]);
     expect(computeAgentArtifactRouting(`${OLD}/AAPL/results/q3.csv`, undefined, read))
-      .toMatchObject({ targetFile: 'results/q3.csv', setWorkspaceId: null });
+      .toMatchObject({ target: { kind: 'file', path: 'results/q3.csv' }, workspaceId: null });
   });
 
   it('reads no other workspace\'s former roots', () => {
@@ -865,7 +853,7 @@ describe('a root the workspace has moved off', () => {
     const sibling = { workspace_id: 'ws-2', computer_id: 'c1', dir_name: 'AAPL-2', previous_root_dirs: [OLD] };
     const read = computerFolders(viewed, [viewed, sibling], [{ computer_id: 'c1', root_dir: '/srv/here' }]);
     expect(read).not.toHaveProperty('otherRoots');
-    expect(computeAgentArtifactRouting(`${OLD}/AAPL/x.md`, undefined, read)).toMatchObject({ targetFile: `${OLD}/AAPL/x.md` });
+    expect(computeAgentArtifactRouting(`${OLD}/AAPL/x.md`, undefined, read)).toMatchObject({ target: { kind: 'file', path: `${OLD}/AAPL/x.md` } });
   });
 
   it('reads its own root off the row before the computer list answers', () => {
@@ -879,21 +867,21 @@ describe('a root the workspace has moved off', () => {
 
   it('routes a path through its current or former folder into this workspace', () => {
     expect(computeAgentArtifactRouting(`${OLD}/AAPL/results/q3.csv`, undefined, folders))
-      .toMatchObject({ targetFile: 'results/q3.csv', setWorkspaceId: null });
+      .toMatchObject({ target: { kind: 'file', path: 'results/q3.csv' }, workspaceId: null });
     expect(computeAgentArtifactRouting(`${OLD}/apple-old/report.md`, undefined, folders))
-      .toMatchObject({ targetFile: 'report.md' });
+      .toMatchObject({ target: { kind: 'file', path: 'report.md' } });
     expect(computeAgentArtifactRouting(`${OLD}/AAPL/${MEMORY_WORKSPACE_DIR}/risk.md`, undefined, folders))
-      .toMatchObject({ targetMemoryKey: 'risk.md', targetMemoryTier: 'workspace' });
+      .toMatchObject({ target: { kind: 'memory', key: 'risk.md', tier: 'workspace' } });
     expect(workspaceScopedPath(parseAgentHref(`${OLD}/AAPL/a%20b.md`), 'AAPL', null, [OLD])).toBe('a b.md');
   });
 
   it('leaves the rest of that machine where it is', () => {
     expect(computeAgentArtifactRouting(`${OLD}/NVDA/x.md`, undefined, folders))
-      .toMatchObject({ targetFile: `${OLD}/NVDA/x.md`, setWorkspaceId: null });
-    expect(computeAgentArtifactRouting(`${OLD}/x.md`, undefined, folders)).toMatchObject({ targetFile: `${OLD}/x.md` });
-    expect(computeAgentArtifactRouting(`${OLD}-2/AAPL/x.md`, undefined, folders)).toMatchObject({ targetFile: `${OLD}-2/AAPL/x.md` });
+      .toMatchObject({ target: { kind: 'file', path: `${OLD}/NVDA/x.md` }, workspaceId: null });
+    expect(computeAgentArtifactRouting(`${OLD}/x.md`, undefined, folders)).toMatchObject({ target: { kind: 'file', path: `${OLD}/x.md` } });
+    expect(computeAgentArtifactRouting(`${OLD}-2/AAPL/x.md`, undefined, folders)).toMatchObject({ target: { kind: 'file', path: `${OLD}-2/AAPL/x.md` } });
     expect(computeAgentArtifactRouting(`${OLD}/AAPL/x.md`, undefined, { ...folders, otherRoots: undefined }))
-      .toMatchObject({ targetFile: `${OLD}/AAPL/x.md` });
+      .toMatchObject({ target: { kind: 'file', path: `${OLD}/AAPL/x.md` } });
   });
 
   it('tries each root a path starts under', () => {
@@ -914,13 +902,13 @@ describe('a root the workspace has moved off', () => {
     const viewed = { workspace_id: 'ws-1', dir_name: 'AAPL', root_dir: '/home/dev', previous_root_dirs: [OLD] };
     const read = computerFolders(viewed, []);
     expect(computeAgentArtifactRouting(`${OLD}/AAPL/results/q3.csv`, undefined, read))
-      .toMatchObject({ targetFile: 'results/q3.csv' });
-    expect(computeAgentArtifactRouting('/home/dev/AAPL/x.md', undefined, read)).toMatchObject({ targetFile: 'x.md' });
+      .toMatchObject({ target: { kind: 'file', path: 'results/q3.csv' } });
+    expect(computeAgentArtifactRouting('/home/dev/AAPL/x.md', undefined, read)).toMatchObject({ target: { kind: 'file', path: 'x.md' } });
     expect(workspaceScopedPath(parseAgentHref(`file://${OLD}/AAPL/a%20b.md`, '/home/dev'), 'AAPL', null, [OLD]))
       .toBe('a b.md');
     // Through no folder of this workspace's, it stays as this computer reads it.
     expect(computeAgentArtifactRouting(`${OLD}/NVDA/x.md`, undefined, read))
-      .toMatchObject({ targetFile: `${OLD}/NVDA/x.md` });
+      .toMatchObject({ target: { kind: 'file', path: `${OLD}/NVDA/x.md` } });
   });
 });
 
@@ -970,26 +958,26 @@ describe('a workspace on another computer', () => {
     for (const raw of [`${SSH}/ssh-e2e-d01c7a/agent.md`, `file://${SSH}/ssh-e2e-d01c7a/agent.md`, `${SSH}//ssh-e2e-d01c7a/./agent.md`]) {
       expect(route(raw)).toEqual(wsref);
     }
-    expect(route(`${SSH}/ssh-e2e-d01c7a/agent.md`)).toMatchObject({ targetFile: 'agent.md', setWorkspaceId: 'ws-ssh' });
+    expect(route(`${SSH}/ssh-e2e-d01c7a/agent.md`)).toMatchObject({ target: { kind: 'file', path: 'agent.md' }, workspaceId: 'ws-ssh' });
     expect(folderWorkspacePath(parseAgentHref(`${SSH}/ssh-e2e-d01c7a/a%20b.md`), home))
       .toEqual({ workspaceId: 'ws-ssh', path: 'a b.md' });
-    expect(route(`${SSH}/ssh-e2e-d01c7a/data/`)).toMatchObject({ targetDirectory: 'data', setWorkspaceId: 'ws-ssh' });
-    expect(route(`${SSH}/ssh-e2e-d01c7a`)).toMatchObject({ targetDirectory: '', setWorkspaceId: 'ws-ssh' });
-    expect(route('/home/workspace-2/Semis/q3.csv')).toMatchObject({ targetFile: 'q3.csv', setWorkspaceId: 'ws-semis' });
+    expect(route(`${SSH}/ssh-e2e-d01c7a/data/`)).toMatchObject({ target: { kind: 'file', dir: 'data' }, workspaceId: 'ws-ssh' });
+    expect(route(`${SSH}/ssh-e2e-d01c7a`)).toMatchObject({ target: { kind: 'file', dir: '' }, workspaceId: 'ws-ssh' });
+    expect(route('/home/workspace-2/Semis/q3.csv')).toMatchObject({ target: { kind: 'file', path: 'q3.csv' }, workspaceId: 'ws-semis' });
   });
 
   it('reaches a former folder there by its name key, and a current one exactly', () => {
-    expect(route(`${SSH}/SSH-OLD/x.md`)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-ssh' });
-    expect(route(`${SSH}/SSH-E2E-D01C7A/x.md`)).toMatchObject({ targetFile: `${SSH}/SSH-E2E-D01C7A/x.md`, setWorkspaceId: null });
+    expect(route(`${SSH}/SSH-OLD/x.md`)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-ssh' });
+    expect(route(`${SSH}/SSH-E2E-D01C7A/x.md`)).toMatchObject({ target: { kind: 'file', path: `${SSH}/SSH-E2E-D01C7A/x.md` }, workspaceId: null });
   });
 
   it('reads a stock root on another computer after every folder on this one', () => {
-    expect(route('/home/workspace/Cloud/x.md')).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-cloud' });
-    expect(route('/home/daytona/cloud-old/x.md')).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-cloud' });
+    expect(route('/home/workspace/Cloud/x.md')).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-cloud' });
+    expect(route('/home/daytona/cloud-old/x.md')).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-cloud' });
     // This computer's sibling and this workspace's own folder win the stock root.
     const shadowed = computerFolders(rows[0], [...rows, { workspace_id: 'ws-dup', computer_id: 'c-cloud', dir_name: 'X', previous_dir_names: ['NVDA', 'Home'] }], computers);
-    expect(route('/home/workspace/NVDA/x.md', shadowed)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-nvda' });
-    expect(route('/home/workspace/Home/x.md', shadowed)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
+    expect(route('/home/workspace/NVDA/x.md', shadowed)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-nvda' });
+    expect(route('/home/workspace/Home/x.md', shadowed)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
   });
 
   it('leaves a path through no workspace\'s folder where it was', () => {
@@ -1003,7 +991,7 @@ describe('a workspace on another computer', () => {
     ]) {
       expect(route(raw)).toEqual(route(raw, withoutOthers));
     }
-    expect(route('/Users/me/Documents/x.pdf')).toMatchObject({ targetFile: '/Users/me/Documents/x.pdf', setWorkspaceId: null });
+    expect(route('/Users/me/Documents/x.pdf')).toMatchObject({ target: { kind: 'file', path: '/Users/me/Documents/x.pdf' }, workspaceId: null });
   });
 
   it('marks the rest of that machine as one this view does not read', () => {
@@ -1040,9 +1028,9 @@ describe('a workspace on another computer', () => {
 
   it('compares roots by whole segments', () => {
     // `/home/workspace-2` is not the stock root, and `${SSH}2` is not under SSH.
-    expect(route('/home/workspace-2/Semis/x.md')).toMatchObject({ setWorkspaceId: 'ws-semis' });
+    expect(route('/home/workspace-2/Semis/x.md')).toMatchObject({ workspaceId: 'ws-semis' });
     expect(route('/home/workspace/Semis/x.md')).toEqual(route('/home/workspace/Semis/x.md', withoutOthers));
-    expect(route(`${SSH}2/ssh-e2e-d01c7a/x.md`)).toMatchObject({ targetFile: `${SSH}2/ssh-e2e-d01c7a/x.md`, setWorkspaceId: null });
+    expect(route(`${SSH}2/ssh-e2e-d01c7a/x.md`)).toMatchObject({ target: { kind: 'file', path: `${SSH}2/ssh-e2e-d01c7a/x.md` }, workspaceId: null });
   });
 
   it('reads this computer\'s folders exactly as before', () => {
@@ -1067,16 +1055,16 @@ describe('a workspace on another computer', () => {
       ...rows,
       { workspace_id: 'ws-took', computer_id: 'c-ssh', dir_name: 'Took', previous_dir_names: ['Home'] },
     ], computers);
-    expect(route(`${SSH}/Home/x.md`, moved)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
+    expect(route(`${SSH}/Home/x.md`, moved)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
   });
 
   it('opens a namesake there under a root this workspace never recorded leaving', () => {
     const namesake = [...rows, { workspace_id: 'ws-ssh-nvda', computer_id: 'c-ssh', dir_name: 'NVDA', root_dir: SSH }];
     const nvda = computerFolders(rows[1], namesake, computers);
-    expect(route(`${SSH}/NVDA/x.md`, nvda)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-ssh-nvda' });
+    expect(route(`${SSH}/NVDA/x.md`, nvda)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-ssh-nvda' });
     const moved = computerFolders({ ...rows[1], previous_root_dirs: [SSH] }, namesake, computers);
     expect(moved?.leftRoots).toEqual([SSH]);
-    expect(route(`${SSH}/NVDA/x.md`, moved)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
+    expect(route(`${SSH}/NVDA/x.md`, moved)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
   });
 
   it('gives up on a folder two computers on one root both hold', () => {
@@ -1088,8 +1076,8 @@ describe('a workspace on another computer', () => {
       { workspace_id: 'ws-c', computer_id: 'c-mac2', dir_name: 'Only', root_dir: `${MAC}/` },
     ], []);
     expect(twoMacs?.otherComputers?.map((g) => [g.root, g.workspaces.length])).toEqual([[MAC, 3]]);
-    expect(route(`${MAC}/Notes/x.md`, twoMacs)).toMatchObject({ targetFile: `${MAC}/Notes/x.md`, setWorkspaceId: null });
-    expect(route(`${MAC}/Only/x.md`, twoMacs)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-c' });
+    expect(route(`${MAC}/Notes/x.md`, twoMacs)).toMatchObject({ target: { kind: 'file', path: `${MAC}/Notes/x.md` }, workspaceId: null });
+    expect(route(`${MAC}/Only/x.md`, twoMacs)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-c' });
   });
 
   it('reads a path under two nested roots by the longer first', () => {
@@ -1098,8 +1086,8 @@ describe('a workspace on another computer', () => {
       { workspace_id: 'ws-old', computer_id: 'c-srv', dir_name: 'old', root_dir: '/srv' },
       { workspace_id: 'ws-a', computer_id: 'c-inner', dir_name: 'A', root_dir: '/srv/old' },
     ], []);
-    expect(route('/srv/old/A/x.md', nested)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-a' });
-    expect(route('/srv/old/notes.md', nested)).toMatchObject({ targetFile: 'notes.md', setWorkspaceId: 'ws-old' });
+    expect(route('/srv/old/A/x.md', nested)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-a' });
+    expect(route('/srv/old/notes.md', nested)).toMatchObject({ target: { kind: 'file', path: 'notes.md' }, workspaceId: 'ws-old' });
   });
 
   it('reads from a computer with a root of its own', () => {
@@ -1111,12 +1099,12 @@ describe('a workspace on another computer', () => {
       { workspace_id: 'ws-mac2', computer_id: 'c-mac2', dir_name: 'Mac2', root_dir: MAC },
       { workspace_id: 'ws-deep', computer_id: 'c-deep', dir_name: 'Deep', root_dir: `${MAC}/inner` },
     ], computers);
-    expect(route('/home/workspace/Home/x.md', mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-home' });
-    expect(route(`${MAC}/Mac2/x.md`, mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-mac2' });
-    expect(route(`${MAC}/inner/Deep/x.md`, mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-deep' });
-    expect(route(`${MAC}/Mac/x.md`, mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
+    expect(route('/home/workspace/Home/x.md', mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-home' });
+    expect(route(`${MAC}/Mac2/x.md`, mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-mac2' });
+    expect(route(`${MAC}/inner/Deep/x.md`, mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-deep' });
+    expect(route(`${MAC}/Mac/x.md`, mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
     // A stock path here is not under this computer's root, nor is its own under the stock one.
-    expect(route(`${MAC}/Cloud/x.md`, mac)).toMatchObject({ setWorkspaceId: null });
+    expect(route(`${MAC}/Cloud/x.md`, mac)).toMatchObject({ workspaceId: null });
   });
 
   it('reads a stock root from a computer with a root of its own as the stock computer\'s first', () => {
@@ -1128,11 +1116,11 @@ describe('a workspace on another computer', () => {
       { workspace_id: 'ws-local', computer_id: 'c-mac', dir_name: 'NVDA', root_dir: MAC },
       { workspace_id: 'ws-only-here', computer_id: 'c-mac', dir_name: 'Local', root_dir: MAC },
     ], computers);
-    expect(route('/home/workspace/NVDA/x.md', mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-nvda' });
-    expect(route(`${MAC}/NVDA/x.md`, mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-local' });
+    expect(route('/home/workspace/NVDA/x.md', mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-nvda' });
+    expect(route(`${MAC}/NVDA/x.md`, mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-local' });
     // No stock computer holds it, so the old spelling still reads here.
-    expect(route('/home/workspace/Local/x.md', mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-only-here' });
-    expect(route('/home/workspace/Mac/x.md', mac)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
+    expect(route('/home/workspace/Local/x.md', mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-only-here' });
+    expect(route('/home/workspace/Mac/x.md', mac)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
 
     // Through no folder, the stock computer's file opens nothing here, while
     // on a stock computer, or with none elsewhere, it is this one's.
@@ -1161,31 +1149,27 @@ describe('computeAgentArtifactRouting: a sibling\'s folder', () => {
     const wsref = computeAgentArtifactRouting('results/report.md', 'ws-nvda');
     for (const raw of ['../NVDA/results/report.md', '/home/workspace/NVDA/results/report.md', 'file:///home/workspace/NVDA/results/report.md']) {
       expect(route(raw)).toEqual(wsref);
-      expect(route(raw)).toMatchObject({ targetFile: 'results/report.md', setWorkspaceId: 'ws-nvda' });
+      expect(route(raw)).toMatchObject({ target: { kind: 'file', path: 'results/report.md' }, workspaceId: 'ws-nvda' });
     }
   });
 
   it('reaches a former folder by its name key, and a current one first', () => {
-    expect(route('../NVIDIA-AB12/report.md')).toMatchObject({ targetFile: 'report.md', setWorkspaceId: 'ws-nvda' });
-    expect(route('/home/workspace/Macro/report.md')).toMatchObject({ targetFile: 'report.md', setWorkspaceId: 'ws-macro' });
-    expect(route('/home/workspace/MACRO/report.md')).toMatchObject({ targetFile: 'report.md', setWorkspaceId: 'ws-tsla' });
+    expect(route('../NVIDIA-AB12/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' }, workspaceId: 'ws-nvda' });
+    expect(route('/home/workspace/Macro/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' }, workspaceId: 'ws-macro' });
+    expect(route('/home/workspace/MACRO/report.md')).toMatchObject({ target: { kind: 'file', path: 'report.md' }, workspaceId: 'ws-tsla' });
   });
 
   it('opens a directory link in the sibling\'s Files tab', () => {
-    expect(route('../NVDA/data/')).toMatchObject({ targetFile: null, targetDirectory: 'data', setWorkspaceId: 'ws-nvda' });
-    expect(route('../NVDA/')).toMatchObject({ targetFile: null, targetDirectory: '', setWorkspaceId: 'ws-nvda' });
+    expect(route('../NVDA/data/')).toMatchObject({ target: { kind: 'file', dir: 'data' }, workspaceId: 'ws-nvda' });
+    expect(route('../NVDA/')).toMatchObject({ target: { kind: 'file', dir: '' }, workspaceId: 'ws-nvda' });
   });
 
   it('routes a sibling\'s store paths with that workspace', () => {
-    expect(route(`../NVDA/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({
-      targetMemoryKey: 'risk.md',
-      targetMemoryTier: 'workspace',
-      setWorkspaceId: 'ws-nvda',
-    });
+    expect(route(`../NVDA/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({ target: { kind: 'memory', key: 'risk.md', tier: 'workspace' }, workspaceId: 'ws-nvda' });
   });
 
   it('keeps a # inside a name', () => {
-    expect(route('../NVDA/issue#1.md')).toMatchObject({ targetFile: 'issue#1.md', setWorkspaceId: 'ws-nvda' });
+    expect(route('../NVDA/issue#1.md')).toMatchObject({ target: { kind: 'file', path: 'issue#1.md' }, workspaceId: 'ws-nvda' });
   });
 
   it('leaves a path that names no sibling as it read before', () => {
@@ -1208,9 +1192,9 @@ describe('computeAgentArtifactRouting: a sibling\'s folder', () => {
     for (const raw of ['__wsref__/ws-other/../NVDA/report.md', '__wsref__/ws-other/NVDA/report.md', `__wsref__/ws-other/${MEMORY_WORKSPACE_DIR}/a.md`]) {
       expect(route(raw)).toEqual(before(raw));
     }
-    expect(route(`__wsref__/ws-other/${MEMORY_WORKSPACE_DIR}/a.md`)).toMatchObject({ setWorkspaceId: 'ws-other' });
+    expect(route(`__wsref__/ws-other/${MEMORY_WORKSPACE_DIR}/a.md`)).toMatchObject({ workspaceId: 'ws-other' });
     expect(route('../NVDA/report.md', 'ws-caller')).toEqual(before('../NVDA/report.md', 'ws-caller'));
-    expect(route('../NVDA/report.md', 'ws-caller')).toMatchObject({ targetFile: '../NVDA/report.md', setWorkspaceId: 'ws-caller' });
+    expect(route('../NVDA/report.md', 'ws-caller')).toMatchObject({ target: { kind: 'file', path: '../NVDA/report.md' }, workspaceId: 'ws-caller' });
   });
 });
 
@@ -1225,24 +1209,21 @@ describe('computeAgentArtifactRouting: a climb back into the workspace\'s own fo
   it('routes as the path inside the folder', () => {
     expect(route('../Home/e2e_probe_comparison/probe_notes_comparison.md'))
       .toEqual(computeAgentArtifactRouting('e2e_probe_comparison/probe_notes_comparison.md'));
-    expect(route('./../Home/notes.md')).toMatchObject({ targetFile: 'notes.md', setWorkspaceId: null });
-    expect(route('reports/../../Home/notes.md')).toMatchObject({ targetFile: 'notes.md' });
+    expect(route('./../Home/notes.md')).toMatchObject({ target: { kind: 'file', path: 'notes.md' }, workspaceId: null });
+    expect(route('reports/../../Home/notes.md')).toMatchObject({ target: { kind: 'file', path: 'notes.md' } });
   });
 
   it('opens a folder link in the Files tab, and a store path in its own', () => {
-    expect(route('../Home/data/')).toMatchObject({ targetFile: null, targetDirectory: 'data' });
-    expect(route('../Home/')).toMatchObject({ targetFile: null, targetDirectory: '' });
-    expect(route(`../Home/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({
-      targetMemoryKey: 'risk.md',
-      targetMemoryTier: 'workspace',
-    });
+    expect(route('../Home/data/')).toMatchObject({ target: { kind: 'file', dir: 'data' } });
+    expect(route('../Home/')).toMatchObject({ target: { kind: 'file', dir: '' } });
+    expect(route(`../Home/${MEMORY_WORKSPACE_DIR}/risk.md`)).toMatchObject({ target: { kind: 'memory', key: 'risk.md', tier: 'workspace' } });
   });
 
   it('matches a former folder by its name key and the current one exactly', () => {
     const renamed = own('Research', ['research-ab12']);
-    expect(route('../Research/report.md', renamed)).toMatchObject({ targetFile: 'report.md' });
-    expect(route('../RESEARCH-AB12/report.md', renamed)).toMatchObject({ targetFile: 'report.md' });
-    expect(route('../RESEARCH/report.md', renamed)).toMatchObject({ targetFile: '../RESEARCH/report.md' });
+    expect(route('../Research/report.md', renamed)).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
+    expect(route('../RESEARCH-AB12/report.md', renamed)).toMatchObject({ target: { kind: 'file', path: 'report.md' } });
+    expect(route('../RESEARCH/report.md', renamed)).toMatchObject({ target: { kind: 'file', path: '../RESEARCH/report.md' } });
   });
 
   it('reads every other climb as it did before', () => {
@@ -1267,10 +1248,10 @@ describe('computeAgentArtifactRouting: a climb back into the workspace\'s own fo
     ]);
     // This workspace's current folder, then a sibling's current one, then this
     // workspace's former ones, then a former one a single sibling left.
-    expect(route('../Home/x.md', folders)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
-    expect(route('../Macro/x.md', folders)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-macro' });
-    expect(route('../MACRO/x.md', folders)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
-    expect(route('../SHARED/x.md', folders)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: null });
-    expect(route('../OLD-TSLA/x.md', folders)).toMatchObject({ targetFile: 'x.md', setWorkspaceId: 'ws-tsla' });
+    expect(route('../Home/x.md', folders)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
+    expect(route('../Macro/x.md', folders)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-macro' });
+    expect(route('../MACRO/x.md', folders)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
+    expect(route('../SHARED/x.md', folders)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: null });
+    expect(route('../OLD-TSLA/x.md', folders)).toMatchObject({ target: { kind: 'file', path: 'x.md' }, workspaceId: 'ws-tsla' });
   });
 });

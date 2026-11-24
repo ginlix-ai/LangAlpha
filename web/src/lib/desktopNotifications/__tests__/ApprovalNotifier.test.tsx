@@ -70,4 +70,14 @@ describe('ApprovalNotifier', () => {
     view.unmount();
     expect(desktop.clearDesktopNotifications).toHaveBeenLastCalledWith(['cli-approval:ap-2']);
   });
+
+  it('posts an action this version does not know as a plain question', () => {
+    pending.list = [{ ...approval('ap-new'), action: 'drive_purge_all', target: { id: 'x', name: 'Everything' } } as unknown as CliApproval];
+    render(<ApprovalNotifier />);
+    expect(desktop.desktopNotify).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cli-approval:ap-new',
+      title: 'Allow “Everything”?',
+      body: 'The analyst in “NVDA” asked in “Q3 prep” to do something this version of the app cannot describe. Reload the page to see what it is.',
+    }));
+  });
 });

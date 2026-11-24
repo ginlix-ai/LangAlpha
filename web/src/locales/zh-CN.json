@@ -149,7 +149,8 @@
     "plugins": "插件",
     "orders": "订单",
     "menu": "菜单",
-    "library": "资料库"
+    "library": "资料库",
+    "drive": "Drive"
   },
   "account": {
     "menuLabel": "账号菜单",
@@ -3716,7 +3717,9 @@
       "automationCreate": "创建自动化“{{name}}”？",
       "automationEdit": "修改自动化“{{name}}”？",
       "automationTrigger": "运行自动化“{{name}}”？",
-      "automationResume": "继续自动化“{{name}}”？"
+      "automationResume": "继续自动化“{{name}}”？",
+      "unknown": "允许“{{name}}”？",
+      "unknownUnnamed": "允许这项操作？"
     },
     "ask": {
       "threadDelete": "删除这个对话",
@@ -3742,7 +3745,8 @@
       "automationTrigger": "立即运行这个自动化",
       "automationTriggerWhere": "立即{{where}}运行这个自动化",
       "automationResume": "继续这个自动化",
-      "automationResumeWhere": "继续这个自动化，它{{where}}运行"
+      "automationResumeWhere": "继续这个自动化，它{{where}}运行",
+      "unknown": "执行一项当前版本的应用无法显示的操作。刷新页面即可查看具体内容"
     },
     "where": {
       "workspace": "在“{{workspace}}”中",
@@ -3779,7 +3783,8 @@
     "resume": "继续",
     "decline": "拒绝",
     "alwaysApprove": "始终允许",
-    "alwaysApproveHint": "这次及以后创建工作区都不再询问，可在设置中关闭。"
+    "alwaysApproveHint": "这次及以后创建工作区都不再询问，可在设置中关闭。",
+    "allow": "允许"
   },
   "vendorTerms": {
     "title": "接受 {{name}} 的服务条款",

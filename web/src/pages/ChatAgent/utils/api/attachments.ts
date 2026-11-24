@@ -3,7 +3,7 @@
  * and the message then names it by id.
  */
 import { api } from '@/api/client';
-import { PART_IDLE_MS, SIGN_DEADLINE_MS, UploadSendError, type SignedUploadPart } from '../partUpload';
+import { PART_IDLE_MS, SIGN_DEADLINE_MS, UploadSendError, type SignedUploadPart } from '@/lib/partUpload';
 
 // Once the last byte is out, the server writes the file to the store before it
 // answers, which on a large file takes a while with nothing moving.

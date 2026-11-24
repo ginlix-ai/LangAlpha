@@ -5,6 +5,8 @@ import {
   AUTOMATION_FILE_NAME,
   AUTOMATIONS_DIR,
   CASEFOLD_EXCEPTIONS,
+  DRIVE_DIR,
+  DRIVE_PERSONAL,
   MEMO_INDEX_FILENAME,
   MEMO_USER_DIR,
   MEMORY_INDEX_FILENAME,
@@ -20,6 +22,8 @@ import {
 
 export {
   AGENT_MD_FILE,
+  DRIVE_DIR,
+  DRIVE_PERSONAL,
   MEMO_INDEX_FILENAME,
   MEMO_USER_DIR,
   MEMORY_INDEX_FILENAME,
@@ -654,7 +658,7 @@ export function normalizeAgentHref(raw: string, root?: string | null): string {
   return parseAgentHref(raw, root).path;
 }
 
-export type AgentPathKind = 'memory' | 'memo' | 'user-data' | 'skill' | 'file';
+export type AgentPathKind = 'memory' | 'memo' | 'user-data' | 'skill' | 'drive' | 'file';
 export type MemoryTier = 'user' | 'workspace';
 
 export interface MemoryPathInfo {
@@ -696,6 +700,22 @@ export interface UserDataPathInfo {
   crossWorkspaceId?: string;
 }
 
+/**
+ * A file or folder in the user's Drive (`.agents/drive/<space>/<path>`). It is
+ * the user's, not a workspace's, so it opens on the Drive page rather than in
+ * a workspace's file panel, whichever workspace the link was written in.
+ */
+export interface DrivePathInfo {
+  kind: 'drive';
+  /** The space's folder under the Drive: `personal` for the person's own. */
+  space: string;
+  /** The path inside the space, no leading or trailing slash; '' is its root. */
+  path: string;
+  /** The path names a folder (it ended in `/`, or it is a space's root). */
+  directory: boolean;
+  rawPath: string;
+}
+
 export interface FilePathInfo {
   kind: 'file';
   rawPath: string;
@@ -706,6 +726,7 @@ export type AgentPathInfo =
   | MemoPathInfo
   | UserDataPathInfo
   | SkillPathInfo
+  | DrivePathInfo
   | FilePathInfo;
 
 /**
@@ -717,16 +738,20 @@ export function workspaceRelativePath(rawPath: string, root?: string | null): st
   return takeApart(rawPath, false, root).path.replace(/^\/+/, '');
 }
 
-/** A path through the selected workspace's folder with the folder folded off (`workspaceScopedPath`); any other path as it came. */
-function selectedWorkspacePath(
+/**
+ * A link as the panel routes it: through the selected workspace's folder with
+ * the folder folded off (`workspaceScopedPath`), any other path as it came;
+ * and that path taken apart as a destination, for whether it names a folder.
+ */
+export function selectedWorkspaceLink(
   rawPath: string,
   folders: ComputerFolders | null | undefined,
-): string {
+): { path: string; parts: AgentPathParts } {
   const { dirName, previousDirNames, rootDir, otherRoots } = folders ?? {};
   const parts = takeApart(rawPath, true, rootDir);
   const scoped = workspaceScopedPath(parts, dirName, previousDirNames, otherRoots);
-  if (scoped === parts.path) return rawPath;
-  return scoped || (parts.directory ? './' : '');
+  const path = scoped === parts.path ? rawPath : scoped || (parts.directory ? './' : '');
+  return { path, parts: path === rawPath ? parts : takeApart(path, true, rootDir) };
 }
 
 // The pre-folder spelling of the workspace memory dir, before a workspace
@@ -810,6 +835,17 @@ export function classifyAgentPath(rawPath: string, root?: string | null): AgentP
     const name = tail.split('/')[0] || '';
     return { kind: 'skill', name, rawPath, crossWorkspaceId };
   }
+  // The Drive is linked into every workspace folder and the computer root
+  // alike, so a `__wsref__` qualifier names nothing: the file is the user's.
+  if (norm.startsWith(`${DRIVE_DIR}/`)) {
+    // Read as the path it is, so a `#` or `?` in a file's name stays in it.
+    const plain = takeApart(rawPath, false, root).path.replace(/^\/+/, '');
+    const [space, ...rest] = plain.slice(DRIVE_DIR.length + 1).split('/');
+    if (space) {
+      const path = rest.filter(Boolean).join('/');
+      return { kind: 'drive', space, path, directory: !path || plain.endsWith('/'), rawPath };
+    }
+  }
   return { kind: 'file', rawPath };
 }
 
@@ -819,131 +855,4 @@ export function topicFromMemoryKey(key: string): string {
   let topic = key;
   if (topic.toLowerCase().endsWith('.md')) topic = topic.slice(0, -3);
   return topic.replace(/[-_]+/g, ' ').trim();
-}
-
-/**
- * Routing decision returned by `computeAgentArtifactRouting`. The ChatView
- * routing handler applies these by clearing all four target fields first and
- * then assigning whichever the routing returned. Empty-string targetMemoKey
- * means "open Memo tab to LIST view (no entry pre-select)" — used for the
- * memo index path.
- */
-export interface AgentArtifactRouting {
-  targetFile: string | null;
-  targetMemoryKey: string | null;
-  targetMemoryTier: MemoryTier | null;
-  /** `''` (empty string) means open Memo tab without selecting; null means no memo target. */
-  targetMemoKey: string | null;
-  /** True when the routing must clear filePanelWorkspaceId (user-scoped artifact). */
-  clearWorkspaceId: boolean;
-  /** Workspace id to set on filePanelWorkspaceId (only for cross-workspace file links). */
-  setWorkspaceId: string | null;
-  /** A folder to open the Files tab on, for a link ending in `/`; `''` is the workspace root. */
-  targetDirectory: string | null;
-}
-
-/**
- * Pure routing decision. Caller (ChatView) applies the resulting state
- * transitions atomically. Centralized here so it's testable without mounting
- * the whole chat shell.
- *
- * `targetWorkspaceId` takes precedence over a `__wsref__/<wsid>/...` embedded
- * id — caller-supplied context wins. When neither is provided for a workspace-
- * tier memory path, we emit `clearWorkspaceId: true` so a stale
- * filePanelWorkspaceId from a prior cross-workspace click doesn't leak into
- * the new query (a regression guard for chats whose links name other
- * workspaces).
- *
- * A path through another workspace's folder (`folderWorkspacePath`) routes
- * as the `__wsref__` link to that workspace would. It is read as a path, which
- * is what an `OpenFileHandler` is handed, so a `#` inside a name stays.
- */
-export function computeAgentArtifactRouting(
-  rawPath: string,
-  targetWorkspaceId?: string,
-  folders?: ComputerFolders | null,
-): AgentArtifactRouting {
-  const root = folders?.rootDir;
-  const other = targetWorkspaceId ? null : folderWorkspacePath(takeApart(rawPath, false, root), folders);
-  if (other) return computeAgentArtifactRouting(other.path, other.workspaceId);
-  const routedPath = selectedWorkspacePath(rawPath, folders);
-  const info = classifyAgentPath(routedPath, root);
-  // Caller-supplied wsid wins; otherwise fall back to the wsid extracted from
-  // a `__wsref__/...` marker in the path itself.
-  const embeddedWsid = info.kind === 'file' ? undefined : info.crossWorkspaceId;
-  const resolvedWsid = targetWorkspaceId ?? embeddedWsid ?? null;
-
-  const base: AgentArtifactRouting = {
-    targetFile: null,
-    targetMemoryKey: null,
-    targetMemoryTier: null,
-    targetMemoKey: null,
-    clearWorkspaceId: false,
-    setWorkspaceId: null,
-    targetDirectory: null,
-  };
-  if (info.kind === 'memory') {
-    if (info.tier === 'user') {
-      // User memory is global to the user — workspace context is meaningless,
-      // and any stale ws id from a cross-workspace `ws://` link must be cleared so the
-      // memory query doesn't leak into the wrong workspace.
-      return {
-        ...base,
-        targetMemoryKey: info.key,
-        targetMemoryTier: 'user',
-        clearWorkspaceId: true,
-      };
-    }
-    // Workspace memory:
-    //  - With a resolved wsid (caller-supplied OR embedded `__wsref__`), set
-    //    it on the panel so MemoryPanel queries the correct workspace.
-    //  - Without one, clear filePanelWorkspaceId. Leaving it as-is leaks a
-    //    stale wsid from a prior cross-workspace click into the new memory
-    //    list query.
-    if (resolvedWsid) {
-      return {
-        ...base,
-        targetMemoryKey: info.key,
-        targetMemoryTier: 'workspace',
-        setWorkspaceId: resolvedWsid,
-      };
-    }
-    return {
-      ...base,
-      targetMemoryKey: info.key,
-      targetMemoryTier: 'workspace',
-      clearWorkspaceId: true,
-    };
-  }
-  if (info.kind === 'memo') {
-    return {
-      ...base,
-      targetMemoKey: info.isIndex ? '' : info.key,
-      clearWorkspaceId: true,
-    };
-  }
-  if (info.kind === 'user-data') {
-    // The DB-backed user files are user-scoped (not workspace-scoped), so
-    // clear any stale filePanelWorkspaceId from a prior cross-workspace click,
-    // the same pattern as user-tier memory.
-    return {
-      ...base,
-      targetFile: routedPath,
-      clearWorkspaceId: true,
-    };
-  }
-  // skill / file → Files tab; pass-through workspace id for cross-workspace links.
-  const parts = takeApart(routedPath, true, root);
-  if (parts.directory) {
-    return {
-      ...base,
-      targetDirectory: parts.path.replace(/^\/+|\/+$/g, ''),
-      setWorkspaceId: resolvedWsid,
-    };
-  }
-  return {
-    ...base,
-    targetFile: routedPath,
-    setWorkspaceId: resolvedWsid,
-  };
 }

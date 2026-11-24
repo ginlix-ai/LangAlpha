@@ -17,6 +17,7 @@ import {
   Play,
   RotateCcw,
   Send,
+  ShieldQuestion,
   type LucideIcon,
 } from 'lucide-react';
 import type { CliApproval, CliApprovalPlace } from '@/api/cliApprovals';
@@ -40,7 +41,13 @@ export type ApprovalVariant =
   | 'automationCreate'
   | 'automationEdit'
   | 'automationTrigger'
-  | 'automationResume';
+  | 'automationResume'
+  /**
+   * An action a newer server asks about that this build has no words for: put
+   * as a plain question, so it can still be answered rather than breaking the
+   * app while it waits.
+   */
+  | 'unknown';
 
 interface VariantConfig {
   icon: LucideIcon;
@@ -65,6 +72,7 @@ export const VARIANT: Record<ApprovalVariant, VariantConfig> = {
   automationEdit: { icon: CalendarCog, approveKey: 'common.save', destructive: false },
   automationTrigger: { icon: Play, approveKey: 'cliApproval.run', destructive: false },
   automationResume: { icon: CalendarClock, approveKey: 'cliApproval.resume', destructive: false },
+  unknown: { icon: ShieldQuestion, approveKey: 'cliApproval.allow', destructive: false, mayBeUntitled: true },
 };
 
 const AUTOMATION_VARIANT = {
@@ -92,7 +100,9 @@ export function variant(a: CliApproval): ApprovalVariant {
     case 'thread_create':
       return a.details.in_home ? 'threadCreateHome' : 'threadCreate';
     case 'automation_change':
-      return AUTOMATION_VARIANT[a.details.kind];
+      return AUTOMATION_VARIANT[a.details.kind] ?? 'unknown';
+    default:
+      return 'unknown';
   }
 }
 
@@ -120,7 +130,10 @@ function automationWhere(t: TFunction, place: CliApprovalPlace): string {
 
 /** What was asked, as the end of "… asked to {{ask}}". */
 function approvalAsk(t: TFunction, a: CliApproval): string {
-  const key = `cliApproval.ask.${variant(a)}`;
+  const v = variant(a);
+  const key = `cliApproval.ask.${v}`;
+  // An action this build has no words for has no forms either.
+  if (v === 'unknown') return t(key);
   switch (a.action) {
     case 'workspace_delete':
       return t(a.details.delete_files ? `${key}Files` : key);

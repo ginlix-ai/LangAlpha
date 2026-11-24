@@ -14,7 +14,7 @@ import { motion, useIsPresent } from '@/lib/framer';
 import { cn } from '@/lib/utils';
 import ImageLightbox from '@/pages/ChatAgent/components/ImageLightbox';
 import { isImageFile } from '@/pages/ChatAgent/utils/fileUpload';
-import type { UploadFailure } from '@/pages/ChatAgent/utils/partUpload';
+import type { UploadFailure } from '@/lib/partUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { CHIP_PRESENCE, MENU_PRESENCE, getSlashCommandIcon } from './chat-input.helpers';

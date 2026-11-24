@@ -14,23 +14,16 @@ const HOME = '11111111-1111-4111-8111-111111111111';
 const SIBLING = '22222222-2222-4222-8222-222222222222';
 
 describe('nextPanelOverride', () => {
-  const plain = { clearWorkspaceId: false, setWorkspaceId: null };
-  const sibling = { clearWorkspaceId: false, setWorkspaceId: SIBLING };
-
-  it("returns Home's panel to its own files on a plain path", () => {
-    expect(nextPanelOverride(plain, HOME)).toBeNull();
+  it("returns Home's panel to its own files when the link names no workspace", () => {
+    expect(nextPanelOverride(null, HOME)).toBeNull();
   });
 
   it("shows a sibling's files from Home", () => {
-    expect(nextPanelOverride(sibling, HOME)).toBe(SIBLING);
+    expect(nextPanelOverride(SIBLING, HOME)).toBe(SIBLING);
   });
 
   it('reads a link naming Home itself as its own files', () => {
-    expect(nextPanelOverride({ clearWorkspaceId: false, setWorkspaceId: HOME }, HOME)).toBeNull();
-  });
-
-  it('clears for a user-scoped target', () => {
-    expect(nextPanelOverride({ clearWorkspaceId: true, setWorkspaceId: null }, HOME)).toBeNull();
+    expect(nextPanelOverride(HOME, HOME)).toBeNull();
   });
 });
 

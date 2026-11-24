@@ -385,6 +385,23 @@ export const queryKeys = {
     list:      (kind: string) => [...queryKeys.orgLibrary.lists(), kind],
     published: (target: string) => [...queryKeys.orgLibrary.all, 'published', target],
   },
+  // The Drive. A space's change feed invalidates everything under its
+  // `space` prefix at once; a body is keyed by the bytes it holds (sha256),
+  // so a change reads the new bytes without throwing the old ones away.
+  drive: {
+    all:      ['drive'],
+    spaces:   () => [...queryKeys.drive.all, 'spaces'],
+    space:    (space: string) => [...queryKeys.drive.all, 'space', space],
+    list:     (space: string, path: string) => [...queryKeys.drive.space(space), 'list', path],
+    folders:  (space: string) => [...queryKeys.drive.space(space), 'folders'],
+    entry:    (space: string, path: string) => [...queryKeys.drive.space(space), 'entry', path],
+    versions: (space: string, entryId: string) => [...queryKeys.drive.space(space), 'versions', entryId],
+    trash:    (space: string) => [...queryKeys.drive.space(space), 'trash'],
+    trashPage: (space: string, limit: number) => [...queryKeys.drive.trash(space), limit],
+    body:     (space: string, entryId: string, sha: string, mode: string) => [...queryKeys.drive.all, 'body', space, entryId, sha, mode],
+    /** Apart from the space's own keys, so reading the space again does not ask the feed again. */
+    changes:  (space: string) => [...queryKeys.drive.all, 'changes', space],
+  },
   sharedWorkspaces: {
     all:     ['sharedWorkspaces'],
     list:    () => [...queryKeys.sharedWorkspaces.all, 'list'],

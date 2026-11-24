@@ -2,7 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { holdReload } from '@/lib/reloadHolds';
-import { classifyUploadError } from '../../utils/partUpload';
+import { classifyUploadError } from '@/lib/partUpload';
 import { uploadToWorkspace } from '../../utils/workspaceUpload';
 import type { ComputerAway } from './useComputerAway';
 
