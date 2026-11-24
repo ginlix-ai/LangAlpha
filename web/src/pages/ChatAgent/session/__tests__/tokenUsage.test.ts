@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 
-import { applyCallUsage, hitRate, withPageTotals, withServerTotals, withoutServerTotals, type TokenUsage } from '../tokenUsage';
+import { afterCompaction, applyCallUsage, hitRate, withPageTotals, withServerTotals, withoutServerTotals, type TokenUsage } from '../tokenUsage';
 import type { SSEEvent } from '../types';
 
 const call = (input: number, cached?: number, extra: Partial<SSEEvent> = {}): SSEEvent => ({
@@ -94,5 +94,22 @@ describe('hitRate', () => {
 
   it('never reads above all of it', () => {
     expect(hitRate(150_000, 140_000)).toBe(1);
+  });
+});
+
+describe('tokenUsage — after a compaction', () => {
+  it('keeps the totals and threshold, and leaves the window to the next call', () => {
+    const before = fold(null, [call(800, 600)], true)!;
+    const after = afterCompaction(before)!;
+    expect(after).toMatchObject({ compacted: true, total: 0, lastInput: 0, lastCached: null, threshold: 1000 });
+    expect(after.totalInput).toBe(before.totalInput);
+    expect(after.totalOutput).toBe(before.totalOutput);
+    const next = applyCallUsage(after, call(300), true);
+    expect(next.compacted).toBeFalsy();
+    expect(next.total).toBe(310);
+  });
+
+  it('leaves usage nothing counted as nothing', () => {
+    expect(afterCompaction(null)).toBeNull();
   });
 });

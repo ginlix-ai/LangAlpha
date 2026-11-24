@@ -25,6 +25,9 @@ export interface TokenUsage {
   threshold: number;
   /** The model's context window, when it declares one. */
   contextLimit: number | null;
+  /** A compaction is the newest thing on the thread: the window it left is
+   *  unknown until the next call reports it, so the ring reads as empty. */
+  compacted?: boolean;
 }
 
 /** The fields of a `token_usage` frame the usage reads. */
@@ -60,6 +63,12 @@ export function applyCallUsage(prev: TokenUsage | null, call: CallUsage, live: b
     threshold: call.threshold || prev?.threshold || 0,
     contextLimit: count(call.context_limit) || null,
   };
+}
+
+/** The usage once a compaction landed: the totals and threshold stay, the
+ *  window waits for the next call. Nothing counted yet stays nothing. */
+export function afterCompaction(prev: TokenUsage | null): TokenUsage | null {
+  return prev && { ...prev, lastInput: 0, lastCached: null, total: 0, compacted: true };
 }
 
 /** The usage with the server's count as the totals; the window stays. */

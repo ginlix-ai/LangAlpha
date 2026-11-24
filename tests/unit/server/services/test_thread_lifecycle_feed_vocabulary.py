@@ -31,6 +31,8 @@ LIFECYCLE_TYPES = {
     "thread_pinned",
     "thread_subagents",
     "thread_tuning",
+    # A summary written while the thread sat idle, which no stream carries.
+    "thread_compacted",
     "thread_deleted",
     "thread_archived",
     "thread_unarchived",

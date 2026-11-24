@@ -90,6 +90,7 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
   ...(await importOriginal() as Record<string, unknown>),
   useChatMessages: () => ({
     messages: [],
+    liveMessages: { get: () => [], subscribe: () => () => {} },
     isLoading: false,
     hasActiveSubagents: true,
     awaitingReportBack: false,

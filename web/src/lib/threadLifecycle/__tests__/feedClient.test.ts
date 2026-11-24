@@ -16,6 +16,8 @@ vi.mock('@/pages/ChatAgent/utils/api/transport', () => transport);
 import {
   startThreadLifecycleFeed,
   stopThreadLifecycleFeed,
+  subscribeThreadCompactions,
+  type ThreadCompacted,
 } from '../feedClient';
 import {
   applyFeedEvent,
@@ -557,6 +559,26 @@ describe('threadLifecycleFeed — thread_subagents', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.detail('t1') });
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.detail('t2') });
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.detail('t3') });
+  });
+});
+
+describe('threadLifecycleFeed — thread_compacted', () => {
+  it('tells the views of a summary written while the thread sat idle', async () => {
+    const heard: ThreadCompacted[] = [];
+    const unsubscribe = subscribeThreadCompactions((c) => heard.push(c));
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    conns[0].emit({
+      event: 'thread_lifecycle',
+      type: 'thread_compacted',
+      thread_id: 't1',
+      workspace_id: 'w1',
+      original_message_count: 214,
+      summary_text: 'what happened',
+    });
+    await flush();
+    unsubscribe();
+    expect(heard).toEqual([{ threadId: 't1', originalMessageCount: 214, summaryText: 'what happened' }]);
   });
 });
 

@@ -196,7 +196,30 @@ async def _summarize_and_install(row: dict[str, Any], thread: _Thread, held: Asy
     # Shielded: a stop landing between the write and its pointer advance
     # would leave the summary beside the pointer, where the next turn reads it.
     await asyncio.shield(_install(agent, write.values, row, thread))
+    await _announce(row, thread, write)
     return kind
+
+
+async def _announce(row: dict[str, Any], thread: _Thread, write: SummaryWrite) -> None:
+    """Tell the user's open tabs the summary landed, as a manual /compact's
+    answer tells the tab that asked."""
+    from src.server.services.shared_workspaces.access import shared_org_of
+    from src.server.services.thread_lifecycle_feed import publish_thread_compacted
+
+    workspace_id = str(thread.meta["workspace_id"]) if thread.meta.get("workspace_id") else None
+    try:
+        # A shared thread's other members may have it open too.
+        shared_org = await shared_org_of(workspace_id)
+    except Exception:
+        shared_org = None
+    await publish_thread_compacted(
+        user_id=row["user_id"],
+        thread_id=row["thread_id"],
+        workspace_id=workspace_id,
+        original_message_count=write.props["original_message_count"],
+        summary_text=write.summary_text,
+        shared_org=shared_org,
+    )
 
 
 async def _agent_summary(agent: Any, row: dict[str, Any]) -> tuple[SummaryWrite, Kind]:

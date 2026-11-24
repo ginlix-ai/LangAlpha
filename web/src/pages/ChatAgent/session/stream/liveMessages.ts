@@ -64,7 +64,10 @@ export function createLiveTranscript<T extends readonly unknown[]>(initial: T, c
 }
 
 /**
- * The store's value, rendered on every change.
+ * One value read off the store, rendered only when it changes: a view that
+ * needs a fact about the transcript, not its text, stays out of the chunk
+ * renders. `select` runs on every change, so keep it cheap, and pass a stable
+ * function (a module-level one), since a new one subscribes again.
  *
  * State and a subscription rather than useSyncExternalStore: a store update
  * renders on the sync lane, apart from the typewriter's default-lane update of
@@ -72,13 +75,21 @@ export function createLiveTranscript<T extends readonly unknown[]>(initial: T, c
  * and with whatever else the same task sets, so one commit never shows the
  * new transcript beside the old loading state.
  */
-export function useLiveMessages<T>(store: LiveMessages<T>): T {
-  const [value, setValue] = useState(store.get);
+export function useLiveSelect<T, S>(store: LiveMessages<T>, select: (value: T) => S): S {
+  const [selected, setSelected] = useState(() => select(store.get()));
   useEffect(() => {
-    const update = () => setValue(store.get());
+    // Wrapped, so a selection that is itself a function is stored, not called.
+    const update = () => setSelected(() => select(store.get()));
     // A chunk can land between this render and the subscription.
     update();
     return store.subscribe(update);
-  }, [store]);
-  return value;
+  }, [store, select]);
+  return selected;
+}
+
+const identity = <T,>(value: T): T => value;
+
+/** The store's value, rendered on every change. */
+export function useLiveMessages<T>(store: LiveMessages<T>): T {
+  return useLiveSelect(store, identity<T>);
 }

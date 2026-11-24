@@ -143,6 +143,10 @@ export interface NotificationSegment {
   detail?: string;
   /** Picks the expander toggle label, 'summary' by default. */
   detailKind?: NotificationDetailKind;
+  /** A compaction or offload of the context. One ahead of any work in its
+   *  turn happened before the turn's message was read, so the transcript
+   *  draws it above that message (`contextHead`). */
+  context?: boolean;
 }
 
 export interface UserQuestionSegment {

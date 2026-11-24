@@ -1345,10 +1345,13 @@ def build_claude_code_graph(
         # Code turn never passes through it.
         ai.response_metadata[CATALOG_MODEL_KEY] = turn.spec.catalog_model
         ai.response_metadata[CLAUDE_MESSAGE_ID] = message.id
-        report_usage(ai, turn.compaction.threshold)
         uuids = run.assistant_records(message.id)
         await run.settle(uuids)
         turn.settled(state)
+        # After a compaction whose records came late: it ran ahead of this
+        # call, so its notice goes out first, or the window this call reports
+        # would read as cleared by it.
+        report_usage(ai, turn.compaction.threshold)
         turn.stamp(ai)
         if on_reply is not None and run.query.streamed:
             await on_reply(ai)

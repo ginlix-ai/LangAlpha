@@ -25,6 +25,9 @@ export interface TurnFoldProps {
   /** The message that opened the turn was sent from this view, so the row
    *  arrives with it (see `isFreshSend`). */
   sentHere?: boolean;
+  /** The thread held the turn before any work (a compaction ahead of its
+   *  first call), so the row arrives as the hold ends, not with the send. */
+  afterHold?: boolean;
   /** The turn, which `onToggle` is called with. */
   turnIndex: number;
   onToggle: (turnIndex: number) => void;
@@ -56,12 +59,13 @@ const CONTROL_STYLE: React.CSSProperties = { color: 'inherit', font: 'inherit', 
  * props, since the list re-renders on every streamed frame and a long thread
  * has a row for each of its settled turns.
  */
-export const TurnFold = memo(function TurnFold({ state, startedAt, completedAt, sentHere, turnIndex, onToggle }: TurnFoldProps): React.ReactElement {
+export const TurnFold = memo(function TurnFold({ state, startedAt, completedAt, sentHere, afterHold, turnIndex, onToggle }: TurnFoldProps): React.ReactElement {
   const { t } = useTranslation();
   const rowRef = useRef<HTMLDivElement>(null);
   // The row is in place from the send on, so nothing is ever inserted above a
-  // reply already typing. It fades in with the message that opened it.
-  const [enter] = useState(() => isFreshSend(sentHere === true, startedAt));
+  // reply already typing. It fades in with the message that opened it, or
+  // with the hold's end, which comes before any reply.
+  const [enter] = useState(() => (afterHold === true && state === 'live') || isFreshSend(sentHere === true, startedAt));
   useLayoutEffect(() => (enter && rowRef.current ? playEntrance(rowRef.current) : undefined), [enter]);
 
   const workedFor = completedAt === undefined

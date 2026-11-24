@@ -5,7 +5,7 @@
 
 import type { SSEEvent, ContextWindowCallbacks } from '../../session/types';
 import type { AssistantMessage, NotificationSegment } from '@/types/chat';
-import { applyCallUsage } from '../../session/tokenUsage';
+import { afterCompaction, applyCallUsage } from '../../session/tokenUsage';
 import { updateMessage } from './messageHelpers';
 
 /**
@@ -50,11 +50,12 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
     }
     if (setIsCompacting) setIsCompacting(false);
     if (event.signal === 'complete') {
+      setTokenUsage(afterCompaction);
       const text = t('chat.compactedNotification', { from: event.original_message_count });
       const detail = (event.summary_text as string | undefined) || undefined;
       const msgId = getMsgId();
       if (msgId) {
-        appendNotification(setMessages, msgId, { content: text, order: nextOrder(), detail });
+        appendNotification(setMessages, msgId, { content: text, order: nextOrder(), detail, context: true });
       } else {
         insertNotification(text, 'info', detail);
       }
@@ -76,6 +77,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
 
   if (action === 'offload') {
     if (event.signal === 'complete') {
+      setTokenUsage(afterCompaction);
       const batch = offloadBatch;
 
       // Accumulate counts
@@ -109,7 +111,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
 
         if (text) {
           if (msgId) {
-            appendNotification(setMessages, msgId, { content: text, order: nextOrder() });
+            appendNotification(setMessages, msgId, { content: text, order: nextOrder(), context: true });
           } else {
             insertNotification(text);
           }

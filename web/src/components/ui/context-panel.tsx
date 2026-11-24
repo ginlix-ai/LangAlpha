@@ -111,13 +111,16 @@ function CountedPanel({ tokenUsage, threadId, note }: {
   const locale = useLocale();
   const breakdown = useContextBreakdown(threadId);
   const { totalInput, totalOutput, totalCached, lastInput, lastCached, total, threshold, contextLimit } = tokenUsage;
+  // Since a compaction the window is unknown until the next call, and a
+  // breakdown of it would read the conversation from that unknown total.
+  const compacted = !!tokenUsage.compacted;
 
   const pct = share(total, threshold);
-  const rows = breakdown.data?.parts ? contextRows(breakdown.data.parts, { total, lastInput }) : [];
+  const rows = breakdown.data?.parts && !compacted ? contextRows(breakdown.data.parts, { total, lastInput }) : [];
   const segments = barSegments(rows, threshold);
   // Idle while pending means no thread to count, which is the window alone.
-  const counting = breakdown.isPending && breakdown.fetchStatus !== 'idle';
-  const stopped = breakdown.data?.reason === 'computer_stopped';
+  const counting = !compacted && breakdown.isPending && breakdown.fetchStatus !== 'idle';
+  const stopped = !compacted && breakdown.data?.reason === 'computer_stopped';
 
   const threadRate = hitRate(totalCached, totalInput);
   const lastRate = hitRate(lastCached, lastInput);
@@ -127,11 +130,13 @@ function CountedPanel({ tokenUsage, threadId, note }: {
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm font-medium">{t('chat.contextPanel.title')}</span>
         <span className="truncate text-(--color-text-tertiary)">
-          {t('chat.contextPanel.used', {
-            used: compactNumber(total, locale),
-            threshold: compactNumber(threshold, locale),
-            percent: percent(threshold > 0 ? total / threshold : 0, locale),
-          })}
+          {compacted
+            ? t('chat.contextPanel.compacted')
+            : t('chat.contextPanel.used', {
+              used: compactNumber(total, locale),
+              threshold: compactNumber(threshold, locale),
+              percent: percent(threshold > 0 ? total / threshold : 0, locale),
+            })}
         </span>
       </div>
 

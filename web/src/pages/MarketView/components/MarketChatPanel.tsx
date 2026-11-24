@@ -573,9 +573,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       summarizeThread(threadId)
         .then((data: Record<string, unknown>) => {
           setIsCompacting?.(false);
-          thread.setNextSummary(null);
-          const detail = (data.summary_text as string | undefined) || undefined;
-          thread.insertNotification(t('chat.compactedNotification', { from: data.original_message_count }), 'info', detail);
+          thread.landCompaction({
+            notice: t('chat.compactedNotification', { from: data.original_message_count }),
+            detail: (data.summary_text as string | undefined) || undefined,
+          });
         })
         .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError'); setIsCompacting?.(false); });
     } else if (cmd.name === 'offload') {
@@ -583,11 +584,13 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       offloadThread(threadId)
         .then((data: Record<string, unknown>) => {
           setIsCompacting?.(false);
-          thread.setNextSummary((data.next_summary as NextSummary | null | undefined) ?? null);
-          thread.insertNotification(t('chat.offloadedNotification', {
-            args: (data.offloaded_args as number) || 0,
-            reads: (data.offloaded_reads as number) || 0,
-          }));
+          thread.landCompaction({
+            notice: t('chat.offloadedNotification', {
+              args: (data.offloaded_args as number) || 0,
+              reads: (data.offloaded_reads as number) || 0,
+            }),
+            nextSummary: (data.next_summary as NextSummary | null | undefined) ?? null,
+          });
         })
         .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError', 'chat.offloadBusy'); setIsCompacting?.(false); });
     }

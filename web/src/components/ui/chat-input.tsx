@@ -894,7 +894,9 @@ function ChatInput({
     onFastModeChange: handleFastModeChange,
   }), [resolvedEffort, settingsEffort, handleReasoningEffortChange, resolvedFastMode, handleFastModeChange]);
 
-  const usageCounted = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  // A compaction just landed counts too: the ring stays, empty, until the
+  // next call reports the window it left.
+  const usageCounted = !!(tokenUsage && tokenUsage.threshold > 0 && (tokenUsage.total > 0 || tokenUsage.compacted));
   // A due summary keeps the ring up where the window is not counted yet (a
   // thread loaded with no call replayed, say), since the ring is where it is said.
   const summary = notices?.summary ?? null;

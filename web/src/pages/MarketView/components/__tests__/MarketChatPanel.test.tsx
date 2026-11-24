@@ -95,6 +95,10 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     forThread: (tid: string) => ({
       setNextSummary: (next: unknown) => h.setNextSummaryFor(tid, next),
       insertNotification: h.insertNotification,
+      landCompaction: ({ notice, detail, nextSummary = null }: { notice: string; detail?: string; nextSummary?: unknown }) => {
+        h.insertNotification(notice, 'info', detail);
+        h.setNextSummaryFor(tid, nextSummary);
+      },
     }),
     insertNotification: h.insertNotification,
     handleEditMessage: h.handleEditMessage,

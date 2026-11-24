@@ -206,10 +206,14 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
 
   const projection = useMemo(() => {
     if (contentProjection && (contentProjection.nextExpiry === null || contentProjection.nextExpiry > now)) return contentProjection;
-    return projectContent({
-      segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root,
+    // Without the notices the list draws above the turn, as it was built.
+    const skip = contentProjection?.skipSegments ?? 0;
+    const next = projectContent({
+      segments: skip ? segments.slice(skip) : segments,
+      reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root,
       cardedCharts: contentProjection?.cardedCharts,
     }, contentProjection);
+    return (next.skipSegments ?? 0) === skip ? next : { ...next, skipSegments: skip };
   }, [contentProjection, segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root]);
   const { blocks: renderBlocks, preparingToolCall, nextExpiry } = projection;
 

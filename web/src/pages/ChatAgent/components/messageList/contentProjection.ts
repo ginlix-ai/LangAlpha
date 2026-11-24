@@ -2,9 +2,10 @@ import { registerAuthReset } from '@/lib/authResets';
 import type { PendingToolCallChunk } from '@/types/chat';
 import type { ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
 import type { ChartLayersCard } from '../chartLayerGrouping';
-import { buildRenderBlocks, groupSegments, HIDDEN_TOOL_CALL_NAMES, textBlockKey, type RenderBlock } from './buildRenderBlocks';
+import { buildRenderBlocks, groupSegments, HIDDEN_TOOL_CALL_NAMES, textBlockKey, type NotificationRenderBlock, type RenderBlock } from './buildRenderBlocks';
 import { preparingCallsOf, samePreparing } from './pendingToolCalls';
 import { retainsNotice } from './notices';
+import { isContextNotice } from './messagePredicates';
 import { ANSWER_SCORE_HELD, ANSWER_SCORE_SHOWN, answerScore } from './answerText';
 import type { ActivityItem, PreparingToolCallData } from './activityTypes';
 import { EMPTY_OBJ, type ContentSegmentRecord, type FoldState, type MessageRecord, type ToolCallProcessRecord } from './types';
@@ -48,6 +49,10 @@ export interface ContentProjection {
   /** The charts it was built leaving to a report row, so a rebuild for the
    *  clock leaves out the same. */
   cardedCharts?: ReadonlySet<ChartKey>;
+  /** How many of the message's leading segments it was built without (the
+   *  notices `contextHead` draws above the turn), so a rebuild for the clock
+   *  leaves out the same. */
+  skipSegments?: number;
 }
 
 const RETAINED_TYPES = new Set<RenderBlock['type']>([
@@ -249,6 +254,51 @@ export function projectContent(input: ContentInput, prev?: ContentProjection): C
     blocks, roles, nextExpiry, preparingToolCall, lastTextKey, textCount, textsFollowed: readFollows(groups, input.toolCallProcesses),
     hasRetained, hasProcess, hasPinnedLive: pinnedLive, pinnedSettledAt, cardedCharts: input.cardedCharts,
   }, prev);
+}
+
+/** A turn's first reply split at its context head: the compaction and
+ *  offload notices it opens with, ahead of any work. */
+export interface ContextHead {
+  head: NotificationRenderBlock[];
+  rest: ContentProjection;
+}
+
+const contextHeads = new WeakMap<ContentProjection, ContextHead | null>();
+
+const isHeadBlock = (block: RenderBlock): block is NotificationRenderBlock =>
+  block.type === 'notification' && isContextNotice(block.segment);
+
+/**
+ * The context notices `projection` opens with, and the projection without
+ * them. A compaction at a turn's start summarizes the thread up to the turn's
+ * message and keeps the message after it, so the list draws them above that
+ * message, where nothing the turn folds, times or rates counts them. Null
+ * when it opens with none. Kept per projection, so a bubble's memo sees the
+ * same `rest` while its projection holds.
+ *
+ * `leading` is how many notices the message's own segments open with: a
+ * call the projection hides (a plan update) can come before a notice, which
+ * then came mid-turn though it is the first block drawn.
+ */
+export function contextHead(projection: ContentProjection, leading: number): ContextHead | null {
+  const hit = contextHeads.get(projection);
+  if (hit !== undefined) return hit;
+  const { blocks } = projection;
+  let n = 0;
+  while (n < blocks.length && n < leading && isHeadBlock(blocks[n])) n++;
+  let split: ContextHead | null = null;
+  if (n > 0) {
+    // `roles` keeps the head's keys, which nothing asks for once its blocks
+    // are gone; only the flags read off it have to be read again.
+    const rest = blocks.slice(n);
+    const kept = rest.map((block) => projection.roles.get(block.key));
+    split = {
+      head: blocks.slice(0, n).filter(isHeadBlock),
+      rest: { ...projection, blocks: rest, hasProcess: kept.includes('process'), hasRetained: kept.includes('retain'), skipSegments: n },
+    };
+  }
+  contextHeads.set(projection, split);
+  return split;
 }
 
 /** What the projection was built from, so a hit can prove it is still current.

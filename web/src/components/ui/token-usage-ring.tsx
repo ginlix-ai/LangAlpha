@@ -50,11 +50,15 @@ export function TokenUsageRing({ tokenUsage, threadId, summary = null }: TokenUs
   // and out of a screen reader's way.
   const pending = tokenUsage === null && !summary;
 
-  const pct = tokenUsage ? share(total, threshold) : 0;
+  const compacted = !!tokenUsage?.compacted;
+  const pct = tokenUsage && !compacted ? share(total, threshold) : 0;
   const color = getColor(pct);
   const dashOffset = CIRCUMFERENCE * (1 - pct);
   const usedPercent = percent(threshold > 0 ? total / threshold : 0, locale);
-  const label = tokenUsage
+  // An offload can leave a summary still due, which is the news then.
+  const label = compacted
+    ? t(due ? 'chat.contextPanel.triggerDueUncounted' : 'chat.contextPanel.triggerCompacted')
+    : tokenUsage
     ? t(due ? 'chat.contextPanel.triggerDue' : 'chat.contextPanel.trigger', { percent: usedPercent })
     : t(due ? 'chat.contextPanel.triggerDueUncounted' : 'chat.contextPanel.title');
 

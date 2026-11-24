@@ -11,14 +11,16 @@ import { bubbleSender, continuesSender, type BubbleSender } from '../session/sha
 import { TurnFold } from './messageList/TurnFold';
 import { AgentPlan } from './messageList/AgentPlan';
 import type { ShownPlan } from './messageList/requestPlans';
-import { holdsAnswerText, projectMessageContent, visibleProjection } from './messageList/contentProjection';
+import { contextHead, holdsAnswerText, projectMessageContent, visibleProjection } from './messageList/contentProjection';
+import { renderNotification } from './messageList/notices';
+import type { NotificationRenderBlock } from './messageList/buildRenderBlocks';
 import { useMessageActions } from './messageList/MessageActionsContext';
-import { isReportRow, opensTurn } from './messageList/messagePredicates';
+import { isReportRow, leadingContextNotices } from './messageList/messagePredicates';
 import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
 import { planReportChartCards } from './chartLayerGrouping';
 import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandoff/reportLinks';
 import {
-  computeReplyEnds, computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
+  computeReplyEnds, computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnSpans, turnStartTimes, type ProjectedMessage,
 } from './messageList/turnProjection';
 import { planQuietChecks, quietEndsByTurn } from './messageList/quietChecks';
 import type { QuietEnd } from '../session/wakeupEvents';
@@ -146,6 +148,13 @@ interface MessageListProps {
   /** Each request's plan, drawn under the message that asked for it, by
    *  message id (`threadPlans`): the host leaves out the one its tray shows. */
   plans?: ReadonlyMap<string, ShownPlan>;
+  /** The thread holds its newest turn before the model can take it up: a
+   *  compaction running, or a send waiting behind one, with nothing done yet
+   *  (see `heldTurn`). */
+  holding?: boolean;
+  /** What holds it, drawn above its message: a compaction's line, where the
+   *  divider its end leaves goes. */
+  holdLine?: React.ReactNode;
 }
 
 interface HeldTranscript {
@@ -153,7 +162,7 @@ interface HeldTranscript {
   plans?: ReadonlyMap<string, ShownPlan>;
 }
 
-function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere, plans: latestPlans }: MessageListProps): React.ReactElement | null {
+function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere, plans: latestPlans, holding, holdLine }: MessageListProps): React.ReactElement | null {
   // A history load writes the transcript an event at a time as its response
   // arrives. Drawn as it went, a finished turn showed its work open above no
   // answer and then folded it away once the answer and its end landed. The
@@ -198,7 +207,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   // the projection cache would answer one reader with another's build.
   const reportCharts = React.useMemo(() => planReportChartCards(projected), [projected]);
   const rootDir = folders?.rootDir;
-  const project = React.useCallback(
+  const projectWhole = React.useCallback(
     (message: MessageRecord) => projectMessageContent(message, isSubagentView, rootDir, reportCharts.omitByMessage.get(message)),
     [isSubagentView, rootDir, reportCharts],
   );
@@ -206,6 +215,38 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     () => visibleProjection(projected, isSubagentView, rootDir, (message) => reportCharts.omitByMessage.get(message)),
     [projected, isSubagentView, rootDir, reportCharts],
   );
+  // Where each turn sits in the list: its message and its replies.
+  const spans = React.useMemo(() => turnSpans(visible), [visible]);
+  // A turn's first reply is drawn without the context notices it opens with,
+  // which go above the turn's message (`contextHead`), so nothing the turn
+  // folds, times or rates counts them. Only the bubble the turn wrote first:
+  // when that one is not drawn, the next one's notices came mid-turn.
+  const firstReplies = React.useMemo(() => {
+    const firsts = new Set([...turnSpans(projected).values()].flatMap(({ replies }) => (replies.length ? [projected[replies[0]].message] : [])));
+    return new Set([...spans.values()].flatMap(({ replies }) => {
+      const first = replies.length ? visible[replies[0]].message : null;
+      return first && firsts.has(first) ? [first] : [];
+    }));
+  }, [projected, spans, visible]);
+  const headOf = React.useCallback(
+    (message: MessageRecord) => contextHead(projectWhole(message), leadingContextNotices(message.contentSegments)),
+    [projectWhole],
+  );
+  const project = React.useCallback(
+    (message: MessageRecord) => (firstReplies.has(message) ? headOf(message)?.rest : undefined) ?? projectWhole(message),
+    [projectWhole, firstReplies, headOf],
+  );
+  // Each head by the entry it is drawn above: the turn's message, or its
+  // first reply when no message opened it (a wake turn).
+  const heads = React.useMemo(() => {
+    const byEntry = new Map<number, NotificationRenderBlock[]>();
+    for (const { opener, replies } of spans.values()) {
+      const first = replies.length ? visible[replies[0]].message : null;
+      const head = first && firstReplies.has(first) ? headOf(first)?.head : undefined;
+      if (head) byEntry.set(opener ?? replies[0], head);
+    }
+    return byEntry;
+  }, [spans, visible, firstReplies, headOf]);
   const turnTails = React.useMemo(() => computeTurnTails(visible), [visible]);
   const replyEnds = React.useMemo(() => computeReplyEnds(visible, turnTails), [visible, turnTails]);
   // The bubbles of the server's turns. A send it never stored is painted
@@ -256,6 +297,17 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     [turned, newestTurn, isLoading, project],
   );
 
+  // The running turn while the thread holds it ahead of any work: a
+  // compaction before its first call, or a send waiting behind one. Its
+  // message has not reached the model yet, so it draws as a steer not yet
+  // taken up does, and the turn draws no row or dots: the hold's own line,
+  // above the message, is all that is happening.
+  const heldTurn = holding && live.has(newestTurn) ? newestTurn : null;
+  // The turns this list drew held, whose row arrives once the hold ends
+  // rather than with the send, and fades in as it would have then.
+  const [wasHeld, setWasHeld] = React.useState<ReadonlySet<number>>(() => new Set());
+  if (heldTurn !== null && !wasHeld.has(heldTurn)) setWasHeld(new Set([...wasHeld, heldTurn]));
+
   const [typing] = React.useState(() => new ProseTyping());
   const { running, ranHere } = useTurnPresentation(live, turned, typing, rememberedRanHere);
   const [collapseClock] = React.useState(() => new CollapseClock());
@@ -274,10 +326,6 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     const ends = new Map<number, number>();
 
     const startedAt = turnStartTimes(visible);
-    const sentHere = new Map<number, boolean>();
-    const rowPos = new Map<number, number>();
-    // Each turn's assistant bubbles, by their place in the visible list.
-    const assistantBubbles = new Map<number, number[]>();
 
     // The turn's end is stamped on its tail bubble, and that bubble is not
     // always painted: a steering continuation that settled empty is dropped
@@ -294,34 +342,12 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     }
 
     for (let i = 0; i < visible.length; i++) {
-      const { message, turnIndex } = visible[i];
-      if (turnIndex === null) continue;
-      const role = message.role as string;
-      if (role === 'user') {
-        // A steering bubble is projected onto the NEXT turn (it lands after the
-        // opener already advanced the counter). Only a turn's own initiator
-        // starts it; of two openers on one count the later is the turn's, and
-        // the row starts over there, as its clock does (`turnStartTimes`).
-        if (!opensTurn(message)) continue;
-        sentHere.set(turnIndex, message.sentHere === true);
-        rowPos.delete(turnIndex);
-        assistantBubbles.delete(turnIndex);
-        continue;
-      }
-      if (role !== 'assistant') continue;
-      if (!rowPos.has(turnIndex)) rowPos.set(turnIndex, i);
-      const bubbles = assistantBubbles.get(turnIndex);
-      if (bubbles) bubbles.push(i);
-      else assistantBubbles.set(turnIndex, [i]);
-    }
-
-    for (let i = 0; i < visible.length; i++) {
       // The turn's end is stamped on its tail bubble, which is also the only
       // bubble that can be streaming once the turn has several.
       if (!turnTails[i]) continue;
       const { message, turnIndex } = visible[i];
       if (turnIndex === null) continue;
-      const bubbles = assistantBubbles.get(turnIndex) ?? [];
+      const { opener = null, replies: bubbles = [] } = spans.get(turnIndex) ?? {};
       const contents = bubbles.map((b) => project(visible[b].message));
       const isLive = running.has(turnIndex);
       // A pinned call outlives the stream that launched it, so the stream-close
@@ -339,7 +365,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       const completedAt = live.has(turnIndex) ? undefined : messageTimeMs(endStamp.completedAt) ?? localEnd;
       if (completedAt !== undefined) ends.set(turnIndex, completedAt);
       const start = startedAt.get(turnIndex);
-      const pos = rowPos.get(turnIndex);
+      const pos = bubbles[0];
       if (start === undefined || pos === undefined) continue;
       // A running turn has its row from the first frame, whatever it has done
       // so far: a row that waited for something foldable arrived above prose
@@ -360,11 +386,11 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
         completedAt,
         isLive,
         foldable,
-        sentHere: sentHere.get(turnIndex) ?? false,
+        sentHere: opener !== null && visible[opener].message.sentHere === true,
       });
     }
     return { turnFolds: folds, turnEnds: ends };
-  }, [visible, turned, turnTails, replyEnds, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
+  }, [visible, spans, turned, turnTails, replyEnds, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
 
   const items = React.useMemo(() => planQuietChecks(visible, quietEnds), [visible, quietEnds]);
   // In a shared workspace's thread, the entries that carry on another
@@ -452,18 +478,32 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
             ? <WakeupRow key={message.id as string} wakeup={wakeup} />
             : <NotificationDivider key={message.id as string} message={message} />;
         }
+        const inHeldTurn = turnIndex !== null && turnIndex === heldTurn;
+        // What sits above the turn's message: a compaction before it, settled
+        // or still running.
+        const head = heads.get(i);
+        const holdAbove = inHeldTurn && spans.get(turnIndex)?.opener === i;
+        const above = (
+          <>
+            {head?.map((block) => <React.Fragment key={block.key}>{renderNotification(block.segment)}</React.Fragment>)}
+            {holdAbove && holdLine}
+          </>
+        );
         if (isReportRow(message)) {
           const prev = visible[i - 1]?.message;
+          // A fragment, not a wrapper: `together` closes the list's own gap.
           return (
-            <ReportRow
-              key={message.id as string}
-              id={message.id as string}
-              provenance={message.provenance as ReportProvenance}
-              together={!!prev && isReportRow(prev)}
-              readOnly={readOnly}
-              dispatcherContext={dispatcherContext}
-              chartCards={reportCharts.byReport.get(message.id as string)}
-            />
+            <React.Fragment key={message.id as string}>
+              {above}
+              <ReportRow
+                id={message.id as string}
+                provenance={message.provenance as ReportProvenance}
+                together={!head && !holdAbove && !!prev && isReportRow(prev)}
+                readOnly={readOnly}
+                dispatcherContext={dispatcherContext}
+                chartCards={reportCharts.byReport.get(message.id as string)}
+              />
+            </React.Fragment>
           );
         }
         // A bubble only ever folds when its turn shows the row that unfolds it:
@@ -507,6 +547,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           isMobile,
           dispatcherContext,
           continuesSender: continuing.has(i),
+          held: inHeldTurn,
         };
         const plan = plans?.get(message.id as string);
         // Every bubble gets the wrapper from its first paint: a turn's row comes
@@ -518,12 +559,14 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
         // list's rhythm, as a group chat stacks them.
         return (
           <div key={message.id as string} style={continuing.has(i) ? RUN_GAP : undefined}>
-            {info && turnIndex !== null && info.rowPos === i && (
+            {above}
+            {info && turnIndex !== null && info.rowPos === i && !inHeldTurn && (
               <TurnFold
                 state={fold}
                 startedAt={info.startedAt}
                 completedAt={info.completedAt}
                 sentHere={info.sentHere}
+                afterHold={wasHeld.has(turnIndex)}
                 turnIndex={turnIndex}
                 onToggle={toggleTurn}
               />
