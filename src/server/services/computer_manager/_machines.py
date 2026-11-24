@@ -77,6 +77,7 @@ from src.server.services.workspace_status_pubsub import (
 )
 
 from src.server.services.computer_manager._providers import host_outage_of
+from src.server.services.computer_manager._sync_turn import sync_turn
 from src.server.services.computer_manager._types import (
     _MACHINE_DECISION_LOCK_TIMEOUT_MS,
     ComputerBinding,
@@ -710,16 +711,19 @@ class MachineLifecycleMixin:
             if self.config.skills.enabled
             else None
         )
-        user_skill_params = await sandbox_skill_sync_params(user_id)
-        result = await sandbox.sync_sandbox_assets(
-            skill_dirs=skill_dirs,
-            reusing_sandbox=reusing_sandbox,
-            workspace_dir_names=await get_workspace_dir_names_for_computer(computer_id),
-            root_owner_dir_name=await self._root_owner_folder(
-                computer_id, origin_workspace_id
-            ),
-            **user_skill_params,
-        )
+        async with sync_turn(computer_id):
+            user_skill_params = await sandbox_skill_sync_params(user_id)
+            result = await sandbox.sync_sandbox_assets(
+                skill_dirs=skill_dirs,
+                reusing_sandbox=reusing_sandbox,
+                workspace_dir_names=await get_workspace_dir_names_for_computer(
+                    computer_id
+                ),
+                root_owner_dir_name=await self._root_owner_folder(
+                    computer_id, origin_workspace_id
+                ),
+                **user_skill_params,
+            )
         await self._stamp_layout_version(computer_id, result)
 
     async def _build_machine_session(

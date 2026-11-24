@@ -65,6 +65,7 @@ from src.server.services.computer_errors import (
     Retirement,
 )
 from src.server.services.computer_manager import ComputerManager
+from src.server.services.computer_manager._sync_turn import wait_for_sync
 from src.server.services.account import refuse_machine_use
 from src.server.services.computer_manager._types import (
     MachineTarget,
@@ -536,6 +537,8 @@ class WorkspaceManager(ComputerManager):
             # And an asset catch-up a turn that has ended left running, which
             # writes the overlay and the skill links into the same folder.
             await self._stop_catch_ups(computer_id, workspace_id=workspace_id)
+            # One this worker cannot cancel is given a short while to end.
+            await wait_for_sync(computer_id)
 
             try:
                 # The project's last mirror sync, before anything on the

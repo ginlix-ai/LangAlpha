@@ -39,6 +39,7 @@ from src.server.database.workspace import (
     SandboxIdentityLostError,
     stamp_computer_sandbox_config,
     update_workspace_activity,
+    workspace_status,
 )
 from src.server.database.workspace_folders import (
     WorkspaceFolderMoving,
@@ -63,8 +64,10 @@ from src.server.services.workspace_layout import (
 from src.server.services.user_skills import sandbox_skill_sync_params
 
 from src.server.services.computer_manager._attach_only import refuse_start
+from src.server.services.computer_manager._sync_turn import sync_turn
 from src.server.services.computer_manager._types import (
     ComputerBinding,
+    WorkspaceNotFound,
     _PROJECTS_ATTACHED_CAP,
     _SEEDED_AGENT_MD,
 )
@@ -293,6 +296,12 @@ class ProvisioningMixin:
                 raise LayoutMigrationError("Cannot identify sibling folders safely") from exc
             view = self._machine(binding.computer_id).tool_views.get(workspace_id)
             async with self._held_workspace_folder(workspace_id) as dir_name:
+                # Deleted while this sync waited its turn. Read under the
+                # hold its folder's removal needs: cleared, the row names no
+                # folder, and the computer's root would stand in for it
+                # under a tool claim nothing retracts.
+                if await workspace_status(workspace_id) == "deleted":
+                    raise WorkspaceNotFound(workspace_id)
                 with sandbox_assets.asset_sync_context(
                     mcp_registry=view.mcp_registry if view is not None else None,
                     mcp_servers=view.mcp_servers if view is not None else None,
@@ -341,7 +350,11 @@ class ProvisioningMixin:
         assets: Any = None
         try:
             try:
-                assets = await _sync_assets()
+                # Around all of it, so what the sync is given (skills, the
+                # tool view, the folder) is read after a wait for another
+                # worker's sync, and its folder is not held through one.
+                async with sync_turn(binding.computer_id):
+                    assets = await _sync_assets()
             except LayoutMigrationError:
                 raise
             except WorkspaceFolderMoving:

@@ -225,3 +225,6 @@ def _known_project_folders(monkeypatch):
         f"{_PROVISIONING}.get_workspace_dir_names_for_computer",
         AsyncMock(return_value=tuple(FOLDERS.values())),
     )
+    monkeypatch.setattr(
+        f"{_PROVISIONING}.workspace_status", AsyncMock(return_value="running")
+    )

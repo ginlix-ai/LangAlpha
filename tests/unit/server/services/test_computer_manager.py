@@ -3088,6 +3088,47 @@ class TestBareMachine(_Base):
         assert backup.await_args_list[0].kwargs["expected_sandbox_id"] == "sandbox-abc"
 
     @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.LocalRunExecutor")
+    @patch(f"{_MACHINES}.update_computer_status")
+    @patch(f"{_MACHINES}.get_computer")
+    @patch(f"{_LIFECYCLE}.get_computer")
+    async def test_a_stop_waits_for_syncs_under_its_heartbeat(
+        self, mock_lifecycle_get, mock_machines_get, mock_status, mock_executor
+    ):
+        """An acquire waiting on this stop reverts a claim it finds with no
+        heartbeat, and the wait for a sync can outlast its patience."""
+        from contextlib import asynccontextmanager
+
+        manager = _make_manager()
+        computer = _make_computer(status="running", provider_ref="sandbox-abc")
+        mock_lifecycle_get.return_value = computer
+        mock_machines_get.return_value = computer
+        mock_status.return_value = {**computer, "status": "stopping"}
+        mock_executor.get_instance.return_value = MagicMock(
+            has_active_tasks_for_computer=AsyncMock(return_value=False)
+        )
+        events: list[str] = []
+
+        @asynccontextmanager
+        async def heartbeat(_computer_id):
+            events.append("heartbeat")
+            yield
+            events.append("heartbeat ended")
+
+        manager._stop_catch_ups = AsyncMock(side_effect=lambda *_: events.append("catch-ups"))
+        manager._finish_claimed_stop = AsyncMock(side_effect=lambda *_, **__: events.append("stop"))
+        with (
+            patch(f"{_LIFECYCLE}.computer_stop_heartbeat", heartbeat),
+            patch(
+                f"{_LIFECYCLE}.wait_for_sync",
+                AsyncMock(side_effect=lambda *_: events.append("syncs")),
+            ),
+        ):
+            await manager._stop_machine("comp-1")
+
+        assert events == ["heartbeat", "catch-ups", "syncs", "stop", "heartbeat ended"]
+
+    @pytest.mark.asyncio
     @patch(f"{_MACHINE_BACKUP}.get_live_workspace_ids_for_computer")
     @patch(f"{_LIFECYCLE}.LocalRunExecutor")
     @patch(f"{_MACHINES}.update_computer_status")

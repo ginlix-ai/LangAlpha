@@ -8548,6 +8548,9 @@ class TestGeneratedContentGoesToTheHeldFolder:
             AsyncMock(return_value=("Macro",)),
         ))
         stack.enter_context(patch(f"{_PROVISIONING}.get_computer", AsyncMock(return_value=None)))
+        return stack.enter_context(patch(
+            f"{_PROVISIONING}.workspace_status", AsyncMock(return_value="running")
+        ))
 
     @pytest.mark.asyncio
     async def test_the_asset_sync_builds_the_overlay_in_the_folder_read_under_the_hold(self):
@@ -8566,6 +8569,33 @@ class TestGeneratedContentGoesToTheHeldFolder:
 
         assert result is not None
         assert events == ["hold", "read", "sync Macro (owner Macro)", "release"]
+
+    @pytest.mark.asyncio
+    async def test_the_asset_sync_takes_the_computers_turn_before_its_folder(self):
+        """A wait for another worker's sync must not keep a settle off this
+        workspace's folder, and what the sync is handed is read after it."""
+        from contextlib import asynccontextmanager
+
+        events = []
+        manager, sandbox = self._asset_sync(events)
+
+        @asynccontextmanager
+        async def turn(_computer_id):
+            events.append("turn")
+            yield
+            events.append("turn given back")
+
+        with ExitStack() as stack:
+            self._asset_sync_reads(stack)
+            self._folder_patches(stack, events, folder="Macro")
+            stack.enter_context(patch(f"{_PROVISIONING}.sync_turn", turn))
+            await manager._sync_project_assets(
+                _binding("ws-1", dir_name="Research"), "user-1", sandbox
+            )
+
+        assert events == [
+            "turn", "hold", "read", "sync Macro (owner Macro)", "release", "turn given back",
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("moving", ["staged", "held by a settle"])
@@ -8589,6 +8619,30 @@ class TestGeneratedContentGoesToTheHeldFolder:
         assert result is None
         sandbox.sync_sandbox_assets.assert_not_awaited()
         manager._stamp_layout_version.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("folder", ["Macro", None])
+    async def test_a_workspace_deleted_while_its_sync_waited_gets_none(self, folder):
+        """A sync can wait minutes for another worker's, and a delete does not
+        wait for it. Its folder cleared, the row names none, and the sync
+        would build the workspace's overlay at the computer's root under a
+        claim no folder's removal retracts. A folder its owner kept gets no
+        sync either."""
+        events = []
+        manager, sandbox = self._asset_sync(events)
+
+        with ExitStack() as stack:
+            status = self._asset_sync_reads(stack)
+            status.side_effect = lambda _id: events.append("status") or "deleted"
+            self._folder_patches(stack, events, folder=folder)
+            result = await manager._sync_project_assets(
+                _binding("ws-1", dir_name="Research"), "user-1", sandbox
+            )
+
+        assert result is None
+        sandbox.sync_sandbox_assets.assert_not_awaited()
+        # Asked under the hold, which the folder's removal needs.
+        assert events == ["hold", "read", "status", "release"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("folder", ["Macro", None])

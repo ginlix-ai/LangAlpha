@@ -52,6 +52,7 @@ from src.server.database.workspace import (
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_manager._attach_only import attaching_only, refuse_start
 from src.server.services.computer_manager._providers import host_outage_of
+from src.server.services.computer_manager._sync_turn import wait_for_sync
 from src.server.services.account import refuse_machine_use
 from src.server.services.computer_manager._types import ComputerBinding
 from src.server.services.computer_usage.events import note_stop_phases
@@ -1779,11 +1780,14 @@ class SessionLifecycleMixin:
             # Cancel discovery before teardown to prevent dead-sandbox probes and
             # orphan schemas.
             self._cancel_mcp_discovery(computer_id)
-            # And an asset sync still running beside a turn that has ended,
-            # so the backup reads a disk nothing here is writing.
-            await self._stop_catch_ups(computer_id)
-
             async with computer_stop_heartbeat(computer_id):
+                # And an asset sync still running beside a turn that has
+                # ended, so the backup reads a disk nothing here is writing.
+                # One this worker cannot cancel is given a short while to
+                # end. Under the heartbeat: an acquire waiting on this stop
+                # takes a claim with none for a stuck one and reverts it.
+                await self._stop_catch_ups(computer_id)
+                await wait_for_sync(computer_id)
                 return await self._finish_claimed_stop(
                     binding,
                     workspace_id=workspace_id,

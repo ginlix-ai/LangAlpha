@@ -12,7 +12,8 @@ One file of the ComputerManager split; see the package __init__.
 
 The gate and the task are this worker's execution context. Truth stays on the
 computer (the asset manifest, the union ledger), so another worker's acquire
-compares for itself, as does this one's after a restart. A sync this worker
+compares for itself, as does this one's after a restart; its sync waits for
+one running here to end first (``_sync_turn.py``). A sync this worker
 took on and did not see finish stays on its books (``MachineState.sync_owed``)
 and the next acquire that syncs runs it again.
 """
