@@ -215,7 +215,7 @@ edition's output directory and refuses a parent holding several.
 | `src/outage.js` | what replaces a blank window when the network does not answer |
 | `src/updater.js` | auto-update, gated on a feed actually existing |
 | `src/probe.js` | "is anything answering", shared by the picker and the outage page |
-| `src/store.js` | a small JSON file: `serverUrl` (the user's own server, never the stack's origin), `stackMode`, `stackPort`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
+| `src/store.js` | a small JSON file: `serverUrl` (the user's own server, never the stack's origin), `stackMode`, `stackPort`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `updateChannel`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
 | `src/stack/` | the bundled stack's supervisor: `plan.js` decides, **pure**, like `policy`; `children.js` runs a process with its guard; `logs.js` rotates; `dataFolder.js` keeps the data folder, its snapshot and its restore; `supervisor.js` is the service table, the order and the restarts, with no Electron in it; `index.js` binds it to this install. Left out of the hosted package |
 | `setup/` | the OSS first-run page: the choice, the server form, the stack's progress and its failure, in its own window with its own preload |
 | `outage/` | the outage page, a local file so it renders when nothing else can |
@@ -798,11 +798,35 @@ without the other is a silent no-op.
 A bundled OSS build updates like any other, through `DESKTOP_UPDATE_FEED`, with the zip
 at about the size of the installer and migrations run by the launch that follows.
 
-The workflow in this repository (`.github/workflows/desktop-release.yml`) builds
-and publishes the OSS edition. What it signs, notarizes and publishes to comes from
-its `desktop-release` environment, whose secrets and variables the workflow's header
-lists, so the environment's branch rule and required review stand between any other
-workflow and those credentials. Each part is optional: without a certificate the
+**The OSS feed carries two channels, stable (`latest*.yml`) and nightly (`nightly*.yml`).**
+A nightly is `<stable patch + 1>-nightly.<UTC yyyymmddHHMM>`, above the release it follows
+and below the next. Version order has to be commit order too, so a nightly builds only a
+commit at or past the last stable release and the last nightly, and a stable release
+publishes only from one at or past the nightly. An install follows the channel its running version came from until
+the person picks the other under Update Channel in the menu (`updater.pickChannel`,
+stored as `updateChannel`). **No channel move ever downgrades**: electron-updater's
+`channel` setter turns `allowDowngrade` on, and `applyChannel` turns it back off, because
+an older backend cannot run on a database a newer one has migrated. A nightly moved to
+stable stays until a stable release passes it. A pick holds back an update the other
+channel downloaded, except on a Mac: electron-updater hands a download to Squirrel.Mac
+as it lands, and nothing takes that back, so the pick says that update still installs on
+quit. A release candidate (`-rc.N`) follows its own `rc*.yml` until someone picks a channel.
+
+Two workflows in this repository publish the OSS edition, both building through
+`.github/workflows/desktop-build.yml`: `desktop-release.yml` a versioned release, by
+hand, and `desktop-nightly.yml` each night's build of the newest main commit whose tests
+passed. What they sign, notarize and publish to comes from the `desktop-release` and
+`desktop-nightly` environments, whose secrets and variables the workflows' headers list,
+so each environment's branch rule (and, for a release, its required review) stands
+between any other workflow and those credentials. Both environments set
+`DESKTOP_UPDATE_FEED` to the same address: picking a channel changes which manifest an
+install reads, never where it reads it, so a nightly on a feed of its own is one no
+install can move to or from. The nightly's commit is the `desktop-oss-nightly` tag, moved
+before the feed's manifests so it never trails them and never moved back; a stable release
+likewise tags its commit before its manifests go up, while the release is still a draft. Both workflows read these tags
+through `scripts/nightly-refs.sh`, which stops them when the nightly tag is gone but the feed
+still serves a nightly. Their feed steps are shared scripts,
+`scripts/feed-*`. Each part is optional: without a certificate the
 builds are unsigned, without a feed they never update themselves, and the notes it
 writes say which. That is what keeps it useful to a fork, which sets whichever it has.
 The hosted edition is released separately from this same source, so a change here

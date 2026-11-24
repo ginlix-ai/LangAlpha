@@ -744,6 +744,9 @@ function installMenu() {
       else openPlatformWindow(platform)
     },
     onCheckForUpdates: (win) => updater.checkManually(win || focusedOrMain()),
+    updateChannel: updater.canPickChannel()
+      ? { current: updater.currentChannel(), onPick: (name, win) => updater.pickChannel(name, win || focusedOrMain()) }
+      : null,
     onReload: reloadWindow,
     onBack: (win) => {
       const history = win.webContents.navigationHistory
