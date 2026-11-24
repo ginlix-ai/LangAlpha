@@ -5,5 +5,6 @@
   "loginPath": "/login",
   "updateFeed": null,
   "updateMode": "auto",
-  "downloadPage": null
+  "downloadPage": null,
+  "releasesPage": null
 }

@@ -186,4 +186,10 @@ module.exports = Object.freeze({
   updateMode: merged.updateMode,
   /** Where a notify-mode build sends someone to collect the new version. */
   downloadPage: normalizeUrl(merged.downloadPage),
+  /**
+   * The releases page of the repository a build came from, whose tags carry
+   * each version's notes; the update button links the one it offers. Null
+   * shows no link.
+   */
+  releasesPage: normalizeUrl(merged.releasesPage),
 })

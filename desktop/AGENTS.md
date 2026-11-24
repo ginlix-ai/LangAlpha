@@ -213,7 +213,7 @@ edition's output directory and refuses a parent holding several.
 | `src/downloads.js` | gives a download a visible ending, since a frameless window has no download shelf |
 | `src/notify.js` | the dock bounce that says a file landed, and posting thread notifications: whether to, and where a click goes |
 | `src/outage.js` | what replaces a blank window when the network does not answer |
-| `src/updater.js` | auto-update, gated on a feed actually existing |
+| `src/updater.js` | auto-update, gated on a feed actually existing; the update state the page's button shows, and the channel |
 | `src/probe.js` | "is anything answering", shared by the picker and the outage page |
 | `src/store.js` | a small JSON file: `serverUrl` (the user's own server, never the stack's origin), `stackMode`, `stackPort`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `updateChannel`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
 | `src/stack/` | the bundled stack's supervisor: `plan.js` decides, **pure**, like `policy`; `children.js` runs a process with its guard; `logs.js` rotates; `dataFolder.js` keeps the data folder, its snapshot and its restore; `supervisor.js` is the service table, the order and the restarts, with no Electron in it; `index.js` binds it to this install. Left out of the hosted package |
@@ -806,6 +806,19 @@ without the other is a silent no-op.
 
 A bundled OSS build updates like any other, through `DESKTOP_UPDATE_FEED`, with the zip
 at about the size of the installer and migrations run by the launch that follows.
+
+**An update is offered in the page, not in a dialog.** Once one has downloaded (or, in
+notify mode, been found), `updater.js` sends `shell:update-state` to every window
+showing the app, and the sidebar shows Update ready above the account (`AppUpdate.tsx`
+in the web app). Its panel says what a restart does before doing it: with the bundled
+stack (`stopsServer`) the running turns, background tasks and commands on this computer
+that it pauses, read from `GET /api/v1/users/me/running-work`, and against a server
+elsewhere that the turns keep going. A page asking `shell:get-update-state` is what
+marks its window as showing the button, so the native prompt still appears where the
+loaded web app predates it. The panel links the version's release when the build was
+given a releases page (`DESKTOP_RELEASES_PAGE`, read as `releasesPage`): the tag
+`desktop-oss-v<version>`, or `desktop-oss-nightly` for a nightly. A turn the restart
+stops is resumed by the next launch, as after any graceful server restart (`restart_drain.py`).
 
 **The OSS feed carries two channels, stable (`latest*.yml`) and nightly (`nightly*.yml`).**
 A nightly is `<stable patch + 1>-nightly.<UTC yyyymmddHHMM>`, above the release it follows

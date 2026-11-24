@@ -213,6 +213,9 @@ jobs:
           # a signed app, so that build would download updates it cannot install
           # and could never be updated into a signed one.
           DESKTOP_UPDATE_FEED: ${{ (runner.os != 'macOS' || secrets.MAC_CSC_LINK != '') && vars.DESKTOP_UPDATE_FEED || '' }}
+          # Where the update button links a version's notes: this repository's
+          # releases, whose tags the release and nightly workflows publish.
+          DESKTOP_RELEASES_PAGE: ${{ github.server_url }}/${{ github.repository }}/releases
           # electron-builder picks these up automatically. Absent, it produces an
           # unsigned build and says so.
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}

@@ -251,6 +251,23 @@ contextBridge.exposeInMainWorld('langalphaDesktop', {
 
   /** The settings, each time they change from anywhere. Answers the way to stop listening. */
   onDesktopSettings: (callback) => subscribe('shell:desktop-settings', callback),
+
+  /**
+   * The app's own update: `status` is `idle`, `available` (found, to download
+   * from `mode: 'notify'`'s page) or `ready` (downloaded, installed by a
+   * restart), with what a restart stops (`stopsServer`). Asking also tells the
+   * shell this page shows it, so the shell holds back its own prompt.
+   */
+  getUpdateState: () => ipcRenderer.invoke('shell:get-update-state'),
+
+  /** Restart into the ready update, or open the download page for an available one. */
+  installUpdate: () => ipcRenderer.invoke('shell:install-update'),
+
+  /** The update state, each time it changes. Answers the way to stop listening. */
+  onUpdateState: (callback) => subscribe('shell:update-state', callback),
+
+  /** This page no longer shows the update, so the shell offers it again itself. */
+  hideUpdates: () => ipcRenderer.invoke('shell:hide-updates'),
 })
 
 // The outage page is a local file loaded into this same window, so it shares

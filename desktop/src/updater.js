@@ -2,8 +2,9 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
-const { app, dialog, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const config = require('./config')
+const origins = require('./origins')
 const store = require('./store')
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,9 @@ let checking = false
 // same answer, so a check after a channel pick waits it out to ask the new one.
 let background = null
 let timer = null
+// What `init` was given: the stop a pre-quit install waits for, and whether a
+// restart takes this app's own server down with it.
+let hooks = { beforeInstall: () => null, stopsServer: () => false }
 
 const notifyOnly = config.updateMode === 'notify'
 
@@ -107,6 +111,100 @@ function applyChannel(updaterInstance) {
   // The setter turns downgrades on, and a downgrade is the one move a bundled
   // stack's data cannot survive.
   updaterInstance.allowDowngrade = false
+}
+
+// ---------------------------------------------------------------------------
+// The page's update button. Once an update is ready to install (auto) or found
+// (notify), every window showing the app hears it on `shell:update-state`, and
+// the sidebar offers it with what a restart will do. A window whose page has
+// asked for the state shows that button, so the native prompt is kept for a
+// page that never asks (a web app from before the button) and is never shown on
+// top of it.
+// ---------------------------------------------------------------------------
+
+/** `idle`, `available` (notify: found, not downloaded) or `ready` (auto: downloaded). */
+let update = { status: 'idle', version: null }
+// Each window whose page shows the button, with what forgets it at the next document.
+const showing = new WeakMap()
+
+/** The release page of `version`, from the releases page a build was given; null without one. */
+function notesUrl(version) {
+  if (!config.releasesPage || !version) return null
+  // The tags desktop-release.yml and desktop-nightly.yml publish under.
+  const tag = versionChannel(version) === 'nightly' ? 'desktop-oss-nightly' : `desktop-oss-v${version}`
+  return `${config.releasesPage.replace(/\/+$/, '')}/tag/${encodeURIComponent(tag)}`
+}
+
+function updateView() {
+  return {
+    status: update.status,
+    version: update.version,
+    currentVersion: app.getVersion(),
+    channel: canPickChannel() ? currentChannel() : 'stable',
+    // Notify mode's button sends the person to the download page instead.
+    mode: notifyOnly ? 'notify' : 'auto',
+    notesUrl: notesUrl(update.version),
+    stopsServer: Boolean(hooks.stopsServer()),
+  }
+}
+
+function appWindows() {
+  return BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed() && origins.isApp(win.webContents.getURL()))
+}
+
+function setUpdate(next) {
+  update = next
+  const view = updateView()
+  for (const win of appWindows()) win.webContents.send('shell:update-state', view)
+}
+
+/** Whether a window showing the app shows the update button, which a native prompt would only repeat. */
+function pageShowsUpdates() {
+  return appWindows().some((win) => showing.has(win))
+}
+
+function hideUpdates(win) {
+  const forget = showing.get(win)
+  if (!forget) return
+  showing.delete(win)
+  win.webContents.removeListener('did-navigate', forget)
+}
+
+/**
+ * The button's click: restart into a downloaded update, or in notify mode open
+ * the download page. Anything else is a stale click and does nothing.
+ */
+async function installFromPage() {
+  if (update.status === 'ready' && !notifyOnly) {
+    const updaterInstance = load()
+    if (updaterInstance) await restartToInstall(updaterInstance, hooks.beforeInstall)
+  } else if (update.status === 'available' && notifyOnly) {
+    await shell.openExternal(config.downloadPage)
+    store.set('updateNotifiedVersion', update.version)
+  }
+}
+
+/** `admit(event)` answers the window asking if its page is the app's own. */
+function registerIpc(admit) {
+  ipcMain.handle('shell:get-update-state', (event) => {
+    const win = admit(event)
+    if (!win) return null
+    // Each document asks for itself as it boots, so a new one, which may be a
+    // web app without the button, starts out not showing it.
+    if (!showing.has(win)) {
+      const forget = () => hideUpdates(win)
+      showing.set(win, forget)
+      win.webContents.once('did-navigate', forget)
+    }
+    return updateView()
+  })
+  // The page took the button down without a new document, as when a narrow
+  // window drops the sidebar, so the native prompt is the person's again.
+  ipcMain.handle('shell:hide-updates', (event) => {
+    const win = admit(event)
+    if (win) hideUpdates(win)
+  })
+  ipcMain.handle('shell:install-update', (event) => (admit(event) ? installFromPage() : null))
 }
 
 /** The packaged feed descriptor, absent in a dev run and in an unpublished build. */
@@ -206,7 +304,8 @@ async function restartToInstall(updaterInstance, beforeInstall, platform = proce
  * `beforeInstall()` answers a promise to wait for before an update that installs
  * ahead of the quit replaces the app, or null.
  */
-function init(getWindow, { beforeInstall = () => null } = {}) {
+function init(getWindow, { beforeInstall = () => null, stopsServer = () => false } = {}) {
+  hooks = { beforeInstall, stopsServer }
   if (!isConfigured()) {
     console.log(`[updater] no feed for this build (packaged=${app.isPackaged}); updates are manual`)
     return
@@ -224,6 +323,8 @@ function init(getWindow, { beforeInstall = () => null } = {}) {
       // on purpose overrides having been told already. Without this the user who
       // clicked "Check for Updates" was shown the same dialog twice.
       if (checking) return
+      setUpdate({ status: 'available', version: info.version })
+      if (pageShowsUpdates()) return
       if (store.get('updateNotifiedVersion') === info.version) return
       // Recorded only once the dialog has actually been on screen. Marking it
       // first meant a check that landed with no window open — an OSS first run
@@ -248,6 +349,8 @@ function init(getWindow, { beforeInstall = () => null } = {}) {
       updaterInstance.autoInstallOnAppQuit = !left
       if (left) return
       if (process.platform === 'darwin') staged = info.version
+      setUpdate({ status: 'ready', version: info.version })
+      if (pageShowsUpdates()) return
       const win = getWindow()
       if (!win || win.isDestroyed()) return
       dialog.showMessageBox(win, {
@@ -258,7 +361,7 @@ function init(getWindow, { beforeInstall = () => null } = {}) {
         message: `LangAlpha ${info.version} is ready to install.`,
         detail: 'It will be applied the next time you quit, or you can restart now.',
       }).then(async ({ response }) => {
-        if (response === 1) await restartToInstall(updaterInstance, beforeInstall)
+        if (response === 1) await restartToInstall(updaterInstance, hooks.beforeInstall)
       }).catch((err) => console.error(`[updater] update prompt failed: ${err.message}`))
     })
   }
@@ -331,18 +434,31 @@ async function checkManually(win) {
         ...(ahead ? { detail: 'It moves to the next stable release once one newer than it is out. An older version cannot run on the data this one has upgraded.' } : {}),
       })
     } else if (notifyOnly) {
+      setUpdate({ status: 'available', version })
       // Announced first, recorded second, for the reason the background handler
       // gives above: the window can be gone by the time the check resolves, and
       // `announce` then shows nothing. Recording first would retire the notice
       // for a version the user never saw, and the timer would never raise it
       // again.
       if (await announce(version, win)) store.set('updateNotifiedVersion', version)
+    } else if (update.status === 'ready' && update.version === version) {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'info',
+        buttons: ['Later', 'Restart Now'],
+        defaultId: 0,
+        title: 'Updates',
+        message: `LangAlpha ${version} is ready to install.`,
+        detail: 'It will be applied the next time you quit, or you can restart now.',
+      })
+      if (response === 1) await restartToInstall(updaterInstance, hooks.beforeInstall)
     } else {
       dialog.showMessageBox(win, {
         type: 'info',
         title: 'Updates',
         message: `LangAlpha ${version} is downloading.`,
-        detail: 'You will be asked once it is ready to install.',
+        detail: pageShowsUpdates()
+          ? 'Update ready shows in the sidebar once it has downloaded.'
+          : 'You will be asked once it is ready to install.',
       })
     }
   } catch (err) {
@@ -388,6 +504,8 @@ function pickChannel(name, win) {
       detail: `It downloaded before you picked ${label}. Updates after it come from ${label}.`,
     })
   }
+  // Whatever the other channel found is no longer what a restart installs.
+  setUpdate({ status: 'idle', version: null })
   if (checking) {
     recheck = { win }
     return
@@ -396,6 +514,6 @@ function pickChannel(name, win) {
 }
 
 module.exports = {
-  init, stop, checkManually, isConfigured, restartToInstall,
+  init, stop, checkManually, isConfigured, restartToInstall, registerIpc,
   canPickChannel, currentChannel, pickChannel, versionChannel,
 }
