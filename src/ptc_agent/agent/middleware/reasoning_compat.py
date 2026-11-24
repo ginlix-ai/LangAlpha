@@ -12,9 +12,11 @@ next turn without a migration.
 
 Reasoning is not all a provider binds to itself. A Responses ``function_call``
 also carries the id its server gave the item, which another server rejects, so
-gate A drops those too. And one API requires the reverse of stripping: DeepSeek
-refuses a tool-calling turn with no thinking block, so a turn another model
-wrote, once stripped, gets an empty one on the way to it.
+gate A drops those too, and a tool the provider ran itself inside a reply goes
+to any other as text, since no other server knows the block. And one API
+requires the reverse of stripping: DeepSeek refuses a tool-calling turn with no
+thinking block, so a turn another model wrote, once stripped, gets an empty one
+on the way to it.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from src.llms.reasoning_lineage import (
     lineage_for_route,
     tool_turns_need_reasoning,
 )
+from src.llms.provider_tools import inline_provider_tools
 from src.llms.reasoning_payload import (
     drop_if_empty,
     is_unfinished_reply,
@@ -67,6 +70,7 @@ class SanitizeStats:
     msgs_stripped: int = 0
     msgs_removed: int = 0
     msgs_ids_dropped: int = 0
+    msgs_tools_inlined: int = 0
     msgs_padded: int = 0
     blocks_repaired: int = 0
     blocks_dropped: int = 0
@@ -103,7 +107,8 @@ def message_lineage(msg: AIMessage) -> str:
 
 
 def _origin_gate(msg: AIMessage, stats: SanitizeStats) -> AIMessage | None:
-    """Gate A: drop the reasoning and item ids another lineage minted.
+    """Gate A: drop the reasoning and item ids another lineage minted, and
+    turn the tools its server ran into text.
 
     The caller establishes that the lineages differ, or that the message is a
     reply cut off mid-stream; unattributable history resolves to
@@ -117,7 +122,10 @@ def _origin_gate(msg: AIMessage, stats: SanitizeStats) -> AIMessage | None:
     unlinked = strip_item_ids(stripped)
     if unlinked is not stripped:
         stats.msgs_ids_dropped += 1
-    return unlinked
+    inlined = inline_provider_tools(unlinked)
+    if inlined is not unlinked:
+        stats.msgs_tools_inlined += 1
+    return inlined
 
 
 def _structure_gate(
