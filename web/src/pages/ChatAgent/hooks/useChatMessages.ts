@@ -18,6 +18,7 @@ import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
 import { readWorkflowStatus } from '../utils/primedStatus';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
+import { subscribeThreadCompactions } from '@/lib/threadLifecycle/feedClient';
 import { ThreadMuxSlot } from '../session/stream/threadStreamMux';
 import type { NextSummary, WorkflowStatusResponse } from '../utils/api';
 import type { BrowserUse } from '../session/stream/browserUse';
@@ -56,7 +57,7 @@ import type { ComposerDraft } from '@/components/ui/chat-input.types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
 import { createRequestKeyTracker, sendFingerprint, type SendOutcome } from './utils/requestKey';
 import { commentSendOf, openerMatchText, readArtifactCommentsShown } from '../components/artifactComments/artifactCommentSend';
-import { withServerTotals, withoutServerTotals } from '../session/tokenUsage';
+import { afterCompaction, withServerTotals, withoutServerTotals } from '../session/tokenUsage';
 import { readSender } from '../session/turnSender';
 import { BUSY_REFUSAL_KEYS, admissionRefusalWords, createForkRefusalRecovery, forkRefusalMessage, isOthersTurnRefusal, isRecoverableRetryRefusal, isStaleForkRefusal, type BusyCode, type ForkCut } from './utils/forkRefusal';
 import { createEditDraftStore, sameDraftMessage, type EditDraft } from './utils/editDrafts';
@@ -3096,6 +3097,22 @@ export function useChatMessages(
     [setMessages],
   );
 
+  /**
+   * A compaction that landed between turns, drawn as one: its divider, no
+   * summary left due but the one it leaves (an offload may), and the window
+   * counted again at the next call (`afterCompaction`). The server stored the
+   * divider with the compaction, so a reload replaces it rather than drawing
+   * its twin (`isHistory`).
+   */
+  const landCompaction = useCallback(
+    ({ notice, detail, nextSummary = null }: { notice: string; detail?: string; nextSummary?: NextSummary | null }) => {
+      setMessages((prev) => appendMessage(prev, { ...createNotificationMessage(notice, 'info', detail), isHistory: true }));
+      setNextSummary(nextSummary);
+      setTokenUsage(afterCompaction);
+    },
+    [setMessages],
+  );
+
   // What a request the view made of thread `tid` (/compact, /offload) writes
   // once it settles, which lands only while that thread is still on screen:
   // the view may have moved to another meanwhile.
@@ -3104,8 +3121,18 @@ export function useChatMessages(
     return {
       setNextSummary: (next: NextSummary | null) => { if (onScreen()) setNextSummary(next); },
       insertNotification: (...args: Parameters<typeof insertNotification>) => { if (onScreen()) insertNotification(...args); },
+      landCompaction: (...args: Parameters<typeof landCompaction>) => { if (onScreen()) landCompaction(...args); },
     };
-  }, [insertNotification]);
+  }, [insertNotification, landCompaction]);
+
+  // A summary written while the thread sat idle, which no stream carries,
+  // lands as a manual /compact's answer does. A view mid-turn or mid-load
+  // passes it over: the load reads it.
+  useEffect(() => subscribeThreadCompactions(({ threadId, originalMessageCount, summaryText }) => {
+    if (threadId !== threadIdRef.current) return;
+    if (isStreamingRef.current || historyLoadingRef.current || isLoadingRef.current) return;
+    landCompaction({ notice: t('chat.compactedNotification', { from: originalMessageCount }), detail: summaryText || undefined });
+  }), [landCompaction, t]);
 
   // =====================================================================
   // Edit / Regenerate / Retry handlers

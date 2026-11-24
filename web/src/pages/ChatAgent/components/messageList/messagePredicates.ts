@@ -62,3 +62,19 @@ export function isReportRow(message: MessageLike & { provenance?: unknown }): bo
 export function isReportKind(kind: MessageProvenance['kind'] | undefined): boolean {
   return kind === 'analyst_report' || kind === 'task_report' || kind === 'command_report';
 }
+
+/**
+ * A compaction's or offload's notice (`NotificationSegment.context`). A turn
+ * whose reply holds nothing else has not started work: whatever it summarized
+ * came before the turn's message.
+ */
+export function isContextNotice(segment: { type?: unknown; context?: unknown }): boolean {
+  return segment.type === 'notification' && segment.context === true;
+}
+
+/** How many context notices a message's segments open with. */
+export function leadingContextNotices(segments: unknown): number {
+  if (!Array.isArray(segments)) return 0;
+  const n = segments.findIndex((segment) => !isContextNotice(segment));
+  return n === -1 ? segments.length : n;
+}

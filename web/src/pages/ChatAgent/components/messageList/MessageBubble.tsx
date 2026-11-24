@@ -184,6 +184,10 @@ interface MessageBubbleProps {
    *  workspace's thread: drawn without their name and picture
    *  (`continuesSender`). */
   continuesSender?: boolean;
+  /** The thread holds this bubble's turn before any work (a compaction ahead
+   *  of its first call): the message that opened it has not reached the model
+   *  and draws as pending, and the reply draws no indicator under it. */
+  held?: boolean;
 }
 
 /**
@@ -192,14 +196,14 @@ interface MessageBubbleProps {
  * MessageActionsContext (one identity-stable object per host), so a streamed
  * chunk never re-renders settled bubbles through a handler identity.
  */
-export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext, continuesSender }: MessageBubbleProps): React.ReactElement | null {
+export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext, continuesSender, held = false }: MessageBubbleProps): React.ReactElement | null {
   const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
   const projection = contentProjection ?? projectMessageContent(message, isSubagentView, root);
   const isUser = (message.role as string) === 'user';
   const isAssistant = (message.role as string) === 'assistant';
-  const isPendingDelivery = isUser && ((message.isPending as boolean) || (message.steering as boolean) || (message.queued as boolean));
+  const isPendingDelivery = isUser && (held || (message.isPending as boolean) || (message.steering as boolean) || (message.queued as boolean));
   const attachments = message.attachments as AttachmentData[] | undefined;
   const hasAttachments = isUser && attachments && attachments.length > 0;
   const widgetSnapshots = message.widgetSnapshots as WidgetChipShape[] | undefined;
@@ -278,7 +282,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   // the turn runs. `isStreaming` is per model call and drops on any
   // content-free finish but a tool call's, so an indicator on it left the turn
   // looking finished between two calls.
-  const showIndicator = isAssistant && isTurnTail && turnLive;
+  const showIndicator = isAssistant && isTurnTail && turnLive && !held;
   // Answer text typing out is its own sign the turn is alive, so the indicator
   // fades out for it, and back in once the text has sat still for
   // TEXT_STILL_MS: a reply that pauses mid-paragraph still reads as working,

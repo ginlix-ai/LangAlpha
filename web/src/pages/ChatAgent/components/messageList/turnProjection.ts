@@ -10,7 +10,7 @@
  * `contentProjection.ts`: the stream code reads turns from here and must not
  * load the render stack to do it.
  */
-import { isReportRow, isSteeringContinuation, isSteeringUserMessage, opensTurn, type MessageLike } from './messagePredicates';
+import { isContextNotice, isReportRow, isSteeringContinuation, isSteeringUserMessage, opensTurn, type MessageLike } from './messagePredicates';
 import type { MessageRecord } from './types';
 
 /** The fields the projection reads, structural for the same reason as `MessageLike`. */
@@ -255,4 +255,57 @@ export function liveTurns<M extends TurnLike & { isStreaming?: unknown }>(
     if (message.isStreaming || pinnedLive(message)) live.add(turnIndex);
   }
   return live;
+}
+
+/** Where a turn sits in a list, by index: the message that opened it and
+ *  its replies. */
+export interface TurnSpan {
+  opener: number | null;
+  replies: number[];
+}
+
+/**
+ * Each turn's span in `entries`. A steer is projected onto the turn it lands
+ * in and opens none; of two openers on one count the later is the turn's, and
+ * its replies start over there, as its clock does (`turnStartTimes`).
+ */
+export function turnSpans<M extends TurnLike>(entries: readonly ProjectedMessage<M>[]): Map<number, TurnSpan> {
+  const spans = new Map<number, TurnSpan>();
+  for (let i = 0; i < entries.length; i++) {
+    const { message, turnIndex } = entries[i];
+    if (turnIndex === null) continue;
+    if (message.role === 'user') {
+      if (opensTurn(message)) spans.set(turnIndex, { opener: i, replies: [] });
+    } else if (message.role === 'assistant') {
+      const span = spans.get(turnIndex);
+      if (span) span.replies.push(i);
+      else spans.set(turnIndex, { opener: null, replies: [i] });
+    }
+  }
+  return spans;
+}
+
+/**
+ * Whether the newest turn has a reply that has done nothing yet: nothing in
+ * it but context notices (`isContextNotice`), no call being written. Scans
+ * back from the end only, since the view asks on every streamed chunk.
+ */
+export function newestTurnUnstarted(messages: readonly (MessageLike & {
+  contentSegments?: readonly { type?: unknown; context?: unknown }[];
+  pendingToolCallChunks?: object;
+  queued?: unknown;
+})[]): boolean {
+  let replies = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === 'assistant') {
+      if (!(message.contentSegments ?? []).every(isContextNotice)) return false;
+      if (Object.keys(message.pendingToolCallChunks ?? {}).length > 0) return false;
+      replies++;
+    } else if (message.role === 'user' && !message.queued && opensTurn(message)) {
+      // A send parked behind the compaction is not the turn it holds.
+      return replies > 0;
+    }
+  }
+  return false;
 }

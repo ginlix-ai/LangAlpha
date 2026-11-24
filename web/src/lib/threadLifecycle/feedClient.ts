@@ -212,6 +212,22 @@ function tellNotification(raw: Record<string, unknown>): void {
   }
 }
 
+/** A summary written while its thread sat idle (`thread_compacted`). */
+export interface ThreadCompacted {
+  threadId: string;
+  originalMessageCount: number;
+  summaryText: string;
+}
+
+const compactions = createEmitter<ThreadCompacted>();
+
+/**
+ * Hear the summaries written while a thread sat idle, which no stream
+ * carries: a view showing the thread draws one as its own /compact's answer
+ * is drawn. An event, not state: one missed is read on the next load.
+ */
+export const subscribeThreadCompactions = compactions.subscribe;
+
 function onFeedEvent(raw: Record<string, unknown>): void {
   const eventName = raw.event as string | undefined;
   if (eventName === 'snapshot') {
@@ -264,6 +280,20 @@ function onFeedEvent(raw: Record<string, unknown>): void {
     updated_at?: string | null;
   };
   switch (evt.type) {
+    case 'thread_compacted': {
+      if (evt.thread_id) {
+        try {
+          compactions.emit({
+            threadId: evt.thread_id,
+            originalMessageCount: typeof raw.original_message_count === 'number' ? raw.original_message_count : 0,
+            summaryText: typeof raw.summary_text === 'string' ? raw.summary_text : '',
+          });
+        } catch {
+          // A view failing must not drop the feed.
+        }
+      }
+      return;
+    }
     case 'run_started':
     case 'run_settled': {
       applyFeedEvent(raw as Parameters<typeof applyFeedEvent>[0]);
