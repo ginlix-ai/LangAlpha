@@ -550,6 +550,19 @@ const pageToViewer = z.discriminatedUnion('type', [
  */
 export type PageToViewerWire = z.input<typeof pageToViewer>;
 
+/** Any spot a comment being written is on: a pick, an area or selected words, with its box. */
+const draftSpot = z.object({ anchor: z.union([pickAnchor, areaAnchor, textAnchor]), rect: frameRect });
+
+/**
+ * A spot kept with a comment being written between visits, held to the same
+ * rules as one the page reports, or null for one not to trust: anything on
+ * the origin can write browser storage.
+ */
+export function parseDraftSpot(data: unknown): { anchor: ArtifactCommentAnchor; rect: FrameRect } | null {
+  const read = draftSpot.safeParse(data);
+  return read.success ? read.data : null;
+}
+
 /** A message from the document, or null for one not to trust. */
 export function parsePageMessage(data: unknown): PageToViewer | null {
   const read = pageToViewer.safeParse(data);

@@ -9,6 +9,7 @@ import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
 import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
 import type { ComposerScope, ComposerSend } from '@/components/ui/chat-input.types';
+import { useEditSearchParams } from '@/hooks/useEditSearchParams';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -164,7 +165,8 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
   // (workspace, symbol), then a new chat. This state determines which thread
   // mounts on the keyed `<ChatBody>` — changing it forces a remount so the SSE
   // engine can re-initialise with a different thread.
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const editSearchParams = useEditSearchParams();
   const [activeThreadInit, setActiveThreadInit] = useState<string>(() => {
     const fromUrl = readMarketViewRoute(searchParams).threadId;
     if (fromUrl) return fromUrl;
@@ -184,12 +186,8 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
     const restored = getMarketThreadId(activeWorkspaceId, symbol);
     setActiveThreadInit(restored ?? '__default__');
     if (restored) return;
-    setSearchParams((p) => {
-      const next = new URLSearchParams(p);
-      if (next.has('thread')) next.delete('thread');
-      return next;
-    }, { replace: true });
-  }, [symbol, activeWorkspaceId, setSearchParams]);
+    editSearchParams((params) => params.delete('thread'), { replace: true });
+  }, [symbol, activeWorkspaceId, editSearchParams]);
 
   // Reset to a fresh chat when the scope or workspace changes. The user
   // explicitly chose a different scope — surface a clean slate. localStorage
@@ -202,12 +200,8 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
     prevWorkspaceRef.current = activeWorkspaceId;
     if (prev === null || activeWorkspaceId === null) return;
     setActiveThreadInit(`__default__#${Date.now()}`);
-    setSearchParams((p) => {
-      const next = new URLSearchParams(p);
-      if (next.has('thread')) next.delete('thread');
-      return next;
-    }, { replace: true });
-  }, [activeWorkspaceId, setSearchParams]);
+    editSearchParams((params) => params.delete('thread'), { replace: true });
+  }, [activeWorkspaceId, editSearchParams]);
 
   const handleSelectThread = useCallback((threadId: string) => {
     setMarketThreadId(activeWorkspaceId, symbol, threadId);
@@ -222,12 +216,8 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
     // Clear `?thread=` from the URL too — otherwise a refresh on the
     // empty new-chat panel would restore the old thread from the URL,
     // beating the freshly-cleared localStorage entry.
-    setSearchParams((p) => {
-      const next = new URLSearchParams(p);
-      if (next.has('thread')) next.delete('thread');
-      return next;
-    }, { replace: true });
-  }, [activeWorkspaceId, symbol, setSearchParams]);
+    editSearchParams((params) => params.delete('thread'), { replace: true });
+  }, [activeWorkspaceId, symbol, editSearchParams]);
 
   if (scope === 'workspace' && !activeWorkspaceId) {
     return (
@@ -297,7 +287,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { preferences } = usePreferences();
-  const [, setSearchParams] = useSearchParams();
+  const editSearchParams = useEditSearchParams();
   const [dialogPayload, setDialogPayload] = useState<DialogPayload | null>(null);
   // Port of the preview currently shown — guards against a late URL resolution
   // reopening a dialog the user already closed (or switched away from).
@@ -458,15 +448,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   useEffect(() => {
     if (!threadId || threadId === '__default__') return;
     setMarketThreadId(activeWorkspaceId, symbol, threadId);
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (next.get('thread') !== threadId) {
-        next.set('thread', threadId);
-      }
-      return next;
-    }, { replace: true });
+    editSearchParams((params) => params.set('thread', threadId), { replace: true });
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(activeWorkspaceId) });
-  }, [threadId, symbol, activeWorkspaceId, setSearchParams, queryClient]);
+  }, [threadId, symbol, activeWorkspaceId, editSearchParams, queryClient]);
 
   const showTranscript = messages.length > 0 || isLoading || isLoadingHistory;
   const follow = useStreamFollow(messagesContainer, transcript, { live: isLoading, loading: isLoadingHistory });

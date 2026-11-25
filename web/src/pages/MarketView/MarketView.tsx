@@ -16,6 +16,7 @@ import { QuoteList } from './components/quoteList/QuoteList';
 import { QuoteListDrawer } from './components/quoteList/QuoteListDrawer';
 import { INTERVALS } from './utils/chartConstants';
 import { MARKET_VIEW_ROUTE_PARAMS, readMarketViewRoute } from './utils/marketRoute';
+import { useEditSearchParams } from '@/hooks/useEditSearchParams';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { homeWorkspaceQuery, resolveChatWorkspace } from '@/hooks/useHomeWorkspace';
 import type { Workspace } from '@/types/api';
@@ -49,7 +50,6 @@ import { chartIdFor, chartKeyParts, chartParts, normalizeTimeframe } from '@/lib
 import { getShowLayersRequest, subscribeLayerView, type ShowLayersRequest } from './stores/layerViewStore';
 import { buildMarketSendContexts } from './utils/marketSend';
 import { useCommentUi } from '../ChatAgent/components/viewers/html/comments/useCommentUi';
-import ConfirmDialog from '../Dashboard/components/ConfirmDialog';
 import { ArtifactCommentSendContext } from '../ChatAgent/components/artifactComments/sendContext';
 import type { ChatCommentSends } from '../ChatAgent/components/artifactComments/useChatCommentSends';
 import type { ArtifactCommentRef } from '../ChatAgent/components/artifactComments/artifactCommentReply';
@@ -99,7 +99,8 @@ function pickQuickQueryIndices(): number[] {
 function MarketViewInner() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const editSearchParams = useEditSearchParams();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe } = useMarketDataWSContext();
@@ -152,10 +153,6 @@ function MarketViewInner() {
   const isMobile = useIsMobile();
   const [chatSends, setChatSends] = useState<Pick<ChatCommentSends, 'sender' | 'sends'> | null>(null);
   const commentUi = useCommentUi(null, chatSends?.sends);
-  const chartComments = useMemo(
-    () => ({ ui: commentUi, tabId: CHART_COMMENTS_TAB, active: true }),
-    [commentUi],
-  );
   const [chartImage, setChartImage] = useState<string | null>(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState<string | null>(null); // text description for LLM
   const [showOverview, setShowOverview] = useState<boolean>(false);
@@ -267,25 +264,12 @@ function MarketViewInner() {
   // one otherwise. The chart shows the agent's layers drawn in it.
   const activeWorkspaceId = scope === 'all' ? homeWorkspace?.workspace_id ?? null : selectedWorkspaceId;
 
-  // A comment being written on the chart belongs to this workspace's chart,
-  // and goes when the chart moves to another, so a move that takes the chart
-  // elsewhere then waits on the writer's answer: from the picker or a link
-  // followed while the page is open. The toolbar's pick of a workspace sets
-  // the workspace and then the side in one press, so both land in the one
-  // move held here.
-  const [heldMove, setHeldMove] = useState<ScopeMove | null>(null);
-  const applyMove = useCallback((move: Partial<ScopeMove>) => {
+  // The toolbar's pick of a workspace sets the workspace and then the side in
+  // one press, and a link may name both: either way they land as one move.
+  const moveScope = useCallback((move: Partial<ScopeMove>) => {
     if (move.workspaceId !== undefined) selectWorkspace(move.workspaceId);
     if (move.scope) setScope(move.scope);
   }, [selectWorkspace]);
-  const writingOnChart = commentUi.writing(CHART_COMMENTS_TAB);
-  const homeWorkspaceId = homeWorkspace?.workspace_id ?? null;
-  const moveScope = useCallback((move: Partial<ScopeMove>) => {
-    const next = { scope, workspaceId: selectedWorkspaceId, ...move };
-    const chartTo = next.scope === 'all' ? homeWorkspaceId : next.workspaceId;
-    if (!writingOnChart || chartTo === activeWorkspaceId) applyMove(move);
-    else setHeldMove((prev) => ({ ...(prev ?? { scope, workspaceId: selectedWorkspaceId }), ...move }));
-  }, [writingOnChart, applyMove, scope, selectedWorkspaceId, homeWorkspaceId, activeWorkspaceId]);
   const pickScope = useCallback((next: ComposerScope) => moveScope({ scope: next }), [moveScope]);
   // Picking a workspace is picking its side too, as the toolbar does next.
   const pickWorkspace = useCallback((id: string) => moveScope({ workspaceId: id, scope: 'workspace' }), [moveScope]);
@@ -334,17 +318,24 @@ function MarketViewInner() {
     setChatExpanded(true);
   } : null);
 
-  // A line in the chat beside naming a comment on a chart in this workspace
-  // brings that chart up and the comment forward on it.
+  // A comment on a chart of this workspace comes forward on it, the chart
+  // moved to its ticker and timeframe first.
   const { requestFocus } = commentUi;
-  const focusSerial = useRef(0);
-  const openChartComment = useCallback((comment: ArtifactCommentRef) => {
-    const chart = chartParts(comment.path);
-    if (comment.kind !== 'chart' || !chart || comment.workspaceId !== activeWorkspaceId) return;
+  const showChartComment = useCallback((path: string, commentId: string) => {
+    const chart = chartParts(path);
+    if (!chart) return;
     handleJumpToChart(chart.symbol, chart.timeframe);
-    focusSerial.current += 1;
-    requestFocus({ kind: 'chart', path: comment.path, commentId: comment.commentId, key: focusSerial.current });
-  }, [activeWorkspaceId, handleJumpToChart, requestFocus]);
+    requestFocus({ kind: 'chart', path, commentId });
+  }, [handleJumpToChart, requestFocus]);
+  // As a line in the chat beside naming one does.
+  const openChartComment = useCallback((comment: ArtifactCommentRef) => {
+    if (comment.kind === 'chart' && comment.workspaceId === activeWorkspaceId) showChartComment(comment.path, comment.commentId);
+  }, [activeWorkspaceId, showChartComment]);
+  // And a row in the chart's list for one on another of its timeframes.
+  const chartComments = useMemo(
+    () => ({ ui: commentUi, tabId: CHART_COMMENTS_TAB, active: true, openComment: showChartComment }),
+    [commentUi, showChartComment],
+  );
 
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState<string | null>(null);
@@ -372,8 +363,7 @@ function MarketViewInner() {
     if (route.timeframe && INTERVALS.some((i) => i.key === route.timeframe)) {
       setSelectedInterval(route.timeframe);
     }
-    // Workspace and scope as one move, which waits on a comment being
-    // written on the chart as the picker's does.
+    // Workspace and scope as one move, as the picker makes it.
     if (route.workspaceId || route.scope) {
       moveFromRoute({
         ...(route.workspaceId ? { workspaceId: route.workspaceId } : {}),
@@ -386,20 +376,15 @@ function MarketViewInner() {
     // A comment a phone opened from the chat comes forward on the chart the
     // route lands on, as one the Market chat names does.
     const commentChart = route.commentId ? chartIdFor(route.symbol, route.timeframe) : null;
-    if (route.commentId && commentChart) {
-      focusSerial.current += 1;
-      requestFocus({ kind: 'chart', path: commentChart, commentId: route.commentId, key: focusSerial.current });
-    }
+    if (route.commentId && commentChart) requestFocus({ kind: 'chart', path: commentChart, commentId: route.commentId });
     // `thread` stays for MarketChatPanel, which consumes it itself.
     const consumed = MARKET_VIEW_ROUTE_PARAMS.filter((key) => key !== 'thread' && searchParams.has(key));
     if (consumed.length > 0) {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        for (const key of consumed) next.delete(key);
-        return next;
+      editSearchParams((params) => {
+        for (const key of consumed) params.delete(key);
       }, { replace: true });
     }
-  }, [searchParams, selectedStock, setSearchParams, requestFocus]);
+  }, [searchParams, selectedStock, editSearchParams, requestFocus]);
 
   const handleStockSearch = useCallback((symbol: string, searchResult?: StockSearchHit | null) => {
     setSelectedStock(displaySpelling(symbol));
@@ -863,15 +848,6 @@ function MarketViewInner() {
           </div>
         </>
       )}
-      <ConfirmDialog
-        open={heldMove !== null}
-        title={t('pageViewer:comments.discardConfirm')}
-        message={t('pageViewer:comments.discardOnSwitch')}
-        confirmLabel={t('pageViewer:comments.discard')}
-        cancelLabel={t('pageViewer:comments.keepWriting')}
-        onConfirm={() => { if (heldMove) applyMove(heldMove); }}
-        onOpenChange={(open) => { if (!open) setHeldMove(null); }}
-      />
     </div>
   );
 }

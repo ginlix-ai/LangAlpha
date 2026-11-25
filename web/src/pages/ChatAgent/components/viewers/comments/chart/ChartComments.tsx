@@ -16,6 +16,12 @@ export interface ChartCommentsHost {
   tabId: string;
   /** The chart is in front: keys and asks are its. */
   active: boolean;
+  /**
+   * Moves the chart to the timeframe of `chartId` (`SYMBOL:timeframe`) and
+   * opens the comment's card there: a row in the list for one on another of
+   * its ticker's timeframes.
+   */
+  openComment: (chartId: string, commentId: string) => void;
 }
 
 /**
@@ -92,6 +98,7 @@ export const ChartComments = memo(function ChartComments({
       pictures={pictures}
       // The region drawn stays in view.
       keepSpotClear
+      openOther={host.openComment}
     />
   );
 });

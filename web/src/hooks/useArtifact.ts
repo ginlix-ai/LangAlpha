@@ -32,6 +32,7 @@ import {
   listArtifactComments,
   listArtifactVersions,
   listQueuedArtifactComments,
+  listSymbolCharts,
   markArtifactCommentRead,
   markArtifactCommentsRead,
   publishArtifact,
@@ -76,21 +77,34 @@ export function artifactPathKey(path: string, root?: string | null): string {
  * Put a record the server answered into every entry that holds it: its
  * detail, its own path, and any other spelling a tab asked by.
  */
+/** What a read among a workspace's paths holds: one record, or a ticker's charts (`useSymbolCharts`). */
+type PathRead = Artifact | Artifact[] | null;
+
+/** `read` with the record `artifactId` passed through `patch`, wherever in it the record is. */
+function patchRead(read: PathRead | undefined, artifactId: string, patch: (a: Artifact) => Artifact): PathRead | undefined {
+  if (Array.isArray(read)) {
+    return read.some((a) => a.artifact_id === artifactId)
+      ? read.map((a) => (a.artifact_id === artifactId ? patch(a) : a))
+      : read;
+  }
+  return read?.artifact_id === artifactId ? patch(read) : read;
+}
+
 export function putArtifact(qc: QueryClient, artifact: Artifact): void {
   qc.setQueryData(queryKeys.artifacts.detail(artifact.artifact_id), artifact);
   qc.setQueryData(targetQueryKey(artifact.workspace_id, artifact), artifact);
-  qc.setQueriesData<Artifact | null>(
+  qc.setQueriesData<PathRead>(
     { queryKey: queryKeys.artifacts.pathsIn(artifact.workspace_id) },
-    (cached) => (cached?.artifact_id === artifact.artifact_id ? artifact : cached),
+    (cached) => patchRead(cached, artifact.artifact_id, () => artifact),
   );
 }
 
 /** Move the record's counts in every entry that holds it, for a read shown before the server answers. */
 function patchArtifactEverywhere(qc: QueryClient, artifactId: string, patch: (a: Artifact) => Artifact): void {
   qc.setQueryData<Artifact>(queryKeys.artifacts.detail(artifactId), (a) => (a ? patch(a) : a));
-  qc.setQueriesData<Artifact | null>(
+  qc.setQueriesData<PathRead>(
     { queryKey: queryKeys.artifacts.allByPath },
-    (cached) => (cached?.artifact_id === artifactId ? patch(cached) : cached),
+    (cached) => patchRead(cached, artifactId, patch),
   );
 }
 
@@ -98,8 +112,9 @@ function patchArtifactEverywhere(qc: QueryClient, artifactId: string, patch: (a:
 function cachedArtifact(qc: QueryClient, artifactId: string): Artifact | undefined {
   const detail = qc.getQueryData<Artifact>(queryKeys.artifacts.detail(artifactId));
   if (detail) return detail;
-  for (const [, data] of qc.getQueriesData<Artifact | null>({ queryKey: queryKeys.artifacts.allByPath })) {
-    if (data?.artifact_id === artifactId) return data;
+  for (const [, data] of qc.getQueriesData<PathRead>({ queryKey: queryKeys.artifacts.allByPath })) {
+    const found = Array.isArray(data) ? data.find((a) => a.artifact_id === artifactId) : data;
+    if (found?.artifact_id === artifactId) return found;
   }
   return undefined;
 }
@@ -132,6 +147,30 @@ export function useArtifactRecord(
   return useQuery<Artifact | null, Error>({
     ...artifactTargetQuery(workspaceId ?? '', keyed),
     enabled: enabled && !!workspaceId && !!keyed.path,
+  });
+}
+
+/** A read that gave up with nothing read earlier to stand in: what would show is not what there is. */
+export function readFailed(query: { isError: boolean; data: unknown }): boolean {
+  return query.isError && query.data === undefined;
+}
+
+/**
+ * The records of every timeframe of a ticker's chart in the workspace, for
+ * what a chart says of its other timeframes: their counts in the toolbar, and
+ * their comments in the list.
+ */
+export function useSymbolCharts(
+  workspaceId: string | null | undefined,
+  symbol: string | null,
+  { enabled = true }: { enabled?: boolean } = {},
+): UseQueryResult<Artifact[], Error> {
+  return useQuery<Artifact[], Error>({
+    queryKey: queryKeys.artifacts.chartsOf(workspaceId ?? '', symbol ?? ''),
+    queryFn: () => listSymbolCharts(workspaceId!, symbol!),
+    enabled: enabled && !!workspaceId && !!symbol,
+    staleTime: 30_000,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -228,17 +267,36 @@ export function useCommentRecord(
   workspaceId: string,
   target: ArtifactTarget,
   { ensure }: { ensure: boolean },
-): { artifact: Artifact | undefined; error: Error | null; loaded: boolean; hashable: boolean } {
+): {
+  artifact: Artifact | undefined;
+  error: Error | null;
+  /** The record or its comments could not be read and nothing read earlier stands in: what shows is not what there is. */
+  failed: boolean;
+  retry: () => void;
+  loaded: boolean;
+  hashable: boolean;
+} {
   const owned = useOwnedArtifact(workspaceId, target, { enabled: ensure });
   const found = useArtifactRecord(workspaceId, target, { enabled: !ensure });
   const artifact = ensure ? owned.record : (found.data ?? undefined);
   const comments = useArtifactComments(artifact?.artifact_id);
   // A comments read that gave up ends the wait as a failed record read does,
   // so an open asked of the layer settles on what is there instead of waiting.
-  const error = (ensure ? owned.error : found.error) ?? comments.error;
+  const recordError = ensure ? owned.error : found.error;
+  const error = recordError ?? comments.error;
+  const failed = (recordError !== null && artifact === undefined) || readFailed(comments);
+  const retry = () => {
+    if (recordError) {
+      if (ensure) owned.retry();
+      else void found.refetch();
+    }
+    if (comments.error) void comments.refetch();
+  };
   return {
     artifact,
     error,
+    failed,
+    retry,
     // One that cannot have a record, or that has none yet and is only read, has no comments to wait for.
     loaded: error !== null || (!ensure && found.data === null) || comments.isSuccess,
     hashable: target.kind === 'file' && !!artifact && (artifact.open_comments > 0 || artifact.latest_seq > 0),
@@ -437,13 +495,17 @@ export function useArtifactPublishing() {
  * another tab's edit arrives.
  */
 export function useArtifactComments(artifactId: string | null | undefined): UseQueryResult<ArtifactComment[], Error> {
-  return useQuery<ArtifactComment[], Error>({
-    queryKey: queryKeys.artifacts.comments(artifactId ?? ''),
-    queryFn: () => listArtifactComments(artifactId!),
-    enabled: !!artifactId,
+  return useQuery<ArtifactComment[], Error>({ ...artifactCommentsQuery(artifactId ?? ''), enabled: !!artifactId });
+}
+
+/** The read of a record's comments, for a view that reads several records' at once. */
+export function artifactCommentsQuery(artifactId: string) {
+  return {
+    queryKey: queryKeys.artifacts.comments(artifactId),
+    queryFn: () => listArtifactComments(artifactId),
     staleTime: 30_000,
     retry: retryUnlessClientError,
-  });
+  };
 }
 
 /** The file's comments as the server has them now, into the same cache entry the cards read. */
@@ -538,18 +600,24 @@ export function useMarkArtifactCommentRead(artifactId: string | null | undefined
   });
 }
 
-/** The owner has read every comment on the file, each up to its latest message. */
-export function useMarkArtifactCommentsRead(artifactId: string | null | undefined) {
+/**
+ * The owner has read every comment on the records, each up to its latest
+ * message: a chart's on screen and its ticker's other timeframes, which its
+ * badge counts together.
+ */
+export function useMarkArtifactCommentsRead() {
   const qc = useQueryClient();
-  const id = artifactId ?? '';
   return useMutation({
-    mutationFn: () => markArtifactCommentsRead(id),
-    onMutate: () => moveReads(qc, id, (comments) => readAll(comments), 0),
-    onSuccess: (comments) => {
-      qc.setQueryData<ArtifactComment[]>(queryKeys.artifacts.comments(id), comments);
+    // Each record stands on its own: one refused puts back only its own count.
+    mutationFn: (ids: string[]) => Promise.allSettled(ids.map(markArtifactCommentsRead)),
+    onMutate: (ids) => Promise.all(ids.map((id) => moveReads(qc, id, (comments) => readAll(comments), 0))),
+    onSuccess: (results, ids, snapshots) => {
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled') qc.setQueryData<ArtifactComment[]>(queryKeys.artifacts.comments(ids[i]), result.value);
+        else restoreReads(qc, ids[i], snapshots?.[i]);
+      });
     },
-    onError: (_err, _vars, snapshot) => restoreReads(qc, id, snapshot),
-    onSettled: () => refreshReads(qc, id),
+    onSettled: (_data, _err, ids) => ids.forEach((id) => refreshReads(qc, id)),
   });
 }
 

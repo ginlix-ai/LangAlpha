@@ -113,6 +113,12 @@ export interface ArtifactDestinations {
   bound: ArtifactThread | null;
   beside: ArtifactThread | null;
   creator: ArtifactThread | null;
+  /**
+   * The Home a new Chief of Staff chat may take the comment in: the owner's,
+   * for a file they own. Null for a chart and in a shared workspace; absent
+   * from an older server.
+   */
+  home_workspace_id?: string | null;
 }
 
 export interface ArtifactDrift {

@@ -25,7 +25,7 @@ import CommentLayer from '../CommentLayer';
 describe('CommentLayer', () => {
   it('reads no status for a file with comments until one is being written', () => {
     const showDoc = () => () => {};
-    const ui = { modeTab: null, listTab: null, showDoc, showWriting: () => {}, setList: vi.fn(), setMode: vi.fn() };
+    const ui = { modeTab: null, listTab: null, showDoc, setList: vi.fn(), setMode: vi.fn() };
     const bridge = { session: 's', path: 'r.html', ready: true, post: vi.fn(), subscribe: () => () => {} };
     renderWithProviders(
       <CommentLayer

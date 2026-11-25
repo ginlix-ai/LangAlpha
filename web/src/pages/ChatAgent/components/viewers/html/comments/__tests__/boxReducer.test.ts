@@ -190,7 +190,7 @@ describe('a close Radix reports', () => {
 
 describe('a new document', () => {
   it('carries an open box onto it, and forgets the pin just made', () => {
-    const state = run(picked, { type: 'saved', id: 'c-9' }, picked, { type: 'docChanged', doc: '2:a' });
+    const state = run(picked, { type: 'saved', id: 'c-9', serial: 1 }, picked, { type: 'docChanged', doc: '2:a' });
     expect(state).toMatchObject({ doc: '2:a', carried: '2:a', madeId: null });
     expect(state.open?.kind).toBe('draft');
   });
@@ -316,8 +316,30 @@ describe('a saved draft', () => {
       picked,
       { type: 'write', text: 'words' },
       { type: 'forAgent', on: false },
-      { type: 'saved', id: 'c-9' },
+      { type: 'saved', id: 'c-9', serial: 1 },
     );
     expect(state).toMatchObject({ open: null, madeId: 'c-9', text: '', forAgent: true, to: null, hover: null, listed: null });
+  });
+
+  it('ends only the draft it saved: one taken up while it was on its way stays', () => {
+    const state = run(picked, { type: 'write', text: 'first' }, picked, { type: 'write', text: 'second' }, { type: 'saved', id: 'c-9', serial: 1 });
+    expect(state.open?.kind).toBe('draft');
+    expect(state).toMatchObject({ text: 'second', madeId: null });
+  });
+});
+
+describe('a card asked for while a comment is being written', () => {
+  it.each<[string, BoxAction]>([
+    ['brought to its pin', { type: 'brought', id: 'c-1' }],
+    ['waited for', { type: 'awaitLanding', id: 'c-1' }],
+  ])('sets the draft aside in the list, words and all, when %s', (_, ask) => {
+    const state = run(picked, { type: 'write', text: 'words' }, ask);
+    expect(state.listed?.draft).toBeTruthy();
+    expect(state.text).toBe('words');
+  });
+
+  it('lets an empty draft go', () => {
+    const state = run(picked, { type: 'brought', id: 'c-1' });
+    expect(state.listed).toBeNull();
   });
 });

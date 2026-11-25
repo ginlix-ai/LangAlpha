@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useArtifactComments, useArtifactStatus, useCommentRecord, useMarkArtifactCommentsRead } from '@/hooks/useArtifact';
+import { unreadComments } from '@/lib/artifactCommentReads';
 import { targetFor } from '@/lib/artifactTarget';
+import { storageUser } from '@/lib/userStorage';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { TWEEN } from '@/lib/motion';
@@ -11,7 +13,7 @@ import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import type { FrameView } from '../BridgedFrame';
 import type { PageAnchorItem, PagePick } from '../pageProtocol';
 import type { PageBridge } from '../usePageBridge';
-import { boxReducer, initialBox, pressCloses, type BoxAction, type BoxOf } from './boxReducer';
+import { boxReducer, pressCloses, type BoxAction, type BoxOf } from './boxReducer';
 import { CommentCard, type CardPlace } from './CommentCard';
 import { CommentComposer, type ComposerMode } from './CommentComposer';
 import { CommentDestination } from './CommentDestination';
@@ -25,7 +27,10 @@ import { PickOverlays } from './PickOverlays';
 import { DRAFT_ID, placePins } from './pinPlaces';
 import { spotOutlines } from './spotOutlines';
 import type { CommentIntent } from '../../../artifactComments/destinations';
+import { useOtherTimeframes } from '../../../artifactComments/useOtherTimeframes';
 import { useBoxPlacement } from './useBoxPlacement';
+import { dropSentDraft } from './commentDrafts';
+import { openingBox, useKeptDraft } from './useKeptDraft';
 import type { CommentUi } from './useCommentUi';
 import { useContentSize } from './useContentSize';
 import { useHeldModifier } from './useHeldModifier';
@@ -95,6 +100,12 @@ export interface CommentLayerProps {
    * so what was boxed or selected stays in view. Left out, beside its pin.
    */
   keepSpotClear?: boolean;
+  /**
+   * Shows a comment on another timeframe of the chart: the chart moves there
+   * and its card opens. Given, the list names the ticker's other timeframes'
+   * comments after the chart's own; left out (a file), it names none.
+   */
+  openOther?: (path: string, commentId: string) => void;
 }
 
 /**
@@ -113,7 +124,7 @@ export interface CommentLayerProps {
  * in the list moves through `boxReducer`.
  */
 export default function CommentLayer({
-  tabId, workspaceId, target, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear,
+  tabId, workspaceId, target, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear, openOther,
 }: CommentLayerProps): React.ReactElement {
   const { t } = useTranslation();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -138,8 +149,12 @@ export default function CommentLayer({
   const byId = useMemo(() => new Map(comments.map((c) => [c.comment_id, c])), [comments]);
 
   const listOpen = ui.listTab === tabId;
+  const elsewhere = useOtherTimeframes(workspaceId, held, { enabled: !!openOther, listed: listOpen });
+  // A comment the chat or the list asked to show on what the frame holds.
+  const askedHere = ui.focus?.kind === held.kind && targetFor(ui.focus.kind, ui.focus.path, rootDir).path === docPath;
   const doc = `${bridge.session}:${view.key}`;
-  const [box, dispatchBox] = useReducer(boxReducer, { doc, listOpen }, initialBox);
+  const shows = { workspaceId, kind: held.kind, path: docPath };
+  const [box, dispatchBox] = useReducer(boxReducer, { doc, listOpen }, (start) => openingBox(start, shows));
   if (box.doc !== doc) dispatchBox({ type: 'docChanged', doc });
   if (box.listOpen !== listOpen) dispatchBox({ type: 'listShown', open: listOpen, comments });
   // A move that puts a card or the draft in the list opens it with the same
@@ -161,21 +176,7 @@ export default function CommentLayer({
   }
   // The comment being written, in its box over the page or waiting in the list.
   const draft = boxDraft ?? box.listed?.draft ?? null;
-  // A draft keeps its file's path but not its workspace: saved after a move
-  // to another (the market page's workspace switch), it would land on that
-  // workspace's file of the same path. So it goes with the move, and a host
-  // that moves the layer asks first where there are words (`ui.writing`).
-  const [workspaceSeen, setWorkspaceSeen] = useState(workspaceId);
-  if (workspaceSeen !== workspaceId) {
-    setWorkspaceSeen(workspaceId);
-    if (draft) dispatchBox({ type: 'endDraft', keepHover: false });
-  }
-  const writing = !!draft && !!box.text.trim();
-  const { showWriting } = ui;
-  useEffect(() => {
-    showWriting(tabId, writing);
-    return () => showWriting(tabId, false);
-  }, [showWriting, tabId, writing]);
+  useKeptDraft({ ...shows, box, draft, dispatchBox, askedHere });
   // The live file's hash, stored with a new comment. Read only once one is
   // being written: each read copies the file's whole list off the computer.
   const { data: status } = useArtifactStatus(artifact, { enabled: record.hashable && !!draft });
@@ -304,7 +305,7 @@ export default function CommentLayer({
   const pinsHidden = !fresh || !view.shown;
 
   const expandInList = useBoxPlacement({
-    focus: active && ui.focus?.kind === held.kind && targetFor(ui.focus.kind, ui.focus.path, rootDir).path === docPath ? ui.focus : null,
+    focus: active && askedHere ? ui.focus : null,
     focusHandled: ui.focusHandled,
     loaded,
     bridge,
@@ -319,7 +320,11 @@ export default function CommentLayer({
 
   const saveDraft = async (intent: CommentIntent) => {
     const route = sending.draftRoute(intent);
-    if (!draft || !route) return;
+    const serial = open?.kind === 'draft' ? open.serial : box.listed?.serial;
+    if (!draft || !route || serial === undefined) return;
+    // Where the draft is kept, as it is now: the layer may move to another
+    // workspace, or the account change, before the save comes back.
+    const sent = { user: storageUser(), workspaceId, kind: held.kind, path: draft.path, anchor: draft.anchor, text: box.text };
     saving.current = true;
     let comment;
     try {
@@ -340,9 +345,12 @@ export default function CommentLayer({
       saving.current = false;
     }
     prepared.current = null;
+    // Sent, so it is let go of where it was kept, whatever the layer shows
+    // now; one closed before the save came back would bring it back.
+    dropSentDraft(sent);
     // The new pin takes the draft's place until the page reports it.
     if (draftRect) reports.placeSpot(comment.comment_id, draftRect);
-    dispatch({ type: 'saved', id: comment.comment_id });
+    dispatch({ type: 'saved', id: comment.comment_id, serial });
     if (draft.anchor.kind === 'text') {
       bridge.post({ type: 'page:clear-selection' });
       reports.clearSelection();
@@ -352,7 +360,10 @@ export default function CommentLayer({
   const shownComment = shownId ? (byId.get(shownId) ?? null) : null;
   useReadWhileOpen(artifactId, shownId, shownComment, active);
   const pulse = useReplyPulse(comments, loaded && !commentsQuery.isFetching, shownId);
-  const markAllRead = useMarkArtifactCommentsRead(artifactId);
+  const markRead = useMarkArtifactCommentsRead();
+  // A chart's badge counts its ticker's other timeframes too, so marking
+  // everything read covers theirs.
+  const unreadIds = [...(artifactId && unreadComments(comments) > 0 ? [artifactId] : []), ...elsewhere.unreadIds];
 
   const onPin = (comment: ArtifactComment) => {
     // A press outside a draft with words in it asks before it lets them go.
@@ -550,7 +561,13 @@ export default function CommentLayer({
                 </DraftCard>
               )}
               onToggle={onRow}
-              onMarkAllRead={() => markAllRead.mutate()}
+              failed={record.failed || elsewhere.failed
+                ? { onRetry: () => { record.retry(); elsewhere.retry(); } }
+                : null}
+              elsewhere={openOther && elsewhere.here
+                ? { here: elsewhere.here, comments: elsewhere.comments, onOpen: (o) => openOther(o.path, o.comment.comment_id) }
+                : null}
+              onMarkAllRead={unreadIds.length > 0 ? () => markRead.mutate(unreadIds) : null}
               renderCard={(c, expanded, onToggle) => renderCard(c, whereNow(c) === null, expanded, { kind: 'list', onToggle })}
               onClose={() => ui.setList(tabId, false)}
             />
@@ -572,9 +589,7 @@ export default function CommentLayer({
               focusSelf={item.of.kind === 'card'}
               arrival={isCurrent && openComment !== null && box.arrivalId === openComment.comment_id}
               replaced={current !== null}
-              draft={isCurrent && boxDraft
-                ? { words: !!box.text.trim(), onAskDiscard: () => dispatch({ type: 'askDiscard' }) }
-                : null}
+              draft={isCurrent && boxDraft ? { words: !!box.text.trim() } : null}
               seeThrough={isCurrent && modifierHeld}
               onDismiss={() => closeBox(item.of)}
               onEscape={escapeOneLayer}

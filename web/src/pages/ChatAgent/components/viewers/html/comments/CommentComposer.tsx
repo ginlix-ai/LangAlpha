@@ -102,10 +102,20 @@ export function CommentComposer({
   const head = over?.head;
   const empty = !value.trim();
   const enter = readCommentEnter(usePreferences().preferences);
-  const layout = footerLayout(forAgent, canQueue, enter);
+  // A queue does not take the filled button's place while the pointer is on
+  // the buttons. In a new chat the filled button is Send now; the first send
+  // makes the thread, after which the same place says Add to queue, and a
+  // second click meant to send again would queue instead. Once the pointer
+  // leaves it follows the routes as they are. A queue that stops being one
+  // goes at once: Send now is never a route that went away.
+  const [pointedQueue, setPointedQueue] = useState<boolean | null>(null);
+  // The question takes the buttons' place, and they never hear the pointer leave.
+  if (confirmDiscard && pointedQueue !== null) setPointedQueue(null);
+  const shownQueue = canQueue && (pointedQueue ?? true);
+  const layout = footerLayout(forAgent, shownQueue, enter);
   // The filled button's two names, both held so it keeps one width as the box is ticked.
-  const tickedPrimary = footerLayout(true, canQueue, enter).primary;
-  const untickedPrimary = footerLayout(false, canQueue, enter).primary;
+  const tickedPrimary = footerLayout(true, shownQueue, enter).primary;
+  const untickedPrimary = footerLayout(false, shownQueue, enter).primary;
 
   // Words carried in from another box (a new spot picked, or the list a
   // version change sent the draft to) are written on from their end; a field
@@ -223,6 +233,8 @@ export function CommentComposer({
         ref={fieldRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        // Words written while the send is out would go with the box it closes.
+        readOnly={busy !== null}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
         aria-label={head ?? placeholder}
@@ -284,7 +296,11 @@ export function CommentComposer({
             >
               {t('pageViewer:comments.forAgent')}
             </CheckboxChoice>
-            <span className="ml-auto flex shrink-0 items-center gap-1">
+            <span
+              className="ml-auto flex shrink-0 items-center gap-1"
+              onPointerEnter={() => setPointedQueue(canQueue)}
+              onPointerLeave={() => setPointedQueue(null)}
+            >
               {quiet && (
                 // Fades out in place unticked, so the filled button stays put.
                 <Button

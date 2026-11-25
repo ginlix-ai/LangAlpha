@@ -102,7 +102,32 @@ describe('the "To:" menu', () => {
 
   it('offers a new thread as the default where the setting sends there, and the thread beside after it', () => {
     const { choices } = commentDestinations(t, answer('new', null), at(BESIDE));
-    expect(choices.map((c) => [c.key, c.isDefault])).toEqual([['new', true], [`thread:${BESIDE}`, false]]);
+    expect(choices.map((c) => [c.key, c.isDefault])).toEqual([['new:ws-1', true], [`thread:${BESIDE}`, false]]);
+  });
+
+  const withHome = (over: Partial<ArtifactDestinations> = {}) => answer('beside', BESIDE, { home_workspace_id: 'ws-home', ...over });
+
+  it('offers a new Chief of Staff chat in Home last, where the server names one (a file its owner holds)', () => {
+    const { choices } = commentDestinations(t, withHome(), at(BESIDE));
+    expect(choices.map((c) => [c.key, c.isDefault, c.label])).toEqual([
+      [`thread:${BESIDE}`, true, 'pageViewer:comments.thisThread'],
+      ['new:ws-home', false, 'pageViewer:comments.newChiefOfStaff'],
+    ]);
+    expect(commentDestinations(t, withHome(), at(BESIDE)).targetFor(null, 'send', { newThreadIn: 'ws-home' }))
+      .toEqual(send({ newThreadIn: 'ws-home' }));
+  });
+
+  it('offers it once where the default already is a new thread in Home', () => {
+    const inHome = answer('new', null, { default: { rule: 'new', thread: null, workspace_id: 'ws-home' }, home_workspace_id: 'ws-home' });
+    const { choices } = commentDestinations(t, inHome, at(BESIDE));
+    expect(choices.filter((c) => c.key === 'new:ws-home').map((c) => c.isDefault)).toEqual([true]);
+  });
+
+  it('offers no Chief of Staff chat where the server names no Home (a chart, a shared workspace)', () => {
+    for (const home of [undefined, null]) {
+      const { choices } = commentDestinations(t, answer('beside', BESIDE, { home_workspace_id: home }), at(BESIDE));
+      expect(choices.some((c) => c.key.startsWith('new:'))).toBe(false);
+    }
   });
 
   it('names a new thread "This thread" beside a new chat in that workspace, which it starts', () => {

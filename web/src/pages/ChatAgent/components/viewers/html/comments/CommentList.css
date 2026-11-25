@@ -18,3 +18,28 @@
   background-color: var(--color-bg-popover);
   pointer-events: auto;
 }
+
+/* Retry beside the line that says the comments could not be read. */
+.page-comment-retry {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.page-comment-retry:hover {
+  background-color: var(--color-border-subtle);
+}
+
+/* The timeframe a comment on another one of the chart's is on, as the
+   chart's toolbar names it, in the pill an outdated card wears. */
+.page-comment-timeframe {
+  padding: 0 6px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
