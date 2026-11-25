@@ -405,23 +405,93 @@ def test_a_chart_anchor_holds_its_marks_and_nothing_else(anchor):
     ("anchor", "kind", "refused"),
     [
         ({"kind": "chart", "marks": [_POINT_MARK]}, "chart", None),
-        ({"kind": "chart", "marks": [_POINT_MARK]}, "file", "A file takes no chart anchor"),
-        ({"kind": "text", "quote": "Revenue"}, "chart", "A chart takes a chart anchor"),
+        ({"kind": "chart", "marks": [_POINT_MARK]}, "file", "a file takes no chart anchor"),
+        ({"kind": "text", "quote": "Revenue"}, "chart", "a chart takes a chart anchor"),
     ],
 )
 def test_a_comment_keeps_to_its_records_kind(anchor, kind, refused):
     """A chart has no file, so its comment keeps no hash or title whatever
-    the client sent."""
-    from fastapi import HTTPException
+    the client sent. The wrong kind is refused as the body's validation
+    refuses, so a client reads one shape of 422."""
+    from fastapi.exceptions import RequestValidationError
 
     request = CreateCommentRequest(
         anchor=anchor, body="why here?", file_sha256="0" * 64, title="NVDA"
     )
     if refused:
-        with pytest.raises(HTTPException) as e:
+        with pytest.raises(RequestValidationError) as e:
             request.check_against(kind)
-        assert (e.value.status_code, e.value.detail) == (422, refused)
+        assert list(e.value.errors()) == [
+            {
+                "type": "value_error",
+                "loc": ("body", "anchor", "kind"),
+                "msg": f"Value error, {refused}",
+                "input": anchor["kind"],
+            }
+        ]
     else:
         request.check_against(kind)
     assert request.file_fields("chart") == (None, None)
     assert request.file_fields("file") == ("0" * 64, "NVDA")
+
+
+_NON_FINITE = [float("nan"), float("inf"), float("-inf")]
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE)
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        lambda bad: {"kind": "element", "path": "#a", "point": {"x": bad, "y": 0.5}},
+        lambda bad: {**_AREA, "rect": {**_AREA["rect"], "h": bad}},
+        lambda bad: {"kind": "region", "boxes": [{"x": bad, "y": 0, "w": 0, "h": 0}]},
+        lambda bad: {"kind": "chart", "marks": [{**_REGION_MARK, "low": bad}]},
+        lambda bad: {"kind": "chart", "marks": [{**_ELEMENT_MARK, "price": bad}]},
+    ],
+)
+def test_every_number_in_an_anchor_is_finite(anchor, bad):
+    with pytest.raises(ValidationError) as e:
+        CommentAnchor.model_validate(anchor(bad))
+    assert [err["type"] for err in e.value.errors()] == ["finite_number"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "loc"),
+    [
+        (b'{"kind":"element","path":"#a","point":{"x":NaN,"y":0.5}}', ["point", "x"]),
+        (b'{"kind":"region","boxes":[{"x":0.1,"y":0.1,"w":Infinity,"h":0.1}]}', ["boxes", 0, "w"]),
+        (
+            b'{"kind":"chart","marks":[{"type":"point","time":"2026-10-03","price":-Infinity}]}',
+            ["marks", 0, "point", "price"],
+        ),
+    ],
+)
+async def test_a_raw_non_finite_number_is_a_422_not_a_500(raw, loc):
+    """Python's JSON reads a raw ``NaN`` or ``Infinity``; the 422 quoting it
+    back must still be JSON."""
+    from fastapi.exceptions import RequestValidationError
+    from httpx import ASGITransport, AsyncClient
+
+    from src.server.app.artifacts import router
+    from src.server.app.setup import _request_validation_handler
+    from tests.conftest import create_test_app
+
+    app = create_test_app(router)
+    app.add_exception_handler(RequestValidationError, _request_validation_handler)
+    body = b'{"body":"why here?","anchor":' + raw + b"}"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.post(
+            "/api/v1/artifacts/00000000-0000-0000-0000-00000000000a/comments",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == [
+        {
+            "type": "finite_number",
+            "loc": ["body", "anchor", *loc],
+            "msg": "Input should be a finite number",
+            "input": None,
+        }
+    ]

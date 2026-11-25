@@ -16,6 +16,7 @@ from psycopg.rows import dict_row, tuple_row
 
 from src.server.database.pool import get_db_connection
 from src.server.database.share_codes import mint_share_code
+from src.server.utils.pg_sanitize import like_escape
 
 # What the title CHECKs admit; a title is read off the file, so it is clipped
 # here rather than refused.
@@ -222,6 +223,28 @@ async def find_record(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             return await _select_record(cur, workspace_id, kind, key)
+
+
+async def list_chart_records(workspace_id: str, symbol: str) -> list[Artifact]:
+    """The workspace's chart records for ``symbol`` (the one spelling
+    ``normalize_chart_symbol`` gives), every timeframe, by chart id.
+
+    A chart id is the symbol, a colon, then the timeframe, and a symbol holds
+    no colon, so the prefix up to the colon matches that symbol alone. The
+    chart index's leading ``workspace_id`` finds the rows; the prefix filters
+    them, since a LIKE under the database's collation cannot range the path."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                SELECT {ARTIFACT_COLUMNS} FROM share_links l
+                 WHERE l.workspace_id = %s AND l.kind = 'chart'
+                   AND l.path LIKE %s ESCAPE '\\'
+                 ORDER BY l.path
+                """,
+                (workspace_id, f"{like_escape(symbol)}:%"),
+            )
+            return [artifact_from_row(row) for row in await cur.fetchall()]
 
 
 async def get_artifact(artifact_id: str, *, user_id: str) -> Artifact | None:
