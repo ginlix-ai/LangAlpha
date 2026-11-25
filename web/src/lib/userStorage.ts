@@ -36,7 +36,7 @@ export function setStorageUser(userId: string | null): void {
   userListeners.forEach((listener) => listener());
 }
 
-function subscribeStorageUser(listener: () => void): () => void {
+export function subscribeStorageUser(listener: () => void): () => void {
   userListeners.add(listener);
   return () => userListeners.delete(listener);
 }
@@ -56,6 +56,11 @@ function currentUser(): string | null {
  */
 export function useStorageUser(): string | null {
   return useSyncExternalStore(subscribeStorageUser, currentUser);
+}
+
+/** Outside React: the user whose keys reads and writes reach now. */
+export function storageUser(): string | null {
+  return currentUser();
 }
 
 function scoped(userId: string, key: string): string {
@@ -114,4 +119,10 @@ function userScoped(store: () => Storage): UserStorage {
 }
 
 export const userLocalStorage = userScoped(() => localStorage);
+
+/** Removes `userId`'s key from localStorage whoever is signed in now: for a
+ *  clean-up that runs once they have signed out. */
+export function removeUserLocalItem(userId: string, key: string): void {
+  try { localStorage.removeItem(scoped(userId, key)); } catch { /* blocked */ }
+}
 export const userSessionStorage = userScoped(() => sessionStorage);

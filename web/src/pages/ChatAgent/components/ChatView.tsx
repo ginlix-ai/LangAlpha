@@ -163,6 +163,7 @@ import type { SubagentInfo } from './messageList/types';
 import { ThreadPrivacyRow } from './chatView/threadPrivacy';
 import { useThreadPrivacy } from './chatView/useThreadPrivacy';
 import { withCopy } from '@/i18n';
+import { draftKeys } from '@/lib/composerDrafts';
 
 
 // Clears the composer floating over the transcript's bottom edge (its height
@@ -187,6 +188,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const marketWatchEnabled = useFeatureEnabled('market_watch');
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
+  // A message another page brought, from when its route state is cleared until
+  // its send settles: the new chat is that message's, not the workspace's
+  // unsent draft's.
+  const [kickoffSending, setKickoffSending] = useState(false);
   const state = location.state as LocationState | null;
   // The workspace row drives the header title and names Home. It
   // has to come from the shared detail query rather than a mount-time snapshot:
@@ -449,6 +454,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // to the panel would give every unsent chat in a workspace one shared strip.
   const liveThreadId = currentThreadId || threadId;
   const panelThreadId = liveThreadId && liveThreadId !== '__default__' ? liveThreadId : undefined;
+  // Where the composer's unsent words are kept (`lib/composerDrafts`). Out of
+  // sight, nowhere: the draft is the visible composer's. A new chat holds the
+  // workspace's new-thread draft only until a first message leaves, its own or
+  // one another page brought, which that draft has nothing to do with.
+  const composerDraftKey = !isActive
+    ? null
+    : panelThreadId
+      ? draftKeys.thread(panelThreadId)
+      : messages.length === 0 && !landingNav && !kickoffSending
+        ? draftKeys.newThread(workspaceId)
+        : null;
   // The host keys this view by chat instance, so this lives as long as the
   // chat, across the panel's own remounts. What the chat held goes to its
   // thread once it has one, whether or not the panel is open, and the rest
@@ -488,7 +504,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Status tab (useRightPanel). The tray reads the same snapshot for its chip.
   const showWatchChip = (marketWatch?.symbols?.length ?? 0) > 0;
 
-  useComposerGiveBack(chatInputRef, chat);
+  useComposerGiveBack(chatInputRef, chat, isActive);
 
   // Read by the unmount cleanup, whose own closure holds a stale thread id
   const readCurrentThreadId = useEffectEvent(() => currentThreadId);
@@ -1410,9 +1426,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       } = location.state;
       const mergedContext = mergeSkills(additionalContext, skills);
       // Clear navigation state to prevent re-sending on re-renders
+      setKickoffSending(true);
       navigate(location.pathname, { replace: true, state: {} });
       const send = () => {
-        handleSendMessage(initialMessage ?? '', mergedContext, attachmentMeta || null, {
+        void Promise.resolve(handleSendMessage(initialMessage ?? '', mergedContext, attachmentMeta || null, {
           model,
           reasoningEffort,
           fastMode,
@@ -1423,7 +1440,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           sharedWithWorkspace: landingShared,
           hiddenOpener,
           threadTitle,
-        });
+        })).finally(() => setKickoffSending(false));
       };
       // The welcome flow's hand-off is sent at once: the view is mounted by
       // the time its effects run, and the hand-off into it holds the page
@@ -1983,6 +2000,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       <ChatInput
                         ref={chatInputRef}
                         onSend={handleSendWithAttachments}
+                        draftKey={composerDraftKey}
                         {...composerDeck}
                         disabled={isLoadingHistory || !workspaceId || !!pendingInterrupt}
                         sendHeld={!!othersTurn}

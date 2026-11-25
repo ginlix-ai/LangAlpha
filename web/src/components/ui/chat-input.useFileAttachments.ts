@@ -11,7 +11,7 @@ import { checkAttachment } from '@/pages/ChatAgent/utils/api/attachments';
 import { apiErrorStatus } from '@/api/errors';
 import { isImageFile } from '@/pages/ChatAgent/utils/fileUpload';
 import { classifyUploadError } from '@/lib/partUpload';
-import type { FileAttachment, ReadyAttachment, TileUpload } from './chat-input.types';
+import type { FileAttachment, HeldFile, ReadyAttachment, TileUpload } from './chat-input.types';
 import { MAX_FILES } from './chat-input.helpers';
 
 const newId = () => Math.random().toString(36).slice(2, 11);
@@ -56,20 +56,17 @@ export function useFileAttachments({
   // one its upload began with, then each it was checked against since.
   const checkedFor = useRef(new Map<string, string | null>());
 
-  // Each ready tile's next staging, by tile id, and when its file became
-  // ready, which the server's expiry counts from.
-  const restages = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; readyAt: number }>());
+  // Each ready tile's next staging, by tile id.
+  const restages = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const cancelRestage = useCallback((id: string) => {
-    const held = restages.current.get(id);
-    if (held) clearTimeout(held.timer);
+    clearTimeout(restages.current.get(id));
     restages.current.delete(id);
   }, []);
 
   /** Stages a ready tile's file again before the server lets it go, then
    *  forgets the old copy; the tile shows ready throughout. */
   const keepStaged = useCallback(function keep(id: string, readyAt: number, wait = readyAt + RESTAGE_AFTER_MS - Date.now()) {
-    const prior = restages.current.get(id);
-    if (prior) clearTimeout(prior.timer);
+    clearTimeout(restages.current.get(id));
     const timer = setTimeout(async () => {
       const tile = filesRef.current.find((f) => f.id === id);
       if (tile?.upload.status !== 'ready') return;
@@ -86,9 +83,10 @@ export function useFileAttachments({
           discardAttachment(fresh);
           return;
         }
-        setUpload(id, { status: 'ready', attachmentId: fresh });
+        const stagedAt = Date.now();
+        setUpload(id, { status: 'ready', attachmentId: fresh, readyAt: stagedAt });
         discardAttachment(old);
-        keep(id, Date.now());
+        keep(id, stagedAt);
       } catch (err) {
         if (ctrl.signal.aborted) return;
         if (Date.now() + RESTAGE_RETRY_MS < readyAt + STAGED_FOR_MS) {
@@ -103,7 +101,7 @@ export function useFileAttachments({
         if (uploads.current.get(id) === ctrl) uploads.current.delete(id);
       }
     }, Math.max(0, wait));
-    restages.current.set(id, { timer, readyAt });
+    restages.current.set(id, timer);
   }, [setUpload, workspaceIdRef]);
 
   const upload = useCallback(async (id: string, file: File) => {
@@ -117,8 +115,9 @@ export function useFileAttachments({
         onProgress: (p) => setUpload(id, { status: 'uploading', percent: p.phase === 'saving' ? null : p.percent }),
       });
       checkedFor.current.set(attachmentId, target);
-      setUpload(id, { status: 'ready', attachmentId });
-      keepStaged(id, Date.now());
+      const readyAt = Date.now();
+      setUpload(id, { status: 'ready', attachmentId, readyAt });
+      keepStaged(id, readyAt);
     } catch (err) {
       if (!ctrl.signal.aborted) setUpload(id, { status: 'failed', failure: classifyUploadError(err) });
     } finally {
@@ -133,7 +132,7 @@ export function useFileAttachments({
     const timers = restages.current;
     return () => {
       for (const ctrl of live.values()) ctrl.abort();
-      for (const { timer } of timers.values()) clearTimeout(timer);
+      for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };
   }, []);
@@ -161,21 +160,33 @@ export function useFileAttachments({
     void upload(id, tile.file);
   }, [setUpload, upload]);
 
-  /** Files a send took that come back to the composer, already on the server.
-   *  What no longer fits is not coming back, so the server forgets it. */
-  const restoreFiles = useCallback((files: ReadyAttachment[]) => {
+  /**
+   * Files coming back to the composer: ones a send took, or a saved draft's
+   * under their own tile ids (one already shown is skipped). One the server
+   * still holds stays ready, staged again at once if past `RESTAGE_AFTER_MS`;
+   * the rest upload again. What no longer fits is not coming back, so the
+   * server forgets it. Not held by `disabled`: the files were attached while
+   * the composer took them.
+   */
+  const restoreFiles = useCallback((files: HeldFile[]) => {
+    const fresh = files.filter((f) => !f.id || !filesRef.current.some((t) => t.id === f.id));
     const room = Math.max(0, MAX_FILES - filesRef.current.length);
-    for (const f of files.slice(room)) discardAttachment(f.attachmentId);
-    const kept = files.slice(0, room);
-    const restored = kept.map((f): FileAttachment => ({
-      id: newId(),
+    for (const f of fresh.slice(room)) if (f.attachmentId) discardAttachment(f.attachmentId);
+    const tiles = fresh.slice(0, room).map((f): FileAttachment => ({
+      id: f.id ?? newId(),
       file: f.file,
       type: f.type,
-      upload: { status: 'ready', attachmentId: f.attachmentId },
+      upload: f.attachmentId
+        ? { status: 'ready', attachmentId: f.attachmentId, readyAt: f.readyAt ?? Date.now() }
+        : { status: 'uploading', percent: 0 },
     }));
-    if (restored.length > 0) commit((prev) => [...prev, ...restored]);
-    restored.forEach((tile, i) => keepStaged(tile.id, kept[i].readyAt ?? Date.now()));
-  }, [commit, keepStaged]);
+    if (tiles.length === 0) return;
+    commit((prev) => [...prev, ...tiles]);
+    for (const t of tiles) {
+      if (t.upload.status === 'ready') keepStaged(t.id, t.upload.readyAt);
+      else void upload(t.id, t.file);
+    }
+  }, [commit, keepStaged, upload]);
 
   const removeFile = useCallback((id: string) => {
     const tile = filesRef.current.find((f) => f.id === id);
@@ -191,12 +202,20 @@ export function useFileAttachments({
     for (const f of filesRef.current) removeFile(f.id);
   }, [removeFile]);
 
+  /** Drops every tile but leaves the server's copies, for a draft that still
+   *  names them: its uploads end and nothing is staged again from here. */
+  const forgetFiles = useCallback(() => {
+    for (const f of filesRef.current) {
+      uploads.current.get(f.id)?.abort();
+      cancelRestage(f.id);
+    }
+    if (filesRef.current.length > 0) commit(() => []);
+  }, [commit, cancelRestage]);
+
   /** A ready tile past the point it is staged again: a tab asleep through its
    *  timer still holds an id the server may already have let go. */
   const isStale = useCallback((f: FileAttachment) => {
-    if (f.upload.status !== 'ready') return false;
-    const held = restages.current.get(f.id);
-    return !!held && Date.now() - held.readyAt >= RESTAGE_AFTER_MS;
+    return f.upload.status === 'ready' && Date.now() - f.upload.readyAt >= RESTAGE_AFTER_MS;
   }, []);
 
   /** Whether a send now would be held by a stale file (`takeFiles`). */
@@ -229,8 +248,8 @@ export function useFileAttachments({
     const taken: ReadyAttachment[] = [];
     for (const f of filesRef.current) {
       if (f.upload.status !== 'ready') continue;
-      const readyAt = restages.current.get(f.id)?.readyAt;
-      taken.push({ file: f.file, type: f.type, attachmentId: f.upload.attachmentId, ...(readyAt ? { readyAt } : {}) });
+      const { attachmentId, readyAt } = f.upload;
+      taken.push({ file: f.file, type: f.type, attachmentId, readyAt });
       uploads.current.get(f.id)?.abort();
       cancelRestage(f.id);
     }
@@ -333,7 +352,7 @@ export function useFileAttachments({
 
   return {
     attachedFiles, uploadingCount, failedCount, isDragging,
-    handleFiles, retryFile, restoreFiles, removeFile, discardFiles, takeFiles, holdsStale,
+    handleFiles, retryFile, restoreFiles, removeFile, discardFiles, takeFiles, holdsStale, forgetFiles,
     onDragEnter, onDragOver, onDragLeave, onDrop, handlePaste,
   };
 }

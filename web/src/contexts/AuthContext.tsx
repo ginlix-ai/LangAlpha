@@ -10,6 +10,7 @@ import { resetNavPanelExpansion } from '@/pages/ChatAgent/components/navExpansio
 import { resetStableNavOrder } from '@/pages/ChatAgent/hooks/navOrderFreeze';
 import { resetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
 import { runAuthResets } from '../lib/authResets';
+import { composerDraftsClearer } from '../lib/composerDrafts';
 import { detectedTimezone } from '@/lib/deviceTimezone';
 import { revokeAllConnectedApps } from '@/api/connectedApps';
 
@@ -343,7 +344,13 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
   }, [sb]);
 
   const logout = useCallback(async () => {
-    await sb.auth.signOut();
+    // Taken while the user is still known, whose drafts these are, and run
+    // only once they are signed out: a failed sign-out leaves them signed in
+    // with their drafts. Only here, on a sign-out the user asked for: a
+    // session that lapses keeps them for the same user's return.
+    const clearDrafts = await composerDraftsClearer();
+    const { error } = await sb.auth.signOut();
+    if (!error) clearDrafts();
     queryClient.clear();
   }, [sb.auth, queryClient]);
 

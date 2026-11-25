@@ -55,6 +55,7 @@ import { useDeckComposer } from '../../ChatAgent/components/artifactComments/use
 import type { ArtifactCommentRef } from '../../ChatAgent/components/artifactComments/artifactCommentReply';
 import { useMarketCommentSends } from '../hooks/useMarketCommentSends';
 import './MarketPanel.css';
+import { draftKeys } from '@/lib/composerDrafts';
 
 /** Compact status banner shown above the input (interrupt, compaction, etc.). */
 function bannerStyle(background: string): React.CSSProperties {
@@ -933,6 +934,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       <ChatInput
         ref={chatInputRef}
         onSend={handleSend}
+        draftKey={threadId && threadId !== '__default__' ? draftKeys.thread(threadId) : draftKeys.market}
         disabled={isLoadingHistory || !!pendingInterrupt}
         onStop={handleStop}
         onAction={handleAction}

@@ -18,27 +18,35 @@ interface ReturnedToComposer {
  * whatever was typed since, and a send that failed at a file's foot, whole,
  * its files and pills too, leaving focus where it is, since the person may
  * have moved on meanwhile.
+ *
+ * Held while the view is out of sight (`active` false): its composer has
+ * closed its draft then, so what came back would be neither kept nor shown.
+ * Back in sight, the composer has its draft again and this lands beside it.
  */
-export function useComposerGiveBack(input: RefObject<ChatInputHandle | null>, chat: ReturnedToComposer): void {
+export function useComposerGiveBack(
+  input: RefObject<ChatInputHandle | null>,
+  chat: ReturnedToComposer,
+  active = true,
+): void {
   const { returnedSteering, clearReturnedSteering, returnedEdit, clearReturnedEdit, returnedDraft, clearReturnedDraft } = chat;
   useEffect(() => {
-    if (returnedSteering) {
+    if (active && returnedSteering) {
       input.current?.giveBack(returnedSteering);
       clearReturnedSteering();
     }
-  }, [input, returnedSteering, clearReturnedSteering]);
+  }, [active, input, returnedSteering, clearReturnedSteering]);
 
   useEffect(() => {
-    if (returnedEdit) {
+    if (active && returnedEdit) {
       input.current?.giveBack(returnedEdit);
       clearReturnedEdit();
     }
-  }, [input, returnedEdit, clearReturnedEdit]);
+  }, [active, input, returnedEdit, clearReturnedEdit]);
 
   useEffect(() => {
-    if (returnedDraft) {
+    if (active && returnedDraft) {
       input.current?.giveBack(returnedDraft.text, returnedDraft.files, { ...returnedDraft, focus: false });
       clearReturnedDraft();
     }
-  }, [input, returnedDraft, clearReturnedDraft]);
+  }, [active, input, returnedDraft, clearReturnedDraft]);
 }

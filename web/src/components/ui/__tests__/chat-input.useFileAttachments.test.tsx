@@ -116,7 +116,7 @@ describe('useFileAttachments', () => {
     expect(result.current.attachedFiles[0].upload).toEqual({ status: 'uploading', percent: null });
 
     await act(async () => { sends[0].resolve(ready('att-1')); });
-    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1' });
+    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1', readyAt: expect.any(Number) });
     expect(result.current.uploadingCount).toBe(0);
     expect(reloadHeld()).toBe(false);
     expect(discard).not.toHaveBeenCalled();
@@ -145,7 +145,7 @@ describe('useFileAttachments', () => {
     expect(result.current.attachedFiles[0].upload).toEqual({ status: 'uploading', percent: 0 });
     await flush();
     await act(async () => { sends[1].resolve(ready('att-2')); });
-    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-2' });
+    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-2', readyAt: expect.any(Number) });
     expect(result.current.failedCount).toBe(0);
   });
 
@@ -203,8 +203,8 @@ describe('useFileAttachments', () => {
     act(() => result.current.restoreFiles(back));
     expect(result.current.attachedFiles).toHaveLength(MAX_FILES);
     expect(result.current.attachedFiles.slice(3).map((f) => f.upload)).toEqual([
-      { status: 'ready', attachmentId: 'att-x' },
-      { status: 'ready', attachmentId: 'att-y' },
+      { status: 'ready', attachmentId: 'att-x', readyAt: expect.any(Number) },
+      { status: 'ready', attachmentId: 'att-y', readyAt: expect.any(Number) },
     ]);
     expect(discard).toHaveBeenCalledExactlyOnceWith('att-z');
   });
@@ -224,7 +224,7 @@ describe('useFileAttachments', () => {
 
     begin.mockClear();
     act(() => result.current.restoreFiles(taken));
-    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1' });
+    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1', readyAt: expect.any(Number) });
     expect(begin).not.toHaveBeenCalled();
   });
 
@@ -243,11 +243,11 @@ describe('useFileAttachments', () => {
       await flush();
       expect(sends).toHaveLength(2);
       // Still ready on the copy the server holds, while the new one goes.
-      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1' });
+      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1', readyAt: expect.any(Number) });
       expect(result.current.uploadingCount).toBe(0);
 
       await act(async () => { sends[1].resolve(ready('att-2')); });
-      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-2' });
+      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-2', readyAt: expect.any(Number) });
       expect(discard).toHaveBeenCalledExactlyOnceWith('att-1');
     } finally {
       vi.useRealTimers();
@@ -322,7 +322,7 @@ describe('useFileAttachments', () => {
       await act(() => vi.advanceTimersByTimeAsync(1000));
       await flush();
       expect(sends).toHaveLength(1);
-      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-x' });
+      expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-x', readyAt: expect.any(Number) });
     } finally {
       vi.useRealTimers();
     }
@@ -356,7 +356,7 @@ describe('useFileAttachments', () => {
       failure: { kind: 'refused', message: "File is too large for this workspace's computer (300 MB). It takes files up to 256 MB." },
     });
     expect(discard).toHaveBeenCalledWith('att-1');
-    expect(result.current.attachedFiles[1].upload).toEqual({ status: 'ready', attachmentId: 'att-2' });
+    expect(result.current.attachedFiles[1].upload).toEqual({ status: 'ready', attachmentId: 'att-2', readyAt: expect.any(Number) });
   });
 
   it('keeps a large file a check found to fit, and checks it again only when the target changes', async () => {
@@ -379,7 +379,7 @@ describe('useFileAttachments', () => {
     rerender({ workspaceId: 'ws-b' });
     await flush();
     expect(check).toHaveBeenLastCalledWith('att-1', 'ws-b');
-    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1' });
+    expect(result.current.attachedFiles[0].upload).toEqual({ status: 'ready', attachmentId: 'att-1', readyAt: expect.any(Number) });
     expect(discard).not.toHaveBeenCalled();
   });
 
