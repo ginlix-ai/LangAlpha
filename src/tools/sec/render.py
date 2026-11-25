@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Collection, Sequence
 
 from edgar_engine import FilingSections, Section, SubmissionDocument
+from edgar_engine.calendar import rules
 from edgar_engine.filings import FilingRef
 from edgar_engine.forms import item_title
 
+from .edgar import index_url
+from .types import DELISTING_FORMS, PERIODIC_FORMS
+
 if TYPE_CHECKING:
-    from .edgar import Calendar, EightKRef, Financials
+    from .edgar import Calendar, Company, EightKRef, Financials
 
 SCOPE_PHRASES = {"complete": "restates the whole report", "exhibits": "adds exhibits only",
                  "cover": "changes the cover page only"}
@@ -228,6 +232,37 @@ def _next_period(returned: FilingRef, fiscal_period: str) -> str:
     return f" for fiscal year {fy}" if fiscal_period == "FY" else f" for {fiscal_period} of fiscal year {fy}"
 
 
+def listing_line(co: Company) -> str | None:
+    """For an operating company asked by a former ticker or with no ticker today: the tickers it trades as, or the
+    latest notice that delisted it and the Form 15 it stopped reporting with, unless a periodic report followed it.
+    None when there is nothing to say."""
+    if co.entity_type != "operating" or co.tickers and co.former_ticker is None:
+        return None
+    who = f"{co.former_ticker} is a former ticker of {co.name}, which" if co.former_ticker else co.name
+    if co.tickers:
+        return f"{who} trades as {', '.join(co.tickers)} today."
+
+    def accepted(r: dict) -> str:
+        at = r.get("acceptanceDateTime") or ""
+        return (at.isoformat() if hasattr(at, "isoformat") else str(at))[:19].replace(" ", "T")
+
+    def latest(forms: Collection[str]) -> tuple[str, str, str, str] | None:
+        """(filing date, acceptance time or "", form, source URL) of the latest of these forms on the company's
+        filings table."""
+        return max(((str(r["filing_date"]), accepted(r), r["form"], index_url(co.cik, r["accession_number"]))
+                    for r in co.filings if r["form"] in forms), default=None)
+
+    delisted, ended, reported = latest(DELISTING_FORMS), latest(rules.TERMINATIONS), latest(PERIODIC_FORMS)
+    events = [f"a Form {delisted[2]} to delist it was filed on {delisted[0]} (source: {delisted[3]})"] if delisted else []
+    followed = reported and ended and (reported[0] > ended[0] or reported[0] == ended[0] and reported[1] and ended[1]
+                                       and reported[1] > ended[1])
+    if ended and not followed:
+        events.append(f"it filed Form {ended[2]} on {ended[0]} to stop reporting (source: {ended[3]})")
+    if not events:
+        return f"{who} has no listed ticker today." if co.former_ticker else None
+    return f"{who} has no listed ticker today: {', and '.join(events)}."
+
+
 def calendar_line(calendar: Calendar | None, returned: FilingRef) -> str | None:
     """The filing calendar's line for a returned report that is the latest periodic report on file; None keeps the
     plain line (no calendar, another latest report, an unknown verdict, or a filing the filings table does not hold).
@@ -323,12 +358,12 @@ class ItemRow:
 def periodic_inline(*, name: str, symbol: str, ref: FilingRef, url: str, view_text: str, metrics: list[str],
                     folder: str | None, rows: Sequence[ItemRow], missing: Sequence[str], full_chars: int,
                     statements: tuple[str, int, Sequence[str]] | None, call: str | None, recent: list[str],
-                    recent_8k: list[str], amended: bool = False) -> str:
+                    recent_8k: list[str], listing: str | None, amended: bool = False) -> str:
     """statements: the statements file, its size and the statements it holds, when the folder holds one. amended:
-    the index is of the amended view, whose full.md is still the filing as first filed."""
+    the index is of the amended view, whose full.md is still the filing as first filed. listing: listing_line's."""
     lines = [f"# {name} ({symbol}) {ref.form}{header_period(ref)}, period ended {ref.report_date or 'not stated'}",
              f"Accession {ref.accession}, filed {ref.filing_date}, CIK {ref.cik}. Source: {url}",
-             CITE_AMENDED if amended else CITE, "", view_text, "", *metrics, "",
+             *([listing] if listing else []), CITE_AMENDED if amended else CITE, "", view_text, "", *metrics, "",
              "## Items"]
     if folder:
         lines.append(f"Each item's full text is in {folder}/. Read only the items you need.")
@@ -394,9 +429,10 @@ class EightKEntry:
     unreadable: bool = False
 
 
-def eight_k_inline(name: str, symbol: str, entries: Sequence[EightKEntry], folders: bool = True) -> str:
-    """folders: the filings' text is in their folders; without them it follows inline."""
-    lines = [f"# {name} ({symbol}) 8-K filings, last 90 days: {len(entries)}",
+def eight_k_inline(name: str, symbol: str, entries: Sequence[EightKEntry], *, listing: str | None,
+                   folders: bool = True) -> str:
+    """folders: the filings' text is in their folders; without them it follows inline. listing: listing_line's."""
+    lines = [f"# {name} ({symbol}) 8-K filings, last 90 days: {len(entries)}", *([listing] if listing else []),
              "Cite each filing's source URL inline for every claim you take from it."
              + (" Each filing's text is in its folder below." if folders else "")]
     for e in entries:
@@ -414,8 +450,8 @@ def eight_k_inline(name: str, symbol: str, entries: Sequence[EightKEntry], folde
 EIGHT_K_UNREADABLE = "Its text could not be read this time; call again later for it."
 
 
-def no_8ks(symbol: str, days: int) -> str:
-    return f"No 8-K filings found for {symbol} in the last {days} days."
+def no_8ks(symbol: str, days: int, *, listing: str | None) -> str:
+    return f"No 8-K filings found for {symbol} in the last {days} days." + (f" {listing}" if listing else "")
 
 
 def bad_form(x: str) -> str:
@@ -426,11 +462,12 @@ def bad_view(x: str) -> str:
     return f'view must be "as_filed" or "as_amended", not "{x}".'
 
 
-def no_filing(symbol: str, form: str, fiscal_year: int | None, fiscal_period: str | None, on_file: Sequence[str]) -> str:
+def no_filing(symbol: str, form: str, fiscal_year: int | None, fiscal_period: str | None, on_file: Sequence[str], *,
+              listing: str | None) -> str:
     which = " for" + (f" fiscal year {fiscal_year}" if fiscal_year else "") + (f" {fiscal_period}" if fiscal_period else "")
     which = "" if which == " for" else which
     tail = f" Its {form}s on file cover: {', '.join(on_file)}." if on_file else ""
-    return f"{symbol} has no {form}{which} on EDGAR.{tail}"
+    return f"{symbol} has no {form}{which} on EDGAR.{tail}" + (f" {listing}" if listing else "")
 
 
 def not_a_filer(symbol: str, form: str) -> str:

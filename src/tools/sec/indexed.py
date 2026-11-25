@@ -29,7 +29,7 @@ from src.data_client.ginlix_data.sec_filings import (FilingCalendar, FiscalLabel
                                                      SecFilingsClient, note_skew, sec_filings_client)
 
 from .metering import note_cache
-from .types import EIGHT_K_FORMS, PERIODIC_FORMS
+from .types import DELISTING_FORMS, EIGHT_K_FORMS, PERIODIC_FORMS
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 CALENDAR_FORMS = tuple(sorted({n for f in rules.PERIODIC_FORMS for n in f.notices} | rules.TERMINATIONS))
 #: Every form this tool reads, as ginlix-data is asked for a filer's filings.
 INDEXED_FORMS = (*sorted({f for form in PERIODIC_FORMS for f in table_forms(form, amendments=True)}), *EIGHT_K_FORMS,
-                 *CALENDAR_FORMS)
+                 *CALENDAR_FORMS, *DELISTING_FORMS)
 
 T = TypeVar("T")
 

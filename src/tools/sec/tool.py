@@ -191,7 +191,7 @@ async def _read_periodic(symbol: str, form: str, fiscal_year: int | None, fiscal
     if ref is None:
         on_file = await edgar.run(lambda: [render.period_label(r, short=True)
                                            for r in edgar.filings_of(co, form, labels, full_history=False)[:5]])
-        return render.no_filing(co.symbol, form, fiscal_year, fiscal_period, on_file)
+        return render.no_filing(co.symbol, form, fiscal_year, fiscal_period, on_file, listing=render.listing_line(co))
 
     async def as_filed() -> View:
         sections, fin = await asyncio.gather(edgar.sections(co, ref), edgar.financials(ref))
@@ -234,7 +234,8 @@ def _index(p: Periodic, v: View, folder: str | None, with_call: bool = True) -> 
         call=render.call_line(p.call, in_file=folder is not None) if with_call else None,
         recent=render.recent_reports_section(p.reports, p.ref, foreign=base_form(p.ref.form) in FOREIGN_FORMS,
                                              calendar=p.calendar),
-        recent_8k=render.recent_8k_section(p.recent_8k), amended=v is not p.views[0])
+        recent_8k=render.recent_8k_section(p.recent_8k), amended=v is not p.views[0],
+        listing=render.listing_line(p.co))
 
 
 def _statements_file(v: View) -> str:
@@ -374,15 +375,17 @@ async def _read_8k(symbol: str, k: edgar.EightKRef) -> EightK:
 
 async def _eight_ks(backend: Any | None, symbol: str) -> tuple[str, dict]:
     co = await edgar.company(symbol)
+    listing = render.listing_line(co)
     refs = await edgar.run(edgar.recent_8ks, co)
     if not refs:
-        return render.no_8ks(co.symbol, edgar.EIGHT_K_DAYS), {}
+        return render.no_8ks(co.symbol, edgar.EIGHT_K_DAYS, listing=listing), {}
     filings = await asyncio.gather(*(_read_8k(co.symbol, k) for k in refs))
     artifact = {"type": "sec_filing", "symbol": co.symbol, "filing_type": "8-K", "filing_count": len(refs),
                 "days_range": edgar.EIGHT_K_DAYS}
 
     if backend is None:
-        content = render.eight_k_inline(co.name, co.symbol, [f.entry(False) for f in filings], folders=False)
+        content = render.eight_k_inline(co.name, co.symbol, [f.entry(False) for f in filings], folders=False,
+                                        listing=listing)
         budget = INSIGHT_CAP_CHARS - len(content)
         for text in (t for f in filings for t in f.files.values()):
             text, budget, cut = _cap(text, budget - 1, render.CUT_DOCUMENTS)
@@ -394,12 +397,13 @@ async def _eight_ks(backend: Any | None, symbol: str) -> tuple[str, dict]:
     async def write(f: EightK) -> str | None:
         if f.sections is None:
             return None
-        index = render.eight_k_inline(co.name, co.symbol, [f.entry(True)])
+        index = render.eight_k_inline(co.name, co.symbol, [f.entry(True)], listing=listing)
         return await _deliver(backend, f.folder, {"index.md": Index(index, f.files)}, {})
 
     errors = await asyncio.gather(*(write(f) for f in filings))
     written = [f.sections is not None and not e for f, e in zip(filings, errors)]
-    content = render.eight_k_inline(co.name, co.symbol, [f.entry(w) for f, w in zip(filings, written)])
+    content = render.eight_k_inline(co.name, co.symbol, [f.entry(w) for f, w in zip(filings, written)],
+                                    listing=listing)
     for f, error in zip(filings, errors):
         if error:
             content += render.files_not_written(f.folder, error) + "\n"
