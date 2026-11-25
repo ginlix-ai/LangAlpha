@@ -55,7 +55,7 @@ const UNDER_ICON: ReadonlySet<string> = new Set(
 
 /**
  * Desktop app: what the shell keeps for this computer (notifications, the
- * menu bar and its panel, how the app starts). Read from the shell and
+ * menu bar and its panel, how the app starts, how it updates). Read from the shell and
  * written back to it; the account holds none of it, so each computer is set
  * on its own. The shell also changes it from elsewhere (a switch in the
  * icon's menu), so the section draws whatever view the shell sent last. Rows a platform cannot do are left out rather than drawn off.
@@ -239,6 +239,17 @@ export function DesktopPanel() {
               onChange={() => save({ keepRunningInTray: !settings.keepRunningInTray })}
             />
           )}
+        </SettingsGroup>
+      )}
+
+      {support.automaticUpdates && (
+        <SettingsGroup title={t('settings:desktop.updatesGroup')}>
+          <ToggleRow
+            label={t('settings:desktop.automaticUpdates')}
+            description={t('settings:desktop.automaticUpdatesDesc')}
+            checked={settings.automaticUpdates ?? true}
+            onChange={() => save({ automaticUpdates: !(settings.automaticUpdates ?? true) })}
+          />
         </SettingsGroup>
       )}
     </>

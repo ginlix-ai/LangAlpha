@@ -172,7 +172,15 @@
     "later": "稍后",
     "restartNow": "立即重启",
     "download": "下载",
-    "installsOnQuit": "也可以在下次退出时自动安装。"
+    "installsOnQuit": "也可以在下次退出时自动安装。",
+    "downloading": "正在下载更新",
+    "manualBody": "自动更新已关闭。现在下载，重启时即可安装。",
+    "downloadingBody": "正在下载，完成后这里会出现“立即重启”。",
+    "downloadingButton": "下载中…",
+    "automatic": "自动安装更新",
+    "countingWork": "正在查看有哪些任务在运行…",
+    "workUnknown": "这台计算机上正在运行的任务和命令会暂停或停止。",
+    "retryBody": "下载未完成，点击“下载”重试。"
   },
   "account": {
     "menuLabel": "账号菜单",

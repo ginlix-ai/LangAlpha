@@ -178,7 +178,15 @@
     "later": "Later",
     "restartNow": "Restart now",
     "download": "Download",
-    "installsOnQuit": "Or it installs the next time you quit."
+    "installsOnQuit": "Or it installs the next time you quit.",
+    "downloading": "Downloading update",
+    "manualBody": "Automatic updates are off. Download it now, and it installs when you restart.",
+    "downloadingBody": "Downloading. Restart now appears here once it's done.",
+    "downloadingButton": "Downloading…",
+    "automatic": "Install updates automatically",
+    "countingWork": "Checking what's running…",
+    "workUnknown": "Anything running on this computer pauses or stops.",
+    "retryBody": "The download didn't finish. Download to try again."
   },
   "account": {
     "menuLabel": "Account menu",

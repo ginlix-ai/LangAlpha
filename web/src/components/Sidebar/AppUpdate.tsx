@@ -1,13 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowUp } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { getRunningWork, type RunningWork } from '@/api/runningWork';
+import { ToggleSwitch } from '@/components/ui/switch';
 import { useLocale } from '@/hooks/useLocale';
-import { canShowUpdates, getUpdateState, installUpdate, onUpdateState, type DesktopUpdateState } from '@/lib/desktop';
+import { useRunningWork } from '@/hooks/useRunningWork';
+import {
+  canDesktopSettings,
+  canShowUpdates,
+  getUpdateState,
+  hideUpdates,
+  installUpdate,
+  onUpdateState,
+  setDesktopSettings,
+  type DesktopUpdateState,
+} from '@/lib/desktop';
 import { calendarMonthDay } from '@/lib/format';
-import { queryKeys } from '@/lib/queryKeys';
 
 /** The desktop app's update as its shell reports it; null outside the app or on a shell that cannot say. */
 function useAppUpdate(): DesktopUpdateState | null {
@@ -22,6 +30,9 @@ function useAppUpdate(): DesktopUpdateState | null {
     return () => {
       live = false;
       off();
+      // Without a new document the shell still counts this page as showing
+      // the button, as when a narrow window swaps the sidebar for tabs.
+      hideUpdates();
     };
   }, []);
   return state;
@@ -56,19 +67,49 @@ function Consequence({ count, label, after }: { count: number; label: string; af
   );
 }
 
+/**
+ * Automatic updates, switched from the panel as from Settings: the shell keeps
+ * the setting and sends the new update state back. Drawn only where the shell
+ * downloads updates itself, so there is something to turn off.
+ */
+function AutomaticSwitch({ state }: { state: DesktopUpdateState }) {
+  const { t } = useTranslation();
+  const labelId = useId();
+  if (state.mode !== 'auto' || typeof state.automatic !== 'boolean' || !canDesktopSettings()) return null;
+  const on = state.automatic;
+  return (
+    <div className="app-update-auto">
+      <label id={labelId} htmlFor={`${labelId}-switch`}>{t('appUpdate.automatic')}</label>
+      <ToggleSwitch
+        id={`${labelId}-switch`}
+        checked={on}
+        onChange={() => void setDesktopSettings({ automaticUpdates: !on })}
+        ariaLabel={t('appUpdate.automatic')}
+      />
+    </div>
+  );
+}
+
+/** What the panel says about an update that is not ready yet. */
+function pendingBodyKey(state: DesktopUpdateState): string {
+  if (state.status === 'downloading') return 'appUpdate.downloadingBody';
+  if (state.mode === 'notify') return 'appUpdate.notifyBody';
+  // Available with automatic updates on is a download that failed. A shell
+  // that does not say is one that always updates by itself.
+  return state.automatic === false ? 'appUpdate.manualBody' : 'appUpdate.retryBody';
+}
+
 function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: () => void }) {
   const { t } = useTranslation();
   const label = useVersionLabel();
   const ready = state.status === 'ready';
-  // Asked only where a restart stops the server, and fresh at each open: it is
-  // what is running now that the person weighs.
-  const { data: running } = useQuery<RunningWork>({
-    queryKey: queryKeys.user.runningWork(),
-    queryFn: getRunningWork,
-    enabled: ready && state.stopsServer,
-    staleTime: 0,
-    gcTime: 0,
-  });
+  const downloading = state.status === 'downloading';
+  // A download made here stays in view, so the person sees it finish and can
+  // restart from the same panel; a restart or a browser download leaves it.
+  const staysOpen = state.status === 'available' && state.mode === 'auto';
+  // Asked only where a restart stops the server.
+  const { data: running, isError: countFailed } = useRunningWork(ready && state.stopsServer);
+  const counting = ready && state.stopsServer && !running && !countFailed;
   const version = label(state.version ?? '');
 
   return (
@@ -82,7 +123,7 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
           <>
             {' · '}
             {/* The shell sends a page's external link to the system browser. */}
-            <a className="app-update-link" href={state.notesUrl} target="_blank" rel="noreferrer">
+            <a className="app-update-link tap-target" href={state.notesUrl} target="_blank" rel="noreferrer">
               {t('appUpdate.whatsNew')}
             </a>
           </>
@@ -94,6 +135,16 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
             <li className="app-update-line">
               <span>{t(state.stopsServer ? 'appUpdate.relaunch' : 'appUpdate.relaunchRemote')}</span>
             </li>
+            {counting && (
+              <li className="app-update-line">
+                <span>{t('appUpdate.countingWork')}</span>
+              </li>
+            )}
+            {state.stopsServer && countFailed && !running && (
+              <li className="app-update-line app-update-line--running">
+                <span>{t('appUpdate.workUnknown')}</span>
+              </li>
+            )}
             {state.stopsServer && running && (
               <>
                 <Consequence
@@ -116,29 +167,37 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
           </>
         ) : (
           <li className="app-update-line">
-            <span>{t('appUpdate.notifyBody')}</span>
+            <span>{t(pendingBodyKey(state))}</span>
           </li>
         )}
       </ul>
       <div className="app-update-buttons">
-        <button type="button" className="app-update-btn" onClick={onLater}>
+        <button type="button" className="app-update-btn tap-target" onClick={onLater}>
           {t('appUpdate.later')}
         </button>
         <button
           type="button"
-          className="app-update-btn app-update-btn--primary"
+          className="app-update-btn app-update-btn--primary tap-target"
+          disabled={downloading || counting}
           onClick={() => {
-            onLater();
+            if (!staysOpen) onLater();
             void installUpdate();
           }}
         >
-          {t(ready ? 'appUpdate.restartNow' : 'appUpdate.download')}
+          {t(ready ? 'appUpdate.restartNow' : downloading ? 'appUpdate.downloadingButton' : 'appUpdate.download')}
         </button>
       </div>
-      {ready && <div className="app-update-foot">{t('appUpdate.installsOnQuit')}</div>}
+      {ready && state.installsOnQuit !== false && <div className="app-update-foot">{t('appUpdate.installsOnQuit')}</div>}
+      <AutomaticSwitch state={state} />
     </div>
   );
 }
+
+const ROW_LABEL = {
+  available: 'appUpdate.available',
+  downloading: 'appUpdate.downloading',
+  ready: 'appUpdate.ready',
+} as const;
 
 /**
  * The desktop app's update, offered in the sidebar once there is one to take:
@@ -149,8 +208,8 @@ export default function AppUpdate({ variant }: { variant: 'row' | 'rail' }) {
   const { t } = useTranslation();
   const state = useAppUpdate();
   const [open, setOpen] = useState(false);
-  if (!state || !state.version || (state.status !== 'ready' && state.status !== 'available')) return null;
-  const label = t(state.status === 'ready' ? 'appUpdate.ready' : 'appUpdate.available');
+  if (!state || !state.version || state.status === 'idle') return null;
+  const label = t(ROW_LABEL[state.status]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
