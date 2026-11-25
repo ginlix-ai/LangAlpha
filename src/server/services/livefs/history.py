@@ -27,6 +27,7 @@ from ptc_agent.core.paths import THREAD_DIR_NAME, SandboxLayout, WorkspaceLayout
 from ptc_agent.core.sandbox.livefs_runtime.protocol import Refusal
 from src.server.database.thread_transcripts import ON_COMPUTER, Scope
 from src.server.services import transcripts
+from src.server.services.forks.start import ThreadStart
 from src.server.services.livefs.cache import client as _cache
 from src.server.services.livefs.cache import tag
 from src.server.services.livefs.routes import InlineBudget, LivefsError, Removed, Saved, version_of
@@ -304,14 +305,17 @@ def index_content(root: str, rows: list[dict[str, Any]]) -> str:
     """The computer's thread index: one line per thread of a live folder,
     with where its transcript is, or null when none is served there: before
     its first turn ends, or while another of its workspace's transcripts
-    shares the directory name."""
+    shares the directory name. A fork made from a snapshot of another thread
+    names the transcripts holding its turns before its own (``forked_from``,
+    from the thread's ``fork`` lineage), by the same rule: a source deleted
+    or not served there is left out."""
     machine = SandboxLayout.for_root(root)
     named = Counter(
         (str(row["workspace_id"]), str(row["conversation_thread_id"])[:8])
         for row in rows
         if row.get("has_transcript")
     )
-    lines = []
+    entries: list[tuple[dict[str, Any], Any]] = []
     for row in rows:
         # A folder staged mid-move is under _internal until it lands.
         if not row.get("dir_name") or "/" in row["dir_name"]:
@@ -331,6 +335,18 @@ def index_content(root: str, rows: list[dict[str, Any]]) -> str:
                 else None
             ),
         }
+        entries.append((entry, row.get("fork")))
+    # A fork lives in its source's workspace, so the source's own line, when
+    # it is served, already says where its transcript is.
+    served = {entry["thread_id"]: entry["transcript"] for entry, _ in entries}
+    lines = []
+    for entry, fork in entries:
+        borrowed = ThreadStart.parse(fork).borrowed if fork else ()
+        entry["forked_from"] = [
+            files.as_manifest(served[files.thread_id])
+            for files in borrowed
+            if served.get(files.thread_id)
+        ] or None
         lines.append(json.dumps(entry, ensure_ascii=False, default=str))
     return "".join(line + "\n" for line in lines)
 

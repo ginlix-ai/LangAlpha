@@ -29,7 +29,7 @@ from ptc_agent.core.sandbox.mount_commands import MountOutcome, code_version  # 
 if TYPE_CHECKING:
     from langchain_core.messages import AnyMessage
 
-    from ptc_agent.agent.transcript import TranscriptTarget, Window
+    from ptc_agent.agent.transcript import BorrowedFiles, TranscriptTarget, Window
     from ptc_agent.core.sandbox.drive_mount import DriveHandle
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
@@ -115,10 +115,11 @@ class MountHandle(Protocol):
 
     async def save_transcript(
         self, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
-    ) -> bool:
+    ) -> TranscriptTarget | None:
         """Store one agent's transcript from the messages in hand, ``window``
-        having been trimmed from their head, where the mount serves it;
-        whether it landed."""
+        having been trimmed from their head, where the mount serves it. The
+        target as it landed, with the files it borrows from the chats it was
+        forked from (``TranscriptTarget.borrowed``), or None when it did not."""
 
 
 class HistoryFiles(Protocol):
@@ -139,7 +140,7 @@ class HistoryFiles(Protocol):
 
     async def save_transcript(
         self, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
-    ) -> bool:
+    ) -> TranscriptTarget | None:
         """As ``MountHandle.save_transcript``, for the routes to serve."""
 
 
@@ -154,6 +155,10 @@ class TranscriptReach:
 
     home: MountHandle | HistoryFiles
     shell: bool
+    #: The thread's turns before its own when it is a snapshot fork, in the
+    #: transcripts of the chats it was forked from: its own agent's files
+    #: number on from the last (``TranscriptTarget.borrowed``).
+    borrowed: tuple[BorrowedFiles, ...] = ()
 
 
 #: Files who a command runs for under its call id. The host sets one on every

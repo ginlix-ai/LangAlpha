@@ -147,6 +147,35 @@ async def workspace_checkpoints(workspace_id: str) -> list[tuple[str, str]]:
 
 
 @dataclass(frozen=True)
+class ThreadCheckpoint:
+    """What one thread's transcripts are rendered from."""
+
+    workspace_id: str | None
+    checkpoint_id: str | None
+    #: Its ``metadata->'fork'``, which says where its own agent starts.
+    fork: Any
+
+
+async def thread_checkpoint(thread_id: str) -> ThreadCheckpoint | None:
+    """One thread's checkpoint and start, read together so an export knows
+    both from one row; None when there is no such thread."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT workspace_id, latest_checkpoint_id, metadata->'fork'
+                FROM conversation_threads
+                WHERE conversation_thread_id = %s
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return ThreadCheckpoint(str(row[0]) if row[0] else None, row[1], row[2])
+
+
+@dataclass(frozen=True)
 class Scope:
     """Which of a workspace's threads a transcript read serves: a condition on
     ``t`` and its parameters."""

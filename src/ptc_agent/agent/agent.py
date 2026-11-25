@@ -62,6 +62,7 @@ from ptc_agent.agent.middleware.background_subagent.subagent import (
     run_on_by_type,
 )
 from ptc_agent.agent.transcript.classify import MARKET_ALERT_SENDER, WAKEUP_SENDER
+from ptc_agent.agent.transcript.store import BorrowedFiles
 from ptc_agent.agent.middleware.compaction.notes import (
     NotesDueMiddleware,
     NotesOffMiddleware,
@@ -328,6 +329,7 @@ class PTCAgent:
         computers: ComputerReach | None = None,
         claude_code_launcher: "Callable[..., Launcher] | None" = None,
         thread_history: HistoryFiles | None = None,
+        transcript_borrowed: tuple[BorrowedFiles, ...] = (),
         member_context: MemberContext | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
@@ -393,6 +395,10 @@ class PTCAgent:
                 leaves this thread out (a thread kept private in a shared
                 workspace); the agent's transcripts are saved and pointed at
                 there. Its subagents share it, as they share the computer's.
+            transcript_borrowed: A snapshot fork's turns before its own, whose
+                files are in the transcripts of the chats it was forked from:
+                the server reads them with the thread, and every pointer the
+                main agent's compaction writes names them there.
             member_context: In a shared workspace whose member's organization
                 lets their own context reach it, the member this turn is for:
                 the main agent alone is given their answer preferences and
@@ -427,6 +433,7 @@ class PTCAgent:
             operation_callback=operation_callback,
             preview_owner=preview_owner,
             history=thread_history,
+            transcript_borrowed=transcript_borrowed,
         )
         # The one workspace root this build uses, read off the live computer
         # root plus the turn's folder rather than the config default.

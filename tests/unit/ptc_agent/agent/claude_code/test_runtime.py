@@ -382,7 +382,7 @@ def _backend(*, routes_serve: bool | None = None, mount_settles: bool | None = N
     async def save_transcript(transcript, messages, *, window):
         if saved is not None:
             saved.append((transcript, messages))
-        return saves
+        return transcript if saves else None
 
     if routes_serve is not None:
         reach = TranscriptReach(SimpleNamespace(serves=lambda workspace_id: routes_serve and workspace_id == "w-1",

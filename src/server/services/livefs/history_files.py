@@ -26,6 +26,7 @@ from typing import Any
 from ptc_agent.agent.backends import ReadOnlyStoreError
 from ptc_agent.agent.backends.text_grep import PageGrep, compile_grep, grep_texts
 from ptc_agent.agent.backends.results import GrepAnswer
+from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.core.paths import THREAD_DIR_NAME, SandboxLayout, WorkspaceLayout
 from src.server.database.thread_transcripts import ON_COMPUTER, Scope, own_thread
 from src.server.services import transcripts
@@ -303,31 +304,50 @@ class ThreadFiles(TranscriptFiles):
 class ThreadHistory:
     """``HistoryFiles`` for a turn in a thread its sender keeps private in a
     shared workspace: that thread's transcript alone, on any of the
-    workspace's computers, mounted or not. Bash and code still do not see it,
-    so the turn's reach says so and its pointers name the file tools."""
+    workspace's computers, mounted or not, and for a snapshot fork the
+    transcripts of the threads it borrows turns from (``borrowed``), where its
+    pointers send the agent for them, each while the sender still reaches it.
+    Bash and code still do not see them, so the turn's reach says so and its
+    pointers name the file tools."""
 
     def __init__(
-        self, workspace_id: str, dir_name: str | None, thread_id: str, sender: str
+        self,
+        workspace_id: str,
+        dir_name: str | None,
+        thread_id: str,
+        sender: str,
+        borrowed: tuple[str, ...] = (),
     ) -> None:
         self._workspace_id = workspace_id
         self._dir_name = dir_name
-        self._thread_id = thread_id
+        self._threads = (thread_id, *borrowed)
         self._sender = sender
 
     def routes(self, sandbox: Any) -> list[Any]:
         root = sandbox.computer_root.rstrip("/")
         layout = SandboxLayout.for_root(root).for_workspace(self._dir_name)
-        return [ThreadFiles(self._workspace_id, layout, self._thread_id, self._sender)]
+        return [
+            ThreadFiles(self._workspace_id, layout, thread_id, self._sender)
+            for thread_id in self._threads
+        ]
 
     def serves(self, workspace_id: str | None) -> bool:
         return workspace_id is not None and str(workspace_id) == self._workspace_id
 
-    async def save_transcript(self, target: Any, messages: Any, *, window: Any) -> bool:
-        return await transcripts.save_live(target, messages, window=window)
+    async def save_transcript(
+        self, target: TranscriptTarget, messages: Any, *, window: Any
+    ) -> TranscriptTarget | None:
+        return await transcripts.save_live(
+            target, messages, window=window, reader=self._sender
+        )
 
 
 async def private_thread_history(
-    workspace_id: str, dir_name: str | None, thread_id: str, sender: str | None
+    workspace_id: str,
+    dir_name: str | None,
+    thread_id: str,
+    sender: str | None,
+    borrowed: tuple[str, ...] = (),
 ) -> ThreadHistory | None:
     """The history a turn in ``thread_id``, in the workspace folder
     ``dir_name``, reads its own transcript through, when the thread is
@@ -339,7 +359,7 @@ async def private_thread_history(
 
     if sender is None or str(await private_to(thread_id)) != str(sender):
         return None
-    return ThreadHistory(str(workspace_id), dir_name, str(thread_id), str(sender))
+    return ThreadHistory(str(workspace_id), dir_name, str(thread_id), str(sender), borrowed)
 
 
 class IndexFile(_ReadOnlyFiles):
@@ -417,7 +437,9 @@ class ComputerHistory:
             folder_id == str(workspace_id) for folder_id, _ in self._folders
         )
 
-    async def save_transcript(self, target: Any, messages: Any, *, window: Any) -> bool:
+    async def save_transcript(
+        self, target: TranscriptTarget, messages: Any, *, window: Any
+    ) -> TranscriptTarget | None:
         return await transcripts.save_live(target, messages, window=window)
 
 

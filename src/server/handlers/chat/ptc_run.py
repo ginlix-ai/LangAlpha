@@ -32,6 +32,7 @@ from src.server.services.shared_workspaces.member_context import (
 )
 from src.server.services.shared_workspaces.turn import TurnIdentity
 from src.server.services.forks.carry import ForkTurnStart
+from src.server.services.forks.start import ThreadStart
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.commands.mirror import mirror_computer
 from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
@@ -811,6 +812,7 @@ async def astream_ptc_workflow(
             user_profile=user_profile,
             acting_for=workspace_id,
             member_context=member_context,
+            fork=prior_thread.fork,
         )
         project = inputs.project
         # One relay session per directly bound server, held for the run.
@@ -860,7 +862,9 @@ async def astream_ptc_workflow(
             # A port, not a value: the switch can flip mid-turn from any
             # worker, so the agent re-reads the row on every call.
             subagent_switch=partial(read_thread_subagents_allowed, thread_id),
-            window_coverage=partial(runs_held, thread_id),
+            window_coverage=partial(
+                runs_held, thread_id, start=ThreadStart.of(prior_thread.fork)
+            ),
             cancel_notices=ThreadCancelNotices(thread_id, turn_context.tool_timezone),
             reached_computers=reached_computers,
         )

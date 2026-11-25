@@ -605,7 +605,7 @@ class Handle:
 
     async def save_transcript(
         self, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
-    ) -> bool:
+    ) -> TranscriptTarget | None:
         return await transcripts.save_live(target, messages, window=window)
 
 

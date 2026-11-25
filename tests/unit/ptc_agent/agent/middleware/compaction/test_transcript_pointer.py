@@ -36,7 +36,7 @@ class _Mount:
             raise ConnectionError("store down")
         if self.outcome == "hangs":
             await asyncio.sleep(10)
-        return self.outcome
+        return target if self.outcome is True else None
 
 
 def _backend(outcome, linked: bool):
@@ -155,7 +155,7 @@ class _History:
         if self.outcome == "raises":
             raise ConnectionError("store down")
         self.saved.append((target, messages, window))
-        return self.outcome
+        return target if self.outcome is True else None
 
 
 def _history_backend(history):

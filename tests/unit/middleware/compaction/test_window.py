@@ -212,6 +212,27 @@ def test_a_window_hashed_in_load_order_is_rehashed_at_its_next_trim() -> None:
     assert old.extend_held(loaded[first:second], loaded[1 : second + 1]) is None
 
 
+def test_a_window_counted_from_a_forks_cut_keeps_its_digest_at_its_next_trim() -> None:
+    """A fork's window counts from the cut, and nothing before the cut is in
+    hand to rehash, so one hashed under an older digest stays under it: what
+    it trimmed is checked in the order it was hashed in, and what it adds in
+    full."""
+    loaded = [*_parallel(1), *_parallel(2), *_parallel(3)]
+    stored = _answers_reversed(loaded)
+    first, second = len(_parallel(1)), 2 * len(_parallel(1))
+    cut = Window(version=1).extend(stored[:first])
+    old = cut.extend(stored[first:second])
+    assert old.holds(stored[first:second], cut)
+
+    added = loaded[second:]
+    head = old.extend_held(added, [*stored[first:second], *added], cut)
+    assert head == old.extend(added) and head.version == 1
+    # Not rehashed, so slices in another order no longer hold it.
+    assert old.extend_held(added, [*loaded[first:second], *added], cut) is None
+    edited = added[-1].model_copy(update={"content": "Answer 3, edited"})
+    assert old.extend_held([*added[:-1], edited], [*stored[first:second], *added], cut) is None
+
+
 def test_the_earlier_index_keeps_only_what_a_summary_lists() -> None:
     messages = _thread(INDEX_LIMIT + 5)
     update = _trim({"messages": messages}, _index(messages, f"h-{INDEX_LIMIT + 4}"))

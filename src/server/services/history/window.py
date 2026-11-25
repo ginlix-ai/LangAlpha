@@ -14,6 +14,10 @@ one request), a request can open with an assistant message that belongs to
 the run before it, and a thread compacted by the old summarizer holds a
 summary where its slices hold the messages it replaced. A count misreads
 each; a thread whose slices do not match is simply not trimmed.
+
+A snapshot fork holds no turns before its cut, only the state there, so its
+messages are read from that one checkpoint and then its own turns' slices,
+and checked from the window that checkpoint kept, never from the first.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from ptc_agent.agent.transcript import Window
 from src.server.database.conversation import turn_slices as slices_db
 from src.server.database.conversation.turn_slices import StoredSlice
 from src.server.database.conversation.threads_read import get_thread_checkpoint_id
+from src.server.services.forks.start import ThreadStart
 from src.server.services.history import slices
 from src.server.services.history.reader import CheckpointHistoryReader, TurnAnchor
 from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
@@ -129,47 +134,72 @@ def _missed(thread_id: str, tip: str | None, count: int, *, extract: bool) -> No
 
 
 async def runs_held(
-    thread_id: str, window: Window, trimmed: Sequence[AnyMessage]
+    thread_id: str,
+    window: Window,
+    trimmed: Sequence[AnyMessage],
+    *,
+    start: ThreadStart = ThreadStart(),
 ) -> Window | None:
-    """``window`` with ``trimmed`` trimmed after it, when the stored slices
-    of the committed branch's turns, read in order, start with exactly the
-    messages of both: every slice up to there is one replay would serve, and
-    together they hash to its digest. None when they do not. A window hashed
-    under an older digest comes back rehashed from them, the messages it adds
-    checked in full (``Window.extend_held``).
+    """``window`` with ``trimmed`` trimmed after it, when the messages of
+    both are exactly the thread's from its ``start`` on: the ones up to a
+    snapshot fork's cut from its one checkpoint, read only while ``window``
+    is short of the cut, and the rest from the stored slices of the
+    committed branch's turns, read in order, every slice up to there one
+    replay would serve. None when they are not. A window hashed under an
+    older digest comes back rehashed from them, the messages it adds checked
+    in full (``Window.extend_held``).
 
-    One indexed read settles the common miss (a thread not yet backfilled
-    holds no slices); only a thread that may be covered pays for the branch
-    walk, which reads checkpoint metadata, never state, and then for decoding
-    the slices a trim would leave as those messages' only copy.
+    ``start`` is read with the thread's row by the caller. One indexed read
+    settles the common miss (a thread not yet backfilled holds no slices);
+    only a thread that may be covered pays for the branch walk, which reads
+    checkpoint metadata, never state, and then for decoding the slices a trim
+    would leave as those messages' only copy.
     """
-    if not await slices_db.has_turn_slices(thread_id, slices.SLICE_KEY):
+    count = window.messages + len(trimmed)
+    own = count > start.head.messages
+    if own and not await slices_db.has_turn_slices(thread_id, slices.SLICE_KEY):
         return None
     tip = await get_thread_checkpoint_id(thread_id)
     if not tip:
         return None
-    count = window.messages + len(trimmed)
-    held = await _read(thread_id, tip, count, extract=False)
-    head = None
-    if held is not None:
-        head = await asyncio.to_thread(window.extend_held, trimmed, held)
+    base, held = start.head, []
+    if window.messages < start.head.messages and start.checkpoint_id is not None:
+        state = await CheckpointHistoryReader.get_instance().aget_state(
+            thread_id, start.checkpoint_id
+        )
+        values = state.values or {}
+        base, held = Window.of(values), list(values.get("messages") or [])
+    need = count - base.messages - len(held)
+    if need > 0:
+        read = await _read(thread_id, tip, need, extract=False)
+        if read is None:
+            _missed(thread_id, tip, count, extract=False)
+            return None
+        held += read
+    head = await asyncio.to_thread(
+        window.extend_held, trimmed, held[: count - base.messages], base
+    )
     if head is None:
         _missed(thread_id, tip, count, extract=False)
     return head
 
 
 async def earlier_runs(
-    thread_id: str, tip: str | None, head: Window
+    thread_id: str, tip: str | None, head: Window, *, after: Window = Window()
 ) -> list[AnyMessage] | None:
     """``head``'s messages, the ones the window trimmed, on the branch ending
     at ``tip`` (the newest checkpoint without one): from the turns' stored
     slices, and from the checkpoints for a turn whose slice replay would not
     serve. None when that branch's turns do not start with exactly them.
+
+    Only the messages trimmed ``after`` the thread's start are read: a
+    snapshot fork's before its cut are the source's (``ThreadStart.head``).
     """
-    if not head.messages:
+    count = head.messages - after.messages
+    if count <= 0:
         return []
-    messages = await _read(thread_id, tip, head.messages, extract=True)
-    if messages is not None and await asyncio.to_thread(head.holds, messages):
+    messages = await _read(thread_id, tip, count, extract=True)
+    if messages is not None and await asyncio.to_thread(head.holds, messages, after):
         return messages
-    _missed(thread_id, tip, head.messages, extract=True)
+    _missed(thread_id, tip, count, extract=True)
     return None
