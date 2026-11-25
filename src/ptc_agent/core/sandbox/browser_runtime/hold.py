@@ -40,6 +40,7 @@ CONTROL_LEASE_S = 60.0
 _FILE = "hold"
 _LOCK = "hold.lock"
 _NAVIGATING = "navigating.lock"
+_MOVING = "moving.lock"
 _HOLDER = re.compile(HOLDER_PATTERN)
 
 T = TypeVar("T")
@@ -103,8 +104,23 @@ def navigating() -> Iterator[None]:
         yield
 
 
+@contextmanager
+def moving() -> Iterator[None]:
+    """Held from a tool update's last look at the hold until the browser it
+    closes is gone, and by a take: one landing in between would be told it
+    holds the page the update then closes, and lose its lease with it."""
+    with locked(_MOVING):
+        yield
+
+
 def held() -> bool:
     return bool(_read().leases)
+
+
+def unseen() -> bool:
+    """Whether the person took the page somewhere the agent has not read since."""
+    hold = _read()
+    return hold.epoch != hold.seen
 
 
 def holds(holder: str) -> bool:

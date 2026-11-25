@@ -30,6 +30,7 @@ from .protocol import (
     page_address,
     release_commands,
     state_file,
+    toolset_seen,
 )
 
 # A read: it starts the browser on its blank page and takes it nowhere, so one
@@ -64,13 +65,18 @@ def status(wait_s: float = 0.0) -> Status:
             token = None
     launched = launch.current() if token else None
     h = host.current()
+    ready = h.ready()
     return Status(
-        h.ready(),
+        ready,
         token is not None,
         token,
         kept=bool(launched and launched.kept),
         port=h.bridge_port,
-        installing=not h.ready() and installing(),
+        installing=not ready and installing(),
+        # Only where the server would ask next: a cloud computer with no
+        # browser may be getting one from a toolset update. A person's own
+        # machine sets its browser up itself and has no toolset to report.
+        toolset=toolset_seen() if not (ready or h.own) else None,
     )
 
 
@@ -129,11 +135,14 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
             if not hold.holds(holder):
                 return _refused("not_held")
             # Nor past the browser's own end, after which this would open another.
-            if not care.look().live():
+            seen = care.look()
+            if not seen.live():
                 return _refused("not_running")
             # Read under the lock, so a save that ended the browser meanwhile
-            # (``choose``) leaves this no launch of the closed one's to run.
-            launched = launch.current()
+            # (``choose``) leaves this no launch of the closed one's to run. On
+            # its daemon's engine when it pins none, or the host's new one
+            # would restart it under the person.
+            launched = seen.pin_engine(launch.current())
             if launched is None:
                 # A browser no command of the wrapper's opened, whose launch is
                 # unknown, so any command could restart it.
@@ -145,6 +154,7 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
                 # person handed it back, which the take that began their hold has
                 # not told the agent.
                 hold.moved()
+                care.note_use()
             if action != "open":
                 # The engine goes back, forward or reloads by running script in the
                 # page, which fails when the page leaves under it, so its exit says
@@ -170,8 +180,19 @@ def control(holder: str, action: str, releases: list[list[str]] | None = None) -
     could not is kept, so the agent waits while the viewer asks again rather
     than acting on a page with the key still down.
     """
+    if action == "take":
+        # Waits out a tool update closing the browser, then finds it closed.
+        with hold.moving():
+            return _control(holder, action, releases)
+    return _control(holder, action, releases)
+
+
+def _control(holder: str, action: str, releases: list[list[str]] | None) -> bool:
     if action != "release" and not care.look().browser_up():
         action = "release"
+    # The person's use of the page, held or handed back, keeps a tool update
+    # from moving the browser under them or just after.
+    care.note_use()
     if action == "release" and releases and not _let_go(holder, releases):
         return hold.holds(holder)
     return hold.control(holder, action)
@@ -188,7 +209,7 @@ def _let_go(holder: str, releases: list[list[str]]) -> bool:
         # Only into this holder's page: one whose hold lapsed is the agent's
         # again, and a browser that ended would start another for the engine.
         seen = care.look()
-        launched = launch.current()
+        launched = seen.pin_engine(launch.current())
         if launched is None or not (hold.holds(holder) and seen.live()):
             return True
         for args in releases:

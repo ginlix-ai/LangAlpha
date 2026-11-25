@@ -8,6 +8,7 @@ to the engine that the server needs to know sits here.
 from __future__ import annotations
 
 import fcntl
+import importlib
 import json
 import os
 import re
@@ -23,16 +24,58 @@ from urllib.parse import urlsplit
 #: PATH, and the commands ``machine.main`` reads answer the server.
 PACKAGE_NAME = "browser_runtime"
 
-#: The engine's release, one binary per platform, keyed by the release's name
-#: for each, with the release's own digest. A computer's image bakes in the
-#: Linux one; a person's own machine downloads the one for its platform (``install``).
-ENGINE_VERSION = "0.41.1"
-ENGINE_SHA256 = {
-    "linux-x64": "2a89295b62ddd497986a9a80b52e1dbe4c1f6bd68ffde67eaae82eec2206af61",
-    "linux-arm64": "f0b3bdaa40abf2a5111ec08e6d242110aaf56045ef5108cbc633bacc8e53ca17",
-    "darwin-x64": "7802f053e7fb25e10548ee10ca60d892c73d42ed2dbb7fc30c2d5925a5c82859",
-    "darwin-arm64": "63b0a97b85a54b4c9b2871318af74104c29b80abd507b53a30316884e062854b",
-}
+#: The engine's unit in the toolset's table (``toolset_runtime``), which pins
+#: its release once for every computer.
+ENGINE_UNIT = "agent-browser"
+
+
+@dataclass(frozen=True)
+class EngineRelease:
+    """The engine's release for one platform, checked against its digest."""
+
+    version: str
+    url: str
+    sha256: str
+
+
+def engine_release(platform: str) -> EngineRelease | None:
+    """The engine's release for *platform*, as the release names it, or None
+    where it has none. A computer's toolset installs the Linux one; a person's
+    own machine downloads the one for its platform (``install``).
+
+    Read when asked, not at import, as every wrapper command imports this
+    module. A table that cannot be read raises rather than answering None,
+    which an install would report as an unsupported platform.
+    """
+    unit = next((u for u in _toolset_runtime("units").load().units if u["name"] == ENGINE_UNIT), None)
+    if unit is None:
+        raise LookupError(f"the toolset's table has no {ENGINE_UNIT} unit")
+    release = unit["platforms"].get(platform)
+    return EngineRelease(unit["version"], release["url"], release["sha256"]) if release else None
+
+
+def toolset_seen() -> Toolset | None:
+    """What the computer's toolset holds, read from its state file and the
+    marker a converge leaves, as the computer's user, so the server learns it
+    from the browser's own ``status`` rather than asking root a second time.
+    None where the runtime that reads them did not ship beside this one.
+    """
+    try:
+        units, converge = _toolset_runtime("units"), _toolset_runtime("converge")
+    except ImportError:
+        return None
+    root = units.DEFAULT_ROOT
+    return Toolset(converge.read_state(root)["version"], converge.converging(root))
+
+
+def _toolset_runtime(module: str):
+    """The toolset runtime's *module*, which ships beside this package:
+    top-level on the machine, whose path starts at ``_internal/src``, and in
+    the same parent package on the host."""
+    parent = (__package__ or "").rpartition(".")[0]
+    name = f"toolset_runtime.{module}"
+    return importlib.import_module(f"{parent}.{name}" if parent else name)
+
 
 #: Where the image installs the real CLI. ``agent-browser`` on a command's PATH
 #: is the wrapper, which runs this one.
@@ -41,6 +84,9 @@ ENGINE_BIN = "/usr/local/lib/agent-browser/agent-browser"
 #: path carries a revision. The engine starts Chrome by it, which is how one the
 #: agent's code starts itself is told apart.
 CHROME_BIN = "/usr/local/bin/chrome-for-testing"
+#: Where the image's Chrome reads the managed policy that keeps it off cloud
+#: metadata hosts and the computer's service ports (``chrome_policy``).
+CHROME_POLICY_FILE = "/etc/opt/chrome_for_testing/policies/managed/langalpha.json"
 #: How the engine names the throwaway profile it starts each Chrome on, in the
 #: temporary directory. A Chrome the agent starts from the same path on a
 #: profile of its own is not the engine's, and neither it nor its profile is
@@ -75,6 +121,40 @@ METADATA_HOSTS = (
 )
 #: The names a Docker container reaches its host by, refused at any port.
 DOCKER_HOSTS = ("host.docker.internal", "gateway.docker.internal")
+
+
+def chrome_policy() -> dict:
+    """Chrome's managed policy on a cloud computer, which the toolset's
+    ``chrome-policy`` unit carries (``scripts/gen_toolset_pins.py`` writes it
+    there). Playwright's Chromium is Chrome for Testing, which reads it only
+    from /etc/opt/chrome_for_testing.
+
+    The proxy every request goes through enforces what the browser may reach,
+    by the address a name resolves to (``proxy.py``). The policy asks the same
+    of Chrome where it can: the list stops a navigation to the metadata
+    services and the agents beside it on loopback by name, local network
+    access stays gated (on by default in the pinned Chrome, whose only switch
+    for it is this opt-out), and WebRTC sends nothing the proxy does not carry.
+    The rest of loopback stays open, where the agent's own apps run. Nothing
+    asks to be remembered.
+    """
+    return {
+        "URLBlocklist": [
+            # An IPv6 address is matched as a URL writes it, in brackets.
+            *(f"[{host}]" if ":" in host else host for host in METADATA_HOSTS),
+            *DOCKER_HOSTS,
+            # localhost and the address are one place reached by two names, so
+            # each port is listed for both.
+            *(f"{host}:{port}" for host in ("localhost", "127.0.0.1", "[::1]") for port in SERVICE_PORTS),
+        ],
+        "LocalNetworkAccessRestrictionsTemporaryOptOut": False,
+        "WebRtcIPHandling": "disable_non_proxied_udp",
+        "PasswordManagerEnabled": False,
+        "AutofillAddressEnabled": False,
+        "AutofillCreditCardEnabled": False,
+        "BrowserSignin": 0,
+        "SyncDisabled": True,
+    }
 
 
 @dataclass(frozen=True)
@@ -353,6 +433,14 @@ CHANGED_MESSAGE = (
     "browser: the person used this browser since you last read it. Nothing was done. "
     "Read the page again, then repeat the command if it still makes sense."
 )
+REOPEN_MESSAGE = (
+    "browser: the browser restarted for a tool update and could not open {} again. "
+    "Nothing was done. Open that address with `agent-browser open`, then repeat the command."
+)
+TABS_CLOSED_MESSAGE = (
+    "browser: the browser restarted for a tool update and kept only the tab that was "
+    "showing. It closed these tabs: {}. Open any you still need with `agent-browser tab new <url>`."
+)
 MEMORY_MESSAGE = (
     "browser: this computer is short of memory. Nothing was done. Close a tab with "
     "`agent-browser tab close`, or the browser with `agent-browser close`, and try again."
@@ -365,13 +453,25 @@ USER_AGENT_MESSAGE = (
 
 
 @dataclass(frozen=True)
+class Toolset:
+    """The toolset as ``status`` reports it: the set version its state file
+    records (None until every unit is current) and whether a converge holds
+    its lock."""
+
+    version: Optional[str] = None
+    converging: bool = False
+
+
+@dataclass(frozen=True)
 class Status:
     """What ``status`` and ``start`` print: whether the image has the engine,
     whether a browser is up behind a bridge, and the token its stream opens on.
     ``low_memory`` is a start that opened nothing because memory is short;
     ``kept``, a running browser on the kept profile, which keeps its sign-ins;
     ``port``, where the bridge listens; ``installing``, a machine with no
-    browser yet that is setting one up (``install``)."""
+    browser yet that is setting one up (``install``); ``toolset``, on a cloud
+    computer with no browser, which its toolset may be bringing, what that
+    toolset holds, and None from a runtime that does not report it."""
 
     installed: bool
     running: bool = False
@@ -380,6 +480,7 @@ class Status:
     kept: bool = False
     port: int = BRIDGE_PORT
     installing: bool = False
+    toolset: Optional[Toolset] = None
 
     def to_wire(self) -> dict[str, object]:
         return asdict(self)
@@ -404,7 +505,15 @@ class Status:
             # A runtime from before a machine's ports were its own says none.
             port=port if type(port) is int and 0 < port < 65536 else BRIDGE_PORT,
             installing=answer.get("installing") is True,
+            toolset=_read_toolset(answer.get("toolset")),
         )
+
+
+def _read_toolset(answer: object) -> Toolset | None:
+    if not isinstance(answer, dict):
+        return None
+    version = answer.get("version")
+    return Toolset(version if isinstance(version, str) else None, answer.get("converging") is True)
 
 
 #: A revision: fixed-width lowercase hex nanoseconds, so text order is save order.
