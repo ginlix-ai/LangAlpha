@@ -47,7 +47,15 @@ from chartkit.schema import (
 )
 from ptc_agent.core.sandbox.jobs.protocol import OUTBOX_READ_MAX, Outbox
 from src.server.database.chart_annotation import add_layers
-from src.server.models.chart_layer import ChartRef, CommandOutbox, LayerRef, PublishedLayer
+from src.server.models.chart_layer import (
+    ChartRef,
+    CommandOutbox,
+    LayerRef,
+    PublishedLayer,
+    element_label,
+    point_text,
+    layer_number as _num,
+)
 from src.tools.chart_annotation.stream import emit, get_writer
 
 logger = logging.getLogger(__name__)
@@ -282,22 +290,13 @@ def _count(n: int, noun: str, plural: str | None = None) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {plural or noun + 's'}"
 
 
-def _num(x: float) -> str:
-    return f"{x:.6g}" if abs(x) < 1e6 else f"{x:.0f}"
-
-
 def _pt(p: Any) -> str:
-    return f"{_num(p.price)} @{p.time}"
-
-
-def _name(d: LayerDrawing) -> str:
-    name = d.id or d.label
-    return f" {name!r}" if name else ""
+    return point_text(p.price, p.time)
 
 
 def _drawing(d: LayerDrawing) -> str:
     """One drawing with its defining coordinates."""
-    head = f"{d.type}{_name(d)}"
+    head = element_label("drawing", d.type, d.id, d.label)
     match d:
         case SegmentDrawing():
             ext = f", extend {d.extend}" if d.extend not in (None, "none") else ""
@@ -381,7 +380,8 @@ def describe_layer(layer: ChartLayer, chart_id: str) -> str:
     for s in layer.series:
         span = f"{s.data[0].time} → {s.data[-1].time}, last {_num(s.data[-1].value)}" if s.data else "no points"
         lines.append(
-            f"  series {s.id} {s.title!r} ({s.pane}, {s.type}): {_count(len(s.data), 'point')}, {span}"
+            f"  {element_label('series', None, s.id, s.title)} ({s.pane}, {s.type}): "
+            f"{_count(len(s.data), 'point')}, {span}"
         )
     for f in layer.fills:
         lines.append(f"  fill {f.a} ↔ {f.b}")
@@ -408,7 +408,9 @@ def describe_layer(layer: ChartLayer, chart_id: str) -> str:
         lines.append(f"  … {len(layer.drawings) - _MAX_LISTED_DRAWINGS} more drawings")
     for a in layer.alerts:
         c = a.condition
-        lines.append(f"  alert {a.id}: price crosses {c.direction} {_num(c.level)}")
+        lines.append(
+            f"  {element_label('alert', None, a.id, None)}: price crosses {c.direction} {_num(c.level)}"
+        )
     if len(lines) == 1:
         lines.append("  (no elements)")
     return "\n".join(lines)

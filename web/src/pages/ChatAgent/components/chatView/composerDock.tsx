@@ -110,7 +110,7 @@ export function ComposerDockSlot({ workspaceId, path, tabId, ui, active }: {
   const dock = useContext(ComposerDockContext);
   const rootDir = useWorkspaceFolders()?.rootDir;
   const docPath = ui.docOf(tabId, artifactPathKey(path, rootDir));
-  const { fallback } = useCommentDestinations(workspaceId, docPath);
+  const { fallback } = useCommentDestinations(workspaceId, { kind: 'file', path: docPath });
   if (!dock) return null;
   // Until the server says where the file's comments go, a file the chat has
   // comments queued from is taken on trust; its word replaces that.

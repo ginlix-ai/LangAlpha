@@ -13,7 +13,7 @@ import type React from 'react';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { queryKeys } from '@/lib/queryKeys';
 import { requestShowLayers, resetLayerViewForTesting } from '../stores/layerViewStore';
-import { chartKeyFor } from '../utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 
 const mocks = vi.hoisted(() => ({
   updateThread: vi.fn(),
@@ -48,14 +48,25 @@ vi.mock('@/components/ui/langalpha-fab', () => ({
 }));
 
 vi.mock('../components/StockHeader', () => ({ default: () => <div data-testid="stock-header" /> }));
-// The chart stands in as its symbol, interval and an "ask about this layer" button.
+// The chart stands in as its symbol, interval, the comment it is asked to
+// bring forward, and an "ask about this layer" button.
 vi.mock('../components/MarketChart', async () => {
   const { useChartComposer } = await import('@/components/chart/chartComposer');
   return {
-    default: function Chart({ symbol, interval }: { symbol: string; interval: string }) {
+    default: function Chart({ symbol, interval, comments }: {
+      symbol: string;
+      interval: string;
+      comments?: { ui: { focus: { path: string; commentId: string } | null } };
+    }) {
       const composer = useChartComposer();
+      const focus = comments?.ui.focus;
       return (
-        <div data-testid="market-chart" data-symbol={symbol} data-interval={interval}>
+        <div
+          data-testid="market-chart"
+          data-symbol={symbol}
+          data-interval={interval}
+          data-focus={focus ? `${focus.path}#${focus.commentId}` : ''}
+        >
           <button
             type="button"
             onClick={() => composer.ask({ symbol, timeframe: interval, layerId: 'a', layerTitle: 'Channel' })}
@@ -201,10 +212,10 @@ function ChatPage() {
 
 let queryClient: QueryClient;
 
-function renderPage() {
+function renderPage(entry = '/market') {
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/market']}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/market" element={<MarketView />} />
           <Route path="/chat/t/:threadId" element={<ChatPage />} />
@@ -354,5 +365,11 @@ describe('the chart beside the mobile composer', () => {
     renderPage();
     await screen.findByTestId('market-chart');
     expect(chart()).toHaveAttribute('data-symbol', 'GOOGL');
+  });
+
+  it('opens the comment a phone followed from the chat on the chart it lands on', async () => {
+    renderPage('/market?symbol=NVDA&tf=1hour&ws=ws-1&comment=c-9');
+    await vi.waitFor(() => expect(chart()).toHaveAttribute('data-focus', 'NVDA:1hour#c-9'));
+    expect(chart()).toHaveAttribute('data-symbol', 'NVDA');
   });
 });

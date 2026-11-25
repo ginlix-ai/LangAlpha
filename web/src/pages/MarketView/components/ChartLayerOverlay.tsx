@@ -28,6 +28,7 @@ import { nearestBarIndex } from '../utils/barTime';
 import { withAlpha } from '../utils/canvasKit';
 import type { ChartLayerPrimitive } from '../utils/chartLayer/ChartLayerPrimitive';
 import { cleanAnchors, type LayerElementInfo } from '../utils/chartLayer/elements';
+import { layerKeyUnder } from '../utils/chartLayer/layerKeyUnder';
 import { layerTimeToSeconds } from '../utils/chartLayer/timeGrid';
 import { cardPosition, type CardMetrics } from '../utils/layerCardPosition';
 import './ChartLayerOverlay.css';
@@ -85,29 +86,6 @@ function paneTopOf(chart: IChartApi, paneIndex: number, host: HTMLElement | null
   }
 }
 
-/** The element key under the pointer, if it is one this overlay explains. */
-function hoveredKey(
-  param: MouseEventParams<Time>,
-  elements: Map<string, LayerElementInfo>,
-  seriesKeys: Map<ISeriesApi<SeriesType>, string>,
-  prim: ChartLayerPrimitive | null,
-): string | null {
-  const info = param.hoveredInfo;
-  const id = info?.objectId ?? param.hoveredObjectId;
-  if (typeof id === 'string' && elements.has(id)) return id;
-  const series = info?.series ?? param.hoveredSeries;
-  if (series) {
-    const key = seriesKeys.get(series);
-    if (key && elements.has(key)) return key;
-  }
-  // Fallback for the price pane: the primitive's own last-frame shapes.
-  if (prim && param.point && (param.paneIndex ?? 0) === 0) {
-    const hit = prim.hitAt(param.point.x, param.point.y);
-    if (hit && elements.has(hit.key)) return hit.key;
-  }
-  return null;
-}
-
 export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
   chart,
   seriesRef,
@@ -162,8 +140,9 @@ export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
     if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
     hoverTimer.current = null;
   };
+  // The element key under the pointer, if it is one this overlay explains.
   const keyAt = (param: MouseEventParams<Time>) =>
-    hoveredKey(param, elements, seriesKeysRef.current, primitiveRef.current);
+    layerKeyUnder(param, seriesKeysRef.current, primitiveRef.current, (key) => elements.has(key));
 
   const onMove = useEffectEvent((param: MouseEventParams<Time>) => {
     if (!chart || !enabled || !param.point) {

@@ -6,20 +6,26 @@ import { fixed2, signedFixed2 } from '@/lib/format';
 import { formatLayerAsOf } from '@/pages/MarketView/utils/layerDisplay';
 import type { IntroVisualId } from '../../registry';
 import { CLOSE, Camera, REST, type Shot, VIEW, shot } from './camera';
-import { Candles, LayerLabel, labelAnchor } from './candles';
+import { Candles, LayerLabel } from './candles';
 import {
+  ChartCommentTools,
   CommentBox,
+  CommentCard,
+  CommentPin,
+  CommentReplyLine,
+  DragArea,
   FoldedIntervals,
-  Pin,
+  ModeHint,
   PublishRow,
-  Selection,
-  SelectionChip,
-  SelectionTools,
-  SentSelection,
+  QueuedDeck,
+  SentComment,
+  SpotOutline,
   ToolBtn,
-  addButton,
-  besideRegion,
+  besidePin,
   dragBox,
+  queueButton,
+  useDeckPlaceholder,
+  useRegionLabel,
 } from './chartTools';
 import { StockPriceCard } from './charts';
 import { PAST, useSceneTime } from './clock';
@@ -41,11 +47,13 @@ import type { IntroScene } from './types';
 
 /* The thread intro's chart step: a chart tab in the file panel
    (`MarketChartSurface` in its compact form, as `ChartTab` hosts it). The
-   user takes a region of it, notes it and sends it from the thread's
-   composer; the agent publishes a layer labelling the news behind the move
-   on the same chart and answers with the layer's card in the transcript. A
-   camera follows the work across the page: the chart, the composer, the
-   reply, then the chart again, where a label opens on the agent's note. */
+   user turns comment mode on, drags across the earnings gap and the fade,
+   asks about it in the comment box and adds it to the queue, then sends it
+   from the thread's composer; the agent publishes a layer labelling the news
+   behind the move on the same chart, with the layer's card in the
+   transcript, and answers under the comment. A camera follows the work
+   across the page: the chart, the composer, the reply, then the chart
+   again, where the comment's pin opens on the answer. */
 /* eslint-disable react-refresh/only-export-components -- scene module:
    private scene components, one record export */
 
@@ -73,8 +81,8 @@ const SCALE = chartScale(NVDA, CHART.w, CHART.h);
 const toPage = (x: number, y: number) => ({ x: CHART.x + x, y: CHART.y + y });
 
 /** The toolbar from its right end: the trail's two buttons, then the menu,
-    Price level and Region. */
-const REGION_BTN = {
+    the comment list and Comment. */
+const COMMENT_BTN = {
   x: CARD.x + CARD.w - 1 - 5 - (11 + 2 + 11) - 4 - (11 + 2) - (11 + 2) - 5.5,
   y: CARD.y + 1 + TOOLBAR_H / 2,
 };
@@ -83,64 +91,68 @@ const SEND = { x: PANEL_X - 10 - 7 - 8, y: VIEW.height - 10 - 7 - 8 };
 
 const { earnings: EARNINGS, exportRule: EXPORT_RULE } = NVDA_EVENTS;
 
-/** The earnings gap and the slide that filled it: Aug 27 to Sep 11. */
+/** The earnings gap and the slide that filled it, Aug 27 to Sep 11,
+    dragged from its top left. Its pin's tail is where the drag was let go. */
 const REGION = {
   x0: SCALE.x(EARNINGS.i) - SCALE.step / 2,
   y0: SCALE.y(187.6),
   x1: SCALE.x(20) + SCALE.step / 2,
   y1: SCALE.y(169.9),
 };
-const BOX_W = 88;
-const BOX = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0, BOX_W);
-const PIN = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0, 10);
-const ADD = addButton(BOX, BOX_W);
-/** The export rule's label, on its chip. */
-const LABEL = toPage(...labelAnchor(SCALE, EXPORT_RULE));
+const REGION_DATES = ['2026-08-27', '2026-09-11'] as const;
+const BOX_W = 100;
+const BOX = besidePin(SCALE, REGION.x1, REGION.y1, BOX_W);
+const QUEUE = queueButton(BOX, BOX_W);
+const CARD_W = 110;
+const COMMENT_CARD = besidePin(SCALE, REGION.x1, REGION.y1, CARD_W);
+/** On the pin, in page px. */
+const ON_PIN = toPage(REGION.x1 + 5, REGION.y1 - 5);
 
 const CH = {
   arm: 850,
   press: 1350,
   release: 2050,
   note: 2250,
-  add: 3050,
-  added: 3200,
-  ask: 4200,
-  send: 5300,
-  think: 5500,
-  draw: 5800,
-  drawn: 6600,
-  answer: 6800,
+  queue: 3450,
+  /** The box closes on Add to queue, leaving the pin and the queue's row. */
+  added: 3600,
+  send: 5000,
+  think: 5200,
+  draw: 5500,
+  drawn: 6300,
+  answer: 6600,
   open: 8900,
-  length: 9900,
+  length: 10400,
 };
 
-const NOTE = 'Earnings gap';
-const ASK = 'Why did this fade?';
+const NOTE = 'Why did this fade?';
+const ANSWER =
+  'It faded on news: a **new export rule** on Sep 8 took 3% off in a day, and the slide ran through the gap to **170.60**.';
 
 /** The camera: on the panel whole, the chart card from its toolbar to its
     volume and an edge of the chat beside it, as the region is taken and
-    noted; across to the chat as the chip lands in the composer, held there
-    as the ask is typed and the reply comes in above it; then in on the
-    chart as its labels land and one opens on the agent's note. */
+    the comment written; across to the chat as it waits in the composer,
+    held there as it goes and the reply comes in above it; then in on the
+    chart as its labels land and the comment's pin opens on the answer. */
 const SHOTS: [Shot, ...Shot[]] = [
   shot(0, 240, 132, REST),
-  shot(4100, 160, 198, REST, 850),
-  shot(8500, 267, 142, CLOSE, 900),
+  shot(4500, 160, 198, REST, 850),
+  shot(8500, 267, 205, CLOSE, 900),
 ];
 
-/** Region armed; the drag from the region's corner, pressed over the
-    dwell, to its far corner and off it; Add on the comment box; send in
-    the composer; and the export rule's label, clicked to pin its card. */
+/** Comment on; the drag from the region's corner, pressed over the dwell,
+    to its far corner and off it; Add to queue in the box; send in the
+    composer; and the comment's pin, clicked to open its card. */
 const POINTER = pointerScript(
   { at: 150, x: 352, y: 168 },
   {
-    region: { ...REGION_BTN, arrive: 650, click: CH.arm, leave: 1000 },
+    comment: { ...COMMENT_BTN, arrive: 650, click: CH.arm, leave: 1000 },
     anchor: { ...toPage(REGION.x0, REGION.y0), arrive: 1300, leave: 1400 },
     release: { ...toPage(REGION.x1, REGION.y1), arrive: 2050 },
-    clear: { ...toPage(REGION.x1 + 4, REGION.y1 - 10), arrive: 2350 },
-    add: { ...toPage(ADD.x, ADD.y), arrive: 2900, click: CH.add, leave: 3300 },
-    send: { ...SEND, arrive: 5100, click: CH.send, leave: 5600 },
-    label: { ...LABEL, arrive: 8800, click: CH.open - 60 },
+    clear: { ...toPage(REGION.x1 - 6, REGION.y1 + 12), arrive: 2350 },
+    queue: { ...toPage(QUEUE.x, QUEUE.y), arrive: 3300, click: CH.queue, leave: 3700 },
+    send: { ...SEND, arrive: 4800, click: CH.send, leave: 5300 },
+    pin: { ...ON_PIN, arrive: 8700, click: CH.open - 60 },
   }
 );
 
@@ -210,12 +222,15 @@ function LegendStats() {
 }
 
 /** The compact chart in the panel: the legend and the folded interval
-    picker, the selection tools and the menu, then the tab's own actions,
+    picker, the comment tools and the menu, then the tab's own actions,
     add to context and open in MarketView. */
-function PanelChart({ armed }: { armed: boolean }) {
+function PanelChart() {
   const t = useSceneTime();
-  const sent = t >= CH.send;
-  const drawing = t >= CH.press && !sent;
+  const place = useRegionLabel(...REGION_DATES);
+  const drafting = t >= CH.release && t < CH.added;
+  const answered = t >= CH.answer;
+  const open = t >= CH.open;
+  const pin = t < CH.send ? 'queued' : t < CH.think ? 'sent' : answered ? 'sent' : 'working';
   return (
     <div
       className="flex flex-1 flex-col px-[5px] pb-[5px] pt-1"
@@ -232,7 +247,11 @@ function PanelChart({ armed }: { armed: boolean }) {
           <LegendLead />
           <FoldedIntervals />
           <span className="flex items-center gap-[2px]">
-            <SelectionTools armed={armed} />
+            <ChartCommentTools
+              on={t >= CH.arm}
+              open={t >= CH.added ? 1 : 0}
+              unread={answered && !open ? 1 : 0}
+            />
             <ToolBtn icon={Menu} />
           </span>
           <span className="flex items-center gap-[2px]">
@@ -242,29 +261,46 @@ function PanelChart({ armed }: { armed: boolean }) {
         </div>
         <LegendStats />
         <Candles series={NVDA} scale={SCALE}>
-          {drawing && t < CH.added && (
-            <Selection {...dragBox(REGION, POINTER.path, CHART, t, CH)} />
+          {t >= CH.arm && <ModeHint at={CH.arm} />}
+          <LayerLabel scale={SCALE} el={EARNINGS} at={CH.drawn} />
+          <LayerLabel scale={SCALE} el={EXPORT_RULE} at={CH.drawn} />
+          {t >= CH.press && t < CH.release && (
+            <DragArea {...dragBox(REGION, POINTER.path, CHART, t, CH)} />
           )}
-          {drawing && t >= CH.added && <Selection {...REGION} active={false} />}
-          {t >= CH.release && t < CH.added && (
-            <CommentBox
-              left={BOX.left}
-              top={BOX.top}
-              width={BOX_W}
-              pressed={t >= CH.add}
-              text={t >= CH.note ? <Typed text={NOTE} at={CH.note} cps={18} /> : undefined}
+          {(drafting || open) && <SpotOutline picked={drafting} {...REGION} />}
+          {drafting && (
+            <>
+              <CommentPin n={1} state="draft" left={REGION.x1} top={REGION.y1} />
+              <CommentBox
+                left={BOX.left}
+                top={BOX.top}
+                width={BOX_W}
+                head={place}
+                pressed={CH.queue}
+                text={t >= CH.note ? <Typed text={NOTE} at={CH.note} cps={18} /> : undefined}
+              />
+            </>
+          )}
+          {t >= CH.added && (
+            <CommentPin
+              n={1}
+              state={pin}
+              unread={answered && !open}
+              open={open}
+              left={REGION.x1}
+              top={REGION.y1}
             />
           )}
-          {t >= CH.added && !sent && <Pin n={1} left={PIN.left} top={PIN.top} />}
-          <LayerLabel scale={SCALE} el={EARNINGS} layer={NVDA_LAYER} at={CH.drawn} />
-          <LayerLabel
-            scale={SCALE}
-            el={EXPORT_RULE}
-            layer={NVDA_LAYER}
-            at={CH.drawn}
-            hover={t >= POINTER.beats.label.arrive}
-            open={t >= CH.open}
-          />
+          {open && (
+            <CommentCard
+              left={COMMENT_CARD.left}
+              top={COMMENT_CARD.top}
+              width={CARD_W}
+              n={1}
+              words={NOTE}
+              reply={ANSWER}
+            />
+          )}
         </Candles>
       </div>
     </div>
@@ -345,10 +381,11 @@ function LayerCard() {
   );
 }
 
-/** The chat column: a thread with history, then the selection's chip above
-    the composer while it waits to go out. */
+/** The chat column: a thread with history, then the comment as it goes out
+    and the turn that answers it. */
 function Chat() {
   const t = useSceneTime();
+  const place = useRegionLabel(...REGION_DATES);
   return (
     <>
       {/* a thread with history, scrolled to its newest lines, the oldest
@@ -369,33 +406,36 @@ function Chat() {
           at={PAST}
         />
         <Reply text="It gapped to **186.90** on Aug 27, then gave most of it back by mid-September." />
-        <SentSelection at={CH.send} text={ASK} note={NOTE} />
+        <SentComment at={CH.send} words={NOTE} place={place} />
         {t >= CH.think && t < CH.draw && (
           <Loader color="var(--color-icon-muted)" className="text-[10px]" />
         )}
         <PublishRow at={CH.draw} done={CH.drawn} />
         {t >= CH.drawn && <LayerCard />}
-        <Reply
-          text="It faded on news: a **new export rule** on Sep 8 took 3% off in a day, and the slide ran through the gap to **170.60**. Both events are labelled on the chart."
-          at={CH.answer}
-          cps={110}
-        />
+        <CommentReplyLine at={CH.answer} read={CH.open} text={ANSWER} />
       </Transcript>
-      {t >= CH.added && t < CH.send && <SelectionChip note={NOTE} at={CH.added} />}
     </>
   );
 }
 
 function ChartPanel() {
   const t = useSceneTime();
+  const placeholder = useDeckPlaceholder();
+  const place = useRegionLabel(...REGION_DATES);
+  const queued = t >= CH.added && t < CH.send;
   return (
     <Camera shots={SHOTS} pointer={POINTER}>
       <ThreadPage
         title="NVDA earnings"
         tabs={<PanelTab icon={CandlestickChart} label="NVDA" active />}
         chat={<Chat />}
-        panel={<PanelChart armed={t >= CH.arm && t < CH.release} />}
-        ask={{ text: ASK, at: CH.ask, send: CH.send, cps: 22 }}
+        panel={<PanelChart />}
+        dock={{
+          chip: queued ? <QueuedDeck at={CH.added} words={NOTE} place={place} /> : undefined,
+          placeholder: queued ? placeholder : undefined,
+          ready: queued,
+          sendAt: [CH.send],
+        }}
       />
     </Camera>
   );

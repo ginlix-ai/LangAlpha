@@ -13,6 +13,7 @@ import { fetchArtifactComments } from '@/hooks/useArtifact';
 import { renderHookWithProviders } from '@/test/utils';
 import type { ArtifactCommentsShown, QueuedArtifactComment } from '@/types/api';
 import type { CommentSendListener } from '../../../hooks/utils/requestKey';
+import type { CommentTarget } from '../../../utils/api/artifacts';
 import type { CommentInWorkspace } from '../artifactCommentSend';
 import { refusalReason, sendBatches, type BatchOutcome } from '../commentSends';
 import { TAKEN_MS } from '../commentSendStore';
@@ -41,10 +42,16 @@ function comment(id: string, over: Partial<CommentInWorkspace> = {}): CommentInW
 
 /**
  * `carries: false` is a chat that took nothing (no thread, a send it could
- * not start). `tell` speaks for the chat's request from then on.
+ * not start). `tell` speaks for the chat's request from then on. With
+ * `threadId` null the chat is a new one, which takes its request once its
+ * create has made the thread `t-new`, a few microtasks on. `move` is the chat
+ * moving on (its first send naming its thread, a turn ending).
  */
-function mount({ carries = true }: { carries?: boolean } = {}) {
+function mount({ carries = true, threadId = 't1', running = false }: { carries?: boolean; threadId?: string | null; running?: boolean } = {}) {
+  const at = { threadId, running };
   const chat: ArtifactCommentsShown[] = [];
+  /** The thread the chat stood in as each send reached it. */
+  const sentIn: (string | null)[] = [];
   const listeners = new Set<CommentSendListener>();
   const tell: CommentSendListener = (comments, outcome) => {
     for (const listener of [...listeners]) listener(comments, outcome);
@@ -54,23 +61,37 @@ function mount({ carries = true }: { carries?: boolean } = {}) {
     return () => { listeners.delete(listener); };
   };
   const hook = renderHookWithProviders(() => useChatCommentSends({
-    threadId: 't1',
-    running: false,
+    threadId: at.threadId ?? undefined,
+    workspaceId: 'ws',
+    running: at.running,
     watch,
     chatCovered: () => false,
     // The chat's send takes its request at once and says so.
     sendToChat: (shown) => {
       chat.push(shown);
-      if (carries) tell(shown, 'began');
+      sentIn.push(at.threadId);
+      if (!carries) return Promise.resolve(null);
+      if (at.threadId) {
+        tell(shown, 'began');
+        return Promise.resolve(at.threadId);
+      }
+      return Promise.resolve().then(() => {
+        tell(shown, 'began');
+        return 't-new';
+      });
     },
   }));
-  return { ...hook, chat, tell };
+  const move = (next: Partial<typeof at>) => {
+    Object.assign(at, next);
+    hook.rerender();
+  };
+  return { ...hook, chat, sentIn, tell, move };
 }
 
 /** Send all for one batch to the chat beside, as the toolbar does; `outcome()` is undefined until it settles. */
-function sendAll(result: ReturnType<typeof mount>['result'], comments: CommentInWorkspace[]) {
+function sendAll(result: ReturnType<typeof mount>['result'], comments: CommentInWorkspace[], to: CommentTarget = { threadId: 't1' }) {
   let outcomes: BatchOutcome[] | undefined;
-  const done = sendBatches([{ to: { threadId: 't1' }, comments }], {
+  const done = sendBatches([{ to, comments }], {
     sender: result.current.sender,
     sends: result.current.sends,
     reasonOf: (err) => refusalReason(t, err, true),
@@ -204,5 +225,78 @@ describe('useChatCommentSends: a send to the chat beside', () => {
       await wentAfterAll.done;
     });
     expect(wentAfterAll.outcome()).toEqual([['t1', null]]);
+  });
+
+  it('from a new chat, a send to a new thread in its workspace starts the chat\'s thread', async () => {
+    const { result, chat, tell } = mount({ threadId: null });
+    expect(result.current.sender).toMatchObject({ beside: { newThreadIn: 'ws' } });
+    const send = sendAll(result, [comment('c1', { delivery: 'note', thread_id: null })], { newThreadIn: 'ws' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    expect(chat.map((s) => s.comments.map((c) => c.comment_id))).toEqual([['c1']]);
+    expect(result.current.sends.get('c1')?.phase).toBe('sending');
+    await act(async () => {
+      tell(chat[0], 'accepted');
+      await send.done;
+    });
+    // The thread the chat's create made, which its request was taken for.
+    expect(send.outcome()).toEqual([['t-new', null]]);
+    expect(fetchRows).not.toHaveBeenCalled();
+  });
+
+  it('from a new chat whose first send is making its thread, joins that thread once named', async () => {
+    const { result, chat, sentIn, tell, move } = mount({ threadId: null, running: true });
+    const send = sendAll(result, [comment('c1', { delivery: 'note', thread_id: null })], { newThreadIn: 'ws' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    // Nothing goes to the placeholder the chat stands in until then.
+    expect(chat).toEqual([]);
+
+    await act(async () => {
+      move({ threadId: 't-made' });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(sentIn).toEqual(['t-made']);
+    await act(async () => {
+      tell(chat[0], 'accepted');
+      await send.done;
+    });
+    expect(send.outcome()).toEqual([['t-made', null]]);
+  });
+
+  it('from a new chat whose first send ends without a thread, is not sent', async () => {
+    const { result, chat, move } = mount({ threadId: null, running: true });
+    const send = sendAll(result, [comment('c1', { delivery: 'note', thread_id: null })], { newThreadIn: 'ws' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    // The chat's effects run once the move is committed.
+    act(() => move({ running: false }));
+    await act(async () => { await send.done; });
+    expect(chat).toEqual([]);
+    expect(send.outcome()).toEqual([[null, 'pageViewer:comments.notSentQueued']]);
+  });
+
+  it('settles by the comments\' rows once the chat goes before answering', async () => {
+    const { result, chat, unmount } = mount();
+    fetchRows.mockResolvedValueOnce([comment('c1', { delivery: 'sent', thread_id: 't1' })]);
+    const send = sendAll(result, [comment('c1')]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(chat).toHaveLength(1);
+
+    await act(async () => {
+      unmount();
+      await send.done;
+    });
+    expect(send.outcome()).toEqual([['t1', null]]);
+  });
+
+  it('is not sent once the chat goes while its new thread is still being made', async () => {
+    const { result, chat, unmount } = mount({ threadId: null, running: true });
+    const send = sendAll(result, [comment('c1', { delivery: 'note', thread_id: null })], { newThreadIn: 'ws' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => {
+      unmount();
+      await send.done;
+    });
+    expect(chat).toEqual([]);
+    expect(send.outcome()).toEqual([[null, 'pageViewer:comments.notSentQueued']]);
   });
 });

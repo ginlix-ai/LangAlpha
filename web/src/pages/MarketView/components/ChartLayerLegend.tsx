@@ -26,7 +26,7 @@ import { useChartComposer } from '@/components/chart/chartComposer';
 import { useChartLayerRows, useRemoveChartLayer } from '../hooks/useChartLayerQuery';
 import { setLayerHidden, useHiddenLayers } from '../stores/layerViewStore';
 import type { ChartLayer, StoredChartLayer } from '../types/chartLayer';
-import type { ChartKey } from '../utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 import { formatLayerAsOf, formatLayerAsOfShort, layerAccent } from '../utils/layerDisplay';
 
 /** More layers than this and the stack folds to one chip. */

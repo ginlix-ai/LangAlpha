@@ -8,7 +8,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReportSource } from '@/types/api';
 import { chartLayersKey } from '@/pages/MarketView/utils/chartLayerCache';
-import { chartKeyFor } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import type { SSEEvent } from '../../types';
 import { createStreamEventProcessor } from '../processStreamEvent';
 

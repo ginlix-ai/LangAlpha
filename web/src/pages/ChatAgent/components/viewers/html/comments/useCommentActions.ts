@@ -11,7 +11,7 @@ import {
   updateArtifactComment,
   type CommentTarget,
 } from '@/pages/ChatAgent/utils/api/artifacts';
-import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
+import type { ArtifactComment, ArtifactCommentAnchor, ArtifactTarget } from '@/types/api';
 import { sendLook, type CommentSendStore } from '../../../artifactComments/commentSendStore';
 import type { ArtifactCommentSender } from '../../../artifactComments/sendContext';
 import type { SendLook } from '../../../artifactComments/commentSendStore';
@@ -23,11 +23,12 @@ type HoldRoute = Extract<CommentRoute, { kind: 'note' | 'queue' }>;
 
 export interface CommentActions {
   /**
-   * A new comment on the file at `path`, made with its record if the file has
-   * none. `fileSha` is the live file's hash as the view loaded it.
+   * A new comment on `target` (a file or a chart, as `targetFor` keys it),
+   * made with its record if it has none. `fileSha` is the live file's hash as
+   * the view loaded it.
    */
   create: (input: {
-    path: string;
+    target: ArtifactTarget;
     anchor: ArtifactCommentAnchor;
     body: string;
     route: CommentRoute;
@@ -96,8 +97,8 @@ export function useCommentActions({ workspaceId, sender, sends }: CommentActions
     }).then(() => refreshArtifactComments(queryClient, [{ artifactId: comment.artifact_id, workspaceId }], ALL));
   }, [sender, sends, t, queryClient, workspaceId]);
 
-  const create = useCallback<CommentActions['create']>(async ({ path, anchor, body, route, fileSha, title }) => {
-    const id = (await ensure(workspaceId, path)).artifact_id;
+  const create = useCallback<CommentActions['create']>(async ({ target, anchor, body, route, fileSha, title }) => {
+    const id = (await ensure(workspaceId, target)).artifact_id;
     const comment = await createArtifactComment(id, {
       anchor,
       body,

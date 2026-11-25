@@ -12,7 +12,7 @@ import { layerAccent } from '../../utils/layerDisplay';
 import { getHiddenLayers, resetLayerViewForTesting } from '../../stores/layerViewStore';
 import { makeLayer, makeStored } from '../../stores/__tests__/layerFixture';
 import { deleteChartLayer, fetchChartLayers } from '../../utils/api';
-import { chartKeyFor } from '../../utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import { applyChartLayerEvent } from '../../utils/chartLayerCache';
 import type { StoredChartLayer } from '../../types/chartLayer';
 

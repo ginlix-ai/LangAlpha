@@ -8,6 +8,7 @@
  */
 import type { ArtifactCommentAnchor, ArtifactCommentRegionBox, RegionAnchor } from '@/types/artifacts';
 import { MAX_REGION_BOXES } from '../../html/pageProtocol';
+import { laidMarks, markValue } from '../spotKit';
 import type { Edges, Found, SpotPicker, SpotStrategy } from '../spotStrategy';
 
 /** What a box is drawn on, and the PDF page it is, if any. */
@@ -25,14 +26,8 @@ export interface RegionSurfaces {
   points: boolean;
 }
 
-/** Marks what the page lays over the content itself, which a change to the content is not. */
-export const OWN_ATTR = 'data-comment-own';
-const LAYER_CLASS = 'comment-regions';
-const BOX_CLASS = 'comment-region';
 /** The least a box is across, in pixels: a shorter drag is a slip, not a box. */
 const MIN_BOX_PX = 6;
-/** How large a point is outlined and pinned, in pixels. */
-const POINT_PX = 14;
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 /** A box's side, never rounded to nothing: on a surface over 12,000px a 6px side would be, and a box of no width is no box. */
@@ -43,23 +38,9 @@ function keyOf(b: ArtifactCommentRegionBox): string {
   return `${b.page ?? ''}|${b.x}|${b.y}|${b.w}|${b.h}`;
 }
 
-/** Whether a change the content observer saw is only the page's own boxes being laid or moved. */
-export function ownChange(record: MutationRecord): boolean {
-  const own = (n: Node) => n instanceof Element && !!n.closest(`[${OWN_ATTR}]`);
-  if (record.type !== 'childList') return own(record.target);
-  const nodes = [...record.addedNodes, ...record.removedNodes];
-  return nodes.length > 0 && nodes.every((n) => n instanceof Element && n.hasAttribute(OWN_ATTR));
-}
-
 /** A box's anchor entry, read off the element that marks it. */
 export function boxOf(spot: Element): ArtifactCommentRegionBox | null {
-  const raw = spot instanceof HTMLElement ? spot.dataset.box : undefined;
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as ArtifactCommentRegionBox;
-  } catch {
-    return null;
-  }
+  return markValue<ArtifactCommentRegionBox>(spot, 'box');
 }
 
 /**
@@ -68,43 +49,16 @@ export function boxOf(spot: Element): ArtifactCommentRegionBox | null {
  * finds lets go of the ones it did not name.
  */
 export function regionSpots(surfaces: RegionSurfaces, base: SpotStrategy | null = null): SpotStrategy {
-  const laid = new Map<string, { el: HTMLElement; pass: number }>();
-  let pass = 0;
+  const marks = laidMarks<ArtifactCommentRegionBox>({ field: 'box', keyOf, isPoint: (box) => box.w === 0 });
 
-  const layerOf = (surface: Element): Element => {
-    const found = [...surface.children].find((c) => c.classList.contains(LAYER_CLASS));
-    if (found) return found;
-    const layer = document.createElement('div');
-    layer.className = LAYER_CLASS;
-    layer.setAttribute(OWN_ATTR, '');
-    surface.appendChild(layer);
-    return layer;
-  };
-
-  /** The element marking `box` on `surface`, laid there if it is not; kept through this pass and `keepFor` more. */
-  const lay = (surface: Surface, box: ArtifactCommentRegionBox, keepFor = 0): HTMLElement => {
-    const key = keyOf(box);
-    const had = laid.get(key);
-    let el = had?.el;
-    if (!el || !surface.el.contains(el)) {
-      el?.remove();
-      el = document.createElement('div');
-      el.className = BOX_CLASS;
-      el.setAttribute(OWN_ATTR, '');
-      el.dataset.box = JSON.stringify(box);
-      const point = box.w === 0;
-      el.dataset.point = point ? 'true' : 'false';
-      Object.assign(el.style, {
-        left: `${box.x * 100}%`,
-        top: `${box.y * 100}%`,
-        width: point ? '0' : `${box.w * 100}%`,
-        height: point ? '0' : `${box.h * 100}%`,
-      });
-      layerOf(surface.el).appendChild(el);
-    }
-    laid.set(key, { el, pass: Math.max(pass + keepFor, had?.pass ?? 0) });
-    return el;
-  };
+  /** The element marking `box` on `surface`; kept through this pass and `keepFor` more. */
+  const lay = (surface: Surface, box: ArtifactCommentRegionBox, keepFor = 0): HTMLElement =>
+    marks.lay(surface.el, box, {
+      left: `${box.x * 100}%`,
+      top: `${box.y * 100}%`,
+      width: `${box.w * 100}%`,
+      height: `${box.h * 100}%`,
+    }, keepFor);
 
   /** A box in client coordinates on `surface`, as fractions of it; null for one too small to be meant. */
   const fractions = (surface: Surface, box: Edges): ArtifactCommentRegionBox | null => {
@@ -124,7 +78,7 @@ export function regionSpots(surfaces: RegionSurfaces, base: SpotStrategy | null 
   };
 
   const picker: SpotPicker = {
-    spotAt: (target) => target.closest(`.${BOX_CLASS}`),
+    spotAt: marks.spotAt,
     spotsIn: () => [],
     labelOf: () => null,
     anchorOf(spots) {
@@ -132,16 +86,7 @@ export function regionSpots(surfaces: RegionSurfaces, base: SpotStrategy | null 
       // All on pages or none: a picture has no pages, and a PDF's every box is on one.
       return boxes.length ? { kind: 'region', boxes } : null;
     },
-    rectsOf(spot) {
-      if (!spot.isConnected) return [];
-      const r = spot.getBoundingClientRect();
-      if (spot instanceof HTMLElement && spot.dataset.point === 'true') {
-        // About its centre: while the add key is held a point takes clicks around it, and its box grows.
-        const half = POINT_PX / 2;
-        return [new DOMRect(r.left + r.width / 2 - half, r.top + r.height / 2 - half, POINT_PX, POINT_PX)];
-      }
-      return [r];
-    },
+    rectsOf: marks.rectsOf,
     draw(box, from) {
       const surface = surfaces.at(from.x, from.y);
       const drawn = surface && fractions(surface, box);
@@ -174,15 +119,15 @@ export function regionSpots(surfaces: RegionSurfaces, base: SpotStrategy | null 
     ...base,
     fresh() {
       base?.fresh?.();
-      pass += 1;
+      marks.fresh();
     },
     settled() {
       base?.settled?.();
-      for (const [key, { el, pass: kept }] of laid) {
-        if (kept >= pass) continue;
-        el.remove();
-        laid.delete(key);
-      }
+      marks.settled();
+    },
+    dispose() {
+      base?.dispose?.();
+      marks.dispose();
     },
     spots: picker,
     find(anchor: ArtifactCommentAnchor) {

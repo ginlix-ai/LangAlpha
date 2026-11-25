@@ -73,6 +73,7 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     threadModels: {},
     handleSendMessage: h.handleSendMessage,
     stopWorkflow: h.stopWorkflow,
+    watchCommentSends: () => () => {},
     getSubagentHistory: vi.fn(),
     handleAnswerQuestion: h.handleAnswerQuestion,
     handleSkipQuestion: h.handleSkipQuestion,
@@ -165,7 +166,6 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importActual) => ({
 import MarketChatPanel from '../MarketChatPanel';
 import { useChatMessages } from '@/pages/ChatAgent/hooks/useChatMessages';
 import { useThreadModel } from '@/pages/ChatAgent/hooks/useThreadModel';
-import { chartSelectionStore } from '../../stores/chartSelectionStore';
 import { userLocalStorage } from '@/lib/userStorage';
 import type { ComposerSend } from '@/components/ui/chat-input.types';
 import type { ComposerNotices } from '@/components/ui/chat-input.notices';
@@ -742,38 +742,6 @@ describe('MarketChatPanel', () => {
       expect.objectContaining({ type: 'skills', name: 'deep-research' }),
       expect.objectContaining({ type: 'directive' }),
     ]));
-  });
-
-  it('forwards a confirmed region crop as a display attachment (arg 2) so the bubble shows a thumbnail', () => {
-    // baseProps is AAPL/1day; stage a confirmed region with a crop on that chart.
-    const id = chartSelectionStore.beginDraft({
-      symbol: 'AAPL',
-      timeframe: '1day',
-      selectionType: 'region',
-      timeStart: '2024-01-03T00:00:00.000Z',
-      timeEnd: '2024-02-15T00:00:00.000Z',
-      priceLow: 180,
-      priceHigh: 195,
-      bars: [],
-      barsTruncated: false,
-      croppedImage: 'data:image/jpeg;base64,WIRED',
-    });
-    chartSelectionStore.confirm(id, '');
-
-    renderPanel();
-    const onSend = ci.props!.onSend as OnSend;
-    // clearAll() after send notifies the chip subscriber → wrap to flush in act.
-    act(() => onSend(composed('analyze')));
-
-    expect(h.handleSendMessage).toHaveBeenCalledTimes(1);
-    const attachmentMeta = h.handleSendMessage.mock.calls[0][2] as Array<Record<string, unknown>>;
-    expect(attachmentMeta).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: 'image',
-        dataUrl: 'data:image/jpeg;base64,WIRED',
-      }),
-    ]));
-    chartSelectionStore._resetForTesting();
   });
 
   it('does not double-inject chart-annotation when typed explicitly', () => {

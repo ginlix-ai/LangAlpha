@@ -19,7 +19,7 @@ import type { ThumbDownFollowUp, ThumbDownFollowUpOutcome } from '../../hooks/us
 import type { PTCAgentProposalState, ToolApprovalPosition } from '@/types/chat';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ChartTabSpec } from '../filePanel/types';
-import type { ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
+import type { ArtifactCommentOpeners } from '../artifactComments/artifactCommentReply';
 import type { EditDraftStore } from '../../hooks/utils/editDrafts';
 import type { ThreadForkCut } from '@/types/api';
 
@@ -52,9 +52,10 @@ export interface MessageActions {
   onOpenSources?: (messageId: string) => void;
   /** Opens a live chart for a symbol beside the chat; absent where there is no panel to land in. */
   onOpenChart?: (spec: ChartTabSpec) => void;
-  /** Opens a file beside the chat on one of its comments; absent where there
-   *  is no panel to land in (a shared chat). */
-  onOpenArtifactComment?: (comment: ArtifactCommentRef) => void;
+  /** Opens a file or a chart beside the chat on one of its comments, by its
+   *  kind; a kind with no place to land in is left out (a shared chat has
+   *  none, the market page only its chart). */
+  onOpenArtifactComment?: ArtifactCommentOpeners;
   /** Opens a tool call's result by id; the host reads the live record. */
   onToolCallDetailClick?: (toolCallId: string) => void;
   onAnswerQuestion?: (answer: string, questionId: string, interruptId: string) => void;

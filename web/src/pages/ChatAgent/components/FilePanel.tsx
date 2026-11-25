@@ -996,6 +996,8 @@ function FilePanel({
               <ActiveTabBody
                 activeTab={activeTab}
                 browser={browserView}
+                commentUi={comments ?? null}
+                active={isActive !== false}
                 tabs={tabs}
                 workspaceId={workspaceId}
                 apiAdapter={apiAdapter}

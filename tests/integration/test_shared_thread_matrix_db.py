@@ -362,8 +362,8 @@ async def test_a_feed_event(patched_get_db_connection, cleanup_tables, seats, pu
             user_id=None, thread_id=thread, workspace_id=s.ws, title="Orchid", shared_org=ORG
         )
         await publish_comment_change(
-            HOLDER, artifact_id="a1", workspace_id=s.ws, path="memo.md", thread_id=thread,
-            comment_ids=["c1"],
+            HOLDER, artifact_id="a1", workspace_id=s.ws, path="memo.md", kind="file",
+            thread_id=thread, comment_ids=["c1"],
         )
         title, comment = published
         for who in VIEWERS:

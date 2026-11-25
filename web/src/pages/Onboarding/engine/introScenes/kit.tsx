@@ -103,9 +103,10 @@ export function Region({
  * the text on top and attach / model / mic / send below. `text` replaces the
  * `placeholder` (a `Typed` while the user writes) and wraps, the box growing
  * a line at a time; `focused` gives it the accent edge the real one takes on
- * focus; the send button fills once there is text, or once the message is
- * `ready` without any (a chart selection waiting as a chip), and presses at
- * each time in `sendAt`.
+ * focus; `chip` sits at its top, over the text (what the send carries: an
+ * attached widget, the queued comments); the send button fills once there
+ * is text, or once the message is `ready` without any (a queued comment can
+ * go alone), and presses at each time in `sendAt`.
  */
 export function InputDock({
   focused = false,

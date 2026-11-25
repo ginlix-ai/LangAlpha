@@ -15,7 +15,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { registerAuthReset } from '@/lib/authResets';
-import type { ChartKey } from '../utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 
 export interface ShowLayersRequest {
   key: ChartKey;

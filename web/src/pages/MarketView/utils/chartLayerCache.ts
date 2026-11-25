@@ -16,7 +16,7 @@ import { queryKeys } from '@/lib/queryKeys';
 
 import { requestShowLayers } from '../stores/layerViewStore';
 import type { ChartLayerArtifactPayload, ChartLayerRef, StoredChartLayer } from '../types/chartLayer';
-import { chartKeyFor, chartKeyParts, type ChartKey } from './chartInstanceKey';
+import { chartKeyFor, chartKeyParts, type ChartKey } from '@/lib/bars/chartId';
 
 /**
  * The query entry holding every layer of the chart's `(workspace, symbol)`;

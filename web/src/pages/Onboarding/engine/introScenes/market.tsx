@@ -3,34 +3,40 @@ import { useTranslation } from 'react-i18next';
 import { Check } from 'lucide-react';
 import type { IntroVisualId } from '../../registry';
 import { Camera, REST, VIEW, shot, type Shot } from './camera';
-import { Candles, LayerLabel, labelAnchor } from './candles';
+import { Candles, LayerLabel } from './candles';
 import {
   CommentBox,
-  Pin,
+  CommentCard,
+  CommentPin,
+  CommentReplyLine,
+  DragArea,
+  ModeHint,
   PublishRow,
-  Selection,
-  SelectionChip,
-  SentSelection,
-  addButton,
-  besideRegion,
+  QueuedDeck,
+  SentComment,
+  SpotOutline,
+  besidePin,
   dragBox,
+  queueButton,
+  useDeckPlaceholder,
+  useRegionLabel,
 } from './chartTools';
 import { PAST, useSceneTime } from './clock';
 import { Loader, Typed, pointerScript } from './kit';
-import { CHART, CHAT_X, MarketPage, PAGE, REGION_BTN, SEND } from './marketParts';
-import { NVDA, NVDA_EVENTS, NVDA_LAYER, chartScale } from './nvdaSeries';
+import { CHART, CHAT_X, COMMENT_BTN, MarketPage, PAGE, SEND } from './marketParts';
+import { NVDA, NVDA_EVENTS, chartScale } from './nvdaSeries';
 import { Reply } from './transcriptParts';
 import type { IntroScene } from './types';
 
 /* The market intro, on MarketView itself, framed by a camera that shows
    one side of the page at a time with an edge of the other. marketAsk: on
-   the chart under the stock's header, the Region tool is armed and the
-   September drop is taken and noted; across to the chat panel, where the
-   selection goes out as a chip. The agent starts on it. marketDraw: on the
-   chat panel as the agent publishes a layer labelling the news behind each
-   move; the pointer rests on its chip, then the camera crosses to the
-   chart, where each move carries its label, and a click pins the agent's
-   note on the drop. */
+   the chart under the stock's header, Comment turns comment mode on, a
+   drag takes the September drop and the box beside it takes the question,
+   added to the queue; across to the chat panel, where it waits in the
+   composer and goes out. The agent starts on it. marketDraw: on the chat
+   panel as the agent publishes a layer labelling the news behind each move
+   and answers under the comment; then across to the chart, where each move
+   carries its label and the comment's pin opens on the answer. */
 /* eslint-disable react-refresh/only-export-components -- scene module:
    private scene components, one record export */
 
@@ -40,12 +46,29 @@ const onPage = (x: number, y: number) => ({ x: CHART.x + x, y: CHART.y + y });
 
 const NOTE = 'What drove this drop?';
 const LEAD = 'Two pieces of news drove it. Marking them on your chart.';
+const ANSWER =
+  'A **new export rule** on Sep 8 took 3% off in a day, and the slide ran to **170.60**. The **Fed cut** on Sep 16 ended it.';
 
 /** Where the metrics' third column (Low, Volume) ends, in page px. A view
     of the chat side from just past it to the page's right edge sits a
     touch wider than REST and cuts none of the metrics' figures. */
 const METRICS_GAP = 137;
 const CHAT_REST = VIEW.width / (PAGE.width - METRICS_GAP);
+
+/** The September drop: from above the post-earnings high (Aug 28) to under
+    the low it slid to (Sep 11), dragged from its top left. Its pin's tail is
+    where the drag was let go. */
+const REGION = {
+  x0: SCALE.x(11) - SCALE.step / 2,
+  y0: SCALE.y(187.6),
+  x1: SCALE.x(20) + SCALE.step / 2,
+  y1: SCALE.y(169),
+};
+const REGION_DATES = ['2026-08-28', '2026-09-11'] as const;
+const BOX = besidePin(SCALE, REGION.x1, REGION.y1, 130);
+const QUEUE = queueButton(BOX);
+/** On the pin, in page px. */
+const ON_PIN = onPage(REGION.x1 + 5, REGION.y1 - 5);
 
 /** A native tooltip (a button's `title`), under the pointer. */
 function Tip({ x, y, children }: { x: number; y: number; children: ReactNode }) {
@@ -69,96 +92,101 @@ function Tip({ x, y, children }: { x: number; y: number; children: ReactNode }) 
 /* ── marketAsk ─────────────────────────────────────────────────────────── */
 
 const ASK = {
-  tip: 900,
-  arm: 1250,
-  press: 2250,
-  release: 2950,
-  type: 3150,
-  add: 4250,
-  /** The comment box closes on Add, leaving the pin and the chip. */
+  tip: 850,
+  arm: 1200,
+  press: 2100,
+  release: 2800,
+  type: 3000,
+  queue: 4250,
+  /** The box closes on Add to queue, leaving the pin and the queue's row. */
   added: 4400,
-  send: 5450,
-  think: 5650,
-  lead: 6250,
-  length: 7600,
+  send: 5750,
+  think: 5950,
+  lead: 6550,
+  length: 8000,
 };
 
-/** The September drop: from above the post-earnings high (Aug 28) to under
-    the low it slid to (Sep 11). */
-const REGION = {
-  x0: SCALE.x(11) - SCALE.step / 2,
-  y0: SCALE.y(187.6),
-  x1: SCALE.x(20) + SCALE.step / 2,
-  y1: SCALE.y(169.9),
-};
-const BOX = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0);
-const PIN = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0, 10);
-const ADD = addButton(BOX);
-
-/** At rest on the chart while the Region tool is armed and the drop is
-    taken and noted; across to the chat panel's foot as the selection goes
-    out, then up the panel to the message as it lands. */
+/** At rest on the chart while comment mode goes on and the drop is taken and
+    noted; across to the chat panel's foot as the comment waits in the
+    composer, then up the panel to the message as it lands. */
 const ASK_SHOTS: [Shot, ...Shot[]] = [
   // the chart column whole under the stock's header, the toolbar's tools
   // on it, the chat panel's edge beside it
   shot(0, 0, 0, REST),
   // the panel from the toolbar's line down to the composer, the chart's
   // right half beside it
-  shot(5150, PAGE.width, PAGE.height, CHAT_REST, 800),
+  shot(5300, PAGE.width, PAGE.height, CHAT_REST, 800),
   // the panel from its header down, the message on top
-  shot(6200, PAGE.width, 0, CHAT_REST, 750),
+  shot(6300, PAGE.width, 0, CHAT_REST, 750),
 ];
 
-/** On the Region button, clear of the pointer its own icon draws. */
-const ON_REGION = { x: REGION_BTN.x + 2.5, y: REGION_BTN.y + 2.5 };
+/** On the Comment button, clear of the pointer its own icon draws. */
+const ON_COMMENT = { x: COMMENT_BTN.x + 2.5, y: COMMENT_BTN.y + 2.5 };
 
-/** Region armed, its tooltip up first; the drag from the region's
-    corner, pressed at the end of the dwell, to its far corner and off it;
-    Add on the comment box; then send in the chat's composer. */
+/** Comment, its tooltip up first; the drag from the region's corner,
+    pressed at the end of the dwell, to its far corner and off it; Add to
+    queue in the box; then send in the chat's composer. */
 const ASK_POINTER = pointerScript(
   { at: 200, x: 238, y: 142 },
   {
-    region: { ...ON_REGION, arrive: 850, click: ASK.arm, leave: 1450 },
-    anchor: { ...onPage(REGION.x0, REGION.y0), arrive: 2150, leave: 2250 },
-    release: { ...onPage(REGION.x1, REGION.y1), arrive: 2950 },
-    clear: { ...onPage(REGION.x1 - 6, REGION.y1 + 8), arrive: 3200 },
-    add: { ...onPage(ADD.x, ADD.y), arrive: 4100, click: ASK.add, leave: 4450 },
-    send: { ...SEND, arrive: 5250, click: ASK.send },
+    comment: { ...ON_COMMENT, arrive: 800, click: ASK.arm, leave: 1400 },
+    anchor: { ...onPage(REGION.x0, REGION.y0), arrive: 2000, leave: 2100 },
+    release: { ...onPage(REGION.x1, REGION.y1), arrive: 2800 },
+    clear: { ...onPage(REGION.x1 - 8, REGION.y1 + 12), arrive: 3100 },
+    queue: { ...onPage(QUEUE.x, QUEUE.y), arrive: 4100, click: ASK.queue, leave: 4500 },
+    send: { ...SEND, arrive: 5550, click: ASK.send },
   }
 );
 
 function MarketAsk() {
   const { t: tr } = useTranslation();
   const t = useSceneTime();
+  const place = useRegionLabel(...REGION_DATES);
+  const placeholder = useDeckPlaceholder();
   const sent = t >= ASK.send;
-  const drawing = t >= ASK.press && !sent;
+  const drafting = t >= ASK.release && t < ASK.added;
+  const queued = t >= ASK.added && !sent;
   return (
     <Camera shots={ASK_SHOTS} page={PAGE} pointer={ASK_POINTER}>
       <MarketPage
-        armed={t >= ASK.arm && t < ASK.release}
+        comments={{ on: t >= ASK.arm, open: t >= ASK.added ? 1 : 0 }}
         chart={
           <Candles series={NVDA} scale={SCALE}>
-            {drawing && t < ASK.added && (
-              <Selection {...dragBox(REGION, ASK_POINTER.path, CHART, t, ASK)} />
+            {t >= ASK.arm && <ModeHint at={ASK.arm} />}
+            {t >= ASK.press && t < ASK.release && (
+              <DragArea {...dragBox(REGION, ASK_POINTER.path, CHART, t, ASK)} />
             )}
-            {drawing && t >= ASK.added && <Selection {...REGION} active={false} />}
-            {t >= ASK.release && t < ASK.added && (
-              <CommentBox
-                left={BOX.left}
-                top={BOX.top}
-                pressed={t >= ASK.add}
-                text={t >= ASK.type ? <Typed text={NOTE} at={ASK.type} cps={22} /> : undefined}
+            {drafting && (
+              <>
+                <SpotOutline picked {...REGION} />
+                <CommentPin n={1} state="draft" left={REGION.x1} top={REGION.y1} />
+                <CommentBox
+                  left={BOX.left}
+                  top={BOX.top}
+                  head={place}
+                  pressed={ASK.queue}
+                  text={t >= ASK.type ? <Typed text={NOTE} at={ASK.type} cps={20} /> : undefined}
+                />
+              </>
+            )}
+            {t >= ASK.added && (
+              <CommentPin
+                n={1}
+                state={t < ASK.send ? 'queued' : t < ASK.think ? 'sent' : 'working'}
+                left={REGION.x1}
+                top={REGION.y1}
               />
             )}
-            {t >= ASK.added && !sent && <Pin n={1} left={PIN.left} top={PIN.top} />}
           </Candles>
         }
         title={sent ? NOTE : undefined}
-        chip={t >= ASK.added && !sent ? <SelectionChip note={NOTE} at={ASK.added} /> : undefined}
+        deck={
+          queued ? { node: <QueuedDeck at={ASK.added} words={NOTE} />, placeholder } : undefined
+        }
         transcript={
           sent ? (
             <>
-              <SentSelection at={ASK.send} text={NOTE} note={NOTE} />
+              <SentComment at={ASK.send} words={NOTE} place={place} />
               {t >= ASK.think && t < ASK.lead && (
                 <Loader color="var(--color-icon-muted)" className="text-[10px]" />
               )}
@@ -166,12 +194,11 @@ function MarketAsk() {
             </>
           ) : undefined
         }
-        ready={t >= ASK.added && !sent}
         sendAt={[ASK.send]}
       />
       {t >= ASK.tip && t < ASK.arm && (
-        <Tip x={ON_REGION.x} y={REGION_BTN.y + 9}>
-          {tr('marketView:selection.toolRegion')}
+        <Tip x={ON_COMMENT.x} y={COMMENT_BTN.y + 9}>
+          {tr('pageViewer:comments.modeTitleChart')}
         </Tip>
       )}
     </Camera>
@@ -207,20 +234,15 @@ function LayerChip() {
 }
 
 /** One ExecuteCode run builds the layer and publishes it: its row settles,
-    the chip lands under it, and every label lands on the chart at once. */
+    the chip lands under it and every label lands on the chart at once; then
+    the answer goes under the comment, and its line lands in the turn. */
 const DRAW = {
   run: 250,
   published: 1500,
-  answer: 1750,
-  hover: 3950,
-  tip: 4250,
-  leave: 4700,
-  click: 6000,
-  length: 8000,
+  answer: 1900,
+  click: 5600,
+  length: 8600,
 };
-
-const ANSWER =
-  'A **new export rule** on Sep 8 took 3% off in a day, and the slide ran to **170.60**. The **Fed cut** on Sep 16 ended it.';
 
 const EVENTS = [
   NVDA_EVENTS.earnings,
@@ -228,73 +250,73 @@ const EVENTS = [
   NVDA_EVENTS.fedCut,
   NVDA_EVENTS.upgrade,
 ];
-const DROP = NVDA_EVENTS.exportRule;
 
-/** On the chip, in page px, and the bottom of it. */
-const CHIP_AT = { x: CHAT_X + 46, y: 149 };
-const CHIP_BOTTOM = 157;
-/** The drop's label, on its chip. */
-const LABEL = onPage(...labelAnchor(SCALE, DROP));
-/** The explain card opens once the pointer has dwelt on the label. */
-const DWELL = 140;
+const CARD_W = 124;
+const CARD = besidePin(SCALE, REGION.x1, REGION.y1, CARD_W);
 
-/** On the chat panel the whole time the reply comes in, its message on top
-    and the chart's right half beside it; then across to rest on the chart
-    under the stock's header, where the layer labels each move, and the
-    drop's note opens beside its label. */
+/** On the chat panel while the turn comes in, its message on top and the
+    chart's right half beside it; then across to rest on the chart, where the
+    layer labels each move and the comment's pin opens on the answer. */
 const DRAW_SHOTS: [Shot, ...Shot[]] = [
   shot(0, PAGE.width, 0, CHAT_REST),
-  // a quick pan, settled before the reply's last words can trail at the edge
-  shot(5300, 0, 0, REST, 600),
+  // the chart from its toolbar down, so the card under the pin shows whole
+  shot(4900, 0, PAGE.height, REST, 700),
 ];
 
-/** Onto the chip, held there for its tooltip, then across to the drop's
-    label, clicked to pin its card. */
+/** Across from the chat to the comment's pin, clicked to open its card. */
 const DRAW_POINTER = pointerScript(
-  { at: 3300, x: CHAT_X + 120, y: 238 },
+  { at: 3700, x: CHAT_X + 120, y: 238 },
   {
-    chip: { ...CHIP_AT, arrive: DRAW.hover, leave: DRAW.leave },
-    label: { ...LABEL, arrive: 5800, click: DRAW.click },
+    pin: { ...ON_PIN, arrive: 5400, click: DRAW.click },
   }
 );
 
 function MarketDraw() {
-  const { t: tr } = useTranslation();
   const t = useSceneTime();
+  const place = useRegionLabel(...REGION_DATES);
+  const answered = t >= DRAW.answer;
+  const open = t >= DRAW.click + 60;
   return (
     <Camera shots={DRAW_SHOTS} page={PAGE} pointer={DRAW_POINTER}>
       <MarketPage
         title={NOTE}
+        comments={{ open: 1, unread: answered && !open ? 1 : 0 }}
         chart={
           <Candles series={NVDA} scale={SCALE}>
             {EVENTS.map((ev) => (
-              <LayerLabel
-                key={ev.title}
-                scale={SCALE}
-                el={ev}
-                layer={NVDA_LAYER}
-                at={DRAW.published}
-                hover={ev === DROP && t >= DRAW_POINTER.beats.label.arrive + DWELL}
-                open={ev === DROP && t >= DRAW.click + 60}
-              />
+              <LayerLabel key={ev.title} scale={SCALE} el={ev} at={DRAW.published} />
             ))}
+            {open && <SpotOutline {...REGION} />}
+            <CommentPin
+              n={1}
+              state={answered ? 'sent' : 'working'}
+              unread={answered && !open}
+              open={open}
+              left={REGION.x1}
+              top={REGION.y1}
+            />
+            {open && (
+              <CommentCard
+                left={CARD.left}
+                top={CARD.top}
+                width={CARD_W}
+                n={1}
+                words={NOTE}
+                reply={ANSWER}
+              />
+            )}
           </Candles>
         }
         transcript={
           <>
-            <SentSelection at={PAST} text={NOTE} note={NOTE} />
+            <SentComment at={PAST} words={NOTE} place={place} />
             <Reply text={LEAD} />
             <PublishRow at={DRAW.run} done={DRAW.published} />
             {t >= DRAW.published && <LayerChip />}
-            <Reply text={ANSWER} at={DRAW.answer} cps={80} />
+            <CommentReplyLine at={DRAW.answer} read={DRAW.click + 60} text={ANSWER} />
           </>
         }
       />
-      {t >= DRAW.tip && t < DRAW.leave && (
-        <Tip x={CHIP_AT.x + 2} y={CHIP_BOTTOM + 3}>
-          {tr('chat.chartLayerCard.chipShownTitle')}
-        </Tip>
-      )}
     </Camera>
   );
 }

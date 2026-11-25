@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  artifactPathKey, useArtifactComments, useArtifactStatus, useMarkArtifactCommentsRead, useOwnedArtifact,
-} from '@/hooks/useArtifact';
+import { useArtifactComments, useArtifactStatus, useCommentRecord, useMarkArtifactCommentsRead } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { TWEEN } from '@/lib/motion';
-import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
+import type { ArtifactComment, ArtifactCommentAnchor, ArtifactTarget } from '@/types/api';
 import { basename } from '../../../../utils/fileRefResolver';
 import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import type { FrameView } from '../BridgedFrame';
@@ -64,8 +63,11 @@ interface Box {
 export interface CommentLayerProps {
   tabId: string;
   workspaceId: string;
-  /** The file the frame was opened on; a link inside it can move the frame to another (`bridge.path`). */
-  path: string;
+  /**
+   * What the frame was opened on, as the tab holds it: a file, which a link
+   * inside it can move the frame from (`bridge.path`), or a chart.
+   */
+  target: ArtifactTarget;
   bridge: PageBridge;
   view: FrameView;
   /** The tab is the one in front of an active panel: keys and asks are its. */
@@ -84,7 +86,8 @@ export interface CommentLayerProps {
   /**
    * Readies a new comment's anchor as it is saved: a viewer whose boxes are
    * pictured for the agent writes the pictures then, so a box let go writes
-   * none. Left out, the anchor is saved as picked.
+   * none. Asked only for a draft on the document on screen. Left out, the
+   * anchor is saved as picked.
    */
   beforeSave?: (anchor: ArtifactCommentAnchor) => Promise<ArtifactCommentAnchor>;
   /**
@@ -110,7 +113,7 @@ export interface CommentLayerProps {
  * in the list moves through `boxReducer`.
  */
 export default function CommentLayer({
-  tabId, workspaceId, path, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear,
+  tabId, workspaceId, target, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear,
 }: CommentLayerProps): React.ReactElement {
   const { t } = useTranslation();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -119,19 +122,21 @@ export default function CommentLayer({
 
   // The file the frame holds, as its hello named it; until it says, the one opened.
   const rootDir = useWorkspaceFolders()?.rootDir;
-  const opened = artifactPathKey(path, rootDir);
-  const docPath = artifactPathKey(bridge.path ?? path, rootDir);
+  const opened = targetFor(target.kind, target.path, rootDir).path;
+  const held = targetFor(target.kind, bridge.path ?? target.path, rootDir);
+  const docPath = held.path;
   const { showDoc } = ui;
   useEffect(() => showDoc(tabId, opened, docPath), [showDoc, tabId, opened, docPath]);
-  const { record: artifact, error: recordError } = useOwnedArtifact(workspaceId, docPath);
+  const mode = ui.modeTab === tabId;
+  // A chart is looked at far more often than commented on: its record is
+  // made once comment mode is on, and only read until then.
+  const record = useCommentRecord(workspaceId, held, { ensure: held.kind === 'file' || mode });
+  const { artifact, loaded } = record;
   const artifactId = artifact?.artifact_id ?? null;
   const commentsQuery = useArtifactComments(artifactId);
   const comments = commentsQuery.data ?? EMPTY;
   const byId = useMemo(() => new Map(comments.map((c) => [c.comment_id, c])), [comments]);
-  // A file that cannot have a record has no comments to wait for.
-  const loaded = recordError !== null || commentsQuery.isSuccess;
 
-  const mode = ui.modeTab === tabId;
   const listOpen = ui.listTab === tabId;
   const doc = `${bridge.session}:${view.key}`;
   const [box, dispatchBox] = useReducer(boxReducer, { doc, listOpen }, initialBox);
@@ -156,16 +161,28 @@ export default function CommentLayer({
   }
   // The comment being written, in its box over the page or waiting in the list.
   const draft = boxDraft ?? box.listed?.draft ?? null;
+  // A draft keeps its file's path but not its workspace: saved after a move
+  // to another (the market page's workspace switch), it would land on that
+  // workspace's file of the same path. So it goes with the move, and a host
+  // that moves the layer asks first where there are words (`ui.writing`).
+  const [workspaceSeen, setWorkspaceSeen] = useState(workspaceId);
+  if (workspaceSeen !== workspaceId) {
+    setWorkspaceSeen(workspaceId);
+    if (draft) dispatchBox({ type: 'endDraft', keepHover: false });
+  }
+  const writing = !!draft && !!box.text.trim();
+  const { showWriting } = ui;
+  useEffect(() => {
+    showWriting(tabId, writing);
+    return () => showWriting(tabId, false);
+  }, [showWriting, tabId, writing]);
   // The live file's hash, stored with a new comment. Read only once one is
-  // being written, for a file with comments to compare or published: each
-  // read copies the file's whole list off the computer.
-  const { data: status } = useArtifactStatus(artifact, {
-    enabled: !!artifact && !!draft && (artifact.open_comments > 0 || artifact.latest_seq > 0),
-  });
+  // being written: each read copies the file's whole list off the computer.
+  const { data: status } = useArtifactStatus(artifact, { enabled: record.hashable && !!draft });
   const sending = useLayerSending({
     workspaceId,
-    docPath,
-    draftPath: draft?.path ?? docPath,
+    doc: held,
+    draft: draft ? { kind: held.kind, path: draft.path } : held,
     ui,
     to: box.to,
     onTo: (target) => dispatch({ type: 'to', target }),
@@ -287,7 +304,7 @@ export default function CommentLayer({
   const pinsHidden = !fresh || !view.shown;
 
   const expandInList = useBoxPlacement({
-    focus: active && ui.focus && artifactPathKey(ui.focus.path, rootDir) === docPath ? ui.focus : null,
+    focus: active && ui.focus?.kind === held.kind && targetFor(ui.focus.kind, ui.focus.path, rootDir).path === docPath ? ui.focus : null,
     focusHandled: ui.focusHandled,
     loaded,
     bridge,
@@ -307,10 +324,12 @@ export default function CommentLayer({
     let comment;
     try {
       const from = draft.anchor;
-      const anchor = !beforeSave ? from : prepared.current?.from === from ? prepared.current.to : await beforeSave(from);
+      // Pictures are cut from what is on screen: a draft carried onto another
+      // document (a chart switched to another symbol) is saved without them.
+      const anchor = !beforeSave || !draftHere ? from : prepared.current?.from === from ? prepared.current.to : await beforeSave(from);
       prepared.current = { from, to: anchor };
       comment = await sending.layer.actions.create({
-        path: draft.path,
+        target: { kind: held.kind, path: draft.path },
         anchor,
         body: box.text.trim(),
         route,

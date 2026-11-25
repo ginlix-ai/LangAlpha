@@ -27,7 +27,7 @@ import { useHiddenLayers } from '../stores/layerViewStore';
 import type { BuiltinIndicators } from '../utils/chartLayer/builtinDuplicates';
 import type { LayerFrameReporter } from '../utils/chartLayer/layerReport';
 import type { StoredChartLayer } from '../types/chartLayer';
-import type { ChartKey } from '../utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 import { installChartLayersDevHelper } from '../utils/chartLayersDevHelper';
 import { useChartLayerRows } from './useChartLayerQuery';
 import { useChartLayers } from './useChartLayers';

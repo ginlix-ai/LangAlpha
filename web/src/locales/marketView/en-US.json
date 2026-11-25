@@ -120,12 +120,6 @@
     "errorLoad": "Failed to load data"
   },
   "selection": {
-    "toolTooltip": "Select a region or price level to ask the agent",
-    "toolRegion": "Region",
-    "toolPriceLevel": "Price level",
-    "commentPlaceholder": "Add a comment…",
-    "commentAdd": "Add",
-    "commentSave": "Save",
     "cardRegionTitle": "Selected region",
     "cardPriceTitle": "Selected price level",
     "cardOpenPreview": "View what the agent sees",
@@ -145,11 +139,7 @@
     "previewBarsCount_other": "{{count}} bars",
     "previewBarsShown": "Showing {{shown}} of {{total}} bars",
     "previewBarsTruncated": "downsampled to fit",
-    "previewDrawBack": "The agent can analyze this and draw its read back onto the same region of the chart.",
-    "editChip": "Edit note",
-    "chipRegion": "Region · {{symbol}} {{timeframe}}",
-    "chipPriceLevel": "Price {{price}} · {{symbol}} {{timeframe}}",
-    "removeChip": "Remove selection"
+    "previewDrawBack": "The agent can analyze this and draw its read back onto the same region of the chart."
   },
   "layers": {
     "legendLabel": "Agent layers",

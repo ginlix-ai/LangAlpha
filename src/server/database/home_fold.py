@@ -21,6 +21,7 @@ import re
 from itertools import count
 
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from src.server.database.conversation.threads_write import (
     lock_thread_index,
@@ -84,6 +85,14 @@ MOVES: dict[str, str] = {
               AND h.chart_id = a.chart_id AND h.annotation_id = a.annotation_id
         )
     """,
+    # A chart's record holds comments on Home's own chart, answered by Home's
+    # threads, which move above. One Home's chart already has was merged into
+    # it first (``_merge_colliding_charts``). A file's record stays with the
+    # sandbox state below: its path names a file on a computer.
+    "share_links": """
+        UPDATE share_links SET workspace_id = %(home)s
+        WHERE workspace_id = %(former)s AND kind = 'chart'
+    """,
 }
 
 #: A layer id's longest (``chartkit.schema.LAYER_ID_PATTERN``), which a
@@ -97,7 +106,6 @@ STAYS: dict[str, str] = {
     "workspace_files": _SANDBOX,
     "workspace_file_uploads": _SANDBOX,
     "livefs_links": _SANDBOX,
-    "share_links": _SANDBOX,
     "sandbox_egress_grants": _SANDBOX,
     "sandbox_egress_grant_claims": _SANDBOX,
     "computers": "origin_workspace_id names the workspace a sandbox was adopted "
@@ -168,7 +176,9 @@ async def fold_former_homes(user_id: str, home_id: str, conn=None) -> list[str]:
                 if await workspace_has_live_runs(cur, former):
                     continue
                 params = {"home": home_id, "former": former}
-                await _rename_colliding_layers(cur, params)
+                renamed = await _rename_colliding_layers(cur, params)
+                await _rename_marked_layers(cur, params, renamed)
+                await _merge_colliding_charts(cur, params)
                 for table, statement in MOVES.items():
                     await cur.execute(statement, params)
                     moved[table] += cur.rowcount
@@ -193,12 +203,14 @@ def renamed_layer_id(layer_id: str, taken: set[str]) -> str:
     raise AssertionError("unreachable")
 
 
-async def _rename_colliding_layers(cur, params: dict[str, str]) -> None:
+async def _rename_colliding_layers(
+    cur, params: dict[str, str]
+) -> dict[str, dict[str, str]]:
     """Give each of the former row's layers whose id its chart in Home
     already has a free id of its own (``renamed_layer_id``), in its row and
     its payload, so the fold keeps both. Layer ids are the agent's own, and
     every chart 117 converted holds ``earlier-annotations``, so two Homes'
-    charts often share one."""
+    charts often share one. Returns each chart's renames, old id to new."""
     await cur.execute(
         """
         SELECT a.chart_id, a.annotation_id,
@@ -217,6 +229,7 @@ async def _rename_colliding_layers(cur, params: dict[str, str]) -> None:
         params,
     )
     taken_on: dict[str, set[str]] = {}
+    renamed: dict[str, dict[str, str]] = {}
     for row in await cur.fetchall():
         old = row["annotation_id"]
         if not _LAYER_ID.match(old):
@@ -225,6 +238,7 @@ async def _rename_colliding_layers(cur, params: dict[str, str]) -> None:
         taken = taken_on.setdefault(row["chart_id"], set(row["taken"]))
         new = renamed_layer_id(old, taken)
         taken.add(new)
+        renamed.setdefault(row["chart_id"], {})[old] = new
         await cur.execute(
             """
             UPDATE chart_annotations
@@ -236,3 +250,80 @@ async def _rename_colliding_layers(cur, params: dict[str, str]) -> None:
             """,
             {**params, "new": new, "old": old, "chart": row["chart_id"]},
         )
+    return renamed
+
+
+async def _rename_marked_layers(
+    cur, params: dict[str, str], renamed: dict[str, dict[str, str]]
+) -> None:
+    """Point the element marks of comments on the former row's chart records
+    at their layers' new ids (``_rename_colliding_layers``). A mark names its
+    layer by id, so once the comment reaches Home the old id would find
+    Home's own layer of that id, or nothing. Only an element mark names a
+    layer; every other mark is kept as it was, in its place."""
+    for chart_id, ids in renamed.items():
+        await cur.execute(
+            """
+            UPDATE artifact_comments c
+            SET anchor = jsonb_set(c.anchor, '{marks}', (
+                SELECT jsonb_agg(
+                    CASE WHEN m->>'type' = 'element' AND %(ids)s::jsonb ? (m->>'layer')
+                         THEN jsonb_set(m, '{layer}', %(ids)s::jsonb -> (m->>'layer'))
+                         ELSE m END
+                    ORDER BY i)
+                FROM jsonb_array_elements(c.anchor->'marks') WITH ORDINALITY AS e(m, i)
+            ))
+            FROM share_links l
+            WHERE l.artifact_id = c.artifact_id
+              AND l.workspace_id = %(former)s AND l.kind = 'chart' AND l.path = %(chart)s
+              AND c.anchor->>'kind' = 'chart'
+              AND jsonb_typeof(c.anchor->'marks') = 'array'
+            """,
+            {**params, "chart": chart_id, "ids": Jsonb(ids)},
+        )
+
+
+async def _merge_colliding_charts(cur, params: dict[str, str]) -> None:
+    """Move the comments on each of the former row's chart records whose
+    chart Home already has a record of onto Home's, numbered after its last,
+    and drop the emptied record: one chart has one record per workspace, and
+    a comment's number is unique on its record. Home's record is locked first,
+    so a comment made there meanwhile cannot take a number moved in. The
+    former record's binding goes along when Home's has none: its thread moves
+    into Home with the rest, so it is still where those comments went."""
+    await cur.execute(
+        """
+        SELECT o.artifact_id::text AS old, h.artifact_id::text AS new,
+               h.last_comment_number, o.bound_thread_id AS old_bound
+        FROM share_links o
+        JOIN share_links h
+          ON h.workspace_id = %(home)s AND h.kind = 'chart' AND h.path = o.path
+        WHERE o.workspace_id = %(former)s AND o.kind = 'chart'
+        ORDER BY h.artifact_id
+        FOR UPDATE OF o, h
+        """,
+        params,
+    )
+    for pair in await cur.fetchall():
+        await cur.execute(
+            """
+            UPDATE artifact_comments c
+            SET artifact_id = %(new)s, number = %(last)s + m.rank
+            FROM (
+                SELECT comment_id, ROW_NUMBER() OVER (ORDER BY number) AS rank
+                FROM artifact_comments WHERE artifact_id = %(old)s
+            ) m
+            WHERE c.comment_id = m.comment_id
+            """,
+            {"new": pair["new"], "old": pair["old"], "last": pair["last_comment_number"]},
+        )
+        await cur.execute(
+            """
+            UPDATE share_links
+            SET last_comment_number = last_comment_number + %s,
+                bound_thread_id = COALESCE(bound_thread_id, %s)
+            WHERE artifact_id = %s
+            """,
+            (cur.rowcount, pair["old_bound"], pair["new"]),
+        )
+        await cur.execute("DELETE FROM share_links WHERE artifact_id = %s", (pair["old"],))

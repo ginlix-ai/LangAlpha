@@ -52,11 +52,12 @@ function CommentLine({ comment, refused, onOpen }: {
     <button
       type="button"
       className={cn(row, 'cursor-pointer outline-hidden focus-visible:ring-2 focus-visible:ring-ring')}
-      title={t('chat.artifactComments.message.open')}
-      aria-label={t('chat.artifactComments.message.openLabel', { number: comment.number })}
+      title={t('chat.artifactComments.message.open', { context: comment.kind })}
+      aria-label={t('chat.artifactComments.message.openLabel', { number: comment.number, context: comment.kind })}
       onClick={() => onOpen({
         artifactId: comment.artifact_id,
         workspaceId: comment.workspace_id,
+        kind: comment.kind,
         path: comment.path,
         commentId: comment.comment_id,
       })}
@@ -106,7 +107,12 @@ export function ArtifactCommentList({ shown, pending = false, leads = false, ref
             </div>
           )}
           {group.comments.map((comment) => (
-            <CommentLine key={comment.comment_id} comment={comment} refused={refused} onOpen={onOpenArtifactComment} />
+            <CommentLine
+              key={comment.comment_id}
+              comment={comment}
+              refused={refused}
+              onOpen={onOpenArtifactComment?.[comment.kind]}
+            />
           ))}
         </div>
       ))}

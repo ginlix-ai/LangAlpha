@@ -117,7 +117,7 @@ async def test_a_files_first_publish_takes_the_members_audience(accounts):
     publish = AsyncMock(side_effect=RuntimeError("published"))
     with (
         patch(
-            "src.server.app.artifacts.records.reached",
+            "src.server.app.artifacts.records.reached_file",
             new_callable=AsyncMock,
             return_value=(artifact, Access(HOLDER, SharedAccess(SHARED, OWNER, "member"))),
         ),

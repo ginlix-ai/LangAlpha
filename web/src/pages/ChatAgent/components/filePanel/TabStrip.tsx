@@ -13,7 +13,8 @@ import type { ToolCallProcessRecord } from '../ToolCallDetailView';
 import { appFaviconGlyph } from '../messaging/appGlyph';
 import { messagingAppName, platformOf, readMessageDelivery } from '../messaging/messageDelivery';
 import { countDedupedSources, type ProvenanceRecord } from '@/types/chat';
-import { useArtifactByPath } from '@/hooks/useArtifact';
+import { useArtifactRecord } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { TWEEN } from '@/lib/motion';
 import { useTranscriptReads, type TranscriptReader } from './useTranscript';
@@ -171,7 +172,7 @@ function ArtifactUnreadDot({ path }: { path: string }): React.ReactElement | nul
   const { t } = useTranslation();
   const workspaceId = useWorkspaceId();
   const root = useWorkspaceFolders()?.rootDir;
-  const { data: artifact } = useArtifactByPath(workspaceId, path, { root });
+  const { data: artifact } = useArtifactRecord(workspaceId, targetFor('file', path, root));
   if (!artifact) return null;
   const label = t('filePanel:pageUnread', { count: artifact.unread });
   return (

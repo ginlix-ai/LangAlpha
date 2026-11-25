@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useArtifactVersions, useOwnedArtifact } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import type { Artifact, ArtifactVersion } from '@/types/api';
 
 /** How long the picker says an Update moved the view before it reads as the version alone. */
@@ -104,7 +105,7 @@ export function useArtifactVersionView(
   store: VersionStore,
   { root }: { root?: string | null } = {},
 ): ArtifactVersionView {
-  const { record } = useOwnedArtifact(workspaceId, path, { root });
+  const { record } = useOwnedArtifact(workspaceId, path ? targetFor('file', path, root) : null);
   const artifactId = record?.artifact_id ?? null;
   const latest = record?.latest_seq ?? 0;
   const versionsQuery = useArtifactVersions(artifactId, { enabled: latest > 0 });

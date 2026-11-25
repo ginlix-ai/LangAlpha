@@ -111,6 +111,7 @@ from ptc_agent.agent.middleware.compaction.brief import (
 from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, stamp_compaction_summary
 from ptc_agent.agent.middleware._utils import nostream
 from ptc_agent.agent.pending_calls import pending_calls
+from ptc_agent.agent.middleware.comment_guidance import is_guidance_row
 from ptc_agent.agent.middleware.runtime_context.carrier import compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
@@ -708,6 +709,13 @@ class ClaudeTurn:
         return self._run is not None
 
     @property
+    def follow(self) -> Follow:
+        """What each message the turn sends is followed by: the guidance for
+        the comments it carries, which an API turn's model-call hook states."""
+        guidance = self.spec.comment_guidance
+        return guidance.inline if guidance is not None else _follows_nothing
+
+    @property
     def run_key(self) -> str:
         """The run's working directory: the thread's, or ``<thread>-<task>``
         for a task's runs, so no two CLIs on a thread share one."""
@@ -765,7 +773,7 @@ class ClaudeTurn:
             content=reentry_trigger(senders), name="orchestrator", additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE}
         )
         sent = ensure_message_ids([trigger, message])
-        prompt = _followed_by(state, sent, shared=self.spec.shared)
+        prompt = _followed_by(state, sent, shared=self.spec.shared, follow=self.follow)
         if await self._held_back(state, prompt):
             await run.close()
             self._run, self._sent_before = None, run.queries
@@ -781,7 +789,7 @@ class ClaudeTurn:
         launching for."""
         if not await self._room(run):
             return None
-        prompt = _followed_by(state, added, shared=self.spec.shared)
+        prompt = _followed_by(state, added, shared=self.spec.shared, follow=self.follow)
         return None if await self._held_back(state, prompt) else prompt
 
     @staticmethod
@@ -885,7 +893,7 @@ class ClaudeTurn:
             return []
         if another_model_replied_last(messages):
             return []
-        asked = turn_prompt(state, baseline=self._baseline_due(state)[1], shared=self.spec.shared)
+        asked = turn_prompt(state, baseline=self._baseline_due(state)[1], shared=self.spec.shared, follow=self.follow)
         plan = self.compaction.repin_plan(records, self.current_pin(), time.time(), pending=prompt_tokens(asked))
         if plan is None:
             return []
@@ -1039,7 +1047,7 @@ class ClaudeTurn:
         turn's prompt."""
         records = state.get("claude_session") or {}
         key, block = self._baseline_due(state)
-        prompt = turn_prompt(state, baseline=block, shared=self.spec.shared)
+        prompt = turn_prompt(state, baseline=block, shared=self.spec.shared, follow=self.follow)
         self._session = records.get("session_id")
         pin, kept = self._launch_pin(state, moves=prompt is not None)
         self._moving = bool(kept) and not same_pin(kept, pin)
@@ -1126,9 +1134,17 @@ Prompt = str | list[dict[str, Any]]
 _Update = dict[str, Any] | Command
 #: The thread's baseline as one block, with a key naming its epoch.
 Baseline = Callable[[Any], tuple[str, str]]
+#: What a message sent to Claude is followed by, if anything.
+Follow = Callable[[BaseMessage], HumanMessage | None]
 
 
-def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None, shared: bool = False) -> Prompt | None:
+def _follows_nothing(_: BaseMessage) -> None:
+    return None
+
+
+def turn_prompt(
+    state: ClaudeCodeState, *, baseline: str | None = None, shared: bool = False, follow: Follow = _follows_nothing
+) -> Prompt | None:
     """The messages the turn added since Claude last spoke, as one user message.
 
     A single plain message goes as the string it is. Otherwise the message is
@@ -1154,6 +1170,13 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None, shared: 
     ``build_claude_code_graph``) is told as the result of each resume, as a
     reminder after the messages ahead of it: Claude made no call for it, and
     its session holds none.
+
+    Each message is followed by what ``follow`` gives for it: the whole
+    guidance for the comments it carries (``ClaudeTurn.follow``), since the
+    guidance row an API turn writes once in view comes from a model-call
+    hook, which a Claude Code turn never runs. A guidance row already saved
+    (an API turn's, or one a hand-off wrote after its steer) is left out, as
+    the send it follows is in the same window and gets the guidance again.
     """
     brief = (stored_brief(state) or {}).get("text")
     if brief is None and another_model_replied_last(state["messages"]):
@@ -1163,11 +1186,14 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None, shared: 
     # A brief also stands in for the summary a thread with no reply opens on.
     window = messages[max(start, brief_cut(messages)) if brief is not None else start :]
     resumed = {c["id"] for m in window if isinstance(m, AIMessage) for c in m.tool_calls}
-    added = [
-        m if isinstance(m, HumanMessage) else HumanMessage(frame_reminder(m.text), id=m.id)
-        for m in window
-        if isinstance(m, HumanMessage) or (isinstance(m, ToolMessage) and m.tool_call_id in resumed)
-    ]
+    added: list[HumanMessage] = []
+    for m in window:
+        if is_guidance_row(m):
+            continue
+        if isinstance(m, HumanMessage) or (isinstance(m, ToolMessage) and m.tool_call_id in resumed):
+            added.append(m if isinstance(m, HumanMessage) else HumanMessage(frame_reminder(m.text), id=m.id))
+            if (followed := follow(m)) is not None:
+                added.append(followed)
     if not added and brief is None:
         last = state["messages"][-1] if state["messages"] else None
         if isinstance(last, ToolMessage) and (state.get("claude_session") or {}).get("session_id"):
@@ -1191,10 +1217,10 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None, shared: 
     return blocks
 
 
-def _followed_by(state: ClaudeCodeState, added: Sequence[BaseMessage], *, shared: bool) -> Prompt:
+def _followed_by(state: ClaudeCodeState, added: Sequence[BaseMessage], *, shared: bool, follow: Follow) -> Prompt:
     """The turn's next query: ``added``, as ``turn_prompt`` hands Claude what
     came since it last spoke."""
-    prompt = turn_prompt({**state, "messages": [*state["messages"], *added]}, shared=shared)
+    prompt = turn_prompt({**state, "messages": [*state["messages"], *added]}, shared=shared, follow=follow)
     assert prompt is not None, "a prompt holds the messages added"
     return prompt
 
@@ -1391,7 +1417,10 @@ def build_claude_code_graph(
 
         async def take() -> HandOff:
             rows, update = plan.rows(state, outs) if plan is not None else ((), {})
-            return HandOff(rows, await turn.steering.take(config), update)
+            steer = await turn.steering.take(config)
+            # What follows the steer, as ``turn_prompt`` sends it after a
+            # turn's message.
+            return HandOff(rows, steer, update, after=turn.follow(steer) if steer is not None else None)
 
         run.after_tool.open([c["id"] for c in calls], take)
         put_off: str | None = None

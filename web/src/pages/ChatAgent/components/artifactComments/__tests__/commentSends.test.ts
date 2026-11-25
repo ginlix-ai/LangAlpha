@@ -95,7 +95,7 @@ describe('sendBatches', () => {
     const send = vi.fn(() => new Promise<{ threadId: string }>((resolve) => {
       answers.push(() => resolve({ threadId: 'made' }));
     }));
-    const sender = { besideThreadId: null, running: false, send } as unknown as ArtifactCommentSender;
+    const sender = { beside: null, running: false, send } as unknown as ArtifactCommentSender;
     const to = { newThreadIn: 'ws' };
     const batches = [{ to, comments: [comment('1')] }, { to, comments: [comment('2')] }];
 
@@ -118,7 +118,7 @@ describe('sendBatches', () => {
       if ('threadId' in to && to.threadId === 't2') return Promise.reject(new Error('no'));
       return new Promise<{ threadId: string }>((resolve) => { release = () => resolve({ threadId: 't1' }); });
     });
-    const sender: ArtifactCommentSender = { besideThreadId: null, running: false, send };
+    const sender: ArtifactCommentSender = { beside: null, running: false, send };
     const batches = queuedBatches([comment('1'), comment('2', { thread_id: 't2' }), comment('3')], pending);
 
     const done = sendBatches(batches, { sender, sends, reasonOf: () => 'why' });
@@ -141,7 +141,7 @@ describe('sendBatches', () => {
         ? Promise.reject(new CommentSendRefused('A reply is still running.', null, 409))
         : Promise.resolve({ threadId: 't2' })
     ));
-    const sender: ArtifactCommentSender = { besideThreadId: 't1', running: true, send };
+    const sender: ArtifactCommentSender = { beside: { threadId: 't1' }, running: true, send };
     const batches = queuedBatches([comment('1'), comment('2', { thread_id: 't2' })], pending);
 
     const outcomes = await sendBatches(batches, { sender, sends, reasonOf: (err) => refusalReason(t, err, true) });

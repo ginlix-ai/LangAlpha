@@ -33,6 +33,7 @@ from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, Waits
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionPin, SessionRecords
 from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server
+from ptc_agent.agent.middleware.comment_guidance import CommentGuidanceMiddleware
 from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.utils.error_sanitization import sanitize_error_text
@@ -99,6 +100,9 @@ class RuntimeSpec:
     #: A shared workspace's turn, whose unrecorded user messages are escaped
     #: as the API path's naming step escapes them (``name_senders``).
     shared: bool = False
+    #: The agent's guidance for the comments a send carries, which a Claude
+    #: Code turn sends after the message whole (``CommentGuidanceMiddleware.inline``).
+    comment_guidance: CommentGuidanceMiddleware | None = None
 
     @property
     def catalog_model(self) -> str:

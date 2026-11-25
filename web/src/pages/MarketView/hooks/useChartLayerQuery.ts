@@ -3,12 +3,13 @@
  */
 
 import { useCallback } from 'react';
-import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { StoredChartLayer } from '../types/chartLayer';
 import { deleteChartLayer, fetchChartLayers } from '../utils/api';
 import { applyLayerOp, chartKeyOf, chartLayersKey, rowsOfChart } from '../utils/chartLayerCache';
-import { chartKeyParts, type ChartKey } from '../utils/chartInstanceKey';
+import { chartKeyParts, type ChartKey } from '@/lib/bars/chartId';
+import { queryKeys } from '@/lib/queryKeys';
 
 const NO_ROWS: StoredChartLayer[] = [];
 
@@ -26,12 +27,12 @@ export function chartLayersQuery(key: ChartKey) {
 /** Every layer of this chart, hidden ones included, oldest first. */
 export function useChartLayerRows(key: ChartKey | null): StoredChartLayer[] {
   const select = useCallback((rows: StoredChartLayer[]) => (key ? rowsOfChart(rows, key) : NO_ROWS), [key]);
-  const { data } = useQuery({
-    // A null key reads nothing; the placeholder key is never fetched.
-    ...chartLayersQuery(key ?? ('' as ChartKey)),
-    enabled: key !== null,
-    select,
-  });
+  // Before the workspace is known there is no chart to read: no fetch, no rows.
+  const { data } = useQuery(
+    key
+      ? { ...chartLayersQuery(key), select }
+      : { queryKey: queryKeys.chartLayers.none(), queryFn: skipToken, select },
+  );
   return data ?? NO_ROWS;
 }
 

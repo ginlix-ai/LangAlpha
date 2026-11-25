@@ -7,6 +7,16 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from chartkit.schema import (
+    DRAWING_TYPES,
+    ELEMENT_ID_PATTERN,
+    LAYER_ID_PATTERN,
+    MAX_TITLE,
+    LayerTime,
+    Title,
+    parse_time,
+)
+from fastapi import HTTPException
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -19,7 +29,7 @@ from pydantic import (
     model_validator,
 )
 
-from src.server.database.artifacts import one_line
+from src.server.database.artifacts import RecordKind, one_line
 from src.server.services.artifacts import snapshot
 from src.server.utils.pg_sanitize import uuid_text
 
@@ -45,9 +55,11 @@ class ArtifactVersionResponse(BaseModel):
 
 class ArtifactResponse(BaseModel):
     artifact_id: str
+    kind: RecordKind
     code: str
     url: str
     workspace_id: str
+    #: A file's workspace-relative path, or a chart's id (``SYMBOL:timeframe``).
     path: str
     name: str
     shared: bool
@@ -84,8 +96,27 @@ class ArtifactLookupResponse(BaseModel):
     artifact: ArtifactResponse | None
 
 
+#: Room for a symbol, a colon and a timeframe; ``normalize_chart_id`` judges it.
+CHART_ID_CHARS = 64
+
+
 class ArtifactPathRequest(BaseModel):
-    path: str = Field(min_length=1, max_length=4096)
+    """A file's path or a chart's id, exactly one: the body that makes a
+    record, and the query that finds one."""
+
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+    chart: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CHART_ID_CHARS,
+        description="A chart's id, SYMBOL:timeframe, in place of a path.",
+    )
+
+    @model_validator(mode="after")
+    def _one(self) -> ArtifactPathRequest:
+        if (self.path is None) == (self.chart is None):
+            raise ValueError("name a path or a chart, not both")
+        return self
 
 
 class KeepUpdatedRequest(BaseModel):
@@ -387,6 +418,82 @@ class RegionBox(BaseModel):
         return self
 
 
+#: A mark's prices are finite, as a chart layer's are.
+_MARK_CONFIG = ConfigDict(extra="forbid", allow_inf_nan=False)
+#: Past any price a chart plots, and short of the digits a huge one would
+#: print where the agent reads it back.
+MarkPrice = Annotated[float, Field(ge=-1e12, le=1e12)]
+
+
+class ChartRegionMark(BaseModel):
+    """A span of a chart's time and price. ``picture`` is the chart cut to it,
+    written for the agent where it could be."""
+
+    model_config = _MARK_CONFIG
+    type: Literal["region"]
+    start: LayerTime
+    end: LayerTime
+    low: MarkPrice
+    high: MarkPrice
+    picture: str | None = Field(default=None, pattern=_PICTURE_PATH)
+
+    @model_validator(mode="after")
+    def _forwards(self) -> ChartRegionMark:
+        if parse_time(self.end) < parse_time(self.start):
+            raise ValueError("a region ends before it starts")
+        if self.high < self.low:
+            raise ValueError("a region's high is below its low")
+        return self
+
+
+class ChartPointMark(BaseModel):
+    """A click on an empty part of the chart: a time and a price."""
+
+    model_config = _MARK_CONFIG
+    type: Literal["point"]
+    time: LayerTime
+    price: MarkPrice
+
+
+ElementKind = Literal["series", "level", "marker", "regime", "drawing", "alert"]
+
+
+class ChartElementMark(BaseModel):
+    """One element of a layer the agent drew, named as the layer names it,
+    with where the user clicked on it. ``index`` is its place in that kind's
+    list, which finds it when it has no id or name."""
+
+    model_config = _MARK_CONFIG
+    type: Literal["element"]
+    layer: Annotated[str, Field(pattern=LAYER_ID_PATTERN)]
+    layer_title: Title
+    element_kind: ElementKind
+    element_type: str | None = None
+    element_id: Annotated[str, Field(pattern=ELEMENT_ID_PATTERN)] | None = None
+    element_name: str | None = Field(default=None, min_length=1, max_length=MAX_TITLE)
+    index: int = Field(ge=0, le=100_000)
+    time: LayerTime
+    price: MarkPrice
+
+    @model_validator(mode="after")
+    def _drawing_type(self) -> ChartElementMark:
+        # The type is how a drawing is named back to the agent; nothing else has one.
+        if self.element_kind == "drawing":
+            if self.element_type not in DRAWING_TYPES:
+                raise ValueError(
+                    f"a drawing's type is one of {', '.join(DRAWING_TYPES)}"
+                )
+        elif self.element_type is not None:
+            raise ValueError(f"a {self.element_kind} has no element_type")
+        return self
+
+
+ChartMark = Annotated[
+    ChartRegionMark | ChartPointMark | ChartElementMark,
+    Field(discriminator="type"),
+]
+
+
 _SPOT_FIELDS = frozenset({"path", "label", "quote", "prefix", "suffix", "detail"})
 #: What each kind may carry beyond ``kind`` and ``point``: only what its
 #: rendering reads, so nothing stored is left out of what the agent is shown.
@@ -398,20 +505,23 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
     "block": frozenset({"lines", "label", "quote"}),
     "cells": frozenset({"sheet", "ranges"}),
     "region": frozenset({"boxes"}),
+    "chart": frozenset({"marks"}),
 }
 _KIND_REQUIRES = {
     "block": "lines",
     "cells": "ranges",
     "area": "elements",
     "region": "boxes",
+    "chart": "marks",
 }
 _KIND_FIELDS_ALL = sorted(frozenset().union(*_KIND_FIELDS.values()))
 
 
 class CommentAnchor(BaseModel):
     """What the owner pinned on the live file, so it can be found again after
-    the file changes. Every text field was read off the file; the comment's
-    own path names the file."""
+    the file changes, or the marks they made on a chart. Every text field was
+    read off the file or the chart's layers; the comment's own path names the
+    file or the chart."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -422,8 +532,10 @@ class CommentAnchor(BaseModel):
 
     #: A clicked element, a text selection, a spot the file names itself, an
     #: area dragged around several elements, a Markdown block, cells of a
-    #: sheet, or boxes on an image or a PDF's pages.
-    kind: Literal["element", "text", "named", "area", "block", "cells", "region"]
+    #: sheet, boxes on an image or a PDF's pages, or marks on a chart.
+    kind: Literal[
+        "element", "text", "named", "area", "block", "cells", "region", "chart"
+    ]
     #: The source lines a block, or selected words, are on.
     lines: SourceLines | None = None
     #: The PDF page selected words are on.
@@ -452,6 +564,8 @@ class CommentAnchor(BaseModel):
     ranges: list[CellRange] | None = Field(default=None, min_length=1, max_length=64)
     #: The boxes or points picked, in the order they were.
     boxes: list[RegionBox] | None = Field(default=None, min_length=1, max_length=64)
+    #: A chart's regions, points and layer elements, in the order picked.
+    marks: list[ChartMark] | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def _kind_fields(self) -> CommentAnchor:
@@ -466,6 +580,9 @@ class CommentAnchor(BaseModel):
         needed = _KIND_REQUIRES.get(self.kind)
         if needed and not getattr(self, needed):
             raise ValueError(f"a {self.kind} anchor names its {needed}")
+        if self.kind == "chart" and self.point is not None:
+            # Each mark says where it sits on the chart; there is no file to pin.
+            raise ValueError("a chart anchor has no point")
         if self.kind == "area":
             # One element is that element's comment; the file sends it as one.
             if len(self.elements) < 2:
@@ -512,8 +629,11 @@ class CommentResponse(BaseModel):
 
     comment_id: str
     artifact_id: str
+    kind: RecordKind
     number: int
+    #: A file's path, or a chart's id.
     path: str
+    #: Null on a chart.
     file_sha256: str | None
     title: str | None
     anchor: CommentAnchor
@@ -579,6 +699,24 @@ class CreateCommentRequest(BaseModel):
     @classmethod
     def _storable_title(cls, value: Any) -> Any:
         return _whole_pairs(value)
+
+    def check_against(self, kind: RecordKind) -> None:
+        """Refuse an anchor of the other kind of record: a chart's marks find
+        nothing in a file, and a file's anchor nothing on a chart."""
+        if (self.anchor.kind == "chart") != (kind == "chart"):
+            raise HTTPException(
+                status_code=422,
+                detail="A chart takes a chart anchor"
+                if kind == "chart"
+                else "A file takes no chart anchor",
+            )
+
+    def file_fields(self, kind: RecordKind) -> tuple[str | None, str | None]:
+        """The ``file_sha256`` and ``title`` a comment keeps: none on a chart,
+        which has no file to hash or title to read."""
+        if kind == "chart":
+            return None, None
+        return self.file_sha256, self.title
 
 
 class AddCommentMessageRequest(BaseModel):

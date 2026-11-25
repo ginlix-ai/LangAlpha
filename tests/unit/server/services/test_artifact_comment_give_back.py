@@ -221,6 +221,7 @@ async def test_a_stop_tells_other_tabs_which_comments_it_gave_back(monkeypatch):
         artifact_id="a1",
         workspace_id="w",
         path="r.html",
+        kind="file",
         thread_id="t",
         comment_ids=["c1", "c2"],
     )

@@ -50,8 +50,8 @@ vi.mock('@/hooks/useArtifact', () => ({
     ownedAsks.push(workspaceId);
     return { record: workspaceId ? { code: 'abc123abc123', url: '/a/abc123abc123' } : undefined };
   },
-  useArtifactByPath: (workspaceId: string | null, path: string | null) => {
-    byPathAsks.push({ workspaceId, path });
+  useArtifactRecord: (workspaceId: string | null, target: { path: string } | null) => {
+    byPathAsks.push({ workspaceId, path: target?.path ?? null });
     return { data: workspaceId ? artifactRecord : undefined };
   },
   useArtifactDestinations: (artifactId: string | null) => ({ data: artifactId ? destinations : undefined }),
@@ -72,7 +72,7 @@ function answerFor(bound: boolean): ArtifactDestinations {
 /** The header beside a chat on thread `th-1`. */
 function besideChat(ui: React.ReactElement): React.ReactElement {
   return (
-    <ArtifactCommentSendContext value={{ besideThreadId: 'th-1', running: false, send: vi.fn() }}>
+    <ArtifactCommentSendContext value={{ beside: { threadId: 'th-1' }, running: false, send: vi.fn() }}>
       {ui}
     </ArtifactCommentSendContext>
   );
@@ -415,7 +415,7 @@ describe('FileHeaderActions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /pageViewer:comments\.bindHere/ }));
     expect(bindMutate).toHaveBeenCalledWith(
-      { workspaceId: 'ws-123', path: 'results/report.html', threadId: 'th-1' },
+      { workspaceId: 'ws-123', target: { kind: 'file', path: 'results/report.html' }, threadId: 'th-1' },
       expect.anything(),
     );
     expect(screen.queryByRole('button', { name: /artifact\.unbind/ })).not.toBeInTheDocument();
@@ -454,7 +454,7 @@ describe('FileHeaderActions', () => {
     expect(openPublish).toHaveBeenCalledWith('results/appendix.html');
     fireEvent.click(screen.getByRole('button', { name: /pageViewer:comments\.bindHere/ }));
     expect(bindMutate).toHaveBeenLastCalledWith(
-      { workspaceId: 'ws-123', path: 'results/appendix.html', threadId: 'th-1' },
+      { workspaceId: 'ws-123', target: { kind: 'file', path: 'results/appendix.html' }, threadId: 'th-1' },
       expect.anything(),
     );
     artifactRecord = null;

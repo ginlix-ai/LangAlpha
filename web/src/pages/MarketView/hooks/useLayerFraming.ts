@@ -24,7 +24,7 @@ import {
 } from '../stores/layerViewStore';
 import type { StoredChartLayer } from '../types/chartLayer';
 import type { ChartView } from '../types/chartView';
-import type { ChartKey } from '../utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 import type { TimeGrid } from '../utils/chartLayer/timeGrid';
 import { chartLayersKey } from '../utils/chartLayerCache';
 import { buildChartView, logicalRangeForTimes } from '../utils/chartView';

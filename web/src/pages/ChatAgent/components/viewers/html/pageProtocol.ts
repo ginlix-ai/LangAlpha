@@ -20,6 +20,8 @@ import type {
   ArtifactCommentAreaElement,
   BlockAnchor,
   CellsAnchor,
+  ChartAnchor,
+  ChartMark,
   RegionAnchor,
   ElementAnchor,
   PartEntry,
@@ -218,6 +220,15 @@ export const MAX_AREA_COUNT = 500;
 export const MAX_CELL_RANGES = 64;
 /** The API's limit on the boxes one comment holds. */
 export const MAX_REGION_BOXES = 64;
+/** The API's limit on the marks one comment on a chart holds. */
+export const MAX_CHART_MARKS = 64;
+/** A time on a chart as its layers write it, the exchange's wall clock with no zone. */
+const CHART_TIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/;
+/** A layer's id, and a shape's own id in it, as the agent names them. */
+const LAYER_ID = /^[a-z0-9-]{1,48}$/;
+const ELEMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}$/;
+/** The API's limit on a layer's title and a shape's name, as layers take them. */
+const MAX_LAYER_TITLE = 120;
 /** The most a box may run past its edge, after rounding, as the API takes it. */
 const EDGE_SLACK = 0.001;
 /** 1-based source lines, one or a span, as the API takes them. */
@@ -353,6 +364,49 @@ const regionAnchor = z.pipe(
   z.transform((a): RegionAnchor => defined(a)),
 );
 
+const chartTime = z.string().check(z.regex(CHART_TIME));
+const chartPrice = z.number().check(z.refine(Number.isFinite));
+
+/**
+ * A mark on a chart: a span of bars and prices, a point, or a shape a layer
+ * holds. Like a box's, a region's picture is the app's to write.
+ */
+const chartMark = z.union([
+  z.pipe(
+    z.object({ type: z.literal('region'), start: chartTime, end: chartTime, low: chartPrice, high: chartPrice })
+      .check(z.refine((m) => m.start <= m.end && m.low <= m.high)),
+    z.transform((m): ChartMark => m),
+  ),
+  z.pipe(
+    z.object({ type: z.literal('point'), time: chartTime, price: chartPrice }),
+    z.transform((m): ChartMark => m),
+  ),
+  z.pipe(
+    z.object({
+      type: z.literal('element'),
+      layer: z.string().check(z.regex(LAYER_ID)),
+      layer_title: text(MAX_LAYER_TITLE),
+      element_kind: z.enum(['series', 'level', 'marker', 'regime', 'drawing', 'alert']),
+      element_type: lenient(z.string().check(z.regex(/^[a-z_]{1,32}$/))),
+      element_id: lenient(z.string().check(z.regex(ELEMENT_ID))),
+      element_name: text(MAX_LAYER_TITLE),
+      index: z.int().check(z.gte(0)),
+      time: chartTime,
+      price: chartPrice,
+    }).check(z.refine((m) => !!m.layer_title)),
+    z.transform((m): ChartMark => defined({ ...m, layer_title: m.layer_title ?? '' })),
+  ),
+]);
+
+/** Marks on a chart, in the order they were picked: each says where it sits, so there is no pin point. */
+const chartAnchor = z.pipe(
+  z.object({
+    kind: z.literal('chart'),
+    marks: z.array(chartMark).check(z.minLength(1), z.maxLength(MAX_CHART_MARKS)),
+  }),
+  z.transform((a): ChartAnchor => defined(a)),
+);
+
 const areaElement = z.pipe(
   z.object({
     lines: lenient(sourceLines),
@@ -384,8 +438,8 @@ const areaAnchor = z.pipe(
 
 const title = text(MAX_TITLE);
 const press = lenient(pressNumber);
-/** What one click picks: a page's element, a Markdown block, cells, or boxes. */
-const pickAnchor = z.union([elementAnchor, blockAnchor, cellsAnchor, regionAnchor]);
+/** What one click picks: a page's element, a Markdown block, cells, boxes, or marks on a chart. */
+const pickAnchor = z.union([elementAnchor, blockAnchor, cellsAnchor, regionAnchor, chartAnchor]);
 
 /** A click's or an area's comment spot: the anchor, its box, the press it pairs with, and whether it extends the draft. */
 function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof pickAnchor | typeof areaAnchor) {

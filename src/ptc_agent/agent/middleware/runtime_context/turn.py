@@ -133,6 +133,11 @@ MARKET_WATCH_KEPT_SINCE = 3
 #: way.
 WAKEUP_CANCELLED_ROW_KIND = "wakeup_cancelled"
 
+#: Row kind of how to answer the comments a send carries
+#: (``middleware/comment_guidance.py``), which ``update_row.md.j2`` hardcodes
+#: the same way.
+COMMENT_GUIDANCE_ROW_KIND = "comment_guidance"
+
 #: Rows that speak for no block, so a rebuild neither folds them in nor
 #: retires them, but a summary carries them: nobody states them again, the
 #: user's cancel of a wakeup holds whatever the blocks say, and a carried step
@@ -143,8 +148,9 @@ NOTICE_ROW_KINDS = frozenset({WAKEUP_CANCELLED_ROW_KIND, LAST_STEP_ROW_KIND})
 #: once a compaction takes them from view (the notes reminder before the next
 #: summary, the check-in after the next run of tool calls, the ask before a
 #: mid-turn rebuild at the next one, the time-up ask on the next call, the
-#: live prices on the next fetch, the mount found down on the next call), so a
-#: rebuild does not count them and a summary does not carry them. The withdrawal of a time-up ask answers only that ask, which a
+#: live prices on the next fetch, the mount found down on the next call, the
+#: comment guidance at the next send of comments), so a rebuild does not count
+#: them and a summary does not carry them. The withdrawal of a time-up ask answers only that ask, which a
 #: summary does not carry either, so it has nothing to answer once both are
 #: out of view.
 NON_CHANGE_ROW_KINDS = frozenset(
@@ -161,6 +167,7 @@ NON_CHANGE_ROW_KINDS = frozenset(
         TIME_UP_ROW_KIND,
         TIME_UP_WITHDRAWN_ROW_KIND,
         MARKET_WATCH_ROW_KIND,
+        COMMENT_GUIDANCE_ROW_KIND,
     }
 )
 

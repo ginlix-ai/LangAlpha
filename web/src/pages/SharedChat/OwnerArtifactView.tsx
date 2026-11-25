@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import { toast } from '@/components/ui/use-toast';
 import { useEnsureArtifact } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { ThreadLifecycleFeed } from '@/lib/threadLifecycle/ThreadLifecycleFeed';
 import PublishDialog from '../ChatAgent/components/PublishDialog';
 import {
@@ -77,7 +78,7 @@ export default function OwnerArtifactView({ code, metadata }: {
   // in this tab, at the section it named, and Back returns here. The section
   // comes as the link's own fragment, already escaped.
   const openLink = (linked: string, fragment: string) => {
-    ensureArtifact(workspaceId, linked).then(
+    ensureArtifact(workspaceId, targetFor('file', linked)).then(
       (artifact) => window.location.assign(fragment ? `${artifact.url}#${fragment}` : artifact.url),
       () => toast({ description: t('publish:linkFailed'), variant: 'destructive' }),
     );
@@ -116,7 +117,7 @@ export default function OwnerArtifactView({ code, metadata }: {
         name={name}
         actions={(
           <>
-            <CommentTools tabId={VIEW_ID} workspaceId={workspaceId} path={path} ui={ui} variant="bar" modeDisabled={versionView.version !== null} />
+            <CommentTools tabId={VIEW_ID} workspaceId={workspaceId} target={{ kind: 'file', path }} ui={ui} variant="bar" modeDisabled={versionView.version !== null} />
             <ArtifactVersionPicker view={versionView} variant="bar" />
             <ShareTopBarAction icon={RefreshCw} label={t('filePanel:reloadPage')} onClick={() => setReloads((n) => n + 1)} />
             <ShareTopBarAction icon={FileDown} label={t('filePanel:saveAsPdf')} onClick={() => void savePdf()} disabled={pdfBusy} />

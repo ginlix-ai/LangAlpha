@@ -29,7 +29,6 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
 from src.server.database import org_library as library_db
-from src.server.database.artifacts import get_artifact
 from src.server.database.share_codes import share_path
 from src.server.services import org_library as library
 from src.server.services.features import Member, org_member
@@ -215,13 +214,10 @@ async def _reach_content(
     it is and whose managers say whether it may leave it."""
     if thread_id is not None:
         return None, await thread_access(thread_id, user_id)
-    artifact = await get_artifact(artifact_id, user_id=user_id)
-    if artifact is not None:
-        return artifact, Access(user_id)
-    from src.server.app.artifacts.records import reached
+    from src.server.app.artifacts.records import reached_file
 
     try:
-        return await reached(artifact_id or "", user_id)
+        return await reached_file(artifact_id or "", user_id)
     except HTTPException as e:
         if e.status_code == 404:
             raise library.not_found() from None

@@ -77,6 +77,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
 )
 from ptc_agent.agent.middleware.file_mount_notice import FileMountNoticeMiddleware
 from ptc_agent.agent.middleware.order_governance import OrderLedger, places_order
+from ptc_agent.agent.middleware.comment_guidance import CommentGuidanceMiddleware
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
     SubagentSwitchReader,
@@ -847,6 +848,11 @@ class PTCAgent:
         )
         main_only_middleware.append(steering)
 
+        # How to answer the comments a send carries, after the steering, whose
+        # message a send mid-turn arrives in.
+        comment_guidance = CommentGuidanceMiddleware(drawing=chart_annotation)
+        main_only_middleware.append(comment_guidance)
+
         # The user's cancels of wakeups the agent set, after the steers that
         # reached this call. Whether or not wakeups are on, so the row saying
         # they were turned off arrives.
@@ -1573,6 +1579,7 @@ class PTCAgent:
                 entry=(skill_loader_middleware, context.turn, context.baseline, plan_state),
                 plan=AgentPlan(plan_close_out) if plan_on else None,
                 shared=not own_data,
+                comment_guidance=comment_guidance,
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,
                 steering=steering,

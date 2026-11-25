@@ -106,6 +106,7 @@ def _artifact(
         artifact_id=ARTIFACT,
         code=CODE,
         workspace_id=WS_ID,
+        kind="file",
         path="report.html",
         created_thread_id=None,
         bound_thread_id=None,

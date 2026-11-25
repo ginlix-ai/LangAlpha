@@ -54,6 +54,7 @@ const record: Artifact = {
   code: 'k7f2m9q1x4z8',
   url: '/a/k7f2m9q1x4z8',
   workspace_id: 'ws-1',
+  kind: 'file',
   path: ENTRY,
   name: 'report.html',
   shared: true,

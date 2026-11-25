@@ -12,6 +12,7 @@ describe('marketRoute', () => {
       workspaceId: 'ws-7',
       threadId: 'thread-1',
       returnTo: '/chat/t/thread-1',
+      commentId: 'c-9',
     });
     expect(url.startsWith('/market?')).toBe(true);
     expect(readMarketViewRoute(paramsOf(url))).toEqual({
@@ -21,12 +22,13 @@ describe('marketRoute', () => {
       scope: 'workspace',
       threadId: 'thread-1',
       returnTo: '/chat/t/thread-1',
+      commentId: 'c-9',
     });
   });
 
   it('selects the workspace scope only when a workspace is named', () => {
     const bare = readMarketViewRoute(paramsOf(buildMarketViewUrl({ symbol: 'AAPL' })));
-    expect(bare).toEqual({ symbol: 'AAPL', timeframe: null, workspaceId: null, scope: null, threadId: null, returnTo: null });
+    expect(bare).toEqual({ symbol: 'AAPL', timeframe: null, workspaceId: null, scope: null, threadId: null, returnTo: null, commentId: null });
 
     const withWs = paramsOf(buildMarketViewUrl({ symbol: 'AAPL', workspaceId: 'ws-7' }));
     expect(withWs.has('mode')).toBe(false);
@@ -53,7 +55,7 @@ describe('marketRoute', () => {
   });
 
   it("lists the params the writer sets and an old link's mode, so a reader can clear exactly those", () => {
-    const url = buildMarketViewUrl({ symbol: 'AAPL', timeframe: '1day', workspaceId: 'ws', threadId: 't', returnTo: '/x' });
+    const url = buildMarketViewUrl({ symbol: 'AAPL', timeframe: '1day', workspaceId: 'ws', threadId: 't', returnTo: '/x', commentId: 'c' });
     expect([...paramsOf(url).keys(), 'mode'].sort()).toEqual([...MARKET_VIEW_ROUTE_PARAMS].sort());
   });
 });

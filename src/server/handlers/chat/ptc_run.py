@@ -126,7 +126,7 @@ from src.server.services.runs.admission import (
     begin_run,
     dedup_retransmit_or_raise,
 )
-from src.server.services.artifacts.comments import CommentSendScope
+from src.server.services.artifacts.comments import CommentSendScope, stamp_send
 from src.server.services.turn_runtime import TurnRoute
 
 from .admission_gate import agent_steer_of, steer_allowed, wait_or_steer
@@ -1001,6 +1001,8 @@ async def astream_ptc_workflow(
 
         if inline_target is not None and written_by is not None:
             written_by.stamp(inline_target)
+        if inline_target is not None:
+            stamp_send(inline_target, request.artifact_comments)
 
         # =====================================================================
         # Save user request to system thread directory (non-critical)

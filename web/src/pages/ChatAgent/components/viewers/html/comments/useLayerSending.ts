@@ -1,22 +1,22 @@
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useArtifactBinding } from '@/hooks/useArtifact';
-import type { ArtifactComment } from '@/types/api';
+import type { ArtifactComment, ArtifactTarget } from '@/types/api';
 import type { CommentTarget } from '../../../../utils/api/artifacts';
 import { useArtifactCommentSender } from '../../../artifactComments/sendContext';
 import type { CommentDestinationProps } from './CommentDestination';
 import type { CommentLayerValue } from './commentLayerContext';
-import { targetKey, type CommentIntent, type CommentRoute } from '../../../artifactComments/destinations';
+import { targetKey, threadOf, type CommentIntent, type CommentRoute } from '../../../artifactComments/destinations';
 import { useCommentActions } from './useCommentActions';
 import { useCommentDestinations } from '../../../artifactComments/useCommentDestinations';
 import type { CommentUi } from './useCommentUi';
 
 interface LayerSendingOptions {
   workspaceId: string;
-  /** The file the frame holds, workspace-relative: its comments are the layer's. */
-  docPath: string;
-  /** The file the comment being written is on, which a link may have led the frame away from. */
-  draftPath: string;
+  /** What the frame holds, as `targetFor` keys it: its comments are the layer's. */
+  doc: ArtifactTarget;
+  /** What the comment being written is on, which a link may have led the frame away from. */
+  draft: ArtifactTarget;
   ui: CommentUi;
   /** Where the comment being written goes when the owner picked other than the default. */
   to: CommentTarget | null;
@@ -39,12 +39,12 @@ export interface LayerSending {
  * makes. The comment being written goes by its own file's destinations, the
  * pinned ones by the frame's.
  */
-export function useLayerSending({ workspaceId, docPath, draftPath, ui, to, onTo }: LayerSendingOptions): LayerSending {
+export function useLayerSending({ workspaceId, doc, draft, ui, to, onTo }: LayerSendingOptions): LayerSending {
   const { t } = useTranslation();
   const sender = useArtifactCommentSender();
-  const beside = sender.besideThreadId;
-  const destinations = useCommentDestinations(workspaceId, docPath);
-  const forDraft = useCommentDestinations(workspaceId, draftPath);
+  const beside = threadOf(sender.beside);
+  const destinations = useCommentDestinations(workspaceId, doc);
+  const forDraft = useCommentDestinations(workspaceId, draft);
   const { bind } = useArtifactBinding();
   // The agent is on a comment while a turn runs on the thread beside and the
   // comment went there; a turn on another thread is not one this view hears.
@@ -55,7 +55,7 @@ export function useLayerSending({ workspaceId, docPath, draftPath, ui, to, onTo 
   // Binding makes the thread beside the default for this file's comments.
   const bindBeside = () => {
     if (!beside) return;
-    bind.mutate({ workspaceId, path: draftPath, threadId: beside }, {
+    bind.mutate({ workspaceId, target: draft, threadId: beside }, {
       onError: () => toast({ description: t('pageViewer:comments.bindFailed'), variant: 'destructive' }),
     });
     onTo(null);

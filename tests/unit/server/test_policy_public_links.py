@@ -121,7 +121,7 @@ async def test_publishing_a_file_is_refused():
     publish = AsyncMock()
     with (
         standing_under(NO_LINKS),
-        patch("src.server.app.artifacts.records.reached", new_callable=AsyncMock, return_value=(MagicMock(audience=None), _as_owner(None, "u"))),
+        patch("src.server.app.artifacts.records.reached_file", new_callable=AsyncMock, return_value=(MagicMock(audience=None), _as_owner(None, "u"))),
         patch("src.server.app.artifacts.records.snapshot.publish", publish),
     ):
         with pytest.raises(HTTPException) as refused:

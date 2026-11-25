@@ -8,6 +8,7 @@
  */
 import { api } from '@/api/client';
 import i18n from '@/i18n';
+import { kindOf } from '@/lib/artifactTarget';
 import { deviceTimezone } from '@/lib/deviceTimezone';
 import type { PageLoads } from '@/lib/pageLoads';
 import { randomUUID } from '@/lib/randomUUID';
@@ -17,9 +18,10 @@ import type {
   ArtifactComment,
   ArtifactDestinations,
   ArtifactGrant,
-  ArtifactLookup,
+  ArtifactKind,
   ArtifactReading,
   ArtifactStatus,
+  ArtifactTarget,
   ArtifactVersion,
   CreateArtifactCommentRequest,
   PublishArtifactRequest,
@@ -34,29 +36,45 @@ const artifactPath = (artifactId: string) => `/api/v1/artifacts/${encodeURICompo
 const workspaceArtifactsPath = (workspaceId: string) =>
   `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/artifacts`;
 
-// --- Records ---
+/** A payload as the server sends it: an older one leaves out `kind`. */
+type Wire<T extends { kind: ArtifactKind }> = Omit<T, 'kind'> & { kind?: ArtifactKind };
 
-/** The file's record if it has one; never makes it, so a tab can ask for any HTML file. */
-export async function findArtifact(workspaceId: string, path: string): Promise<Artifact | null> {
-  const { data } = await api.get<ArtifactLookup>(workspaceArtifactsPath(workspaceId), { params: { path } });
-  return data.artifact;
+/** A payload's kind, read here as it arrives, so nothing past this layer decodes it again. */
+function kinded<T extends { kind: ArtifactKind }>(x: Wire<T>): T {
+  return { ...x, kind: kindOf(x) } as T;
 }
 
-/** The file's record, made private if new. 400 for a path that may not be shared. */
-export async function ensureArtifact(workspaceId: string, path: string): Promise<Artifact> {
-  const { data } = await api.post<Artifact>(workspaceArtifactsPath(workspaceId), { path });
-  return data;
+const asRecord = (data: Wire<Artifact>) => kinded<Artifact>(data);
+const asComment = (data: Wire<ArtifactComment>) => kinded<ArtifactComment>(data);
+
+// --- Records ---
+
+/** A target as the records route names it: a file by `path`, a chart by `chart`, never both. */
+function targetParam(target: ArtifactTarget): { path: string } | { chart: string } {
+  return target.kind === 'chart' ? { chart: target.path } : { path: target.path };
+}
+
+/** The target's record if it has one; never makes it, so a tab can ask for any HTML file. */
+export async function findArtifact(workspaceId: string, target: ArtifactTarget): Promise<Artifact | null> {
+  const { data } = await api.get<{ artifact: Wire<Artifact> | null }>(workspaceArtifactsPath(workspaceId), { params: targetParam(target) });
+  return data.artifact && asRecord(data.artifact);
+}
+
+/** The target's record, made private if new. 400 for a path that may not be shared, or a chart id that is not one. */
+export async function ensureArtifact(workspaceId: string, target: ArtifactTarget): Promise<Artifact> {
+  const { data } = await api.post<Wire<Artifact>>(workspaceArtifactsPath(workspaceId), targetParam(target));
+  return asRecord(data);
 }
 
 /** 404 when it is not the caller's. */
 export async function getArtifact(artifactId: string): Promise<Artifact> {
-  const { data } = await api.get<Artifact>(artifactPath(artifactId));
-  return data;
+  const { data } = await api.get<Wire<Artifact>>(artifactPath(artifactId));
+  return asRecord(data);
 }
 
 export async function setArtifactKeepUpdated(artifactId: string, keepUpdated: boolean): Promise<Artifact> {
-  const { data } = await api.patch<Artifact>(artifactPath(artifactId), { keep_updated: keepUpdated });
-  return data;
+  const { data } = await api.patch<Wire<Artifact>>(artifactPath(artifactId), { keep_updated: keepUpdated });
+  return asRecord(data);
 }
 
 /**
@@ -68,27 +86,27 @@ export async function setArtifactKeepUpdated(artifactId: string, keepUpdated: bo
  */
 export async function setArtifactKept(artifactId: string, kept: boolean, loads?: PageLoads): Promise<Artifact> {
   const body = kept && loads ? { kept, loaded: loads.now, earlier: loads.earlier } : { kept };
-  const { data } = await api.put<Artifact>(`${artifactPath(artifactId)}/kept`, body);
-  return data;
+  const { data } = await api.put<Wire<Artifact>>(`${artifactPath(artifactId)}/kept`, body);
+  return asRecord(data);
 }
 
 /** Take a file the page does not need to draw off what a publish carries, or put it back. */
 export async function setArtifactFileLeftOut(artifactId: string, path: string, leftOut: boolean): Promise<Artifact> {
-  const { data } = await api.post<Artifact>(`${artifactPath(artifactId)}/left-out`, { path, left_out: leftOut });
-  return data;
+  const { data } = await api.post<Wire<Artifact>>(`${artifactPath(artifactId)}/left-out`, { path, left_out: leftOut });
+  return asRecord(data);
 }
 
 // --- Where comments go ---
 
 /** Send the file's comments to `threadId` until unbound. 409 `destination_unavailable`. */
 export async function bindArtifact(artifactId: string, threadId: string): Promise<Artifact> {
-  const { data } = await api.put<Artifact>(`${artifactPath(artifactId)}/binding`, { thread_id: threadId });
-  return data;
+  const { data } = await api.put<Wire<Artifact>>(`${artifactPath(artifactId)}/binding`, { thread_id: threadId });
+  return asRecord(data);
 }
 
 export async function unbindArtifact(artifactId: string): Promise<Artifact> {
-  const { data } = await api.delete<Artifact>(`${artifactPath(artifactId)}/binding`);
-  return data;
+  const { data } = await api.delete<Wire<Artifact>>(`${artifactPath(artifactId)}/binding`);
+  return asRecord(data);
 }
 
 /**
@@ -126,20 +144,22 @@ export async function getArtifactStatus(artifactId: string, loads: PageLoads): P
  * the new list; an unchanged file cuts nothing (`cut: false`).
  */
 export async function publishArtifact(artifactId: string, body: PublishArtifactRequest): Promise<PublishArtifactResponse> {
-  const { data } = await api.post<PublishArtifactResponse>(`${artifactPath(artifactId)}/publish`, body);
-  return data;
+  const { data } = await api.post<Omit<PublishArtifactResponse, 'artifact'> & { artifact: Wire<Artifact> }>(
+    `${artifactPath(artifactId)}/publish`, body,
+  );
+  return { ...data, artifact: asRecord(data.artifact) };
 }
 
 /** Stop sharing; every version is kept and sharing again resumes at the same link. */
 /** Who the link opens to; on a shared link it holds from every visitor's next request. */
 export async function setArtifactAudience(artifactId: string, audience: ShareAudience): Promise<Artifact> {
-  const { data } = await api.put<Artifact>(`${artifactPath(artifactId)}/audience`, { audience });
-  return data;
+  const { data } = await api.put<Wire<Artifact>>(`${artifactPath(artifactId)}/audience`, { audience });
+  return asRecord(data);
 }
 
 export async function unshareArtifact(artifactId: string): Promise<Artifact> {
-  const { data } = await api.post<Artifact>(`${artifactPath(artifactId)}/unshare`);
-  return data;
+  const { data } = await api.post<Wire<Artifact>>(`${artifactPath(artifactId)}/unshare`);
+  return asRecord(data);
 }
 
 /** Newest first. */
@@ -162,8 +182,8 @@ const commentPath = (artifactId: string, commentId: string) =>
 
 /** Every comment on the file, by pin number, each with its messages. */
 export async function listArtifactComments(artifactId: string): Promise<ArtifactComment[]> {
-  const { data } = await api.get<{ comments: ArtifactComment[] }>(commentsPath(artifactId));
-  return data.comments;
+  const { data } = await api.get<{ comments: Wire<ArtifactComment>[] }>(commentsPath(artifactId));
+  return data.comments.map(asComment);
 }
 
 /** A new comment on the live file; it waits as a note or in a thread's queue until a send carries it. */
@@ -171,8 +191,8 @@ export async function createArtifactComment(
   artifactId: string,
   body: CreateArtifactCommentRequest,
 ): Promise<ArtifactComment> {
-  const { data } = await api.post<ArtifactComment>(commentsPath(artifactId), body);
-  return data;
+  const { data } = await api.post<Wire<ArtifactComment>>(commentsPath(artifactId), body);
+  return asComment(data);
 }
 
 /** The owner writes again on a comment, which reopens it if resolved. */
@@ -181,8 +201,8 @@ export async function addArtifactCommentMessage(
   commentId: string,
   body: AddArtifactCommentMessageRequest,
 ): Promise<ArtifactComment> {
-  const { data } = await api.post<ArtifactComment>(`${commentPath(artifactId, commentId)}/messages`, body);
-  return data;
+  const { data } = await api.post<Wire<ArtifactComment>>(`${commentPath(artifactId, commentId)}/messages`, body);
+  return asComment(data);
 }
 
 /**
@@ -195,8 +215,8 @@ export async function updateArtifactComment(
   commentId: string,
   body: UpdateArtifactCommentRequest,
 ): Promise<ArtifactComment> {
-  const { data } = await api.patch<ArtifactComment>(commentPath(artifactId, commentId), body);
-  return data;
+  const { data } = await api.patch<Wire<ArtifactComment>>(commentPath(artifactId, commentId), body);
+  return asComment(data);
 }
 
 export async function deleteArtifactComment(artifactId: string, commentId: string): Promise<void> {
@@ -212,22 +232,22 @@ export async function markArtifactCommentRead(
   commentId: string,
   through: number,
 ): Promise<ArtifactComment> {
-  const { data } = await api.post<ArtifactComment>(`${commentPath(artifactId, commentId)}/read`, { through });
-  return data;
+  const { data } = await api.post<Wire<ArtifactComment>>(`${commentPath(artifactId, commentId)}/read`, { through });
+  return asComment(data);
 }
 
 /** The owner has read every comment on the file; answers with its comments. */
 export async function markArtifactCommentsRead(artifactId: string): Promise<ArtifactComment[]> {
-  const { data } = await api.post<{ comments: ArtifactComment[] }>(`${commentsPath(artifactId)}/read`);
-  return data.comments;
+  const { data } = await api.post<{ comments: Wire<ArtifactComment>[] }>(`${commentsPath(artifactId)}/read`);
+  return data.comments.map(asComment);
 }
 
 /** What the thread's next send carries: the comments queued for it, on any artifact. */
 export async function listQueuedArtifactComments(threadId: string): Promise<QueuedArtifactComment[]> {
-  const { data } = await api.get<{ comments: QueuedArtifactComment[] }>(
+  const { data } = await api.get<{ comments: Wire<QueuedArtifactComment>[] }>(
     `/api/v1/artifacts/threads/${encodeURIComponent(threadId)}/queued-comments`,
   );
-  return data.comments;
+  return data.comments.map((c) => kinded<QueuedArtifactComment>(c));
 }
 
 // --- Sending ---

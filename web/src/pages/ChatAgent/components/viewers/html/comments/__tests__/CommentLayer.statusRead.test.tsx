@@ -15,7 +15,7 @@ const { status, owned, comments } = vi.hoisted(() => ({
 }));
 vi.mock('@/hooks/useArtifact', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useOwnedArtifact: () => owned,
+  useCommentRecord: () => ({ artifact: owned.record, error: owned.error, loaded: true, hashable: true }),
   useArtifactComments: () => comments,
   useArtifactStatus: (...args: unknown[]) => status(...args),
 }));
@@ -25,13 +25,13 @@ import CommentLayer from '../CommentLayer';
 describe('CommentLayer', () => {
   it('reads no status for a file with comments until one is being written', () => {
     const showDoc = () => () => {};
-    const ui = { modeTab: null, listTab: null, showDoc, setList: vi.fn(), setMode: vi.fn() };
+    const ui = { modeTab: null, listTab: null, showDoc, showWriting: () => {}, setList: vi.fn(), setMode: vi.fn() };
     const bridge = { session: 's', path: 'r.html', ready: true, post: vi.fn(), subscribe: () => () => {} };
     renderWithProviders(
       <CommentLayer
         tabId="t"
         workspaceId="ws"
-        path="r.html"
+        target={{ kind: 'file', path: 'r.html' }}
         bridge={bridge as never}
         view={{ key: 'k', versionView: { version: null, record: null, entry: null } } as never}
         active

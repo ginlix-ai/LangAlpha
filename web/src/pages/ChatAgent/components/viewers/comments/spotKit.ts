@@ -337,3 +337,122 @@ export function overlaps(r: DOMRect, box: Edges): boolean {
 export function laidOutBox(spot: Element): DOMRect[] {
   return spot.getClientRects().length ? [spot.getBoundingClientRect()] : [];
 }
+
+// --- Marks laid over the content ---
+
+/** Marks what the page lays over the content itself, which a change to the content is not. */
+export const OWN_ATTR = 'data-comment-own';
+/** The layer the marks sit in, and each mark: the same rules let a picture's boxes and a chart's marks take clicks. */
+const LAYER_CLASS = 'comment-regions';
+const MARK_CLASS = 'comment-region';
+/** How large a point is outlined and pinned, in pixels. */
+const POINT_PX = 14;
+
+/** Whether a change the content observer saw is only the page's own marks being laid or moved. */
+export function ownChange(record: MutationRecord): boolean {
+  const own = (n: Node) => n instanceof Element && !!n.closest(`[${OWN_ATTR}]`);
+  if (record.type !== 'childList') return own(record.target);
+  const nodes = [...record.addedNodes, ...record.removedNodes];
+  return nodes.length > 0 && nodes.every((n) => n instanceof Element && n.hasAttribute(OWN_ATTR));
+}
+
+/** Where a mark sits in the layer, as CSS lengths; a point's width and height are dropped. */
+export interface MarkPlace {
+  left: string;
+  top: string;
+  width: string;
+  height: string;
+}
+
+/** The value a mark holds in `data-<field>`, read off the element that marks it. */
+export function markValue<V>(spot: Element, field: string): V | null {
+  const raw = spot instanceof HTMLElement ? spot.dataset[field] : undefined;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as V;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The elements marking a viewer's drawn spots (boxes on a picture, marks on a
+ * chart), each holding its value as JSON in `data-<field>`. They are laid as
+ * anchors are found and spots drawn, and the end of a pass of finds lets go
+ * of the ones it did not name. Only its own are picked: the content can
+ * outlive the page that laid marks on it (a chart kept while another is
+ * shown), and another page's marks hold another document's values.
+ */
+export function laidMarks<V>({ field, keyOf, isPoint }: {
+  field: string;
+  keyOf: (value: V) => string;
+  isPoint: (value: V) => boolean;
+}) {
+  const laid = new Map<string, { el: HTMLElement; pass: number }>();
+  const own = new WeakSet<Element>();
+  let pass = 0;
+
+  const layerOf = (host: Element): Element => {
+    const found = [...host.children].find((c) => c.classList.contains(LAYER_CLASS));
+    if (found) return found;
+    const layer = document.createElement('div');
+    layer.className = LAYER_CLASS;
+    layer.setAttribute(OWN_ATTR, '');
+    host.appendChild(layer);
+    return layer;
+  };
+
+  return {
+    /** The element marking `value` at `place` in `host`, laid there if it is not; kept through this pass and `keepFor` more. */
+    lay(host: Element, value: V, place: MarkPlace, keepFor = 0): HTMLElement {
+      const key = keyOf(value);
+      const had = laid.get(key);
+      const point = isPoint(value);
+      let el = had?.el;
+      if (!el || !host.contains(el)) {
+        el?.remove();
+        el = document.createElement('div');
+        el.className = MARK_CLASS;
+        el.setAttribute(OWN_ATTR, '');
+        el.dataset[field] = JSON.stringify(value);
+        el.dataset.point = point ? 'true' : 'false';
+        own.add(el);
+        layerOf(host).appendChild(el);
+      }
+      Object.assign(el.style, { ...place, ...(point ? { width: '0', height: '0' } : {}) });
+      laid.set(key, { el, pass: Math.max(pass + keepFor, had?.pass ?? 0) });
+      return el;
+    },
+    /** The mark of these a click on `target` is on, if any. */
+    spotAt(target: Element): Element | null {
+      const spot = target.closest(`.${MARK_CLASS}`);
+      return spot && own.has(spot) ? spot : null;
+    },
+    valueOf: (spot: Element): V | null => markValue<V>(spot, field),
+    rectsOf(spot: Element): DOMRect[] {
+      if (!spot.isConnected) return [];
+      const r = spot.getBoundingClientRect();
+      if (spot instanceof HTMLElement && spot.dataset.point === 'true') {
+        // About its centre: while the add key is held a point takes clicks around it, and its box grows.
+        const half = POINT_PX / 2;
+        return [new DOMRect(r.left + r.width / 2 - half, r.top + r.height / 2 - half, POINT_PX, POINT_PX)];
+      }
+      return [r];
+    },
+    fresh() {
+      pass += 1;
+    },
+    settled() {
+      for (const [key, { el, pass: kept }] of laid) {
+        if (kept >= pass) continue;
+        el.remove();
+        laid.delete(key);
+      }
+    },
+    /** Takes every mark out: the page that laid them is gone. */
+    dispose() {
+      for (const { el } of laid.values()) el.remove();
+      laid.clear();
+    },
+  };
+}

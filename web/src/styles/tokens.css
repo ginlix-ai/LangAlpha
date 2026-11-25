@@ -534,7 +534,7 @@ html {
   /* The light theme's text ink, for the same reason. */
   --ring: var(--foreground);
   /* Kept tight rather than dropped: floating overlays (ChartLayerOverlay,
-     SelectionCommentOverlay, JumpToLatestPill) rely on this to separate from
+     JumpToLatestPill) rely on this to separate from
      a now-pure-white page — the workspace cards carry their own border. */
   --shadow-card: 0 1px 2px rgba(31, 29, 26, 0.04), 0 2px 8px rgba(31, 29, 26, 0.05);
 

@@ -30,6 +30,7 @@ from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.background_subagent.steering import SubagentSteeringMiddleware
 from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker, config_own_run_id
 from ptc_agent.agent.middleware.credit_gate import account_ends, credit_stops
+from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
 from ptc_agent.agent.transcript.sender import HARNESS_NAMED_KEY, escape_unrecorded
 from ptc_agent.agent.transcript.steer_text import (
@@ -81,16 +82,19 @@ ORDINARY = Query()
 @dataclass(frozen=True)
 class HandOff:
     """What a batch hands the CLI once its last result is in: the rows the
-    turn writes then, and what was sent into the thread, with the state the
-    rows go with. The step commits it all with the batch's results."""
+    turn writes then, what was sent into the thread, and what follows it (the
+    guidance for the comments it carries), with the state the rows go with.
+    The step commits it all with the batch's results, in the order Claude is
+    handed it, so a relaunch reads the guidance after its send."""
 
     rows: tuple[HumanMessage, ...] = ()
     steer: HumanMessage | None = None
     update: Mapping[str, Any] = field(default_factory=dict)
+    after: HumanMessage | None = None
 
     @property
     def messages(self) -> list[HumanMessage]:
-        return [*self.rows, *([self.steer] if self.steer is not None else [])]
+        return [*self.rows, *(m for m in (self.steer, self.after) if m is not None)]
 
 
 class TurnSteering:
@@ -332,6 +336,10 @@ class AfterTool:
                     out["additionalContext"] = context
                 for text in mid_turn_messages(steer, shared=self.shared) if steer is not None else ():
                     await self.send(text)
+                # Sent after the steer it follows, not in the hook's context,
+                # which the CLI places ahead of the steer.
+                if handed.after is not None:
+                    await self.send(frame_reminder(handed.after.text))
         return {"hookSpecificOutput": out} if len(out) > 1 else {}
 
 

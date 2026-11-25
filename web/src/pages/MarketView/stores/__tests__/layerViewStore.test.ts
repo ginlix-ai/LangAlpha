@@ -11,7 +11,7 @@ import {
   showRequestExpired,
   SHOW_REQUEST_TTL_MS,
 } from '../layerViewStore';
-import { chartKeyFor } from '../../utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 
 const KEY = chartKeyFor('ws-1', 'NVDA', '1day')!;
 const OTHER = chartKeyFor('ws-1', 'NVDA', '1hour')!;

@@ -53,7 +53,7 @@ export const EMPTY_COMPILED: CompiledLayers = {
   scene: EMPTY_SCENE,
   markers: [],
   markerBoxes: [],
-  elements: { explain: new Map(), names: new Map() },
+  elements: { explain: new Map(), names: new Map(), identities: new Map() },
 };
 
 const DEFAULT_PANE_HEIGHT = 0.2;
@@ -87,13 +87,15 @@ export function compileLayers(
     const { layer } = stored;
     const builtin = planBuiltinDuplicates(layer, builtins);
     for (const note of builtin.notes) notes.push(`${layer.id}: ${note}`);
-    const add = (kind: ElementKind, idx: number | string, e: ElementEntry) => registry.add(stored, kind, idx, e);
+    // Every kind is keyed by its place in its list but a series, by its id.
+    const add = (kind: ElementKind, index: number, e: ElementEntry, idx: number | string = index) =>
+      registry.add(stored, kind, idx, index, e);
 
     // ── Series, the panes they open, and their end labels ──
     const declared = new Map(layer.panes.map((p) => [p.id, p]));
     const runsOf = new Map<string, SnappedPoint[][]>();
-    for (const s of layer.series) {
-      add('series', s.id, describe.series(s));
+    for (const [index, s] of layer.series.entries()) {
+      add('series', index, describe.series(s), s.id);
       if (builtin.skipSeries.has(s.id)) continue;
       const paneId = s.pane || 'price';
       if (paneId !== 'price' && !declared.has(paneId)) continue;
@@ -251,6 +253,6 @@ export function compileLayers(
     scene: { drawings: [...drawings, ...futureMarkers], regimes, seriesLabels },
     markers: placed.map((p) => p.marker),
     markerBoxes: placed.flatMap((p) => (p.box ? [p.box] : [])),
-    elements: { explain: registry.explain, names: registry.names },
+    elements: { explain: registry.explain, names: registry.names, identities: registry.identities },
   };
 }

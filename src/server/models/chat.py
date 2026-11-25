@@ -39,7 +39,10 @@ class ShownComment(BaseModel):
     comment_id: str
     artifact_id: str
     workspace_id: str
+    #: A file's path, or a chart's id.
     path: str
+    #: Rows written before charts had comments hold files.
+    kind: Literal["file", "chart"] = "file"
     title: Optional[str] = None
     number: int
     #: The owner's words this send carried, clipped.
@@ -52,6 +55,11 @@ class ShownComment(BaseModel):
     quote: Optional[str] = None
 
 
+#: What the agent's guidance for a send of comments says beyond how to answer
+#: any, which ``ptc_agent/agent/middleware/comment_guidance.py`` words.
+GuidancePart = Literal["computer", "pictures", "chart"]
+
+
 class ShownSend(BaseModel):
     """What a reader is shown for a message carrying file comments: the note
     the owner typed and a chip per comment. It rides the query row, a steer's
@@ -60,6 +68,9 @@ class ShownSend(BaseModel):
     note: str
     reading: Literal["chat", "file"]
     comments: List[ShownComment]
+    #: Not shown: the parts of the agent's guidance this send needs, which a
+    #: runtime-context row states once while in view.
+    guidance: List[GuidancePart] = Field(default_factory=list)
 
 # Roles the chat path can VALIDLY persist into the ``messages`` channel. The
 # chat path writes ``{"role", "content"}`` dicts straight in; under DeltaChannel

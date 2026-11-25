@@ -21,7 +21,7 @@ import { SwapCell } from '@/components/ui/crossfade';
 import { cn } from '@/lib/utils';
 import type { QueuedArtifactComment } from '@/types/api';
 import { commentsByFile, latestOwnerWords } from './artifactCommentSend';
-import type { ArtifactCommentRef } from './artifactCommentReply';
+import type { ArtifactCommentOpeners, ArtifactCommentRef } from './artifactCommentReply';
 import { anchorLabel, areaTitle, outlineOf, spotPhrase } from './anchorKinds';
 import { PinBadge } from './PinBadge';
 import type { QueuedCommentDeck as Deck } from './useQueuedCommentDeck';
@@ -84,10 +84,13 @@ function Row({ comment, onOpen, onKeep }: {
 }): React.ReactElement {
   const { t } = useTranslation();
   // An area's parts would starve in this slot; its size says what it is.
-  // Boxes have no place: their heading ("On a box on page 3") is the label.
+  // Boxes and marks on a chart have no place: their heading ("On a box on
+  // page 3", "Sep 2 to Oct 14") is the label.
   const { anchor } = comment;
   const place = anchorLabel(anchor)?.trim();
-  const label = anchor.kind === 'area' ? areaTitle(t, anchor) : anchor.kind === 'region' ? spotPhrase(t, anchor) : place;
+  const label = anchor.kind === 'area' ? areaTitle(t, anchor)
+    : anchor.kind === 'region' || anchor.kind === 'chart' ? spotPhrase(t, anchor)
+    : place;
   const body = (
     <>
       <PinBadge number={comment.number} state="queued" className="justify-self-center" />
@@ -117,10 +120,11 @@ function Row({ comment, onOpen, onKeep }: {
         <button
           type="button"
           className={cn(main, 'cursor-pointer outline-hidden focus-visible:ring-2 focus-visible:ring-ring')}
-          title={t('chat.artifactComments.deck.showInFile')}
+          title={t('chat.artifactComments.deck.showInFile', { context: comment.kind })}
           onClick={() => onOpen({
             artifactId: comment.artifact_id,
             workspaceId: comment.workspace_id,
+            kind: comment.kind,
             path: comment.path,
             commentId: comment.comment_id,
           })}
@@ -250,7 +254,7 @@ function DeckBody({ deck, running, compact, onOpen, onAddToTurn, focusComposer }
               ) : (
                 <Row
                   comment={line.comment}
-                  onOpen={onOpen}
+                  onOpen={onOpen?.[line.comment.kind]}
                   onKeep={(from) => {
                     focusAfterKeep(from, rootRef.current, focusComposer);
                     keep([line.comment]);
@@ -292,7 +296,8 @@ interface DeckProps {
   running: boolean;
   /** Folds to one row, for a phone's dock under the file. */
   compact?: boolean;
-  onOpen?: (comment: ArtifactCommentRef) => void;
+  /** Opens a comment by its kind; one of a kind left out shows no way to open it. */
+  onOpen?: ArtifactCommentOpeners;
   /** Sends into the running turn, as Enter does. */
   onAddToTurn?: () => void;
   /** Puts focus in the composer's text box, where a keep that empties the queue leaves it. */

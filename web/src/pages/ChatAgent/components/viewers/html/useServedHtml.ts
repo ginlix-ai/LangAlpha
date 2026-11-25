@@ -1,4 +1,5 @@
-import { useArtifactByPath, useOwnedArtifact } from '@/hooks/useArtifact';
+import { useArtifactRecord, useOwnedArtifact } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { useWorkspaceFileGrant } from '@/hooks/useWorkspaceFileGrant';
 import { useWorkspaceFolders } from '../../../contexts/WorkspaceContext';
 import type { PanelAccess } from '../../filePanel/types';
@@ -35,8 +36,9 @@ export function useServedHtml(
   const granted = !sharePrefix && !!filePath;
   const grant = useWorkspaceFileGrant(granted ? workspaceId : null);
   const root = useWorkspaceFolders()?.rootDir;
-  const owned = useOwnedArtifact(access.kind === 'owner' ? workspaceId : null, filePath, { root });
-  const found = useArtifactByPath(access.kind === 'readOnly' ? workspaceId : null, filePath, { root });
+  const target = filePath ? targetFor('file', filePath, root) : null;
+  const owned = useOwnedArtifact(access.kind === 'owner' ? workspaceId : null, target);
+  const found = useArtifactRecord(access.kind === 'readOnly' ? workspaceId : null, target);
   const record = owned.record ?? found.data ?? undefined;
 
   const prefix = sharePrefix ?? grant.data?.prefix;

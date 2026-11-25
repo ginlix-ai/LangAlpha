@@ -144,8 +144,11 @@ export type PanelTarget =
   /** A dev server the agent started in the sandbox; it opens as a tab in the
    *  Files panel. `seq` counts the asks, so the same port twice is two. */
   | ({ kind: 'preview'; seq: number } & PreviewSpec)
-  /** A live market chart; it opens as a tab in the Files panel, one per symbol. */
-  | ({ kind: 'chart'; seq: number } & ChartTabSpec)
+  /**
+   * A live market chart; it opens as a tab in the Files panel, one per symbol.
+   * `comment` is one of its comments to bring forward, as a file's.
+   */
+  | ({ kind: 'chart'; seq: number; comment?: string | null } & ChartTabSpec)
   /** A tool call's result, opened as a tab in the Files panel. */
   | ({ kind: 'tool'; seq: number } & ToolTabSpec)
   /** A turn's provenance, opened as a tab in the Files panel. */

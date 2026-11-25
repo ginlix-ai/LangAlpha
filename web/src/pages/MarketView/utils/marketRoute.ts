@@ -17,6 +17,8 @@ export interface MarketViewRoute {
   threadId?: string | null;
   /** Where "Return to chat" goes: a path inside the app, or the reader drops it. */
   returnTo?: string | null;
+  /** A comment on this chart to open on arrival. */
+  commentId?: string | null;
 }
 
 /** What a MarketView URL carries, each field null when the param is absent. */
@@ -27,6 +29,7 @@ export interface MarketViewRouteParams {
   scope: ComposerScope | null;
   threadId: string | null;
   returnTo: string | null;
+  commentId: string | null;
 }
 
 /** The thread id that means "no particular thread"; the URL never carries it. */
@@ -40,18 +43,20 @@ const PARAM = {
   workspaceId: 'ws',
   threadId: 'thread',
   returnTo: 'returnTo',
+  commentId: 'comment',
 } as const;
 
 /** Every param the route owns, for a reader that clears them once consumed. */
 export const MARKET_VIEW_ROUTE_PARAMS: readonly string[] = Object.values(PARAM);
 
-export function buildMarketViewUrl({ symbol, timeframe, workspaceId, threadId, returnTo }: MarketViewRoute): string {
+export function buildMarketViewUrl({ symbol, timeframe, workspaceId, threadId, returnTo, commentId }: MarketViewRoute): string {
   const sp = new URLSearchParams();
   sp.set(PARAM.symbol, symbol);
   if (timeframe) sp.set(PARAM.timeframe, timeframe);
   if (workspaceId) sp.set(PARAM.workspaceId, workspaceId);
   if (threadId && threadId !== DEFAULT_MARKET_THREAD) sp.set(PARAM.threadId, threadId);
   if (returnTo) sp.set(PARAM.returnTo, returnTo);
+  if (commentId) sp.set(PARAM.commentId, commentId);
   return `/market?${sp.toString()}`;
 }
 
@@ -67,5 +72,6 @@ export function readMarketViewRoute(searchParams: URLSearchParams): MarketViewRo
     scope: legacyScope ?? (workspaceId ? 'workspace' : null),
     threadId: searchParams.get(PARAM.threadId),
     returnTo: inAppPath(searchParams.get(PARAM.returnTo)),
+    commentId: searchParams.get(PARAM.commentId),
   };
 }

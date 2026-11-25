@@ -18,7 +18,7 @@ const { owned, comments } = vi.hoisted(() => ({
 }));
 vi.mock('@/hooks/useArtifact', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useOwnedArtifact: () => owned,
+  useCommentRecord: () => ({ artifact: owned.record, error: owned.error, loaded: true, hashable: false }),
   useArtifactComments: () => comments,
   useArtifactStatus: () => ({ data: undefined }),
 }));
@@ -28,7 +28,7 @@ import CommentLayer from '../CommentLayer';
 function setup() {
   let send: (message: PageToViewer) => void = () => {};
   const post = vi.fn();
-  const ui = { modeTab: 't', listTab: null, showDoc: () => () => {}, setList: vi.fn(), setMode: vi.fn() };
+  const ui = { modeTab: 't', listTab: null, showDoc: () => () => {}, showWriting: () => {}, setList: vi.fn(), setMode: vi.fn() };
   const bridge = {
     session: 's',
     path: 'r.html',
@@ -43,7 +43,7 @@ function setup() {
     <CommentLayer
       tabId="t"
       workspaceId="ws"
-      path="r.html"
+      target={{ kind: 'file', path: 'r.html' }}
       bridge={bridge as never}
       view={{ key: 'k', versionView: { version: null, record: null, entry: null } } as never}
       active

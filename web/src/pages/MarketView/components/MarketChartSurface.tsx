@@ -24,6 +24,7 @@ import { displayOverrideFromHit, type SymbolDisplayOverride } from '@/lib/displa
 import { displaySpelling } from '@/lib/bars/exchanges';
 
 import MarketChart from './MarketChart';
+import type { ChartCommentsHost } from '@/pages/ChatAgent/components/viewers/comments/chart/ChartComments';
 import { MarketDataWSProvider, useMarketDataWSContext } from '../contexts/MarketDataWSContext';
 import { useStockData } from '../hooks/useStockData';
 import { useStockQuoteModel } from '../hooks/useStockQuoteModel';
@@ -42,8 +43,8 @@ interface MarketChartSurfaceProps {
   /** A host's own buttons. They land in the chart's toolbar row, so a host
    *  passes toolbar-sized icon buttons there (`ChartToolButton`). */
   headerActions?: React.ReactNode;
-  /** Region and price-level selection, for a host whose composer sends them. */
-  selectionTools?: boolean;
+  /** The owner's comments on the chart, for a host that keeps and sends them. */
+  comments?: ChartCommentsHost | null;
 }
 
 /** The chart sits as a card inset on the panel's own page ground, not a
@@ -58,7 +59,7 @@ function MarketChartSurfaceInner({
   onIntervalChange,
   onSwitchSymbol,
   headerActions,
-  selectionTools = false,
+  comments = null,
 }: MarketChartSurfaceProps): React.ReactElement {
   const {
     prices: wsPrices,
@@ -175,7 +176,7 @@ function MarketChartSurfaceInner({
           marketStatus={marketStatus}
           defaultView="fill"
           modeSwitcher={false}
-          selectionTools={selectionTools}
+          comments={comments}
           toolbarLead={legend.toolbarLead}
           toolbarLeadKey={legend.toolbarLeadKey}
           measureToolbarLead={legend.measureToolbarLead}

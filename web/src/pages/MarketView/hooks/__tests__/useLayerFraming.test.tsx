@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { requestShowLayers, resetLayerViewForTesting, useShowLayersRequest } from '../../stores/layerViewStore';
 import { makeStored } from '../../stores/__tests__/layerFixture';
-import { chartKeyFor } from '../../utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import { chartLayersKey } from '../../utils/chartLayerCache';
 import { layerFrame } from '../../utils/layerFrame';
 import { useLayerFraming, type UseLayerFramingArgs } from '../useLayerFraming';

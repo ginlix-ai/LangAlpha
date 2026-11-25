@@ -163,11 +163,6 @@ interface ModelOptions {
    */
   widgetSnapshots?: import('@/pages/Dashboard/widgets/framework/contextSnapshot').WidgetContextSnapshot[];
   /**
-   * Chart selections attached to this send. Stored on the UserMessage so the
-   * chat renders read-only pills below the user bubble (like widgetSnapshots).
-   */
-  chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
-  /**
    * The subagents setting for the thread this send creates. A send on a live
    * thread carries none: the row's PATCH is its only writer.
    */
@@ -214,6 +209,13 @@ interface SendOptions extends ModelOptions {
   /** What the charts beside the composer show, sent as `chart_views` so the
    *  agent's snapshot paints the same view. */
   chartViews?: import('@/pages/MarketView/types/chartView').ChartView[];
+  /**
+   * Told the thread the send goes to as its request is taken, which is when
+   * the file comments it carries are on their way, and never a new chat's
+   * placeholder; a send that never takes one (nothing to send, a stop during
+   * a new thread's create) never tells.
+   */
+  onTaken?: (threadId: string) => void;
 }
 
 /** Offload batch ref state. */

@@ -1,9 +1,6 @@
 import type { ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
-import { MessageSquarePlus, X } from 'lucide-react';
 import { PAST, useSceneTime } from './clock';
 import { useSvgId } from './kit';
-import { cardPosition, type CardMetrics } from '@/pages/MarketView/utils/layerCardPosition';
 import {
   AXIS_W,
   TIME_H,
@@ -19,7 +16,7 @@ import {
    the price pane, MA20 and MA50, an RSI pane beneath, the price axis on the
    right with the last price on it, the time axis below. Over it go the
    agent's chart layer, a label on the bar each piece of news hit, and the
-   user's selection (chartTools.tsx). The series and its scale are nvdaSeries.ts. */
+   user's comments (chartTools.tsx). The series and its scale are nvdaSeries.ts. */
 
 /* ── the chart ─────────────────────────────────────────────────────────── */
 
@@ -218,149 +215,51 @@ const EDGE_X = 15;
 /** A label's chip sits this far above its point, center to point. */
 const CHIP_RISE = 7;
 
-/** Where a pointer lands on a label, in chart px: on its chip, over its bar.
-    The labels the scenes point at sit clear of the pane's edges. */
-// eslint-disable-next-line react-refresh/only-export-components -- the anchor travels with the label's geometry
-export function labelAnchor(k: ChartScale, el: ChartEvent): [number, number] {
-  return [k.x(el.i), k.y(el.price) - CHIP_RISE];
-}
-
 /**
  * A label in the agent's chart layer as the layer renderer paints it
  * (`chartLayer/kinds/label`), at half the app's size: a dot on the bar and
  * price, and the text on a pill chip above it with the element's color as its
- * dot. Pops in at `at`. `hover` gives the chip the element's edge and opens
- * the explain card (`ChartLayerOverlay`) with its hint; `open` pins the card,
- * with Ask about this. `layer` is the layer's title, which the card names.
+ * dot. Pops in at `at`.
  */
 export function LayerLabel({
   scale: k,
   el,
-  layer,
   at = PAST,
-  hover = false,
-  open = false,
 }: {
   scale: ChartScale;
   el: ChartEvent;
-  layer: string;
   at?: number;
-  hover?: boolean;
-  open?: boolean;
 }) {
   if (useSceneTime() < at) return null;
   const x = Math.max(EDGE_X, Math.min(k.x(el.i), k.paneW - EDGE_X));
   const y = k.y(el.price);
   return (
-    <>
-      <span className="absolute" style={{ left: x, top: y }}>
+    <span className="absolute" style={{ left: x, top: y }}>
+      <span
+        className="intro-pop absolute block h-[2.5px] w-[2.5px] rounded-full"
+        style={{ left: -1.25, top: -1.25, background: LAYER_COLOR }}
+      />
+      {/* centered on the anchor; the pop animates the chip's own transform */}
+      <span
+        className="absolute left-0 -translate-x-1/2 -translate-y-1/2"
+        style={{ top: -CHIP_RISE }}
+      >
         <span
-          className="intro-pop absolute block h-[2.5px] w-[2.5px] rounded-full"
-          style={{ left: -1.25, top: -1.25, background: LAYER_COLOR }}
-        />
-        {/* centered on the anchor; the pop animates the chip's own transform */}
-        <span
-          className="absolute left-0 -translate-x-1/2 -translate-y-1/2"
-          style={{ top: -CHIP_RISE }}
+          className="intro-pop flex h-[9.5px] items-center gap-[2.5px] whitespace-nowrap rounded-full border px-[4px] text-[5.5px] font-semibold leading-none"
+          style={{
+            background: 'var(--color-bg-elevated)',
+            borderColor: 'var(--color-border-elevated)',
+            color: 'var(--color-text-primary)',
+            boxShadow: '0 0.5px 3px rgba(0, 0, 0, 0.18)',
+          }}
         >
           <span
-            className="intro-pop flex h-[9.5px] items-center gap-[2.5px] whitespace-nowrap rounded-full border px-[4px] text-[5.5px] font-semibold leading-none transition-colors"
-            style={{
-              background: 'var(--color-bg-elevated)',
-              borderColor: hover || open ? LAYER_COLOR : 'var(--color-border-elevated)',
-              color: 'var(--color-text-primary)',
-              boxShadow: '0 0.5px 3px rgba(0, 0, 0, 0.18)',
-            }}
-          >
-            <span
-              className="h-[3px] w-[3px] shrink-0 rounded-full"
-              style={{ background: LAYER_COLOR }}
-            />
-            {el.title}
-          </span>
+            className="h-[3px] w-[3px] shrink-0 rounded-full"
+            style={{ background: LAYER_COLOR }}
+          />
+          {el.title}
         </span>
       </span>
-      {(hover || open) && (
-        <ExplainCard k={k} el={el} layer={layer} at={[x, y - CHIP_RISE]} pinned={open} />
-      )}
-    </>
-  );
-}
-
-/** The overlay's card at half size; its height as placed, before it is measured. */
-const CARD: CardMetrics = { width: 140, height: 60, gap: 7, edge: 4 };
-
-/** The explain card (`.chart-layer-card`, half size): the element's kind and
-    its layer, its text, the agent's note; then the hint while it is only
-    hovered, or Ask about this once pinned. Up and to the left of the
-    pointer, as the overlay places it, else beside or below it. */
-function ExplainCard({
-  k,
-  el,
-  layer,
-  at: [px, py],
-  pinned,
-}: {
-  k: ChartScale;
-  el: ChartEvent;
-  layer: string;
-  at: [number, number];
-  pinned: boolean;
-}) {
-  const { t } = useTranslation();
-  const { left, top } = cardPosition(px, py, k.width, k.height, CARD);
-  return (
-    <span
-      className="intro-pop absolute z-10 flex flex-col gap-[2px] rounded-[4px] border px-[6px] py-[5px]"
-      style={{
-        left,
-        top,
-        width: CARD.width,
-        background: 'var(--color-bg-elevated)',
-        borderColor: 'var(--color-border-muted)',
-        boxShadow: 'var(--shadow-card)',
-      }}
-    >
-      <span
-        className="flex min-w-0 items-center gap-[3px] font-mono text-[5px] leading-none tracking-[0.02em]"
-        style={{ color: 'var(--color-text-tertiary)' }}
-      >
-        <span
-          className="h-[3.5px] w-[3.5px] shrink-0 rounded-full"
-          style={{ background: LAYER_COLOR }}
-        />
-        <span className="shrink-0 uppercase">{t('marketView:layerExplain.types.label')}</span>
-        <span className="shrink-0">·</span>
-        <span className="min-w-0 truncate">{layer}</span>
-        {pinned && <X className="ml-auto h-[6.5px] w-[6.5px] shrink-0" />}
-      </span>
-      <span
-        className="text-[6.5px] font-semibold leading-[1.35]"
-        style={{ color: 'var(--color-text-primary)' }}
-      >
-        {el.title}
-      </span>
-      {el.note && (
-        <span className="text-[6px] leading-[1.5]" style={{ color: 'var(--color-text-secondary)' }}>
-          {el.note}
-        </span>
-      )}
-      {pinned ? (
-        <span
-          className="mt-[3px] flex h-[13px] w-fit items-center gap-[3px] rounded-full border px-[5px] text-[6px] font-medium leading-none"
-          style={{ borderColor: 'var(--color-border-elevated)', color: 'var(--color-text-primary)' }}
-        >
-          <MessageSquarePlus className="h-[6.5px] w-[6.5px]" />
-          {t('marketView:layerExplain.ask')}
-        </span>
-      ) : (
-        <span
-          className="mt-px text-[5.5px] leading-none"
-          style={{ color: 'var(--color-text-quaternary)' }}
-        >
-          {t('marketView:layerExplain.pinHint')}
-        </span>
-      )}
     </span>
   );
 }

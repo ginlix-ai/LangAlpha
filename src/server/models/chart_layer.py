@@ -8,9 +8,14 @@ report all carry these same fields, built here, so they never drift apart.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, TypedDict
+
+from chartkit.schema import TIMEFRAMES, Symbol
+from pydantic import TypeAdapter, ValidationError
 
 from src.server.models.user import normalize_symbol
 
@@ -81,6 +86,63 @@ class CommandOutbox:
 
 def make_chart_id(symbol: str, timeframe: str) -> str:
     return ChartRef.of("", symbol, timeframe).chart_id
+
+
+_SYMBOL = TypeAdapter(Symbol)
+# What a stored comment path refuses (migration 101's path check), which a
+# chart id is stored as.
+_NOT_A_PATH = re.compile(r"(^/|(^|/)\.\.?(/|$)|//)")
+
+
+def normalize_chart_id(value: str) -> str | None:
+    """``SYMBOL:timeframe`` as ``ChartRef`` spells it, so one chart is always
+    named alike, or None when it names no chart: a symbol a layer would refuse,
+    one holding the colon that ends it, one a stored path may not be, or one
+    with an invisible format character (``Cf``, a zero-width space or a
+    direction mark), which would make a look-alike second record."""
+    symbol, sep, timeframe = value.strip().rpartition(":")
+    if not sep or timeframe not in TIMEFRAMES:
+        return None
+    symbol = normalize_symbol(symbol)
+    try:
+        _SYMBOL.validate_python(symbol)
+    except ValidationError:
+        return None
+    if ":" in symbol or _NOT_A_PATH.search(symbol):
+        return None
+    if any(unicodedata.category(c) == "Cf" for c in symbol):
+        return None
+    return make_chart_id(symbol, timeframe)
+
+
+def layer_number(x: float) -> str:
+    """A price as the agent reads chart layers back, and every other place
+    that shows it one, so the same price always reads the same."""
+    return f"{x:.6g}" if abs(x) < 1e6 else f"{x:.0f}"
+
+
+def point_text(price: float, time: str) -> str:
+    """A point as the agent reads chart layers back, and as a comment on a
+    chart names one, so the agent finds the one in the other."""
+    return f"{layer_number(price)} @{time}"
+
+
+def element_label(
+    kind: str, drawing_type: str | None, element_id: str | None, name: str | None
+) -> str:
+    """An element of a layer named as the agent reads layers back, and as a
+    comment on it names it: a drawing by its type and its id or label, a
+    series by its id and title, an alert by its id, anything else by its kind
+    and title."""
+    if kind == "drawing":
+        words, quoted = [drawing_type], element_id or name
+    elif kind == "series":
+        words, quoted = [kind, element_id], name
+    elif kind == "alert":
+        words, quoted = [kind, element_id], None
+    else:
+        words, quoted = [kind], name
+    return " ".join([*filter(None, words), *([repr(quoted)] if quoted else [])])
 
 
 #: The keys of a ``chart_layer`` event a subagent's lane forwards: every one

@@ -12,11 +12,12 @@ vi.mock('react-router', async (importOriginal) => {
 });
 vi.mock('../../../utils/api', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), getPreviewUrl: vi.fn() }));
 
-function open(isMobile: boolean) {
+function open(isMobile: boolean, threadId: string | null = null) {
   const setFilePanelWorkspaceId = vi.fn();
   const { result } = renderHook(() => useRightPanel({
     isMobile,
     workspaceId: 'ws',
+    threadId,
     isActive: true,
     containerRef: { current: null },
     setFilePanelWorkspaceId,
@@ -83,5 +84,44 @@ describe('a chart opened from chat', () => {
     expect(url.searchParams.get('tf')).toBe('1day');
     expect(url.searchParams.get('ws')).toBe('ws');
     expect(url.searchParams.get('returnTo')).toBe('/chat/t1');
+  });
+
+  it('opens a chart comment on its own workspace\'s chart, whatever workspace the panel shows', () => {
+    // A chart tab with no workspace draws the panel's, which a sibling's
+    // file may have switched; the comment's record is in its own.
+    const result = open(false);
+    act(() => result.current.handleOpenArtifactComment({
+      artifactId: 'a-1', workspaceId: 'ws', kind: 'chart', path: 'NVDA:1hour', commentId: 'c-9',
+    }));
+
+    expect(result.current.panelTarget).toMatchObject({ kind: 'chart', symbol: 'NVDA', timeframe: '1hour', workspaceId: 'ws', comment: 'c-9' });
+  });
+
+  it('opens a chart comment on the MarketView page on mobile, with the comment to open there', () => {
+    const result = open(true);
+    act(() => result.current.handleOpenArtifactComment({
+      artifactId: 'a-1', workspaceId: 'ws', kind: 'chart', path: 'NVDA:1hour', commentId: 'c-9',
+    }));
+
+    const url = new URL(navigate.mock.calls[0][0] as string, 'http://localhost');
+    expect(url.pathname).toBe('/market');
+    expect(url.searchParams.get('symbol')).toBe('NVDA');
+    expect(url.searchParams.get('tf')).toBe('1hour');
+    expect(url.searchParams.get('comment')).toBe('c-9');
+  });
+
+  it('carries the chat on to its own workspace\'s chart, and none to a sibling\'s', () => {
+    // MarketView mounts the route's thread first, and a thread lives in one
+    // workspace: under a sibling it would hold the chart's comments it cannot take.
+    const result = open(true, 't1');
+    act(() => result.current.handleOpenChart({ symbol: 'NVDA' }));
+    act(() => result.current.handleOpenArtifactComment({
+      artifactId: 'a-1', workspaceId: 'ws-2', kind: 'chart', path: 'NVDA:1day', commentId: 'c-9',
+    }));
+
+    const [own, sibling] = navigate.mock.calls.map(([to]) => new URL(to as string, 'http://localhost').searchParams);
+    expect(own.get('thread')).toBe('t1');
+    expect(sibling.get('ws')).toBe('ws-2');
+    expect(sibling.get('thread')).toBeNull();
   });
 });

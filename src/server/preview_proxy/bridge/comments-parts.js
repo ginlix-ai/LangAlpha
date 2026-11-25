@@ -306,7 +306,8 @@ function togglePart(el, point) {
 // A chip's close button in the box: the part it names leaves the selection.
 listen('page:drop-part', function (data) {
   var part = data.part;
-  // A range of cells is a sheet's part, a box a picture's; a page lists neither.
-  if (!part || typeof part !== 'object' || 'range' in part || 'w' in part) return;
+  // A range of cells is a sheet's part, a box a picture's, a typed mark a
+  // chart's; a page lists none of them.
+  if (!part || typeof part !== 'object' || 'range' in part || 'w' in part || 'type' in part) return;
   sendParts(partsWithout({ path: part.path, quote: part.quote }), null);
 });

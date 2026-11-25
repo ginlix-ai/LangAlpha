@@ -21,7 +21,7 @@ import { flattenMarkdown } from '@/lib/plainLine';
 import { useMotionSafe } from '@/lib/reducedMotion';
 import { cn } from '@/lib/utils';
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
-import { fileNameOf } from './artifactCommentSend';
+import { commentFileTitle } from './artifactCommentSend';
 import { groupCommentReplies, readArtifactCommentReply, type ArtifactCommentReply } from './artifactCommentReply';
 import type { InlineCardProps } from '../charts/cardReaders';
 import Markdown from '../Markdown';
@@ -181,7 +181,7 @@ function ReplyExcerpt({ reply, label, onOpen }: {
                 <Markdown variant="compact" content={reply.text} className="text-[13px] leading-5" />
                 {reply.clipped && onOpen && (
                   <button type="button" className={cn('mt-1', LINK_CLASS)} style={{ color: 'var(--color-text-primary)' }} onClick={onOpen}>
-                    {t('chat.artifactComments.reply.readRest')}
+                    {t('chat.artifactComments.reply.readRest', { context: reply.kind })}
                   </button>
                 )}
               </>
@@ -207,8 +207,9 @@ function ReplyExcerpt({ reply, label, onOpen }: {
 }
 
 function ReplyLine({ group }: { group: readonly CommentReplyMember[] }): React.ReactElement {
-  const { onOpenArtifactComment } = useMessageActions();
   const first = group[0].reply;
+  // A line names one file's comments, or one chart's.
+  const onOpenArtifactComment = useMessageActions().onOpenArtifactComment?.[first.kind];
   // Only the owner can read the file's comments; a shared chat names the file
   // by its path and marks nothing unread.
   const owner = !!useWorkspaceId();
@@ -218,12 +219,13 @@ function ReplyLine({ group }: { group: readonly CommentReplyMember[] }): React.R
   // Null until the comments are read, so a dot already there when they
   // arrive is drawn rather than played in.
   const unread = comments ? new Set(commentIds) : null;
-  const named = comments?.find((c) => c.comment_id === first.commentId)?.title?.trim();
-  const title = named || fileNameOf(first.path);
+  const named = comments?.find((c) => c.comment_id === first.commentId)?.title ?? null;
+  const title = commentFileTitle({ title: named, path: first.path, kind: first.kind });
   const openMember = onOpenArtifactComment
     ? (member: CommentReplyMember) => onOpenArtifactComment({
       artifactId: member.reply.artifactId,
       workspaceId: member.reply.workspaceId,
+      kind: member.reply.kind,
       path: member.reply.path,
       commentId: member.reply.commentId,
     })

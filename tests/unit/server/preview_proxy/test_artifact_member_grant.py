@@ -154,7 +154,7 @@ async def test_a_member_is_minted_a_grant_bound_to_them(monkeypatch):
     artifact = SimpleNamespace(artifact_id=ARTIFACT)
     monkeypatch.setattr(
         records,
-        "reached",
+        "reached_file",
         AsyncMock(return_value=(artifact, Access(HOLDER, SimpleNamespace()))),
     )
     monkeypatch.setattr(records, "artifact_base", lambda: None)
@@ -172,7 +172,7 @@ async def test_the_owner_is_minted_the_owners_grant(monkeypatch):
 
     artifact = SimpleNamespace(artifact_id=ARTIFACT)
     monkeypatch.setattr(
-        records, "reached", AsyncMock(return_value=(artifact, Access(HOLDER)))
+        records, "reached_file", AsyncMock(return_value=(artifact, Access(HOLDER)))
     )
     monkeypatch.setattr(records, "artifact_base", lambda: None)
 

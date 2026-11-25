@@ -17,7 +17,6 @@ import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { countDedupedSources, type CreditPauseState, type MessageProvenance, type UserMessage, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
-import type { SelectionPreviewShape } from '../SelectionContextPreview';
 import { AttachmentCard, InlineSelectionCards, InlineWidgetDeck } from './attachments';
 import type { AttachmentData, WidgetChipShape } from './attachments';
 import { MessageContentSegments } from './MessageContentSegments';
@@ -208,7 +207,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const hasAttachments = isUser && attachments && attachments.length > 0;
   const widgetSnapshots = message.widgetSnapshots as WidgetChipShape[] | undefined;
   const hasWidgetSnapshots = isUser && widgetSnapshots && widgetSnapshots.length > 0;
-  const chartSelections = message.chartSelections as SelectionPreviewShape[] | undefined;
+  const chartSelections = message.chartSelections as UserMessage['chartSelections'];
   const hasChartSelections = isUser && chartSelections && chartSelections.length > 0;
   const provenance = isUser ? (message.provenance as MessageProvenance | undefined) : undefined;
   const shared = useSharedBubble(message as UserMessage, turnIndex);

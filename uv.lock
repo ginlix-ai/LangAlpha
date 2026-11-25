@@ -2487,7 +2487,7 @@ requires-dist = [
     { name = "e2b", specifier = ">=2.53.1,<2.54" },
     { name = "edgartools", specifier = ">=5.62.1" },
     { name = "exchange-calendars", specifier = ">=4.13.2" },
-    { name = "fastapi", specifier = ">=0.113.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-re2", specifier = ">=1.1.20251105" },
     { name = "html-to-markdown", specifier = ">=3.5.0" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },

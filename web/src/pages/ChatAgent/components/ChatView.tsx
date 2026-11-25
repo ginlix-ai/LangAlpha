@@ -96,7 +96,7 @@ import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
 import { OlderHistorySkeleton } from './chatView/OlderHistorySkeleton';
 import { useThreadCommands } from '../hooks/useCommands';
 import { ThreadCommandsContext } from './commands/threadCommandsContext';
-import { ChatCommentSendsProvider, useChatCommentSends } from './artifactComments/useChatCommentSends';
+import { ChatCommentSendsProvider, useChatCommentSends, whenTaken } from './artifactComments/useChatCommentSends';
 import { DockableComposer } from './chatView/composerDock';
 import { ComposerDockContext } from './chatView/useComposerDock';
 import { useChatCover, useChatCoverReads } from './chatView/useChatCover';
@@ -104,6 +104,7 @@ import { useComposerGiveBack } from './chatView/useComposerGiveBack';
 import { usePublishFile } from './chatView/usePublishFile';
 import { DockTurnStatus } from './chatView/DockTurnStatus';
 import { QueuedCommentDeck } from './artifactComments/QueuedCommentDeck';
+import { useDeckComposer } from './artifactComments/useDeckComposer';
 import { useTrayFold } from './chatView/useTrayFold';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { motion, AnimatePresence, type PanInfo } from '@/lib/framer';
@@ -155,7 +156,6 @@ import { handOffToggleFocus } from './filePanel/panelToggleFocus';
 import { PanelLoadingStrip } from './filePanel/PanelLoadingStrip';
 import { usePanelFiles } from './chatView/usePanelFiles';
 import { usePanelChart } from './chatView/usePanelChart';
-import { SelectionChips } from '@/pages/MarketView/components/SelectionChips';
 import { useMessageActionBundles } from './chatView/useMessageActionBundles';
 import { useForkThread } from './chatView/useForkThread';
 import { ForkedFromLink } from './chatView/ForkedFromLink';
@@ -718,8 +718,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // The file comments queued for this thread's next send, shown above the
   // text box and carried by its send, and the sender the file panel uses.
   const commentSends = useChatCommentSends({
-    threadId: panelThreadId, running: isLoading, watch: watchCommentSends, chatCovered: coverReads.covered,
-    sendToChat: (artifactComments) => stableSendMessage('', null, null, composerSendOptions({ ...readComposerOptions(), artifactComments })),
+    threadId: panelThreadId, workspaceId, running: isLoading, watch: watchCommentSends, chatCovered: coverReads.covered,
+    sendToChat: (artifactComments) => whenTaken((onTaken) =>
+      stableSendMessage('', null, null, composerSendOptions({ ...readComposerOptions(), artifactComments, onTaken }))),
   });
   const { deck: commentDeck, take: takeQueuedComments } = commentSends;
   // A rerun carries what the composer shows, as a send does, so a pick whose
@@ -767,7 +768,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [isCompacting, isLoading, handleStop, stableStopCompaction]);
 
-  const panelChart = usePanelChart(isActive, chatInputRef);
+  const panelChart = usePanelChart(chatInputRef);
 
   // Wrapper: converts ChatInput's send into handleSendMessage(message,
   // additionalContext, attachmentMeta), the send itself the draft it gives back.
@@ -807,21 +808,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       contexts.push(...widgetSnapshotsToContexts(modelOptions.widgetSnapshots));
     }
 
-    // Regions and price levels picked on a panel chart tab, and what each chart shows.
-    const { picked, chartViews } = panelChart.takeForSend(message);
-    if (picked) {
-      contexts.push(...picked.contexts);
-      meta.push(...picked.attachments);
-    }
+    // What each chart in the panel shows.
+    const chartViews = panelChart.viewsForSend();
 
     const additionalContext = contexts.length > 0 ? contexts : null;
     const attachmentMeta = meta.length > 0 ? meta : null;
-    const outgoing = picked?.outgoingMessage ?? message;
-    // The queued file comments go with every send, the text as their note.
-    const artifactComments = takeQueuedComments(outgoing);
-    stableSendMessage(outgoing, additionalContext, attachmentMeta, composerSendOptions({
+    // The queued comments, on files and charts, go with every send, the text as their note.
+    const artifactComments = takeQueuedComments(message);
+    stableSendMessage(message, additionalContext, attachmentMeta, composerSendOptions({
       ...modelOptions,
-      ...(picked ? { chartSelections: picked.snapshots } : {}),
       ...(artifactComments ? { artifactComments } : {}),
       ...(chartViews.length > 0 ? { chartViews } : {}),
       draft: send,
@@ -1052,20 +1047,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     isMobile, filePanel: rightPanelType === 'file', panelExpanded, panelWidth: rightPanelWidth, threadId: panelThreadId,
     mainAgent: activeAgentId === 'main', queuedComments: commentDeck.comments, reads: coverReads,
   });
-  // Files that hold the send keep the comments waiting with them; the
-  // composer takes focus, where the hint beside Send says why.
-  const addCommentsToTurn = useStableHandler(() => {
-    const input = chatInputRef.current;
-    if (input && !input.send() && input.holdsSend()) input.focus();
-  });
-  const focusComposer = useStableHandler(() => { chatInputRef.current?.focus(); });
+  const deckComposer = useDeckComposer(chatInputRef);
+  const openArtifactComment = useMemo(
+    () => ({ file: handleOpenArtifactComment, chart: handleOpenArtifactComment }),
+    [handleOpenArtifactComment],
+  );
   // The queued comments ride above the text box and count as something to
   // send. Folded as the sheet starts over the chat, so it docks folded.
   const composerDeck = {
-    hasExternalContext: panelChart.chips.length > 0 || commentDeck.ready.length > 0,
+    hasExternalContext: commentDeck.ready.length > 0,
     placeholder: commentDeck.placeholder ?? chatPlaceholder,
-    deck: <QueuedCommentDeck deck={commentDeck} running={isLoading} compact={isMobile && dockOpen} onOpen={handleOpenArtifactComment}
-      onAddToTurn={addCommentsToTurn} focusComposer={focusComposer} />,
+    deck: <QueuedCommentDeck deck={commentDeck} running={isLoading} compact={isMobile && dockOpen} onOpen={openArtifactComment}
+      {...deckComposer} />,
   };
 
   // On desktop the header's files toggle gives way to the panel's own the
@@ -1401,7 +1394,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         reasoningEffort,
         fastMode,
         widgetSnapshots,
-        chartSelections,
         chartViews,
         skills,
         hiddenOpener,
@@ -1418,7 +1410,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           reasoningEffort,
           fastMode,
           widgetSnapshots,
-          chartSelections,
           chartViews,
           subagentsAllowed: subagentsToSend,
           ...tuningToSend,
@@ -1944,8 +1935,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               ref={publishComposerHeight}
               className={`absolute inset-x-0 bottom-0 z-10 pointer-events-none ${isMobile ? 'p-3' : 'p-4'} flex justify-center`}
             >
-              {/* sibling-space-y, not space-y: SelectionChips' own margin would
-                  otherwise win. */}
               {/* Re-declares --composer-h for the same reason the transcript
                   content does (TRANSCRIPT_BOTTOM_PAD): nothing in the stack
                   reads it. */}
@@ -1970,7 +1959,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     {/* Each a row of the stack; one that renders nothing leaves
                         no element, so it takes no gap. */}
                     {composerDock.docked && threadNotices.map(({ key, node }) => <React.Fragment key={key}>{node}</React.Fragment>)}
-                    <SelectionChips chips={panelChart.chips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}
                     {composerDock.docked && <DockTurnStatus running={isLoading} messages={messages} />}

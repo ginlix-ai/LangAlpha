@@ -41,7 +41,7 @@ describe('the default destination', () => {
     ['"A new thread" (or no thread to take it) is a new thread in the file\'s workspace', answer('new', null), NEW],
     ['nothing while the server has not answered for the record', undefined, null],
   ])('%s', (_rule, destinations, fallback) => {
-    expect(commentDestinations(t, destinations, BESIDE).fallback).toEqual(fallback);
+    expect(commentDestinations(t, destinations, at(BESIDE)).fallback).toEqual(fallback);
   });
 });
 
@@ -71,7 +71,7 @@ describe('where each intent takes the words', () => {
     ['nothing that needs the default goes while it is unknown', undefined, noThread, 'send', null, null],
     ['a new comment does not go while the default is unknown', undefined, null, 'queue', null, null],
   ])('%s', (_rule, destinations, comment, intent, picked, route) => {
-    expect(commentDestinations(t, destinations, BESIDE).targetFor(comment, intent, picked)).toEqual(route);
+    expect(commentDestinations(t, destinations, at(BESIDE)).targetFor(comment, intent, picked)).toEqual(route);
   });
 });
 
@@ -85,7 +85,7 @@ describe('binding the file to the thread beside', () => {
     ['is not offered with no chat beside', answer('new', null, { beside: null }), null, false],
     ['is not offered while the server has not answered', undefined, BESIDE, false],
   ])('%s', (_rule, destinations, beside, canBind) => {
-    expect(commentDestinations(t, destinations, beside).canBind).toBe(canBind);
+    expect(commentDestinations(t, destinations, beside ? at(beside) : null).canBind).toBe(canBind);
   });
 });
 
@@ -93,7 +93,7 @@ describe('the "To:" menu', () => {
   it('lists the default first, then the thread beside and the bound thread, once each and only where usable', () => {
     const { choices } = commentDestinations(t, answer('creator', 'th-maker', {
       bound: thread('th-gone', { usable: false }),
-    }), BESIDE);
+    }), at(BESIDE));
     expect(choices.map((c) => [c.key, c.isDefault, c.label])).toEqual([
       ['thread:th-maker', true, 'T th-maker'],
       [`thread:${BESIDE}`, false, 'pageViewer:comments.thisThread'],
@@ -101,12 +101,18 @@ describe('the "To:" menu', () => {
   });
 
   it('offers a new thread as the default where the setting sends there, and the thread beside after it', () => {
-    const { choices } = commentDestinations(t, answer('new', null), BESIDE);
+    const { choices } = commentDestinations(t, answer('new', null), at(BESIDE));
     expect(choices.map((c) => [c.key, c.isDefault])).toEqual([['new', true], [`thread:${BESIDE}`, false]]);
   });
 
+  it('names a new thread "This thread" beside a new chat in that workspace, which it starts', () => {
+    const label = (newIn: string) => commentDestinations(t, answer('new', null, { beside: null }), { newThreadIn: newIn }).choices[0].label;
+    expect(label('ws-1')).toBe('pageViewer:comments.thisThread');
+    expect(label('ws-other')).toBe('pageViewer:comments.newThread');
+  });
+
   it('offers nothing while the server has not answered', () => {
-    expect(commentDestinations(t, undefined, BESIDE).choices).toEqual([]);
+    expect(commentDestinations(t, undefined, at(BESIDE)).choices).toEqual([]);
   });
 });
 

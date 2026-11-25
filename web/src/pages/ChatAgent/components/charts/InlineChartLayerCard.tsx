@@ -18,7 +18,7 @@ import { INTERVAL_LABEL, displaySpelling } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
 import { cn } from '@/lib/utils';
 import { requestShowLayers } from '@/pages/MarketView/stores/layerViewStore';
-import { chartKeyFor } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
 import { formatLayerAsOf } from '@/pages/MarketView/utils/layerDisplay';
 

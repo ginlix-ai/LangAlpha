@@ -170,6 +170,30 @@ async def test_a_market_target_wake_reruns_with_its_notice():
 
 
 @pytest.mark.asyncio
+async def test_a_comment_send_reruns_with_its_record():
+    """The agent's guidance for the comments is decided from the record the
+    turn's input carries; without it the rerun reads them bare."""
+    from src.server.models.chat import ChatRequest
+    from src.server.services.runs.pending_input import unstarted_regenerate_request
+
+    shown = {"note": "", "reading": "file", "comments": [], "guidance": ["pictures"]}
+    query = {"content": "<file-comments>…</file-comments>", "type": "user", "metadata": {"artifact_comments": shown}}
+    with patch(GET_QUERY, new=AsyncMock(return_value=query)):
+        rerun = await input_rerun_request(
+            "t-1", _failed_run(), PendingInput(None), workspace_id="ws-1", body=None
+        )
+        regenerate = await unstarted_regenerate_request(
+            "t-1",
+            ChatRequest(messages=[], checkpoint_id="cp-tip", fork_from_turn=4),
+            4,
+            _failed_run(pending_input={"checkpoint_id": None}),
+        )
+
+    for request in (rerun, regenerate):
+        assert request.artifact_comments.model_dump(mode="json") == shown
+
+
+@pytest.mark.asyncio
 async def test_a_stored_report_that_no_longer_reads_is_dropped():
     query = {"content": "report back", "type": "system", "metadata": {"report_source": {"kind": "gone"}}}
     with patch(GET_QUERY, new=AsyncMock(return_value=query)):

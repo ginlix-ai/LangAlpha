@@ -2,8 +2,8 @@ import type { TFunction } from 'i18next';
 import { CommentSendRefused, type CommentTarget } from '../../utils/api/artifacts';
 import { MAX_COMMENTS_PER_SEND, type CommentInWorkspace } from './artifactCommentSend';
 import type { CommentSendWriter } from './commentSendStore';
-import { chatCarries, type ArtifactCommentSender } from './sendContext';
-import { targetKey, type CommentDestinations } from './destinations';
+import type { ArtifactCommentSender } from './sendContext';
+import { sameTarget, targetKey, type CommentDestinations } from './destinations';
 
 /** Comments that go out in one send, to one thread or a new one. */
 export interface SendBatch {
@@ -74,7 +74,7 @@ export async function sendBatches(
     reasonOf: (err: unknown, batch: SendBatch) => string;
   },
 ): Promise<BatchOutcome[]> {
-  const posted = batches.filter((b) => !chatCarries(sender, b.to));
+  const posted = batches.filter((b) => !sameTarget(sender.beside, b.to));
   sends.sending(posted.flatMap((b) => b.comments));
   const sendOne = async (batch: SendBatch, to: CommentTarget): Promise<BatchOutcome> => {
     const marks = posted.includes(batch);

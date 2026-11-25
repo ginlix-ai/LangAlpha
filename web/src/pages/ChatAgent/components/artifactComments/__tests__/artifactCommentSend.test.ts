@@ -29,6 +29,7 @@ function queued(overrides: Partial<QueuedArtifactComment> = {}): QueuedArtifactC
     artifact_id: 'a-1',
     workspace_id: 'ws-1',
     number: 2,
+    kind: 'file',
     path: 'reports/q3/index.html',
     file_sha256: null,
     title: 'Q3 review',
@@ -138,9 +139,11 @@ describe('file comment replies', () => {
 
   it('reads a reply off its artifact, and nothing else', () => {
     expect(readArtifactCommentReply(artifact(2, { resolved: true, clipped: true }))).toEqual({
-      artifactId: 'a-1', workspaceId: 'ws-1', path: 'r.html', commentId: 'c-2', number: 2,
+      artifactId: 'a-1', workspaceId: 'ws-1', kind: 'file', path: 'r.html', commentId: 'c-2', number: 2,
       resolved: true, text: 'answer 2', clipped: true,
     });
+    // A chart's reply names its chart the way the record does.
+    expect(readArtifactCommentReply(artifact(1, { kind: 'chart', path: 'NVDA:1day' }))).toMatchObject({ kind: 'chart', path: 'NVDA:1day' });
     // The tool's error result is an empty artifact.
     expect(readArtifactCommentReply({})).toBeNull();
     expect(readArtifactCommentReply(artifact(2, { number: '2' }))).toBeNull();

@@ -19,8 +19,10 @@ import { fileExtension, isHtmlFile } from '../utils/filePaths';
 import { useDownloadState, workspaceDownloadKey } from '../utils/downloadNotice';
 import { exportServedPdf } from './viewers/html/useHtmlActions';
 import { useServedHtml } from './viewers/html/useServedHtml';
-import { artifactPathKey, useArtifactBinding, useArtifactByPath } from '@/hooks/useArtifact';
+import { useArtifactBinding, useArtifactRecord } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
+import { sameTarget, threadOf } from './artifactComments/destinations';
 import { useArtifactCommentSender } from './artifactComments/sendContext';
 import { useCommentDestinations } from './artifactComments/useCommentDestinations';
 import type { PanelAccess } from './filePanel/types';
@@ -440,19 +442,21 @@ function ArtifactMenu({ workspaceId, path, onPublish }: {
 }): React.ReactElement {
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
-  const { data: artifact } = useArtifactByPath(workspaceId, path, { root });
+  const target = targetFor('file', path, root);
+  const { data: artifact } = useArtifactRecord(workspaceId, target);
   const artifactId = artifact?.artifact_id ?? null;
-  const { besideThreadId } = useArtifactCommentSender();
-  const { choices, canBind } = useCommentDestinations(workspaceId, artifactPathKey(path, root));
+  const { beside } = useArtifactCommentSender();
+  const besideThreadId = threadOf(beside);
+  const { choices, canBind } = useCommentDestinations(workspaceId, target);
   const { bind, unbind } = useArtifactBinding();
 
   const goesTo = choices.find((c) => c.isDefault) ?? null;
   const goesLine = !goesTo
     ? null
-    : !('threadId' in goesTo.target)
-      ? t('artifact.commentsGoNew')
-      : goesTo.target.threadId === besideThreadId
-        ? t('artifact.commentsGoHere')
+    : sameTarget(beside, goesTo.target)
+      ? t('artifact.commentsGoHere')
+      : !('threadId' in goesTo.target)
+        ? t('artifact.commentsGoNew')
         : t('artifact.commentsGoTo', { thread: goesTo.label });
   const bound = artifact?.bound_thread_id ?? null;
 
@@ -477,7 +481,7 @@ function ArtifactMenu({ workspaceId, path, onPublish }: {
         {canBind && besideThreadId && (
           <DropdownMenuItem
             onSelect={() => bind.mutate(
-              { workspaceId, path, threadId: besideThreadId },
+              { workspaceId, target, threadId: besideThreadId },
               { onError: () => toast({ description: t('pageViewer:comments.bindFailed'), variant: 'destructive' }) },
             )}
           >

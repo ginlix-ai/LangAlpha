@@ -1,6 +1,6 @@
 import { registerAuthReset } from '@/lib/authResets';
 import type { PendingToolCallChunk } from '@/types/chat';
-import type { ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 import type { ChartLayersCard } from '../chartLayerGrouping';
 import { buildRenderBlocks, groupSegments, HIDDEN_TOOL_CALL_NAMES, textBlockKey, type NotificationRenderBlock, type RenderBlock } from './buildRenderBlocks';
 import { preparingCallsOf, samePreparing } from './pendingToolCalls';

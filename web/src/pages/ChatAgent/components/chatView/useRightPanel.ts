@@ -16,6 +16,7 @@ import type { Computer } from '@/types/api';
 import type { LinkActions } from '../../contexts/LinkActionsContext';
 import type { ChartTabSpec, UnsequencedTarget } from '../filePanel/types';
 import type { PreviewData } from '../../hooks/utils/types';
+import { chartParts } from '@/lib/bars/chartId';
 import { readArtifactCommentReply, type ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
 import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './toolCallLookup';
 import { useTranscriptReader } from '../filePanel/transcriptStore';
@@ -601,14 +602,18 @@ export function useRightPanel({
     handleOpenPreview(data);
   }, [isMobile, rightPanelType, previewData, detailToolCallId, landInFilePanel, handleOpenPreview]);
 
-  /** The full MarketView page on one symbol, with a way back to this chat. */
-  const handleOpenInMarketView = useCallback((spec: ChartTabSpec) => {
+  /** The full MarketView page on one symbol, with a way back to this chat,
+   *  and on one of the chart's comments when given. */
+  const handleOpenInMarketView = useCallback((spec: ChartTabSpec, commentId?: string) => {
+    // A thread lives in one workspace, so a sibling's chart opens on no thread.
+    const here = !spec.workspaceId || spec.workspaceId === workspaceId;
     navigate(buildMarketViewUrl({
       symbol: spec.symbol,
       timeframe: spec.timeframe,
       workspaceId: spec.workspaceId ?? workspaceId,
-      threadId: threadId && threadId !== '__default__' ? threadId : null,
+      threadId: here && threadId && threadId !== '__default__' ? threadId : null,
       returnTo: location.pathname + location.search,
+      commentId,
     }));
   }, [workspaceId, threadId, location.pathname, location.search, navigate]);
 
@@ -628,13 +633,24 @@ export function useRightPanel({
     landInFilePanel({ kind: 'chart', ...spec });
   }, [isMobile, handleOpenInMarketView, landInFilePanel]);
 
-  /** Opens a file beside the chat on one of its comments. The path is the
-   *  file's own in its workspace, so it is not read against an open file. */
-  const handleOpenArtifactComment = useCallback(({ workspaceId: fileWorkspaceId, path, commentId }: ArtifactCommentRef) => {
+  /** Opens a file beside the chat on one of its comments, or a chart's tab on
+   *  one of its. The path is the file's own in its workspace, so it is not
+   *  read against an open file. A phone has no tab strip: a chart opens on
+   *  the market page, at the symbol and timeframe the comment is on. */
+  const handleOpenArtifactComment = useCallback(({ workspaceId: fileWorkspaceId, kind, path, commentId }: ArtifactCommentRef) => {
     if (!path) return;
     const sibling = fileWorkspaceId && fileWorkspaceId !== workspaceId ? fileWorkspaceId : undefined;
+    if (kind === 'chart') {
+      const chart = chartParts(path);
+      if (!chart) return;
+      // Its owner always: a tab with none draws the panel's workspace, which may be a sibling's.
+      const spec = { symbol: chart.symbol, timeframe: chart.timeframe, workspaceId: fileWorkspaceId };
+      if (isMobile) handleOpenInMarketView(spec, commentId);
+      else landInFilePanel({ kind: 'chart', ...spec, comment: commentId });
+      return;
+    }
     handleOpenFileFromChat(path, sibling, undefined, { rooted: true, pin: true, comment: commentId });
-  }, [workspaceId, handleOpenFileFromChat]);
+  }, [workspaceId, handleOpenFileFromChat, isMobile, handleOpenInMarketView, landInFilePanel]);
 
   /**
    * Show a tool call's result. On desktop it lands as a tab in the file panel

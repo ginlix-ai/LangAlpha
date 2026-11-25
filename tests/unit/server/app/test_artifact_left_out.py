@@ -23,6 +23,7 @@ def _artifact(**over) -> Artifact:
         artifact_id=_ID,
         code="c0de",
         workspace_id="00000000-0000-0000-0000-00000000000f",
+        kind="file",
         path="reports/q3.html",
         created_thread_id=None,
         bound_thread_id=None,

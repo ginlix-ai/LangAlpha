@@ -16,6 +16,7 @@ function comment(id: string, overrides: Partial<ArtifactComment> = {}): Artifact
     comment_id: id,
     artifact_id: 'a-1',
     number: 1,
+    kind: 'file',
     path: 'report.html',
     file_sha256: null,
     title: null,

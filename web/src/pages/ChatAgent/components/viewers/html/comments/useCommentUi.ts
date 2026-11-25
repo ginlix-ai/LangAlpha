@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import type { ArtifactKind } from '@/types/api';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useSharedCommentSends, type CommentSendStore } from '../../../artifactComments/commentSendStore';
 
 /**
  * A chat line asked to show this comment, on the file at `path`
- * (workspace-relative). `key` tells two asks for one comment apart.
+ * (workspace-relative), or the chart whose id it is. `key` tells two asks
+ * for one comment apart.
  */
 export interface CommentFocus {
+  kind: ArtifactKind;
   path: string;
   commentId: string;
   key: number;
@@ -61,11 +64,22 @@ export interface CommentUi {
    */
   docOf: (tabId: string, opened: string) => string;
   showDoc: (tabId: string, opened: string, doc: string) => void;
+  /**
+   * Whether a tab's layer holds words not yet saved. A draft goes when its
+   * layer moves to another workspace, so a host that moves it asks first.
+   */
+  writing: (tabId: string) => boolean;
+  showWriting: (tabId: string, words: boolean) => void;
   /** Where each comment's send stands: the chat's store beside it, so the deck and the cards agree. */
   sends: CommentSendStore;
 }
 
-export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null): CommentUi {
+/**
+ * `sends` is the chat's store for a view whose chat sits beside it in
+ * another subtree (the market page's chart and its chat panel); left out,
+ * the store provided around this view.
+ */
+export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null, beside?: CommentSendStore | null): CommentUi {
   const [modeTab, setModeTab] = useState<string | null>(null);
   const [listTab, setListTab] = useState<string | null>(null);
   const [focus, setFocus] = useState<CommentFocus | null>(null);
@@ -74,7 +88,9 @@ export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null)
   const takers = useRef(new Map<string, WordsTaker>());
   const [wordTabs, setWordTabs] = useState<ReadonlySet<string>>(() => new Set());
   const [docs, setDocs] = useState<ReadonlyMap<string, { opened: string; doc: string }>>(() => new Map());
-  const sends = useSharedCommentSends();
+  const [writingTabs, setWritingTabs] = useState<ReadonlySet<string>>(() => new Set());
+  const shared = useSharedCommentSends();
+  const sends = beside ?? shared;
 
   const setMode = useCallback((tabId: string, on: boolean) => {
     setModeTab((prev) => (on ? tabId : prev === tabId ? null : prev));
@@ -118,14 +134,25 @@ export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null)
     });
   }, []);
 
+  const writing = useCallback((tabId: string) => writingTabs.has(tabId), [writingTabs]);
+  const showWriting = useCallback((tabId: string, words: boolean) => {
+    setWritingTabs((prev) => {
+      if (prev.has(tabId) === words) return prev;
+      const next = new Set(prev);
+      if (words) next.add(tabId);
+      else next.delete(tabId);
+      return next;
+    });
+  }, []);
+
   return useMemo(
     () => ({
       modeTab, setMode, listTab, setList, focus, requestFocus, focusHandled, takesWords, commentOnWords, registerWordsTaker, askInChat, docOf,
-      showDoc, sends,
+      showDoc, writing, showWriting, sends,
     }),
     [
       modeTab, setMode, listTab, setList, focus, requestFocus, focusHandled, takesWords, commentOnWords, registerWordsTaker, askInChat, docOf,
-      showDoc, sends,
+      showDoc, writing, showWriting, sends,
     ],
   );
 }

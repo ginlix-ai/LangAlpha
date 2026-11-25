@@ -43,6 +43,7 @@ def _record(latest_seq: int, **changes) -> artifacts.Artifact:
         artifact_id=_A,
         code="c0de",
         workspace_id="w",
+        kind="file",
         path="r.html",
         created_thread_id=None,
         bound_thread_id=None,
@@ -578,6 +579,7 @@ _CLAIMABLE = {
     "anchor": {},
     "path": "r.html",
     "workspace_id": "w",
+    "kind": "file",
     "recorded_at": _NOW,
 }
 

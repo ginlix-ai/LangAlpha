@@ -64,9 +64,10 @@ def test_it_sits_after_steering_and_outside_the_task_interceptor(machine):
     names = _names(_build(subagent_switch=AsyncMock(), **machine))
 
     at = names.index("SubagentSwitchMiddleware")
-    # Only the wakeup cancel notice, which wraps no tool call, sits between.
+    # Only rows written before a model call, which wrap no tool call, sit
+    # between: the comment guidance and the wakeup cancel notice.
     between = names[names.index("SteeringMiddleware") + 1 : at]
-    assert between in ([], ["WakeupCancelNoticeMiddleware"])
+    assert set(between) <= {"CommentGuidanceMiddleware", "WakeupCancelNoticeMiddleware"}
     assert names[at + 1] == "BackgroundSubagentMiddleware"
     assert names.count("SubagentSwitchMiddleware") == 1
 

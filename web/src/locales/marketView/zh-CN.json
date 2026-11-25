@@ -120,12 +120,6 @@
     "errorLoad": "加载数据失败"
   },
   "selection": {
-    "toolTooltip": "选择一个区域或价格水平，向 Agent 提问",
-    "toolRegion": "区域",
-    "toolPriceLevel": "价格水平",
-    "commentPlaceholder": "添加评论…",
-    "commentAdd": "添加",
-    "commentSave": "保存",
     "cardRegionTitle": "选定区域",
     "cardPriceTitle": "选定价格水平",
     "cardOpenPreview": "查看 Agent 看到的内容",
@@ -145,11 +139,7 @@
     "previewBarsCount_other": "{{count}} 根",
     "previewBarsShown": "显示 {{total}} 根中的 {{shown}} 根",
     "previewBarsTruncated": "已降采样以适应",
-    "previewDrawBack": "Agent 可以据此分析，并将其判读绘制回图表的同一区域。",
-    "editChip": "编辑备注",
-    "chipRegion": "区域 · {{symbol}} {{timeframe}}",
-    "chipPriceLevel": "价格 {{price}} · {{symbol}} {{timeframe}}",
-    "removeChip": "移除选择"
+    "previewDrawBack": "Agent 可以据此分析，并将其判读绘制回图表的同一区域。"
   },
   "layers": {
     "legendLabel": "Agent 图层",

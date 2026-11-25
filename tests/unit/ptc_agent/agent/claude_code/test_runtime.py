@@ -114,6 +114,41 @@ def test_the_prompt_is_what_the_turn_added_since_claude_spoke():
         turn_prompt({"messages": earlier})
 
 
+def test_a_send_of_comments_is_followed_by_the_whole_guidance_every_time():
+    """No model-call hook runs on a Claude Code turn, so the guidance an API
+    turn states once in view goes with each send here."""
+    from ptc_agent.agent.middleware.comment_guidance import (
+        BASE, CHART, CHART_DRAWING, READING, CommentGuidanceMiddleware,
+    )
+
+    send = HumanMessage("<file-comments>…</file-comments>", additional_kwargs={
+        "artifact_comments": {"note": "", "reading": "chat", "comments": [], "guidance": ["chart"]},
+    })
+    follow = CommentGuidanceMiddleware(drawing=True).inline
+    guidance = frame_reminder("\n".join([BASE, READING["chat"], CHART + CHART_DRAWING]))
+    first = turn_prompt({"messages": [send]}, follow=follow)
+    assert [b["text"] for b in first] == ["<file-comments>…</file-comments>", guidance]
+    earlier = [send, _claude("answered")]
+    assert [b["text"] for b in turn_prompt({"messages": [*earlier, send]}, follow=follow)] == [
+        "<file-comments>…</file-comments>", guidance,
+    ]
+
+
+def test_a_saved_guidance_row_is_not_sent_beside_the_guidance_after_its_send():
+    """An API turn's row, or one a hand-off saved after its steer, sits in the
+    same window as its send, which is followed by the guidance again: Claude
+    reads it once, after the send."""
+    from ptc_agent.agent.middleware.comment_guidance import CommentGuidanceMiddleware
+
+    send = HumanMessage("<file-comments>…</file-comments>", additional_kwargs={
+        "artifact_comments": {"note": "", "reading": "file", "comments": [], "guidance": []},
+    })
+    guidance = CommentGuidanceMiddleware(drawing=False)
+    saved = guidance.inline(send)
+    sent = turn_prompt({"messages": [send, saved]}, follow=guidance.inline)
+    assert [b["text"] for b in sent] == ["<file-comments>…</file-comments>", frame_reminder(saved.text)]
+
+
 def test_a_brief_through_the_summary_a_thread_opens_on_is_sent_in_its_place():
     summary = HumanMessage("SUMMARY TEXT", id="s1", additional_kwargs={"lc_source": "summarization"})
     briefed = {"messages": [summary, HumanMessage("new")], BRIEF_KEY: {"text": "BRIEF", "through": "s1", "source": "model"}}
@@ -861,6 +896,32 @@ async def test_the_turns_rows_go_to_claude_ahead_of_the_reports_only_where_the_c
     hook.open(["t2"], take)
     assert (await hook({"hook_event_name": "PostToolUse"}, "t2", None))["continue"] is False
     assert taken == [True]
+
+
+@pytest.mark.asyncio
+async def test_the_guidance_for_a_steers_comments_goes_to_claude_after_the_steer():
+    """The hook's context reaches Claude ahead of the steers it sends, so the
+    guidance is sent after them, and kept after the steer as it was sent."""
+    sent: list[str] = []
+
+    async def send(text: str) -> None:
+        sent.append(text)
+
+    steer = HumanMessage("A report came in.", additional_kwargs={STEERS_AT: 17, "steering_delivered": {"messages": []}})
+    plan_row, guidance = HumanMessage("Your plan has not moved for a while"), HumanMessage("How to answer comments.")
+    handed = HandOff((plan_row,), steer, after=guidance)
+
+    async def take():
+        return handed
+
+    results = ToolResults()
+    results.resolve(ToolMessage("ok", tool_call_id="t1"))
+    hook = AfterTool(results, send=send, plan=UNWATCHED)
+    hook.open(["t1"], take)
+    out = await hook({"hook_event_name": "PostToolUse"}, "t1", None)
+    assert "How to answer comments." not in out["hookSpecificOutput"]["additionalContext"]
+    assert sent[-1] == frame_reminder("How to answer comments.")
+    assert handed.messages == [plan_row, steer, guidance]
 
 
 class _Ends:

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
 import type { SSEEvent } from '../../types';
 import { chartLayersKey } from '@/pages/MarketView/utils/chartLayerCache';
-import { chartKeyFor } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import { resetLayerViewForTesting } from '@/pages/MarketView/stores/layerViewStore';
 import type { StoredChartLayer } from '@/pages/MarketView/types/chartLayer';
 import type { ChartLayerArtifactPayload } from '@/pages/MarketView/types/chartLayer';

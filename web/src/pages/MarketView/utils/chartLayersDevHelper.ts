@@ -9,7 +9,7 @@ import { queryKeys } from '@/lib/queryKeys';
 
 import type { ChartLayer, StoredChartLayer } from '../types/chartLayer';
 import { applyChartLayerEvent } from './chartLayerCache';
-import { chartKeyFor, chartKeyParts } from './chartInstanceKey';
+import { chartKeyFor, chartKeyParts } from '@/lib/bars/chartId';
 
 interface ChartLayersDevHelper {
   /** Publish `layer` as the agent would, in `workspaceId` (default: the last one read). */

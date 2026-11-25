@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { ViewerComments, type ViewerCommentsTarget } from '../ViewerComments';
-import { pdfSource } from '../region/regionPictures';
+import { pdfSource, regionPictures } from '../region/regionPictures';
 import { pdfRegions } from './pdfSpots';
 
 /** The comment layer over a PDF's pages: words selected on a page, or a box drawn on it, take a comment. */
@@ -16,7 +16,7 @@ export function PdfComments({ scroller, content, pdf, target }: {
 }) {
   const { t } = useTranslation();
   const strategy = useMemo(() => (content ? pdfRegions(content) : null), [content]);
-  const pictures = useMemo(() => (pdf ? pdfSource(pdf) : null), [pdf]);
+  const pictures = useMemo(() => (pdf ? regionPictures(pdfSource(pdf)) : null), [pdf]);
   return (
     <ViewerComments
       scroller={scroller}

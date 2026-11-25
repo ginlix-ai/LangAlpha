@@ -3,12 +3,13 @@
  * (bar index, price) with the identity hover, ask and the render report need.
  */
 
+import type { ChartElementKind } from '@/types/artifacts';
 import type { LayerDrawing } from '../../types/chartLayer';
 import type { SceneDrawing } from './kinds';
 import type { IP } from './timeGrid';
 
 /** The kinds of element a layer holds, as their keys name them. */
-export type ElementKind = 'series' | 'level' | 'alert' | 'marker' | 'regime' | 'drawing';
+export type ElementKind = ChartElementKind;
 
 /** Which element of which layer: the layer's row id, the element's kind and its index or id. */
 export interface ElementId {

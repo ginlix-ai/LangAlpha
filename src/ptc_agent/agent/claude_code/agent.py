@@ -40,6 +40,7 @@ from ptc_agent.agent.claude_code.mid_turn import TaskSteering
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, build_claude_code_graph
 from ptc_agent.agent.middleware import ask_user
 from ptc_agent.agent.middleware.background_subagent.event_capture import SubagentEventCaptureMiddleware
+from ptc_agent.agent.middleware.comment_guidance import CommentGuidanceMiddleware
 from ptc_agent.agent.middleware.credit_gate import CreditGateMiddleware
 from ptc_agent.agent.middleware.file_mount_notice import FileMountNoticeMiddleware
 from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddleware, places_order
@@ -145,6 +146,7 @@ def claude_code_graph(
     compaction: CompactionRules, middleware: Sequence[Any] = (), baseline: Baseline | None = None,
     steering: SteeringMiddleware | TaskSteering | None = None, alert_senders: frozenset[str] = frozenset(),
     plan: AgentPlan | None = None, shared: bool = False,
+    comment_guidance: CommentGuidanceMiddleware | None = None,
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
@@ -155,7 +157,8 @@ def claude_code_graph(
     between tool calls and as each query ends, coming back for a notice of
     ``alert_senders`` as a langalpha turn does. ``plan`` is the agent's plan
     as the turn asks its check-in, nudge and close-out itself, where the
-    agent keeps one. The user is who
+    agent keeps one. ``comment_guidance`` is the agent's own, whose
+    guidance the turn sends after each message carrying comments. The user is who
     Claude Code is told the device belongs to, so a graph without one is
     refused, and each run's thread and namespace name its working
     directory (``ClaudeTurn.run_key``). ``launcher`` makes where a turn's
@@ -178,6 +181,7 @@ def claude_code_graph(
         waits=waits_for_user(orders),
         ends_turn=_ends_turn,
         shared=shared,
+        comment_guidance=comment_guidance,
     )
     def turn(**run: str) -> ClaudeTurn:
         waits = CliWaits()

@@ -19,29 +19,9 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import type { SelectionPreviewShape } from '@/types/chat';
 import { selectionPriceBounds } from '../utils/selectionBounds';
 
-interface PreviewBar {
-  time: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-export interface SelectionPreviewShape {
-  selectionType: 'region' | 'price_level';
-  symbol: string;
-  timeframe: string;
-  priceLow: number;
-  priceHigh: number;
-  comment?: string;
-  timeStart?: string;
-  timeEnd?: string;
-  bars?: PreviewBar[];
-  barsTruncated?: boolean;
-}
 
 /** Rows shown in the OHLCV table; the rest collapse to a "+N more" note. */
 const MAX_TABLE_ROWS = 60;

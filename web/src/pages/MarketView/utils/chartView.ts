@@ -10,7 +10,7 @@
 import { displaySpelling } from '@/lib/bars/exchanges';
 import type { Locale } from '@/lib/locale';
 import type { ChartView } from '../types/chartView';
-import { normalizeTimeframe } from './chartInstanceKey';
+import { normalizeTimeframe } from '@/lib/bars/chartId';
 import { gridFor, indexToSeconds, layerTimeToSeconds, resolveIndex, secondsToLayerTime } from './chartLayer/timeGrid';
 import type { LogicalFrame } from './layerFrame';
 

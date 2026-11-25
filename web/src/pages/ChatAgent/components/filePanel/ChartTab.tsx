@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ChartToolButton } from '@/pages/MarketView/components/ChartToolButton';
 import { QuoteListDrawer } from '@/pages/MarketView/components/quoteList/QuoteListDrawer';
 import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { CommentUi } from '../viewers/html/comments/useCommentUi';
 import type { ChartTabSpec } from './types';
 import type { FileTab, FileTabsApi } from './useFileTabs';
 import './ChartTab.css';
@@ -21,6 +22,10 @@ interface ChartTabProps {
   onAddContext: ((ctx: ContextPayload) => void) | null;
   /** Leaves the panel for the full MarketView page on this symbol. */
   onOpenInMarketView: ((spec: ChartTabSpec) => void) | null;
+  /** The panel's comment controls, where the owner keeps comments; the chart's go to the thread beside. */
+  commentUi: CommentUi | null;
+  /** The panel is the one in front. */
+  active: boolean;
 }
 
 /**
@@ -33,7 +38,7 @@ interface ChartTabProps {
  * watchlist and holdings drawer, which switches it the same way, add to
  * context and open in the market page. It needs no crumb row.
  */
-export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketView }: ChartTabProps): React.ReactElement {
+export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketView, commentUi, active }: ChartTabProps): React.ReactElement {
   const { t } = useTranslation();
   const { id, symbol, timeframe } = tab;
   // An artifact from another workspace opens on that workspace's drawings.
@@ -65,6 +70,11 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
     [onOpenInMarketView, symbol, timeframe, tab.workspaceId],
   );
 
+  const comments = useMemo(
+    () => (commentUi ? { ui: commentUi, tabId: id, active } : null),
+    [commentUi, id, active],
+  );
+
   const headerActions = useMemo(() => (
     <>
       <QuoteListDrawer symbol={symbol} onPick={onSwitchSymbol} />
@@ -91,8 +101,7 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
           onIntervalChange={rememberInterval}
           onSwitchSymbol={onSwitchSymbol}
           headerActions={headerActions}
-          // Picks go out with the thread's composer, so only a host with one gets the tools.
-          selectionTools={onAddContext != null}
+          comments={comments}
         />
       </div>
     </Suspense>

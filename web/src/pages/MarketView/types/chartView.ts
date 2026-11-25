@@ -1,5 +1,5 @@
 import type { Locale } from '@/lib/locale';
-import type { Timeframe } from '../utils/chartInstanceKey';
+import type { Timeframe } from '@/lib/bars/chartId';
 
 /**
  * What a chart on screen looks like, sent with a chat message so the agent's

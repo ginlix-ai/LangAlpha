@@ -225,6 +225,121 @@ async def test_a_layer_id_both_homes_chart_has_is_kept_under_a_free_one(seed_use
     assert all(r["ws"] == home and r["id"] == r["annotation_id"] for r in landed)
 
 
+async def test_home_chart_comments_follow_their_threads_into_home(seed_user, test_db_pool):
+    """A chart's record in the former Home moves with the threads that answer
+    it. One Home's chart already has is merged into Home's record, its
+    comments numbered after Home's last and its binding kept where Home's
+    record has none; a file's record stays."""
+    from src.server.database import artifacts
+
+    user_id = seed_user["user_id"]
+    home = str((await workspaces.get_or_create_home_workspace(user_id))["workspace_id"])
+    former = await _former(user_id, "old-account-charts")
+
+    async def comment(artifact_id: str, body: str) -> None:
+        await artifacts.create_comment(
+            user_id=user_id, artifact_id=artifact_id, delivery="note", caller=user_id,
+            anchor={"kind": "chart", "marks": [{"type": "point", "time": "2026-10-03", "price": 1}]},
+            body=body,
+        )
+
+    kept = await artifacts.ensure_record(home, "chart", "NVDA:1day")
+    merged = await artifacts.ensure_record(former, "chart", "NVDA:1day")
+    alone = await artifacts.ensure_record(former, "chart", "AMD:1day")
+    file = await artifacts.ensure_record(former, "file", "report.html")
+    await comment(kept.artifact_id, "home 1")
+    await comment(merged.artifact_id, "former 1")
+    await comment(merged.artifact_id, "former 2")
+    await comment(alone.artifact_id, "amd 1")
+    answering = await _thread(test_db_pool, former, 1, datetime.now(timezone.utc))
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE share_links SET bound_thread_id = %s WHERE artifact_id = %s",
+            (answering, merged.artifact_id),
+        )
+
+    await workspaces.get_or_create_home_workspace(user_id)
+
+    records = await _rows(
+        test_db_pool,
+        "SELECT artifact_id::text AS id, workspace_id::text AS ws, last_comment_number,"
+        " bound_thread_id::text AS bound"
+        " FROM share_links WHERE artifact_id = ANY(%s::uuid[])",
+        [kept.artifact_id, merged.artifact_id, alone.artifact_id, file.artifact_id],
+    )
+    assert {r["id"]: (r["ws"], r["last_comment_number"], r["bound"]) for r in records} == {
+        kept.artifact_id: (home, 3, answering),
+        alone.artifact_id: (home, 1, None),
+        file.artifact_id: (former, 0, None),
+    }
+    pins = await artifacts.list_comments(kept.artifact_id)
+    assert [(c.number, c.messages[0].body) for c in pins] == [
+        (1, "home 1"), (2, "former 1"), (3, "former 2"),
+    ]
+
+
+async def test_a_moved_comment_names_its_layer_by_the_id_the_fold_gave_it(
+    seed_user, test_db_pool
+):
+    """A former layer renamed past Home's id of it takes the element marks
+    pointing at it along, whether its chart's comments merge into Home's
+    record or move with their own; other layers' and other marks stay."""
+    import json
+
+    from src.server.database import artifacts
+
+    user_id = seed_user["user_id"]
+    home = str((await workspaces.get_or_create_home_workspace(user_id))["workspace_id"])
+    former = await _former(user_id, "old-account-marks")
+
+    async with test_db_pool.connection() as conn:
+        for ws, chart_id, layer_id in [
+            (home, "NVDA:1day", "breakout"),
+            (former, "NVDA:1day", "breakout"),
+            (former, "NVDA:1day", "trend"),
+            (home, "AMD:1day", "breakout"),
+            (former, "AMD:1day", "breakout"),
+        ]:
+            symbol, timeframe = chart_id.split(":")
+            await conn.execute(
+                "INSERT INTO chart_annotations "
+                "(workspace_id, chart_id, symbol, timeframe, annotation_id, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
+                (ws, chart_id, symbol, timeframe, layer_id, json.dumps({"id": layer_id})),
+            )
+
+    def element(layer_id: str) -> dict:
+        return {
+            "type": "element", "layer": layer_id, "layer_title": "Setup",
+            "element_kind": "level", "index": 0, "time": "2026-10-03", "price": 1,
+        }
+
+    point = {"type": "point", "time": "2026-10-03", "price": 1}
+    marks = [element("breakout"), point, element("trend")]
+    await artifacts.ensure_record(home, "chart", "NVDA:1day")
+    merged = await artifacts.ensure_record(former, "chart", "NVDA:1day")
+    alone = await artifacts.ensure_record(former, "chart", "AMD:1day")
+    for record in (merged, alone):
+        await artifacts.create_comment(
+            user_id=user_id, artifact_id=record.artifact_id, delivery="note",
+            caller=user_id, anchor={"kind": "chart", "marks": marks}, body="here",
+        )
+
+    await workspaces.get_or_create_home_workspace(user_id)
+
+    moved = await _rows(
+        test_db_pool,
+        "SELECT l.path, c.anchor FROM artifact_comments c"
+        " JOIN share_links l ON l.artifact_id = c.artifact_id"
+        " WHERE l.workspace_id = %s AND l.kind = 'chart'",
+        home,
+    )
+    assert {r["path"]: r["anchor"]["marks"] for r in moved} == {
+        "NVDA:1day": [element("breakout-2"), point, element("trend")],
+        "AMD:1day": [element("breakout-2"), point, element("trend")],
+    }
+
+
 @pytest.mark.parametrize("background", [False, True], ids=["root", "subagent"])
 async def test_a_former_row_with_a_run_in_progress_waits(
     seed_user, test_db_pool, seed_response, background

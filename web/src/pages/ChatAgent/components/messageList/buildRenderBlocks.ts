@@ -9,7 +9,7 @@ import { preapprovedCardOf, type PreapprovedCard } from '../../utils/preapproved
 import { isPlanTool, readPastPlan, type PastPlanOutcome } from './pastPlan';
 import { readArtifactCommentReply, type ArtifactCommentReply } from '../artifactComments/artifactCommentReply';
 import type { PTCAgentProposalState } from '@/types/chat';
-import type { ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
+import type { ChartKey } from '@/lib/bars/chartId';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
 import type { ActivityItem, ToolActivityItem, LiveState, ToolCallData, ToolCallResultData } from './activityTypes';
 
