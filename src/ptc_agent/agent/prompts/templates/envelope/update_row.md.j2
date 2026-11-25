@@ -117,6 +117,11 @@
    too: its text is already the whole notice, and it compares nothing with a
    frozen block.
 
+   A `comment_guidance` row (`turn.COMMENT_GUIDANCE_ROW_KIND`) says how to
+   answer the comments a send carries, only the parts no row in view says
+   yet (`middleware/comment_guidance.py`). It renders bare too: its text is
+   the whole guidance, and the comments themselves stay in the send.
+
    A `subagents_switched` row (`turn.SUBAGENTS_ROW_KIND`) says the
    user flipped the thread's subagent switch, which `provenance.allowed`
    carries; its text is empty and every word is here. It names no tool, since
@@ -135,7 +140,7 @@
    State only, so it renders the same at both guidance levels. The standing
    rules for reading a row are static prose in the system prefix. #}
 {% if update %}
-{% if update.kind in ("turn_opened", "wakeup_cancelled", "market_watch") %}
+{% if update.kind in ("turn_opened", "wakeup_cancelled", "market_watch", "comment_guidance") %}
 {{ update.text }}
 {% elif update.kind == "subagents_switched" %}
 {% if update.provenance.get("allowed") is false %}

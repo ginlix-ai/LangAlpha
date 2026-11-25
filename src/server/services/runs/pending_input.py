@@ -26,7 +26,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from src.server.contracts.status import is_user_stop
 from src.server.contracts.turn_kinds import WAKE_QUERY_TYPE
-from src.server.models.chat import ChatMessage, ChatRequest, ReportSource
+from src.server.models.chat import ChatMessage, ChatRequest, ReportSource, ShownSend
 from src.server.models.workflow import RetryRequest
 
 if TYPE_CHECKING:
@@ -209,7 +209,10 @@ def _stored_turn_fields(query: Mapping[str, Any]) -> dict[str, Any]:
     """The server-set fields a turn's query row keeps, for a request that runs
     the turn again: its type, so a system turn (a report-back) runs as one and
     a wake turn may still end quietly, and the report or notices it announces,
-    which label it in history and the live stream."""
+    which label it in history and the live stream. A send of comments keeps
+    its record too, since the agent's guidance for them is decided from it on
+    the turn's input (``stamp_send``) and a rerun without it reads the
+    comments bare."""
     metadata = query.get("metadata") or {}
     stored = metadata.get("report_source") or None
     try:
@@ -218,11 +221,20 @@ def _stored_turn_fields(query: Mapping[str, Any]) -> dict[str, Any]:
         report_source = None
     market_target = metadata.get("market_target")
     wakeup = metadata.get("wakeup")
+    try:
+        shown = (
+            ShownSend.model_validate(metadata["artifact_comments"])
+            if metadata.get("artifact_comments")
+            else None
+        )
+    except ValidationError:
+        shown = None
     return {
         "query_type": query.get("type"),
         "report_source": report_source,
         "market_target": market_target if isinstance(market_target, dict) else None,
         "wakeup": wakeup if isinstance(wakeup, dict) else None,
+        "artifact_comments": shown,
     }
 
 
