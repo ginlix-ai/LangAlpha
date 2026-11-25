@@ -6,6 +6,8 @@ import { useLocale } from '@/hooks/useLocale';
 import { useTitleFade } from '@/hooks/useTitleFade';
 import { shortMonthDay } from '@/lib/format';
 import { useThreadFlags } from '@/lib/threadLifecycle/store';
+import { draftKeys, useWaitingDraft } from '@/lib/composerDrafts';
+import { DraftMark } from '@/components/ui/draft-mark';
 import { cn } from '@/lib/utils';
 import { PersonAvatar } from '@/components/organization/PersonAvatar';
 import { personLabel, threadByline } from '@/lib/sharedThreads';
@@ -57,6 +59,9 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
   const cardTitle = (thread.title as string) || t('nav.untitledThread');
   const titleFading = useTitleFade(cardTitle);
   const byline = threadByline(sharedMe ? thread.shared : undefined, sharedMe);
+  // Left unsent in its composer: the line under the title leads with it.
+  const hasDraft = useWaitingDraft(draftKeys.thread(tid)) !== null;
+  const date = thread.updated_at ? shortMonthDay(new Date(thread.updated_at as string), locale) : null;
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent card click when clicking delete icon
     if (onDelete) {
@@ -115,14 +120,17 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
           <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }} data-testid="thread-byline">
             <PersonAvatar name={byline.starter.name} size={14} />
             <span className="min-w-0 truncate">
+              {hasDraft && <><DraftMark /> · </>}
               {byline.starter.mine ? t('sharedWorkspace.threads.startedByMe') : t('sharedWorkspace.threads.startedBy', { name: personLabel(t, byline.starter) })}
               {byline.last && <> · {byline.last.mine ? t('sharedWorkspace.threads.lastByMe') : t('sharedWorkspace.threads.lastBy', { name: personLabel(t, byline.last) })}</>}
-              {!!thread.updated_at && <> · {shortMonthDay(new Date(thread.updated_at as string), locale)}</>}
+              {date && <> · {date}</>}
             </span>
           </p>
-        ) : !!thread.updated_at && (
+        ) : (hasDraft || date) && (
           <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-            {shortMonthDay(new Date(thread.updated_at as string), locale)}
+            {hasDraft && <DraftMark />}
+            {hasDraft && date && ' · '}
+            {date}
           </p>
         )}
       </div>
