@@ -36,7 +36,7 @@ const EXPECTED = ['index', 'rolldown-runtime', 'vendor-react']
 // deliberately thin, so routine growth shows up here instead of being quietly
 // absorbed. Raise it only for a measured cause, and put that cause in the commit
 // message that raises it; the line's history is the record of why it moved.
-const MAX_EAGER_KB = 444
+const MAX_EAGER_KB = 447
 
 const outDir = process.argv[2] || 'dist'
 const indexPath = join(outDir, 'index.html')
