@@ -82,6 +82,10 @@ class ThreadBranchRead:
 
     checkpoint_id: Optional[str]
     run_horizon: int
+    #: The stored fork lineage (``metadata->'fork'``) read in the same
+    #: snapshot, raw: its model is the fork service's
+    #: (``history.branch.borrowing_of``).
+    fork: Any = None
 
 
 async def get_thread_branch_read(conversation_thread_id: str) -> ThreadBranchRead:
@@ -100,7 +104,8 @@ async def get_thread_branch_read(conversation_thread_id: str) -> ThreadBranchRea
                        COALESCE((
                            SELECT max(r.run_seq) FROM conversation_responses r
                            WHERE r.conversation_thread_id = t.conversation_thread_id
-                       ), 0) AS run_horizon
+                       ), 0) AS run_horizon,
+                       t.metadata->'fork' AS fork
                 FROM conversation_threads t
                 WHERE t.conversation_thread_id = %s
                 """,
@@ -109,7 +114,7 @@ async def get_thread_branch_read(conversation_thread_id: str) -> ThreadBranchRea
             row = await cur.fetchone()
     if row is None:
         return ThreadBranchRead(None, 0)
-    return ThreadBranchRead(row["latest_checkpoint_id"], int(row["run_horizon"]))
+    return ThreadBranchRead(row["latest_checkpoint_id"], int(row["run_horizon"]), row["fork"])
 
 
 # Latest-attempt lifecycle columns joined onto paged thread rows. Ordered by
@@ -141,9 +146,12 @@ LATEST_ATTEMPT_LATERAL_COLS = (
 # Exact turn count for a paged row: conversation_queries is one-row-per-turn
 # (unique (thread_id, turn_index)), unlike conversation_responses where
 # retries duplicate turn_index.
+# A snapshot fork counts the turns it shows from its sources (all those
+# before its ``turn_base``) as it shows them.
 TURN_COUNT_LATERAL = """
     LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS turn_count
+        SELECT COUNT(*)::int
+               + COALESCE((t.metadata->'fork'->'borrow'->>'turn_base')::int, 0) AS turn_count
         FROM conversation_queries q
         WHERE q.conversation_thread_id = t.conversation_thread_id
     ) tc ON TRUE
@@ -682,6 +690,7 @@ async def list_computer_threads(
             SELECT t.conversation_thread_id, t.title, t.created_at,
                    t.updated_at, w.workspace_id,
                    w.name AS workspace_name, w.dir_name,
+                   t.metadata->'fork' AS fork,
                    EXISTS (
                        SELECT 1 FROM thread_transcripts s
                        WHERE s.conversation_thread_id = t.conversation_thread_id
@@ -694,6 +703,7 @@ async def list_computer_threads(
             SELECT t.conversation_thread_id, t.title, t.created_at,
                    t.updated_at, h.workspace_id,
                    h.name AS workspace_name, si.dir_name,
+                   t.metadata->'fork' AS fork,
                    EXISTS (
                        SELECT 1 FROM thread_transcripts s
                        WHERE s.conversation_thread_id = t.conversation_thread_id
@@ -771,6 +781,53 @@ async def get_thread_by_id(conversation_thread_id: str) -> Optional[Dict[str, An
     except Exception as e:
         logger.error(f"Error getting thread by id: {e}")
         raise
+
+
+async def get_thread_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
+    """The thread's ``metadata`` object, or None for a malformed id or no row.
+
+    One column, for the readers that need only a lineage or an origin and not
+    the whole row.
+    """
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return None
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT metadata FROM conversation_threads "
+                "WHERE conversation_thread_id = %s",
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+    return (row[0] or {}) if row else None
+
+
+async def borrowing_fork_ids(thread_id: str) -> list[str]:
+    """Forks that show some of this thread's turns instead of holding them,
+    archived ones included: deleting the thread takes that part of each one's
+    view with it. A fork of a fork lists every thread it shows turns from in
+    its own ``borrow.ancestors``, so grandchildren count too.
+
+    The predicate is written as migration 152's index states it, or the
+    planner will not use the index.
+    """
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return []
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT conversation_thread_id::text FROM conversation_threads
+                WHERE metadata->'fork'->'borrow'->'ancestors'
+                      @> jsonb_build_array(jsonb_build_object('thread_id', %s::text))
+                  AND metadata->'fork'->'borrow' IS NOT NULL
+                """,
+                (thread_id,),
+            )
+            rows = await cur.fetchall()
+    return [row[0] for row in rows]
 
 
 async def get_thread_owner_id(thread_id: str, *, conn=None) -> Optional[str]:

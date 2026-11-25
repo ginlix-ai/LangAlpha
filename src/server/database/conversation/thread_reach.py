@@ -122,6 +122,23 @@ async def unreached_folders(
     return set(names) - reached
 
 
+async def served_on_computer(thread_id: str, *, conn=None) -> bool:
+    """Whether the thread's computer serves its transcript to any agent there
+    (``served_on_computer_sql``); False for no such thread."""
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return False
+    async with pool.get_db_connection(conn) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {served_on_computer_sql('t')} FROM conversation_threads t"
+                " WHERE t.conversation_thread_id = %s",
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+    return bool(row and row[0])
+
+
 async def private_to(thread_id: str, *, conn=None) -> Optional[str]:
     """The one person the thread's events are for: its starter while they
     keep it private, None once it is shared, outside a shared workspace,

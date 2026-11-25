@@ -13,7 +13,12 @@ from typing import NamedTuple
 from fastapi import HTTPException
 
 from src.server.database.conversation import threads_read
-from src.server.services.history.branch import branch_turns, stale_fork_detail
+from src.server.services.forks.model import BorrowedTurn, Borrowing
+from src.server.services.history.branch import (
+    branch_turns,
+    borrowing_of,
+    stale_fork_detail,
+)
 from src.server.utils.checkpoint_helpers import (
     FORK_ROOT_CHECKPOINT_ID,
     build_checkpoint_config,
@@ -30,7 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 async def get_thread_turns(
-    thread_id: str, branch_tip_checkpoint_id: str | None = None
+    thread_id: str,
+    branch_tip_checkpoint_id: str | None = None,
+    *,
+    borrow: Borrowing | None = None,
 ) -> ThreadTurnsResponse:
     """Turn boundaries on the thread's current branch, for edit/regenerate.
 
@@ -41,8 +49,10 @@ async def get_thread_turns(
     with no persisted turn to name is left out. Turns past the last boundary
     share one last entry at the tip, or at the empty fork root on a thread
     with no checkpoint, which is also where the first turn's edit forks.
+    ``borrow`` is the thread's standing as a snapshot fork, read with the tip
+    (``borrowing_of``).
     """
-    listing = await branch_turns(thread_id, branch_tip_checkpoint_id)
+    listing = await branch_turns(thread_id, branch_tip_checkpoint_id, borrow=borrow)
     return ThreadTurnsResponse(
         thread_id=thread_id,
         turns=listing.turns,
@@ -86,7 +96,7 @@ async def resolve_fork_turn(
     """
     branch = await threads_read.get_thread_branch_read(thread_id)
     branch_tip, horizon = branch.checkpoint_id, branch.run_horizon
-    listing = await branch_turns(thread_id, branch_tip)
+    listing = await branch_turns(thread_id, branch_tip, borrow=borrowing_of(branch))
     turns = listing.turns
     if (
         regenerate
@@ -127,20 +137,35 @@ async def first_turn_dropped(thread_id: str, checkpoint_id: str) -> int | None:
     """
     from src.server.utils.checkpoint_helpers import checkpoint_on_branch
 
-    tip = (await threads_read.get_thread_branch_read(thread_id)).checkpoint_id
+    branch = await threads_read.get_thread_branch_read(thread_id)
+    tip, borrow = branch.checkpoint_id, borrowing_of(branch)
     if tip is None:
         return 0
     if checkpoint_id == tip or await checkpoint_on_branch(thread_id, tip, checkpoint_id):
         return None
-    if not await checkpoint_on_branch(thread_id, checkpoint_id, tip):
+    on_branch = await checkpoint_on_branch(thread_id, checkpoint_id, tip)
+    if borrow is not None and (
+        checkpoint_id == FORK_ROOT_CHECKPOINT_ID
+        or (not on_branch and not await _holds(thread_id, checkpoint_id))
+    ):
+        # A snapshot fork's state is the checkpoint it holds: one it does not
+        # hold loads as empty state, which would drop the borrowed turns too.
+        # One it holds off the branch is a view of its own turns gone stale.
+        raise BorrowedTurn()
+    if not on_branch:
         return 0
-    dropped = 0
+    dropped = borrow.turn_base if borrow is not None else 0
     # Checkpoint ids are uuid6, ordered by time, the fork root first.
-    for turn in (await branch_turns(thread_id, tip)).turns:
+    for turn in (await branch_turns(thread_id, tip, borrow=borrow)).turns:
         start = turn.edit_checkpoint_id
         if start is not None and start <= checkpoint_id:
             dropped = max(dropped, turn.turn_index)
     return dropped
+
+
+async def _holds(thread_id: str, checkpoint_id: str) -> bool:
+    config = build_checkpoint_config(thread_id, checkpoint_id)
+    return await get_checkpointer().aget_tuple(config) is not None
 
 
 async def first_turn_replaced(thread_id: str, request: ChatRequest) -> int | None:

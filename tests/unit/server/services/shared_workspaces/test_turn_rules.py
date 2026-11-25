@@ -176,7 +176,7 @@ class TestTheFirstTurnACheckpointDrops:
         parents = {"g": "e", "e": "d", "d": "c", "c": "b", "b": "a", "f": "g"}
 
         async def _read(thread_id):
-            return SimpleNamespace(checkpoint_id="g", run_horizon=0)
+            return SimpleNamespace(checkpoint_id="g", run_horizon=0, fork=None)
 
         async def _on_branch(thread_id, checkpoint_id, tip, **_):
             node = tip
@@ -186,7 +186,7 @@ class TestTheFirstTurnACheckpointDrops:
                 node = parents.get(node)
             return False
 
-        async def _turns(thread_id, tip):
+        async def _turns(thread_id, tip, *, borrow):
             return SimpleNamespace(
                 turns=[
                     TurnCheckpointInfo(turn_index=i, edit_checkpoint_id=c, regenerate_checkpoint_id=c)

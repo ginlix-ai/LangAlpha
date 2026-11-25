@@ -20,6 +20,7 @@ from src.server.models.conversation import (
     FeedbackResponse,
 )
 from src.server.app.reports import report_refusal
+from src.server.services.history.branch import read_borrowing
 from src.server.services import feedback as ratings
 from src.server.services.feedback import NotFound, ReportClosed, ReportRefused
 
@@ -49,6 +50,14 @@ def _report_closed() -> HTTPException:
     return HTTPException(status_code=409, detail={"error": "report_closed"})
 
 
+async def _refuse_borrowed(thread_id: str, turn_index: int) -> None:
+    """A snapshot fork's borrowed turn is rated in the chat that holds it,
+    since the fork holds no response there to rate."""
+    borrow = await read_borrowing(thread_id)
+    if borrow is not None:
+        borrow.require_own(turn_index)
+
+
 @router.post("/{thread_id}/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
     thread_id: str,
@@ -61,6 +70,7 @@ async def submit_feedback(
     withdraws it."""
     try:
         access = await shared_access.thread_access(thread_id, x_user_id)
+        await _refuse_borrowed(thread_id, request.turn_index)
         if access.is_shared and request.consent_human_review:
             await refuse_others_review(thread_id, request.turn_index, x_user_id)
         row, report_status = await ratings.submit(
@@ -104,6 +114,7 @@ async def follow_up_feedback(
         raise HTTPException(status_code=422, detail="A note needs its note_id")
 
     access = await shared_access.thread_access(thread_id, x_user_id)
+    await _refuse_borrowed(thread_id, request.turn_index)
     if access.is_shared and request.human_review:
         await refuse_others_review(thread_id, request.turn_index, x_user_id)
     try:

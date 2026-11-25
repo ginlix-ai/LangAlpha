@@ -1,21 +1,23 @@
-"""Copying a thread's history into a new thread, up to a checkpoint.
+"""Writing a fork's checkpoints and task runs from its source thread.
 
-Two halves, which may live in two databases: the checkpoint chain (LangGraph's
-tables) and the run ledger (queries, responses, their sources, and the
-background task runs they launched). Every copied row gets a new id, and
-every run id the copied checkpoint data holds is rewritten to its copy's: the
-checkpoints' ``run_id`` and ``task_run_id`` stamps, the task lanes' ``ui``
-records that name their run (a workflow's archived result, which TaskOutput
-finds by the ledger's run id, and its lifecycle snapshot), and the launch
-artifacts on ``messages``, by which replay finds the run a Task call started.
-Nothing in the copy points back into the source thread.
+A fork holds one checkpoint of its own, the source's state at the cut, under
+the cut's checkpoint id with no parent. ``messages`` and ``claude_session``
+are ``DeltaChannel``s, which a checkpoint holds no value for but the writes
+back to the last snapshot do, so the fork stores each as a
+``_DeltaSnapshot`` of its value there; the plain channels' blobs and the
+cut's own writes (which a stopped turn resumes from) are copied as stored.
+The turns before the cut keep their rows in the source, which the fork shows
+them from.
 
-The chain is copied whole, from the root to the cut, with every write and
-blob those checkpoints name. ``messages`` and ``claude_session`` are
-``DeltaChannel``s: a checkpoint holds no value for them, only the writes back
-to the last snapshot do, so a copy of the cut alone could not be read.
-Checkpoints are immutable once written, so the copy needs no lock on the
-source's chain; the ledger read is checked against a run horizon instead.
+Background task lanes and the finished task runs the kept turns launched are
+still copied whole, each copy under a new id, and every value naming a run
+is rewritten to its copy's: the checkpoints' ``task_run_id`` stamps, the
+lanes' ``ui`` records that name their run (a workflow's archived result,
+which TaskOutput finds by the ledger's run id, and its lifecycle snapshot),
+and the launch artifacts on ``messages``, by which replay finds the run a
+Task call started. Checkpoints are immutable once written, so the copy needs
+no lock on the source's chain; the ledger read is checked against a run
+horizon instead.
 """
 
 from __future__ import annotations
@@ -32,29 +34,7 @@ from langgraph.checkpoint.serde.types import _DeltaSnapshot
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from src.server.database.replay_facts import ARCHIVE_KEY
-
 logger = logging.getLogger(__name__)
-
-#: Response metadata that drives work owed to the source thread (a Chief of
-#: Staff hand-off's report-back, a fork's pinned pointer, the automation firing
-#: a run settles and the deliveries it sends), and the surface the run answered
-#: on, whose rules a retry restores. A copied run owes none of it, so the keys
-#: stay behind: a retry of a copied run sends for nothing and answers where the
-#: fork is used.
-_SOURCE_ONLY_RUN_KEYS = frozenset(
-    {
-        "origin_home_thread_id",
-        "origin_dispatch_gen",
-        "report_back_ptc_thread_id",
-        "fork_base",
-        "automation_execution_id",
-        "automation_id",
-        "automation_delivery",
-        "automation_earlier_runs",
-        "surface",
-    }
-)
 
 _CHAIN_SQL = """
     CREATE TEMP TABLE IF NOT EXISTS fork_chain (
@@ -183,34 +163,128 @@ class ChainTip:
 
 @dataclass
 class LedgerPlan:
-    """The source's ledger rows a fork copies, read under one snapshot, with
-    the ids their copies take. Minted before anything is written, so the
-    checkpoint copy can stamp the new run ids before the ledger exists."""
+    """What a fork reads of the source's ledger, under one snapshot: the
+    finished task runs it copies, with the ids their copies take, minted
+    before anything is written so the checkpoint copy can stamp them first,
+    and the response that ended the last kept turn."""
 
     source_thread_id: str = ""
-    queries: list[dict[str, Any]] = field(default_factory=list)
-    #: Settled attempts in run order, so the copies' ``run_seq`` keep it.
-    responses: list[dict[str, Any]] = field(default_factory=list)
     #: Each copied task's row and its finished runs, oldest first.
     tasks: list[tuple[dict[str, Any], list[dict[str, Any]]]] = field(default_factory=list)
-    #: Source run id to its copy's, for responses and task runs alike.
+    #: Source task run id to its copy's.
     run_map: dict[str, str] = field(default_factory=dict)
     #: The task lanes the copy carries, each to the newest checkpoint a
     #: copied run of it finished on.
     task_tips: list[ChainTip] = field(default_factory=list)
-
-    def task_run_map(self) -> dict[str, str]:
-        """``run_map`` narrowed to the copied task runs, the only runs a
-        value in the copied channels names."""
-        return {
-            str(r["task_run_id"]): self.run_map[str(r["task_run_id"])]
-            for _, runs in self.tasks
-            for r in runs
-        }
+    #: The newest response of the newest kept turn that has one: while it
+    #: exists, the source has not rewritten the turns the fork borrows.
+    response_id: Optional[str] = None
 
 
 class StaleSource(Exception):
-    """A run that rewrote the copied turns started after the snapshot."""
+    """A run that rewrote the kept turns started after the snapshot, or the
+    source went away."""
+
+
+@dataclass(frozen=True)
+class ForkCheckpoint:
+    """The fork's one checkpoint: the source's cut, its delta channels
+    materialized (``forks.materialize``)."""
+
+    checkpoint_id: str
+    #: The cut's checkpoint as stored, primitives inline.
+    checkpoint: dict[str, Any]
+    #: The cut's ``step``.
+    step: Any
+    #: Each delta channel's value at the cut, by channel.
+    deltas: dict[str, Any]
+    #: The plain channels whose blobs the fork needs, at the cut's versions.
+    required: frozenset[str]
+
+
+async def write_snapshot(conn: Any, target_thread_id: str, cut: ForkCheckpoint) -> None:
+    """Write ``cut`` as the target's only main checkpoint, inside the
+    caller's transaction: the cut's id, no parent, its versions verbatim, and
+    each delta channel as a ``_DeltaSnapshot`` at its version, so a load
+    reads it without walking back. Saved by a saver of its own on ``conn``
+    with the app saver's serde, so the values read back as written."""
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from src.server.utils.checkpoint_helpers import get_checkpointer
+
+    raw = cut.checkpoint
+    versions = raw.get("channel_versions") or {}
+    deltas = {k: v for k, v in cut.deltas.items() if k in versions}
+    checkpoint = {
+        **raw,
+        "id": cut.checkpoint_id,
+        "channel_values": {
+            **{k: v for k, v in (raw.get("channel_values") or {}).items() if k not in deltas},
+            **{k: _DeltaSnapshot(v) for k, v in deltas.items()},
+        },
+    }
+    saver = AsyncPostgresSaver(conn, serde=get_checkpointer().serde)
+    await saver.aput(
+        {"configurable": {"thread_id": target_thread_id, "checkpoint_ns": ""}},
+        checkpoint,
+        {"source": "fork", "step": cut.step, "parents": {}},
+        {k: versions[k] for k in deltas},
+    )
+
+
+async def copy_cut_blobs(
+    conn: Any, *, source_thread_id: str, target_thread_id: str, cut: ForkCheckpoint
+) -> None:
+    """Copy the plain channels' blobs at the cut's versions. Raises
+    ``StaleSource`` when one the state holds a value for is not there: the
+    fork would load without it."""
+    versions = {
+        k: v
+        for k, v in (cut.checkpoint.get("channel_versions") or {}).items()
+        if k not in cut.deltas
+    }
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            INSERT INTO checkpoint_blobs (thread_id, checkpoint_ns, channel, version, type, blob)
+            SELECT %(dst)s, b.checkpoint_ns, b.channel, b.version, b.type, b.blob
+            FROM checkpoint_blobs b
+            JOIN jsonb_each_text(%(versions)s::jsonb) v
+              ON v.key = b.channel AND v.value = b.version
+            WHERE b.thread_id = %(src)s AND b.checkpoint_ns = ''
+            ON CONFLICT DO NOTHING
+            RETURNING channel
+            """,
+            {"src": source_thread_id, "dst": target_thread_id, "versions": Json(versions)},
+        )
+        copied = {row["channel"] for row in await cur.fetchall()}
+    if missing := cut.required - copied:
+        logger.warning(
+            "[fork] cut %s of %s has no blob for %s", cut.checkpoint_id, source_thread_id, sorted(missing)
+        )
+        raise StaleSource(source_thread_id)
+
+
+async def copy_cut_writes(
+    conn: Any, *, source_thread_id: str, target_thread_id: str, checkpoint_id: str, run_map: dict[str, str]
+) -> None:
+    """Copy the cut's own writes, which a turn stopped there resumes from,
+    with the launches on ``messages`` pointed at the task runs' copies."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO checkpoint_writes (
+                thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel,
+                type, blob, task_path
+            )
+            SELECT %s, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob, task_path
+            FROM checkpoint_writes
+            WHERE thread_id = %s AND checkpoint_ns = '' AND checkpoint_id = %s
+            """,
+            (target_thread_id, source_thread_id, checkpoint_id),
+        )
+    if run_map:
+        await _remap_writes(conn, target_thread_id, "messages", [""], run_map, remap_launches)
 
 
 async def copy_checkpoint_chains(
@@ -220,12 +294,11 @@ async def copy_checkpoint_chains(
     target_thread_id: str,
     tips: Iterable[ChainTip],
     run_map: dict[str, str],
-    task_run_map: dict[str, str],
 ) -> int:
-    """Copy each tip's chain from ``source_thread_id`` into
+    """Copy each task lane's chain from ``source_thread_id`` into
     ``target_thread_id``, inside the caller's transaction, stamping
-    ``run_map``'s ids on the checkpoints and ``task_run_map``'s in the values
-    that name a task run. Returns how many checkpoints were copied."""
+    ``run_map``'s ids on the checkpoints and in the values that name a task
+    run. Returns how many checkpoints were copied."""
     tips = list(tips)
     if not tips:
         return 0
@@ -241,11 +314,10 @@ async def copy_checkpoint_chains(
         copied = cur.rowcount
         await cur.execute(_COPY_WRITES_SQL, params)
         await cur.execute(_COPY_BLOBS_SQL, params)
-    if task_run_map:
-        namespaces = sorted({t.checkpoint_ns for t in tips})
-        lanes = [ns for ns in namespaces if ns.startswith("task:")]
-        await _remap_channel(conn, target_thread_id, "messages", namespaces, task_run_map, remap_launches)
-        await _remap_channel(conn, target_thread_id, "ui", lanes, task_run_map, remap_ui_records)
+    if run_map:
+        lanes = sorted({t.checkpoint_ns for t in tips})
+        await _remap_channel(conn, target_thread_id, "messages", lanes, run_map, remap_launches)
+        await _remap_channel(conn, target_thread_id, "ui", lanes, run_map, remap_ui_records)
     return copied
 
 
@@ -257,7 +329,8 @@ async def _remap_channel(
     run_map: dict[str, str],
     remap: Callable[[Any, dict[str, str]], Any],
 ) -> None:
-    """Point a copied channel's values at the copies' task run ids.
+    """Point a copied channel's values, its writes and its blobs, at the
+    copies' task run ids.
 
     Replay finds the run a Task call started by the id on its launch artifact
     (``messages``), and TaskOutput finds a workflow's archived result by the
@@ -265,19 +338,41 @@ async def _remap_channel(
     copy has the new ids. Only values that change are rewritten; the rest keep
     their bytes.
     """
+    await _remap_writes(conn, target_thread_id, channel, namespaces, run_map, remap)
     if not namespaces:
         return
-    # The app saver's own serde, so a rewritten value reads back as written.
-    from src.server.utils.checkpoint_helpers import get_checkpointer
+    serde = _serde()
+    params = {"dst": target_thread_id, "nss": namespaces, "channel": channel, "ids": list(run_map)}
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_NAMING_BLOBS_SQL, params)
+        for b in await cur.fetchall():
+            blob = _remapped_blob(serde, b["type"], b["blob"], run_map, remap)
+            if blob is not None:
+                await cur.execute(
+                    """
+                    UPDATE checkpoint_blobs SET type = %s, blob = %s
+                    WHERE thread_id = %s AND checkpoint_ns = %s AND channel = %s
+                      AND version = %s
+                    """,
+                    (*blob, target_thread_id, b["checkpoint_ns"], channel, b["version"]),
+                )
 
-    serde = get_checkpointer().serde
+
+async def _remap_writes(
+    conn: Any,
+    target_thread_id: str,
+    channel: str,
+    namespaces: list[str],
+    run_map: dict[str, str],
+    remap: Callable[[Any, dict[str, str]], Any],
+) -> None:
+    if not namespaces:
+        return
+    serde = _serde()
     params = {"dst": target_thread_id, "nss": namespaces, "channel": channel, "ids": list(run_map)}
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(_NAMING_WRITES_SQL, params)
-        writes = await cur.fetchall()
-        await cur.execute(_NAMING_BLOBS_SQL, params)
-        blobs = await cur.fetchall()
-        for w in writes:
+        for w in await cur.fetchall():
             blob = _remapped_blob(serde, w["type"], w["blob"], run_map, remap)
             if blob is not None:
                 await cur.execute(
@@ -289,17 +384,13 @@ async def _remap_channel(
                     (*blob, target_thread_id, w["checkpoint_ns"], w["checkpoint_id"],
                      w["task_id"], w["idx"]),
                 )
-        for b in blobs:
-            blob = _remapped_blob(serde, b["type"], b["blob"], run_map, remap)
-            if blob is not None:
-                await cur.execute(
-                    """
-                    UPDATE checkpoint_blobs SET type = %s, blob = %s
-                    WHERE thread_id = %s AND checkpoint_ns = %s AND channel = %s
-                      AND version = %s
-                    """,
-                    (*blob, target_thread_id, b["checkpoint_ns"], channel, b["version"]),
-                )
+
+
+def _serde() -> Any:
+    """The app saver's own serde, so a rewritten value reads back as written."""
+    from src.server.utils.checkpoint_helpers import get_checkpointer
+
+    return get_checkpointer().serde
 
 
 def _remapped_blob(
@@ -477,63 +568,69 @@ async def plan_ledger(
     tip: Optional[str],
     copy_task_runs: bool,
 ) -> LedgerPlan:
-    """Read the turns' queries, settled responses and (``copy_task_runs``)
-    the finished background task runs they launched, and mint their copies'
-    ids, after ``check_source``. Writes nothing; meant for one repeatable-read
-    snapshot, so the reads agree with each other."""
+    """After ``check_source``, find the response that ended the newest kept
+    turn and (``copy_task_runs``) the finished background task runs the kept
+    turns launched, minting their copies' ids. Writes nothing; meant for one
+    repeatable-read snapshot, so the reads agree with each other."""
     await check_source(
         conn, source_thread_id=source_thread_id, read_through=read_through,
         run_horizon=run_horizon, tip=tip,
     )
     plan = LedgerPlan(source_thread_id=source_thread_id)
-    if not turn_indexes:
-        return plan
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT * FROM conversation_queries
-            WHERE conversation_thread_id = %s AND turn_index = ANY(%s)
-            ORDER BY turn_index
-            """,
-            (source_thread_id, turn_indexes),
-        )
-        plan.queries = await cur.fetchall()
-        await cur.execute(
-            """
-            SELECT * FROM conversation_responses
-            WHERE conversation_thread_id = %s AND turn_index = ANY(%s)
-              AND status <> 'in_progress' AND run_seq <= %s
-            ORDER BY run_seq
-            """,
-            (source_thread_id, turn_indexes, run_horizon),
-        )
-        plan.responses = await cur.fetchall()
-        _mint(plan.run_map, plan.responses, "conversation_response_id")
-        if plan.responses and copy_task_runs:
-            await _plan_task_runs(cur, source_thread_id, plan)
+        responses = []
+        if turn_indexes:
+            await cur.execute(
+                """
+                SELECT conversation_response_id, turn_index, run_seq, status
+                FROM conversation_responses
+                WHERE conversation_thread_id = %s AND turn_index = ANY(%s) AND run_seq <= %s
+                ORDER BY turn_index, run_seq
+                """,
+                (source_thread_id, turn_indexes, run_horizon),
+            )
+            responses = await cur.fetchall()
+        if responses:
+            plan.response_id = str(responses[-1]["conversation_response_id"])
+        settled = [str(r["conversation_response_id"]) for r in responses if r["status"] != "in_progress"]
+        # Even with no turn of its own kept: a fork's source made with tasks
+        # holds them for the turns it borrows.
+        if copy_task_runs:
+            await _plan_task_runs(cur, source_thread_id, settled, plan)
     return plan
 
 
-async def _plan_task_runs(cur: Any, source_thread_id: str, plan: LedgerPlan) -> None:
-    """The finished background task runs the copied turns launched, so the
+async def _plan_task_runs(
+    cur: Any, source_thread_id: str, response_ids: list[str], plan: LedgerPlan
+) -> None:
+    """The finished background task runs the kept turns launched, so the
     forked agent can resume a task its history names and its cards open.
 
     A task whose later runs belong to turns past the cut keeps only the runs
     before it, and its lane is copied to the newest of those runs' ends.
+
+    A source that is itself a fork holds the runs it was made with under no
+    parent, since the turns that launched them are borrowed. Each keeps its
+    original start, before the source existed, which no run of its own can
+    have; they all belong to turns before any cut of it, so they all carry.
     """
     await cur.execute(
         """
         SELECT * FROM subagent_runs
-        WHERE thread_id = %s AND parent_run_id = ANY(%s::uuid[])
-          AND status <> 'in_progress'
+        WHERE thread_id = %(t)s AND status <> 'in_progress'
+          AND (parent_run_id = ANY(%(parents)s::uuid[])
+               OR (parent_run_id IS NULL AND started_at < (
+                   SELECT created_at FROM conversation_threads
+                   WHERE conversation_thread_id = %(t)s)))
         ORDER BY started_at
         """,
-        (source_thread_id, list(plan.run_map)),
+        {"t": source_thread_id, "parents": response_ids},
     )
     runs = await cur.fetchall()
     if not runs:
         return
-    _mint(plan.run_map, runs, "task_run_id")
+    for r in runs:
+        plan.run_map[str(r["task_run_id"])] = str(uuid.uuid4())
     by_task: dict[str, list[dict[str, Any]]] = {}
     for r in runs:
         by_task.setdefault(r["task_id"], []).append(r)
@@ -549,83 +646,16 @@ async def _plan_task_runs(cur: Any, source_thread_id: str, plan: LedgerPlan) -> 
             plan.task_tips.append(ChainTip(f"task:{task['task_id']}", max(ends)))
 
 
-def _mint(run_map: dict[str, str], rows: list[dict[str, Any]], key: str) -> None:
-    for r in rows:
-        run_map[str(r[key])] = str(uuid.uuid4())
-
-
 def _json(value: Any) -> Optional[Json]:
     return Json(value) if value is not None else None
 
 
-async def write_ledger(conn: Any, plan: LedgerPlan, target_thread_id: str) -> int:
-    """Insert the planned copies into ``target_thread_id``, inside the
-    caller's transaction. Returns the last copied response's ``run_seq``
-    (0 for none)."""
-    ids = plan.run_map
-    last_run_seq = 0
+async def write_tasks(conn: Any, plan: LedgerPlan, target_thread_id: str) -> None:
+    """Insert the planned task copies into ``target_thread_id``, inside the
+    caller's transaction."""
     async with conn.cursor(row_factory=dict_row) as cur:
-        for q in plan.queries:
-            await cur.execute(
-                """
-                INSERT INTO conversation_queries (
-                    conversation_query_id, conversation_thread_id, turn_index,
-                    content, type, feedback_action, metadata, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(uuid.uuid4()), target_thread_id, q["turn_index"], q["content"],
-                    q["type"], q["feedback_action"], Json(q["metadata"] or {}), q["created_at"],
-                ),
-            )
-        for r in plan.responses:
-            new_id = ids[str(r["conversation_response_id"])]
-            metadata = {
-                k: v for k, v in (r["metadata"] or {}).items() if k not in _SOURCE_ONLY_RUN_KEYS
-            }
-            await cur.execute(
-                """
-                INSERT INTO conversation_responses (
-                    conversation_response_id, conversation_thread_id, turn_index,
-                    status, interrupt_reason, metadata, warnings, errors,
-                    execution_time, created_at, attempt_no, retry_of_run_id,
-                    cancel_requested_at, user_id, usage_settled_at, replay_facts
-                ) VALUES (%s, %s, %s, 'in_progress', %s, %s, %s, %s, %s, %s, %s, %s,
-                          NULL, %s, COALESCE(%s, NOW()), %s)
-                RETURNING run_seq
-                """,
-                (
-                    new_id, target_thread_id, r["turn_index"], r["interrupt_reason"],
-                    Json(metadata), r["warnings"], r["errors"], r["execution_time"],
-                    r["created_at"], r["attempt_no"], _remap(ids, r["retry_of_run_id"]),
-                    r["user_id"], r["usage_settled_at"],
-                    _json(_own_replay_facts(r["replay_facts"], plan.source_thread_id, target_thread_id)),
-                ),
-            )
-            last_run_seq = (await cur.fetchone())["run_seq"]
-            await _settle(cur, "conversation_responses", "conversation_response_id", new_id, r)
-        if plan.responses:
-            await _copy_provenance(cur, plan.source_thread_id, target_thread_id, ids)
         for task, runs in plan.tasks:
-            await _write_task(cur, target_thread_id, ids, task, runs)
-    return last_run_seq
-
-
-def _own_replay_facts(facts: Any, source_thread_id: str, target_thread_id: str) -> Any:
-    """A legacy turn's archived stream names the thread in each frame, which
-    replay keeps as stamped, so a copied frame is restamped with the fork's;
-    a frame naming any other thread is left alone."""
-    archive = facts.get(ARCHIVE_KEY) if isinstance(facts, dict) else None
-    if not isinstance(archive, list):
-        return facts
-    frames = [
-        {**f, "data": {**f["data"], "thread_id": target_thread_id}}
-        if isinstance(f, dict) and isinstance(f.get("data"), dict)
-        and f["data"].get("thread_id") == source_thread_id
-        else f
-        for f in archive
-    ]
-    return {**facts, ARCHIVE_KEY: frames}
+            await _write_task(cur, target_thread_id, plan.run_map, task, runs)
 
 
 def _remap(ids: dict[str, str], run_id: Any) -> Optional[str]:
@@ -642,38 +672,12 @@ async def _settle(cur: Any, table: str, key: str, row_id: str, source: dict[str,
     )
 
 
-async def _copy_provenance(
-    cur: Any, source_thread_id: str, target_thread_id: str, ids: dict[str, str]
-) -> None:
-    """The sources each copied run used, which its answer cites. Task-run ids
-    in the map match no response, so they select nothing. The thread filter
-    keeps the planner on the source's rows rather than a scan of every
-    thread's."""
-    await cur.execute(
-        """
-        INSERT INTO provenance_records (
-            conversation_response_id, conversation_thread_id, turn_index,
-            tool_call_id, source_type, identifier, title, detail,
-            args_fingerprint, args, result_sha256, result_size, result_snippet,
-            agent, provider, source_timestamp, created_at, emitted_at,
-            cost_credits, site
-        )
-        SELECT (m.value)::uuid, %s, p.turn_index,
-               p.tool_call_id, p.source_type, p.identifier, p.title, p.detail,
-               p.args_fingerprint, p.args, p.result_sha256, p.result_size,
-               p.result_snippet, p.agent, p.provider, p.source_timestamp,
-               p.created_at, p.emitted_at, p.cost_credits, p.site
-        FROM provenance_records p
-        JOIN jsonb_each_text(%s::jsonb) m ON (m.key)::uuid = p.conversation_response_id
-        WHERE p.conversation_thread_id = %s
-        """,
-        (target_thread_id, Json(ids), source_thread_id),
-    )
-
-
 async def _write_task(
     cur: Any, target_thread_id: str, ids: dict[str, str], task: dict[str, Any], runs: list[dict[str, Any]]
 ) -> None:
+    """One task and its runs. A run's launching turn stays the source's, so
+    the copy has no parent run: like a workflow's own children, it reports to
+    no turn of the fork."""
     await cur.execute(
         """
         INSERT INTO subagent_tasks (
@@ -696,11 +700,11 @@ async def _write_task(
                 cancel_requested_at, start_checkpoint_id, final_checkpoint_id,
                 failure, result_delivered_at, started_at, finalized_at,
                 user_id, usage_settled_at, replay_facts
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'in_progress', NULL, %s, %s, %s, %s, %s,
+            ) VALUES (%s, %s, %s, NULL, %s, %s, %s, 'in_progress', NULL, %s, %s, %s, %s, %s,
                       %s, %s, COALESCE(%s, NOW()), %s)
             """,
             (
-                new_id, target_thread_id, r["task_id"], ids[str(r["parent_run_id"])],
+                new_id, target_thread_id, r["task_id"],
                 r["launch_tool_call_id"], _remap(ids, r["predecessor_run_id"]), r["cause"],
                 r["start_checkpoint_id"], r["final_checkpoint_id"], _json(r["failure"]),
                 r["result_delivered_at"], r["started_at"], r["finalized_at"],
@@ -715,40 +719,18 @@ async def _write_task(
 
 
 async def finish_thread(
-    conn: Any,
-    thread_id: str,
-    *,
-    checkpoint_id: Optional[str],
-    last_run_seq: int,
-    llm_model: Optional[str],
-    shared_reader: Optional[str] = None,
+    conn: Any, thread_id: str, *, checkpoint_id: Optional[str], llm_model: Optional[str]
 ) -> None:
-    """Point the copy at its cut, keep the source's model, and mark the copied
-    runs seen: a fork opens read, not as a thread with news in it. In a shared
-    workspace a member reads by their own cursor, so the maker's
-    (``shared_reader``) is set too."""
+    """Point the fork at its snapshot and keep the source's model."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
             UPDATE conversation_threads
-            SET latest_checkpoint_id = %s, last_seen_run_seq = %s, llm_model = %s,
-                updated_at = NOW()
+            SET latest_checkpoint_id = %s, llm_model = %s, updated_at = NOW()
             WHERE conversation_thread_id = %s
             """,
-            (checkpoint_id, last_run_seq, llm_model, thread_id),
+            (checkpoint_id, llm_model, thread_id),
         )
-        if shared_reader is not None and last_run_seq:
-            await cur.execute(
-                """
-                INSERT INTO shared_thread_reads (conversation_thread_id, user_id, last_seen_run_seq)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (conversation_thread_id, user_id) DO UPDATE
-                   SET last_seen_run_seq = GREATEST(shared_thread_reads.last_seen_run_seq,
-                                                    EXCLUDED.last_seen_run_seq),
-                       updated_at = now()
-                """,
-                (thread_id, shared_reader, last_run_seq),
-            )
 
 
 async def claim_carry(thread_id: str) -> bool:
@@ -768,3 +750,4 @@ async def claim_carry(thread_id: str) -> bool:
             (thread_id,),
         )
         return cur.rowcount > 0
+

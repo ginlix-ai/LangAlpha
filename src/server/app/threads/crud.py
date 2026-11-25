@@ -1,5 +1,6 @@
 """Thread CRUD: list, get, update, delete, external-id stamp, market watch."""
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from uuid import UUID
@@ -81,7 +82,7 @@ from src.server.services.shared_workspaces.viewer import name_thread_senders
 
 from ._deps import logger, router
 from src.server.services.shared_workspaces.feed import reach_of
-from src.server.database.conversation import thread_reach
+from src.server.database.conversation import thread_reach, threads_read
 from src.server.database.conversation.senders import thread_creator
 
 
@@ -234,6 +235,33 @@ async def get_thread(thread_id: str, x_user_id: ReadUserId):
     if access.is_shared:
         await name_thread_senders([item], x_user_id)
     return item
+
+
+_FORK_CHECKS_AT_ONCE = 8
+
+
+@router.get("/{thread_id}/fork-count")
+async def get_fork_count(thread_id: str, x_user_id: ReadUserId):
+    """How many chats the caller can open show this thread's turns from it,
+    for the delete dialog. A fork another member keeps private is left out,
+    as the thread list leaves it out: its count would say it exists."""
+    await thread_access(thread_id, x_user_id)
+
+    async def readable(fork_id: str) -> bool:
+        try:
+            await thread_access(fork_id, x_user_id)
+        except HTTPException:
+            return False
+        return True
+
+    # A few at a time: each check takes a pool connection, and a popular
+    # thread can have many forks.
+    forks = await threads_read.borrowing_fork_ids(thread_id)
+    count = 0
+    for at in range(0, len(forks), _FORK_CHECKS_AT_ONCE):
+        batch = forks[at : at + _FORK_CHECKS_AT_ONCE]
+        count += sum(await asyncio.gather(*(readable(f) for f in batch)))
+    return {"count": count}
 
 
 @router.put("/{thread_id}/visibility")

@@ -4,6 +4,10 @@ Turns are read off the source's current branch by the same walk edit and
 regenerate use (``history.branch.branch_turns``), so a fork names turns by
 the ``turn_index`` the chat shows. The pointer and the run horizon are read in
 one snapshot; the copy refuses itself if a run rewrote a kept turn after it.
+
+A source that is itself a snapshot fork holds no state before its own first
+turn, so a cut there is refused: the chat that made those turns is where a
+fork of them starts.
 """
 
 from __future__ import annotations
@@ -13,9 +17,11 @@ from typing import Optional
 
 from src.server.database import thread_fork
 from src.server.database.conversation import threads_read
-from src.server.services.history.branch import branch_turns
+from src.server.services.history.branch import borrowing_of, branch_turns
 from src.server.services.forks.model import (
+    FORK_BORROWED,
     BeforeTurn,
+    Borrowing,
     Cut,
     ForkKind,
     ForkRefused,
@@ -45,13 +51,21 @@ class Snapshot:
     tip_read: Optional[str]
     #: A ``BeforeTurn`` cut's message.
     prefill: Optional[str]
+    #: The source's standing when it is a snapshot fork, whose borrowed
+    #: turns the fork borrows too.
+    source_borrow: Optional[Borrowing] = None
 
 
 async def take_snapshot(source_thread_id: str, cut: Cut, kind: ForkKind) -> Snapshot:
     if not isinstance(cut, kind.cuts):
         raise ForkRefused(400, "unsupported_cut", "This kind of copy can't start there.")
     branch = await threads_read.get_thread_branch_read(source_thread_id)
-    listing = await branch_turns(source_thread_id, branch.checkpoint_id)
+    source_borrow = borrowing_of(branch)
+    # Before the turns: a snapshot fork's branch lists only its own, so a
+    # borrowed cut would read as stale there.
+    if source_borrow is not None:
+        source_borrow.require_own(cut.turn_index, FORK_BORROWED)
+    listing = await branch_turns(source_thread_id, branch.checkpoint_id, borrow=source_borrow)
     turns = listing.turns
     # A turn that never checkpointed has no entry of its own: the next entry
     # stands for it, as for an edit, and forks from the same state.
@@ -111,4 +125,5 @@ async def take_snapshot(source_thread_id: str, cut: Cut, kind: ForkKind) -> Snap
         run_horizon=branch.run_horizon,
         tip_read=branch.checkpoint_id if from_tip else None,
         prefill=prefill,
+        source_borrow=source_borrow,
     )

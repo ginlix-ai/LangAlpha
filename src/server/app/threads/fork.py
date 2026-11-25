@@ -1,4 +1,4 @@
-"""POST /api/v1/threads/{thread_id}/fork — copy a chat into a new one from a turn."""
+"""POST /api/v1/threads/{thread_id}/fork — start a new chat from a turn of this one."""
 
 from typing import Optional
 
@@ -19,10 +19,12 @@ from .crud import get_thread
 async def fork_thread_endpoint(
     thread_id: str, request: ThreadForkRequest, principal: RunPrincipal
 ):
-    """A new thread holding this one's history up to ``turn_index``. It runs
-    nothing: the caller sends the fork's first message as any other. Answers
-    the new thread as ``GET /{thread_id}`` reads it, with ``turns_copied``
-    and, for a ``before_turn`` cut, the cut turn's message as ``prefill``."""
+    """A new thread carrying on from this one's state at ``turn_index``,
+    showing the turns before it from here. It runs nothing: the caller sends
+    the fork's first message as any other. Answers the new thread as
+    ``GET /{thread_id}`` reads it, with ``turns_borrowed`` (the turns it shows
+    from the chats it came from) and, for a ``before_turn`` cut, the cut
+    turn's message as ``prefill``."""
     refuse_computer(principal, "A computer's token cannot copy a chat")
     await _admit(thread_id, principal.user_id, request.platform)
     result = await fork_thread(
@@ -36,7 +38,7 @@ async def fork_thread_endpoint(
     )
     return {
         "thread": jsonable_encoder(await get_thread(result.thread_id, principal.user_id)),
-        "turns_copied": result.turns_copied,
+        "turns_borrowed": result.turns_borrowed,
         "prefill": result.prefill,
     }
 

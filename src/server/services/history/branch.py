@@ -2,12 +2,15 @@
 name them: by the ``turn_index`` the chat shows, each with the checkpoint an
 edit or a regenerate of it starts from."""
 
+from __future__ import annotations
+
 import logging
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from fastapi import HTTPException
 
 from src.server.database.conversation import queries as queries_db
+from src.server.database.conversation import threads_read
 from src.server.models.workflow import TurnCheckpointInfo
 from src.server.services.history.reader import pair_turns, turn_anchors
 from src.server.utils.checkpoint_helpers import (
@@ -15,6 +18,9 @@ from src.server.utils.checkpoint_helpers import (
     get_checkpointer,
     walk_current_branch_boundaries,
 )
+
+if TYPE_CHECKING:
+    from src.server.services.forks.model import Borrowing
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +33,40 @@ class BranchTurns(NamedTuple):
     unstarted: TurnCheckpointInfo | None
 
 
+async def read_borrowing(thread_id: str) -> Borrowing | None:
+    """The thread's standing on its sources when it is a snapshot fork, else
+    None (an ordinary thread, or a fork that copied its history and holds
+    every turn itself). For a caller with no thread row or branch read in
+    hand: one that has a branch read takes it from there (``borrowing_of``)."""
+    metadata = await threads_read.get_thread_metadata(thread_id)
+    return _borrowing((metadata or {}).get("fork"))
+
+
+def borrowing_of(branch: threads_read.ThreadBranchRead) -> Borrowing | None:
+    """``read_borrowing`` from the lineage a branch read carries, so an
+    operation that reads the branch reads the lineage with it."""
+    return _borrowing(branch.fork)
+
+
+def _borrowing(raw: object) -> Borrowing | None:
+    # Imported here: the lineage model imports this module.
+    from src.server.services.forks.model import ForkLineage
+
+    lineage = ForkLineage.parse(raw)
+    return lineage.borrow if lineage is not None else None
+
+
 async def branch_turns(
-    thread_id: str, branch_tip_checkpoint_id: str | None
+    thread_id: str,
+    branch_tip_checkpoint_id: str | None,
+    *,
+    borrow: Borrowing | None,
 ) -> BranchTurns:
+    """The thread's own turns on its current branch. A snapshot fork lists
+    none of its borrowed turns: it holds no checkpoint to edit or regenerate
+    them from, and a fork with no turn of its own yet lists none at all.
+    ``borrow`` is the thread's (``borrowing_of``), read by the caller with
+    the branch tip."""
     try:
         boundaries, tip_id = await walk_current_branch_boundaries(
             get_checkpointer(), thread_id, branch_tip_checkpoint_id
@@ -39,6 +76,9 @@ async def branch_turns(
         logger.error(f"[CHECKPOINT] Failed to list checkpoints for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve checkpoint history")
 
+    if borrow is not None:
+        # The snapshot is where the fork starts, never a turn's input.
+        boundaries = [b for b in boundaries if b.checkpoint_id != borrow.checkpoint_id]
     anchors = turn_anchors(boundaries, tip_id) if tip_id else []
     numbers = pair_turns(anchors, persisted)
     turns = [
@@ -54,6 +94,7 @@ async def branch_turns(
         )
         for anchor, turn_index in zip(anchors, numbers)
         if turn_index is not None
+        and (borrow is None or borrow.owns(turn_index))
     ]
     # A run that failed before its first step, an edit's included, leaves its
     # turn's rows past the branch's last boundary and nothing on the branch.
@@ -86,3 +127,4 @@ def stale_fork_detail() -> dict:
         "code": "stale_fork",
         "message": "This chat changed since it was loaded. Reload it and try again.",
     }
+

@@ -33,7 +33,7 @@ from src.server.database.pool import DATABASE_UNAVAILABLE
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 from src.server.services.shared_workspaces.access import ThreadWatch, thread_access
 from src.server.services.shared_workspaces.turn import TurnIdentity
-from src.server.services.shared_workspaces.viewer import name_steer_senders, name_turn_senders
+from src.server.services.shared_workspaces.viewer import name_steer_senders
 from src.server.database.shared_workspaces import is_holder
 from src.server.services.shared_workspaces.turns import (
     refuse_crossing_workspaces,
@@ -401,8 +401,18 @@ async def _settle_against_branch(
         settle_fork_request,
         settle_resume_request,
     )
+    from src.server.services.history.branch import read_borrowing
 
     try:
+        # Checked on its own: a request naming no checkpoint skips the
+        # settle below, and a borrowed turn has no rows here to rewrite.
+        # Before the settle, whose branch lists only the fork's own turns: a
+        # borrowed turn's number can ride the snapshot's own checkpoint,
+        # which forks a real turn.
+        if request.fork_from_turn is not None:
+            borrow = await read_borrowing(thread_id)
+            if borrow is not None:
+                borrow.require_own(request.fork_from_turn)
         if request.fork_from_turn is not None and request.checkpoint_id:
             return await settle_fork_request(thread_id, request)
         if request.hitl_response:
@@ -1102,6 +1112,8 @@ async def replay_thread_messages(
     - user_message: emitted once per turn_index (query content)
     - message_chunk/tool_* events: projected from checkpoints; a turn they
       cannot cover sends only its closing rows (``source=auto``)
+    - fork_divider: in a fork that shows its source's turns, once, after
+      them and before its own (``history/replay/borrowed.py``)
     - snapshot: cursors for the runs replay could not project (newest page only)
     - replay_done: terminal sentinel; on the newest page it also names the
       thread's newest run (``latest_run_id``), read before the transcript
@@ -1119,9 +1131,8 @@ async def replay_thread_messages(
         from src.server.services.history.replay import (
             CheckpointReplayUnavailable,
             PageBudget,
-            finish_lines,
-            read_replay_page,
         )
+        from src.server.services.history.replay.borrowed import read_thread_page
 
         budget = (
             PageBudget(min_turns=min_turns, max_bytes=max_bytes)
@@ -1129,8 +1140,11 @@ async def replay_thread_messages(
             else None
         )
         try:
-            page, resolved_source = await read_replay_page(
+            # A fork's turns before its own are read from the threads that
+            # hold them, as this viewer.
+            page = await read_thread_page(
                 rows,
+                x_user_id,
                 source=source,
                 before_turn=before_turn,
                 limit=limit,
@@ -1144,11 +1158,10 @@ async def replay_thread_messages(
 
         # After source selection and outside the stored lines: task artifacts
         # replay their spawn-time payload, so the card's status is stamped
-        # here from current liveness (see history/task_status.py).
-        replay_lines = page.lines
-        await finish_lines(thread_id, replay_lines)
-        if is_holder(rows.owner_id):
-            await name_turn_senders(thread_id, replay_lines)
+        # here from current liveness (see history/task_status.py), against
+        # the thread each part's turns belong to.
+        replay_lines = await page.finish()
+        resolved_source = page.source
         paged = limit is not None or before_turn is not None
 
         async def event_generator():
@@ -1502,13 +1515,16 @@ async def get_thread_turns(thread_id: str, x_user_id: ReadUserId):
     - retry_checkpoint_id: most recent checkpoint (for retrying after failure)
     """
     await thread_access(thread_id, x_user_id)
+    from src.server.database.conversation import threads_read
     from src.server.handlers.checkpoint_handler import (
         get_thread_turns as _get_thread_turns,
     )
-    from src.server.database.conversation import get_thread_checkpoint_id
+    from src.server.services.history.branch import borrowing_of
 
-    branch_tip = await get_thread_checkpoint_id(thread_id)
-    return await _get_thread_turns(thread_id, branch_tip_checkpoint_id=branch_tip)
+    branch = await threads_read.get_thread_branch_read(thread_id)
+    return await _get_thread_turns(
+        thread_id, branch_tip_checkpoint_id=branch.checkpoint_id, borrow=borrowing_of(branch)
+    )
 
 
 @router.post("/{thread_id}/retry")

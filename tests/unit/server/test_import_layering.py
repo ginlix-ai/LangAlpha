@@ -36,6 +36,9 @@ LEGACY_ALIASED_PATHS: dict[str, str] = {}
 # cross-worker story (src/server/AGENTS.md § Multi-worker review checklist).
 POSTGRES_SAVER_MODULE = "langgraph.checkpoint.postgres"
 ALLOWED_SAVER_IMPORTERS = {
+    # A fork's one checkpoint, written in the fork's own transaction under a
+    # thread id nothing names until it commits (``forks.service``).
+    "src/server/database/thread_fork.py",
     "src/server/services/thread_mutation.py",
     "src/server/services/writer_guard.py",
     "src/server/utils/checkpoint_helpers.py",

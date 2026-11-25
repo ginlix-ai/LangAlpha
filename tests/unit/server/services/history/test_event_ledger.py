@@ -92,6 +92,8 @@ LIVE_ONLY = {
     "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
     "history_page",  # paged replay header: oldest turn sent, older remain
+    "fork_divider",  # built at read time like history_page: where a fork's
+    # borrowed turns end and its own begin, with each source's current state
     "snapshot",  # read-time cursors for the runs replay could not project;
     # recomputed from ledger+Redis on every load, never replayed from a store
     "market_watch_update",  # transient stamp notice; the durable watchlist

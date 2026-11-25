@@ -76,105 +76,112 @@ async def get_replay_thread_data(thread_id: str) -> ThreadRows | None:
 
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            # 1. Owner check (join threads -> workspaces)
-            await cur.execute(
-                """SELECT w.user_id
-                   FROM conversation_threads t
-                   JOIN workspaces w ON w.workspace_id = t.workspace_id
-                   WHERE t.conversation_thread_id = %s""",
-                (thread_id,),
-            )
-            owner_row = await cur.fetchone()
-            owner_id = owner_row["user_id"] if owner_row else None
+            return await _read_thread_rows(cur, thread_id)
 
-            if owner_id is None:
-                return None
 
-            # 2. Thread summary, with its newest run. Read before the rows and
-            # checkpoints the replay shows, so a run that starts during the
-            # read is never named as one the client has seen.
-            await cur.execute(
-                """SELECT conversation_thread_id, workspace_id, current_status,
-                          thread_index, latest_checkpoint_id, created_at, updated_at,
-                          (SELECT r.conversation_response_id
-                           FROM conversation_responses r
-                           WHERE r.conversation_thread_id = t.conversation_thread_id
-                           ORDER BY r.run_seq DESC
-                           LIMIT 1) AS latest_run_id
-                   FROM conversation_threads t
-                   WHERE conversation_thread_id = %s""",
-                (thread_id,),
-            )
-            thread = await cur.fetchone()
-            if thread is None:
-                return None
+async def _read_thread_rows(cur: Any, thread_id: str) -> ThreadRows | None:
+    """``get_replay_thread_data`` on a cursor the caller holds, so a read
+    can share its transaction."""
+    # 1. Owner check (join threads -> workspaces)
+    await cur.execute(
+        """SELECT w.user_id
+           FROM conversation_threads t
+           JOIN workspaces w ON w.workspace_id = t.workspace_id
+           WHERE t.conversation_thread_id = %s""",
+        (thread_id,),
+    )
+    owner_row = await cur.fetchone()
+    owner_id = owner_row["user_id"] if owner_row else None
 
-            # 3. Queries, with the row version replay keys stored lines by
-            await cur.execute(
-                """SELECT *, xmin FROM conversation_queries
-                   WHERE conversation_thread_id = %s
-                   ORDER BY turn_index ASC""",
-                (thread_id,),
-            )
-            queries = [dict(r) for r in await cur.fetchall()]
+    if owner_id is None:
+        return None
 
-            # 4. The in_progress slots, by id alone: what each running turn's
-            # run is called, which its replay stub names and nothing reads.
-            # Read before the settled rows, since each read is its own
-            # snapshot: a run settling between the two then shows in one or
-            # both, where the other order would miss it in both.
-            await cur.execute(
-                """SELECT DISTINCT ON (turn_index) turn_index,
-                          conversation_response_id
-                   FROM conversation_responses
-                   WHERE conversation_thread_id = %s AND status = 'in_progress'
-                   ORDER BY turn_index ASC, attempt_no DESC""",
-                (thread_id,),
-            )
-            open_runs = {
-                r["turn_index"]: str(r["conversation_response_id"])
-                for r in await cur.fetchall()
-            }
+    # 2. Thread summary, with its newest run. Read before the rows and
+    # checkpoints the replay shows, so a run that starts during the
+    # read is never named as one the client has seen.
+    await cur.execute(
+        """SELECT conversation_thread_id, workspace_id, current_status,
+                  thread_index, latest_checkpoint_id, created_at, updated_at,
+                  metadata->'fork' AS fork,
+                  (SELECT r.conversation_response_id
+                   FROM conversation_responses r
+                   WHERE r.conversation_thread_id = t.conversation_thread_id
+                   ORDER BY r.run_seq DESC
+                   LIMIT 1) AS latest_run_id
+           FROM conversation_threads t
+           WHERE conversation_thread_id = %s""",
+        (thread_id,),
+    )
+    thread = await cur.fetchone()
+    if thread is None:
+        return None
 
-            # 4b. Responses — one settled row per turn; an in_progress slot or
-            # superseded attempt must never drive replay rendering. Without
-            # their replay facts: a turn replay projects afresh re-reads its
-            # row with them (see get_replay_responses).
-            await cur.execute(
-                _sql.settled_attempts(_sql._LIGHT_RESPONSE_COLUMNS),
-                (thread_id,),
-            )
-            responses = [dict(r) for r in await cur.fetchall()]
+    # 3. Queries, with the row version replay keys stored lines by
+    await cur.execute(
+        """SELECT *, xmin FROM conversation_queries
+           WHERE conversation_thread_id = %s
+           ORDER BY turn_index ASC""",
+        (thread_id,),
+    )
+    queries = [dict(r) for r in await cur.fetchall()]
 
-            # 5. Main-workflow usage rows (table-sourced credit_usage
-            # reconstruction). Background subagents persist additional
-            # msg_type='task' rows under the same response id, but the live
-            # credit_usage event represents the main workflow only.
-            await cur.execute(
-                """SELECT conversation_response_id, msg_type, token_usage,
-                          total_credits, created_at
-                   FROM conversation_usages
-                   WHERE conversation_thread_id = %s
-                     AND msg_type <> 'task'
-                   ORDER BY created_at ASC""",
-                (thread_id,),
-            )
-            usages = [dict(r) for r in await cur.fetchall()]
+    # 4. The in_progress slots, by id alone: what each running turn's
+    # run is called, which its replay stub names and nothing reads.
+    # Read before the settled rows, since each read is its own
+    # snapshot: a run settling between the two then shows in one or
+    # both, where the other order would miss it in both.
+    await cur.execute(
+        """SELECT DISTINCT ON (turn_index) turn_index,
+                  conversation_response_id
+           FROM conversation_responses
+           WHERE conversation_thread_id = %s AND status = 'in_progress'
+           ORDER BY turn_index ASC, attempt_no DESC""",
+        (thread_id,),
+    )
+    open_runs = {
+        r["turn_index"]: str(r["conversation_response_id"])
+        for r in await cur.fetchall()
+    }
 
-            # 6. Provenance rows (table-sourced provenance reconstruction)
-            await cur.execute(
-                f"""SELECT {PROVENANCE_READ_COLUMNS}
-                   FROM provenance_records
-                   WHERE conversation_thread_id = %s
-                   ORDER BY turn_index ASC,
-                            source_timestamp ASC NULLS LAST, created_at ASC""",
-                (thread_id,),
-            )
-            provenance = [dict(r) for r in await cur.fetchall()]
+    # 4b. Responses — one settled row per turn; an in_progress slot or
+    # superseded attempt must never drive replay rendering. Without
+    # their replay facts: a turn replay projects afresh re-reads its
+    # row with them (see get_replay_responses).
+    await cur.execute(
+        _sql.settled_attempts(_sql._LIGHT_RESPONSE_COLUMNS),
+        (thread_id,),
+    )
+    responses = [dict(r) for r in await cur.fetchall()]
 
-            # 7. Replay facts of the thread's runs, keyed by launching turn
-            await cur.execute(RUN_FACTS_SQL, (thread_id,))
-            run_facts = [dict(r) for r in await cur.fetchall()]
+    # 5. Main-workflow usage rows (table-sourced credit_usage
+    # reconstruction). Background subagents persist additional
+    # msg_type='task' rows under the same response id, but the live
+    # credit_usage event represents the main workflow only.
+    await cur.execute(
+        """SELECT conversation_response_id, msg_type, token_usage,
+                  total_credits, created_at
+           FROM conversation_usages
+           WHERE conversation_thread_id = %s
+             AND msg_type <> 'task'
+           ORDER BY created_at ASC""",
+        (thread_id,),
+    )
+    usages = [dict(r) for r in await cur.fetchall()]
+
+    # 6. Provenance rows (table-sourced provenance reconstruction)
+    await cur.execute(
+        f"""SELECT {PROVENANCE_READ_COLUMNS}
+           FROM provenance_records
+           WHERE conversation_thread_id = %s
+           ORDER BY turn_index ASC,
+                    source_timestamp ASC NULLS LAST, created_at ASC""",
+        (thread_id,),
+    )
+    provenance = [dict(r) for r in await cur.fetchall()]
+
+    # 7. Replay facts of the thread's runs, keyed by launching turn
+    await cur.execute(RUN_FACTS_SQL, (thread_id,))
+    run_facts = [dict(r) for r in await cur.fetchall()]
 
     return ThreadRows(
         thread_id=thread_id,
@@ -187,6 +194,99 @@ async def get_replay_thread_data(thread_id: str) -> ThreadRows | None:
         run_facts=run_facts,
         open_runs=open_runs,
     )
+
+
+@dataclass(frozen=True)
+class BorrowedRows:
+    """What a fork needs from a thread it borrows turns from, as of one
+    snapshot: whether the thread is still there, whether the borrowed turns
+    still read as the fork saw them, and when they do not, which of them
+    still do."""
+
+    present: bool
+    kept: bool
+    # The borrowed range's persisted turns ascending, each with whether it
+    # still reads as the fork saw it: answered by a run from before the fork
+    # and by none since. Read only when ``kept`` is False.
+    seen: list[tuple[int, bool]]
+    # The thread's replay rows, when asked for and the thread is present.
+    rows: ThreadRows | None
+
+
+async def get_borrowed_rows(
+    thread_id: str,
+    *,
+    response_id: str,
+    run_horizon: int,
+    first_turn: int,
+    through_turn: int,
+    with_rows: bool,
+) -> BorrowedRows:
+    """A borrowed segment's state and its thread's replay rows in one
+    REPEATABLE READ snapshot, so an edit of the source landing between the
+    two cannot pair a state that says nothing changed with rows that lost
+    the edited turns. The range is kept while the response that ended it
+    stands and no run past ``run_horizon`` answered a turn in it: a retry
+    keeps the attempt it follows, so the response alone does not show it. A
+    thread in a deleted workspace counts as gone."""
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return BorrowedRows(present=False, kept=False, seen=[], rows=None)
+    async with pool.get_db_connection() as conn, conn.transaction():
+        await conn.execute(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+        )
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """SELECT EXISTS (
+                              SELECT 1 FROM conversation_responses
+                              WHERE conversation_response_id = %(rid)s
+                                AND conversation_thread_id = %(t)s)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM conversation_responses
+                              WHERE conversation_thread_id = %(t)s
+                                AND turn_index BETWEEN %(first)s AND %(through)s
+                                AND run_seq > %(horizon)s) AS kept
+                   FROM conversation_threads t
+                   JOIN workspaces w ON w.workspace_id = t.workspace_id
+                   WHERE t.conversation_thread_id = %(t)s
+                     AND w.status <> 'deleted'""",
+                {
+                    "t": thread_id,
+                    "rid": normalize_uuid(response_id),
+                    "first": first_turn,
+                    "through": through_turn,
+                    "horizon": run_horizon,
+                },
+            )
+            head = await cur.fetchone()
+            if head is None:
+                return BorrowedRows(present=False, kept=False, seen=[], rows=None)
+            seen: list[tuple[int, bool]] = []
+            if not head["kept"]:
+                await cur.execute(
+                    """SELECT q.turn_index,
+                              COALESCE((
+                                  SELECT MAX(r.run_seq) <= %(horizon)s
+                                  FROM conversation_responses r
+                                  WHERE r.conversation_thread_id = %(t)s
+                                    AND r.turn_index = q.turn_index), FALSE) AS seen
+                       FROM (SELECT DISTINCT turn_index
+                             FROM conversation_queries
+                             WHERE conversation_thread_id = %(t)s
+                               AND turn_index BETWEEN %(first)s AND %(through)s
+                       ) q
+                       ORDER BY q.turn_index""",
+                    {
+                        "t": thread_id,
+                        "horizon": run_horizon,
+                        "first": first_turn,
+                        "through": through_turn,
+                    },
+                )
+                seen = [(r["turn_index"], r["seen"]) for r in await cur.fetchall()]
+            rows = await _read_thread_rows(cur, thread_id) if with_rows else None
+    return BorrowedRows(present=True, kept=head["kept"], seen=seen, rows=rows)
 
 
 async def get_replay_responses(response_ids: list[str]) -> dict[str, dict]:
