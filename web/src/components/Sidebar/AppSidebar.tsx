@@ -14,6 +14,8 @@ import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
 import type { NavWorkspace } from '@/pages/ChatAgent/hooks/useNavigationData';
 import AccountMenu from './AccountMenu';
+import { draftKeys } from '@/lib/composerDrafts';
+import { DraftPencil } from '@/components/ui/draft-mark';
 import { useChatRoute } from './useChatRoute';
 import { paletteKeyShortcuts, paletteShortcut, useCommandPalette } from '../CommandPalette/CommandPaletteProvider';
 import { useOpenCreateWorkspace } from '../CreateWorkspaceHost';
@@ -22,6 +24,13 @@ import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { GettingStartedGate } from '@/pages/Onboarding';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './sidebarWidth';
 import './Sidebar.css';
+
+/** The pages whose own composer keeps a draft, which their item points at
+ *  while you are elsewhere. */
+const PAGE_DRAFTS: Record<string, string> = {
+  '/dashboard': draftKeys.dashboard,
+  '/market': draftKeys.market,
+};
 
 interface NavigationLike {
   canGoBack: boolean;
@@ -310,6 +319,11 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
             >
               <Icon className="sidebar-panel-item-icon" />
               <span>{t(item.labelKey)}</span>
+              {PAGE_DRAFTS[item.key] && (
+                <span className="ml-auto flex items-center">
+                  <DraftPencil draftKey={PAGE_DRAFTS[item.key]} />
+                </span>
+              )}
             </button>
           );
         })}

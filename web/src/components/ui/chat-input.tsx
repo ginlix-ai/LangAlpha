@@ -54,6 +54,7 @@ import { useQuoteTokens } from './chat-input.useQuoteTokens';
 import { useSlashCommands } from './chat-input.useSlashCommands';
 import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
 import { useFileAttachments } from './chat-input.useFileAttachments';
+import { useComposerDraft } from './chat-input.useDraft';
 import { useDeviceTuningLift } from './chat-input.useDeviceTuningLift';
 import { readSubagentsDefault } from '@/lib/subagentsDefault';
 import { readGivenBack, spellOutQuotes } from './chat-input.quoteTokens';
@@ -225,6 +226,14 @@ export interface ChatInputProps {
    * its identity while nothing in it changes, as the memo below relies on.
    */
   notices?: ComposerNotices | null;
+  /**
+   * Where what is written here is kept unsent (`lib/composerDrafts`' `draftKeys`),
+   * so leaving and coming back finds it in the box. A host that keeps this
+   * composer mounted out of sight clears it meanwhile, so the draft shows in
+   * one box at a time; a key that changes while set is the same message under
+   * a new name, and the draft moves with it. Unset, nothing is kept.
+   */
+  draftKey?: string | null;
 }
 
 /* --- MAIN COMPONENT --- */
@@ -290,6 +299,7 @@ function ChatInput({
   header = null,
   deck = null,
   notices = null,
+  draftKey = null,
   ref,
 }: ChatInputProps & { ref?: React.Ref<ChatInputHandle> }) {
   const { t } = useTranslation();
@@ -317,7 +327,7 @@ function ChatInput({
   const targetWorkspaceRef = useRef<string | null>(null);
   const {
     attachedFiles, uploadingCount, failedCount, isDragging,
-    handleFiles, retryFile, restoreFiles, removeFile, discardFiles, takeFiles, holdsStale,
+    handleFiles, retryFile, restoreFiles, removeFile, discardFiles, takeFiles, holdsStale, forgetFiles,
     onDragEnter, onDragOver, onDragLeave, onDrop, handlePaste,
   } = useFileAttachments({ disabled, workspaceIdRef: targetWorkspaceRef, workspaceId: slashWorkspaceId ?? null });
   const [watchMode, setWatchMode] = useState(false);
@@ -467,6 +477,25 @@ function ChatInput({
   const {
     heldMentions, quotes, chips, addQuote, handleSelect, handleQuotePress, handleKeyDown: tokenKeyDown, keepWhole,
   } = useQuoteTokens({ textareaRef, message, setMessage, mentions, draftTokens, pruneDraft });
+
+  // A draft replaces the box's words outright: `giveBack` appends to them,
+  // numbering its quotes after those already there.
+  const fillDraft = useCallback((draft: Pick<ComposerDraft, 'text' | 'mentions' | 'commands'>) => {
+    setMessage(draft.text);
+    setMentionedFiles(draft.mentions);
+    resetSlash();
+    restoreSlash(draft.commands);
+  }, [setMentionedFiles, resetSlash, restoreSlash]);
+  const { dropDraft, restoringFiles } = useComposerDraft({
+    draftKey,
+    text: message,
+    mentions: heldMentions,
+    commands: slashCommands,
+    files: attachedFiles,
+    fill: fillDraft,
+    restoreFiles,
+    forgetFiles,
+  });
 
   // Voice input (speech recognition) — see chat-input.useVoiceInput.
   const { isListening, toggleListening, stopListening, abandonListening } = useVoiceInput({ message, setMessage, isLoading });
@@ -745,8 +774,11 @@ function ChatInput({
   // --- Send ---
   const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || chips.length > 0 || widgetSnapshots.length > 0 || hasExternalContext;
   // A file still uploading has nothing to send yet, and a failed one is never
-  // dropped unseen: either holds the send until it is ready or removed.
-  const filesHold = uploadingCount > 0 || failedCount > 0;
+  // dropped unseen: either holds the send until it is ready or removed, and
+  // says so. A draft's files still on their way back hold it too, for the
+  // moment that takes.
+  const uploadsHold = uploadingCount > 0 || failedCount > 0;
+  const filesHold = uploadsHold || restoringFiles;
 
   /** Whether it sent. */
   const handleSend = useCallback((): boolean => {
@@ -785,6 +817,7 @@ function ChatInput({
       const blocks = chips.map((f) => formatContextBlock(f, t));
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
+    dropDraft();
     onSend({
       text: message,
       files: readyAttachments,
@@ -815,7 +848,7 @@ function ChatInput({
     return true;
   }, [hasContent, disabled, sendHeld, filesHold, message, effectiveMarketWatch, draftSubagents, discardFiles, takeFiles, onSend, onAction,
     heldMentions, quotes, chips, resetMentions, slashCommands, resetSlash,
-    sentModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, t]);
+    sentModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, dropDraft, t]);
   useEffect(() => {
     holdsRef.current = filesHold;
     sendRef.current = () => {
@@ -1258,7 +1291,7 @@ function ChatInput({
                 />
               )}
               {/* Also beside Stop: Enter steering a running turn waits on the files too. */}
-              {filesHold && <FilesHoldHint uploading={uploadingCount} failed={failedCount} />}
+              {uploadsHold && <FilesHoldHint uploading={uploadingCount} failed={failedCount} />}
               <SendStopButton
                 running={isLoading || isCompacting}
                 canSend={!!hasContent && !disabled && !sendHeld && !filesHold}

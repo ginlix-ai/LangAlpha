@@ -6,6 +6,7 @@ import { useChatInput } from '../hooks/useChatInput';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileFabChat } from '@/components/ui/mobile-fab-chat';
 import { staggerDelay } from '@/lib/motion';
+import { draftKeys } from '@/lib/composerDrafts';
 
 /**
  * Floating chat input wrapper for dashboard.
@@ -61,6 +62,7 @@ function ChatInputCard() {
           <ChatInput
             ref={chatInputRef}
             onSend={handleMobileSend}
+            draftKey={draftKeys.dashboard}
             disabled={isLoading}
             scope={scope}
             onScopeChange={setScope}
@@ -113,6 +115,7 @@ function ChatInputCard() {
           <ChatInput
             ref={chatInputRef}
             onSend={sendComposer}
+            draftKey={draftKeys.dashboard}
             disabled={isLoading}
             scope={scope}
             onScopeChange={setScope}

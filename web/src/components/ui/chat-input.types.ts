@@ -5,7 +5,8 @@ import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/
 export type TileUpload =
   /** `percent` sent; null once the bytes are in and the server is storing them. */
   | { status: 'uploading'; percent: number | null }
-  | { status: 'ready'; attachmentId: string }
+  /** `readyAt`: when the server had it, which its expiry counts from. */
+  | { status: 'ready'; attachmentId: string; readyAt: number }
   | { status: 'failed'; failure: UploadFailure };
 
 /**
@@ -116,6 +117,18 @@ export interface ReadyAttachment {
   attachmentId: string;
   type: string;
   /** When the server had it ready, which its expiry counts from; unknown is now. */
+  readyAt?: number;
+}
+
+/** A file coming back to the composer: given back by a send, or kept in a
+ *  draft under its tile's `id`. With an `attachmentId` the server holds it
+ *  still; without one it uploads again. */
+export interface HeldFile {
+  id?: string;
+  file: File;
+  type: string;
+  attachmentId?: string;
+  /** When the server had it ready; unknown is now. */
   readyAt?: number;
 }
 

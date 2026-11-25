@@ -54,6 +54,7 @@ import { ArtifactCommentSendContext } from '../ChatAgent/components/artifactComm
 import type { ChatCommentSends } from '../ChatAgent/components/artifactComments/useChatCommentSends';
 import type { ArtifactCommentRef } from '../ChatAgent/components/artifactComments/artifactCommentReply';
 import { layerAskContext } from './utils/layerAsk';
+import { draftKeys } from '@/lib/composerDrafts';
 
 // Stable identity for the pre-data render, so the reconcile effect's
 // `workspaces` dependency doesn't change on every render before the fetch
@@ -704,6 +705,7 @@ function MarketViewInner() {
             )}
             <ChatInput
               onSend={(send: ComposerSend) => { void handleSendMessage(send.message, send.files, [], send.modelOptions); setChatExpanded(false); }}
+              draftKey={draftKeys.market}
               scope={scope}
               onScopeChange={pickScope}
               model={threadModel.model}

@@ -52,6 +52,7 @@ import { motion, AnimatePresence } from '@/lib/framer';
 import { DURATION, EASE_OUT, TWEEN } from '@/lib/motion';
 import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
 import { useBrowserViews } from './filePanel/useBrowserView';
+import { draftKeys } from '@/lib/composerDrafts';
 
 /** Placeholder rows while the list is read: the first screen's worth. */
 const THREAD_SKELETON_ROWS = 5;
@@ -719,7 +720,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             {/* Chat Input */}
             <div className="w-full relative z-20">
               <ChatInput
+                // Each workspace keeps its own new thread's draft.
+                key={workspaceId}
                 ref={chatInputRef}
+                draftKey={draftKeys.newThread(workspaceId)}
                 onSend={({ message, files, commands, modelOptions }: ComposerSend) => handleSendMessage(message, files, commands, modelOptions)}
                 disabled={isSendingMessage || !workspaceId}
                 files={ownFiles}

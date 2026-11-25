@@ -20,6 +20,7 @@ import { ConversationConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import './ConversationWidget.css';
 import { STAGGER } from '@/lib/motion';
+import { draftKeys } from '@/lib/composerDrafts';
 
 type ConversationConfig = Record<string, never>;
 
@@ -157,6 +158,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
         >
           <ChatInput
             onSend={({ message, files, commands, modelOptions }) => handleSend(message, files, commands, modelOptions)}
+            draftKey={draftKeys.dashboard}
             disabled={isLoading}
             scope={scope}
             onScopeChange={setScope}
