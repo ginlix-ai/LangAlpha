@@ -34,6 +34,7 @@ from ptc_agent.config.core import (
     DockerConfig,
     ResourceTier,
 )
+from ptc_agent.core.sandbox._shared import TOOLSET_SOURCE_DIR, package_files
 from ptc_agent.core.sandbox.providers import _docker_image as docker_image
 from ptc_agent.core.sandbox.providers import docker as docker_provider
 from ptc_agent.core.sandbox.providers._tiers import parse_memory
@@ -688,7 +689,13 @@ class TestDockerProvider:
 
         assert "fileobj" in build_kwargs
         with tarfile.open(fileobj=build_kwargs["fileobj"], mode="r") as tar:
-            assert tar.getnames() == ["Dockerfile.sandbox"]
+            # The Dockerfile and the toolset runtime it copies in, nothing else.
+            names = tar.getnames()
+        assert names[0] == "Dockerfile.sandbox"
+        assert names[1:] == [
+            f"src/ptc_agent/core/sandbox/toolset_runtime/{path.name}"
+            for path in package_files(TOOLSET_SOURCE_DIR)
+        ]
         assert build_kwargs["path_dockerfile"] == "Dockerfile.sandbox"
         assert build_kwargs["tag"] == "test-sandbox:latest"
         assert build_kwargs["stream"] is True

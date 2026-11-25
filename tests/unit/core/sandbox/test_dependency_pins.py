@@ -131,12 +131,12 @@ async def test_every_install_command_quotes_the_list():
     from unittest.mock import AsyncMock, MagicMock
 
     from ptc_agent.core.sandbox import mcp_setup
-    from ptc_agent.core.sandbox.providers._image_recipe import Run, image_steps
+    from ptc_agent.core.sandbox.providers._image_recipe import Run, image_recipe
 
     assert any(">" in d for d in DEFAULT_DEPENDENCIES)
     recipe = next(
         command
-        for step in image_steps(working_dir="/home/workspace", mcp_packages=None, cpu=2)
+        for step in image_recipe(working_dir="/home/workspace", mcp_packages=None, cpu=2).steps
         if isinstance(step, Run)
         for command in step.commands
         if "uv pip install --system" in command

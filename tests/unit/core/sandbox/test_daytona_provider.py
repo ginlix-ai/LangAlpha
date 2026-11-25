@@ -11,11 +11,14 @@ Covers:
 - DaytonaProvider.is_transient_error() classifies errors correctly
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from daytona.common.snapshot import PaginatedSnapshots, Snapshot
+from daytona_api_client import SnapshotState
 
 from ptc_agent.config.core import DaytonaConfig
 from ptc_agent.core.sandbox._defaults import SANDBOX_IMAGE_ENV, sandbox_thread_env
@@ -24,6 +27,21 @@ from ptc_agent.core.sandbox.runtime import (
     RuntimeState,
     SandboxGoneError,
 )
+
+
+def _snapshot(name: str, state: str, day: int = 1) -> Snapshot:
+    return Snapshot.model_construct(
+        name=name,
+        state=SnapshotState(state),
+        created_at=datetime(2026, 11, day, tzinfo=UTC),
+        error_reason=None,
+    )
+
+
+def _page(*snapshots: Snapshot, page: int = 1, total_pages: int = 1) -> PaginatedSnapshots:
+    return PaginatedSnapshots.model_construct(
+        items=list(snapshots), total=len(snapshots), page=page, total_pages=total_pages
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -509,23 +527,16 @@ class TestDaytonaProvider:
         hash so the stale-sized snapshot isn't silently reused."""
         from daytona import Resources
 
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+        provider = self._snapshot_provider()
 
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
+        def family(cpu):
+            return provider._image_name(
+                ["pkg-a"], "standard", Resources(cpu=cpu, memory=1, disk=3)
+            ).family
 
-        baseline = provider._get_snapshot_hash(
-            ["pkg-a"], resources=Resources(cpu=1, memory=1, disk=3)
-        )
-        retuned_cpu = provider._get_snapshot_hash(
-            ["pkg-a"], resources=Resources(cpu=2, memory=1, disk=3)
-        )
         # Same resources, same packages -> stable (deterministic cache key).
-        stable = provider._get_snapshot_hash(
-            ["pkg-a"], resources=Resources(cpu=1, memory=1, disk=3)
-        )
-        assert baseline == stable
-        assert baseline != retuned_cpu
+        assert family(1) == family(1)
+        assert family(1) != family(2)
 
     def test_snapshot_hash_covers_image_env(self):
         """An env-only edit must move the hash. Nothing else in the hash changes
@@ -534,28 +545,22 @@ class TestDaytonaProvider:
         is never built (NODE_PATH shipped dead this way)."""
         from daytona import Resources
 
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
-
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
+        provider = self._snapshot_provider()
         res = Resources(cpu=1, memory=1, disk=3)
 
-        baseline = provider._get_snapshot_hash([], resources=res)
+        baseline = provider._image_name([], "standard", res).family
         with patch(
             "ptc_agent.core.sandbox.providers._image_recipe.SANDBOX_IMAGE_ENV",
             {**SANDBOX_IMAGE_ENV, "NEW_VAR": "/somewhere"},
         ):
-            with_added = provider._get_snapshot_hash([], resources=res)
+            with_added = provider._image_name([], "standard", res).family
 
         assert baseline != with_added
 
     def test_snapshot_image_bakes_every_shared_env_var(self):
         """Both delivery layers carry the same values: the image ENV here, and
         the create-time injection in PTCSandbox._build_sandbox_env_vars."""
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
-
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
+        provider = self._snapshot_provider()
 
         dockerfile = provider._create_snapshot_image([]).dockerfile()
         for key, value in SANDBOX_IMAGE_ENV.items():
@@ -568,10 +573,7 @@ class TestDaytonaProvider:
         magnitude. A snapshot is per tier, so the image can carry the number."""
         from daytona import Resources
 
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
-
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
+        provider = self._snapshot_provider()
 
         dockerfile = provider._create_snapshot_image(
             [], resources=Resources(cpu=4, memory=8, disk=10)
@@ -598,16 +600,7 @@ class TestDaytonaProvider:
         retune yields a new snapshot instead of reusing the stale-sized one."""
         from daytona import Resources
 
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
-
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
-        provider._config = DaytonaConfig(api_key="test-key")
-
-        client = AsyncMock()
-        client.snapshot.list = AsyncMock(return_value=MagicMock(items=[]))
-        client.snapshot.create = AsyncMock()
-        provider._client = client
+        provider = self._snapshot_provider()
 
         name_small = await provider._ensure_snapshot(
             ["pkg"], tier="performance",
@@ -625,14 +618,7 @@ class TestDaytonaProvider:
     async def test_prebuilt_snapshot_name_is_the_one_create_looks_for(self):
         """scripts/daytona_snapshots.py builds what ``snapshot_name`` says; a
         sandbox only starts from it if create asks for the same name."""
-        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
-
-        provider = DaytonaProvider.__new__(DaytonaProvider)
-        provider._working_dir = "/home/workspace"
-        provider._config = DaytonaConfig(api_key="test-key", snapshot_name="la")
-        client = AsyncMock()
-        client.snapshot.list = AsyncMock(return_value=MagicMock(items=[]))
-        provider._client = client
+        provider = self._snapshot_provider(snapshot_name="la")
 
         for tier in provider._config.resource_tiers:
             _, resources = provider._resolve_tier(tier)
@@ -643,14 +629,38 @@ class TestDaytonaProvider:
             assert asked.startswith(f"la-{tier}-")
 
     @staticmethod
-    def _snapshot_provider(client):
+    def _snapshot_provider(client=None, **config):
+        """A provider whose organization has no snapshots until a test lists some."""
+        from daytona import DaytonaNotFoundError
+
         from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
 
         provider = DaytonaProvider.__new__(DaytonaProvider)
         provider._working_dir = "/home/workspace"
-        provider._config = DaytonaConfig(api_key="test-key")
-        provider._client = client
+        provider._config = DaytonaConfig(api_key="test-key", **config)
+        provider._client = client or AsyncMock()
+        provider._client.snapshot.get = AsyncMock(side_effect=DaytonaNotFoundError("absent"))
+        provider._client.snapshot.list = AsyncMock(return_value=_page())
         return provider
+
+    def _wanted(self, provider, packages=("pkg",)):
+        choice, resources = provider._resolve_tier(None)
+        wanted = provider._image_name(list(packages), choice.name, resources)
+        return wanted, choice, resources
+
+    @pytest.mark.asyncio
+    async def test_an_active_snapshot_costs_one_lookup(self):
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        client.snapshot.get = AsyncMock(return_value=_snapshot(str(wanted), "active"))
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == str(wanted)
+        client.snapshot.get.assert_awaited_once_with(str(wanted))
+        client.snapshot.list.assert_not_awaited()
+        client.snapshot.create.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("listed", ["pending", "pulling", "building", "snapshotting"])
@@ -660,13 +670,11 @@ class TestDaytonaProvider:
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         client = AsyncMock()
         provider = self._snapshot_provider(client)
-        choice, resources = provider._resolve_tier(None)
-        name = provider.snapshot_name(["pkg"])
-        client.snapshot.list = AsyncMock(
-            return_value=MagicMock(items=[SimpleNamespace(name=name, state=listed)])
-        )
+        wanted, choice, resources = self._wanted(provider)
+        name = str(wanted)
+        client.snapshot.list = AsyncMock(return_value=_page(_snapshot(name, listed)))
         client.snapshot.get = AsyncMock(
-            side_effect=[SimpleNamespace(state=listed), SimpleNamespace(state="active")]
+            side_effect=[_snapshot(name, listed), _snapshot(name, "active")]
         )
 
         got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
@@ -680,17 +688,22 @@ class TestDaytonaProvider:
     async def test_a_name_another_build_took_is_used_only_once_active(
         self, settles, usable, monkeypatch
     ):
+        from daytona import DaytonaNotFoundError
+
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         client = AsyncMock()
         provider = self._snapshot_provider(client)
-        choice, resources = provider._resolve_tier(None)
-        name = provider.snapshot_name(["pkg"])
-        client.snapshot.list = AsyncMock(return_value=MagicMock(items=[]))
+        wanted, choice, resources = self._wanted(provider)
+        name = str(wanted)
         client.snapshot.create = AsyncMock(
             side_effect=RuntimeError(f"Snapshot with name {name} already exists")
         )
         client.snapshot.get = AsyncMock(
-            side_effect=[SimpleNamespace(state="pending"), SimpleNamespace(state=settles)]
+            side_effect=[
+                DaytonaNotFoundError("absent"),
+                _snapshot(name, "pending"),
+                _snapshot(name, settles),
+            ]
         )
 
         got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
@@ -704,38 +717,234 @@ class TestDaytonaProvider:
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         client = AsyncMock()
         provider = self._snapshot_provider(client)
-        choice, resources = provider._resolve_tier(None)
-        name = provider.snapshot_name(["pkg"])
-        client.snapshot.list = AsyncMock(
-            return_value=MagicMock(items=[SimpleNamespace(name=name, state="inactive")])
+        wanted, choice, resources = self._wanted(provider)
+        name = str(wanted)
+        client.snapshot.activate = AsyncMock(return_value=_snapshot(name, "pending"))
+        client.snapshot.get = AsyncMock(
+            side_effect=[_snapshot(name, "inactive"), _snapshot(name, "active")]
         )
-        client.snapshot.activate = AsyncMock(return_value=SimpleNamespace(state="pending"))
-        client.snapshot.get = AsyncMock(return_value=SimpleNamespace(state="active"))
 
         got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
 
         assert got == name
         client.snapshot.activate.assert_awaited_once_with(name)
+        client.snapshot.list.assert_not_awaited()
         client.snapshot.create.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_name_another_build_took_that_settles_inactive_is_not_used(
         self, monkeypatch
     ):
+        from daytona import DaytonaNotFoundError
+
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         client = AsyncMock()
         provider = self._snapshot_provider(client)
-        choice, resources = provider._resolve_tier(None)
-        name = provider.snapshot_name(["pkg"])
-        client.snapshot.list = AsyncMock(return_value=MagicMock(items=[]))
+        wanted, choice, resources = self._wanted(provider)
+        name = str(wanted)
         client.snapshot.create = AsyncMock(
             side_effect=RuntimeError(f"Snapshot with name {name} already exists")
         )
-        client.snapshot.get = AsyncMock(return_value=SimpleNamespace(state="inactive"))
+        client.snapshot.get = AsyncMock(
+            side_effect=[DaytonaNotFoundError("absent"), _snapshot(name, "inactive")]
+        )
 
         got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
 
         assert got is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_snapshot_is_removed_and_built_again(self, monkeypatch):
+        from daytona import DaytonaNotFoundError
+
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        name = str(wanted)
+        client.snapshot.get = AsyncMock(
+            side_effect=[_snapshot(name, "build_failed"), DaytonaNotFoundError("gone")]
+        )
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == name
+        client.snapshot.delete.assert_awaited_once_with(name)
+        assert client.snapshot.create.await_args.args[0].name == name
+
+    def test_a_snapshot_is_named_by_its_base_and_its_toolset(self, monkeypatch):
+        """A new table moves only the tag; a new base moves the family."""
+        from ptc_agent.core.sandbox.providers import _image_recipe
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+        from ptc_agent.core.sandbox.toolset_runtime import units
+
+        provider = self._snapshot_provider()
+        wanted, _, resources = self._wanted(provider)
+        assert re.fullmatch(r"ptc-base-standard-[0-9a-f]{8}", wanted.family)
+        assert wanted.tag == f"{units.load().revision}-{units.version()[:8]}"
+        assert provider.snapshot_name(["pkg"], tier="standard") == str(wanted)
+
+        monkeypatch.setattr(_image_recipe, "toolset_tag", lambda: "1-01234567")
+        bumped = provider._image_name(["pkg"], "standard", resources)
+        assert bumped == ImageName(wanted.family, "1-01234567")
+        assert provider._image_name(["other"], "standard", resources).family != bumped.family
+
+        # Without resources the family has no tier, as before.
+        assert re.fullmatch(
+            r"ptc-base-[0-9a-f]{8}", provider._image_name(["pkg"], "standard", None).family
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_create_takes_the_newest_snapshot_of_its_base(self, monkeypatch):
+        """No snapshot for the exact pair: the newest active one with the same
+        base serves, and nothing is built on the person's create."""
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        other, _, _ = self._wanted(provider, ["other"])
+        family = wanted.family
+        client.snapshot.list = AsyncMock(
+            return_value=_page(
+                _snapshot(str(ImageName(family, "1-aaaaaaa1")), "active", 1),
+                _snapshot(str(ImageName(family, "1-aaaaaaa3")), "build_failed", 4),
+                _snapshot(str(ImageName(family, "1-aaaaaaa2")), "active", 3),
+                _snapshot(str(ImageName(family, "1-aaaaaaa4")), "building", 5),
+                _snapshot(str(ImageName(other.family, "1-aaaaaaa5")), "active", 6),
+                _snapshot(f"{ImageName(family, '1-aaaaaaa6')}-x", "active", 7),
+            )
+        )
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == str(ImageName(family, "1-aaaaaaa2"))
+        client.snapshot.create.assert_not_awaited()
+        client.snapshot.get.assert_awaited_once_with(str(wanted))
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_snapshot_of_the_base_is_activated_for_the_fallback(
+        self, monkeypatch
+    ):
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        sibling = str(ImageName(wanted.family, "1-aaaaaaa1"))
+        client.snapshot.list = AsyncMock(return_value=_page(_snapshot(sibling, "inactive")))
+        client.snapshot.activate = AsyncMock(return_value=_snapshot(sibling, "active"))
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == sibling
+        client.snapshot.activate.assert_awaited_once_with(sibling)
+        client.snapshot.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_takes_an_active_sibling_first_and_activates_at_most_one(
+        self, monkeypatch
+    ):
+        """Each activation can hold the create for minutes."""
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        newer, older = (str(ImageName(wanted.family, tag)) for tag in ("1-aaaaaaa2", "1-aaaaaaa1"))
+        client.snapshot.list = AsyncMock(
+            return_value=_page(_snapshot(newer, "inactive", 3), _snapshot(older, "active", 2))
+        )
+        assert await provider._newest_usable_sibling(wanted) == older
+        client.snapshot.activate.assert_not_awaited()
+
+        oldest = str(ImageName(wanted.family, "1-aaaaaaa0"))
+        client.snapshot.list = AsyncMock(
+            return_value=_page(_snapshot(newer, "inactive", 3), _snapshot(oldest, "inactive", 1))
+        )
+        client.snapshot.activate = AsyncMock(return_value=_snapshot(newer, "error"))
+        client.snapshot.get = AsyncMock(return_value=_snapshot(newer, "error"))
+        assert await provider._newest_usable_sibling(wanted) is None
+        client.snapshot.activate.assert_awaited_once_with(newer)
+
+    @pytest.mark.asyncio
+    async def test_a_prebuild_under_way_does_not_hold_a_create_that_can_fall_back(
+        self, monkeypatch
+    ):
+        """``make daytona-snapshots`` building the new name takes many minutes;
+        the snapshot before it serves meanwhile."""
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        name, sibling = str(wanted), str(ImageName(wanted.family, "1-aaaaaaa1"))
+        client.snapshot.get = AsyncMock(return_value=_snapshot(name, "building", 2))
+        client.snapshot.list = AsyncMock(
+            return_value=_page(_snapshot(name, "building", 2), _snapshot(sibling, "active", 1))
+        )
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == sibling
+        client.snapshot.get.assert_awaited_once_with(name)
+        client.snapshot.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_new_base_with_nothing_to_fall_back_on_builds_the_exact_name(self):
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        other, _, _ = self._wanted(provider, ["other"])
+        client.snapshot.list = AsyncMock(
+            return_value=_page(_snapshot(str(ImageName(other.family, "1-aaaaaaa1")), "active"))
+        )
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == str(wanted)
+        assert client.snapshot.create.await_args.args[0].name == str(wanted)
+
+    @pytest.mark.asyncio
+    async def test_every_page_of_snapshots_is_read(self):
+        from ptc_agent.core.sandbox.providers._image_recipe import ImageName
+
+        client = AsyncMock()
+        provider = self._snapshot_provider(client)
+        wanted, choice, resources = self._wanted(provider)
+        sibling = str(ImageName(wanted.family, "1-aaaaaaa1"))
+        pages = {
+            1: _page(_snapshot("unrelated", "active", 1), page=1, total_pages=2),
+            2: _page(_snapshot(sibling, "active", 2), page=2, total_pages=2),
+        }
+        client.snapshot.list = AsyncMock(side_effect=lambda page, limit: pages[page])
+
+        got = await provider._ensure_snapshot(["pkg"], tier=choice.name, resources=resources)
+
+        assert got == sibling
+        assert client.snapshot.list.await_count == 2
+        client.snapshot.create.assert_not_awaited()
+
+    def test_the_image_copies_the_toolset_runtime_and_converges_it(self):
+        from daytona import Resources
+
+        from ptc_agent.core.sandbox.providers._image_recipe import Copy, Run, toolset_steps
+
+        provider = self._snapshot_provider()
+        lines = provider._create_snapshot_image(
+            [], resources=Resources(cpu=1, memory=1, disk=3)
+        ).dockerfile().splitlines()
+        copy, run = toolset_steps()
+        assert isinstance(copy, Copy) and isinstance(run, Run)
+        copies = [line.split()[-1] for line in lines if line.startswith("COPY ")]
+        assert copies == [f"{copy.dest}/{f}" for f in copy.files]
+        assert lines[lines.index(f"RUN {run.commands[0]}") - 1].startswith("COPY ")
 
     @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
     @pytest.mark.asyncio
