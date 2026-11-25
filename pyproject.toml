@@ -61,7 +61,7 @@ dependencies = [
     "pypdf>=4.0.0",
     "youtube-transcript-api>=1.0.0",
     "playwright",
-    "fastapi>=0.113.0",
+    "fastapi>=0.115.0",
     "anyio>=4.0.0",
     "uvicorn>=0.27.1",
     # The preview proxy subclasses the asyncio client to refuse redirects.

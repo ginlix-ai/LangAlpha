@@ -39,7 +39,7 @@ _DBWS = f"{_M}.db_get_workspace"
 # included.
 _OWNED_DBWS = "src.server.services.workspace_files.db_get_workspace"
 _GET_LINK = f"{_M}.get_link"
-_CREATE = f"{_M}.artifacts_db.ensure_artifact"
+_CREATE = f"{_M}.artifacts_db.ensure_record"
 _UNSHARE = f"{_M}.artifacts_db.unshare"
 _CHANGED = f"{_M}.publish_artifact_change"
 _SET_PRIVATE = f"{_M}.set_private"
@@ -84,6 +84,7 @@ def _artifact() -> Artifact:
         artifact_id=_ARTIFACT,
         code=_CODE,
         workspace_id=_WS_ID,
+        kind="file",
         path="report.html",
         created_thread_id=None,
         bound_thread_id=None,
@@ -228,7 +229,7 @@ async def test_create_folds_a_sandbox_absolute_path(client):
             _BASE, json={"kind": "file", "path": "/home/workspace/proj/report.html"}
         )
     assert resp.status_code == 200
-    create.assert_awaited_once_with(_WS_ID, "report.html")
+    create.assert_awaited_once_with(_WS_ID, "file", "report.html")
 
 
 # --- ownership ------------------------------------------------------------

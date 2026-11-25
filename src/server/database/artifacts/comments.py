@@ -1,4 +1,5 @@
-"""The owner's comments on a file, their messages, and the owner's read cursor.
+"""The owner's comments on a file or a chart, their messages, and the owner's
+read cursor.
 
 Every change to a comment's messages locks the comment row first; see the
 package docstring for why that orders the thread and keeps ``delivery`` true.
@@ -13,7 +14,12 @@ from typing import Any, Literal
 from psycopg.rows import dict_row
 
 from src.server.database.artifacts.routing import require_destination, require_reached
-from src.server.database.artifacts.records import ArtifactNotFound, clip_title
+from src.server.database.artifacts.records import (
+    COMMENT_RECORDS,
+    ArtifactNotFound,
+    RecordKind,
+    clip_title,
+)
 from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import SafeJson
 
@@ -56,9 +62,12 @@ class CommentMessage:
 class Comment:
     comment_id: str
     artifact_id: str
+    #: The record's: on a chart, ``path`` is its id and there is no file.
+    kind: RecordKind
     number: int
-    #: The file's path when the comment was made.
+    #: The file's path when the comment was made; a chart's id.
     path: str
+    #: Both None on a chart, which has no file to hash or title to read.
     file_sha256: str | None
     title: str | None
     anchor: dict[str, Any]
@@ -89,10 +98,11 @@ class CommentCounts:
     unread: int
 
 
-# The owner's cursor on comment ``c``, read as ``r``, and the thread it waits
-# for or went to, as ``t``: every query that selects ``_COMMENT_COLUMNS``
-# joins both.
+# Comment ``c``'s record as ``k``, the owner's cursor on it as ``r``, and the
+# thread it waits for or went to as ``t``: every query that selects
+# ``_COMMENT_COLUMNS`` joins all three.
 _COMMENT_JOINS = """
+    JOIN share_links k ON k.artifact_id = c.artifact_id
     LEFT JOIN artifact_comment_reads r
       ON r.comment_id = c.comment_id AND r.user_id = c.user_id
     LEFT JOIN conversation_threads t
@@ -111,7 +121,7 @@ _COMMENT_COLUMNS = f"""
     c.title, c.anchor, c.status, c.delivery, c.thread_id::text,
     t.title AS thread_title, (t.archived_at IS NOT NULL) AS thread_archived,
     c.created_at, c.updated_at, c.resolved_at,
-    COALESCE(r.read_through, 0) AS read_through, {_UNREAD_SQL} AS unread
+    COALESCE(r.read_through, 0) AS read_through, {_UNREAD_SQL} AS unread, k.kind
 """
 
 # Moves a reader's cursor forward, never back, and returns a row only when it
@@ -231,9 +241,8 @@ async def _lock_owned_comment(
 ) -> dict[str, Any]:
     await cur.execute(
         """
-        SELECT c.delivery, c.status, c.thread_id::text, l.workspace_id::text
+        SELECT c.delivery, c.status, c.thread_id::text
           FROM artifact_comments c
-          JOIN share_links l ON l.artifact_id = c.artifact_id
          WHERE c.comment_id = %s AND c.artifact_id = %s AND c.user_id = %s
            FOR UPDATE OF c
         """,
@@ -256,7 +265,7 @@ async def _queue_thread(
     cur,
     *,
     user_id: str,
-    workspace_id: str,
+    artifact_id: str,
     current: dict[str, Any] | None,
     thread_id: str | None,
     caller: str,
@@ -271,7 +280,7 @@ async def _queue_thread(
     """
     if thread_id is not None:
         await require_destination(
-            cur, user_id=user_id, workspace_id=workspace_id, thread_id=thread_id,
+            cur, user_id=user_id, artifact_id=artifact_id, thread_id=thread_id,
             caller=caller,
         )
         return thread_id
@@ -298,8 +307,8 @@ async def create_comment(
     title: str | None = None,
     caller: str,
 ) -> Comment:
-    """The owner's new comment on the live file, with its first message,
-    written by ``caller`` (:func:`_writer`).
+    """The owner's new comment on the live file or a chart, with its first
+    message, written by ``caller`` (:func:`_writer`).
 
     The record row is locked while the comment takes the next number, so two
     comments never share one. A queued comment waits for ``thread_id``, which
@@ -311,14 +320,14 @@ async def create_comment(
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    """
+                    f"""
                     UPDATE share_links l
                        SET last_comment_number = l.last_comment_number + 1
                       FROM workspaces w
-                     WHERE l.artifact_id = %(artifact_id)s AND l.kind = 'file'
+                     WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
                        AND w.workspace_id = l.workspace_id
                        AND w.user_id = %(user_id)s AND w.status <> 'deleted'
-                    RETURNING l.last_comment_number, l.path, l.workspace_id::text
+                    RETURNING l.last_comment_number, l.path
                     """,
                     {"artifact_id": artifact_id, "user_id": user_id},
                 )
@@ -329,7 +338,7 @@ async def create_comment(
                     thread_id = await _queue_thread(
                         cur,
                         user_id=user_id,
-                        workspace_id=record["workspace_id"],
+                        artifact_id=artifact_id,
                         current=None,
                         thread_id=thread_id,
                         caller=caller,
@@ -411,7 +420,7 @@ async def add_owner_message(
                     thread_id = await _queue_thread(
                         cur,
                         user_id=user_id,
-                        workspace_id=current["workspace_id"],
+                        artifact_id=artifact_id,
                         current=current,
                         thread_id=thread_id,
                         caller=caller,
@@ -487,7 +496,7 @@ async def update_comment(
                     new_thread = await _queue_thread(
                         cur,
                         user_id=user_id,
-                        workspace_id=current["workspace_id"],
+                        artifact_id=artifact_id,
                         current=current,
                         thread_id=thread_id,
                         caller=caller,

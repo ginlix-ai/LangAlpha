@@ -211,21 +211,22 @@ async def test_words_wait_only_for_a_thread_their_writer_reaches():
     cur = _Cursor(reached=False)
     with pytest.raises(routing.DestinationUnavailable):
         await comments._queue_thread(
-            cur, user_id="shared-0000", workspace_id=W, current=queued, thread_id=None, caller=LEE
+            cur, user_id="shared-0000", artifact_id="a", current=queued,
+            thread_id=None, caller=LEE,
         )
     ((sql, params),) = cur.ran
     assert sql.endswith("FOR SHARE OF t")
     assert params == {"thread_id": T, "user_id": "shared-0000", "caller": LEE}
 
     assert await comments._queue_thread(
-        _Cursor(reached=True), user_id="shared-0000", workspace_id=W, current=queued,
-        thread_id=None, caller=MAYA,
+        _Cursor(reached=True), user_id="shared-0000", artifact_id="a",
+        current=queued, thread_id=None, caller=MAYA,
     ) == T
     # A personal workspace's comment keeps waiting as before, asking nothing.
     personal = _Cursor(reached=False)
     assert await comments._queue_thread(
-        personal, user_id="alice", workspace_id=W, current=queued, thread_id=None,
-        caller="alice",
+        personal, user_id="alice", artifact_id="a", current=queued,
+        thread_id=None, caller="alice",
     ) == T
     assert personal.ran == []
 
@@ -474,6 +475,7 @@ async def test_a_bound_thread_out_of_reach_is_left_out_of_the_artifact():
         artifact_id="a", code="c", workspace_id=W, path="x.md", name="x.md", shared=False,
         shared_at=None, keep_updated=False, kept=False, latest_seq=0, shared_seq=0,
         bound_thread_id=T, created_at="2026-11-16T00:00:00Z", legacy_refused=None, audience=None,
+        kind="file",
     )
     counts = SimpleNamespace(open=0, unread=0)
     with patch.object(records.artifacts_db, "comment_counts", AsyncMock(return_value=counts)), \

@@ -34,9 +34,9 @@ def create_reply_to_comment_tool() -> BaseTool:
         config: RunnableConfig,
         resolve: bool = False,
     ) -> tuple[str, dict[str, Any]]:
-        """Answer a comment the user left on a file. The answer shows under that comment beside the file.
+        """Answer a comment the user left on a file or a chart. The answer shows under that comment.
 
-        If the comment asked for a change, edit the file in <file>, then say in the reply what changed.
+        If the comment asked for a change, make it first, then say in the reply what changed.
 
         Args:
             comment_id: The comment's id, from its block in the user's message.
@@ -89,10 +89,12 @@ def create_reply_to_comment_tool() -> BaseTool:
             artifact_id=reply.artifact_id,
             workspace_id=reply.workspace_id,
             path=reply.path,
+            kind=reply.kind,
             thread_id=str(thread_id),
             comment_ids=[comment_id],
         )
-        where = f"comment {reply.number} on {reply.path}"
+        on = f"the {reply.path} chart" if reply.kind == "chart" else reply.path
+        where = f"comment {reply.number} on {on}"
         if reply.kept_open:
             content = (
                 f"Replied to {where}. It stays open: the user has written more in "
@@ -108,6 +110,7 @@ def create_reply_to_comment_tool() -> BaseTool:
             "artifact_id": reply.artifact_id,
             "workspace_id": reply.workspace_id,
             "path": reply.path,
+            "kind": reply.kind,
             "comment_id": comment_id,
             "number": reply.number,
             "resolved": reply.resolved,

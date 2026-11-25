@@ -31,6 +31,7 @@ def _comment_row() -> dict:
     return {
         "comment_id": _C,
         "artifact_id": _A,
+        "kind": "file",
         "number": 1,
         "path": "report.html",
         "file_sha256": None,
@@ -100,7 +101,7 @@ async def test_an_owner_message_takes_its_seq_under_the_lock_and_moves_the_curso
     mock_cursor,
 ):
     mock_cursor.fetchone.side_effect = [
-        {"delivery": "note", "status": "open", "thread_id": None, "workspace_id": _W},
+        {"delivery": "note", "status": "open", "thread_id": None},
         {"seq": 7},
         {"read_through": 7},
         _comment_row(),
@@ -122,7 +123,7 @@ async def test_an_owner_message_takes_its_seq_under_the_lock_and_moves_the_curso
 @pytest.mark.asyncio
 async def test_a_new_comment_starts_the_cursor_at_its_first_message(mock_cursor):
     mock_cursor.fetchone.side_effect = [
-        {"last_comment_number": 1, "path": "report.html", "workspace_id": _W},
+        {"last_comment_number": 1, "path": "report.html"},
         {"comment_id": _C},
         {"seq": 1},
         {"read_through": 1},
@@ -153,6 +154,7 @@ async def test_an_agent_reply_is_locked_first_and_leaves_the_cursor_alone(mock_c
             "status": "open",
             "path": "report.html",
             "workspace_id": _W,
+            "kind": "file",
         },
         {"seq": 2},
     ]

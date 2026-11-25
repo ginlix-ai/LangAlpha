@@ -1,4 +1,9 @@
-"""Where a file's comments go: its binding, and the default thread."""
+"""Where a record's comments go: its binding, and the default thread.
+
+A file's may go to a thread in its workspace or the owner's Home. A chart's
+only to its own workspace's, since a chart id names a chart in that workspace:
+a workspace's chart never goes to Home, and Home's own chart goes to Home's
+threads, Home being that chart's workspace."""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ from psycopg.rows import dict_row
 
 from src.server.database.artifacts.records import (
     ARTIFACT_COLUMNS,
+    COMMENT_RECORDS,
     OWNED,
     Artifact,
     ArtifactNotFound,
@@ -61,27 +67,39 @@ async def require_reached(cur, *, user_id: str, thread_id: str, caller: str) -> 
         raise DestinationUnavailable(thread_id)
 
 
+def destination_sql(record: str, thread: str) -> str:
+    """Whether comments on the record ``record`` may go to the thread
+    ``thread``, as SQL over those aliases with ``%(home_id)s`` the owner's
+    Home: not archived, and in the record's workspace or, for a file, Home.
+    The caller joins the thread's workspace to the owner."""
+    return (
+        f"({thread}.archived_at IS NULL"
+        f" AND ({thread}.workspace_id = {record}.workspace_id"
+        f" OR ({record}.kind = 'file' AND {thread}.workspace_id = %(home_id)s)))"
+    )
+
+
 async def require_destination(
-    cur, *, user_id: str, workspace_id: str, thread_id: str, caller: str
+    cur, *, user_id: str, artifact_id: str, thread_id: str, caller: str
 ) -> None:
-    """Raise unless comments on a file in ``workspace_id`` may go to the
-    thread, one ``caller`` may see."""
+    """Raise unless comments on the record may go to the thread, one
+    ``caller`` may see."""
     await cur.execute(
         f"""
         SELECT 1
           FROM conversation_threads t
           JOIN workspaces tw ON tw.workspace_id = t.workspace_id
+          JOIN share_links l ON l.artifact_id = %(artifact_id)s
          WHERE t.conversation_thread_id = %(thread_id)s
-           AND t.archived_at IS NULL
            AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
-           AND t.workspace_id IN (%(workspace_id)s, %(home_id)s)
+           AND {destination_sql('l', 't')}
            AND {visible_sql('t', 'tw.user_id', '%(caller)s')}
         {_held(user_id, caller)}
         """,
         {
             "thread_id": thread_id,
             "user_id": user_id,
-            "workspace_id": workspace_id,
+            "artifact_id": artifact_id,
             "home_id": get_home_workspace_id(user_id),
             "caller": caller,
         },
@@ -99,13 +117,16 @@ async def bind(*, user_id: str, artifact_id: str, thread_id: str, caller: str) -
     async with get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
-                artifact = await lock_owned(
-                    cur, user_id=user_id, artifact_id=artifact_id
+                await lock_owned(
+                    cur,
+                    user_id=user_id,
+                    artifact_id=artifact_id,
+                    kinds=COMMENT_RECORDS,
                 )
                 await require_destination(
                     cur,
                     user_id=user_id,
-                    workspace_id=artifact.workspace_id,
+                    artifact_id=artifact_id,
                     thread_id=thread_id,
                     caller=caller,
                 )
@@ -127,6 +148,7 @@ async def unbind(*, user_id: str, artifact_id: str) -> Artifact:
         artifact_id=artifact_id,
         assignments="bound_thread_id = NULL",
         params={},
+        kinds=COMMENT_RECORDS,
     )
 
 
@@ -136,7 +158,7 @@ class DestinationThread:
     title: str | None
     workspace_id: str
     #: Whether comments may go there now: not archived, in the artifact's
-    #: workspace or the owner's Home.
+    #: workspace or, for a file, the owner's Home.
     usable: bool
     #: A Chief of Staff thread, in the owner's Home.
     home: bool
@@ -192,7 +214,7 @@ async def destinations(
                           FROM user_preferences p
                          WHERE p.user_id = %(user_id)s) AS comment_destination
                   FROM {OWNED}
-                 WHERE l.artifact_id = %(artifact_id)s AND l.kind = 'file'
+                 WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
                 """,
                 {"artifact_id": artifact_id, "user_id": user_id},
             )
@@ -216,14 +238,13 @@ async def destinations(
                     f"""
                     SELECT t.conversation_thread_id::text AS thread_id, t.title,
                            t.workspace_id::text,
-                           (t.archived_at IS NULL
-                            AND t.workspace_id IN (%(workspace_id)s, %(home_id)s))
-                               AS usable,
+                           {destination_sql('l', 't')} AS usable,
                            (t.workspace_id = %(home_id)s) AS home
                       FROM conversation_threads t
                       JOIN workspaces tw
                         ON tw.workspace_id = t.workspace_id
                        AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
+                      JOIN share_links l ON l.artifact_id = %(artifact_id)s
                      WHERE t.conversation_thread_id = ANY(%(ids)s::uuid[])
                        AND {visible_sql('t', 'tw.user_id', '%(caller)s')}
                     """,
@@ -231,7 +252,7 @@ async def destinations(
                         "caller": caller,
                         "ids": ids,
                         "user_id": user_id,
-                        "workspace_id": artifact.workspace_id,
+                        "artifact_id": artifact_id,
                         "home_id": get_home_workspace_id(user_id),
                     },
                 )

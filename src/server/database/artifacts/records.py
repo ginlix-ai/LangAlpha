@@ -1,11 +1,16 @@
-"""The file's record: its ``share_links`` row, made on first need."""
+"""The file's record: its ``share_links`` row, made on first need.
+
+A chart has one too (``kind = 'chart'``, ``path`` its chart id), which only
+holds comments and where they go. A read by id takes either and the record
+says which; a write that shares, publishes, keeps or versions takes files
+alone (``FILE_RECORDS``), so none of them can reach a chart."""
 
 from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal, get_args
 
 from psycopg.rows import dict_row, tuple_row
 
@@ -15,6 +20,15 @@ from src.server.database.share_codes import mint_share_code
 # What the title CHECKs admit; a title is read off the file, so it is clipped
 # here rather than refused.
 _TITLE_CHARS = 300
+
+
+RecordKind = Literal["file", "chart"]
+_RECORD_KINDS: tuple[str, ...] = get_args(RecordKind)
+
+#: The records a statement takes off ``share_links l``: a file's alone, or
+#: any that holds comments, a file's or a chart's.
+FILE_RECORDS = "l.kind = 'file'"
+COMMENT_RECORDS = "l.kind IN ('file', 'chart')"
 
 
 class ArtifactNotFound(LookupError):
@@ -36,7 +50,8 @@ class Artifact:
     artifact_id: str
     code: str
     workspace_id: str
-    #: Workspace-relative.
+    kind: RecordKind
+    #: Workspace-relative; a chart's id (``SYMBOL:timeframe``) for a chart.
     path: str
     created_thread_id: str | None
     bound_thread_id: str | None
@@ -104,7 +119,7 @@ ARTIFACT_COLUMNS = """
     l.created_thread_id::text, l.bound_thread_id::text, l.keep_updated,
     l.latest_seq, l.shared_at, l.files, l.revision, l.created_at,
     l.legacy_refused, l.loaded_files, l.left_out_files, l.kept_at, l.shared_seq,
-    l.audience
+    l.audience, l.kind
 """
 
 #: ``Artifact.follows_turns`` over ``share_links l``; change the two together.
@@ -130,6 +145,7 @@ def artifact_from_row(row: dict[str, Any] | None) -> Artifact | None:
         artifact_id=row["artifact_id"],
         code=row["code"],
         workspace_id=row["workspace_id"],
+        kind=row["kind"],
         path=row["path"],
         created_thread_id=row["created_thread_id"],
         bound_thread_id=row["bound_thread_id"],
@@ -148,59 +164,74 @@ def artifact_from_row(row: dict[str, Any] | None) -> Artifact | None:
     )
 
 
-async def _select_by_path(cur, workspace_id: str, path: str) -> Artifact | None:
+def _kind(kind: RecordKind) -> RecordKind:
+    """``kind`` checked, since it is written into the statement: each kind's
+    unique index is partial, which a conflict target or a generic plan finds
+    only by a literal predicate, not a parameter."""
+    if kind not in _RECORD_KINDS:
+        raise ValueError(f"not a record kind: {kind!r}")
+    return kind
+
+
+async def _select_record(
+    cur, workspace_id: str, kind: RecordKind, key: str
+) -> Artifact | None:
     await cur.execute(
         f"""
         SELECT {ARTIFACT_COLUMNS} FROM share_links l
-         WHERE l.workspace_id = %s AND l.kind = 'file' AND l.path = %s
+         WHERE l.workspace_id = %s AND l.kind = '{_kind(kind)}' AND l.path = %s
         """,
-        (workspace_id, path),
+        (workspace_id, key),
     )
     return artifact_from_row(await cur.fetchone())
 
 
-async def ensure_artifact(workspace_id: str, path: str) -> Artifact:
-    """The file's record, made private on first sight.
+async def ensure_record(workspace_id: str, kind: RecordKind, key: str) -> Artifact:
+    """The record of a file (``key`` its path) or a chart (its chart id),
+    made private on first sight.
 
-    The caller has checked the workspace is the user's and ``path`` is a
-    contained workspace path that may be shared. Two writers for one file
-    land on one row and one code.
+    The caller has checked the workspace is reached and ``key`` is the one
+    spelling of a file that may be shared, or of a chart
+    (``normalize_chart_id``). Two writers for one land on one row and one code.
     """
+    kind = _kind(kind)
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
                 INSERT INTO share_links AS l (code, workspace_id, kind, path)
-                VALUES (%s, %s, 'file', %s)
-                ON CONFLICT (workspace_id, path) WHERE kind = 'file' DO NOTHING
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (workspace_id, path) WHERE kind = '{kind}' DO NOTHING
                 RETURNING {ARTIFACT_COLUMNS}
                 """,
-                (mint_share_code(), workspace_id, path),
+                (mint_share_code(), workspace_id, kind, key),
             )
             created = artifact_from_row(await cur.fetchone())
             if created is not None:
                 return created
-            existing = await _select_by_path(cur, workspace_id, path)
+            existing = await _select_record(cur, workspace_id, kind, key)
     if existing is None:
         raise RuntimeError("artifact record vanished between insert and read")
     return existing
 
 
-async def find_artifact(workspace_id: str, path: str) -> Artifact | None:
-    """The file's record if it has one; never makes it."""
+async def find_record(
+    workspace_id: str, kind: RecordKind, key: str
+) -> Artifact | None:
+    """The file's or chart's record if it has one; never makes it."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            return await _select_by_path(cur, workspace_id, path)
+            return await _select_record(cur, workspace_id, kind, key)
 
 
 async def get_artifact(artifact_id: str, *, user_id: str) -> Artifact | None:
-    """The user's record by id, or None."""
+    """The user's record by id, a file's or a chart's, or None."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
                 SELECT {ARTIFACT_COLUMNS} FROM {OWNED}
-                 WHERE l.artifact_id = %(artifact_id)s AND l.kind = 'file'
+                 WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
                 """,
                 {"artifact_id": artifact_id, "user_id": user_id},
             )
@@ -208,15 +239,15 @@ async def get_artifact(artifact_id: str, *, user_id: str) -> Artifact | None:
 
 
 async def artifact_workspace_id(artifact_id: str) -> str | None:
-    """The workspace of a live file record, whoever owns it; the caller
-    judges whether it may be reached."""
+    """The workspace of a live record, whoever owns it; the caller judges
+    whether it may be reached."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=tuple_row) as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT l.workspace_id::text FROM share_links l
                   JOIN workspaces w ON w.workspace_id = l.workspace_id
-                 WHERE l.artifact_id = %s AND l.kind = 'file'
+                 WHERE l.artifact_id = %s AND {COMMENT_RECORDS}
                    AND w.status <> 'deleted'
                 """,
                 (artifact_id,),
@@ -254,15 +285,18 @@ async def record_creator(
             written = artifact_from_row(await cur.fetchone())
             if written is not None:
                 return written
-            return await _select_by_path(cur, workspace_id, path)
+            return await _select_record(cur, workspace_id, "file", path)
 
 
-async def lock_owned(cur, *, user_id: str, artifact_id: str) -> Artifact:
-    """The user's record under its row lock, or ``ArtifactNotFound``."""
+async def lock_owned(
+    cur, *, user_id: str, artifact_id: str, kinds: str = FILE_RECORDS
+) -> Artifact:
+    """The user's record of ``kinds`` under its row lock, or
+    ``ArtifactNotFound``."""
     await cur.execute(
         f"""
         SELECT {ARTIFACT_COLUMNS} FROM {OWNED}
-         WHERE l.artifact_id = %(artifact_id)s AND l.kind = 'file'
+         WHERE l.artifact_id = %(artifact_id)s AND {kinds}
            FOR UPDATE OF l
         """,
         {"artifact_id": artifact_id, "user_id": user_id},
@@ -274,9 +308,15 @@ async def lock_owned(cur, *, user_id: str, artifact_id: str) -> Artifact:
 
 
 async def set_record(
-    *, user_id: str, artifact_id: str, assignments: str, params: dict[str, Any]
+    *,
+    user_id: str,
+    artifact_id: str,
+    assignments: str,
+    params: dict[str, Any],
+    kinds: str = FILE_RECORDS,
 ) -> Artifact:
-    """Apply ``assignments`` to the user's record, or ``ArtifactNotFound``."""
+    """Apply ``assignments`` to the user's record of ``kinds``, or
+    ``ArtifactNotFound``."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -284,7 +324,7 @@ async def set_record(
                 UPDATE share_links l
                    SET {assignments}
                   FROM workspaces w
-                 WHERE l.artifact_id = %(artifact_id)s AND l.kind = 'file'
+                 WHERE l.artifact_id = %(artifact_id)s AND {kinds}
                    AND w.workspace_id = l.workspace_id
                    AND w.user_id = %(user_id)s AND w.status <> 'deleted'
                 RETURNING {ARTIFACT_COLUMNS}
@@ -342,7 +382,7 @@ async def release_unlisted(
                 UPDATE share_links l
                    SET kept_at = NULL
                   FROM workspaces w
-                 WHERE l.workspace_id = %(workspace_id)s AND l.kind = 'file'
+                 WHERE l.workspace_id = %(workspace_id)s AND {FILE_RECORDS}
                    AND w.workspace_id = l.workspace_id
                    AND w.user_id = %(user_id)s AND w.status <> 'deleted'
                    AND l.kept_at < NOW() - %(grace)s
@@ -423,7 +463,7 @@ async def list_kept_updated(workspace_id: str) -> list[Artifact]:
             await cur.execute(
                 f"""
                 SELECT {ARTIFACT_COLUMNS} FROM share_links l
-                 WHERE l.workspace_id = %s AND l.kind = 'file'
+                 WHERE l.workspace_id = %s AND {FILE_RECORDS}
                    AND {FOLLOWS_TURNS}
                  ORDER BY l.path
                 """,

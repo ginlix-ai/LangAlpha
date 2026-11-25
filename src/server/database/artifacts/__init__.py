@@ -7,6 +7,10 @@ the agent writing the file (its creator), a comment, a binding or a publish.
 Ownership is the workspace's: every read and write keyed by ``artifact_id``
 joins the workspace and checks its user.
 
+A chart has a record too, keyed by its chart id, which holds comments and
+nothing else: no file, so no version, share or creator. Its comments go only
+to threads in its own workspace, since nothing outside it reads that chart.
+
 A version is cut in one transaction under the record's row lock, which also
 numbers comments, so two publishes never take one ``seq`` and two comments
 never take one pin. A shared record's ``files`` is always its shared
@@ -20,9 +24,10 @@ message takes the next ``seq`` once it holds the lock, so seq order is commit
 order, which ``created_at`` (the transaction's start) is not.
 
 Where a comment goes is a thread the owner may send it to: theirs, not
-archived, and in the artifact's workspace or the owner's Home, whose Chief of
-Staff reaches every workspace. A sent message names the thread it went to,
-and only that thread's agent may answer the comment.
+archived, and in the artifact's workspace or, for a file, the owner's Home,
+whose Chief of Staff reaches every workspace's files (``routing.destination_sql``).
+A sent message names the thread it went to, and only that thread's agent may
+answer the comment.
 
 How far the owner has read a comment is a cursor in
 ``artifact_comment_reads``, never on the comment row, since reading is not an
@@ -77,11 +82,12 @@ from src.server.database.artifacts.records import (
     ARTIFACT_COLUMNS,
     Artifact,
     ArtifactNotFound,
+    RecordKind,
     artifact_from_row,
     artifact_workspace_id,
     clip_title,
-    ensure_artifact,
-    find_artifact,
+    ensure_record,
+    find_record,
     get_artifact,
     list_kept_updated,
     one_line,
@@ -139,6 +145,7 @@ __all__ = [
     "Origin",
     "PublishResult",
     "ReadBasis",
+    "RecordKind",
     "SharingChanged",
     "VersionMoved",
     "Status",
@@ -157,8 +164,8 @@ __all__ = [
     "create_comment",
     "delete_comment",
     "destinations",
-    "ensure_artifact",
-    "find_artifact",
+    "ensure_record",
+    "find_record",
     "get_artifact",
     "get_shared_version_file",
     "get_version",

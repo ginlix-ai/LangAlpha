@@ -101,6 +101,7 @@ def test_a_comment_response_prints_the_anchor_as_stored():
     row = {
         "comment_id": "c",
         "artifact_id": "a",
+        "kind": "file",
         "number": 1,
         "path": "r.html",
         "file_sha256": None,
@@ -288,3 +289,139 @@ def test_boxes_on_a_picture_are_kept_as_sent(anchor):
 def test_a_region_the_api_could_not_show_is_refused(anchor):
     with pytest.raises(ValidationError):
         CommentAnchor.model_validate(anchor)
+
+
+_REGION_MARK = {
+    "type": "region",
+    "start": "2026-09-02",
+    "end": "2026-10-14",
+    "low": 108.2,
+    "high": 131.5,
+    "picture": ".agents/comments/NVDA-1day-20261124-141205.png",
+}
+_POINT_MARK = {"type": "point", "time": "2026-10-28T09:30", "price": 118.4}
+_ELEMENT_MARK = {
+    "type": "element",
+    "layer": "nvda-breakout",
+    "layer_title": "Breakout setup",
+    "element_kind": "drawing",
+    "element_type": "segment",
+    "element_id": "neck",
+    "element_name": "Neckline",
+    "index": 2,
+    "time": "2026-10-03T15:59:59",
+    "price": 118.4,
+}
+
+
+@pytest.mark.parametrize(
+    "marks",
+    [
+        [_REGION_MARK, _POINT_MARK, _ELEMENT_MARK],
+        [{k: v for k, v in _REGION_MARK.items() if k != "picture"}],
+        # One instant, one price: a region of no size is still a region.
+        [{**_REGION_MARK, "end": "2026-09-02", "high": 108.2}],
+        [{**_REGION_MARK, "start": "2026-09-02", "end": "2026-09-02T10:00"}],
+        [
+            {
+                "type": "element",
+                "layer": "sma",
+                "layer_title": "Moving averages",
+                "element_kind": "series",
+                "element_id": "sma50",
+                "index": 0,
+                "time": "2026-10-03",
+                "price": 1.5,
+            }
+        ],
+        [{**_ELEMENT_MARK, "element_kind": "level", "element_type": None}],
+        [_POINT_MARK] * 64,
+    ],
+)
+def test_chart_marks_are_kept_as_sent(marks):
+    anchor = {"kind": "chart", "marks": marks}
+    kept = CommentAnchor.model_validate(anchor).model_dump(exclude_none=True)
+    assert kept == {
+        "kind": "chart",
+        "marks": [{k: v for k, v in m.items() if v is not None} for m in marks],
+    }
+
+
+@pytest.mark.parametrize(
+    "marks",
+    [
+        [],
+        [_POINT_MARK] * 65,
+        [{"type": "box", "time": "2026-10-03", "price": 1}],
+        [{**_POINT_MARK, "zone": "UTC"}],
+        # Layer times: exchange-local, no zone or offset, a real date.
+        [{**_POINT_MARK, "time": "2026-10-28T09:30Z"}],
+        [{**_POINT_MARK, "time": "2026-10-28T09:30:00+04:00"}],
+        [{**_POINT_MARK, "time": "2026-02-30"}],
+        [{**_POINT_MARK, "time": "1730107800"}],
+        [{**_POINT_MARK, "price": float("nan")}],
+        [{**_POINT_MARK, "price": float("inf")}],
+        # A price past any chart's would print as hundreds of digits.
+        [{**_POINT_MARK, "price": 1e308}],
+        [{**_ELEMENT_MARK, "price": -1e13}],
+        [{**_REGION_MARK, "start": "2026-10-15"}],
+        [{**_REGION_MARK, "low": 131.6}],
+        [{**_REGION_MARK, "high": float("-inf")}],
+        [{**_REGION_MARK, "high": 1e13}],
+        [{**_REGION_MARK, "picture": "../secret.png"}],
+        [{**_REGION_MARK, "picture": ".agents/comments/chart.svg"}],
+        [{**_ELEMENT_MARK, "layer": "Not A Layer"}],
+        [{**_ELEMENT_MARK, "layer_title": ""}],
+        [{**_ELEMENT_MARK, "element_kind": "fill"}],
+        [{**_ELEMENT_MARK, "element_type": "doodle"}],
+        [{**_ELEMENT_MARK, "element_type": None}],
+        [{**_ELEMENT_MARK, "element_kind": "series"}],
+        [{**_ELEMENT_MARK, "element_id": "has space"}],
+        [{**_ELEMENT_MARK, "element_name": "x" * 121}],
+        [{**_ELEMENT_MARK, "index": -1}],
+        [{k: v for k, v in _ELEMENT_MARK.items() if k != "time"}],
+    ],
+)
+def test_a_chart_mark_the_agent_could_not_find_is_refused(marks):
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate({"kind": "chart", "marks": marks})
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        {"kind": "chart"},
+        {"kind": "chart", "marks": [_POINT_MARK], "point": {"x": 0.5, "y": 0.5}},
+        {"kind": "chart", "marks": [_POINT_MARK], "quote": "NVDA"},
+        {"kind": "region", "marks": [_POINT_MARK]},
+    ],
+)
+def test_a_chart_anchor_holds_its_marks_and_nothing_else(anchor):
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate(anchor)
+
+
+@pytest.mark.parametrize(
+    ("anchor", "kind", "refused"),
+    [
+        ({"kind": "chart", "marks": [_POINT_MARK]}, "chart", None),
+        ({"kind": "chart", "marks": [_POINT_MARK]}, "file", "A file takes no chart anchor"),
+        ({"kind": "text", "quote": "Revenue"}, "chart", "A chart takes a chart anchor"),
+    ],
+)
+def test_a_comment_keeps_to_its_records_kind(anchor, kind, refused):
+    """A chart has no file, so its comment keeps no hash or title whatever
+    the client sent."""
+    from fastapi import HTTPException
+
+    request = CreateCommentRequest(
+        anchor=anchor, body="why here?", file_sha256="0" * 64, title="NVDA"
+    )
+    if refused:
+        with pytest.raises(HTTPException) as e:
+            request.check_against(kind)
+        assert (e.value.status_code, e.value.detail) == (422, refused)
+    else:
+        request.check_against(kind)
+    assert request.file_fields("chart") == (None, None)
+    assert request.file_fields("file") == ("0" * 64, "NVDA")

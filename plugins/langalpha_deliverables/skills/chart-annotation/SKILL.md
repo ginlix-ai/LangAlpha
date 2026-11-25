@@ -1,6 +1,6 @@
 ---
 name: chart-annotation
-description: Drawing on the user's chart from Python with chartkit, as one chart layer per analysis (levels, lines, zones, indicators, channels, fibs, projections, trade setups). Also answering a chart selection the user sends.
+description: Drawing on the user's chart from Python with chartkit, as one chart layer per analysis (levels, lines, zones, indicators, channels, fibs, projections, trade setups). Also answering a comment the user leaves on a chart.
 ---
 
 # Drawing on the chart
@@ -93,9 +93,9 @@ For anything computed from the bars, read `.agents/skills/chart-annotation/refer
 
 `manage_chart_layers` lists the layers on a chart with their ids, and deletes them by id or all at once. The chart's own lines (52-week high, analyst targets, earnings markers) are the app's and stay.
 
-## A chart selection from the user
+## A comment on the chart
 
-A `<chart-selection>` block means the user selected part of the chart and sent it. Its `selection_type` is `region` (a time and price box, with the OHLCV bars inside it) or `price_level` (one price they tapped). Treat each block on its own; a `User note:` line is their comment on that selection. Analyse it, then draw your read back on the same chart: `c.box((time_start, price_high), (time_end, price_low))` over a region, `c.level(price)` at a level, adjusted to where your analysis lands.
+A comment with `<chart>` is on part of that chart. Its anchor is a `<region>`, a time span and price range with a `<picture>` of it; a `<point>`, one price at one time; or a `<layer>` and `<element>`, one of your shapes named as the read-back names it, with `<at>` where the user clicked. It carries no bars: fetch them with `bars()`. Answer with `reply_to_comment`, and when it helps, draw your read on the same chart: `c.box((start, high), (end, low))` over a region, `c.marker(time)` or `c.level(price)` at a point, or republish the layer under its id with the element changed.
 
 ## A chart for a report
 

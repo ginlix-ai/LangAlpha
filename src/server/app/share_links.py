@@ -143,7 +143,9 @@ async def get_or_create_share_link(
         )
 
     ws_id, path = artifact_path(workspace, body.path or "")
-    return _to_model(file_link(await artifacts_db.ensure_artifact(ws_id, path)))
+    return _to_model(
+        file_link(await artifacts_db.ensure_record(ws_id, "file", path))
+    )
 
 
 @router.get("/{workspace_id}/share-links")

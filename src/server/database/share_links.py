@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 
 from src.server.database.artifacts.records import (
     ARTIFACT_COLUMNS,
+    FILE_RECORDS,
     Artifact,
     artifact_from_row,
 )
@@ -28,10 +29,13 @@ from src.server.database.share_codes import mint_share_code
 
 KIND_FILE = "file"
 KIND_APP = "app"
+#: A link is a file's record or an app's port. A chart's record holds comments
+#: and has no link: its code opens nothing.
+_LINKS = f"({FILE_RECORDS} OR l.kind = '{KIND_APP}')"
 
 # Off ``share_links l``. An app's start command comes along in the same
 # statement, so no caller reads it per row; ``_link`` keeps only its key.
-_COLUMNS = f"""{ARTIFACT_COLUMNS}, l.kind, l.port, l.title,
+_COLUMNS = f"""{ARTIFACT_COLUMNS}, l.port, l.title,
     (SELECT w.artifacts->'preview_servers'->>(l.port::text)
        FROM workspaces w
       WHERE l.kind = 'app' AND w.workspace_id = l.workspace_id) AS app_command"""
@@ -196,7 +200,9 @@ async def get_link(code: str) -> Optional[ShareLink]:
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_COLUMNS} FROM share_links l WHERE l.code = %s", (code,)
+                f"SELECT {_COLUMNS} FROM share_links l "
+                f"WHERE l.code = %s AND {_LINKS}",
+                (code,),
             )
             return await _fetch_link(cur)
 
@@ -209,7 +215,7 @@ async def set_private(code: str) -> Optional[ShareLink]:
                 "UPDATE share_links l "
                 "SET shared_at = NULL, files = NULL, shared_seq = 0, "
                 "revision = l.revision + 1 "
-                f"WHERE l.code = %s RETURNING {_COLUMNS}",
+                f"WHERE l.code = %s AND {_LINKS} RETURNING {_COLUMNS}",
                 (code,),
             )
             return await _fetch_link(cur)
@@ -220,7 +226,7 @@ async def list_shared(workspace_id: str) -> list[ShareLink]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM share_links l "
-                "WHERE l.workspace_id = %s AND l.shared_at IS NOT NULL "
+                f"WHERE l.workspace_id = %s AND l.shared_at IS NOT NULL AND {_LINKS} "
                 "ORDER BY l.shared_at DESC",
                 (workspace_id,),
             )

@@ -18,6 +18,8 @@ from src.server.database.artifacts.comments import (
     append_message,
     messages_by_comment,
 )
+from src.server.database.artifacts.records import RecordKind
+from src.server.database.artifacts.routing import destination_sql
 from src.server.database.conversation.thread_reach import visible_sql
 from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.pool import get_db_connection
@@ -60,6 +62,8 @@ _SETTLE_SENT_SQL = """
 class AgentReply:
     artifact_id: str
     workspace_id: str
+    kind: RecordKind
+    #: A file's path, or a chart's id.
     path: str
     number: int
     #: Whether the comment is resolved after the reply.
@@ -90,7 +94,7 @@ async def add_agent_reply(
                 await cur.execute(
                     """
                     SELECT c.artifact_id::text, c.number, c.delivery, c.status,
-                           l.path, l.workspace_id::text
+                           l.path, l.workspace_id::text, l.kind
                       FROM artifact_comments c
                       JOIN share_links l ON l.artifact_id = c.artifact_id
                      WHERE c.comment_id = %s AND c.user_id = %s
@@ -137,6 +141,7 @@ async def add_agent_reply(
         number=row["number"],
         resolved=resolved,
         kept_open=kept_open,
+        kind=row["kind"],
     )
 
 
@@ -147,7 +152,8 @@ class ClaimedComment:
     comment_id: str
     artifact_id: str
     workspace_id: str
-    #: The file to edit, workspace-relative.
+    kind: RecordKind
+    #: The file to edit, workspace-relative; a chart's id.
     path: str
     #: The document's title when the comment was made, read off the file.
     title: str | None
@@ -182,9 +188,9 @@ async def claim_comments(
     marked under its key and that thread.
 
     A comment counts only if it is this user's and the thread is one its
-    comments may go to (owner's, not archived, in the artifact's workspace or
-    the owner's Home). It gives the owner's words that are unsent, or those
-    already marked by this same ``request_key`` where any are, so a retransmit
+    comments may go to (owner's, not archived, in the artifact's workspace or,
+    on a file, the owner's Home). It gives the owner's words that are unsent,
+    or those already marked by this same ``request_key`` where any are, so a retransmit
     takes again what its first copy carried, and not words added since, which
     a copy that lost the race would mark sent and never deliver. One with
     neither is left out, and so is one whose thread the sender ``caller``
@@ -199,7 +205,7 @@ async def claim_comments(
                     f"""
                     SELECT c.comment_id::text, c.artifact_id::text, c.number,
                            c.title, c.anchor, l.path, l.workspace_id::text,
-                           l.created_at AS recorded_at
+                           l.kind, l.created_at AS recorded_at
                       FROM artifact_comments c
                       JOIN share_links l ON l.artifact_id = c.artifact_id
                       JOIN workspaces w
@@ -207,8 +213,7 @@ async def claim_comments(
                        AND w.user_id = %(user_id)s AND w.status <> 'deleted'
                       JOIN conversation_threads t
                         ON t.conversation_thread_id = %(thread_id)s
-                       AND t.archived_at IS NULL
-                       AND t.workspace_id IN (l.workspace_id, %(home_id)s)
+                       AND {destination_sql('l', 't')}
                       JOIN workspaces tw
                         ON tw.workspace_id = t.workspace_id
                        AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
@@ -264,6 +269,7 @@ async def claim_comments(
                                 delivered=delivered,
                                 earlier=earlier,
                                 message_ids=ids,
+                                kind=row["kind"],
                             ),
                         )
                     )

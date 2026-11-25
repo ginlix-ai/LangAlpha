@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from src.server.database.artifacts import Artifact
+from src.server.database.artifacts.records import RecordKind
 from src.server.database.shared_workspaces import is_holder
 from src.server.services.thread_lifecycle_feed import EVENT_VERSION, publish_user_event
 from src.server.services.shared_workspaces.access import shared_org_of
@@ -28,11 +29,12 @@ async def publish_comment_change(
     artifact_id: str,
     workspace_id: str,
     path: str,
+    kind: RecordKind,
     thread_id: str | None,
     comment_ids: Iterable[str],
 ) -> None:
     """``thread_id`` is the changed comments' destination, whose queue the
-    owner's tabs read again."""
+    owner's tabs read again. ``path`` is a chart's id on a chart."""
     await _publish(
         user_id,
         {
@@ -41,6 +43,7 @@ async def publish_comment_change(
             "artifact_id": artifact_id,
             "workspace_id": workspace_id,
             "path": path,
+            "kind": kind,
             "thread_id": thread_id,
             "comment_ids": list(comment_ids),
         },
@@ -56,6 +59,7 @@ async def publish_artifact_change(user_id: str, artifact: Artifact) -> None:
             "artifact_id": artifact.artifact_id,
             "workspace_id": artifact.workspace_id,
             "path": artifact.path,
+            "kind": artifact.kind,
             "shared": artifact.shared,
             "latest_seq": artifact.latest_seq,
             "shared_seq": artifact.shared_seq,

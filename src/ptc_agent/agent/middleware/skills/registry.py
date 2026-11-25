@@ -128,7 +128,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
             "Drawing on the user's chart from Python with chartkit, as one "
             "chart layer per analysis (levels, lines, zones, indicators, "
             "channels, fibs, projections, trade setups). Also answering a "
-            "chart selection the user sends."
+            "comment the user leaves on a chart."
         ),
         switched_tools=("manage_chart_layers",),
         skill_md_path="skills/chart-annotation/SKILL.md",

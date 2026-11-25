@@ -1,5 +1,7 @@
 """The owner's routes on a file's record: find or make it, where its comments
-go, publishing and versions.
+go, publishing and versions. A chart's record takes the first two and nothing
+else: every other route takes its record through ``reached_file``, which
+answers a chart's id as not found.
 
 A shared workspace's members use them as its owner does: the record is the
 holder's, read and written as the holder's rows (``Access.owner_id``), while
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -40,9 +42,10 @@ from src.server.app.artifacts.models import (
 )
 from src.server.services.workspace_files import owner_work_dir
 from src.server.database import artifacts as artifacts_db
-from src.server.database.artifacts import Artifact
+from src.server.database.artifacts import Artifact, RecordKind
 from src.server.database.conversation import thread_reach
 from src.server.database.share_codes import share_path
+from src.server.models.chart_layer import normalize_chart_id
 from src.server.services.artifacts import snapshot
 from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.artifacts.grants import (
@@ -145,13 +148,22 @@ def _snapshot_errors() -> Iterator[None]:
 
 
 async def owned(artifact_id: str, user_id: str) -> Artifact:
-    return (await reached(artifact_id, user_id))[0]
+    return (await reached_file(artifact_id, user_id))[0]
+
+
+async def reached_file(artifact_id: str, caller: str) -> tuple[Artifact, Access]:
+    """``reached`` for a route only a file takes (sharing, publishing,
+    keeping, versions): a chart's id is not found there."""
+    artifact, access = await reached(artifact_id, caller)
+    if artifact.kind != "file":
+        raise not_found()
+    return artifact, access
 
 
 async def reached(artifact_id: str, caller: str) -> tuple[Artifact, Access]:
-    """The record and the caller's access to its workspace: its owner's, or
-    a shared workspace member's. Anyone else's, or a deleted workspace's, is
-    not found, as every owner route answers."""
+    """The record, a file's or a chart's, and the caller's access to its
+    workspace: its owner's, or a shared workspace member's. Anyone else's, or
+    a deleted workspace's, is not found, as every owner route answers."""
     artifact_id = path_id(artifact_id)
     artifact = await artifacts_db.get_artifact(artifact_id, user_id=caller)
     if artifact is not None:
@@ -187,6 +199,7 @@ async def _response(artifact: Artifact, user_id: str, viewer: str) -> ArtifactRe
         bound = None
     return ArtifactResponse(
         artifact_id=artifact.artifact_id,
+        kind=artifact.kind,
         code=artifact.code,
         url=share_path(artifact.code),
         workspace_id=artifact.workspace_id,
@@ -224,21 +237,40 @@ def artifact_path(workspace: dict[str, Any], path: str) -> tuple[str, str]:
     return str(workspace["workspace_id"]), relative
 
 
-async def _workspace_path(
-    workspace_id: str, path: str, user_id: str
-) -> tuple[str, str, str]:
-    """``artifact_path`` in a workspace the caller reaches, and whose rows
-    its records are. Another user's workspace, or a deleted one, is not
-    found, as every owner route answers."""
+async def _record_key(
+    workspace_id: str, place: ArtifactPathRequest, user_id: str
+) -> tuple[str, RecordKind, str, str]:
+    """The workspace's id, the record's kind and key (a file's canonical path,
+    or a chart's one spelling), and whose rows its records are, in a workspace
+    the caller reaches. Another user's workspace, or a deleted one, is not
+    found, as every owner route answers. A chart is no file, so its workspace
+    need not be on a computer."""
+    chart_id = None
+    if place.chart is not None:
+        chart_id = normalize_chart_id(place.chart)
+        if chart_id is None:
+            raise HTTPException(
+                status_code=400, detail="A chart is named SYMBOL:timeframe"
+            )
+    from src.server.database.workspace import get_workspace
+
     try:
-        workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
+        if chart_id is None:
+            workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
+        else:
+            workspace = await get_workspace(workspace_id)
+            await workspace_access(workspace, user_id)
     except HTTPException as e:
         if e.status_code == 403:
             raise not_found("Workspace") from None
         raise
     if workspace.get("status") == "deleted":
         raise not_found("Workspace")
-    return (*artifact_path(workspace, path), str(workspace["user_id"]))
+    owner_id = str(workspace["user_id"])
+    if chart_id is not None:
+        return str(workspace["workspace_id"]), "chart", chart_id, owner_id
+    ws_id, relative = artifact_path(workspace, place.path)
+    return ws_id, "file", relative, owner_id
 
 
 # --- records -----------------------------------------------------------------
@@ -249,12 +281,13 @@ async def _workspace_path(
 )
 async def find_artifact(
     workspace_id: str,
+    place: Annotated[ArtifactPathRequest, Query()],
     x_user_id: CurrentUserId,
-    path: str = Query(..., min_length=1, max_length=4096),
 ) -> ArtifactLookupResponse:
-    """The file's record, or null for a file never recorded. Never makes one."""
-    ws_id, relative, owner_id = await _workspace_path(workspace_id, path, x_user_id)
-    artifact = await artifacts_db.find_artifact(ws_id, relative)
+    """The file's or chart's record, or null for one never recorded. Never
+    makes one."""
+    ws_id, kind, key, owner_id = await _record_key(workspace_id, place, x_user_id)
+    artifact = await artifacts_db.find_record(ws_id, kind, key)
     return ArtifactLookupResponse(
         artifact=await _response(artifact, owner_id, x_user_id) if artifact else None
     )
@@ -264,9 +297,9 @@ async def find_artifact(
 async def ensure_artifact(
     workspace_id: str, body: ArtifactPathRequest, x_user_id: CurrentUserId
 ) -> ArtifactResponse:
-    """The file's record, made private if new."""
-    ws_id, relative, owner_id = await _workspace_path(workspace_id, body.path, x_user_id)
-    artifact = await artifacts_db.ensure_artifact(ws_id, relative)
+    """The file's or chart's record, made private if new."""
+    ws_id, kind, key, owner_id = await _record_key(workspace_id, body, x_user_id)
+    artifact = await artifacts_db.ensure_record(ws_id, kind, key)
     return await _response(artifact, owner_id, x_user_id)
 
 
@@ -280,7 +313,7 @@ async def get_artifact(artifact_id: str, x_user_id: CurrentUserId) -> ArtifactRe
 async def update_artifact(
     artifact_id: str, body: KeepUpdatedRequest, x_user_id: CurrentUserId
 ) -> ArtifactResponse:
-    current, access = await reached(artifact_id, x_user_id)
+    current, access = await reached_file(artifact_id, x_user_id)
     if current.shared:
         # Each later version a kept-updated link cuts reaches its visitors.
         await refuse_link_change(access)
@@ -306,7 +339,7 @@ async def set_artifact_kept(
     version (``shared_seq``). Stopping keeps the versions cut so far. A keep
     refused leaves the record as it was.
     """
-    artifact, access = await reached(artifact_id, x_user_id)
+    artifact, access = await reached_file(artifact_id, x_user_id)
     with db_errors(), _snapshot_errors():
         if body.kept:
             artifact = await snapshot.keep(
@@ -330,7 +363,7 @@ async def set_file_left_out(
     """Take a file the page does not need to draw off what a publish carries, or
     put it back. A file the page loads goes along regardless, so naming one here
     changes nothing."""
-    artifact, access = await reached(artifact_id, x_user_id)
+    artifact, access = await reached_file(artifact_id, x_user_id)
     with db_errors():
         artifact = await artifacts_db.set_left_out(
             user_id=access.owner_id,
@@ -351,8 +384,8 @@ async def set_file_left_out(
 async def bind_artifact(
     artifact_id: str, body: BindRequest, x_user_id: CurrentUserId
 ) -> ArtifactResponse:
-    """Send the file's comments to a thread until unbound: one in the file's
-    workspace, or a Chief of Staff thread."""
+    """Send the record's comments to a thread until unbound: one in its
+    workspace, or for a file a Chief of Staff thread."""
     _, access = await reached(artifact_id, x_user_id)
     with db_errors():
         artifact = await artifacts_db.bind(
@@ -440,7 +473,7 @@ async def get_status_unreported(
 async def _status(
     artifact_id: str, user_id: str, loaded: tuple[str, ...], earlier: tuple[str, ...]
 ) -> StatusResponse:
-    artifact, access = await reached(artifact_id, user_id)
+    artifact, access = await reached_file(artifact_id, user_id)
     with _snapshot_errors():
         found = await snapshot.status(
             artifact,
@@ -480,7 +513,7 @@ async def publish_artifact(
     computer's page that loads from a library folder is a 409
     ``needs_computer``, as for status.
     """
-    artifact, access = await reached(artifact_id, x_user_id)
+    artifact, access = await reached_file(artifact_id, x_user_id)
     owner_id = access.owner_id
     await refuse_link_change(access)
     if link_audience(artifact.audience) == ORGANIZATION:
@@ -528,7 +561,7 @@ async def set_audience(
     shared link is turning on a public link (``public_links``). Holds on every
     visitor's next request; a member's grant opens nothing once the link opens
     to anyone, and an anonymous one nothing once it opens to members."""
-    artifact, access = await reached(artifact_id, x_user_id)
+    artifact, access = await reached_file(artifact_id, x_user_id)
     owner_id = access.owner_id
     await refuse_link_change(access)
     before = link_audience(artifact.audience)
@@ -564,7 +597,7 @@ async def unshare_artifact(
 ) -> ArtifactResponse:
     """Stop sharing; the versions stay, and publishing again resumes at the
     same link."""
-    _, access = await reached(artifact_id, x_user_id)
+    _, access = await reached_file(artifact_id, x_user_id)
     await refuse_link_change(access)
     with db_errors():
         artifact = await artifacts_db.unshare(
@@ -590,7 +623,7 @@ async def mint_grant(
     """Where the owner's viewer frames a published version from, read only;
     see ``services/artifacts/grants``. A shared workspace's member gets a
     grant bound to them, which ends when they stop reaching the workspace."""
-    artifact, access = await reached(artifact_id, x_user_id)
+    artifact, access = await reached_file(artifact_id, x_user_id)
     if access.is_shared:
         grant = await mint_artifact_member_grant(artifact.artifact_id, x_user_id)
     else:
