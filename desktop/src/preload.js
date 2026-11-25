@@ -253,14 +253,15 @@ contextBridge.exposeInMainWorld('langalphaDesktop', {
   onDesktopSettings: (callback) => subscribe('shell:desktop-settings', callback),
 
   /**
-   * The app's own update: `status` is `idle`, `available` (found, to download
-   * from `mode: 'notify'`'s page) or `ready` (downloaded, installed by a
-   * restart), with what a restart stops (`stopsServer`). Asking also tells the
-   * shell this page shows it, so the shell holds back its own prompt.
+   * The app's own update: `status` is `idle`, `available` (found, to download:
+   * from `mode: 'notify'`'s page, or here with `automatic` off), `downloading`
+   * or `ready` (downloaded, installed by a restart, and on quit when
+   * `installsOnQuit`), with what a restart stops (`stopsServer`). Asking also
+   * tells the shell this page shows it, so the shell holds back its own prompt.
    */
   getUpdateState: () => ipcRenderer.invoke('shell:get-update-state'),
 
-  /** Restart into the ready update, or open the download page for an available one. */
+  /** Restart into the ready update, download an available one, or in notify mode open the download page. */
   installUpdate: () => ipcRenderer.invoke('shell:install-update'),
 
   /** The update state, each time it changes. Answers the way to stop listening. */

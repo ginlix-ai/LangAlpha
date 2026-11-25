@@ -815,10 +815,25 @@ stack (`stopsServer`) the running turns, background tasks and commands on this c
 that it pauses, read from `GET /api/v1/users/me/running-work`, and against a server
 elsewhere that the turns keep going. A page asking `shell:get-update-state` is what
 marks its window as showing the button, so the native prompt still appears where the
-loaded web app predates it. The panel links the version's release when the build was
+loaded web app predates it. A page that takes the button down (`shell:hide-updates`, as
+its phone layout does when zoom narrows the window) gets the native prompt once per
+update, unless a page shows the button again within a second, as a sidebar collapsing
+to its rail does; a new document in that window gets five seconds to boot and ask. The
+panel links the version's release when the build was
 given a releases page (`DESKTOP_RELEASES_PAGE`, read as `releasesPage`): the tag
 `desktop-oss-v<version>`, or `desktop-oss-nightly` for a nightly. A turn the restart
 stops is resumed by the next launch, as after any graceful server restart (`restart_drain.py`).
+
+**Automatic updates can be turned off** (`automaticUpdates` in the desktop settings, on by
+default), from Settings or from the switch in the update panel, both writing the same
+setting through `shell:set-desktop-settings`. Off, the timed check still runs and the
+sidebar offers what it finds as Update available; nothing downloads until the person
+clicks Download (`downloading`, then `ready`), and only that update installs on quit.
+One that downloaded before they turned it off waits for a restart they choose
+(`installsOnQuit: false`), except on a Mac, where Squirrel.Mac took it as it landed and
+it still installs on quit, which the panel then says. Turned on again, an update already offered starts downloading.
+The row shows only in a build that downloads its own updates (`support.automaticUpdates`),
+never in notify mode.
 
 **The OSS feed carries two channels, stable (`latest*.yml`) and nightly (`nightly*.yml`).**
 A nightly is `<stable patch + 1>-nightly.<UTC yyyymmddHHMM>`, above the release it follows

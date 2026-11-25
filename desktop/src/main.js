@@ -523,7 +523,13 @@ const shortcut = createShortcut({ supported: traits.globalShortcut, onPress: () 
 
 const loginItem = createLoginItem(traits)
 
-const settings = createSettingsService({ store, traits, loginItem, shortcutError: shortcut.error })
+const settings = createSettingsService({
+  store,
+  traits,
+  loginItem,
+  shortcutError: shortcut.error,
+  updates: () => updater.canTurnOffAutomatic(),
+})
 
 const glance = createGlance({
   traits,
@@ -545,6 +551,7 @@ const glance = createGlance({
 settings.onChange((next, prev) => {
   if (prev.shortcut !== next.shortcut) shortcut.apply(next.shortcut)
   if (prev.menubar.enabled !== next.menubar.enabled) syncMenubarItem(next.menubar.enabled)
+  if (prev.automaticUpdates !== next.automaticUpdates) updater.setAutomatic()
 })
 
 // ---------------------------------------------------------------------------
