@@ -7,13 +7,14 @@ import contextlib
 import json
 import shlex
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from ptc_agent.core.sandbox.runtime import PreviewInfo, RuntimeState
 from src.server.services import browser_view as module
 from ptc_agent.core.sandbox.browser_runtime import protocol
+from src.server.services.toolset import Answer
 from src.server.services.browser_view import (
     VIEW_LIFETIME_S,
     browser_control,
@@ -70,11 +71,91 @@ def _asked(sandbox) -> list[str]:
     return [shlex.split(call.args[0])[3:] for call in sandbox.runtime.exec.await_args_list]
 
 
+@pytest.fixture(autouse=True)
+def toolset(monkeypatch):
+    """The computer's tool update, which answers nothing unless a test says."""
+    stand_in = SimpleNamespace(
+        ask_status=AsyncMock(return_value=None),
+        # Starts one unless the version it is told is the table's, "t-new".
+        converge_soon=Mock(side_effect=lambda sandbox, computer_id, known: known != "t-new"),
+    )
+    monkeypatch.setattr(module, "toolset", stand_in)
+    return stand_in
+
+
 @pytest.mark.asyncio
 async def test_a_cloud_computer_without_the_engine_was_built_before_the_browser():
     sandbox = _sandbox(_status(installed=False))
-    assert (await browser_view(sandbox, "ws-1")).state == "outdated"
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "outdated"
     assert sandbox.runtime.exec.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_computer_whose_tools_are_updating_is_installing(toolset):
+    toolset.ask_status.return_value = Answer(None, converging=True)
+    assert (await browser_view(_sandbox(_status(installed=False)), "ws-1", "c-1")).state == "installing"
+    toolset.converge_soon.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, "t-old"])
+async def test_a_cloud_computer_behind_the_server_s_tools_is_updated_and_installing(toolset, version):
+    toolset.ask_status.return_value = Answer(version)
+    sandbox = _sandbox(_status(installed=False))
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "installing"
+    toolset.converge_soon.assert_called_once_with(sandbox, "c-1", version)
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_computer_current_and_still_without_the_engine_is_outdated(toolset):
+    toolset.ask_status.return_value = Answer("t-new")
+    assert (await browser_view(_sandbox(_status(installed=False)), "ws-1", "c-1")).state == "outdated"
+    assert toolset.converge_soon.call_args.args[2] == "t-new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("seen", "state", "known"),
+    [
+        ({"version": "t-old", "converging": False}, "installing", "t-old"),
+        ({"version": None, "converging": False}, "installing", None),
+        ({"version": "t-new", "converging": False}, "outdated", "t-new"),
+        ({"version": "t-old", "converging": True}, "installing", "skip"),
+    ],
+)
+async def test_the_browser_s_own_status_says_what_the_tools_hold_in_one_call(toolset, seen, state, known):
+    sandbox = _sandbox(_status(installed=False, toolset=seen))
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == state
+    assert sandbox.runtime.exec.await_count == 1
+    toolset.ask_status.assert_not_awaited()
+    if known == "skip":
+        toolset.converge_soon.assert_not_called()
+    else:
+        toolset.converge_soon.assert_called_once_with(sandbox, "c-1", known)
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_that_does_not_report_the_tools_has_root_asked(toolset):
+    toolset.ask_status.return_value = Answer("t-old")
+    sandbox = _sandbox(_status(installed=False))
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "installing"
+    toolset.ask_status.assert_awaited_once_with(sandbox.runtime, "/r/_internal/src")
+    toolset.converge_soon.assert_called_once_with(sandbox, "c-1", "t-old")
+
+
+@pytest.mark.asyncio
+async def test_a_tool_status_that_fails_leaves_the_computer_outdated(toolset):
+    toolset.ask_status.side_effect = RuntimeError("no answer")
+    assert (await browser_view(_sandbox(_status(installed=False)), "ws-1", "c-1")).state == "outdated"
+    toolset.converge_soon.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_computer_with_the_browser_or_of_the_person_s_own_never_asks_for_tools(toolset):
+    await browser_view(_sandbox(_status()), "ws-1", "c-1")
+    sandbox = _own_machine(_status(installed=False), {"done": False, "reason": "unsupported"})
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "unavailable"
+    toolset.ask_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -82,14 +163,14 @@ async def test_a_machine_of_the_person_s_own_with_no_browser_says_so():
     sandbox = _own_machine(
         _status(installed=False), {"done": False, "reason": "no_chrome", "chrome": None}
     )
-    assert (await browser_view(sandbox, "ws-1")).state == "no_chrome"
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "no_chrome"
     assert _asked(sandbox) == [["status"], ["install"]]
 
 
 @pytest.mark.asyncio
 async def test_only_the_person_asking_downloads_chrome_for_testing():
     sandbox = _own_machine(_status(installed=False), {"done": True})
-    assert (await browser_view(sandbox, "ws-1", get_chrome=True)).state == "installing"
+    assert (await browser_view(sandbox, "ws-1", "c-1", get_chrome=True)).state == "installing"
     assert _asked(sandbox) == [["status"], ["install", "chrome"]]
 
 
@@ -99,14 +180,14 @@ async def test_asking_for_chrome_behind_a_setup_under_way_queues_the_download():
     machine runs one install at a time, and the queued one finds Chrome there
     after a download."""
     sandbox = _own_machine(_status(installed=False, installing=True), {"done": True})
-    assert (await browser_view(sandbox, "ws-1", get_chrome=True)).state == "installing"
+    assert (await browser_view(sandbox, "ws-1", "c-1", get_chrome=True)).state == "installing"
     assert _asked(sandbox) == [["status"], ["install", "chrome"]]
 
 
 @pytest.mark.asyncio
 async def test_a_machine_setting_up_is_left_to_it():
     sandbox = _own_machine(_status(installed=False, installing=True))
-    assert (await browser_view(sandbox, "ws-1")).state == "installing"
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "installing"
     assert _asked(sandbox) == [["status"]]
 
 
@@ -117,7 +198,7 @@ async def test_a_machine_set_up_while_the_person_waits_is_watched_on_its_own_por
         {"done": True, "reason": None, "chrome": "/opt/google/chrome/chrome"},
         _status(running=True, token=TOKEN, port=22097),
     )
-    view = await browser_view(sandbox, "ws-1")
+    view = await browser_view(sandbox, "ws-1", "c-1")
     assert view.state == "running"
     assert view.url.startswith(f"https://p.example.com{protocol.PATH_PREFIX}{TOKEN}")
     assert sandbox.get_preview_url.await_args.args[0] == 22097
@@ -128,7 +209,7 @@ async def test_a_cloud_computer_is_watched_on_the_image_s_port_whatever_it_repor
     """Its agent can write the port it reports, and a preview link, which
     members may hold, must not open another."""
     sandbox = _sandbox(_status(running=True, token=TOKEN, port=22097))
-    view = await browser_view(sandbox, "ws-1")
+    view = await browser_view(sandbox, "ws-1", "c-1")
     assert view.state == "running"
     assert sandbox.get_preview_url.await_args.args[0] == protocol.BRIDGE_PORT
 
@@ -136,7 +217,7 @@ async def test_a_cloud_computer_is_watched_on_the_image_s_port_whatever_it_repor
 @pytest.mark.asyncio
 async def test_a_machine_that_stopped_and_so_did_not_answer_is_stopped():
     sandbox = _sandbox(exec_error=RuntimeError("gone"), state=RuntimeState.STOPPED)
-    assert (await browser_view(sandbox, "ws-1")).state == "stopped"
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "stopped"
 
 
 @pytest.mark.parametrize(("start", "state"), [(False, RuntimeState.RUNNING), (True, RuntimeState.STOPPED)])
@@ -146,14 +227,14 @@ async def test_a_running_computer_that_did_not_answer_is_an_error_not_a_stopped_
     again. A start has just brought the computer up, whatever its state reads."""
     sandbox = _sandbox(exec_error=TimeoutError(), state=state)
     with pytest.raises(TimeoutError):
-        await browser_view(sandbox, "ws-1", start=start)
+        await browser_view(sandbox, "ws-1", "c-1", start=start)
 
 
 @pytest.mark.asyncio
 async def test_a_computer_that_stops_while_its_link_is_made_is_stopped():
     sandbox = _sandbox(_status(running=True, token=TOKEN), state=RuntimeState.STOPPED)
     sandbox.get_preview_url.side_effect = RuntimeError("sandbox is not running")
-    assert (await browser_view(sandbox, "ws-1")).state == "stopped"
+    assert (await browser_view(sandbox, "ws-1", "c-1")).state == "stopped"
 
 
 @pytest.mark.asyncio
@@ -161,13 +242,13 @@ async def test_a_link_that_fails_on_a_running_computer_is_still_an_error():
     sandbox = _sandbox(_status(running=True, token=TOKEN))
     sandbox.get_preview_url.side_effect = RuntimeError("no preview")
     with pytest.raises(RuntimeError, match="no preview"):
-        await browser_view(sandbox, "ws-1")
+        await browser_view(sandbox, "ws-1", "c-1")
 
 
 @pytest.mark.parametrize("stdout", ["", "python3: can't open file", _status(installed=False)])
 @pytest.mark.asyncio
 async def test_a_computer_older_than_the_browser_is_outdated(stdout: str):
-    assert (await browser_view(_sandbox(stdout), "ws-1")).state == "outdated"
+    assert (await browser_view(_sandbox(stdout), "ws-1", "c-1")).state == "outdated"
 
 
 @pytest.mark.parametrize(
@@ -184,14 +265,14 @@ async def test_a_computer_older_than_the_browser_is_outdated(stdout: str):
 )
 @pytest.mark.asyncio
 async def test_no_browser_open_is_idle(fields: dict):
-    assert (await browser_view(_sandbox(_status(**fields)), "ws-1")).state == "idle"
+    assert (await browser_view(_sandbox(_status(**fields)), "ws-1", "c-1")).state == "idle"
 
 
 @pytest.mark.asyncio
 async def test_an_open_refused_for_memory_says_so():
-    assert (await browser_view(_sandbox(_status(low_memory=True)), "ws-1", start=True)).state == "low_memory"
+    assert (await browser_view(_sandbox(_status(low_memory=True)), "ws-1", "c-1", start=True)).state == "low_memory"
     # A browser that is up is shown whatever else the answer says.
-    up = await browser_view(_sandbox(_status(running=True, token=TOKEN, low_memory=True)), "ws-1")
+    up = await browser_view(_sandbox(_status(running=True, token=TOKEN, low_memory=True)), "ws-1", "c-1")
     assert up.state == "running"
 
 
@@ -199,20 +280,20 @@ async def test_an_open_refused_for_memory_says_so():
 async def test_an_app_on_the_owners_own_machine_may_open_the_stream_past_the_server():
     """Its bridge listens on the machine's loopback, behind the same token."""
     sandbox = _own_machine(_status(running=True, token=TOKEN, port=22097))
-    view = await browser_view(sandbox, "ws-1")
+    view = await browser_view(sandbox, "ws-1", "c-1")
     assert view.local_url == f"http://127.0.0.1:22097{protocol.PATH_PREFIX}{TOKEN}"
 
 
 @pytest.mark.asyncio
 async def test_no_loopback_for_a_cloud_computer_or_a_shared_workspaces_member():
-    cloud = await browser_view(_sandbox(_status(running=True, token=TOKEN)), "ws-1")
+    cloud = await browser_view(_sandbox(_status(running=True, token=TOKEN)), "ws-1", "c-1")
     assert cloud.state == "running" and cloud.local_url is None
     sandbox = _own_machine(_status(running=True, token=TOKEN, port=22097))
     with (
         patch.object(module, "preview_base", return_value=None),
         patch.object(module, "publish", AsyncMock(return_value="https://p.example.com/")),
     ):
-        member = await browser_view(sandbox, "ws-1", viewer_id="member-1")
+        member = await browser_view(sandbox, "ws-1", "c-1", viewer_id="member-1")
     assert member.state == "running" and member.local_url is None
 
 
@@ -230,7 +311,7 @@ def test_whether_a_machine_sets_its_browser_up_is_its_providers():
 
 @pytest.mark.asyncio
 async def test_a_signed_url_gets_the_token_path_and_keeps_its_query():
-    view = await browser_view(_sandbox(_status(running=True, token=TOKEN)), "ws-1")
+    view = await browser_view(_sandbox(_status(running=True, token=TOKEN)), "ws-1", "c-1")
     assert view.state == "running"
     assert view.url == f"https://p.example.com/b/{TOKEN}?t=1"
     assert view.expires_in == VIEW_LIFETIME_S
@@ -239,11 +320,11 @@ async def test_a_signed_url_gets_the_token_path_and_keeps_its_query():
 @pytest.mark.asyncio
 async def test_reading_starts_nothing_and_only_start_opens_a_browser():
     reading = _sandbox(_status())
-    await browser_view(reading, "ws-1")
+    await browser_view(reading, "ws-1", "c-1")
     assert reading.runtime.exec.await_args.args[0] == "python3 -I /r/_internal/src/browser_runtime status"
 
     starting = _sandbox(_status())
-    await browser_view(starting, "ws-1", start=True)
+    await browser_view(starting, "ws-1", "c-1", start=True)
     assert starting.runtime.exec.await_args.args[0].endswith("browser_runtime start 30")
 
 
@@ -260,7 +341,7 @@ async def test_only_a_start_may_wake_the_computer_to_resolve_its_url(start: bool
         patch.object(module, "preview_base", return_value=object()),
         patch.object(module, "publish", AsyncMock(return_value="https://p.example.com/")),
     ):
-        await browser_view(sandbox, "ws-1", start=start)
+        await browser_view(sandbox, "ws-1", "c-1", start=start)
     assert sandbox.get_preview_url.await_args.kwargs == {"wake": start}
     assert sandbox.get_preview_link.await_args.kwargs == {"wake": start}
 
@@ -275,7 +356,7 @@ async def test_the_stream_is_minted_for_the_viewer_it_was_asked_for(viewer):
     publish = AsyncMock(return_value="https://9224-cap.preview.example.com/")
 
     with patch.object(module, "preview_base", return_value=None), patch.object(module, "publish", publish):
-        await browser_view(sandbox, "ws-1", viewer_id=viewer)
+        await browser_view(sandbox, "ws-1", "c-1", viewer_id=viewer)
     assert publish.await_args.kwargs["viewer_id"] == viewer
 
 
@@ -290,14 +371,14 @@ async def test_a_members_signed_stream_goes_through_the_proxy_where_one_runs():
     publish = AsyncMock(return_value="https://9224-cap.preview.example.com/")
 
     with patch.object(module, "preview_base", return_value=object()), patch.object(module, "publish", publish):
-        await browser_view(sandbox, "ws-1", viewer_id="member-1")
+        await browser_view(sandbox, "ws-1", "c-1", viewer_id="member-1")
     published = publish.await_args.args[0]
     assert (published.browser_ready, published.auth_headers) == (False, {"x-token": "t"})
 
     # The owner's signed URL is the provider's to revoke, as any preview's is.
     publish.reset_mock()
     with patch.object(module, "preview_base", return_value=object()), patch.object(module, "publish", publish):
-        await browser_view(sandbox, "ws-1")
+        await browser_view(sandbox, "ws-1", "c-1")
     assert publish.await_args.args[0].token == "signed"
 
 
@@ -312,14 +393,14 @@ async def test_a_url_with_no_credential_goes_through_the_proxy_where_one_runs():
     publish = AsyncMock(return_value="https://9224-cap.preview.example.com/")
 
     with patch.object(module, "preview_base", return_value=object()), patch.object(module, "publish", publish):
-        await browser_view(sandbox, "ws-1")
+        await browser_view(sandbox, "ws-1", "c-1")
     published = publish.await_args.args[0]
     assert (published.url, published.browser_ready, published.token) == (link.url, False, None)
 
     # With no proxy there is nothing to go through, and the URL is handed out as it is.
     publish.reset_mock()
     with patch.object(module, "preview_base", return_value=None), patch.object(module, "publish", publish):
-        await browser_view(sandbox, "ws-1")
+        await browser_view(sandbox, "ws-1", "c-1")
     assert publish.await_args.args[0].url == "http://localhost:49153"
 
 
@@ -328,7 +409,7 @@ async def test_a_signed_url_is_never_routed_through_the_proxy():
     sandbox = _sandbox(_status(running=True, token=TOKEN))
     sandbox.get_preview_link = AsyncMock()
     with patch.object(module, "preview_base", return_value=object()):
-        view = await browser_view(sandbox, "ws-1")
+        view = await browser_view(sandbox, "ws-1", "c-1")
     assert view.url == f"https://p.example.com/b/{TOKEN}?t=1"
     sandbox.get_preview_link.assert_not_awaited()
 

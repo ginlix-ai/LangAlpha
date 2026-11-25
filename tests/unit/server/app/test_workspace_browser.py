@@ -27,14 +27,16 @@ NAVIGATE = ("/browser-navigate", {"holder": "view-1", "action": "back"})
 
 
 def _reach(owner_id: str = USER) -> AsyncMock:
-    return AsyncMock(return_value=({"workspace_id": WS, "user_id": owner_id}, "owner"))
+    return AsyncMock(
+        return_value=({"workspace_id": WS, "user_id": owner_id, "computer_id": "c-read"}, "owner")
+    )
 
 
 MANAGER = SimpleNamespace(keep_sandbox_alive=AsyncMock(return_value=True))
 
 
 def _setup(*, running: object = SANDBOX, reach: AsyncMock | None = None, on: bool = True):
-    acquire = AsyncMock(return_value=(SANDBOX, {"workspace_id": WS}))
+    acquire = AsyncMock(return_value=(SANDBOX, {"workspace_id": WS, "computer_id": "c-acquired"}))
     if_running = AsyncMock(return_value=running)
     MANAGER.keep_sandbox_alive.reset_mock()
     patches = (
@@ -109,7 +111,8 @@ async def test_only_a_start_acquires_and_access_is_checked_once():
     reach.assert_awaited_once_with(WS, USER)
     acquire.assert_awaited_once_with(WS, USER, "browser_view")
     if_running.assert_not_awaited()
-    assert view.await_args.args[0] is SANDBOX
+    # The computer as the acquisition left the workspace, which a move changes.
+    assert view.await_args.args == (SANDBOX, WS, "c-acquired")
     assert view.await_args.kwargs == {"start": True, "get_chrome": False, "viewer_id": None}
 
 
@@ -122,6 +125,7 @@ async def test_a_shared_workspaces_member_gets_a_stream_minted_for_them():
     with patch.object(module, "browser_view", view):
         await _post("/browser-view", {}, *patches)
 
+    assert view.await_args.args == (SANDBOX, WS, "c-read")
     assert view.await_args.kwargs == {"start": False, "get_chrome": False, "viewer_id": USER}
 
 
