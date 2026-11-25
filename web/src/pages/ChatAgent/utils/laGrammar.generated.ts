@@ -212,5 +212,6 @@ export const LA_COMMANDS: readonly CommandSpec[] = [
   {"words":["drive","restore"],"operands":["path"],"flags":{"rev":{"type":"int","required":true},"space":{"type":"string"}}},
   {"words":["drive","trash","restore"],"operands":["trash_id"],"flags":{"space":{"type":"string"}}},
   {"words":["drive","trash"],"operands":[],"flags":{"space":{"type":"string"}}},
+  {"words":["skills","save"],"operands":["name"],"flags":{"workspace":{"type":"string","short":"w"}}},
   {"words":["models","list"],"operands":[],"flags":{}},
 ];

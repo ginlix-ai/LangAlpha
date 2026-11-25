@@ -43,11 +43,27 @@ class TestTheSectionFollowsTheMessagingTools:
         ]
         assert HEADING in block
         assert "reply with\n`send_message`" in block
-        assert POINTER in block
+        # The page on how each app shows a message is named with the other
+        # langalpha-doc pages, in the section that lists them.
+        assert POINTER not in block
+
+    def test_its_page_is_named_with_the_doc_skill_s_others(self, guidance, role):
+        prompt = _prompt(
+            channels_enabled=True,
+            langalpha_doc_enabled=True,
+            role=role,
+            **guidance_template_vars(guidance),
+        )
+
+        doc = prompt[prompt.index("<langalpha_doc>") : prompt.index("</langalpha_doc>")]
+        assert POINTER in doc
+        assert prompt.count(POINTER) == 1
 
     @pytest.mark.parametrize("off", [{"channels_enabled": False}, {}])
     def test_it_is_absent_without_them(self, guidance, role, off):
-        prompt = _prompt(role=role, **guidance_template_vars(guidance), **off)
+        prompt = _prompt(
+            role=role, langalpha_doc_enabled=True, **guidance_template_vars(guidance), **off
+        )
 
         assert HEADING not in prompt
         assert POINTER not in prompt

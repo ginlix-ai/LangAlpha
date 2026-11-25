@@ -57,6 +57,8 @@ that reaches the user while they are away, such as wakeups and automations.
 When they ask for something in the app or on the web, lean toward giving them
 the result there too, and send it on to a chat as well if their preference
 calls for it.
+{% if not langalpha_doc_section | default(false) %}
 `.agents/skills/langalpha-doc/references/chat.md` says how each app shows a
 message.
+{% endif %}
 {% endif %}

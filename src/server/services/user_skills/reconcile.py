@@ -54,6 +54,7 @@ from src.server.database.user_skills import (
     delete_user_skill_cas,
     get_user_skill_by_id,
     list_user_skills,
+    hold_workspace_skill_sync,
     list_workspace_skill_disables,
     update_user_skill_content_cas,
     workspace_skill_sync_lock,
@@ -72,9 +73,11 @@ from src.server.services.user_skills.materialize import (
     fetch_skill_archive,
 )
 from src.server.services.user_skills.validate import (
+    SkillNamesUnavailable,
     SkillValidationError,
     ValidatedSkill,
     archive_file_pairs,
+    reserved_for_a_command_only,
     reserved_skill_names,
     validate_skill_archive,
 )
@@ -136,6 +139,34 @@ class ReconcileStats:
             or self.linked
             or self.unlinked
         )
+
+
+@dataclass(frozen=True)
+class SkillSaved:
+    """What saving one skill folder on request came to
+    (:func:`save_workspace_skill`)."""
+
+    saved: bool
+    #: Whether this call wrote the skill; False for a folder already saved as
+    #: it stands.
+    changed: bool = False
+    #: Why it was not saved, worded for whoever asked.
+    reason: str | None = None
+
+
+@dataclass
+class _Watch:
+    """One skill's path through a pass, for a caller that answers for it."""
+
+    name: str
+    rep: dict[str, Any] | None = None
+    row: dict[str, Any] | None = None
+    #: The account's own skill of this name, which a workspace reaches
+    #: through a link rather than a folder.
+    user_row: dict[str, Any] | None = None
+    restore_incomplete: bool = False
+    failure: str | None = None
+    apply_failure: str | None = None
 
 
 class _SyncFailure(Exception):
@@ -271,6 +302,7 @@ async def _run_pass(
     workspace_id: str,
     source: str,
     layout: WorkspaceLayout,
+    watch: _Watch | None = None,
 ) -> ReconcileStats:
     base = layout.skills
     scope_id = acting_for(user_id, workspace_id)
@@ -295,12 +327,19 @@ async def _run_pass(
         restore_incomplete=await files_restore_incomplete(workspace_id),
     )
     ctx.stats.restore_incomplete = ctx.restore_incomplete
+    if watch is not None:
+        watch.rep = report.get(watch.name)
+        watch.row = ws_rows.get(watch.name)
+        watch.user_row = user_rows.get(watch.name)
+        watch.restore_incomplete = ctx.restore_incomplete
 
     for name in sorted(set(report) | set(ws_rows)):
         try:
             await _decide(ctx, name)
         except _SyncFailure as f:
             ctx.stats.failures += 1
+            if watch is not None and name == watch.name:
+                watch.failure = f.reason
             logger.warning(
                 "[skill_sync] %s failed for %r (ws=%s): %s",
                 f.kind,
@@ -312,6 +351,8 @@ async def _run_pass(
                 _record_failure(ctx, name, f)
         except Exception:
             ctx.stats.failures += 1
+            if watch is not None and name == watch.name:
+                watch.failure = "the save did not finish; run it again"
             logger.exception(
                 "[skill_sync] reconcile failed for %r (ws=%s)", name, workspace_id
             )
@@ -321,6 +362,12 @@ async def _run_pass(
         for res in results:
             if res.get("ok"):
                 continue
+            if watch is not None and res.get("name") == watch.name:
+                watch.apply_failure = (
+                    "the folder changed while it was being saved; run it again"
+                    if res.get("drift")
+                    else str(res.get("error") or "the computer refused the write")
+                )
             if res.get("drift"):
                 # The agent wrote between report and apply; the guarded op
                 # aborted and the next pass re-decides from fresh state.
@@ -369,6 +416,144 @@ async def _run_pass(
             stats.unlinked,
         )
     return stats
+
+
+#: How long a save waits for a pass already running on the workspace.
+SAVE_LOCK_WAIT_SECONDS = 20.0
+
+
+async def save_workspace_skill(
+    sandbox: "PTCSandbox",
+    *,
+    user_id: str,
+    workspace_id: str,
+    name: str,
+    project: ProjectContext | None = None,
+) -> SkillSaved:
+    """Save the folder ``name`` in the workspace's skill directory now, and
+    say what came of it.
+
+    The same pass a turn's end runs, so one set of rules decides what a skill
+    folder becomes; this one waits for a pass in flight instead of yielding
+    to it, and answers for the one folder, where a pass only leaves a refusal
+    in the ledger for the next reader. Never raises: a computer that cannot
+    be read is an answer too, for a caller that can only run it again.
+    """
+    watch = _Watch(name)
+    scope = acting_for(user_id, workspace_id)
+    try:
+        resolved = await _resolve_layout(sandbox, workspace_id, project)
+        async with AsyncExitStack() as locks:
+            for lock_id in sorted({workspace_id, scope}):
+                await locks.enter_async_context(
+                    hold_workspace_skill_sync(lock_id, wait_s=SAVE_LOCK_WAIT_SECONDS)
+                )
+            await asyncio.wait_for(
+                _run_pass(sandbox, user_id, workspace_id, "save", resolved, watch),
+                timeout=RECONCILE_TIMEOUT_SECONDS,
+            )
+            rows = await list_user_skills(user_id, workspace_id=scope)
+    except TimeoutError:
+        return SkillSaved(False, reason="saving took too long; run it again")
+    except WorkspaceLayoutUnavailable:
+        return SkillSaved(False, reason="this workspace has no folder on the computer yet")
+    except SkillSyncLockBusy:
+        return SkillSaved(
+            False, reason="this workspace's skills are being synced; run it again in a moment"
+        )
+    except Exception:
+        logger.exception("[skill_sync] save of %r failed (ws=%s)", name, workspace_id)
+        return SkillSaved(False, reason="the computer could not be read; run it again")
+    saved = next((r for r in rows if r["name"] == name), None)
+    return _saved(watch, saved, where=f"{resolved.skills.rstrip('/')}/{name}")
+
+
+def _built_in(name: str) -> bool:
+    try:
+        return name in reserved_skill_names()
+    except SkillNamesUnavailable:
+        return False
+
+
+def _saved(watch: _Watch, row: dict[str, Any] | None, *, where: str) -> SkillSaved:
+    """The answer for one folder, from what the pass saw and left."""
+    rep = watch.rep or {}
+    entry = rep.get("entry") or {}
+    if entry.get("owner") == "platform" or _built_in(watch.name):
+        # Checked before the folder: a built-in reaches a workspace as a
+        # link, which the report does not count as a folder of its own.
+        taken = (
+            f"`{watch.name}` is the name of a platform skill or command, so nothing "
+            "is saved under it. "
+        )
+        rename = (
+            "Rename the folder to a name no skill has, set `name:` in its "
+            "SKILL.md to the new folder name, and save that"
+        )
+        if reserved_for_a_command_only(watch.name):
+            advice = rename if rep.get("present") else "Use a name no skill has"
+        elif rep.get("present"):
+            advice = rename + "; the platform skill of this name is linked again by that save"
+        else:
+            advice = (
+                "To change it, copy it to a name no skill has (`cp -rL`, which "
+                "resolves the link), set `name:` in the copy's SKILL.md to the new "
+                "folder name, and save that"
+            )
+        return SkillSaved(False, reason=taken + advice)
+    if not rep.get("present"):
+        if watch.user_row is not None:
+            return SkillSaved(
+                False,
+                reason=(
+                    f"`{watch.name}` is one of the account's skills, shared by every "
+                    "workspace, and not a folder of this workspace's own. To change "
+                    f"it for this workspace only, put a copy in place of the link at {where} "
+                    "(`cp -rL`), change the copy, and save that"
+                ),
+            )
+        return SkillSaved(False, reason=f"there is no {where}/SKILL.md")
+    if not rep.get("syncable"):
+        return SkillSaved(
+            False, reason=f"the folder holds what a skill cannot carry: {rep.get('reason')}"
+        )
+    if not rep.get("wellFormed"):
+        return SkillSaved(
+            False,
+            reason=(
+                "SKILL.md must open with frontmatter that has a description and "
+                f"`name: {watch.name}`, the folder's own name"
+            ),
+        )
+    if watch.restore_incomplete:
+        return SkillSaved(
+            False, reason="this workspace's files are still being restored; run it again shortly"
+        )
+    if watch.failure or watch.apply_failure:
+        return SkillSaved(False, reason=watch.failure or watch.apply_failure)
+    if _suppressed(rep, watch.row):
+        refused = (entry.get("sync") or {}).get("lastFailedSync") or {}
+        return SkillSaved(
+            False,
+            reason=str(refused.get("reason") or "it was refused before and has not changed"),
+        )
+    if row is None:
+        if watch.user_row is not None:
+            # A copy equal to the account's skill is that skill's delivered
+            # copy to the pass, which puts the link back in its place.
+            return SkillSaved(
+                False,
+                reason=(
+                    f"the folder was the same as the account's skill `{watch.name}`, so "
+                    "there was nothing of this workspace's own to save and the link is "
+                    "back in its place. Change the copy before you save it"
+                ),
+            )
+        return SkillSaved(False, reason="it is not a skill of this workspace's own")
+    if not row["enabled"]:
+        return SkillSaved(False, reason="this skill is turned off for this workspace")
+    before = (watch.row or {}).get("content_hash")
+    return SkillSaved(True, changed=before != row.get("content_hash"))
 
 
 async def _link_shared(ctx: _Pass) -> None:

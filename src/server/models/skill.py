@@ -80,3 +80,12 @@ class SkillMoveInput(BaseModel):
 
     from_workspace_id: str | None = None
     to_workspace_id: str | None = None
+
+
+class SkillSaveResult(BaseModel):
+    """What saving a skill folder from the computer came to."""
+
+    name: str
+    saved: bool
+    changed: bool = False
+    reason: str | None = None

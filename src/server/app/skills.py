@@ -25,7 +25,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 
 from ptc_agent.agent.middleware.skills import (
     SKILL_REGISTRY,
@@ -33,7 +33,10 @@ from ptc_agent.agent.middleware.skills import (
     list_skills,
     resolve_skill_dir,
 )
+from ptc_agent.agent.middleware.skills.discovery import validate_skill_name
 from src.server.database.account_disables import list_account_disables
+from src.server.database.computer import get_computer_for_workspace
+from src.server.database.home_workspace import get_home_stand_in_id, is_home_id
 from src.server.database.user_skills import (
     delete_user_skill,
     get_user_skill,
@@ -54,6 +57,7 @@ from src.server.models.skill import (
     SkillInfo,
     SkillLimitsResponse,
     SkillMoveInput,
+    SkillSaveResult,
     SkillsResponse,
 )
 from src.server.services import skill_archive_storage
@@ -92,6 +96,8 @@ from src.server.services.user_skills.limits import (
     MAX_SKILL_SINGLE_FILE_BYTES,
     MAX_SKILL_UNCOMPRESSED_BYTES,
 )
+from src.server.dependencies.principal import WorkspaceWriteUserId, computer_call
+from src.server.services.workspace_files import sandbox_if_running
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.utils.api import (
     CurrentUserId,
@@ -763,6 +769,65 @@ async def upload_workspace_skill(
     info = await _upload_skill_archive(user_id, file, workspace_id=workspace_id)
     WorkspaceManager.schedule_skill_reconcile(workspace_id, user_id, source="ws_upload")
     return info
+
+
+@router.post("/{name}/save", response_model=SkillSaveResult)
+@handle_api_exceptions("save workspace skill", logger)
+async def save_workspace_skill_folder(
+    name: str,
+    request: Request,
+    user_id: WorkspaceWriteUserId,
+    workspace_id: Optional[str] = Query(None),
+):
+    """Save the skill folder ``name`` as it stands on a workspace's computer,
+    and answer with what came of it.
+
+    For whoever wrote the folder there, the agent included: the save a turn's
+    end makes anyway, made now, with a refusal in the answer rather than in
+    the folder's ledger. With no ``workspace_id`` it is the workspace the
+    calling command ran in. A refusal of the folder is a 200 that says why;
+    only a request that names nothing saveable is an error.
+    """
+    if workspace_id is None:
+        workspace_id = await _workspace_a_command_ran_in(request, user_id)
+    ok, err = validate_skill_name(name, name)
+    if not ok:
+        raise HTTPException(status_code=422, detail=f"Not a skill name: {err}")
+    await _require_owned_workspace(workspace_id, user_id)
+    # A save reads the folder off the computer, and is not a reason to start
+    # one: what a stopped computer holds is saved when it starts.
+    sandbox = await sandbox_if_running(workspace_id, user_id)
+    if sandbox is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The workspace's computer is not running; its skills are saved when it starts",
+        )
+    result = await WorkspaceManager.get_instance().save_skill(
+        workspace_id, user_id, sandbox, name
+    )
+    return SkillSaveResult(
+        name=name, saved=result.saved, changed=result.changed, reason=result.reason
+    )
+
+
+async def _workspace_a_command_ran_in(request: Request, user_id: str) -> str:
+    """The workspace whose folder the calling command ran in.
+
+    A command files the workspace its turn works for, which for a Home turn
+    is Home wherever it runs, and it runs in Home's stand-in on any computer
+    but Home's own.
+    """
+    call = computer_call(request.scope)
+    if call is None or not call.workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Name the workspace: this command did not run inside one",
+        )
+    if is_home_id(user_id, call.workspace_id):
+        home = await get_computer_for_workspace(call.workspace_id)
+        if home is None or str(home["computer_id"]) != call.principal.computer_id:
+            return get_home_stand_in_id(user_id)
+    return call.workspace_id
 
 
 def _schedule_disable_reconcile(workspace_id: str, user_id: str) -> None:

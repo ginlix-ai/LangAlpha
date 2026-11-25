@@ -9,4 +9,6 @@ The Drive at `.agents/drive/personal/` is the user's lasting library: the same f
 {% if memo_in_drive | default(false) %}
 - The user's memos, documents they wrote or uploaded as their own reference (a thesis, an IC memo, a valuation framework), are at `.agents/user/memo/`, read only. `memo.md` there lists each in one line. When one covers the question, read it and cite it before working the answer out again.
 {% endif %}
+{% if not langalpha_doc_section | default(false) %}
 - For a file that is not text, a save that did not land, a file's history or the trash, read `.agents/skills/langalpha-doc/references/drive.md`.
+{% endif %}
