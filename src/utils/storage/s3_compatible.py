@@ -9,37 +9,7 @@ All use boto3 under the hood.
 Dependencies:
     pip install boto3
 
-Environment Variables:
-    STORAGE_ACCESS_KEY_ID     - Access key (falls back to AWS_ACCESS_KEY_ID)
-    STORAGE_SECRET_ACCESS_KEY - Secret key (falls back to AWS_SECRET_ACCESS_KEY)
-    STORAGE_BUCKET_NAME       - Bucket name (falls back to S3_BUCKET_NAME)
-    STORAGE_REGION            - Region (falls back to S3_REGION, default: us-east-1)
-    STORAGE_ENDPOINT_URL      - Custom endpoint for non-AWS services (falls back to S3_ENDPOINT_URL)
-    STORAGE_PUBLIC_URL_BASE   - Public URL base (falls back to S3_PUBLIC_URL_BASE)
-    STORAGE_MAX_UPLOAD_SIZE   - Max upload size in bytes (default: 10MB)
-    STORAGE_CONNECT_TIMEOUT_S - boto3 connect timeout in seconds (default: 5)
-    STORAGE_READ_TIMEOUT_S    - boto3 read timeout in seconds (default: 30)
-    STORAGE_RANGE_READ_TIMEOUT_S - read timeout for small ranged reads, which
-                                   fail fast so a dead pooled connection is
-                                   retried quickly (default: 5)
-    STORAGE_MAX_POOL_CONNECTIONS - boto3 connection pool size (default: 32)
-    STORAGE_ADDRESSING_STYLE  - Bucket addressing: virtual (default) | path | auto
-    STORAGE_BROWSER_ENDPOINT_URL - Endpoint browsers reach for signed download
-                                   links, when it differs from STORAGE_ENDPOINT_URL
-    STORAGE_KEY_PREFIX        - Namespace for every key this process stores, for
-                                environments that share one bucket (default: none)
-
-Endpoint / addressing:
-    AWS S3:        No endpoint needed, just credentials + bucket + region
-    Cloudflare R2: STORAGE_ENDPOINT_URL=https://{account_id}.r2.cloudflarestorage.com
-                   STORAGE_REGION=auto
-    MinIO:         STORAGE_ENDPOINT_URL=http://localhost:9000  + STORAGE_ADDRESSING_STYLE=path
-    Other S3-compatible: STORAGE_ENDPOINT_URL=https://{bare-host}  (no bucket subdomain)
-
-Most cloud S3-compatible services use virtual-hosted addressing (the default);
-self-hosted / path-only backends (e.g. MinIO) require STORAGE_ADDRESSING_STYLE=path.
-For a custom endpoint, give the bare host with no bucket subdomain — embedding the
-bucket double-prefixes object keys under virtual addressing.
+Configuration and the clients live in :mod:`s3_client`.
 
 Multipart uploads:
     An upload opened and never completed keeps its parts as storage that no
@@ -53,16 +23,14 @@ Multipart uploads:
 import base64
 import hashlib
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import boto3
-from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
     HTTPClientError,
@@ -71,250 +39,16 @@ from botocore.exceptions import (
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
 
 from src.utils.mime import resolve_content_type
-from src.utils.storage.key_prefix import KEY_PREFIX, full_key
+from src.utils.storage.key_prefix import full_key
+from src.utils.storage.s3_client import (
+    StorageConfig,
+    _get_browser_client,
+    _get_client,
+    _get_range_client,
+    _get_slice_client,
+)
 
 logger = logging.getLogger(__name__)
-
-
-_VALID_ADDRESSING_STYLES = {"virtual", "path", "auto"}
-
-
-def _resolve_addressing_style() -> str:
-    """Read STORAGE_ADDRESSING_STYLE, trimmed and validated; default 'virtual'.
-
-    Warns on an unrecognized value rather than silently coercing it, so a typo
-    or stray whitespace on a path-only backend surfaces instead of reintroducing
-    key doubling.
-    """
-    raw = (os.getenv("STORAGE_ADDRESSING_STYLE") or "virtual").strip().lower()
-    if raw not in _VALID_ADDRESSING_STYLES:
-        logger.warning(
-            "Invalid STORAGE_ADDRESSING_STYLE=%r; falling back to 'virtual' (valid: virtual, path, auto)",
-            raw,
-        )
-        return "virtual"
-    return raw
-
-
-class StorageConfig:
-    """Storage configuration loaded from environment variables.
-
-    Uses STORAGE_* env vars with fallback to legacy S3_*/AWS_* vars
-    for backward compatibility.
-    """
-
-    ACCESS_KEY_ID = os.getenv("STORAGE_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID")
-    SECRET_ACCESS_KEY = os.getenv("STORAGE_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
-    BUCKET_NAME = os.getenv("STORAGE_BUCKET_NAME") or os.getenv("S3_BUCKET_NAME")
-    REGION = os.getenv("STORAGE_REGION") or os.getenv("S3_REGION", "us-east-1")
-    ENDPOINT_URL = os.getenv("STORAGE_ENDPOINT_URL") or os.getenv("S3_ENDPOINT_URL")
-    PUBLIC_URL_BASE = os.getenv("STORAGE_PUBLIC_URL_BASE") or os.getenv("S3_PUBLIC_URL_BASE")
-    # The endpoint a browser reaches the store at, when it differs from the
-    # one this process uses (a MinIO addressed by its compose service name).
-    # Links handed to a browser are signed for this host instead.
-    BROWSER_ENDPOINT_URL = os.getenv("STORAGE_BROWSER_ENDPOINT_URL")
-    MAX_UPLOAD_SIZE = int(os.getenv("STORAGE_MAX_UPLOAD_SIZE", str(10 * 1024 * 1024)))
-
-    DEFAULT_IMAGE_PREFIX = os.getenv("STORAGE_DEFAULT_IMAGE_PREFIX", "images/")
-    DEFAULT_CHART_PREFIX = os.getenv("STORAGE_DEFAULT_CHART_PREFIX", "charts/")
-
-    CONNECT_TIMEOUT_S = int(os.getenv("STORAGE_CONNECT_TIMEOUT_S", "5"))
-    READ_TIMEOUT_S = int(os.getenv("STORAGE_READ_TIMEOUT_S", "30"))
-    RANGE_READ_TIMEOUT_S = int(os.getenv("STORAGE_RANGE_READ_TIMEOUT_S", "5"))
-
-    # botocore defaults this to 10, which workspace-file restore overruns: it
-    # fetches blobs under a semaphore of 16, so six of every sixteen requests
-    # got their connection discarded and paid a fresh TLS handshake. Sized
-    # above that concurrency with headroom for the concurrent sync path.
-    MAX_POOL_CONNECTIONS = int(os.getenv("STORAGE_MAX_POOL_CONNECTIONS", "32"))
-
-    # boto3 bucket addressing. Defaults to "virtual" because most cloud
-    # S3-compatible services require/prefer virtual-hosted addressing, whereas
-    # boto3's own default ("path" for custom endpoints) double-prefixes keys
-    # against an endpoint that already embeds the bucket. Self-hosted / path-only
-    # backends (e.g. MinIO) should set STORAGE_ADDRESSING_STYLE=path.
-    ADDRESSING_STYLE = _resolve_addressing_style()
-
-    @classmethod
-    def get_public_url_base(cls) -> str:
-        """Get the public URL base for the bucket."""
-        if cls.PUBLIC_URL_BASE:
-            return cls.PUBLIC_URL_BASE.rstrip("/")
-        return f"https://{cls.BUCKET_NAME}.s3.{cls.REGION}.amazonaws.com"
-
-
-# Module-level cache. Using a boto3 client from many threads is safe and the
-# underlying connection pool reuses TLS sessions, so a single shared client
-# eliminates the per-op handshake that previously dominated upload/download
-# latency under load. Lazy so import-time failures (missing creds in tests)
-# don't blow up modules that never actually use object storage.
-#
-# *Constructing* one is a different matter: botocore's session and loader are
-# not thread-safe, and every caller here arrives through asyncio.to_thread.
-# Workspace file restore fetches blobs under a semaphore of 16, so on a cold
-# process all 16 threads reach this at once. The lock makes construction
-# happen exactly once; the unlocked fast path keeps the steady state free.
-_BROWSER_CLIENT: Any | None = None
-_CLIENT_MU = threading.Lock()
-
-
-# A client older than this is rebuilt. Connections only live inside a client,
-# so none sits idle anywhere near the store's close interval, however traffic
-# is spread across the pool.
-_CLIENT_MAX_AGE_S = 120
-
-
-class _ExpiringClient:
-    """A lazily built client that is replaced once it is old.
-
-    The store closes an idle connection after a fixed interval and the close
-    can be lost on the way, so a pooled connection can look alive after it is
-    dead and the next call waits out the read timeout before the SDK retries.
-    Bounding the client's age bounds every connection's idle time, and costs
-    one handshake per connection each interval. The replaced client is closed
-    shortly after, so a call still running on it finishes.
-    """
-
-    def __init__(self, factory: Callable[[], Any]) -> None:
-        self._factory = factory
-        self._client: Any | None = None
-        self._born = 0.0
-
-    def get(self) -> Any:
-        client = self._client
-        if client is not None and time.monotonic() - self._born <= _CLIENT_MAX_AGE_S:
-            return client
-        with _CLIENT_MU:
-            if (
-                self._client is None
-                or time.monotonic() - self._born > _CLIENT_MAX_AGE_S
-            ):
-                old, self._client = self._client, self._factory()
-                self._born = time.monotonic()
-                _retire(old)
-            return self._client
-
-    def reset(self) -> None:
-        with _CLIENT_MU:
-            old, self._client = self._client, None
-        _retire(old)
-
-
-# A thread can take a client just before it is replaced and reach its pool just
-# after, and a request on a closed pool fails outright. The replaced client is
-# closed once that window has passed; a request already running is unaffected.
-_RETIRED_CLOSE_DELAY_S = 30
-
-
-def _close_quietly(client: Any | None) -> None:
-    if client is None:
-        return
-    try:
-        client.close()
-    except Exception:
-        logger.debug("Closing a replaced storage client failed", exc_info=True)
-
-
-def _retire(client: Any | None) -> None:
-    if client is None:
-        return
-    timer = threading.Timer(_RETIRED_CLOSE_DELAY_S, _close_quietly, args=(client,))
-    timer.daemon = True
-    timer.start()
-
-
-_SHARED = _ExpiringClient(lambda: _build_client())
-# Ranged GETs must not validate response checksums: an object uploaded with a
-# full-object checksum returns that header on a ranged response too, and the
-# SDK then checks the partial body against it and fails every time. Callers
-# reading a range verify the bytes they get by their own means.
-_RANGED = _ExpiringClient(
-    lambda: _build_client(response_checksum_validation="when_required")
-)
-# A small slice that has not started replying within a few seconds is a dead
-# pooled connection, not a slow transfer. Failing fast lets the SDK's retry
-# open a fresh connection instead of waiting out the full read timeout.
-_SLICE = _ExpiringClient(
-    lambda: _build_client(
-        response_checksum_validation="when_required",
-        read_timeout=min(
-            StorageConfig.RANGE_READ_TIMEOUT_S, StorageConfig.READ_TIMEOUT_S
-        ),
-    )
-)
-
-
-def _get_client() -> Any:
-    """Return the shared S3-compatible client."""
-    return _SHARED.get()
-
-
-def _get_range_client() -> Any:
-    """Return the client for streamed reads that skip checksum validation."""
-    return _RANGED.get()
-
-
-def _get_slice_client() -> Any:
-    """Return the fail-fast client for small ranged reads."""
-    return _SLICE.get()
-
-
-def _get_browser_client() -> Any:
-    """The client that signs links a browser follows; signing makes no request."""
-    if not StorageConfig.BROWSER_ENDPOINT_URL:
-        return _get_client()
-    global _BROWSER_CLIENT
-    if _BROWSER_CLIENT is not None:
-        return _BROWSER_CLIENT
-    with _CLIENT_MU:
-        if _BROWSER_CLIENT is None:
-            _BROWSER_CLIENT = _build_client(
-                endpoint_url=StorageConfig.BROWSER_ENDPOINT_URL
-            )
-    return _BROWSER_CLIENT
-
-
-def _build_client(*, endpoint_url: str | None = None, **config_overrides: Any) -> Any:
-    config_args: dict[str, Any] = {
-        "read_timeout": StorageConfig.READ_TIMEOUT_S,
-        **config_overrides,
-    }
-    kwargs: dict[str, Any] = {
-        "aws_access_key_id": StorageConfig.ACCESS_KEY_ID,
-        "aws_secret_access_key": StorageConfig.SECRET_ACCESS_KEY,
-        "region_name": StorageConfig.REGION,
-        "config": Config(
-            signature_version="s3v4",
-            s3={"addressing_style": StorageConfig.ADDRESSING_STYLE},
-            retries={"max_attempts": 3, "mode": "standard"},
-            connect_timeout=StorageConfig.CONNECT_TIMEOUT_S,
-            max_pool_connections=StorageConfig.MAX_POOL_CONNECTIONS,
-            **config_args,
-        ),
-    }
-    if endpoint_url or StorageConfig.ENDPOINT_URL:
-        kwargs["endpoint_url"] = endpoint_url or StorageConfig.ENDPOINT_URL
-    client = boto3.client("s3", **kwargs)
-    if KEY_PREFIX:
-        # On the client rather than at each call, so no operation, presigned
-        # or not, can reach the bucket outside the namespace.
-        client.meta.events.register("before-parameter-build.s3", _prefix_object_key)
-    return client
-
-
-def _prefix_object_key(params: dict[str, Any], **_: Any) -> None:
-    if "Key" in params:
-        params["Key"] = full_key(params["Key"])
-
-
-def _reset_client_for_test() -> None:
-    """Drop the cached clients. Test-only — production never re-initializes."""
-    global _BROWSER_CLIENT
-    _SHARED.reset()
-    _RANGED.reset()
-    _SLICE.reset()
-    with _CLIENT_MU:
-        _BROWSER_CLIENT = None
 
 
 def upload_file(key: str, file_path: str, content_type: str | None = None) -> bool:
@@ -638,30 +372,110 @@ def sign_upload_part(
     size: int,
     expires_in: int = 900,
     for_browser: bool = False,
+    content_md5: str | None = None,
 ) -> str | None:
     """Presign one part's PUT with its length signed in; ``None`` if signing failed.
 
     The length binds the body, so whoever holds the URL writes exactly that
-    many bytes to that part or nothing. ``for_browser`` signs for
+    many bytes to that part or nothing. ``content_md5`` (base64) is signed in
+    too when given, and the store then refuses a body with other bytes; the
+    uploader sends it as ``Content-MD5``. MD5 because a part's SHA-256 is not
+    something every S3-compatible store checks. ``for_browser`` signs for
     ``STORAGE_BROWSER_ENDPOINT_URL`` when one is set, as a download link does.
     """
+    params: dict[str, Any] = {
+        "Bucket": StorageConfig.BUCKET_NAME,
+        "Key": key,
+        "UploadId": upload_id,
+        "PartNumber": part_number,
+        "ContentLength": size,
+    }
+    if content_md5:
+        params["ContentMD5"] = content_md5
     try:
         client = _get_browser_client() if for_browser else _get_client()
-        return client.generate_presigned_url(
-            "upload_part",
-            Params={
-                "Bucket": StorageConfig.BUCKET_NAME,
-                "Key": key,
-                "UploadId": upload_id,
-                "PartNumber": part_number,
-                "ContentLength": size,
-            },
-            ExpiresIn=expires_in,
-        )
+        return client.generate_presigned_url("upload_part", Params=params, ExpiresIn=expires_in)
     except Exception as e:
         logger.error(f"Failed to presign part {part_number} of {key}: {e}")
         return None
 
+
+def upload_part(
+    key: str, upload_id: str, *, part_number: int, data: bytes, content_md5: str
+) -> str | None:
+    """Send one part of an open upload from this process; its ETag, or ``None``
+    when the store refused it or did not answer."""
+    try:
+        sent = _get_client().upload_part(
+            Bucket=StorageConfig.BUCKET_NAME,
+            Key=key,
+            UploadId=upload_id,
+            PartNumber=part_number,
+            Body=data,
+            ContentMD5=content_md5,
+        )
+        return sent["ETag"]
+    except Exception as e:
+        logger.error(f"Failed to send part {part_number} of {key}: {e}")
+        return None
+
+
+# A copy is made in ranges of this size, side by side. One CopyObject of a
+# large object outlasts the client's read timeout: the store answers only once
+# the whole copy is made (measured on R2, 2 GiB: one call timed out, 8 ranges
+# of 256 MiB took 12 s). Ranges grow past it only for an object that would
+# not fit _MAX_PARTS at that size; at the store's 5 TiB object limit that is
+# about 525 MiB, well inside the 5 GiB a copied part may be.
+_COPY_PART_BYTES = 256 * 1024 * 1024
+_COPY_WORKERS = 8
+
+
+def copy_object(src: str, dst: str, size: int) -> bool:
+    """Copy ``src`` to ``dst`` inside the store, no bytes passing through here.
+
+    The source is named in full: the key-prefix hook rewrites only ``Key``,
+    and the SDK's managed copy reads its source through that hook too, so it
+    would look under the prefix twice. Blocking; callers run it in a thread.
+    """
+    client = _get_client()
+    bucket = StorageConfig.BUCKET_NAME
+    source = f"{bucket}/{full_key(src)}"
+    if size <= _COPY_PART_BYTES:
+        try:
+            client.copy_object(Bucket=bucket, Key=dst, CopySource=source)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to copy {src} to {dst}: {e}")
+            return False
+    upload_id = open_multipart_upload(dst, content_type="application/octet-stream")
+    if upload_id is None:
+        return False
+    part = max(_COPY_PART_BYTES, -(-size // _MAX_PARTS))
+
+    def copy_range(number: int) -> tuple[int, str]:
+        start = (number - 1) * part
+        end = min(size, start + part) - 1
+        copied = client.upload_part_copy(
+            Bucket=bucket,
+            Key=dst,
+            UploadId=upload_id,
+            PartNumber=number,
+            CopySource=source,
+            CopySourceRange=f"bytes={start}-{end}",
+        )
+        return number, copied["CopyPartResult"]["ETag"]
+
+    try:
+        with ThreadPoolExecutor(_COPY_WORKERS) as pool:
+            parts = list(pool.map(copy_range, range(1, -(-size // part) + 1)))
+    except Exception as e:
+        logger.error(f"Failed to copy {src} to {dst} in parts: {e}")
+        abort_multipart_upload(dst, upload_id)
+        return False
+    if complete_multipart_upload(dst, upload_id, parts):
+        return True
+    abort_multipart_upload(dst, upload_id)
+    return False
 
 def list_uploaded_parts(key: str, upload_id: str) -> list[dict[str, Any]] | None:
     """The parts the store holds for an open upload, in order, as it counts them.
@@ -738,7 +552,9 @@ def complete_multipart_upload(
 
 
 def sha256_object(
-    key: str, deadline_for: Callable[[int], float] | None = None
+    key: str,
+    deadline_for: Callable[[int], float] | None = None,
+    stop: threading.Event | None = None,
 ) -> str | None:
     """Hash the bytes the store holds under ``key``, streamed. ``None`` if unreadable.
 
@@ -747,7 +563,8 @@ def sha256_object(
     The SDK's own checksum check is off, as for a range: this is that check.
     ``deadline_for`` maps the object's size to seconds for the whole read:
     the socket timeout only catches a store gone silent, not one that
-    trickles, and this runs in a thread nothing can cancel.
+    trickles, and this runs in a thread nothing can cancel; ``stop`` set
+    ends it at the next chunk, answering ``None``.
     """
     body = None
     try:
@@ -762,6 +579,8 @@ def sha256_object(
         for chunk in body.iter_chunks(chunk_size=64 * 1024):
             if ends is not None and time.monotonic() > ends:
                 raise TimeoutError("read-back passed its deadline")
+            if stop is not None and stop.is_set():
+                return None
             digest.update(chunk)
         return digest.hexdigest()
     except Exception as e:
@@ -882,13 +701,17 @@ def sanitize_storage_key(name: str, data_url: str | None = None) -> str:
     return safe
 
 
-def has_multipart_cleanup_rule() -> bool | None:
+def has_multipart_cleanup_rule(
+    *, min_days: int = 0, prefix: str | None = None
+) -> bool | None:
     """Whether the bucket expires multipart uploads nobody finished.
 
     ``None`` when the store would not say (no permission, or an API that does
     not serve lifecycle config). An upload whose abort never ran, because the
     process died between opening it and settling it, holds its parts as bytes
-    nothing lists; only this rule ever reclaims them.
+    nothing lists; only this rule ever reclaims them. With ``prefix``, only
+    the rules over keys under it count, and the soonest of them must wait
+    ``min_days``: an upload kept open longer than that is aborted under it.
     """
     try:
         config = _get_client().get_bucket_lifecycle_configuration(
@@ -900,9 +723,24 @@ def has_multipart_cleanup_rule() -> bool | None:
         return None
     except Exception:
         return None
-    return any(
-        rule.get("Status") == "Enabled" and "AbortIncompleteMultipartUpload" in rule
+    days = [
+        int(rule["AbortIncompleteMultipartUpload"].get("DaysAfterInitiation") or 0)
         for rule in config.get("Rules", [])
+        if rule.get("Status") == "Enabled"
+        and "AbortIncompleteMultipartUpload" in rule
+        and (prefix is None or full_key(prefix).startswith(_rule_prefix(rule)))
+    ]
+    return bool(days) and min(days) >= min_days
+
+
+def _rule_prefix(rule: dict[str, Any]) -> str:
+    """The key prefix a lifecycle rule applies to, in any of its spellings."""
+    found = rule.get("Filter") or {}
+    return (
+        found.get("Prefix")
+        or (found.get("And") or {}).get("Prefix")
+        or rule.get("Prefix")
+        or ""
     )
 
 

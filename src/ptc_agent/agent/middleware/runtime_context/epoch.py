@@ -8,8 +8,9 @@ against.
 
 Old checkpoints decode here and nowhere else. ``BaselineEpoch.from_state`` is
 the one place that fills in a key an older build never wrote (an epoch frozen
-before profiles existed, a memo count that never answered), so every reader
-downstream works from typed fields instead of guessing at a dict.
+before profiles existed) or reads one a newer build stopped writing (the memo
+pointer), so every reader downstream works from typed fields instead of
+guessing at a dict.
 """
 
 from __future__ import annotations
@@ -46,10 +47,6 @@ from ptc_agent.agent.tools.context_file_policy import visible
 
 # Rendered in a fixed order so the block is byte-identical for equal inputs.
 MEMORY_TIERS: tuple[str, ...] = ("user", "workspace")
-
-# Cap the memo count so the rendered block stays constant-size no matter how
-# many memos a user has.
-MEMO_DISPLAY_CAP = 500
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +271,12 @@ class FileEntry:
 
 @dataclass(frozen=True, slots=True)
 class MemoRef:
-    """The memo pointer: a count, its display form, and where the memos live."""
+    """The memo pointer an epoch froze before memos stopped being announced.
+
+    Nothing freezes one now. An epoch that holds one keeps rendering it, so
+    the block a thread's cache and reasoning rest on stays byte for byte as
+    it was, and the next rebuild drops it like any source it no longer reads.
+    """
 
     count: int | None = None
     display: str | None = None
@@ -411,7 +413,6 @@ class BaselineEpoch:
             "workspace": self.workspace.to_state(),
             "identity": (self.identity or Identity()).to_state(),
             "profile": self.profile.to_state() if self.profile is not None else {},
-            "memo": self.memo.to_state() if self.memo is not None else {},
             "memory": {tier: entry.to_state() for tier, entry in self.memory.items()},
             "blocks": {kind: entry.to_state() for kind, entry in self.blocks.items()},
             "compaction_seen": self.compaction_seen,
@@ -421,6 +422,8 @@ class BaselineEpoch:
         }
         if self.agent_md is not None:
             state["agent_md"] = self.agent_md.to_state()
+        if self.memo is not None:
+            state["memo"] = self.memo.to_state()
         if self.files_mounted is not None:
             state["files_mounted"] = self.files_mounted
         if self.channels_enabled is not None:
@@ -466,9 +469,6 @@ class Observations:
     identity: Identity = field(default_factory=Identity)
     profile: ProfileSnapshot = field(default_factory=ProfileSnapshot)
     reads: tuple[SourceRead, ...] = ()
-    memo_configured: bool = False
-    memo_count: int | None = None
-    memo_path: str = ""
     compaction: str | None = None
     rebuild_after_updates: int = 0
     # The kinds of the change rows the compaction cutoff left where the model
@@ -654,8 +654,6 @@ def compaction_fingerprint(event: Any) -> str | None:
 def _carried_row_kinds(obs: Observations) -> set[str]:
     """The row kinds whose source this turn's rebuild carries forward unread."""
     kinds = {read.update_kind for read in obs.reads if not read.available}
-    if obs.memo_configured and obs.memo_count is None:
-        kinds.add("memo_changed")
     if not obs.profile_available:
         kinds.add("profile_changed")
     if obs.workspace_configured and not obs.workspace_available:
@@ -748,23 +746,6 @@ def _freeze(
             if entry is not None:
                 blocks[read.kind] = entry
 
-    # A read that did not answer leaves a hole the change detector can never
-    # fill, since it only measures against a frozen entry. A memo count that
-    # did not answer is the same hole: the epoch says so and rebuilds once more
-    # instead of losing the source for the life of the epoch.
-    if obs.memo_configured and obs.memo_count is None:
-        incomplete = True
-    # A build with no memo source has none to carry: the pointer an
-    # earlier PTC epoch froze names a path this build cannot reach.
-    memo = previous.memo if obs.memo_configured else None
-    memo_carried = memo is not None and obs.memo_count is None
-    if obs.memo_configured and (obs.memo_count is not None or memo is None):
-        memo = MemoRef(
-            count=obs.memo_count,
-            display=_memo_display(obs.memo_count),
-            path=obs.memo_path,
-        )
-
     workspace_carried = obs.workspace_configured and not obs.workspace_available
     if obs.workspace_available:
         workspace = obs.workspace
@@ -800,7 +781,6 @@ def _freeze(
     for key, carried, kind in (
         ("profile", profile_carried, "profile_changed"),
         ("workspace", workspace_carried, "workspace_changed"),
-        ("memo", memo_carried, "memo_changed"),
     ):
         if carried and kind in retained and key in previous.cursor.observed:
             observed[key] = previous.cursor.observed[key]
@@ -815,7 +795,6 @@ def _freeze(
         workspace=workspace,
         identity=identity,
         profile=profile,
-        memo=memo,
         agent_md=agent_md,
         memory=memory,
         blocks=blocks,
@@ -840,11 +819,6 @@ def _observe(
         row = _file_row(epoch, read, observed, obs.now)
         if row is not None:
             rows.append(row)
-
-    memo_row = _memo_row(epoch, obs)
-    if memo_row is not None:
-        rows.append(memo_row)
-        observed["memo"] = str(obs.memo_count)
 
     if obs.workspace_available:
         workspace_row = _workspace_row(epoch, obs, observed.get("workspace"))
@@ -912,36 +886,6 @@ def _file_row(
         text=text,
         provenance=dict(read.provenance),
         created_at=now,
-    )
-
-
-def _memo_row(epoch: BaselineEpoch, obs: Observations) -> DurableUpdate | None:
-    """A row when the memo count moved since it was last observed.
-
-    The memo pointer is a count, so there is nothing to diff: the row says the
-    new number and leaves the frozen block alone. Without it a memo the user
-    uploads mid-thread stays invisible until the next compaction.
-    """
-    if not obs.memo_configured or obs.memo_count is None:
-        return None
-    frozen = epoch.memo.count if epoch.memo is not None else None
-    last = epoch.cursor.observed.get("memo")
-    seen = int(last) if isinstance(last, str) and last.isdigit() else frozen
-    if seen == obs.memo_count or (seen is None and obs.memo_count == 0):
-        return None
-    # ``frozen`` is None only in an epoch from before a missing count marked the
-    # epoch incomplete; the block then carries no number.
-    block = (
-        f"the index in your baseline block says {frozen}"
-        if isinstance(frozen, int)
-        else "your baseline block carries no memo count"
-    )
-    return DurableUpdate(
-        kind="memo_changed",
-        schema_version=UPDATE_SCHEMA_VERSION,
-        text=f"{obs.memo_count} memo(s) now under {obs.memo_path} ({block}).",
-        provenance={"source": "store", "tier": "memo"},
-        created_at=obs.now,
     )
 
 
@@ -1062,12 +1006,3 @@ def _entry(read: SourceRead, previous: FileEntry | None) -> FileEntry | None:
         sha256=sha256_text(raw),
         exists=read.text is not None,
     )
-
-
-def _memo_display(count: int | None) -> str | None:
-    if count is None or count <= 0:
-        return None
-    if count > MEMO_DISPLAY_CAP:
-        return f"{MEMO_DISPLAY_CAP}+"
-    return str(count)
-

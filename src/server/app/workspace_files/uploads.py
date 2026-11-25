@@ -96,16 +96,6 @@ def direct_available(sandbox: Any) -> bool:
     return browser_uploads_enabled() and sandbox_pulls_from_store(sandbox)
 
 
-def _multipart(row: dict[str, Any]) -> MultipartUpload:
-    return MultipartUpload(
-        key=row["object_key"],
-        upload_id=row["store_upload_id"],
-        size=row["size"],
-        part_size=row["part_size"],
-        part_count=row["part_count"],
-    )
-
-
 def _status(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "upload_id": row["upload_id"],
@@ -227,7 +217,7 @@ async def sign_workspace_upload_parts(
     if row is None:
         raise HTTPException(status_code=409, detail=UPLOAD_ENDED)
 
-    parts = await asyncio.to_thread(sign_parts, _multipart(row), numbers)
+    parts = await asyncio.to_thread(sign_parts, MultipartUpload.of_row(row), numbers)
     if parts is None:
         raise HTTPException(status_code=503, detail=STORE_UNREACHABLE)
 

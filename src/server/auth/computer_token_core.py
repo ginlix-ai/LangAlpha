@@ -166,10 +166,13 @@ class Kind:
     #: The Redis client, or None with Redis off; asked at each use, since a
     #: revoke's drop keeps retrying across an outage.
     client: Callable[[], Any]
+    #: The key the rate is counted under, beside the token's own keys; a
+    #: second name gives the same tokens a rate of their own.
+    rate_key: str = "rate"
 
     def keys(self, computer_id: str) -> tuple[str, str, str]:
         tag = self.key_tag(computer_id)
-        return f"{tag}:auth", f"{tag}:gen", f"{tag}:rate"
+        return f"{tag}:auth", f"{tag}:gen", f"{tag}:{self.rate_key}"
 
 
 class Held(Protocol):

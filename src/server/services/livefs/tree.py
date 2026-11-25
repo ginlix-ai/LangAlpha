@@ -25,13 +25,8 @@ from ptc_agent.agent.filesystem_routes import (
     build_filesystem_backend,
     resolve_identity_gates,
 )
-from ptc_agent.core.paths import (
-    ROOT_MOUNTED_AGENT_SUBDIRS,
-    USER_DATA_DIRS,
-    SandboxLayout,
-    WorkspaceLayout,
-    logged_path,
-)
+from ptc_agent.core.paths import USER_DATA_DIRS, SandboxLayout, WorkspaceLayout, logged_path
+from ptc_agent.core.path_fold import ROOT_MOUNTED_AGENT_SUBDIRS
 from ptc_agent.core.sandbox.livefs_mount import CallContext
 from ptc_agent.core.sandbox.livefs_runtime.protocol import (
     INLINE_LISTING_MAX_BYTES,

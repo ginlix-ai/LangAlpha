@@ -34,7 +34,7 @@ from ptc_agent.agent.backends import (
     StoreBackend,
     user_memory_namespace,
 )
-from ptc_agent.agent.backends.langgraph_store import UnsupportedPattern
+from ptc_agent.agent.backends.text_grep import UnsupportedPattern
 from ptc_agent.agent.middleware.member_context.context import MemberContext
 from ptc_agent.agent.tools.context_file_policy import AGENT_MD, CappedFile
 from ptc_agent.agent.backends.read_window import READ_CLIPPED_NOTE, READ_FULL_WINDOW_NOTE
@@ -200,6 +200,11 @@ class MemberMemory(StoreBackend):
         if key is None:
             return None
         return await super().aread_text(f"{self.root_prefix}{key}")
+
+    async def adownload_file_bytes_capped(self, filepath: str, cap: Any) -> bytes | None:
+        # Memory is text in the store; without this the composite would read
+        # the folder's path from the disk, where nothing is a member's.
+        return None
 
     async def aglob_paths(self, pattern: str, path: str = ".", *, strict: bool = False) -> list[str]:
         normalized = self.normalize_path(path)
@@ -559,6 +564,9 @@ class MembersClosed(StoreBackend):
     reached_only_inside = True
 
     async def aread_text(self, file_path: str) -> str | None:
+        return None
+
+    async def adownload_file_bytes_capped(self, filepath: str, cap: Any) -> bytes | None:
         return None
 
     async def aglob_paths(self, pattern: str, path: str = ".", *, strict: bool = False) -> list[str]:

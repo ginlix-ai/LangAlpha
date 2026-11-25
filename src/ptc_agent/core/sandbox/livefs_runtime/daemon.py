@@ -16,20 +16,16 @@ import contextlib
 import json
 import os
 import sys
-import threading
 from collections.abc import Callable, Iterator
 
 from .lifecycle import (
     Paths,
-    has_libfuse,
     healthy,
-    install_config,
-    install_libfuse,
     locked,
+    prepare,
+    probing,
     read_state,
-    rebase,
-    start,
-    unsupported,
+    start_probed,
     use_libfuse3,
     write_state,
 )
@@ -58,58 +54,15 @@ def _probe(paths: Paths) -> str | None:
     return None if status == 200 else f"the server answered {status}"
 
 
-def _probing(paths: Paths) -> Callable[[], str | None]:
-    """Start ``_probe`` beside the rest of ``start``; the call returned waits
-    for its answer. Its request is mostly waiting on the network, which a
-    new daemon's start fills."""
-    answer: list[str | None] = []
-
-    def run() -> None:
-        try:
-            answer.append(_probe(paths))
-        except Exception as exc:  # the config went unreadable mid-probe
-            answer.append(f"the probe failed: {exc}")
-
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-
-    def result() -> str | None:
-        thread.join()
-        return answer[0]
-
-    return result
-
-
 def _ready(args, paths: Paths) -> tuple[dict | None, Callable[[], str | None] | None]:
     """Everything before the lock: the answer when the mount cannot serve
     yet, else the probe a start waits on (None when there is nothing to
-    probe). A new token goes in first, so it reaches the sandbox whatever
-    else holds the mount back."""
-    reason = unsupported()
-    if reason:
-        return {"ok": False, "error": MountError.UNSUPPORTED, "reason": reason}, None
-    os.makedirs(paths.private, mode=0o700, exist_ok=True)
-    if args.config:
-        # Under the lock, as the rebase below is: a rebase that read the
-        # config before a new token landed would write the old one back.
-        with locked(paths):
-            problem = install_config(args.config, paths)
-        if problem:
-            return {"ok": False, "error": MountError.BAD_CONFIG, "reason": problem}, None
-    if not os.path.exists(paths.config):
-        return {"ok": False, "error": MountError.NO_CONFIG}, None
-    if not has_libfuse():
-        install_libfuse(paths)
-        return {
-            "ok": False,
-            "error": MountError.INSTALLING,
-            "reason": "installing libfuse",
-        }, None
-    with locked(paths):
-        rebased = rebase(args.base_url, paths)
+    probe)."""
+    refused, rebased = prepare(args, paths, paths)
+    if refused:
+        return refused, None
     changed = bool(args.config) or rebased or not healthy(paths.mount)
-    probe = _probing(paths) if changed else None
-    return None, probe
+    return None, probing(lambda: _probe(paths)) if changed else None
 
 
 def _serving(
@@ -122,21 +75,13 @@ def _serving(
         # A probe that failed is asked again until one answers, whichever
         # host asks: a daemon up since then serves nothing it can save. Read
         # under the lock, so a start that waited on the one that failed asks.
-        probe = _probing(paths)
-    try:
-        started, problem = start(args, state, paths, gate=probe)
-    except OSError as exc:
-        started, problem = True, str(exc)
-    unreachable = probe() if probe else None
-    if unreachable:
-        state["unreachable"] = unreachable
+        probe = probing(lambda: _probe(paths))
+    started, refused = start_probed(args, state, paths, probe)
+    if refused and refused["error"] == MountError.UNREACHABLE:
+        state["unreachable"] = refused["reason"]
     elif probe:
         state.pop("unreachable", None)
-    if unreachable:
-        return started, {"ok": False, "error": MountError.UNREACHABLE, "reason": unreachable}
-    if problem:
-        return started, {"ok": False, "error": MountError.START_FAILED, "reason": problem}
-    return started, None
+    return started, refused
 
 
 @contextlib.contextmanager

@@ -21,28 +21,34 @@ export const GLOBAL = {
 
 export type GlobalFlag = keyof typeof GLOBAL;
 
-export interface Ctx<F extends string = string, O extends string = string> {
+export interface Ctx<F extends string = string, O extends string = string, P extends string = string> {
   api: Api;
-  args: Args<F | GlobalFlag, O>;
+  args: Args<F | GlobalFlag, O, P>;
   json: boolean;
 }
 
-type OperandName<S> = S extends `${infer N}...` ? N : S;
+type RequiredOperand<S> = S extends `${string}?` ? never : S extends `${infer N}...` ? N : S;
+type OptionalOperand<S> = S extends `${infer N}?` ? N : never;
 
 /** A command, declared once: the parser accepts exactly what it declares and
  *  the help lists exactly that, so the two cannot drift apart. */
 export interface Command<O extends readonly string[] = readonly string[], F extends Flags = Flags> {
   words: readonly string[];
   summary: string;
-  /** All required, in order; a last one ending in ``...`` takes the rest of
-   *  the words, joined, so a message needs no quotes. */
+  /** All required, in order, but a last one ending in ``?``, which may be
+   *  left out; a last one ending in ``...`` takes the rest of the words,
+   *  joined, so a message needs no quotes. */
   operands?: O;
   flags?: F;
-  run(ctx: Ctx<Extract<keyof F, string>, OperandName<O[number]>>): Promise<number | void>;
+  run(ctx: Ctx<Extract<keyof F, string>, RequiredOperand<O[number]>, OptionalOperand<O[number]>>): Promise<number | void>;
 }
 
 /** Infers the operand and flag names, so ``run`` is typed by its own spec. */
 export function command<const O extends readonly string[] = [], F extends Flags = {}>(c: Command<O, F>): Command<O, F> {
+  const optional = (c.operands ?? []).findIndex((o) => o.endsWith("?"));
+  if (optional !== -1 && optional !== c.operands!.length - 1) {
+    throw new Error(`${c.words.join(" ")}: optional operand <${c.operands![optional]}> must be last`);
+  }
   return c;
 }
 
@@ -67,7 +73,7 @@ export function bind(command: Command, parsed: Parsed): Args {
 }
 
 export function synopsis(c: Command): string {
-  const parts = [...c.words, ...(c.operands ?? []).map((o) => `<${o}>`)];
+  const parts = [...c.words, ...(c.operands ?? []).map((o) => (o.endsWith("?") ? `[${o.slice(0, -1)}]` : `<${o}>`))];
   for (const [name, flag] of Object.entries(c.flags ?? {})) {
     parts.push(flag.required ? flagName(name, flag) : `[${flagName(name, flag)}]`);
   }

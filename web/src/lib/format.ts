@@ -43,6 +43,9 @@ export function createDateFormatter(
   return (d, locale) => format(locale).format(d);
 }
 
+/** Orders names as people read them in `locale`: `file2` before `file10`, case and accents aside. */
+export const nameCollator = perLocale((locale) => new Intl.Collator(locale, { numeric: true, sensitivity: 'base' }));
+
 // Option sets shared by several components.
 export const shortMonthDay = createDateFormatter({ month: 'short', day: 'numeric' });
 export const clockTime = createDateFormatter({ hour: 'numeric', minute: '2-digit' });

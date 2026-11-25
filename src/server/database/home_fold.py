@@ -114,6 +114,7 @@ STAYS: dict[str, str] = {
     "shared_workspaces": "a Home is never shared, so a former Home holds none",
     "shared_workspace_members": "a Home is never shared, so a former Home holds none",
     "activity_events": "a record of where it happened",
+    "drive_versions": "a record of where the save was made; its thread is found by thread_id",
 }
 
 _HAS_FORMER = """

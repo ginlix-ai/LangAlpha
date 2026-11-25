@@ -397,7 +397,8 @@ class TestCancelDuringTheHandOff:
             call = asyncio.ensure_future(
                 _main(backend).ainvoke(tool_call("Bash", command="python run.py"), _CONFIG)
             )
-            await writing.wait()
+            # Bounded: a call that fails before the write never sets it.
+            await asyncio.wait_for(writing.wait(), 5)
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await call
@@ -434,7 +435,8 @@ class TestCancelDuringTheHandOff:
             call = asyncio.ensure_future(
                 _main(backend).ainvoke(tool_call("Bash", command="python run.py"), _CONFIG)
             )
-            await writing.wait()
+            # Bounded: a call that fails before the write never sets it.
+            await asyncio.wait_for(writing.wait(), 5)
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await call

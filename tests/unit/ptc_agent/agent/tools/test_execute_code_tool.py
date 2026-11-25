@@ -351,7 +351,8 @@ class TestCancelWhileTheSlotIsLetGo:
             call = asyncio.ensure_future(
                 tool.ainvoke(tool_call("ExecuteCode", code="run()"), _CONFIG)
             )
-            await releasing.wait()
+            # Bounded: a call that fails before the slot never sets it.
+            await asyncio.wait_for(releasing.wait(), 5)
             call.cancel()
             finish.set()
             with pytest.raises(asyncio.CancelledError):

@@ -1,4 +1,5 @@
 import type { Credential } from "./credentials.js";
+import { rawResponse } from "./rawHttp.js";
 import { CliError, detailMessage, detailReason, Exit, exitFor, unreachable } from "./errors.js";
 
 declare const __LA_VERSION__: string;
@@ -17,7 +18,12 @@ export type Query = Record<string, string | number | boolean | undefined>;
 
 export interface RequestOptions {
   query?: Query;
+  /** JSON, or raw bytes sent as they are. */
   body?: unknown;
+  /** Defaults to ``application/json`` for JSON and ``application/octet-stream`` for bytes. */
+  contentType?: string;
+  /** Headers beyond the ones every call carries (``If-Match``). */
+  headers?: Record<string, string>;
   accept?: string;
   /** Send no token: asking how to sign in must not first try to refresh a
    *  sign-in that may be the reason for asking. */
@@ -60,6 +66,12 @@ export class Api {
     const text = await (await this.send(method, path, opts)).text();
     if (!text) throw new CliError(`${method} ${path} answered with no body`, Exit.error);
     return JSON.parse(text) as T;
+  }
+
+  /** The answer's bytes, whatever they are. */
+  async bytes(method: string, path: string, opts: RequestOptions = {}): Promise<Uint8Array> {
+    const res = await this.send(method, path, { accept: "*/*", ...opts });
+    return new Uint8Array(await res.arrayBuffer());
   }
 
   /** A call whose answer carries nothing the caller reads. */
@@ -113,6 +125,7 @@ export class Api {
       if (v !== undefined) url.searchParams.set(k, String(v));
     }
     const headers: Record<string, string> = {
+      ...opts.headers,
       ...extra,
       accept: opts.accept ?? "application/json",
       "user-agent": `langalpha-cli/${VERSION}`,
@@ -121,8 +134,12 @@ export class Api {
     if (token) headers.authorization = `Bearer ${token}`;
     const call = process.env[CALL_ENV];
     if (call) headers["x-langalpha-call"] = call;
-    if (opts.body !== undefined) headers["content-type"] = "application/json";
+    const raw = opts.body instanceof Uint8Array;
+    if (raw) headers["content-type"] = opts.contentType ?? "application/octet-stream";
+    else if (opts.body !== undefined) headers["content-type"] = opts.contentType ?? "application/json";
     try {
+      // Bytes go by node:http, which sends the caller's buffer as it is.
+      if (raw) return await rawResponse(url, { method, headers, body: opts.body as Uint8Array });
       return await fetch(url, {
         method,
         headers,

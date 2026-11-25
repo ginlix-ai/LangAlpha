@@ -33,6 +33,7 @@ from ptc_agent.core.sandbox.jobs import (
     Running,
     StoppedJob,
 )
+from ptc_agent.core.sandbox.drive_mount import NO_DRIVE, DriveHandle
 from ptc_agent.core.sandbox.livefs_mount import (
     CallFiler,
     HistoryFiles,
@@ -117,6 +118,10 @@ class PTCSandbox:
         # Set by the host on a machine the mount never serves, whose past
         # threads the file tools then read in process.
         self.history: HistoryFiles | None = None
+        # Set by the host at each acquire: its view of the Drive mount here,
+        # which the tools ask before a call names the Drive. Until then the
+        # Drive is none of this sandbox's business.
+        self.drive: DriveHandle = NO_DRIVE
         # A reconnect found the mount gone: it booted the sandbox, or nothing
         # answered at the mount's path. The host records that before it next
         # reads what was recorded of the mount, which still says it serves.

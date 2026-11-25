@@ -249,13 +249,7 @@ def is_open(row: ChatAttachmentRow) -> bool:
 
 def _multipart(row: ChatAttachmentRow) -> MultipartUpload:
     assert row["object_key"] and row["store_upload_id"] and row["part_size"] and row["part_count"]
-    return MultipartUpload(
-        key=row["object_key"],
-        upload_id=row["store_upload_id"],
-        size=row["size"],
-        part_size=row["part_size"],
-        part_count=row["part_count"],
-    )
+    return MultipartUpload.of_row(row)
 
 
 # --- steps ---------------------------------------------------------------------

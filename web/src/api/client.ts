@@ -80,6 +80,7 @@ export class ApiError extends Error {
   declare status?: number;
   declare response?: ApiResponse<unknown>;
   declare rateLimitInfo?: Record<string, unknown>;
+  /** Seconds to wait before asking again, from `Retry-After` on a 429 or a 503. */
   declare retryAfter?: number | null;
 
   constructor(message: string, code: ErrorCode, response?: ApiResponse<unknown>) {
@@ -95,8 +96,9 @@ export class ApiError extends Error {
     if (response) {
       this.response = response;
       this.status = response.status;
-      if (response.status === 429) {
-        this.rateLimitInfo = body;
+      if (response.status === 429) this.rateLimitInfo = body;
+      // A rate limit and a busy server both say when to ask again.
+      if (response.status === 429 || response.status === 503) {
         this.retryAfter = parseInt(response.headers['retry-after'], 10) || null;
       }
     }
@@ -351,6 +353,25 @@ async function request<T>(method: string, url: string, data: unknown, config: Re
   }
 }
 
+/**
+ * Waits `ms` between two requests, ending as an aborted request does when
+ * `signal` fires, so a retry loop stops the way its requests would.
+ */
+export function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new ApiError('canceled', 'ERR_CANCELED'));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new ApiError('canceled', 'ERR_CANCELED'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export const api = {
   defaults: { baseURL },
   get: <T = Untyped>(url: string, config?: RequestConfig) => request<T>('GET', url, config?.data, config),
@@ -362,8 +383,9 @@ export const api = {
   getUri: ({ url, params }: { url: string; params?: QueryParams }) => buildUrl(url, params),
   /**
    * A PUT to a URL the backend signed, such as one part of an upload to object
-   * storage. None of the app's headers go with it: the signature says what the
-   * request may carry, and a bearer token has no business on another origin.
+   * storage. None of the app's headers go with it, only those the signer named
+   * in `config.headers`: the signature says what the request may carry, and a
+   * bearer token has no business on another origin.
    */
-  putSigned: (url: string, body: Blob, config: RequestConfig = {}) => send('PUT', url, {}, body, config),
+  putSigned: (url: string, body: Blob, config: RequestConfig = {}) => send('PUT', url, config.headers ?? {}, body, config),
 };

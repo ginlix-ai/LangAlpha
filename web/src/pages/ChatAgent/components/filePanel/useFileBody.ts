@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { replaceEqualDeep, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { isStale } from '@/lib/rangedFile';
-import { bodyMode, readFileBody, type BodyReaders, type FileBody } from './fileBody';
+import { bindReaders, bodyMode, readFileBody, type BodyReaders, type FileBody } from './fileBody';
 import { categorizeFileError, type FileError } from './fileErrors';
 import { awayRefetch, backupCode, unreachableCode } from '../../utils/computerAway';
 
@@ -49,7 +49,7 @@ export function useFileBodyCache({ scope, workspaceId, readers }: BodyCacheArgs)
 
   const options = useCallback((path: string) => ({
     queryKey: keyFor(path),
-    queryFn: () => readFileBody(readers, workspaceId, path),
+    queryFn: () => readFileBody(bindReaders(readers, workspaceId, path), path),
     staleTime: BODY_STALE_MS,
     structuralSharing: keepSameVersion,
     // A file that is not there does not become there by asking three more

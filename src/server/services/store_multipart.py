@@ -66,6 +66,17 @@ class MultipartUpload:
     part_size: int
     part_count: int
 
+    @classmethod
+    def of_row(cls, row: Any) -> MultipartUpload:
+        """From an upload row; every caller's table names these columns alike."""
+        return cls(
+            key=row["object_key"],
+            upload_id=row["store_upload_id"],
+            size=row["size"],
+            part_size=row["part_size"],
+            part_count=row["part_count"],
+        )
+
     def part_size_of(self, number: int) -> int:
         """Every part but the last is ``part_size``; the last is what remains."""
         if number < self.part_count:
@@ -84,7 +95,7 @@ def shown_state(state: str, expires_at: datetime) -> str:
 def extend_sql(table: str, id_column: str, returning: str) -> str:
     """Move an uploading row's idle deadline out, up to its age limit; the row
     back, or none once it has no deadline left. Takes ``%(id)s`` and
-    :data:`EXTEND_PARAMS`."""
+    :func:`extend_params` (the table's own TTLs)."""
     return f"""
         UPDATE {table}
         SET expires_at = LEAST(NOW() + %(idle_ttl)s, created_at + %(max_age)s),
@@ -95,7 +106,11 @@ def extend_sql(table: str, id_column: str, returning: str) -> str:
     """
 
 
-EXTEND_PARAMS = {"idle_ttl": IDLE_TTL, "max_age": MAX_AGE}
+def extend_params(idle_ttl: timedelta = IDLE_TTL, max_age: timedelta = MAX_AGE) -> dict[str, Any]:
+    return {"idle_ttl": idle_ttl, "max_age": max_age}
+
+
+EXTEND_PARAMS = extend_params()
 
 
 @asynccontextmanager
@@ -119,9 +134,17 @@ async def opened_upload(key: str, *, content_type: str) -> AsyncIterator[str]:
         raise
 
 
-def sign_parts(upload: MultipartUpload, numbers: list[int]) -> list[dict[str, Any]] | None:
+def sign_parts(
+    upload: MultipartUpload,
+    numbers: list[int],
+    *,
+    for_browser: bool = True,
+    md5s: dict[int, str | None] | None = None,
+) -> list[dict[str, Any]] | None:
     """Signed PUT URLs for ``numbers``, each bound to its part's length; None
-    when the store would not sign one.
+    when the store would not sign one. With ``md5s`` (base64, by part) a part
+    is also bound to its bytes, and each answer carries the ``headers`` its
+    PUT must send.
 
     Run off the event loop: signing makes no request, but the first one in a
     process builds the store's client, which takes a while.
@@ -129,24 +152,27 @@ def sign_parts(upload: MultipartUpload, numbers: list[int]) -> list[dict[str, An
     parts = []
     for number in numbers:
         size = upload.part_size_of(number)
+        md5 = md5s.get(number) if md5s is not None else None
         url = sign_upload_part(
             upload.key,
             upload.upload_id,
             part_number=number,
             size=size,
             expires_in=PART_URL_TTL_S,
-            for_browser=True,
+            for_browser=for_browser,
+            **({"content_md5": md5} if md5 else {}),
         )
         if url is None:
             return None
-        parts.append(
-            {
-                "part_number": number,
-                "offset": (number - 1) * upload.part_size,
-                "size": size,
-                "url": url,
-            }
-        )
+        part = {
+            "part_number": number,
+            "offset": (number - 1) * upload.part_size,
+            "size": size,
+            "url": url,
+        }
+        if md5s is not None:
+            part["headers"] = {"Content-MD5": md5} if md5 else {}
+        parts.append(part)
     return parts
 
 

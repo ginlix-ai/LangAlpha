@@ -6,9 +6,10 @@
  * regression letting the agent mutate memos doesn't render as "Read memo".
  */
 import { describe, it, expect } from 'vitest';
-import { Clock, Contact, Send, User, Wrench } from 'lucide-react';
+import { Clock, Contact, HardDrive, Send, User, Wrench } from 'lucide-react';
 import {
   categorizeTool,
+  getActiveLabel,
   getCompletedRowTitle,
   getCompletedSummary,
   getDisplayName,
@@ -330,5 +331,20 @@ describe('schedule_wakeup row summary', () => {
     expect(getCompletedSummary('schedule_wakeup', call({ quiet: 'flat' }), undefined, answered({ quiet: false, changed: false })))
       .toBeNull();
     expect(getCompletedSummary('schedule_wakeup', call({}))).toBeNull();
+  });
+});
+
+describe('a Drive file: a plain file with its own glyph', () => {
+  const read = { id: 'c1', name: 'Read', args: { file_path: '.agents/drive/personal/notes/q3.md' } };
+
+  it('reads like a workspace file, the tool named before its verb', () => {
+    const workspace = { id: 'c2', name: 'Read', args: { file_path: 'notes/q3.md' } };
+    expect(getActiveLabel('Read', read)).toBe(getActiveLabel('Read', workspace));
+    expect(categorizeTool('Read', read)).toBe('fileRead');
+    expect(categorizeTool('Edit', { ...read, name: 'Edit' })).toBe('fileEdit');
+  });
+
+  it('shows the Drive glyph', () => {
+    expect(getToolIcon('Read', read.args)).toBe(HardDrive);
   });
 });

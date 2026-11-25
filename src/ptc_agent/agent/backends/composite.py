@@ -9,16 +9,17 @@ from typing import Any, Callable, Collection, Protocol, Sequence, TypeVar
 
 import structlog
 
-from ptc_agent.agent.backends.langgraph_store import UnsupportedPattern
-from ptc_agent.agent.backends.results import EditTextResult, GrepAnswer, WriteTextResult
+from ptc_agent.agent.backends.results import (
+    EditTextResult,
+    GrepAnswer,
+    RouteUnavailable,
+    WriteTextResult,
+)
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.backends.search_match import DiskGlob, RgRefused, RgWalk
-from ptc_agent.core.paths import (
-    MOUNTED_AGENT_SUBDIRS,
-    computer_tier_relative_path,
-    grep_working_dir,
-    lexical_path,
-)
+from ptc_agent.agent.backends.text_grep import UnsupportedPattern
+from ptc_agent.core.paths import grep_working_dir, lexical_path
+from ptc_agent.core.path_fold import FOLDER_LINKED_AGENT_SUBDIRS, computer_tier_relative_path
 from ptc_agent.core.sandbox.glob_runtime import expand_braces
 from ptc_agent.core.sandbox.grep_render import GrepLine
 
@@ -36,16 +37,6 @@ _INLINE_FILTER_CHARS = 1024
 # machine.
 IN_PROCESS_CHANNEL = "server"
 
-# The computer's server-held folders, which the file mount links in at the
-# root and in every folder. The sandbox glob goes through such a link only by
-# the pattern's literal prefix, so Glob finds their files only that way. The
-# workspace's own memory is linked too but stays in a wildcard's reach, as
-# Glob has always listed it.
-_LINKED_COMPUTER_DIRS = tuple(
-    subdir
-    for subdir in MOUNTED_AGENT_SUBDIRS
-    if computer_tier_relative_path(subdir) is not None
-)
 
 
 class FilesystemRoute(Protocol):
@@ -53,8 +44,9 @@ class FilesystemRoute(Protocol):
     WorkflowsBackend, UserDataBackend, …): the composite dispatches these
     seven members, and reads the optional one below where a route has it.
 
-    Glob lists a route with ``aglob_paths("*", root_prefix)``, wherever the
-    search starts, which has to name every file the route holds. Glob's
+    Glob lists a route with ``aglob_paths("*", path)``, ``path`` being the
+    deepest folder of the route every pattern names, else its root; it has
+    to name at least every file the route holds under ``path``. Glob's
     pattern and Grep's ``glob`` and ``type`` are matched here, against each
     file's path, so ``agrep_rich`` is never handed a filter or a type.
 
@@ -86,7 +78,15 @@ class FilesystemRoute(Protocol):
     stops once the page has enough. Any route's answer may carry ``notes``
     (a ``GrepAnswer``), which the composite passes on, and a route whose
     search refuses the pattern raises ``UnsupportedPattern``, which the
-    composite answers with a note naming what it did not search."""
+    composite answers with a note naming what it did not search. A route
+    that cannot answer a Glob or Grep at all raises ``RouteUnavailable``,
+    whose text becomes the note, and the rest of the search stands.
+
+    ``adownload_file_bytes_capped`` (the sandbox's, when absent) hands out a
+    file's raw bytes for a Read that attaches them, with the sandbox
+    download's signature and cap; a route that holds bytes the sandbox does
+    not have it, and so does one the disk must not answer for (a refusing or
+    closed route), or the disk's file at its path is attached."""
 
     @property
     def root_prefix(self) -> str: ...
@@ -426,7 +426,9 @@ class CompositeFilesystemBackend:
         rel = self._spelling(route.root_prefix.rstrip("/"))
         if rel is None:
             return roots
-        for linked in _LINKED_COMPUTER_DIRS:
+        # The sandbox glob goes through a linked folder only by the pattern's
+        # literal prefix, so Glob finds its files only that way.
+        for linked in FOLDER_LINKED_AGENT_SUBDIRS:
             if rel == linked or rel.startswith(linked + "/"):
                 below = len(rel) - len(linked)
                 return tuple(
@@ -531,6 +533,16 @@ class CompositeFilesystemBackend:
             return await route.awrite_text(normalized, content)
         return await self._sandbox.awrite_text(normalized, content)
 
+    async def adownload_file_bytes_capped(
+        self, filepath: str, cap: Callable[[bytes], int]
+    ) -> bytes | None:
+        normalized = self.normalize_path(filepath)
+        route = self._route_for(normalized)
+        download = getattr(route, "adownload_file_bytes_capped", None)
+        if download is not None:
+            return await download(normalized, cap)
+        return await self._sandbox.adownload_file_bytes_capped(normalized, cap)
+
     async def aedit_text(
         self,
         file_path: str,
@@ -552,8 +564,8 @@ class CompositeFilesystemBackend:
     async def aglob_paths(self, pattern: str, path: str = ".") -> list[str]:
         normalized = self.normalize_path(path)
         route = self._route_for(normalized)
-        # Each route is listed whole and matched here, since a route knows
-        # neither the base nor the names the agent gives its root. Its files
+        # Each route lists its files and they are matched here, since a route
+        # knows neither the base nor the names the agent gives its root. Its files
         # are files at both of their spellings, matched as the sandbox glob
         # matches the disk: each pattern the braces expand to on its own.
         wanted = [DiskGlob(each, normalized) for each in expand_braces(pattern)]
@@ -563,10 +575,11 @@ class CompositeFilesystemBackend:
             reached = (
                 [route] if any(self._glob_lists(route, w) for w in wanted) else []
             )
-            listings = await asyncio.gather(
-                *(r.aglob_paths("*", r.root_prefix) for r in reached)
+            aliases = self._aliases()
+            answers = await asyncio.gather(
+                *(self._route_listing(r, wanted, aliases) for r in reached)
             )
-            return self._glob_found(reached, list(listings), wanted)
+            return _answer(self._glob_found(reached, answers, wanted), answers)
 
         # Above or beside the routes, or with an absolute pattern, which
         # names files wherever they are whatever the path, the sandbox's own
@@ -581,18 +594,39 @@ class CompositeFilesystemBackend:
             if (r is route or not getattr(r, "reached_only_inside", False))
             and any(self._glob_lists(r, w) for w in wanted)
         ]
-        sandbox_paths, *listings = await asyncio.gather(
-            self._sandbox.aglob_paths(pattern, normalized),
-            *(r.aglob_paths("*", r.root_prefix) for r in reached),
-        )
         aliases = self._aliases()
+        sandbox_paths, *answers = await asyncio.gather(
+            self._sandbox.aglob_paths(pattern, normalized),
+            *(self._route_listing(r, wanted, aliases) for r in reached),
+        )
         found = [
             canonical
             for canonical in (self._canonical(p, aliases) for p in sandbox_paths)
             if not self._closed_to_search(canonical)
         ]
-        found.extend(self._glob_found(reached, listings, wanted))
-        return list(dict.fromkeys(found))
+        found.extend(self._glob_found(reached, answers, wanted))
+        return _answer(list(dict.fromkeys(found)), answers)
+
+    async def _route_listing(
+        self,
+        route: FilesystemRoute,
+        wanted: Sequence[DiskGlob],
+        aliases: list[tuple[str, str]],
+    ) -> GrepAnswer:
+        """What Glob lists of ``route``, asked below the deepest folder every
+        pattern names inside it, so a Glob of one folder of a large route
+        never lists the rest; with a note where the route could not answer."""
+        start = route.root_prefix
+        root = start.rstrip("/")
+        dirs = [w.literal_dir for w in wanted]
+        if all(dirs):
+            under = [self._canonical(d, aliases) for d in dirs if d]
+            if all(d == root or d.startswith(root + "/") for d in under):
+                start = posixpath.commonpath(under)
+        try:
+            return GrepAnswer(await route.aglob_paths("*", start))
+        except RouteUnavailable as gone:
+            return GrepAnswer((), [str(gone)])
 
     async def _route_grep(
         self, route: FilesystemRoute, searched: str, pattern: str, **kwargs: Any
@@ -603,6 +637,8 @@ class CompositeFilesystemBackend:
             return await route.agrep_rich(pattern, **kwargs)
         except UnsupportedPattern as refused:
             return GrepAnswer((), [refused.note(self._sandbox.virtualize_path(searched))])
+        except RouteUnavailable as gone:
+            return GrepAnswer((), [str(gone)])
 
     async def agrep_rich(
         self,

@@ -28,7 +28,6 @@ from functools import lru_cache
 from typing import Any
 
 from ptc_agent.core.paths import (
-    BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
     OS_LITTER_BASENAMES,
@@ -36,6 +35,7 @@ from ptc_agent.core.paths import (
     SandboxLayout,
     WorkspaceLayout,
 )
+from ptc_agent.core.path_fold import BACKUP_EXCLUDE_AGENT_SUBDIRS
 from ptc_agent.core.sandbox._shared import (
     _TRANSFER_RUNTIME_SOURCE,
     TRANSFER_RUNTIME_SANDBOX_NAME,

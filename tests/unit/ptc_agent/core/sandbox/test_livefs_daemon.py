@@ -246,11 +246,11 @@ def box(tmp_path, monkeypatch):
     mount.parent.mkdir()
     root = tmp_path / "home" / "workspace"
     root.mkdir(parents=True)
-    monkeypatch.setattr(daemon, "unsupported", lambda: None)
-    monkeypatch.setattr(daemon, "has_libfuse", lambda: True)
+    monkeypatch.setattr(lifecycle, "unsupported", lambda: None)
+    monkeypatch.setattr(lifecycle, "has_libfuse", lambda: True)
     monkeypatch.setattr(daemon, "healthy", lambda path: True)
     monkeypatch.setattr(daemon, "_probe", lambda paths: None)
-    monkeypatch.setattr(daemon, "start", lambda args, state, paths, gate=None: (False, None))
+    monkeypatch.setattr(lifecycle, "start", lambda args, state, paths, gate=None: (False, None))
     yield SimpleNamespace(tmp=tmp_path, private=private, mount=mount, root=root, paths=paths)
     # A folder a test shut to its owner is one pytest's cleanup cannot list,
     # so it would warn about it on every later run.
@@ -403,7 +403,7 @@ def test_link_lays_the_links_without_the_daemon_or_its_token(box, monkeypatch):
     def untouched(*args, **kwargs):
         raise AssertionError("link reached the daemon")
 
-    monkeypatch.setattr(daemon, "start", untouched)
+    monkeypatch.setattr(lifecycle, "start", untouched)
     monkeypatch.setattr(daemon, "_probe", untouched)
     config = (box.private / "config.json").read_text()
 

@@ -78,7 +78,7 @@ describe('the primary nav', () => {
 
   it('shows Orders once a shipped brokerage is connected', () => {
     servers = [httpCatalogServer({ name: 'moomoo', url: MOOMOO.url, oauth_status: 'connected' })];
-    features = [{ key: 'org_library', enabled: true }];
+    features = [{ key: 'org_library', enabled: true }, { key: 'drive', enabled: true }];
     expect(keys()).toContain('/orders');
     // In its declared place, not appended: the gate filters the list, it does
     // not rebuild it.
@@ -93,6 +93,14 @@ describe('the primary nav', () => {
     expect(keys()).not.toContain('/library');
     features = [{ key: 'org_library', enabled: true }];
     expect(keys()).toContain('/library');
+  });
+
+  it('shows the Drive only where its feature is on, apart from the library', () => {
+    features = [{ key: 'org_library', enabled: true }];
+    expect(keys()).not.toContain('/drive');
+    features = [{ key: 'drive', enabled: true }];
+    expect(keys()).toContain('/drive');
+    expect(keys()).not.toContain('/library');
   });
 
   it('hides Orders while the answer is still in flight', () => {

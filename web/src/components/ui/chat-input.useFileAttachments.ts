@@ -10,7 +10,7 @@ import {
 import { checkAttachment } from '@/pages/ChatAgent/utils/api/attachments';
 import { apiErrorStatus } from '@/api/errors';
 import { isImageFile } from '@/pages/ChatAgent/utils/fileUpload';
-import { classifyUploadError } from '@/pages/ChatAgent/utils/partUpload';
+import { classifyUploadError } from '@/lib/partUpload';
 import type { FileAttachment, ReadyAttachment, TileUpload } from './chat-input.types';
 import { MAX_FILES } from './chat-input.helpers';
 

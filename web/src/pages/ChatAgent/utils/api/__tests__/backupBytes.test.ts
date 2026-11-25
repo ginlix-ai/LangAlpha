@@ -20,7 +20,7 @@ vi.mock('@/lib/authToken', () => ({
 }));
 
 import { api } from '@/api/client';
-import { readFileBody } from '../../../components/filePanel/fileBody';
+import { bindReaders, readFileBody } from '../../../components/filePanel/fileBody';
 import { downloadWorkspaceFileAsArrayBuffer, openWorkspaceFileRanged, readWorkspaceFileFull } from '../files';
 
 const mockGet = api.get as unknown as Mock;
@@ -45,7 +45,7 @@ describe('a binary file answered from the backup', () => {
   ])('carries the computer\'s code on %s, and asks to be answered from the backup', async (_label, path) => {
     mockGet.mockResolvedValue(answer({ 'x-computer-unreachable': 'not_connected' }));
 
-    const body = await readFileBody(readers, 'ws', path);
+    const body = await readFileBody(bindReaders(readers, 'ws', path), path);
 
     expect(body.from).toEqual({ kind: 'backup', unreachable: 'not_connected' });
     expect(mockGet.mock.calls[0][1].params).toMatchObject({ path, backup_ok: true });
@@ -54,7 +54,7 @@ describe('a binary file answered from the backup', () => {
   it('is live when the answer carries no code', async () => {
     mockGet.mockResolvedValue(answer({}));
 
-    const body = await readFileBody(readers, 'ws', 'chart.png');
+    const body = await readFileBody(bindReaders(readers, 'ws', 'chart.png'), 'chart.png');
 
     expect(body.from).toEqual({ kind: 'live' });
   });

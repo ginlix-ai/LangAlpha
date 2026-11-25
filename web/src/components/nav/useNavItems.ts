@@ -1,13 +1,14 @@
 import { useMemo } from 'react';
 import { useOrdersVisible } from '@/hooks/useOrdersVisible';
-import { useFeatureEnabled } from '@/hooks/useFeatures';
+import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { NAV_ITEMS, type NavItem } from './navItems';
 
 /**
  * The primary nav items this user can see, in NAV_ITEMS order.
  *
- * The library is offered where the organization library is on for the
- * account, read off the flags, which fail closed while they load.
+ * An item that names a feature (the Drive, the organization library) is
+ * offered where that feature is on, read off the flags, which fail closed
+ * while they load.
  *
  * Orders is offered when a broker is connected or the ledger holds an order
  * from before; someone with neither is spared an entry into an empty list.
@@ -17,16 +18,14 @@ import { NAV_ITEMS, type NavItem } from './navItems';
  */
 export function useNavItems(): NavItem[] {
   const ordersVisible = useOrdersVisible();
-  const libraryOn = useFeatureEnabled('org_library');
+  const { data: features } = useFeatures();
   return useMemo(
     () =>
-      NAV_ITEMS.filter((item) =>
-        item.requires === 'orders'
-          ? ordersVisible === true
-          : item.requires === 'org_library'
-            ? libraryOn
-            : true,
-      ),
-    [ordersVisible, libraryOn],
+      NAV_ITEMS.filter((item) => {
+        if (!item.requires) return true;
+        if (item.requires === 'orders') return ordersVisible === true;
+        return isFeatureEnabled(features, item.requires);
+      }),
+    [ordersVisible, features],
   );
 }

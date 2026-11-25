@@ -12,6 +12,7 @@ from typing import Any, Optional
 from src.config.features import is_feature_enabled_system
 from src.server.services import platform_client
 from src.server.services.account_contract import ACCOUNT_CONTRACT, parse_account
+from src.server.database.shared_workspaces import is_holder
 from src.server.services.shared_workspaces.holder import refuse_holder
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,26 @@ async def access_tier(user_id: str, *, recheck: bool = False) -> Optional[int]:
     return int(answer.get("access_tier", -1))
 
 
+async def drive_allowance(user_id: str) -> Optional[int]:
+    """The Drive allowance the deployment's account service gives this person,
+    in bytes, -1 for no cap; None when it gives none (no account service, or no
+    answer on record, or an answer without one), so the deployment's own
+    setting applies."""
+    if not platform_client.platform_gating_active() or is_holder(user_id):
+        return None
+    answer = await read_membership(user_id)
+    if plan_unknown(answer):
+        return None
+    return _drive_bytes(answer.get("drive_max_bytes"))
+
+
+def _drive_bytes(value: object) -> Optional[int]:
+    """The allowance as sent, when it reads as one; anything else is no answer."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < -1:
+        return None
+    return value
+
+
 def _answer_suspended(result: dict) -> bool:
     org = result.get("org")
     return isinstance(org, dict) and org.get("suspended") is True
@@ -183,7 +204,7 @@ def _standing_in(last_known: object, epoch: int) -> Optional[dict]:
 
 
 # The fields every build's record carries and reads the same way.
-_MEMBERSHIP_PLAN_KEYS = ("access_tier", "plan_display_name")
+_MEMBERSHIP_PLAN_KEYS = ("access_tier", "plan_display_name", "drive_max_bytes")
 
 
 async def _earlier_plan(cache, user_id: str, contract: int) -> Optional[dict]:
@@ -358,7 +379,8 @@ async def _read_platform_membership(
     strict: bool = False,
     answered_only: bool = False,
 ) -> Optional[dict]:
-    """The user's platform membership: ``{"access_tier", "plan_display_name"}``,
+    """The user's platform membership: ``{"access_tier", "plan_display_name"}``
+    and ``drive_max_bytes`` when the answer carried it,
     plus, with the ``teams`` door open, whichever of
     :data:`MEMBERSHIP_ACCOUNT_KEYS` the auth service sent.
 
@@ -485,6 +507,9 @@ async def _ask_platform_membership(
             "access_tier": int(result.get("access_tier", -1)),
             "plan_display_name": result.get("plan_display_name"),
         }
+        drive_bytes = _drive_bytes(result.get("drive_max_bytes"))
+        if drive_bytes is not None:
+            membership["drive_max_bytes"] = drive_bytes
         if not fenced:
             await cache.set_many([
                 (entry_key, membership, _PLATFORM_MEMBERSHIP_CACHE_TTL),

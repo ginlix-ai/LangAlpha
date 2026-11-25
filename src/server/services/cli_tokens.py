@@ -49,6 +49,8 @@ SCOPES: tuple[str, ...] = (
     "workspace:write",
     "computer:write",
     "data:read",
+    "drive:read",
+    "drive:write",
 )
 
 

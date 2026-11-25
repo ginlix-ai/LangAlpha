@@ -13,13 +13,8 @@ from collections.abc import Iterable
 
 import structlog
 
-from ptc_agent.core.paths import (
-    lexical_path,
-    machine_path,
-    name_fold,
-    resolve_agent_path,
-    virtual_agent_path,
-)
+from ptc_agent.core.path_fold import machine_path, resolve_agent_path, virtual_agent_path
+from ptc_agent.core.paths import lexical_path, name_fold
 from ptc_agent.core.project_context import ProjectContext, current_project
 
 from typing import TYPE_CHECKING
@@ -52,7 +47,7 @@ def normalize_path(
 
     ``project`` is for a caller running outside the turn's own task, where the
     ambient one is not bound yet; everything inside a turn omits it. The fold
-    itself is ``paths.resolve_agent_path``, shared with the pinned backend.
+    itself is ``path_fold.resolve_agent_path``, shared with the pinned backend.
     """
     ctx = _ambient_project(project)
     if ctx is not None and ctx.machine is not None:

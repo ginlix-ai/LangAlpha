@@ -58,12 +58,8 @@ from ptc_agent.agent.filesystem_routes import (
 )
 from ptc_agent.agent.tools.glob import create_glob_tool
 from ptc_agent.agent.tools.grep import create_grep_tool
-from ptc_agent.core.paths import (
-    SandboxLayout,
-    grep_working_dir,
-    resolve_agent_path,
-    virtual_agent_path,
-)
+from ptc_agent.core.paths import SandboxLayout, grep_working_dir
+from ptc_agent.core.path_fold import resolve_agent_path, virtual_agent_path
 from ptc_agent.core.sandbox import files as sandbox_files
 from ptc_agent.core.sandbox.files import aglob_files
 from ptc_agent.core.sandbox.glob_runtime import agent_glob_pattern
@@ -269,11 +265,13 @@ async def _grep(files, pattern: str, path: str = ".", **kwargs) -> list:
 
 def _computer_routes(files) -> list[str]:
     """Each route's root as the folder spells it, for every route mounted
-    at the computer root rather than in the folder."""
+    at the computer root rather than in the folder and able to hold a file
+    (``fixed_names`` of none holds nothing to find)."""
     return [
         route.root_prefix[len(ROOT) + 1 :].rstrip("/")
         for route in files._routes
         if not route.root_prefix.startswith(f"{FOLDER}/")
+        and getattr(route, "fixed_names", None) != ()
     ]
 
 

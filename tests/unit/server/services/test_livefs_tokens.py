@@ -135,6 +135,30 @@ async def test_a_minted_token_authenticates_as_its_computer_user_and_root(table)
 
 
 @pytest.mark.asyncio
+async def test_a_request_is_admitted_under_the_kind_set_when_it_arrives(table, monkeypatch):
+    """A caller that names no kind gets the module's, read at the call: one
+    bound when the function was defined would ignore a later replacement."""
+    import dataclasses
+
+    minted = await mint_token(COMPUTER, USER)
+    seen = []
+    admit = core.admit
+
+    async def recording(kind, *args, **kwargs):
+        seen.append(kind)
+        return await admit(kind, *args, **kwargs)
+
+    monkeypatch.setattr(core, "admit", recording)
+    slowed = dataclasses.replace(tokens.KIND, rate_per_s=0.01)
+    monkeypatch.setattr(tokens, "KIND", slowed)
+
+    await authenticate(_bearer(minted.token))
+    await authenticate(_bearer(minted.token), kind=tokens.DRIVE)
+
+    assert seen == [slowed, tokens.DRIVE]
+
+
+@pytest.mark.asyncio
 async def test_a_forged_secret_for_a_real_computer_is_rejected(table):
     await mint_token(COMPUTER, USER)
 

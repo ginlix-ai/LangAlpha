@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
-import { computeAgentArtifactRouting, type AgentArtifactRouting, type ComputerFolders } from '../../utils/agentPaths';
+import { useNavigate } from 'react-router';
+import { computeAgentArtifactRouting } from '../../utils/agentArtifactRouting';
+import type { ComputerFolders } from '../../utils/agentPaths';
 import { isValidUuid } from '../../utils/uuid';
 import { isOneShotKind, stampTarget, type PanelTarget, type UnsequencedTarget } from '../filePanel/types';
 import type { OpenFileHandler } from '../../utils/fileLocation';
@@ -11,12 +13,8 @@ import type { RouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
  * link that names that workspace, so an open that names no other workspace
  * returns to its own.
  */
-export function nextPanelOverride(
-  routing: Pick<AgentArtifactRouting, 'clearWorkspaceId' | 'setWorkspaceId'>,
-  ownWorkspaceId: string,
-): string | null {
-  if (routing.clearWorkspaceId) return null;
-  return routing.setWorkspaceId && routing.setWorkspaceId !== ownWorkspaceId ? routing.setWorkspaceId : null;
+export function nextPanelOverride(named: string | null, ownWorkspaceId: string): string | null {
+  return named && named !== ownWorkspaceId ? named : null;
 }
 
 /**
@@ -98,39 +96,31 @@ export function usePanelLinkOpen({ workspaceId, folders, override, setOverride, 
   /** The panel's leave guard (usePanelAsks). */
   leave: RouteLeaveGuard;
 }): OpenFileHandler {
+  const navigate = useNavigate();
   return useCallback<OpenFileHandler>((rawPath, targetWorkspaceId, location, opts) => {
-    const r = computeAgentArtifactRouting(rawPath, targetWorkspaceId, folders);
-    if (r.setWorkspaceId && !isValidUuid(r.setWorkspaceId)) {
-      console.warn('[FilePanel] ignoring artifact ref with invalid workspace id', r.setWorkspaceId);
+    const dest = computeAgentArtifactRouting(rawPath, targetWorkspaceId, folders);
+    // A Drive file is the user's, not the workspace's: it opens on its page.
+    if (dest.kind === 'page') {
+      leave(() => navigate(dest.href));
       return;
     }
-
-    // The routing result carries exactly one non-null target field; map it to
-    // the matching panel kind. `targetMemoKey` may legitimately be '' (memo
-    // index → LIST view), so test for null rather than truthiness.
-    let target: UnsequencedTarget;
-    if (r.targetMemoryKey != null && r.targetMemoryTier != null) {
-      target = { kind: 'memory', key: r.targetMemoryKey, tier: r.targetMemoryTier };
-    } else if (r.targetMemoKey != null) {
-      target = { kind: 'memo', key: r.targetMemoKey };
-    } else if (r.targetDirectory != null) {
-      // `''` is the workspace root, which the router returns for `/home/workspace/`
-      // and `./`. Folding it to null said "no directory was asked for", and with a
-      // file open neither panel effect ran, so the link read as dead.
-      target = { kind: 'file', dir: r.targetDirectory };
-    } else {
-      target = { kind: 'file', path: r.targetFile, location: location ?? null, pin: !!opts?.pin, ...(opts?.comment && { comment: opts.comment }) };
+    if (dest.workspaceId && !isValidUuid(dest.workspaceId)) {
+      console.warn('[FilePanel] ignoring artifact ref with invalid workspace id', dest.workspaceId);
+      return;
     }
+    const target: UnsequencedTarget = dest.target.kind === 'file' && 'path' in dest.target
+      ? { ...dest.target, location: location ?? null, pin: !!opts?.pin, ...(opts?.comment && { comment: opts.comment }) }
+      : dest.target;
     // Another workspace's strip replaces this one's, drafts included. Only a
     // change in the workspace the panel shows does that; clearing an unset
     // override keeps the strip.
     const shown = (id: string | null) => id || workspaceId;
-    const nextOverride = nextPanelOverride(r, workspaceId);
+    const nextOverride = nextPanelOverride(dest.workspaceId, workspaceId);
     const switching = shown(nextOverride) !== shown(override);
     const go = () => {
       if (nextOverride !== override) setOverride(nextOverride);
       land(target);
     };
     if (switching) leave(go); else go();
-  }, [land, setOverride, folders, leave, workspaceId, override]);
+  }, [land, setOverride, folders, leave, workspaceId, override, navigate]);
 }

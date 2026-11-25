@@ -1,8 +1,8 @@
-"""Shared helpers for multipart upload handling."""
+"""Shared helpers for upload handling: multipart files and raw bodies."""
 
 from typing import TypeVar
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request, UploadFile
 from pydantic import TypeAdapter, ValidationError
 
 T = TypeVar("T")
@@ -47,6 +47,17 @@ async def read_capped(file: UploadFile, max_bytes: int) -> bytes:
             raise HTTPException(status_code=413, detail=_too_large(max_bytes))
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def read_body(request: Request, cap: int) -> bytes:
+    """A raw body, read no further than the chunk that passes ``cap``: the
+    caller refuses a body longer than ``cap`` in its own words."""
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > cap:
+            break
+    return bytes(body)
 
 
 def json_form_field(

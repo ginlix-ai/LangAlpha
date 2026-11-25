@@ -16,8 +16,9 @@ export type FlagSpecs = Readonly<Record<string, FlagSpec>>;
 
 export interface CommandSpec {
   words: readonly string[];
-  /** All required, in order; a last one ending in ``...`` takes the rest of
-   *  the words, joined, so a message needs no quotes. */
+  /** In order; a last one ending in ``...`` takes the rest of the words,
+   *  joined, so a message needs no quotes. All are required but a last one
+   *  ending in ``?``, which may be left out. */
   operands?: readonly string[];
   flags?: FlagSpecs;
 }
@@ -107,8 +108,10 @@ export function bind(command: CommandSpec, parsed: Parsed): Map<string, string> 
   const operands = new Map<string, string>();
   specs.forEach((spec, i) => {
     const rest = spec.endsWith("...");
-    const name = rest ? spec.slice(0, -3) : spec;
+    const optional = spec.endsWith("?");
+    const name = rest ? spec.slice(0, -3) : optional ? spec.slice(0, -1) : spec;
     const value = rest ? parsed.operands.slice(i).join(" ").trim() : parsed.operands[i];
+    if (!value && optional) return;
     if (!value) throw new GrammarError(`Missing <${name}>`);
     operands.set(name, value);
   });

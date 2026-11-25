@@ -1,12 +1,13 @@
 /**
- * Sending a file to the server, shared by workspace uploads and chat
- * attachments. Each caller owns its own routes (begin, sign, complete, cancel)
- * and hands them in; what is here is how an upload goes: its start raced with
- * a cancel, the parts a few at a time, each retried on a fresh URL, given up
- * only when no bytes move, and the upload ended on the server whenever it
- * fails, is cancelled, or its page goes away while it is open.
+ * Sending a file to the server, shared by workspace uploads, chat attachments
+ * and the Drive. Each caller owns its own routes (begin, sign or relay,
+ * complete, cancel) and hands them in; what is here is how an upload goes: its
+ * start raced with a cancel, the parts a few at a time, each retried on a
+ * fresh URL or through the server, given up only when no bytes move, and the
+ * upload ended on the server whenever it fails, is cancelled, or its page goes
+ * away while it is open.
  */
-import { api, ApiError } from '@/api/client';
+import { api, ApiError, delay } from '@/api/client';
 import { apiErrorDetail, apiErrorDetailMessage, apiErrorStatus } from '@/api/errors';
 import { getAuthHeaders } from '@/lib/authToken';
 
@@ -15,12 +16,20 @@ export interface SignedUploadPart {
   offset: number;
   size: number;
   url: string;
+  /** Sent verbatim with the part, where the store signed them into the URL's terms. */
+  headers?: Record<string, string>;
 }
 
-export type UploadProgress =
-  | { phase: 'sending'; percent: number }
-  /** The bytes are in and the server is taking the file, which a cancel no longer stops. */
-  | { phase: 'saving' };
+/** The bytes are in and the server is taking the file, which a cancel no longer stops. */
+type Saving = { phase: 'saving' };
+
+/** An upload in parts, which counts its bytes: those the store holds or is taking. */
+export type PartProgress = { phase: 'sending'; percent: number; loaded: number } | Saving;
+
+/** A one-request upload, which knows only how far its body has gone. */
+export type RelayProgress = { phase: 'sending'; percent: number } | Saving;
+
+export type UploadProgress = PartProgress | RelayProgress;
 
 /** The parts could not be sent, retries and all: the connection, not the server, is the likely cause. */
 export class UploadSendError extends Error {
@@ -66,6 +75,46 @@ type SignParts = (
   partNumbers: number[],
   signal: AbortSignal,
 ) => Promise<{ parts: SignedUploadPart[]; expires_in: number }>;
+
+/** Sends part `n`'s bytes through the server, which passes them into the store. */
+export type RelayPart = (
+  n: number,
+  body: Blob,
+  config: { signal: AbortSignal; onUploadProgress: (e: { loaded: number }) => void },
+) => Promise<unknown>;
+
+/**
+ * How one upload's parts travel: to the store on signed URLs, through the
+ * server, or both, where once a direct PUT gets no answer at all (a bucket
+ * without CORS, a firewall, the store's host unreachable) that part and every
+ * part after it go through the server instead.
+ */
+export type PartRoutes =
+  | { kind: 'signed'; sign: SignParts }
+  | { kind: 'relay'; relay: RelayPart }
+  | { kind: 'signedWithFallback'; sign: SignParts; relay: RelayPart };
+
+type SendBody = (body: Blob, config: { signal: AbortSignal; onUploadProgress: (e: { loaded: number }) => void }) => Promise<unknown>;
+
+/** One try at sending one part: which bytes, how, and whether a refusal on the way ends the upload. */
+interface PartTrip {
+  offset: number;
+  size: number;
+  send: SendBody;
+  /** The upload has ended: a refusal from the backend, which no retry brings back. */
+  ends: (e: unknown) => boolean;
+}
+
+/** The way parts go for one upload. */
+interface PartTransport {
+  /** Part `n`'s next try; `fresh` asks for a new address, since the old one may be what failed. A refusal here is the backend's. */
+  transportFor(n: number, fresh: boolean): Promise<PartTrip>;
+  /** Tells the backend the upload is still going while a part takes long. */
+  keepAlive(n: number): void;
+}
+
+/** The backend refusing a URL or a part: the upload has ended. */
+const backendRefusal = (e: unknown) => e instanceof ApiError && !!e.status && e.status < 500 && e.status !== 429;
 
 const PART_CONCURRENCY = 4;
 const SIGN_BATCH = 8;
@@ -133,20 +182,6 @@ function partTurn(signal: AbortSignal): Promise<() => void> {
 
 export const canceled = () => new ApiError('canceled', 'ERR_CANCELED');
 
-export function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(canceled());
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(canceled());
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 function untilAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -177,10 +212,147 @@ function missingParts(e: unknown): number[] | null {
 /** Part numbers 1 through `count`. */
 const allParts = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
 
-/** Sends parts of one upload, a few at a time, each retried on a fresh URL. */
-class PartSender {
+/** Parts through the server, each cut from the file by its number. */
+function relayTransport(relay: RelayPart, partSize: number, fileSize: number): PartTransport {
+  return {
+    async transportFor(n) {
+      const offset = (n - 1) * partSize;
+      return { offset, size: Math.min(partSize, fileSize - offset), send: (body, config) => relay(n, body, config), ends: backendRefusal };
+    },
+    keepAlive() {},
+  };
+}
+
+/** Parts to the store on signed URLs, each signed with the next few waiting so most sends wait on no request. */
+class SignedTransport implements PartTransport {
   private readonly signed = new Map<number, { part: SignedUploadPart; until: number }>();
   private readonly signing = new Map<number, Promise<void>>();
+
+  constructor(
+    private readonly signParts: SignParts,
+    private readonly signal: AbortSignal,
+    /** Parts waiting their turn or queued, nearest first: signed along with the one asked for. */
+    private readonly upcoming: () => number[],
+  ) {}
+
+  async transportFor(n: number, fresh: boolean): Promise<PartTrip> {
+    const part = await this.urlFor(n, fresh);
+    return {
+      offset: part.offset,
+      size: part.size,
+      send: async (body, config) => {
+        await api.putSigned(part.url, body, { ...config, headers: part.headers });
+        this.signed.delete(n);
+      },
+      // The store's refusal is a URL gone stale or a passing fault; the retry signs again.
+      ends: () => false,
+    };
+  }
+
+  /** Signs the part again, its URL unused: signing is what keeps the upload open and counts it as use. Best effort. */
+  keepAlive(n: number): void {
+    this.signParts([n], this.signal).catch(() => {});
+  }
+
+  private async urlFor(n: number, fresh: boolean): Promise<SignedUploadPart> {
+    if (fresh) this.signed.delete(n);
+    const pending = this.signing.get(n);
+    if (!fresh && pending) await pending;
+    const held = this.signed.get(n);
+    if (held && held.until > Date.now()) return held.part;
+    const batch = [
+      n,
+      ...this.upcoming().filter((m) => m !== n && !this.signed.has(m) && !this.signing.has(m)).slice(0, SIGN_BATCH - 1),
+    ];
+    const request = this.sign(batch);
+    for (const m of batch) this.signing.set(m, request);
+    try {
+      await request;
+    } finally {
+      for (const m of batch) if (this.signing.get(m) === request) this.signing.delete(m);
+    }
+    const got = this.signed.get(n);
+    if (!got) throw new Error(`part ${n} was not signed`);
+    return got.part;
+  }
+
+  private async sign(batch: number[]): Promise<void> {
+    const deadline = new AbortController();
+    const stop = () => deadline.abort();
+    if (this.signal.aborted) stop();
+    else this.signal.addEventListener('abort', stop, { once: true });
+    let late = false;
+    const timer = setTimeout(() => {
+      late = true;
+      deadline.abort();
+    }, SIGN_DEADLINE_MS);
+    let signed: Awaited<ReturnType<SignParts>>;
+    try {
+      signed = await untilAborted(this.signParts(batch, deadline.signal), deadline.signal);
+    } catch (e) {
+      // A deadline, as the retry loop counts one, not a cancel of the upload.
+      if (late && !this.signal.aborted) throw new ApiError(`timeout of ${SIGN_DEADLINE_MS}ms exceeded`, 'ECONNABORTED');
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      this.signal.removeEventListener('abort', stop);
+    }
+    const { parts, expires_in } = signed;
+    // A minute short of the store's deadline, for a clock that runs behind it.
+    const until = Date.now() + Math.max(expires_in - 60, 0) * 1000;
+    for (const part of parts) this.signed.set(part.part_number, { part, until });
+  }
+}
+
+/**
+ * Signed URLs until a PUT gets no answer at all, which is what a store the
+ * page may not reach looks like: that part goes again at once through the
+ * server, and so does every part after it.
+ */
+function fallbackTransport(direct: SignedTransport, viaServer: PartTransport, signal: AbortSignal): PartTransport {
+  let switched = false;
+  return {
+    async transportFor(n, fresh) {
+      if (switched) return viaServer.transportFor(n, fresh);
+      const trip = await direct.transportFor(n, fresh);
+      let relayed = false;
+      return {
+        ...trip,
+        send: async (body, config) => {
+          try {
+            return await trip.send(body, config);
+          } catch (e) {
+            if (!(e instanceof ApiError) || signal.aborted) throw e;
+            // No answer (a firewall, or a preflight the bucket's CORS refuses): the rest goes through the server.
+            if (e.code === 'ERR_NETWORK') switched = true;
+            // An answer refusing a part signed afresh (a store or proxy that will not take the signed
+            // headers): that part goes through the server, which checks the same digest.
+            else if (!(fresh && e.status !== undefined && e.status >= 400 && e.status < 500)) throw e;
+            relayed = true;
+            return (await viaServer.transportFor(n, false)).send(body, config);
+          }
+        },
+        ends: (e) => relayed && backendRefusal(e),
+      };
+    },
+    keepAlive: (n) => direct.keepAlive(n),
+  };
+}
+
+function transportOf(routes: PartRoutes, partSize: number, fileSize: number, signal: AbortSignal, upcoming: () => number[]): PartTransport {
+  switch (routes.kind) {
+    case 'relay':
+      return relayTransport(routes.relay, partSize, fileSize);
+    case 'signed':
+      return new SignedTransport(routes.sign, signal, upcoming);
+    case 'signedWithFallback':
+      return fallbackTransport(new SignedTransport(routes.sign, signal, upcoming), relayTransport(routes.relay, partSize, fileSize), signal);
+  }
+}
+
+/** Sends parts of one upload, a few at a time, each retried. */
+class PartSender {
+  private readonly transport: PartTransport;
   private readonly inFlight = new Map<number, number>();
   private readonly putting = new Set<number>();
   // Parts waiting for their turn (`partTurn`), which keep the upload open too.
@@ -193,10 +365,16 @@ class PartSender {
 
   constructor(
     private readonly file: File,
-    private readonly signParts: SignParts,
+    routes: PartRoutes,
+    partSize: number,
     private readonly ctrl: AbortController,
-    private readonly onProgress?: (progress: UploadProgress) => void,
-  ) {}
+    private readonly onProgress?: (progress: PartProgress) => void,
+    /** Parts the store already has, from an upload continued: counted as sent and never sent again. */
+    held: ReadonlyArray<{ part_number: number; size: number }> = [],
+  ) {
+    for (const part of held) this.sent.set(part.part_number, part.size);
+    this.transport = transportOf(routes, partSize, file.size, ctrl.signal, () => [...this.waiting, ...this.queue]);
+  }
 
   async send(numbers: number[]): Promise<void> {
     // Parts sent again are counted again.
@@ -216,15 +394,10 @@ class PartSender {
     }
   }
 
-  /**
-   * Signs a part in flight, or waiting for its turn, again, its URL unused:
-   * signing is what keeps the upload open and counts it as use. Best effort, since a refusal that
-   * matters stops the next batch anyway.
-   */
+  /** A part in flight, or waiting for its turn, keeps the upload open. */
   private keepAlive(): void {
     const n = this.putting.values().next().value ?? this.waiting.values().next().value;
-    if (n === undefined) return;
-    this.signParts([n], this.ctrl.signal).catch(() => {});
+    if (n !== undefined) this.transport.keepAlive(n);
   }
 
   private fail(e: unknown): never {
@@ -236,7 +409,7 @@ class PartSender {
   private async sendPart(n: number): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       if (this.ctrl.signal.aborted) throw canceled();
-      let signing = true;
+      let trip: PartTrip | null = null;
       let release: (() => void) | null = null;
       try {
         // Taken at once when free, so the parts starting together sign together.
@@ -249,22 +422,19 @@ class PartSender {
             this.waiting.delete(n);
           }
         }
-        // Signed after the wait, so a long one does not leave a stale URL.
-        // A retry asks for a new URL: the old one may be what failed.
-        const part = await this.urlFor(n, attempt > 1);
-        signing = false;
-        await this.put(n, part);
-        this.signed.delete(n);
+        // Asked for after the wait, so a long one does not leave a stale URL.
+        trip = await this.transport.transportFor(n, attempt > 1);
+        await this.put(n, trip);
         this.inFlight.delete(n);
-        this.sent.set(n, part.size);
+        this.sent.set(n, trip.size);
         this.report();
         return;
       } catch (e) {
         this.inFlight.delete(n);
         if (this.ctrl.signal.aborted) throw e;
         this.report();
-        // The backend refusing a URL means the upload has ended; no retry brings it back.
-        if (signing && e instanceof ApiError && e.status && e.status < 500 && e.status !== 429) this.fail(e);
+        // Before a trip, the backend was being asked; after, the trip says whose refusal it was.
+        if (trip ? trip.ends(e) : backendRefusal(e)) this.fail(e);
         if (attempt >= PART_ATTEMPTS) this.fail(new UploadSendError());
       } finally {
         release?.();
@@ -275,7 +445,7 @@ class PartSender {
   }
 
   /** One PUT, abandoned once no bytes have gone for PART_IDLE_MS; the retry loop sends it again. */
-  private async put(n: number, part: SignedUploadPart): Promise<void> {
+  private async put(n: number, { offset, size, send }: PartTrip): Promise<void> {
     const idle = new AbortController();
     const stop = () => idle.abort();
     if (this.ctrl.signal.aborted) stop();
@@ -283,12 +453,13 @@ class PartSender {
     let timer = setTimeout(stop, PART_IDLE_MS);
     this.putting.add(n);
     try {
-      await api.putSigned(part.url, this.file.slice(part.offset, part.offset + part.size), {
+      // A slice is a view of the file on disk, so a part's bytes are read only as they go.
+      await send(this.file.slice(offset, offset + size), {
         signal: idle.signal,
         onUploadProgress: ({ loaded }) => {
           clearTimeout(timer);
           timer = setTimeout(stop, PART_IDLE_MS);
-          this.report(n, Math.min(loaded, part.size));
+          this.report(n, Math.min(loaded, size));
         },
       });
     } finally {
@@ -296,58 +467,6 @@ class PartSender {
       this.putting.delete(n);
       this.ctrl.signal.removeEventListener('abort', stop);
     }
-  }
-
-  /** A URL for part `n`, signed with the next few queued parts so most sends wait on no request. */
-  private async urlFor(n: number, fresh: boolean): Promise<SignedUploadPart> {
-    if (fresh) this.signed.delete(n);
-    const pending = this.signing.get(n);
-    if (!fresh && pending) await pending;
-    const held = this.signed.get(n);
-    if (held && held.until > Date.now()) return held.part;
-    const batch = [
-      n,
-      ...[...this.waiting, ...this.queue]
-        .filter((m) => m !== n && !this.signed.has(m) && !this.signing.has(m))
-        .slice(0, SIGN_BATCH - 1),
-    ];
-    const request = this.sign(batch);
-    for (const m of batch) this.signing.set(m, request);
-    try {
-      await request;
-    } finally {
-      for (const m of batch) if (this.signing.get(m) === request) this.signing.delete(m);
-    }
-    const got = this.signed.get(n);
-    if (!got) throw new Error(`part ${n} was not signed`);
-    return got.part;
-  }
-
-  private async sign(batch: number[]): Promise<void> {
-    const deadline = new AbortController();
-    const stop = () => deadline.abort();
-    if (this.ctrl.signal.aborted) stop();
-    else this.ctrl.signal.addEventListener('abort', stop, { once: true });
-    let late = false;
-    const timer = setTimeout(() => {
-      late = true;
-      deadline.abort();
-    }, SIGN_DEADLINE_MS);
-    let signed: Awaited<ReturnType<SignParts>>;
-    try {
-      signed = await untilAborted(this.signParts(batch, deadline.signal), deadline.signal);
-    } catch (e) {
-      // A deadline, as the retry loop counts one, not a cancel of the upload.
-      if (late && !this.ctrl.signal.aborted) throw new ApiError(`timeout of ${SIGN_DEADLINE_MS}ms exceeded`, 'ECONNABORTED');
-      throw e;
-    } finally {
-      clearTimeout(timer);
-      this.ctrl.signal.removeEventListener('abort', stop);
-    }
-    const { parts, expires_in } = signed;
-    // A minute short of the store's deadline, for a clock that runs behind it.
-    const until = Date.now() + Math.max(expires_in - 60, 0) * 1000;
-    for (const part of parts) this.signed.set(part.part_number, { part, until });
   }
 
   private report(n?: number, loaded?: number): void {
@@ -358,7 +477,7 @@ class PartSender {
     const percent = Math.min(100, Math.floor((bytes * 100) / (this.file.size || 1)));
     if (percent === this.lastPercent) return;
     this.lastPercent = percent;
-    this.onProgress?.({ phase: 'sending', percent });
+    this.onProgress?.({ phase: 'sending', percent, loaded: bytes });
   }
 }
 
@@ -370,7 +489,7 @@ async function completeParts<T>(
   complete: (signal: AbortSignal) => Promise<T>,
   parts: PartSender,
   signal: AbortSignal,
-  onProgress?: (progress: UploadProgress) => void,
+  onProgress?: (progress: PartProgress) => void,
 ): Promise<T> {
   for (let round = 1; ; round++) {
     // Said before each request, parts sent again or not: from here a cancel
@@ -428,7 +547,7 @@ export async function beginUnlessAborted<T>(
 }
 
 /** Progress from a one-request upload's percent: once the body is all sent, the server is storing it. */
-export function relayProgress(onProgress?: (progress: UploadProgress) => void): (percent: number) => void {
+export function relayProgress(onProgress?: (progress: RelayProgress) => void): (percent: number) => void {
   let saving = false;
   return (percent) => {
     if (saving) return;
@@ -441,18 +560,31 @@ export function relayProgress(onProgress?: (progress: UploadProgress) => void): 
   };
 }
 
+/** How long an open upload lives. */
+export type UploadLifetime =
+  /**
+   * Its page's: it ends on any failure, and when the page goes away, by
+   * `cancelOnUnload`, a request that outlives the page.
+   */
+  | { kind: 'page'; cancelOnUnload: (headers: Record<string, string>) => void }
+  /**
+   * Until it is finished or cancelled, for a caller that remembers it and
+   * continues it from the parts the store holds, from this page or another: a
+   * failure `keepOpen` names leaves it open. A cancel still ends it.
+   */
+  | { kind: 'resumable'; keepOpen: (e: unknown) => boolean };
+
 interface OpenUploadRoutes {
   /** Ends the upload on the server, discarding what was sent. */
   cancel: () => Promise<unknown>;
-  /** The same, as a request that outlives a page going away. */
-  cancelOnUnload: (headers: Record<string, string>) => void;
+  lifetime: UploadLifetime;
 }
 
 /**
  * Runs `send` on an upload the server holds open until it ends. While `send`
  * keeps it open (from the start, and whenever it calls `setOpen(true)`), a
  * failure or cancel ends it now rather than when it would expire, and so does
- * the page going away. `ctrl` aborts with `signal`.
+ * the page going away where the routes say how. `ctrl` aborts with `signal`.
  */
 export async function whileOpen<T>(
   routes: OpenUploadRoutes,
@@ -464,13 +596,15 @@ export async function whileOpen<T>(
   if (signal?.aborted) ctrl.abort();
   else signal?.addEventListener('abort', stop, { once: true });
   let open = true;
-  const releasePageHide = endOnPageHide(() => open, routes.cancelOnUnload);
+  const { lifetime } = routes;
+  const releasePageHide = lifetime.kind === 'page' ? endOnPageHide(() => open, lifetime.cancelOnUnload) : () => {};
   try {
     const result = await send(ctrl, (next) => { open = next; });
     open = false;
     return result;
   } catch (e) {
-    if (open) void routes.cancel().catch(() => {});
+    const keptOpen = lifetime.kind === 'resumable' && lifetime.keepOpen(e);
+    if (open && (signal?.aborted || !keptOpen)) void routes.cancel().catch(() => {});
     if (signal?.aborted) throw canceled();
     throw e;
   } finally {
@@ -479,30 +613,32 @@ export async function whileOpen<T>(
   }
 }
 
-interface DirectUploadRoutes<T> extends OpenUploadRoutes {
-  sign: SignParts;
+type PartUploadRoutes<T> = OpenUploadRoutes & {
+  parts: PartRoutes;
   /** Asks the server to assemble the parts; safe to repeat. */
   complete: (signal: AbortSignal) => Promise<T>;
-}
+};
 
 /**
- * Sends `file` in `partCount` parts and completes it. `settle` follows the
- * accepted completion with the upload no longer open; its `again` completes
- * once more, open again until accepted, for a server that hands it back.
+ * Sends `file` in `parts.count` parts of `parts.size` and completes it,
+ * skipping those `parts.held` names. `settle` follows the accepted completion
+ * with the upload no longer open; its `again` completes once more, open again
+ * until accepted, for a server that hands it back.
  */
-export function runDirectUpload<T, R>(
+export function runPartUpload<T, R>(
   file: File,
-  partCount: number,
-  routes: DirectUploadRoutes<T>,
-  { onProgress, signal }: { onProgress?: (progress: UploadProgress) => void; signal?: AbortSignal },
+  parts: { count: number; size: number; held?: ReadonlyArray<{ part_number: number; size: number }> },
+  routes: PartUploadRoutes<T>,
+  { onProgress, signal }: { onProgress?: (progress: PartProgress) => void; signal?: AbortSignal },
   settle: (accepted: T, again: () => Promise<T>) => Promise<R> | R,
 ): Promise<R> {
   return whileOpen(routes, signal, async (ctrl, setOpen) => {
-    const parts = new PartSender(file, routes.sign, ctrl, onProgress);
-    await parts.send(allParts(partCount));
+    const sender = new PartSender(file, routes.parts, parts.size, ctrl, onProgress, parts.held);
+    const held = new Set(parts.held?.map((p) => p.part_number));
+    await sender.send(allParts(parts.count).filter((n) => !held.has(n)));
     const finish = async () => {
       setOpen(true);
-      const accepted = await completeParts(routes.complete, parts, ctrl.signal, onProgress);
+      const accepted = await completeParts(routes.complete, sender, ctrl.signal, onProgress);
       setOpen(false);
       return accepted;
     };

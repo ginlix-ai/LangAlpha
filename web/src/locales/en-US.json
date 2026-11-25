@@ -149,7 +149,8 @@
     "plugins": "Plugins",
     "orders": "Orders",
     "menu": "Menu",
-    "library": "Library"
+    "library": "Library",
+    "drive": "Drive"
   },
   "account": {
     "menuLabel": "Account menu",
@@ -3737,7 +3738,9 @@
       "automationCreate": "Create automation “{{name}}”?",
       "automationEdit": "Change automation “{{name}}”?",
       "automationTrigger": "Run automation “{{name}}”?",
-      "automationResume": "Resume automation “{{name}}”?"
+      "automationResume": "Resume automation “{{name}}”?",
+      "unknown": "Allow “{{name}}”?",
+      "unknownUnnamed": "Allow this action?"
     },
     "ask": {
       "threadDelete": "delete this thread",
@@ -3763,7 +3766,8 @@
       "automationTrigger": "run this automation now",
       "automationTriggerWhere": "run this automation now, {{where}}",
       "automationResume": "resume this automation",
-      "automationResumeWhere": "resume this automation, which runs {{where}}"
+      "automationResumeWhere": "resume this automation, which runs {{where}}",
+      "unknown": "do something this version of the app cannot describe. Reload the page to see what it is"
     },
     "where": {
       "workspace": "in “{{workspace}}”",
@@ -3800,7 +3804,8 @@
     "resume": "Resume",
     "decline": "Decline",
     "alwaysApprove": "Always allow",
-    "alwaysApproveHint": "Create this and later workspaces without asking. Turn it off in Settings."
+    "alwaysApproveHint": "Create this and later workspaces without asking. Turn it off in Settings.",
+    "allow": "Allow"
   },
   "vendorTerms": {
     "title": "Accept {{name}}'s terms",

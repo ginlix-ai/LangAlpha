@@ -326,6 +326,21 @@ class TestOnlyReadAndGlobReachIt:
         assert planted not in found and sandbox.agrep_rich.await_args.kwargs["glob"] == odd
 
     @pytest.mark.asyncio
+    async def test_a_file_left_on_disk_under_members_is_not_attached(self):
+        # A PNG or PDF Read takes the capped download, not the text read.
+        sandbox = _sandbox()
+        sandbox.adownload_file_bytes_capped = AsyncMock(return_value=b"\x89PNG")
+        closed = close_members(
+            CompositeFilesystemBackend(sandbox=sandbox, routes=[]),
+            store=InMemoryStore(), sandbox=sandbox, layout=LAYOUT,
+        )
+        _, _, mounted = await _files(sandbox)
+
+        for files, path in ((closed, ".agents/members/x/memory/c.png"), (mounted, f"{FOLDER}c.png")):
+            assert await files.adownload_file_bytes_capped(path, lambda _: 1 << 20) is None
+        sandbox.adownload_file_bytes_capped.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_writes_are_refused_with_who_to_ask(self):
         _, tools, _ = await _files()
         for name, args in (

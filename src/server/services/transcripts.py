@@ -35,7 +35,8 @@ from ptc_agent.agent.transcript import (
     load_manifest,
 )
 from ptc_agent.agent.transcript.render import SCHEMA_VERSION
-from ptc_agent.core.paths import THREAD_INDEX, WorkspaceLayout
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.path_fold import THREAD_INDEX
 
 if TYPE_CHECKING:
     from src.server.database.thread_transcripts import TaskRun

@@ -97,6 +97,8 @@ if __name__ == "__main__":
             workers=args.workers,
             log_level=args.log_level,
             timeout_keep_alive=300,  # 5 minutes - for long-running workflows
+            # TCP_NODELAY on every connection; see the module.
+            http="src.server.http_protocol:NoDelayHTTPProtocol",
             # How long open streams may hold shutdown. The lifespan's shutdown
             # runs only after, so whoever kills this process must wait longer.
             timeout_graceful_shutdown=int(

@@ -10,7 +10,8 @@ import pytest
 from ptc_agent.agent.backends.composite import CompositeFilesystemBackend
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.config.core import SSHConfig
-from ptc_agent.core.paths import WorkspaceLayout, on_file_mount
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.path_fold import on_file_mount
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 

@@ -25,6 +25,8 @@ import httpx
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
+from ptc_agent.agent.backends.results import RouteRefused
+from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.middleware.file_operations.image_fit import (
     UnreadableImage,
     UnsupportedImageFormat,
@@ -342,12 +344,17 @@ class MultimodalMiddleware(AgentMiddleware):
     def __init__(self, *, sandbox: Any, computers: ComputerReach | None = None) -> None:
         """
         Args:
-            sandbox: PTCSandbox the Read tool is backed by, used to fetch the
-                raw bytes of a path the tool only acknowledged.
+            sandbox: What the Read tool is backed by (its filesystem backend,
+                or a PTCSandbox), used to fetch the raw bytes of a path the
+                tool only acknowledged, from wherever the tool read it.
             computers: The user's other computers, for a Read that names one
                 (the Chief of Staff's); its bytes are fetched from there.
         """
         super().__init__()
+        if not hasattr(sandbox, "aread_range"):
+            # A PTCSandbox itself, whose download takes a whole path; a
+            # backend normalizes as the Read tool's reads do.
+            sandbox = SandboxBackend(sandbox)
         self.sandbox = sandbox
         self._computers = computers
 
@@ -539,13 +546,12 @@ class MultimodalMiddleware(AgentMiddleware):
             if target is not None:
                 sandbox, project = target.sandbox, target.project
         try:
-            # The Read tool reaches the sandbox through SandboxBackend, which
-            # normalizes first; this middleware holds the sandbox itself, whose
-            # download does not. Without this, a virtual path the tool resolved
-            # fine ("/work/task/charts/c.png") misses here and replaces the
-            # tool's success with a not-found error.
-            with project_bound(project):
-                path = sandbox.normalize_path(file_path)
+            path = file_path
+            if sandbox is not self.sandbox:
+                # Another computer's sandbox itself, whose download takes a
+                # whole path; this computer's backend normalizes as its reads do.
+                with project_bound(project):
+                    path = sandbox.normalize_path(file_path)
             file_bytes = await sandbox.adownload_file_bytes_capped(path, self._cap_for)
             if not file_bytes:
                 logger.warning(f"[MULTIMODAL] Failed to download file: {file_path}")
@@ -557,6 +563,9 @@ class MultimodalMiddleware(AgentMiddleware):
 
         except (_TooLarge, FileOverCap) as exc:
             return self._too_large(file_path, tool_call_id, exc.limit)
+        except RouteRefused as e:
+            # Worded for the agent by the route that holds the file.
+            return _error(tool_call_id, str(e))
         except (OSError, ValueError) as e:
             logger.warning(f"[MULTIMODAL] Error loading sandbox file {file_path}: {e}")
             return _error(tool_call_id, f"Failed to load file: {e}")

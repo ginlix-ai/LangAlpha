@@ -110,8 +110,41 @@ langalpha automations trigger <id>
 langalpha automations pause <id>
 langalpha automations resume <id>
 langalpha automations delete <id> [-y]
+langalpha drive ls [path] [-r] [--space SPACE]
+langalpha drive cat <path> [--rev N] [--space SPACE]
+langalpha drive get <path> [-o FILE] [--rev N] [--force] [--space SPACE]
+langalpha drive put <file> <path> [--note WHY] [--new] [--if-match SHA256] [--space SPACE]
+langalpha drive mkdir <path> [--space SPACE]
+langalpha drive mv <from> <to> [--space SPACE]
+langalpha drive rm <path> [--space SPACE]
+langalpha drive history <path> [--space SPACE]
+langalpha drive history clear <path> [--before N] [--space SPACE]
+langalpha drive restore <path> --rev N [--space SPACE]
+langalpha drive trash [--space SPACE]
+langalpha drive trash restore <trash_id> [--space SPACE]
+langalpha drive usage [--space SPACE]
 langalpha models list
 ```
+
+`drive` is the server-held file tree: paths like `research/nvda/thesis.md`, `put -`
+reads stdin, and `put` takes a folder too, sending every file under it with its
+relative path. Files of any size go in parts, a few at a time, straight to the
+Drive's storage (or through the server where the storage cannot be reached), with
+memory held to a few parts; a terminal shows progress on stderr. Run the same `put`
+again after an interruption and it continues from the parts the Drive holds, and bytes
+the Drive already holds are answered at once. `get` downloads by ranges into a
+hidden `.NAME.la-part` file beside the target, checks the file's SHA-256, then
+renames it into place; run it again to continue an interrupted download. `rm` moves to
+a trash kept 14 days (`drive trash restore` undoes it, emptying it is done only in the
+app), and `put --new` or `--if-match SHA256` exit 5 rather than overwrite a file that
+is there or has changed (the hash is `sha256` in `drive ls --json`). `--rev N` reads
+an older version. `history` says when each earlier version goes: a text file keeps
+every version, another file under 100 MiB keeps them 30 days and at most 10, and a
+larger one keeps none, so saving over it replaces it. `history clear` deletes a file's
+earlier versions for good and prints the room it freed (`--before N` keeps version N
+and later). `usage` shows the space the Drive counts, live files and their earlier
+versions, against its allowance, and the trash apart: the trash does not count, and
+when it grows past the allowance its oldest items go before their 14 days.
 
 `WS` is a workspace id, its exact name, or `home`. A turn streams the
 agent's words by default; `--wait` prints only the answer, `--detach` returns

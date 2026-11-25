@@ -148,8 +148,8 @@ CLAIM_SQL = """
 """
 
 # Every column a row can reference a blob through: a manifest row's own object
-# or the pack chunk it is a member of, a stored thread transcript file, and a
-# file of a published artifact version.
+# or the pack chunk it is a member of, a stored thread transcript file, a
+# file of a published artifact version, and a Drive file's bytes.
 # Written against a ``workspace_file_blobs b``; the condemn pass, the reap
 # re-check and the orphan report must agree on it exactly. A row references a
 # registry entry only under the same user, since that user's object is the
@@ -165,7 +165,9 @@ REFERENCED_SQL = (
     " OR EXISTS (SELECT 1 FROM thread_transcript_files t"
     " WHERE t.sha256 = b.sha256 AND t.user_id = b.user_id)"
     " OR EXISTS (SELECT 1 FROM artifact_version_files a"
-    " WHERE a.sha256 = b.sha256 AND a.user_id = b.user_id))"
+    " WHERE a.sha256 = b.sha256 AND a.user_id = b.user_id)"
+    " OR EXISTS (SELECT 1 FROM drive_contents d"
+    " WHERE d.blob_user_id = b.user_id AND d.sha256 = b.sha256))"
 )
 
 # The manifest side of the same relation: an unaliased ``workspace_files``

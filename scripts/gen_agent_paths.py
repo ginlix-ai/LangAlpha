@@ -30,6 +30,7 @@ from ptc_agent.core.paths import (  # noqa: E402
     MEMO_INDEX_FILENAME,
     MEMORY_INDEX_FILENAME,
     AUTOMATION_FILE_NAME,
+    DRIVE_PERSONAL,
     SANDBOX_ROOTS,
     SUBAGENT_FILE_NAME,
     USER_DATA_DIRS,
@@ -111,9 +112,16 @@ def render() -> str:
         ("LARGE_TOOL_RESULTS_DIR", WorkspaceLayout, "LARGE_TOOL_RESULTS_DIR"),
         ("AGENTS_DIR", SandboxLayout, "AGENTS_DIR"),
         ("INTERNAL_DIR", SandboxLayout, "INTERNAL_DIR"),
+        ("DRIVE_DIR", SandboxLayout, "DRIVE_DIR"),
     ):
         out.append(f"export const {export_name} = '{getattr(owner, attr)}';\n")
     out.append("\n")
+
+    out.append(
+        "/** The personal space's folder under DRIVE_DIR; the Drive has one\n"
+        " *  folder there per space the user reaches. */\n"
+    )
+    out.append(f"export const DRIVE_PERSONAL = '{DRIVE_PERSONAL}';\n\n")
 
     out.append(
         "/** The agent's own notes file at the workspace root: runtime context\n"

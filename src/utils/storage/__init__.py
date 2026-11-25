@@ -23,6 +23,7 @@ Usage:
 
 import logging
 import os
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -109,6 +110,11 @@ def get_blob_transfer_mode(sandbox_provider: str | None) -> str:
 def is_storage_enabled() -> bool:
     """Check if cloud storage uploads are enabled."""
     return STORAGE_PROVIDER != "none"
+
+
+def multipart_enabled() -> bool:
+    """Whether the store takes an upload in parts; OSS and ``none`` do not here."""
+    return STORAGE_PROVIDER not in ("none", "oss")
 
 
 def browser_uploads_enabled() -> bool:
@@ -229,6 +235,7 @@ else:
     from src.utils.storage.s3_compatible import (
         abort_multipart_upload,
         complete_multipart_upload,
+        copy_object,
         create_signed_multipart_upload,
         get_signed_upload_url,
         delete_object,
@@ -249,6 +256,7 @@ else:
         upload_chart,
         upload_file,
         upload_image,
+        upload_part,
         verify_connection,
     )
     _PROVIDER_NAME = f"S3-compatible ({STORAGE_PROVIDER})"
@@ -289,8 +297,17 @@ if STORAGE_PROVIDER in ("none", "oss"):
         size: int,
         expires_in: int = 900,
         for_browser: bool = False,
+        content_md5: str | None = None,
     ) -> str | None:
         return None
+
+    def upload_part(
+        key: str, upload_id: str, *, part_number: int, data: bytes, content_md5: str
+    ) -> str | None:
+        return None
+
+    def copy_object(src: str, dst: str, size: int) -> bool:
+        return False
 
     def list_uploaded_parts(key: str, upload_id: str) -> list[dict[str, Any]] | None:
         return None
@@ -298,11 +315,15 @@ if STORAGE_PROVIDER in ("none", "oss"):
     def object_size(key: str) -> int | None:
         return None
 
-    def has_multipart_cleanup_rule() -> bool | None:
+    def has_multipart_cleanup_rule(
+        *, min_days: int = 0, prefix: str | None = None
+    ) -> bool | None:
         return None
 
     def sha256_object(
-        key: str, deadline_for: Callable[[int], float] | None = None
+        key: str,
+        deadline_for: Callable[[int], float] | None = None,
+        stop: threading.Event | None = None,
     ) -> str | None:
         return None
 
@@ -311,6 +332,7 @@ __all__ = [
     "abort_multipart_upload",
     "browser_uploads_enabled",
     "complete_multipart_upload",
+    "copy_object",
     "create_signed_multipart_upload",
     "delete_object",
     "does_object_exist",
@@ -325,6 +347,7 @@ __all__ = [
     "has_multipart_cleanup_rule",
     "is_storage_enabled",
     "list_uploaded_parts",
+    "multipart_enabled",
     "object_size",
     "open_multipart_upload",
     "sanitize_storage_key",
@@ -335,5 +358,6 @@ __all__ = [
     "upload_chart",
     "upload_file",
     "upload_image",
+    "upload_part",
     "verify_connection",
 ]

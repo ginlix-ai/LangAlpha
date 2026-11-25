@@ -7,6 +7,7 @@ export const APP_SECTIONS = [
   'automations',
   'orders',
   'library',
+  'drive',
   'plugins',
   'settings',
   'connectors',

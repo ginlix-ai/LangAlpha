@@ -40,6 +40,8 @@ SECTION_WORKSPACE = "workspace"
 SECTION_PROFILE = "user_profile"
 SECTION_IDENTITY = "identity"
 SECTION_FILES = "files"
+# The memo pointer an epoch froze before memos stopped being announced (see
+# ``MemoRef``): rendered while its epoch lasts, never restated or named gone.
 SECTION_MEMO = "memo"
 
 #: The row that states sections of the block whole, where the frozen block
@@ -54,7 +56,6 @@ _GONE = ""
 #: row names it. The harness kinds name their block from ``HARNESS_BLOCKS``.
 _ROW_BLOCKS: dict[str, str] = {
     "agent_md_changed": "<agentmd>",
-    "memo_changed": "the memo count",
     "profile_changed": "<user_profile> and <user_identity>",
     "workspace_changed": "<workspace>",
 }
@@ -89,12 +90,10 @@ def restate(
     """
     now, then = render(rebuilt), render(epoch)
     sections = [text for key, text in now.items() if then.get(key) != text]
-    gone = [key for key in then if key not in now]
+    gone = [key for key in then if key not in now and key != SECTION_MEMO]
     observed = dict(rebuilt.cursor.observed)
     if obs.workspace_available:
         observed["workspace"] = obs.workspace.sha()
-    if obs.memo_configured and obs.memo_count is not None:
-        observed["memo"] = str(obs.memo_count)
     for kind in epoch.source_kinds() - {read.kind for read in obs.reads}:
         observed[kind] = _GONE
     restated = replace(
@@ -224,5 +223,4 @@ def _section_label(key: str) -> str | None:
         SECTION_WORKSPACE: "<workspace>",
         SECTION_PROFILE: "<user_profile>",
         SECTION_IDENTITY: "<user_identity>",
-        SECTION_MEMO: "<memo-index>",
     }.get(key, key)

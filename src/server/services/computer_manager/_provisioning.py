@@ -1319,6 +1319,10 @@ class ProvisioningMixin:
         mount, under the workspace's owner where the caller named no user."""
         workspace_id = binding.workspace_id
         if not self._livefs_owed(binding.computer_id, workspace_id, sandbox):
+            # The Drive's setting changes while the file mount serves, and
+            # only a turn's acquire brings the Drive to it.
+            if user_id:
+                self._keep_drive(binding.computer_id, user_id, sandbox)
             return
         if not user_id:
             workspace = await db_get_workspace(workspace_id)

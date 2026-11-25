@@ -54,6 +54,7 @@ def subagent_compiler(
     model: str = "",
     prompt_vars: Mapping[str, bool] | None = None,
     shared: bool = False,
+    drive: bool = False,
 ) -> SubagentCompiler:
     """What compiles the turn's subagents into the specs ``SubAgentMiddleware``
     takes (``create_subagents``), and one of them again on a model a Task
@@ -69,6 +70,7 @@ def subagent_compiler(
     a subagent's prompt points at no more of the person's own than the main
     agent's does. ``shared`` is a shared workspace's build, whose baselines
     name nobody (``SubagentContext``).
+    ``drive`` is whether the build has the Drive route.
     """
     tool_sets: dict[str, list[Any]] = {
         "execute_code": [execute_code],
@@ -95,6 +97,7 @@ def subagent_compiler(
         search_tool=search_tool,
         sandbox_tools=sandbox_tools,
         prompt_vars=prompt_vars,
+        drive=drive,
         context=SubagentContext.build(
             turn_context=turn_context,
             user_profile=user_profile,

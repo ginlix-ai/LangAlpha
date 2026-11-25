@@ -1,13 +1,14 @@
 /**
  * Workspace file endpoints (list/read/write/delete/backup/upload).
  */
-import { api, ApiError, type RequestConfig } from '@/api/client';
+import { api } from '@/api/client';
 import { isPlatformMode } from '@/config/hostMode';
-import { FileChangedError, markStale, parseContentRange, type RangedFile } from '@/lib/rangedFile';
+import type { RangedFile } from '@/lib/rangedFile';
+import { openRangedRead } from '@/lib/rangedRead';
 import { withDownloadNotice, workspaceDownloadKey, type DownloadProgressReport } from '../downloadNotice';
 import type { FileRefResolution } from '../../components/filePanel/types';
 import type { BackupResponse, BackupStatusResponse } from '@/types/api';
-import type { SignedUploadPart } from '../partUpload';
+import type { SignedUploadPart } from '@/lib/partUpload';
 import { BACKUP_OK, LIVE, readFromBody, type ReadFrom } from './readFrom';
 
 /** Bytes carry no field for it, so the download says by header, and only for a computer that did not answer. */
@@ -21,6 +22,8 @@ export interface TextRead {
   mime?: string;
   truncated?: boolean;
   from: ReadFrom;
+  /** The token of the bytes read, where the source names one (the Drive's sha256). */
+  version?: string | null;
 }
 
 /**
@@ -116,135 +119,16 @@ export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, fi
   return { buffer: response.data as ArrayBuffer, from: readFromHeaders(response.headers) };
 }
 
-/** The opening request's size. A file that fits arrives whole, in the one request it always took. */
-const FIRST_SLICE_BYTES = 4 * 1024 * 1024;
-/** The wait before each retry of a slice that failed in transit or on a server error. */
-const SLICE_RETRY_MS = [500, 2000];
-/**
- * How long a later slice may go without a byte. pdf.js puts no deadline on a
- * range, so a connection that stalls without closing would hold the page, and
- * its request slot, for good. A bound on silence rather than on the whole
- * answer leaves a slow link, sharing itself among six slices, to finish; this
- * long covers the server's own 10 s read plus a cold worker taking the request.
- */
-const SLICE_IDLE_MS = 30_000;
-
-/**
- * The route's 503 for a file that changed while it was read, as one an agent
- * is still writing does. The client hands an error body back in the type the
- * request asked for, so a range's arrives as bytes.
- */
-function isFileChangedRefusal(err: unknown): boolean {
-  const body = err instanceof ApiError && err.status === 503 ? err.response?.data : undefined;
-  if (!(body instanceof ArrayBuffer)) return false;
-  try {
-    const { detail } = JSON.parse(new TextDecoder().decode(body)) as { detail?: { code?: unknown } };
-    return detail?.code === 'file_changed';
-  } catch {
-    return false;
-  }
-}
-
-async function withRetry<T>(request: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await request();
-    } catch (err) {
-      // A 4xx, an abort and a file that changed under the read are answers;
-      // only a dropped request or another 5xx is worth asking again.
-      const transient = err instanceof ApiError && err.name !== 'CanceledError'
-        && (err.status === undefined || err.status >= 500) && !isFileChangedRefusal(err);
-      if (!transient || attempt >= SLICE_RETRY_MS.length || signal?.aborted) throw err;
-      await new Promise((resolve) => setTimeout(resolve, SLICE_RETRY_MS[attempt]));
-    }
-  }
-}
-
 /**
  * Open a file from its first slice, so a large one is usable before the rest
  * arrives. A file that fits in the slice, or a server that answers with the
  * whole body, comes back as bytes, exactly as a whole download would.
  */
-export async function openWorkspaceFileRanged(
-  workspaceId: string,
-  filePath: string,
-): Promise<OpenedRead> {
-  const slice = (first: number, last: number, config: RequestConfig = {}) =>
-    api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
-      ...config,
-      params: { path: filePath, ...BACKUP_OK },
-      headers: { Range: `bytes=${first}-${last}` },
-      responseType: 'arraybuffer',
-      // A browser holding the whole file from a plain download would make
-      // this request conditional, and the server answers a conditional range
-      // with the whole file.
-      cache: 'no-store',
-    });
-  const whole = () => downloadWorkspaceFileAsArrayBuffer(workspaceId, filePath);
-
-  let head: Awaited<ReturnType<typeof slice>>;
-  try {
-    // No deadline, as the whole download this replaces had none, and a 200
-    // with the whole file is an answer it takes.
-    head = await withRetry(() => slice(0, FIRST_SLICE_BYTES - 1));
-  } catch (err) {
-    // An empty file has no first byte for a range to start at, and one that
-    // changes as it is read has no version for slices to keep to: a plain
-    // download takes either as it stands.
-    if ((err instanceof ApiError && err.status === 416) || isFileChangedRefusal(err)) return whole();
-    throw err;
-  }
-  const from = readFromHeaders(head.headers);
-  if (head.status !== 206) return { buffer: head.data as ArrayBuffer, from };
-  const bytes = head.data as ArrayBuffer;
-  const opened = parseContentRange(head.headers['content-range']);
-  // Answered by range but not described (a header the deploy does not
-  // expose), or described as other bytes than arrived, so there is no length
-  // to read on from: read it again whole.
-  if (!opened || opened.first !== 0 || bytes.byteLength !== opened.last + 1) return whole();
-  if (opened.last + 1 === opened.total) return { buffer: bytes, from };
-  // With no version to hold the slices to, a change between two would go unseen.
-  const etag = head.headers.etag;
-  if (!etag) return whole();
-
-  const length = opened.total;
-  const readSpan = async (begin: number, end: number, signal?: AbortSignal) => {
-    const out = new Uint8Array(end - begin);
-    // A slice answered whole cannot be held to the version that opened, so its
-    // body, the entire file, is never read: it comes back empty and the check
-    // below has the file opened again.
-    const config: RequestConfig = { signal, idleTimeout: SLICE_IDLE_MS, expectStatus: 206 };
-    // The server caps one answer, so a short one is asked again from where it stopped.
-    for (let at = begin; at < end;) {
-      const part = await withRetry(() => slice(at, end - 1, config), signal).catch((err: unknown) => {
-        // The offset lay inside the version that opened, so the file has since
-        // shrunk or gone, and reading it again says which. The route's own
-        // refusal says the version moved while it read.
-        const changed = (err instanceof ApiError && (err.status === 416 || err.status === 404)) || isFileChangedRefusal(err);
-        throw changed ? new FileChangedError() : err;
-      });
-      const got = part.status === 206 ? parseContentRange(part.headers['content-range']) : null;
-      if (!got || got.first !== at || got.total !== length || part.headers.etag !== etag) {
-        throw new FileChangedError();
-      }
-      const body = part.data as ArrayBuffer;
-      if (body.byteLength !== got.last - got.first + 1) throw new Error('A file slice arrived incomplete');
-      const take = Math.min(body.byteLength, end - at);
-      out.set(new Uint8Array(body, 0, take), at - begin);
-      at += take;
-    }
-    return out;
-  };
-  const file: RangedFile = {
-    length,
-    etag,
-    initial: new Uint8Array(bytes),
-    read: (begin, end, signal) => readSpan(begin, end, signal).catch((err: unknown) => {
-      if (err instanceof FileChangedError) markStale(file);
-      throw err;
-    }),
-  };
-  return { ranged: file, from };
+export async function openWorkspaceFileRanged(workspaceId: string, filePath: string): Promise<OpenedRead> {
+  const opened = await openRangedRead(`/api/v1/workspaces/${workspaceId}/files/download`, { path: filePath, ...BACKUP_OK });
+  if (opened.kind === 'whole') return downloadWorkspaceFileAsArrayBuffer(workspaceId, filePath);
+  const from = readFromHeaders(opened.headers);
+  return opened.kind === 'bytes' ? { buffer: opened.buffer, from } : { ranged: opened.file, from };
 }
 
 /**

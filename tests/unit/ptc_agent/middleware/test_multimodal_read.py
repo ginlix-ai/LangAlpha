@@ -14,6 +14,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 from PIL import Image
 
+from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.core.sandbox import files as sandbox_files
 from ptc_agent.agent.middleware.file_operations.multimodal import (
     MultimodalMiddleware,
@@ -62,6 +63,9 @@ class _Sandbox:
         self.downloaded: str | None = None
         self.runtime = types.SimpleNamespace(download_file_stream=self.stream)
         self._download_semaphore = asyncio.Semaphore(4)
+        self.config = types.SimpleNamespace(
+            filesystem=types.SimpleNamespace(working_directory=work_dir)
+        )
 
     def normalize_path(self, path: str) -> str:
         if path.startswith((self._work_dir, "/tmp")):
@@ -249,11 +253,11 @@ class TestContentSizeCap:
 class TestSandboxPathNormalization:
     @pytest.mark.asyncio
     async def test_a_virtual_path_is_normalized_before_download(self):
-        """The Read tool normalizes through SandboxBackend, this middleware holds
-        the sandbox itself. Skipping it makes the middleware miss a file the tool
-        just read and overwrite that success with a not-found error."""
+        """The backend's download normalizes as its text reads do. Skipping it
+        makes the middleware miss a file the tool just read and overwrite that
+        success with a not-found error."""
         sandbox = _Sandbox(_png_bytes())
-        mw = MultimodalMiddleware(sandbox=sandbox)
+        mw = MultimodalMiddleware(sandbox=SandboxBackend(sandbox))
 
         result = await mw._handle_sandbox_content(
             "/results/chart.png", _ack(), "call-1"
@@ -262,9 +266,18 @@ class TestSandboxPathNormalization:
         assert isinstance(result, ToolMessage)
 
     @pytest.mark.asyncio
-    async def test_an_already_absolute_path_is_left_alone(self):
+    async def test_a_raw_sandbox_is_normalized_too(self):
+        """Held as the sandbox itself, whose download takes a whole path."""
         sandbox = _Sandbox(_png_bytes())
         mw = MultimodalMiddleware(sandbox=sandbox)
+
+        await mw._handle_sandbox_content("/results/chart.png", _ack(), "call-1")
+        assert sandbox.downloaded == "/home/workspace/results/chart.png"
+
+    @pytest.mark.asyncio
+    async def test_an_already_absolute_path_is_left_alone(self):
+        sandbox = _Sandbox(_png_bytes())
+        mw = MultimodalMiddleware(sandbox=SandboxBackend(sandbox))
 
         await mw._handle_sandbox_content(
             "/home/workspace/work/t/charts/fig.png", _ack(), "call-1"
@@ -303,7 +316,7 @@ class TestAReadOnAnotherComputer:
         home = _Sandbox(_png_bytes())
         there = _Sandbox(_png_bytes(), work_dir="/Users/me/langalpha")
         target = types.SimpleNamespace(sandbox=there, project=None)
-        mw = MultimodalMiddleware(sandbox=home, computers=_Reach(target))
+        mw = MultimodalMiddleware(sandbox=SandboxBackend(home), computers=_Reach(target))
 
         result = await mw.awrap_tool_call(self._read("Studio Mac"), self._handler)
 
@@ -314,7 +327,7 @@ class TestAReadOnAnotherComputer:
     @pytest.mark.asyncio
     async def test_the_turns_own_computer_is_read_here(self):
         home = _Sandbox(_png_bytes())
-        mw = MultimodalMiddleware(sandbox=home, computers=_Reach(None))
+        mw = MultimodalMiddleware(sandbox=SandboxBackend(home), computers=_Reach(None))
 
         await mw.awrap_tool_call(self._read("Cloud computer"), self._handler)
 
@@ -328,7 +341,7 @@ class TestAReadOnAnotherComputer:
 
         home = _Sandbox(_png_bytes())
         gone = ComputerUnreachable('Computer "Studio Mac" is not reachable right now.')
-        mw = MultimodalMiddleware(sandbox=home, computers=_Reach(gone))
+        mw = MultimodalMiddleware(sandbox=SandboxBackend(home), computers=_Reach(gone))
 
         result = await mw.awrap_tool_call(self._read("Studio Mac"), self._handler)
 
@@ -756,3 +769,82 @@ class TestPdfByteCaps:
     def test_the_caps(self):
         assert MultimodalMiddleware.MAX_CONTENT_BYTES == 5 * 1024 * 1024
         assert MultimodalMiddleware.MAX_PDF_SOURCE_BYTES == 64 * 1024 * 1024
+
+
+class TestARouteHoldsTheBytes:
+    """Through the file tools' backend, a file a route holds (the Drive's) is
+    attached from the route, as the Read tool read it, and every other file
+    from the sandbox."""
+
+    ROOT = "/home/workspace"
+
+    class _BytesRoute:
+        def __init__(self, root_prefix: str, data: bytes | Exception) -> None:
+            self.root_prefix = root_prefix
+            self._data = data
+            self.asked: str | None = None
+
+        async def adownload_file_bytes_capped(self, path, cap):
+            self.asked = path
+            if isinstance(self._data, Exception):
+                raise self._data
+            return self._data
+
+    def _backend(self, data):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ptc_agent.agent.backends.composite import CompositeFilesystemBackend
+        from ptc_agent.core.path_fold import resolve_agent_path
+
+        sandbox = MagicMock()
+        sandbox.computer_root = self.ROOT
+        sandbox.workspace_dir = self.ROOT
+        sandbox.normalize_path.side_effect = lambda p: resolve_agent_path(
+            p, workspace=self.ROOT, root=self.ROOT, allowed=[self.ROOT]
+        )
+        sandbox.adownload_file_bytes_capped = AsyncMock(return_value=_png_bytes())
+        route = self._BytesRoute(f"{self.ROOT}/.agents/drive/", data)
+        return CompositeFilesystemBackend(sandbox=sandbox, routes=[route]), sandbox, route
+
+    @staticmethod
+    def _read(file_path):
+        return types.SimpleNamespace(
+            tool_call={"name": "Read", "args": {"file_path": file_path}, "id": "tc-1"}
+        )
+
+    @staticmethod
+    async def _handler(_request):
+        return ToolMessage(content="ok", tool_call_id="tc-1")
+
+    @pytest.mark.asyncio
+    async def test_a_route_file_comes_from_the_route(self):
+        backend, sandbox, route = self._backend(_png_bytes())
+        mw = MultimodalMiddleware(sandbox=backend)
+
+        result = await mw.awrap_tool_call(self._read(".agents/drive/personal/c.png"), self._handler)
+
+        assert result.content[-1]["type"] == "image_url"
+        assert route.asked == f"{self.ROOT}/.agents/drive/personal/c.png"
+        sandbox.adownload_file_bytes_capped.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_any_other_file_comes_from_the_sandbox(self):
+        backend, sandbox, route = self._backend(b"")
+        mw = MultimodalMiddleware(sandbox=backend)
+
+        result = await mw.awrap_tool_call(self._read("charts/c.png"), self._handler)
+
+        assert result.content[-1]["type"] == "image_url"
+        assert route.asked is None
+        sandbox.adownload_file_bytes_capped.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_route_refusal_reads_in_its_own_words(self):
+        from ptc_agent.agent.backends.results import RouteRefused
+
+        backend, _, _ = self._backend(RouteRefused("The Drive did not answer for c.png; try again shortly."))
+        mw = MultimodalMiddleware(sandbox=backend)
+
+        result = await mw.awrap_tool_call(self._read(".agents/drive/personal/c.png"), self._handler)
+
+        assert "The Drive did not answer for c.png; try again shortly." in str(result.content)

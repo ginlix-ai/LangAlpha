@@ -19,7 +19,8 @@ from ptc_agent.agent.middleware.skills.lock import (
     is_shared_tier,
     parse_skills_lock,
 )
-from ptc_agent.core.paths import MOUNTED_AGENT_SUBDIRS, THREAD_DIR_NAME, WorkspaceLayout
+from ptc_agent.core.paths import THREAD_DIR_NAME, WorkspaceLayout
+from ptc_agent.core.path_fold import SERVER_HELD_FOLDERS
 from ptc_agent.core.sandbox.assets import delivered_skill_names
 from src.server.database.workspace_file import (
     SYNC_LOCK_WAIT,
@@ -235,6 +236,11 @@ async def restore_to_sandbox(
         raise
 
 
+#: Restored later (the deferred dirs), or never: the server holds the only
+#: copy of its folders, whichever mount links them in.
+_NOT_RESTORED = (*DEFERRED_RESTORE_DIRS, *(f.path for f in SERVER_HELD_FOLDERS))
+
+
 async def _restore_locked(
     workspace_id: str, sandbox: Any, conn: Any, layout: WorkspaceLayout
 ) -> dict[str, Any]:
@@ -244,7 +250,7 @@ async def _restore_locked(
         workspace_id,
         include_content=True,
         all_kinds=True,
-        outside=(*DEFERRED_RESTORE_DIRS, *MOUNTED_AGENT_SUBDIRS),
+        outside=_NOT_RESTORED,
         conn=conn,
     )
     notes = await _kept_notes(workspace_id, conn)
@@ -891,7 +897,7 @@ async def _folder_keeps_backed_up_files(
 ) -> bool:
     """Whether any of a sample of the backed-up files is still in the folder."""
     rows = await get_files_for_workspace(
-        workspace_id, outside=(*DEFERRED_RESTORE_DIRS, *MOUNTED_AGENT_SUBDIRS), conn=conn
+        workspace_id, outside=_NOT_RESTORED, conn=conn
     )
     sample = rows[:: max(1, len(rows) // _KEPT_FILES_PROBE)][:_KEPT_FILES_PROBE]
     if not sample:

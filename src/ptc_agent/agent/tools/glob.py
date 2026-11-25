@@ -80,10 +80,13 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
 
             stamp_sandbox_served(backend, normalized_path)
             matches = await backend.aglob_paths(pattern, normalized_path)
+            # What the listing left out, such as a server-held folder that
+            # did not answer.
+            notes = "".join(f"\n\n{note}" for note in getattr(matches, "notes", ()))
 
             if not matches:
                 logger.info("No files found", path=logged_path(search_path))
-                return f"No files matching pattern '{pattern}' found in '{search_path}'"
+                return f"No files matching pattern '{pattern}' found in '{search_path}'{notes}"
 
             # Cap the number of paths returned to the model (see GLOB_MATCH_LIMIT),
             # virtualizing only the shown slice so a pathological match set doesn't pay
@@ -93,7 +96,11 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
             shown = [backend.virtualize_path(m) for m in matches[:GLOB_MATCH_LIMIT]]
 
             lines = [f"Found {total} file(s) matching '{pattern}':", *shown]
-            result = "\n".join(lines) + (glob_cut_note(GLOB_MATCH_LIMIT, total) if truncated else "")
+            result = (
+                "\n".join(lines)
+                + (glob_cut_note(GLOB_MATCH_LIMIT, total) if truncated else "")
+                + notes
+            )
 
             logger.info(
                 "Glob completed successfully",

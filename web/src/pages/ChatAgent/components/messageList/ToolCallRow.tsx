@@ -6,6 +6,7 @@ import { categorizeTool, getDisplayName, getToolIcon, getPreparingText, isFailed
 import { ToolIcon } from '../ToolIcon';
 import { completedToolTitle, completedToolSummary, liveToolLabel } from './activitySummary';
 import { filePathOf } from './groupFileToolRuns';
+import { AGENT_PATH_TRAITS } from '../../utils/agentPathTraits';
 import { classifyAgentPath } from '../../utils/agentPaths';
 import { RunningTitle, RowIcon, FailedIconBadge } from './ActivityRowParts';
 import { SwapCell } from '@/components/ui/crossfade';
@@ -23,7 +24,7 @@ const RUNNING_VERB_KEY: Record<string, string> = { Read: 'read', Edit: 'edit', W
 function runningLine(item: ToolActivityItem, t: (key: string) => string): { verb: string; pill: string | null } {
   const verbKey = RUNNING_VERB_KEY[item.toolName || ''];
   const filePath = verbKey ? filePathOf(item) : null;
-  if (verbKey && filePath && classifyAgentPath(filePath, item.root).kind === 'file') {
+  if (verbKey && filePath && AGENT_PATH_TRAITS[classifyAgentPath(filePath, item.root).kind].plainFile) {
     return { verb: t(`toolArtifact:running.${verbKey}`), pill: completedToolSummary(item, t) || filePath.split('/').pop() || null };
   }
   return { verb: liveToolLabel(item, t), pill: null };

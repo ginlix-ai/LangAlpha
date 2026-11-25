@@ -1025,6 +1025,14 @@ class DiskGlob:
                 walked = self._step(states, names[-1], is_file=True)[1]
         return walked and self._kept(path)
 
+    @property
+    def literal_dir(self) -> str | None:
+        """The deepest folder every file the glob lists is under, read off
+        its literal prefix; None for one that lists nothing here."""
+        if self._exact is not None:
+            return posixpath.dirname(self._exact) if self._exact else None
+        return self._root.rstrip("/") or "/"
+
     def enters(self, link: str) -> bool:
         """Whether the walk goes into the link into the file mount at
         ``link``: ``find`` follows one only where the pattern's literal

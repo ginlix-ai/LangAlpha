@@ -4,6 +4,7 @@ import { motion } from '@/lib/framer';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { categorizeTool, getToolIcon, getCompletedRowTitle, getCompletedSummary, isFailedCall } from '../toolDisplayConfig';
+import { AGENT_PATH_TRAITS } from '../../utils/agentPathTraits';
 import { classifyAgentPath, ranElsewhere } from '../../utils/agentPaths';
 import { RunningLine } from './ToolCallRow';
 import { RowIcon, FailedIconBadge } from './ActivityRowParts';
@@ -63,7 +64,7 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
   const openLabel = t('toolArtifact:a11y.openInTab', { tab: t(`filePanel:tabs.${tab}`) });
   const singlePath = filePathOf(item);
   const singleLabel = getCompletedSummary(toolName, item.toolCall, t, { root })
-    || (singlePath && classifyAgentPath(singlePath, root).kind === 'file' ? singlePath.split('/').pop() : null);
+    || (singlePath && AGENT_PATH_TRAITS[classifyAgentPath(singlePath, root).kind].plainFile ? singlePath.split('/').pop() : null);
   // A run keeps to one computer. On another one the path is that machine's,
   // and the file panel would read it here, so the pill opens the call.
   const elsewhere = ranElsewhere(item.toolCall?.args);

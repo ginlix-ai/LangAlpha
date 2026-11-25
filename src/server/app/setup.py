@@ -795,6 +795,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start ProvenanceGCService: {e}")
 
+    # Start the Drive's trash sweep (purges what the trash has kept long enough)
+    try:
+        from src.server.services.drive.sweep import DriveTrashSweep
+
+        await DriveTrashSweep.get_instance().start()
+    except Exception as e:
+        logger.warning(f"Failed to start DriveTrashSweep: {e}")
+
     # Start WorkspaceFileGCService (condemn-then-reap of unreferenced file blobs)
     try:
         from src.server.services.workspace_file_gc import WorkspaceFileGCService
@@ -807,18 +815,27 @@ async def lifespan(app: FastAPI):
     # only the bucket's own expiry rule reclaims its parts. The check only
     # feeds a warning, so an unresponsive store must not hold up startup.
     try:
+        from src.server.database.blob_keys import UPLOAD_KEY_PREFIX
+        from src.server.database.drive.uploads import MAX_AGE
         from src.utils.storage import has_multipart_cleanup_rule
 
         if (
             await asyncio.wait_for(
-                asyncio.to_thread(has_multipart_cleanup_rule), timeout=5
+                asyncio.to_thread(
+                    has_multipart_cleanup_rule,
+                    min_days=MAX_AGE.days + 1,
+                    prefix=UPLOAD_KEY_PREFIX,
+                ),
+                timeout=5,
             )
             is False
         ):
             logger.warning(
-                "Storage bucket has no rule expiring incomplete multipart uploads; "
-                "parts of an upload interrupted mid-transfer will be kept and billed. "
-                "Add an AbortIncompleteMultipartUpload lifecycle rule (e.g. 1 day)."
+                "Storage bucket has no rule expiring incomplete multipart uploads, "
+                "or one sooner than 7 days; parts of an upload interrupted "
+                "mid-transfer are kept and billed without one, and a Drive file "
+                "sent in parts may stay open up to 6 days before one aborts it. "
+                "Add an AbortIncompleteMultipartUpload lifecycle rule of at least 7 days."
             )
     except Exception as e:
         logger.info(f"Skipped the multipart cleanup rule check: {e!r}")
@@ -966,6 +983,13 @@ async def lifespan(app: FastAPI):
         await ProvenanceGCService.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error shutting down ProvenanceGCService: {e}")
+
+    try:
+        from src.server.services.drive.sweep import DriveTrashSweep
+
+        await DriveTrashSweep.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping DriveTrashSweep: {e}")
 
     try:
         from src.server.services.workspace_file_gc import WorkspaceFileGCService
@@ -1384,9 +1408,13 @@ def _gzip_exempt(path: str) -> bool:
 
     A ticker logo is an already compressed image whose ETag a browser sends
     back to revalidate it, for the same reason.
+
+    The Drive's file content answers ranges, whose Content-Range counts the
+    stored bytes: compressed, the bytes sent no longer match it.
     """
     return (
         path.endswith("/files/download")
+        or (path.startswith("/api/v1/drive/") and path.endswith("/content"))
         or path.startswith(f"{LIVEFS_PREFIX}/")
         or path.startswith(f"{LOGOS_PREFIX}/")
     )
@@ -1606,6 +1634,7 @@ from src.server.app.oauth import OAuthRefusal, router as oauth_router
 from src.server.app.orders import router as orders_router
 from src.server.app.activity import router as activity_router
 from src.server.app.org_library import router as org_library_router
+from src.server.app.drive import router as drive_router
 from src.server.app.shared_workspaces import router as shared_workspaces_router
 from src.server.app.public import router as public_router
 from src.server.app.share_links import (
@@ -1620,6 +1649,7 @@ from src.server.app.memory import router as memory_router
 from src.server.app.workflows import include_workflow_router
 from src.server.app.egress_relay import router as egress_relay_router
 from src.server.app.livefs import router as livefs_router
+from src.server.app.drive_mount import router as drive_mount_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
 from src.server.app.mcp_brokerages import router as mcp_brokerages_router
 from src.server.app.mcp_builtin import router as mcp_builtin_router
@@ -1761,6 +1791,7 @@ app.include_router(
 app.include_router(
     org_library_router
 )  # /api/v1/org-library - The organization library (flag org_library)
+app.include_router(drive_router)  # /api/v1/drive/* - The user's Drive (flag drive)
 app.include_router(
     shared_workspaces_router
 )  # /api/v1/shared-workspaces, /api/v1/workspaces/{id}/members (flag shared_workspaces)
@@ -1818,6 +1849,9 @@ app.include_router(
 app.include_router(
     livefs_router
 )  # /api/v1/livefs/* - Sandbox file mount (mount-token auth, not user auth)
+app.include_router(
+    drive_mount_router
+)  # /api/v1/livefs/drive/* - Sandbox Drive mount (mount-token auth, flag drive)
 app.include_router(
     mcp_servers_router
 )  # /api/v1/workspaces/{id}/mcp/servers - Per-workspace MCP server config

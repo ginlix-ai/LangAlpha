@@ -42,7 +42,6 @@ from ptc_agent.agent.middleware.runtime_context import (
     BaselineEpoch,
     BaselineSources,
     FrozenPromptMiddleware,
-    MemoSource,
     MemoryTierSource,
     Observations,
     RowCarrierMiddleware,
@@ -53,11 +52,16 @@ from ptc_agent.agent.middleware.runtime_context import (
 )
 from ptc_agent.agent.middleware.runtime_context.baseline import _workspace_block
 from ptc_agent.agent.middleware.runtime_context.changes import render_diff, sha256_text
+from ptc_agent.agent.middleware.runtime_context.durable import (
+    DurableUpdate,
+    build_update_message,
+)
 from ptc_agent.agent.middleware.runtime_context.epoch import (
     ANALYST_MACHINE,
     HOME_MACHINE,
     HOSTED,
     MAC_TOOLS,
+    MemoRef,
     MACHINE_PHRASES,
     MOVED,
     OTHER_COMPUTERS,
@@ -129,7 +133,7 @@ _MEMORY_DISPLAY = {
 }
 
 
-def _sources(store, *, memory: dict | None = None, memo=None) -> BaselineSources:
+def _sources(store, *, memory: dict | None = None) -> BaselineSources:
     """The store-backed tiers, wired the way the agent build wires them."""
     return BaselineSources(
         store=store,
@@ -140,7 +144,6 @@ def _sources(store, *, memory: dict | None = None, memo=None) -> BaselineSources
             )
             for tier, ns in (memory or {}).items()
         },
-        memo=MemoSource(namespace_factory=(lambda: memo)) if memo else None,
     )
 
 
@@ -604,61 +607,6 @@ class TestCrossWriterChanges:
         rows = [runtime_update_from_message(m) for m in _rows(fifth)]
         assert [r.kind for r in rows] == ["baseline_rebuilt"]
         assert "still_in_force" not in rows[0].provenance
-
-    @pytest.mark.asyncio
-    async def test_a_memo_upload_mid_thread_files_a_row_rather_than_waiting(self):
-        """The memo pointer is a count, so the row carries the number, not a diff."""
-        counts = {"memo_count": 2}
-        store = MagicMock()
-
-        async def aget(namespace, key):
-            item = MagicMock()
-            item.value = dict(counts)
-            return item
-
-        store.aget = AsyncMock(side_effect=aget)
-        mw = _middleware(
-            None, sources=_sources(store, memo=("u", "memos"))
-        )
-        state = await mw.abefore_agent({}, None)
-        assert state[STATE_BASELINE]["memo"]["display"] == "2"
-
-        counts["memo_count"] = 5
-        second = await mw.abefore_agent(state, None)
-
-        row = runtime_update_from_message(_rows(second)[0])
-        assert row.kind == "memo_changed"
-        assert "5 memo(s)" in row.text
-        assert row.provenance == {"source": "store", "tier": "memo"}
-
-        # Once observed, it does not re-fire every turn.
-        assert await mw.abefore_agent({**state, **second}, None) is None
-
-    @pytest.mark.asyncio
-    async def test_a_memo_count_that_did_not_answer_marks_the_epoch_incomplete(self):
-        """A frozen None would leave every later count with nothing to compare against."""
-        counts: dict = {}
-        store = MagicMock()
-
-        async def aget(namespace, key):
-            if not counts:
-                raise RuntimeError("store down")
-            item = MagicMock()
-            item.value = dict(counts)
-            return item
-
-        store.aget = AsyncMock(side_effect=aget)
-        mw = _middleware(
-            None, sources=_sources(store, memo=("u", "memos"))
-        )
-        state = await mw.abefore_agent({}, None)
-        assert state[STATE_BASELINE]["incomplete"] is True
-
-        counts["memo_count"] = 3
-        second = await mw.abefore_agent(state, None)
-        assert second[STATE_BASELINE]["reason"] == "incomplete"
-        assert second[STATE_BASELINE]["memo"]["count"] == 3
-        assert second[STATE_BASELINE]["incomplete"] is False
 
     @pytest.mark.asyncio
     async def test_the_writer_stamp_labels_one_change_only(self):
@@ -1337,25 +1285,62 @@ class TestRendering:
         assert row.text.endswith("The workspace is back to what <workspace> says.")
 
     @pytest.mark.asyncio
-    async def test_a_build_with_no_memo_source_drops_the_pointer_a_ptc_epoch_froze(self):
-        store = MagicMock()
-
-        async def aget(namespace, key):
-            item = MagicMock()
-            item.value = {"memo_count": 3}
-            return item
-
-        store.aget = AsyncMock(side_effect=aget)
-        ptc = _middleware(
-            _session("# Notes"), sources=_sources(store, memo=("u", "memos"))
+    async def test_an_epoch_frozen_with_a_memo_pointer_keeps_it_until_its_next_rebuild(self):
+        """A thread from before memos stopped being announced: its stored epoch
+        has the pointer, and a ``memo_changed`` row sits in its history. The
+        block stays as its cache and reasoning have it, no row says the line
+        went, and the next rebuild drops it."""
+        mw = _middleware(_session("# Notes"))
+        fresh = await mw.abefore_agent({}, None)
+        stored = dict(fresh[STATE_BASELINE])
+        stored["memo"] = {"count": 3, "display": "3", "path": ".agents/user/memo/"}
+        stored["observed"] = {**stored["observed"], "memo": "4"}
+        row = build_update_message(
+            DurableUpdate(
+                kind="memo_changed",
+                schema_version=1,
+                text="4 memo(s) now under .agents/user/memo/ (the index in your baseline block says 3).",
+                provenance={"source": "store", "tier": "memo"},
+            )
         )
-        state = await ptc.abefore_agent({}, None)
-        assert "<memo-index" in _text(await _render(ptc, state))
+        old = {STATE_BASELINE: stored, "messages": [row]}
+        line = '<memo-index count="3" path=".agents/user/memo/"/>'
 
-        bare = _middleware(None)
-        second = await bare.abefore_agent(state, None)
-        assert second[STATE_BASELINE]["reason"] == "source_removed"
-        assert "<memo-index" not in _text(await _render(bare, {**state, **second}))
+        epoch = BaselineEpoch.from_state(stored)
+        assert epoch.memo is not None and epoch.to_state()["memo"] == stored["memo"]
+        before = _text(await _render(mw, old))
+        assert before.endswith(line)
+
+        # The next turn: nothing moved, no row, the same block.
+        assert await mw.abefore_agent(old, None) is None
+        assert _text(await _render(mw, old)) == before
+
+        # The next rebuild: the line is gone, and no row names it.
+        compacted = {**old, "_summarization_event": _compaction_event("a1", cutoff=0)}
+        rebuilt = await mw.abefore_agent(compacted, None)
+        assert rebuilt[STATE_BASELINE]["reason"] == "compaction"
+        assert "memo" not in rebuilt[STATE_BASELINE]
+        assert "<memo-index" not in _text(await _render(mw, {**compacted, **rebuilt}))
+        assert all("memo" not in m.content for m in _rows(rebuilt))
+
+    def test_a_restatement_after_a_summary_never_names_the_memo_pointer_gone(self):
+        """Where the block stands for the reasoning bound to it, the pointer it
+        holds is neither restated nor named gone: nothing says it moved."""
+        mw = _middleware(None)
+        epoch = BaselineEpoch(
+            stored=True,
+            profile=ProfileSnapshot(),
+            memo=MemoRef(count=3, display="3", path=".agents/user/memo/"),
+        )
+        obs = Observations(
+            now=datetime(2026, 11, 23, tzinfo=UTC),
+            compaction="1:a:s",
+            thinking_bound=True,
+            workspace_configured=False,
+        )
+        kept, rows = advance_epoch(epoch, obs, mw._render_sections)
+        assert kept.memo == epoch.memo
+        assert all("gone" not in r.provenance and "memo" not in r.text for r in rows)
 
     def test_the_workspace_name_is_escaped_as_element_text(self):
         block = _workspace_block(

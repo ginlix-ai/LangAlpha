@@ -135,7 +135,7 @@ def find(
     search_path: str,
     excluded_dirs: list[str],
     history_children: dict[str, list[str]],
-    mount: str,
+    mounts: Sequence[str],
     denied: Sequence[str],
 ) -> list[str]:
     """Files matching ``pattern`` below ``search_path``, newest first, none
@@ -152,7 +152,7 @@ def find(
     files: dict[str, str] = {}
     for each in patterns:
         for path in _find(
-            each, search_path, excluded_dirs, history_children, mount, listings, denied
+            each, search_path, excluded_dirs, history_children, mounts, listings, denied
         ):
             files.setdefault(os.path.normpath(path), path)
     return sorted(files.values(), key=_mtime, reverse=True)
@@ -171,7 +171,7 @@ def _find(
     search_path: str,
     excluded_dirs: list[str],
     history_children: dict[str, list[str]],
-    mount: str,
+    mounts: Sequence[str],
     listings: dict[str, list[os.DirEntry]] | None,
     denied: Sequence[str],
 ) -> list[str]:
@@ -180,19 +180,23 @@ def _find(
 
     Matches as ``glob.glob(recursive=True, include_hidden=True)`` does, with
     one walker of its own so that nothing a wildcard reaches below the
-    pattern's literal prefix is a link into ``mount``, directly or through
-    other links: those are server-held files, where every stat is a request,
-    so a walk skips them unread (a readlink is local). A literal prefix that
-    names one is still followed. ``listings`` keeps each folder's listing
-    for the next pattern's walk.
+    pattern's literal prefix is a link into one of ``mounts``, directly or
+    through other links: those are server-held files, where every stat is a
+    request, so a walk skips them unread (a readlink is local). A literal
+    prefix that names one is still followed. ``listings`` keeps each
+    folder's listing for the next pattern's walk.
     """
     excluded = set(excluded_dirs)
     # Matched as a Mac's disk matches names.
     held = tuple(d.rstrip("/").casefold() for d in denied)
     history = {parent: set(names) for parent, names in history_children.items()}
-    # ``mount`` is itself a link to the live mount under its hidden sibling,
+    # Each mount is itself a link to the live one under its hidden sibling,
     # where every earlier generation stays mounted too.
-    mounts = (mount, os.path.join(os.path.dirname(mount), "." + os.path.basename(mount)))
+    mounts = tuple(
+        path
+        for each in mounts
+        for path in (each, os.path.join(os.path.dirname(each), "." + os.path.basename(each)))
+    )
 
     def held_back(path: str) -> bool:
         path = os.path.normpath(path).casefold()

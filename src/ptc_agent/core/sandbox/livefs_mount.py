@@ -8,12 +8,10 @@ for the state it wants and the daemon does whatever part of it is missing.
 
 from __future__ import annotations
 
-import functools
-import json
 import secrets
 import shlex
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -24,14 +22,15 @@ from ptc_agent.core.paths import (
     SandboxLayout,
     WorkspaceLayout,
 )
+from ptc_agent.core.sandbox import mount_commands
 from ptc_agent.core.sandbox.livefs_runtime import lifecycle, protocol
-from ptc_agent.core.sandbox.livefs_runtime.protocol import MountError
-from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.mount_commands import MountOutcome, code_version  # noqa: F401 - read here
 
 if TYPE_CHECKING:
     from langchain_core.messages import AnyMessage
 
     from ptc_agent.agent.transcript import TranscriptTarget, Window
+    from ptc_agent.core.sandbox.drive_mount import DriveHandle
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 # Covers a cold start's wait for its mount, plus the probe and links.
@@ -61,6 +60,29 @@ class CallContext:
     thread_id: str | None = None
     # None reads the user's stored zone, when a file needs one.
     timezone: str | None = None
+    #: The turn's run, read per call (``for_call``): one context serves
+    #: every run of the thread and every subagent of the turn.
+    run_id: str | None = None
+    #: ``main`` or the subagent's name, read per call as ``run_id`` is.
+    agent: str | None = None
+
+    def for_call(self, config: Mapping[str, Any] | None) -> CallContext:
+        """This context as one tool call runs it, with the run and the agent
+        its config names: the tool's metadata keeps the turn's ``run_id``,
+        and a subagent's run adds its ``subagent_type``."""
+        metadata = (config or {}).get("metadata") or {}
+        run_id = metadata.get("run_id") or (config or {}).get("run_id")
+        agent = metadata.get("subagent_type") or "main"
+        return replace(self, run_id=str(run_id) if run_id else None, agent=str(agent))
+
+    @property
+    def sitting(self) -> str | None:
+        """What a Drive save by this call folds into: every save one agent
+        makes to one file in one run is one version, through the file tools
+        and the mount alike. None outside a run."""
+        if not (self.thread_id and self.run_id):
+            return None
+        return f"{self.thread_id}:{self.run_id}"
 
 
 class MountHandle(Protocol):
@@ -140,32 +162,44 @@ class TranscriptReach:
 CallFiler = Callable[[str, CallContext], Awaitable[None]]
 
 
-async def through_mount(
+async def run_call(
+    run: Callable[[str | None], Awaitable[tuple[str, dict[str, Any]]]],
+    *,
+    command: str,
     mount: MountHandle | None,
+    drive: DriveHandle,
     filer: CallFiler | None,
     context: CallContext | None,
-    run: Callable[[str | None], Awaitable[tuple[str, dict[str, Any]]]],
+    paid_calls: Callable[[str], Awaitable[str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Run one command under a fresh call id, filed with who it runs for, and
-    while the mount serves add to its output what its saves through the
-    mount reported.
+    """Run ``command`` as one call: filed with who it runs for, executed, its
+    Drive saves settled, then added to its output in this order what its
+    paid relay calls cost, what its saves through the file mount reported,
+    and the Drive's note.
 
-    The id is collected once ``run`` returns, so the later saves of a command
-    it handed off reach the next command's result. A cancelled run reports
-    nothing. With neither a mount nor anything to file, the command runs
-    under no id.
+    It runs under a fresh call id when something reads one (a mount, or a
+    context to file), else under none. The id is collected once ``run``
+    returns, so the later saves of a command it handed off reach the next
+    command's result. A cancelled run reports nothing.
     """
     filing = filer is not None and context is not None
-    if mount is None and not filing:
-        return await run(None)
-    call_id = secrets.token_hex(8)
+    call_id = secrets.token_hex(8) if mount is not None or filing else None
     if filing:
         await filer(call_id, context)
-    text, artifact = await run(call_id)
-    if mount is None:
-        return text, artifact
-    report = await mount.report(call_id, text, context)
-    return (f"{text}\n\n{report}" if report else text), artifact
+    output, artifact = await run(call_id)
+    # Before the mount's report collects the call's outcomes: a save the
+    # Drive's server refused is filed by then.
+    settled = await drive.push_saves(command, call_id)
+    if call_id is not None and paid_calls is not None:
+        output = _added(output, await paid_calls(call_id))
+    if mount is not None:
+        output = _added(output, await mount.report(call_id, output, context))
+    note = await drive.after(output, text=command, call_id=call_id, settled=settled)
+    return _added(output, note), artifact
+
+
+def _added(output: str, more: str) -> str:
+    return f"{output}\n\n{more}" if more else output
 
 
 _MEMORY_MARKERS = (f"{MEMORY_USER_DIR}/", f"{WorkspaceLayout.MEMORY_DIR}/", f"{MEMO_USER_DIR}/")
@@ -189,129 +223,6 @@ def unserved_tree(mount: MountHandle | None, text: str) -> str | None:
     return next((d for d in _SERVED_DIRS if d in text), None)
 
 
-@dataclass(frozen=True)
-class MountOutcome:
-    ok: bool
-    error: MountError | None = None
-    reason: str | None = None
-    started: bool = False
-    failed: dict[str, str] | None = None
-    #: Link paths that already held files, and where those were moved.
-    set_aside: dict[str, str] | None = None
-
-
-@functools.cache
-def _boot() -> tuple[str, str, str, str]:
-    """``boot``'s text and what it checks the shipped package against: the
-    daemon's private directory, and the code and manifest this host ships."""
-    from ptc_agent.core.sandbox.livefs_runtime import boot, lifecycle
-
-    with open(boot.__file__) as f:
-        script = f.read()
-    manifest = json.dumps(lifecycle.code_manifest(), sort_keys=True)
-    return script, lifecycle.Paths().private, lifecycle.code_version(), manifest
-
-
-def code_version() -> str:
-    """The daemon code this host ships, which ``start`` brings a daemon to."""
-    return _boot()[2]
-
-
-def _shipped_dir(layout: SandboxLayout) -> str:
-    return f"{layout.internal_src}/{protocol.PACKAGE_NAME}"
-
-
-def _command(layout: SandboxLayout, action: str, *args: str) -> str:
-    script, private, code, manifest = _boot()
-    shipped = _shipped_dir(layout)
-    argv = (script, private, shipped, code, manifest, action, "--root", layout.root, *args)
-    # Root runs the host's own text, which runs the package from a checked
-    # copy: the shipped one is the sandbox user's to rewrite.
-    return "cd / && python3 -I -c " + " ".join(shlex.quote(a) for a in argv)
-
-
-def _parse(result: Any) -> dict[str, Any] | None:
-    lines = (getattr(result, "stdout", "") or "").strip().splitlines()
-    try:
-        return json.loads(lines[-1]) if lines else None
-    except ValueError:
-        return None
-
-
-async def _ship_code(sandbox: PTCSandbox) -> bool:
-    """Put the daemon's files where ``boot`` checks them, saying whether they
-    landed. The asset sync ships the same files with the other internal
-    packages; this is for a command that ran before it got to them."""
-    assert sandbox.runtime is not None
-    shipped = _shipped_dir(sandbox.layout)
-    try:
-        await sandbox._runtime_call(
-            sandbox.runtime.exec,
-            f"mkdir -p {shlex.quote(shipped)}",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        await sandbox._runtime_call(
-            sandbox.runtime.upload_files,
-            [(data, f"{shipped}/{name}") for name, data in lifecycle.package_files()],
-            retry_policy=RetryPolicy.SAFE,
-        )
-    except Exception as e:  # noqa: BLE001 - the caller answers stale_code as before
-        logger.warning("Could not ship the file mount's code", error=str(e))
-        return False
-    return True
-
-
-async def _run(
-    sandbox: PTCSandbox,
-    action: str,
-    args: list[str],
-    config: dict[str, Any] | None,
-) -> MountOutcome:
-    """Run one daemon command as root, carrying ``config`` in when given.
-
-    The daemon's code reaches the machine with the asset sync, which a
-    turn's mount does not wait for. A command refused for stale code ships
-    the daemon's own files and asks once more, so the mount never depends on
-    that sync having got there first."""
-    outcome = await _ask(sandbox, action, args, config)
-    if outcome.error == MountError.STALE_CODE and await _ship_code(sandbox):
-        outcome = await _ask(sandbox, action, args, config)
-    return outcome
-
-
-async def _ask(
-    sandbox: PTCSandbox,
-    action: str,
-    args: list[str],
-    config: dict[str, Any] | None,
-) -> MountOutcome:
-    assert sandbox.runtime is not None
-    env = None if config is None else {protocol.CONFIG_ENV: json.dumps(config)}
-    result = await sandbox._runtime_call(
-        sandbox.runtime.exec_as_root,
-        _command(sandbox.layout, action, *args),
-        _EXEC_TIMEOUT_S,
-        env,
-        retry_policy=RetryPolicy.SAFE,
-    )
-    answer = _parse(result)
-    if answer is None:
-        return MountOutcome(
-            ok=False,
-            error=MountError.UNANSWERED,
-            reason=(getattr(result, "stderr", "") or "")[-300:],
-        )
-    error = answer.get("error")
-    return MountOutcome(
-        ok=bool(answer.get("ok")),
-        error=MountError(error) if error else None,
-        reason=answer.get("reason"),
-        started=bool(answer.get("started")),
-        failed=answer.get("failed"),
-        set_aside=answer.get("set_aside"),
-    )
-
-
 async def start(
     sandbox: PTCSandbox,
     *,
@@ -326,21 +237,16 @@ async def start(
     it where only root can read it, which hides it from agent code only where
     that code runs as another user (see ``protocol.CONFIG_ENV``).
     """
-    return await _run(sandbox, "start", ["--base-url", base_url], config)
+    return await mount_commands.run(
+        sandbox, "start", ["--base-url", base_url], config, timeout_s=_EXEC_TIMEOUT_S
+    )
 
 
 async def answers(sandbox: PTCSandbox) -> bool | None:
     """Whether the mount answers at its path (None: the exec failed). After a
     restart no reconnect saw, the links dangle and answer ENOENT, which no
     command tells apart from a missing file."""
-    assert sandbox.runtime is not None
-    try:
-        result = await sandbox._runtime_call(
-            sandbox.runtime.exec, PROBE, retry_policy=RetryPolicy.SAFE
-        )
-    except Exception:  # noqa: BLE001 - unknown, so the caller changes nothing
-        return None
-    return answered(getattr(result, "stdout", None))
+    return await mount_commands.probe(sandbox, PROBE, _ANSWERS)
 
 
 async def link(sandbox: PTCSandbox, links: Sequence[tuple[str, str]]) -> MountOutcome:
@@ -349,4 +255,4 @@ async def link(sandbox: PTCSandbox, links: Sequence[tuple[str, str]]) -> MountOu
     args: list[str] = []
     for source, target in links:
         args += ["--link", f"{source}:{target}"]
-    return await _run(sandbox, "link", args, None)
+    return await mount_commands.run(sandbox, "link", args, timeout_s=_EXEC_TIMEOUT_S)

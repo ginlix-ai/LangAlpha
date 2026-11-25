@@ -1,4 +1,4 @@
-import type { UploadFailure } from '@/pages/ChatAgent/utils/partUpload';
+import type { UploadFailure } from '@/lib/partUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 
 /** Where a composer file's upload stands. */

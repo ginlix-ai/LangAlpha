@@ -7,7 +7,7 @@
  * assembled object into place. Starting the upload answers which; this never
  * guesses, since only the backend knows what the computer can do.
  */
-import { ApiError } from '@/api/client';
+import { ApiError, delay } from '@/api/client';
 import {
   beginWorkspaceUpload,
   cancelWorkspaceUpload,
@@ -21,13 +21,12 @@ import {
 } from './api/files';
 import {
   beginUnlessAborted,
-  delay,
   relayProgress,
   retryable,
-  runDirectUpload,
+  runPartUpload,
   UploadRefusedError,
   type UploadProgress,
-} from './partUpload';
+} from '@/lib/partUpload';
 
 export interface WorkspaceUploadOptions {
   /** Where in the workspace; the file's own name at the folder's root when absent. */
@@ -106,16 +105,16 @@ export async function uploadToWorkspace(
   }
 
   const uploadId = begun.upload_id;
-  const status = await runDirectUpload(
+  const status = await runPartUpload(
     file,
-    begun.part_count,
+    { count: begun.part_count, size: begun.part_size },
     {
-      sign: (numbers, partSignal) => signWorkspaceUploadParts(workspaceId, uploadId, numbers, partSignal),
+      parts: { kind: 'signed', sign: (numbers, partSignal) => signWorkspaceUploadParts(workspaceId, uploadId, numbers, partSignal) },
       complete: (s) => completeWorkspaceUpload(workspaceId, uploadId, s),
       cancel: () => cancelWorkspaceUpload(workspaceId, uploadId),
       // A page closed or reloaded mid-send takes the upload with it, so it
       // ends the row then rather than when the row would expire.
-      cancelOnUnload: (headers) => cancelWorkspaceUploadOnUnload(workspaceId, uploadId, headers),
+      lifetime: { kind: 'page', cancelOnUnload: (headers) => cancelWorkspaceUploadOnUnload(workspaceId, uploadId, headers) },
     },
     { onProgress, signal },
     // The sandbox pulls the assembled object into place after the completion

@@ -156,7 +156,7 @@ def create_execute_code_tool(
         tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> tuple[str, dict[str, Any]]:
         call = CommandCall("ExecuteCode", code, description, config, tool_call_id, session)
-        return await _guarded(code, lambda call_id: _run(call, call_id))
+        return await _guarded(code, config, lambda call_id: _run(call, call_id))
 
     async def subagent_execute_code(
         code: str,
@@ -165,9 +165,9 @@ def create_execute_code_tool(
         config: RunnableConfig,
     ) -> tuple[str, dict[str, Any]]:
         call = CommandCall("ExecuteCode", code, description, config, None, session)
-        return await _guarded(code, lambda call_id: _run(call, call_id))
+        return await _guarded(code, config, lambda call_id: _run(call, call_id))
 
-    async def _guarded(code: str, run: Any) -> tuple[str, dict[str, Any]]:
+    async def _guarded(code: str, config: RunnableConfig, run: Any) -> tuple[str, dict[str, Any]]:
         return await run_guarded(
             backend,
             code,
@@ -179,6 +179,7 @@ def create_execute_code_tool(
             file_tools_error=_FILE_TOOLS_ONLY_ERROR,
             file_tools_errors=_FILE_TOOLS_ONLY_ERRORS,
             blocked_event="Blocked execute_code referencing a store-backed path",
+            config=config,
             code_length=len(code),
         )
 

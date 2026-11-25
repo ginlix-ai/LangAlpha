@@ -60,7 +60,8 @@ export function exitFor(status: number, reason?: string): number {
   if (reason === "approval_expired") return Exit.error;
   if (status === 401 || status === 403) return Exit.auth;
   if (status === 404) return Exit.notFound;
-  if (status === 409) return Exit.conflict;
+  // 412: the file changed since the version the caller named.
+  if (status === 409 || status === 412) return Exit.conflict;
   if (status === 400 || status === 422) return Exit.usage;
   return Exit.error;
 }

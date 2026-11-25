@@ -2,8 +2,8 @@
 
 Background
 ----------
-``BaselineContextMiddleware`` reads user + workspace ``memory.md`` and the
-memo catalog row at the turn boundary, and the store-backed filesystem routes
+``BaselineContextMiddleware`` reads user + workspace ``memory.md`` at the
+turn boundary, and the store-backed filesystem routes
 read the same keys whenever the agent touches those files. Without a shared
 cache a turn pays the same round-trips several times over, on data that is
 identical round-to-round in 99% of turns. This cache deduplicates them to one
@@ -19,8 +19,8 @@ key so the next read sees the fresh value within the same turn.
 
 Bounds
 ------
-Per turn the cache holds at most ~5 entries (two memory tiers + memo catalog
-+ a couple of agent-side memory writes). No eviction policy is needed at
+Per turn the cache holds at most ~5 entries (two memory tiers + a couple of
+agent-side memory writes). No eviction policy is needed at
 this size; the cache is dropped with the agent instance.
 """
 

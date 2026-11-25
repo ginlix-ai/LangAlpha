@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatTokenPrice, formatUnitList, relativeTime, signedFixed2 } from '@/lib/format';
+import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatTokenPrice, formatUnitList, nameCollator, relativeTime, signedFixed2 } from '@/lib/format';
 
 describe('createFormatter', () => {
   it('formats numbers in the given locale', () => {
@@ -223,5 +223,15 @@ describe('formatTokenPrice', () => {
     expect(formatTokenPrice(0.004, 'en-US')).toBe('$0.004');
     expect(formatTokenPrice(0.0004, 'en-US')).toBe('$0.0004');
     expect(formatTokenPrice(0.00002, 'en-US')).toBe('$0.00002');
+  });
+});
+
+describe('nameCollator', () => {
+  it('compares names by the locale it is given, numbers by value and letters by base', () => {
+    expect(nameCollator('sv').compare('ä', 'z')).toBeGreaterThan(0);
+    expect(nameCollator('de').compare('ä', 'z')).toBeLessThan(0);
+    expect(nameCollator('en-US').compare('f2', 'f10')).toBeLessThan(0);
+    expect(nameCollator('en-US').compare('a', 'A')).toBe(0);
+    expect(nameCollator('sv')).toBe(nameCollator('sv'));
   });
 });

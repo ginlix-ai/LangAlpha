@@ -3,11 +3,12 @@ import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
-  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
+  Sparkles, BookText, BookMarked, HardDrive, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
   Layers, ArrowUpDown, Copy,
 } from 'lucide-react';
+import { AGENT_PATH_TRAITS } from '../utils/agentPathTraits';
 import {
-  classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type UserDataEntity,
+  classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type AgentPathKind, type UserDataEntity,
 } from '../utils/agentPaths';
 import { directToolDisplayName, parseDirectToolName, summarizeDirectToolArgs } from '../utils/directTools';
 import { INTERVAL_LABEL } from '@/lib/bars';
@@ -140,6 +141,11 @@ interface LaCallInfo {
 
 type CallInfo = AgentPathInfo | LaCallInfo;
 
+/** A path an ordinary file tool names: its row reads in the tool's own words. */
+function isPlainFile(info: CallInfo | null): boolean {
+  return !!info && info.kind !== 'la' && AGENT_PATH_TRAITS[info.kind].plainFile;
+}
+
 /**
  * What a call's args make it: the path a Read/Write/Edit names, or the `la`
  * step a Bash call runs. Null for all other calls.
@@ -245,21 +251,33 @@ export function isTaskTool(toolName: string | undefined): boolean {
   return toolName === 'Task' || toolName === 'task';
 }
 
+/**
+ * Each path kind's glyph for a file tool's row, or null to keep the tool's
+ * own. Exhaustive, so a new kind picks one.
+ */
+const PATH_ICONS: { [K in AgentPathKind]: (info: Extract<AgentPathInfo, { kind: K }>, write: boolean) => LucideIcon | null } = {
+  file: () => null,
+  drive: () => HardDrive,
+  skill: () => Sparkles,
+  memory: () => BookMarked,
+  // A "book + plus" marks a memo write, so the row shows the agent changed it
+  // even though the backend keeps memos read-only.
+  memo: (_info, write) => (write ? BookPlus : BookText),
+  // Automations take the glyph check_automations uses, so the file and the
+  // tool read as one surface.
+  'user-data': (info) => (info.entity === 'automations' ? Clock : User),
+};
+
+function pathIcon(info: AgentPathInfo, write: boolean): LucideIcon | null {
+  // The table is keyed by kind, so the entry takes this info's own shape.
+  const pick = PATH_ICONS[info.kind] as (info: AgentPathInfo, write: boolean) => LucideIcon | null;
+  return pick(info, write);
+}
+
 export function getToolIcon(rawToolName: string, args?: ToolCallArgs, root?: string | null): LucideIcon {
   const info = classifyFromArgs(rawToolName, args, root);
-  if (info) {
-    if (info.kind === 'skill') return Sparkles;
-    if (info.kind === 'memory') return BookMarked;
-    if (info.kind === 'memo') {
-      // Distinguish memo writes/edits from reads with a "book + plus" glyph
-      // so the timeline row hints that the agent modified the memo (even
-      // though current backend rules make this read-only by design).
-      return FILE_WRITE_TOOLS.has(rawToolName) ? BookPlus : BookText;
-    }
-    // Automations take the glyph check_automations uses, so the file and the
-    // tool read as one surface.
-    if (info.kind === 'user-data') return info.entity === 'automations' ? Clock : User;
-  }
+  const glyph = info && info.kind !== 'la' ? pathIcon(info, FILE_WRITE_TOOLS.has(rawToolName)) : null;
+  if (glyph) return glyph;
   if (parseDirectToolName(rawToolName)) return Plug;
   return TOOL_DISPLAY_CONFIG[rawToolName]?.icon || Wrench;
 }
@@ -596,9 +614,9 @@ export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined,
   const args = toolCall?.args;
   const info = classifyFromArgs(toolName, args, root);
   const pt = inProgressTextOf(info, toolName, args, t);
-  // The in-progress text is already the full phrase for path-aware paths and
-  // for an `la` step.
-  if (info && info.kind !== 'file') return pt;
+  // The in-progress text is already the full phrase for a store path and for
+  // an `la` step; a plain file's is the tool's verb, after its name.
+  if (info && !isPlainFile(info)) return pt;
   const dn = displayNameOf(info, toolName, t, { root });
   return pt ? `${dn} ${pt}` : dn;
 }
@@ -694,7 +712,8 @@ export type ToolCategory =
 export function categorizeTool(toolName: string, toolCall: ToolCall | undefined, root?: string | null): ToolCategory {
   const args = toolCall?.args;
   const info = classifyFromArgs(toolName, args, root);
-  if (info) {
+  // A plain file (a workspace or Drive file) goes by the tool, below.
+  if (info && !isPlainFile(info)) {
     if (info.kind === 'skill') return 'skill';
     if (info.kind === 'memory') {
       return FILE_WRITE_TOOLS.has(toolName) ? 'memoryWrite' : 'memoryRead';
@@ -710,8 +729,6 @@ export function categorizeTool(toolName: string, toolCall: ToolCall | undefined,
     // An `la` step manages the user's workspaces and threads rather than
     // running code of the agent's own, so a header counts it as a step.
     if (info.kind === 'la') return 'generic';
-    // info.kind === 'file' (a known file tool but path is generic) falls
-    // through to the per-tool bucketing below.
   }
   if (toolName === 'ExecuteCode' || toolName === 'Bash') return 'code';
   if (toolName === 'WebSearch' || toolName === 'WebFetch') return 'web';

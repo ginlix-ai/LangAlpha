@@ -13,12 +13,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from .links import swap_link
-from .protocol import GENERATIONS, MOUNT
+from .protocol import GENERATIONS, MOUNT, MountError
 
 START_TIMEOUT_S = 10
 
@@ -112,6 +113,19 @@ def healthy(path: str) -> bool:
         return False
     try:
         os.stat(path)
+    except OSError:
+        return False
+    return True
+
+
+def answering(path: str) -> bool:
+    """Healthy, and its daemon still answers: the kernel answers a stat of a
+    dead mount's root from its attribute cache, but opening the folder always
+    asks the daemon."""
+    if not healthy(path):
+        return False
+    try:
+        os.close(os.open(path, os.O_RDONLY | os.O_DIRECTORY))
     except OSError:
         return False
     return True
@@ -327,7 +341,12 @@ def point(generation: str, paths: Paths) -> None:
 
 
 def start(
-    args, state: dict, paths: Paths, gate: Callable[[], str | None] | None = None
+    args,
+    state: dict,
+    paths: Paths,
+    gate: Callable[[], str | None] | None = None,
+    serve: str = "serve",
+    alive: Callable[[str], bool] = healthy,
 ) -> tuple[bool, str | None]:
     """Serve, replacing a daemon that died or runs older code. Updates
     ``state`` on success.
@@ -335,10 +354,14 @@ def start(
     A new daemon loads while ``gate`` runs and mounts only if it answers
     None; otherwise it exits unmounted, and nothing was started.
 
+    ``serve`` is the package command the daemon runs as (the Drive mount
+    is a second daemon from the same package), and ``alive`` the check that
+    an existing mount still serves.
+
     Returns whether a daemon was started, and why it failed if it did.
     """
     code = code_version()
-    if healthy(paths.mount) and state.get("code") == code:
+    if alive(paths.mount) and state.get("code") == code:
         return False, None
     # The copy ``boot`` checked and runs this command from, never the
     # shipped package.
@@ -349,7 +372,7 @@ def start(
     except OSError as exc:
         return False, str(exc)
     log = open(paths.log, "ab")
-    command = [sys.executable, "-m", __package__, "serve", "--root", args.root, "--mount", served]
+    command = [sys.executable, "-m", __package__, serve, "--root", args.root, "--mount", served]
     child = subprocess.Popen(
         [*command, "--gated"] if gate else command,
         stdin=subprocess.PIPE if gate else subprocess.DEVNULL,
@@ -387,3 +410,73 @@ def start(
     _drop_copies(code, paths)
     state["code"] = code
     return True, None
+
+
+# --- a start, as both daemons run one -------------------------------------
+
+
+def prepare(args, paths: Paths, token: Paths) -> tuple[dict | None, bool]:
+    """Everything a start does before its own lock: the answer when the mount
+    cannot serve yet, and whether the token's server address moved. A new
+    token goes in first, so it reaches the sandbox whatever else holds the
+    mount back. ``token`` is where the token lives (the Drive's daemon
+    uses the file mount's)."""
+    reason = unsupported()
+    if reason:
+        return {"ok": False, "error": MountError.UNSUPPORTED, "reason": reason}, False
+    os.makedirs(token.private, mode=0o700, exist_ok=True)
+    os.makedirs(paths.private, mode=0o700, exist_ok=True)
+    # The token and the address it goes to are written as one pair, under
+    # one hold of the lock: another start between the two would leave its
+    # token pointed at this start's address.
+    with locked(token):
+        if args.config:
+            problem = install_config(args.config, token)
+            if problem:
+                return {"ok": False, "error": MountError.BAD_CONFIG, "reason": problem}, False
+        if not os.path.exists(token.config):
+            return {"ok": False, "error": MountError.NO_CONFIG}, False
+        rebased = rebase(args.base_url, token)
+    if not has_libfuse():
+        install_libfuse(paths)
+        return {"ok": False, "error": MountError.INSTALLING, "reason": "installing libfuse"}, False
+    return None, rebased
+
+
+def probing(probe: Callable[[], str | None]) -> Callable[[], str | None]:
+    """Run ``probe`` (why the server cannot be reached, if it cannot) beside
+    the rest of a start; the call returned waits for its answer. Its request
+    is mostly waiting on the network, which a new daemon's start fills."""
+    answer: list[str | None] = []
+
+    def run() -> None:
+        try:
+            answer.append(probe())
+        except Exception as exc:  # the config went unreadable mid-probe
+            answer.append(f"the probe failed: {exc}")
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    def result() -> str | None:
+        thread.join()
+        return answer[0]
+
+    return result
+
+
+def start_probed(
+    args, state: dict, paths: Paths, probe: Callable[[], str | None] | None, **how
+) -> tuple[bool, dict | None]:
+    """Under the daemon's lock: ``start`` gated on ``probe``. Whether a daemon
+    was started, and the answer when the mount does not serve."""
+    try:
+        started, problem = start(args, state, paths, gate=probe, **how)
+    except OSError as exc:
+        started, problem = True, str(exc)
+    unreachable = probe() if probe else None
+    if unreachable:
+        return started, {"ok": False, "error": MountError.UNREACHABLE, "reason": unreachable}
+    if problem:
+        return started, {"ok": False, "error": MountError.START_FAILED, "reason": problem}
+    return started, None

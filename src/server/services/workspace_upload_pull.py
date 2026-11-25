@@ -150,15 +150,7 @@ def has_room(free_bytes: int, size: int) -> bool:
 
 
 def _assemble(row: dict[str, Any]) -> Assembly:
-    return assemble_parts(
-        MultipartUpload(
-            key=row["object_key"],
-            upload_id=row["store_upload_id"],
-            size=row["size"],
-            part_size=row["part_size"],
-            part_count=row["part_count"],
-        )
-    )
+    return assemble_parts(MultipartUpload.of_row(row))
 
 
 async def assemble_and_pull(row: dict[str, Any]) -> tuple[dict[str, Any] | None, Assembly]:

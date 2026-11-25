@@ -315,6 +315,17 @@ describe('CliApprovalHost: answering', () => {
     expect(api.decideCliApproval).toHaveBeenCalledWith('ap-d', false);
   });
 
+  it('puts an action this version does not know as a plain question that can still be answered', async () => {
+    const future = approval({ approval_id: 'ap-new', action: 'drive_purge_all', target: { id: 'x', name: 'Everything' }, details: {} } as unknown as Partial<CliApproval>);
+    api.getPendingCliApprovals.mockResolvedValueOnce([future]).mockResolvedValue([]);
+    renderHost();
+    const shown = await dialog();
+    expect(within(shown).getByRole('heading').textContent).toBe('Allow “Everything”?');
+    expect(await sentence()).toBe('Your Chief of Staff asked in “Morning brief” to do something this version of the app cannot describe. Reload the page to see what it is.');
+    fireEvent.click(within(shown).getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(api.decideCliApproval).toHaveBeenCalledWith('ap-new', true));
+  });
+
   it('creates a workspace, or creates it and every later one', async () => {
     api.getPendingCliApprovals.mockResolvedValue([
       approval({

@@ -27,6 +27,19 @@ const base: CliApproval = {
 };
 
 describe('cliApprovals copy', () => {
+  it('puts an automation change this build has no words for as the plain question, wherever it runs', () => {
+    const t = i18n.getFixedT('en-US');
+    const newer = {
+      ...base,
+      action: 'automation_change',
+      target: { id: 'a-1', name: 'Morning brief' },
+      details: { kind: 'pause', automation_name: 'Morning brief', prompt_preview: null, workspace_name: 'AMD', computer_name: 'Laptop', in_home: false },
+    } as unknown as CliApproval;
+    expect(requestSentenceText(t, newer)).toBe(
+      'Your Chief of Staff asked in “Morning brief” to do something this version of the app cannot describe. Reload the page to see what it is.',
+    );
+  });
+
   it('reads as plain text, the thread unlinked', () => {
     const t = i18n.getFixedT('en-US');
     expect(approvalTitle(t, base)).toBe('Delete workspace “Research”?');
