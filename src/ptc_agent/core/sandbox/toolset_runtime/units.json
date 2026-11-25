@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "units": [
+    {
+      "name": "chrome-policy",
+      "version": "a41121de636c",
+      "kind": "file",
+      "content": {
+        "URLBlocklist": [
+          "169.254.169.254",
+          "169.254.170.2",
+          "[fd00:ec2::254]",
+          "100.100.100.200",
+          "metadata.google.internal",
+          "metadata.goog",
+          "host.docker.internal",
+          "gateway.docker.internal",
+          "localhost:9223",
+          "localhost:9224",
+          "localhost:9225",
+          "localhost:2280",
+          "localhost:22220",
+          "localhost:22222",
+          "localhost:49983",
+          "localhost:2375",
+          "localhost:2376",
+          "127.0.0.1:9223",
+          "127.0.0.1:9224",
+          "127.0.0.1:9225",
+          "127.0.0.1:2280",
+          "127.0.0.1:22220",
+          "127.0.0.1:22222",
+          "127.0.0.1:49983",
+          "127.0.0.1:2375",
+          "127.0.0.1:2376",
+          "[::1]:9223",
+          "[::1]:9224",
+          "[::1]:9225",
+          "[::1]:2280",
+          "[::1]:22220",
+          "[::1]:22222",
+          "[::1]:49983",
+          "[::1]:2375",
+          "[::1]:2376"
+        ],
+        "LocalNetworkAccessRestrictionsTemporaryOptOut": false,
+        "WebRtcIPHandling": "disable_non_proxied_udp",
+        "PasswordManagerEnabled": false,
+        "AutofillAddressEnabled": false,
+        "AutofillCreditCardEnabled": false,
+        "BrowserSignin": 0,
+        "SyncDisabled": true
+      },
+      "file": "langalpha.json",
+      "mode": "0644",
+      "expose": [
+        "/etc/opt/chrome_for_testing/policies/managed/langalpha.json"
+      ]
+    },
+    {
+      "name": "chrome-for-testing",
+      "version": "1",
+      "kind": "link",
+      "target_glob": "/usr/local/ms-playwright/chromium-*/chrome-linux*/chrome",
+      "file": "chrome",
+      "expose": [
+        "/usr/local/bin/chrome-for-testing"
+      ]
+    },
+    {
+      "name": "agent-browser",
+      "version": "0.41.1",
+      "kind": "binary",
+      "platforms": {
+        "linux-x64": {
+          "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.41.1/agent-browser-linux-x64",
+          "sha256": "2a89295b62ddd497986a9a80b52e1dbe4c1f6bd68ffde67eaae82eec2206af61"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.41.1/agent-browser-linux-arm64",
+          "sha256": "f0b3bdaa40abf2a5111ec08e6d242110aaf56045ef5108cbc633bacc8e53ca17"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.41.1/agent-browser-darwin-x64",
+          "sha256": "7802f053e7fb25e10548ee10ca60d892c73d42ed2dbb7fc30c2d5925a5c82859"
+        },
+        "darwin-arm64": {
+          "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.41.1/agent-browser-darwin-arm64",
+          "sha256": "63b0a97b85a54b4c9b2871318af74104c29b80abd507b53a30316884e062854b"
+        }
+      },
+      "file": "agent-browser",
+      "mode": "0755",
+      "expose": [
+        "/usr/local/lib/agent-browser/agent-browser"
+      ]
+    }
+  ]
+}

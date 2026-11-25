@@ -233,6 +233,12 @@ class PTCSandbox:
         return type(self.provider).installs_browser
 
     @property
+    def serves_toolset(self) -> bool:
+        """Whether the server converges this computer's machine onto the tool
+        table."""
+        return type(self.provider).serves_toolset
+
+    @property
     def recreatable(self) -> bool:
         """Whether the server rebuilds this computer, and so lays its files
         unasked; on one its owner brought, a missing folder is theirs to restore."""

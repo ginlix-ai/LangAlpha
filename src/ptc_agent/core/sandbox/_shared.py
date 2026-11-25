@@ -101,6 +101,10 @@ _TURN_CWD_SOURCE = Path(__file__).with_name("turn_cwd_sitecustomize.py")
 #: The browser's runtime, shipped the same way, and its wrapper, which goes on
 #: every command's PATH as ``agent-browser`` and runs it.
 _BROWSER_SOURCE_DIR = Path(__file__).with_name("browser_runtime")
+#: The toolset's runtime and its table of units, shipped the same way under
+#: the folder's own name, and copied into every built image. The browser's
+#: protocol reads the engine's pins from the table beside it.
+TOOLSET_SOURCE_DIR = Path(__file__).with_name("toolset_runtime")
 #: Where the `la` CLI's shim ships, relative to ``_internal/src/``; its
 #: bundle (built by `cli/`, absent until it is) sits beside the directory.
 _CLI_BIN = PurePosixPath(SandboxLayout.CLI_BIN_DIR).relative_to(
@@ -260,6 +264,15 @@ def _hash_dict(d: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def package_files(folder: Path) -> list[Path]:
+    """A runtime package's modules and data files, sorted.
+
+    Flat and by suffix, so a host's bytecode and anything run beside the
+    package (the browser's wrapper) are left to whoever ships them.
+    """
+    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix in (".py", ".json"))
+
+
 def _internal_package_uploads(
     src_dir: Path, provider: "type[SandboxProvider] | None" = None
 ) -> list[tuple[Path, Path, int | None]]:
@@ -293,10 +306,11 @@ def _internal_package_uploads(
         files.append((livefs_file, Path(LIVEFS_SANDBOX_PACKAGE) / livefs_file.name, None))
     # The engine's config file ships beside the modules: the wrapper points the
     # engine at it, and an engine handed a config path that is not there fails.
-    browser_files = [*_BROWSER_SOURCE_DIR.glob("*.py"), *_BROWSER_SOURCE_DIR.glob("*.json")]
-    for browser_file in sorted(browser_files):
+    for browser_file in package_files(_BROWSER_SOURCE_DIR):
         files.append((browser_file, Path(browser_protocol.PACKAGE_NAME) / browser_file.name, None))
     files.append((_BROWSER_SOURCE_DIR / "agent-browser", Path(_CLI_BIN, "agent-browser"), 0o755))
+    for toolset_file in package_files(TOOLSET_SOURCE_DIR):
+        files.append((toolset_file, Path(TOOLSET_SOURCE_DIR.name) / toolset_file.name, None))
     cli_bundle = src_dir.parent / "cli" / "dist" / "la.mjs"
     if cli_bundle.is_file():
         files.append((cli_bundle, Path(_CLI_BIN.parent, "la.mjs"), None))

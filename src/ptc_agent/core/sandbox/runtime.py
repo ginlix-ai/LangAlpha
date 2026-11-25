@@ -671,6 +671,12 @@ class SandboxProvider(ABC):
     # (``browser_runtime/install.py``) rather than having it from the sandbox
     # image: a machine someone brings has only what it has.
     installs_browser: ClassVar[bool] = False
+    # Whether the server converges this kind's machines onto the tool table
+    # (``toolset_runtime``) as root. Today it is ``not installs_browser``, since
+    # a machine that sets the browser up itself has its tools another way, but
+    # it is a fact of its own: the table will carry packages a machine someone
+    # brings takes too, while the browser there stays its own setup.
+    serves_toolset: ClassVar[bool] = True
     # The layout version a sandbox whose manifest has no stamp was made at, so
     # a failed first manifest write cannot replay older layout moves.
     first_layout_version: ClassVar[int] = 1

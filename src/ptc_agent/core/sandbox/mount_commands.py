@@ -8,11 +8,11 @@ keep apart the code copy, lock and state they run from.
 
 from __future__ import annotations
 
-import functools
 import json
 import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -21,6 +21,9 @@ from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.livefs_runtime import lifecycle, protocol
 from ptc_agent.core.sandbox.livefs_runtime.protocol import MountError
 from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.root_package import RootPackage, parse
+
+__all__ = ["LIVEFS", "MountOutcome", "code_version", "execute", "parse", "probe", "run"]
 
 if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
@@ -39,55 +42,26 @@ class MountOutcome:
     set_aside: dict[str, str] | None = None
 
 
-@functools.cache
-def _boot() -> tuple[str, str, str, str]:
-    """``boot``'s text and what it checks the shipped package against: the
-    file mount's private directory, and the code and manifest this host ships."""
-    from ptc_agent.core.sandbox.livefs_runtime import boot
-
-    with open(boot.__file__) as f:
-        script = f.read()
-    manifest = json.dumps(lifecycle.code_manifest(), sort_keys=True)
-    return script, lifecycle.Paths().private, lifecycle.code_version(), manifest
+#: The daemon's package, run by root from its own copy. The daemon drops the
+#: copies of other code once it is replaced (``lifecycle._drop_copies``).
+LIVEFS = RootPackage(
+    Path(lifecycle.__file__).resolve().parent,
+    lifecycle.Paths().private,
+    name=protocol.PACKAGE_NAME,
+)
 
 
 def code_version() -> str:
     """The daemon code this host ships, which a start brings a daemon to."""
-    return _boot()[2]
-
-
-def _shipped_dir(layout: SandboxLayout) -> str:
-    return f"{layout.internal_src}/{protocol.PACKAGE_NAME}"
+    return LIVEFS.code
 
 
 def _command(layout: SandboxLayout, action: str, *args: str, private: str | None = None) -> str:
     """``private`` is the daemon's own directory: the file mount's unless
     named."""
-    script, own_private, code, manifest = _boot()
-    argv = (
-        script,
-        private or own_private,
-        _shipped_dir(layout),
-        code,
-        manifest,
-        action,
-        "--root",
-        layout.root,
-        *args,
+    return LIVEFS.command(
+        layout.internal_src, action, "--root", layout.root, *args, private=private
     )
-    # Root runs the host's own text, which runs the package from a checked
-    # copy: the shipped one is the sandbox user's to rewrite.
-    return "cd / && python3 -I -c " + " ".join(shlex.quote(a) for a in argv)
-
-
-def parse(result: Any) -> dict[str, Any] | None:
-    """The JSON answer a daemon command printed last (None: none)."""
-    lines = (getattr(result, "stdout", "") or "").strip().splitlines()
-    try:
-        answer = json.loads(lines[-1]) if lines else None
-    except ValueError:
-        return None
-    return answer if isinstance(answer, dict) else None
 
 
 async def _ship_code(sandbox: PTCSandbox) -> bool:
@@ -95,7 +69,7 @@ async def _ship_code(sandbox: PTCSandbox) -> bool:
     landed. The asset sync ships the same files with the other internal
     packages; this is for a command that ran before it got to them."""
     assert sandbox.runtime is not None
-    shipped = _shipped_dir(sandbox.layout)
+    shipped = LIVEFS.shipped_dir(sandbox.layout.internal_src)
     try:
         await sandbox._runtime_call(
             sandbox.runtime.exec,
@@ -104,7 +78,7 @@ async def _ship_code(sandbox: PTCSandbox) -> bool:
         )
         await sandbox._runtime_call(
             sandbox.runtime.upload_files,
-            [(data, f"{shipped}/{name}") for name, data in lifecycle.package_files()],
+            [(data, f"{shipped}/{name}") for name, data in LIVEFS.files],
             retry_policy=RetryPolicy.SAFE,
         )
     except Exception as e:  # noqa: BLE001 - the caller answers stale_code as before
