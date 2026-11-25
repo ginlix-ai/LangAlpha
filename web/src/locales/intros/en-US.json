@@ -28,7 +28,7 @@
     },
     "chart": {
       "title": "Charts open beside the chat",
-      "body": "Open a live chart in the file panel, or click one the agent made. Select a region or a price level to ask about it, and the agent marks the events behind the move right on the chart."
+      "body": "Open a live chart in the file panel, or click one the agent made. Turn on Comment and drag across bars to ask about them: the agent answers under your comment and marks the events behind the move right on the chart."
     },
     "memory": {
       "title": "The agent remembers how you work",
@@ -59,12 +59,12 @@
   },
   "market": {
     "ask": {
-      "title": "Ask about what you see",
-      "body": "Pick Region or Price level in the toolbar and mark the chart. The selection goes to the agent in the side panel with the bars behind it, so it reads exactly what you marked."
+      "title": "Comment on what you see",
+      "body": "Turn on Comment in the chart's toolbar, then drag across bars, click a point, or click a shape the agent drew. Your comment gets a numbered pin and waits in the chat until you send it, so the agent reads exactly what you marked."
     },
     "draw": {
-      "title": "The agent marks what moved the price",
-      "body": "It answers on the chart too, with a layer that labels each event behind a move at the bar where it hit. Click a label for the agent's note on it. The layer stays with the workspace, so its chart tab shows it too."
+      "title": "The agent answers on the chart",
+      "body": "It replies under your comment and often draws its answer too: a layer that labels each event behind a move at the bar where it hit. Click the pin to read the reply beside what you marked. The layer stays with the workspace, so its chart tab shows it too."
     }
   },
   "automations": {

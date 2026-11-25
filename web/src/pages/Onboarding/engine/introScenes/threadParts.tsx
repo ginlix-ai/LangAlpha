@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { useAgentNames } from '../introAgents';
 import { VIEW } from './camera';
@@ -28,7 +28,9 @@ export function ChromeIcon({ icon: Icon }: { icon: LucideIcon }) {
  * the rest. `stack` places the transcript: from the top for a new thread, or
  * settled on the composer for one with history above, the oldest lines
  * running off the top as the newest come in. `ask` is typed into the
- * composer from `at`, `cps` characters a second, and sent at `send`.
+ * composer from `at`, `cps` characters a second, and sent at `send`; `dock`
+ * is anything else the composer shows, as `InputDock` reads it (a queued
+ * comment at its top, its placeholder, its send).
  */
 export function ThreadPage({
   title,
@@ -38,6 +40,7 @@ export function ThreadPage({
   chat,
   panel,
   ask,
+  dock,
   stack = 'top',
 }: {
   title: string;
@@ -47,6 +50,7 @@ export function ThreadPage({
   chat: ReactNode;
   panel: ReactNode;
   ask?: { text: string; at: number; send: number; cps: number };
+  dock?: Pick<ComponentProps<typeof InputDock>, 'chip' | 'placeholder' | 'ready' | 'sendAt'>;
   stack?: 'top' | 'bottom';
 }) {
   const { worker } = useAgentNames();
@@ -72,8 +76,9 @@ export function ThreadPage({
         <div className="flex min-w-0 flex-1 flex-col gap-1.5 p-2.5">
           {stack === 'bottom' ? <Transcript settled>{chat}</Transcript> : chat}
           <InputDock
+            {...dock}
             text={typing ? <Typed text={ask.text} at={ask.at} cps={ask.cps} /> : undefined}
-            sendAt={ask && [ask.send]}
+            sendAt={ask ? [ask.send] : dock?.sendAt}
           />
         </div>
         <div

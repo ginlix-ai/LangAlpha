@@ -15,15 +15,15 @@ import {
 import { useLocale } from '@/hooks/useLocale';
 import { fixed2, signedFixed2 } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { Intervals, Segmented, SelectionTools, ToolBtn } from './chartTools';
+import { ChartCommentTools, Intervals, Segmented, ToolBtn } from './chartTools';
 import { InputDock, signColor } from './kit';
 import { NVDA_LAST, NVDA_QUOTE } from './nvdaSeries';
 import { Transcript } from './transcriptParts';
 
 /* MarketView as the market intro's camera sees it, after pages/MarketView:
    the stock header and its metrics over the chart and its toolbar, the
-   folded sidebar's strip, and the chat panel with its empty state,
-   selection chips and composer. The page is drawn whole at its own size and
+   folded sidebar's strip, and the chat panel with its empty state and
+   composer, where queued comments wait. The page is drawn whole at its own size and
    the scenes frame parts of it, so the scripted pointer lands where the
    parts are. */
 /* eslint-disable react-refresh/only-export-components -- shared parts:
@@ -49,13 +49,13 @@ export const CHART = {
 export const CHAT_X = CHART_W + STRIP_W;
 
 /** The toolbar's right group, laid from the right: the mode switch, the menu,
-    the tools, then Price level and Region. */
+    the tools, then the comment list and Comment. */
 const MODE_W = 48;
 const BTN = 11;
 const GAP = 2;
 const PAD_X = 5;
-/** The Region button's center. */
-export const REGION_BTN = {
+/** The Comment button's center, while the list beside it holds no count. */
+export const COMMENT_BTN = {
   x: CHART_W - PAD_X - MODE_W - 3 * (BTN + GAP) - GAP - BTN / 2,
   y: HEAD_H + METRICS_H + TOOLS_H / 2 - 0.5,
 };
@@ -240,10 +240,10 @@ function Metrics() {
 }
 
 /** The chart's toolbar (`.chart-tools`) as a page-width chart lays it out:
-    intervals and indicators on the left; the selection tools, the tools, the
+    intervals and indicators on the left; the comment tools, the tools, the
     menu (the view buttons fold into it at this width) and the Light /
     Advanced switch on the right. */
-function ChartTools({ armed = false }: { armed?: boolean }) {
+function ChartTools({ comments }: { comments?: ChartComments }) {
   const { t } = useTranslation();
   return (
     <div
@@ -258,7 +258,7 @@ function ChartTools({ armed = false }: { armed?: boolean }) {
       <Intervals />
       <ToolBtn icon={SlidersHorizontal} />
       <span className="ml-auto flex items-center" style={{ gap: GAP }}>
-        <SelectionTools armed={armed} />
+        <ChartCommentTools {...comments} />
         <ToolBtn icon={Settings2} />
         <ToolBtn icon={Menu} />
         <Segmented
@@ -354,17 +354,16 @@ function EmptyChat() {
 }
 
 /** The chat panel (`MarketChatPanel`): the transcript, or the empty state
-    until there is one, then any selection chip, then the composer under the
-    market placeholder, its send filled while a selection is `ready` to go. */
+    until there is one, then the composer under the market placeholder. A
+    queued comment (`deck`) waits at the composer's top, the placeholder
+    asks for a note, and the send is filled, as the comment can go alone. */
 function ChatPanel({
   transcript,
-  chip,
-  ready,
+  deck,
   sendAt,
 }: {
   transcript?: ReactNode;
-  chip?: ReactNode;
-  ready?: boolean;
+  deck?: { node: ReactNode; placeholder: string };
   sendAt?: number[];
 }) {
   const { t } = useTranslation();
@@ -378,10 +377,10 @@ function ChatPanel({
       }}
     >
       {transcript ? <Transcript className="px-[2px] pt-2">{transcript}</Transcript> : <EmptyChat />}
-      {chip && <div className="flex px-[2px] pb-[4px]">{chip}</div>}
       <InputDock
-        placeholder={t('marketView:chatPanel.defaultPlaceholder')}
-        ready={ready}
+        chip={deck?.node}
+        placeholder={deck?.placeholder ?? t('marketView:chatPanel.defaultPlaceholder')}
+        ready={deck != null}
         sendAt={sendAt}
       />
     </div>
@@ -390,28 +389,29 @@ function ChatPanel({
 
 /* ── the page ──────────────────────────────────────────────────────────── */
 
+/** What the chart's comment tools show: the mode held on, and the counts. */
+type ChartComments = Parameters<typeof ChartCommentTools>[0];
+
 /**
  * MarketView with the sidebar folded, drawn at `PAGE` size: the header band
  * over the chart column (metrics, toolbar, then `chart`, `CHART` sized), the
  * sidebar's strip, and the chat panel. `title` names the thread once there
- * is one; `ready` and `sendAt` drive the composer's send, as `InputDock`
- * reads them.
+ * is one; `deck` is a queued comment in the composer, and `sendAt` presses
+ * its send, as `InputDock` reads it.
  */
 export function MarketPage({
-  armed,
+  comments,
   chart,
   title,
   transcript,
-  chip,
-  ready,
+  deck,
   sendAt,
 }: {
-  armed?: boolean;
+  comments?: ChartComments;
   chart: ReactNode;
   title?: string;
   transcript?: ReactNode;
-  chip?: ReactNode;
-  ready?: boolean;
+  deck?: { node: ReactNode; placeholder: string };
   sendAt?: number[];
 }) {
   const card = { borderColor: 'var(--color-border-muted)', background: 'var(--color-bg-card)' };
@@ -430,13 +430,13 @@ export function MarketPage({
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-col" style={{ width: CHART_W }}>
           <Metrics />
-          <ChartTools armed={armed} />
+          <ChartTools comments={comments} />
           <div className="relative flex-1" style={{ background: 'var(--color-bg-card)' }}>
             {chart}
           </div>
         </div>
         <FoldedSidebar />
-        <ChatPanel transcript={transcript} chip={chip} ready={ready} sendAt={sendAt} />
+        <ChatPanel transcript={transcript} deck={deck} sendAt={sendAt} />
       </div>
     </div>
   );

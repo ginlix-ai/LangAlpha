@@ -20,13 +20,15 @@ const threadFiles = withCopy(() => import('./threadFiles').then((m): SceneMap =>
   'filePanel', 'toolArtifact',
 ]);
 const threadChart = withCopy(() => import('./threadChart').then((m): SceneMap => m.threadChartScenes), [
-  'marketView', 'toolArtifact',
+  'marketView', 'pageViewer', 'toolArtifact',
 ]);
 const thread = withCopy(() => import('./thread').then((m): SceneMap => m.threadScenes), [
   'filePanel', 'memoPanel', 'toolArtifact',
 ]);
 const dashboard = withCopy(() => import('./dashboard').then((m): SceneMap => m.dashboardScenes), ['dashboard']);
-const market = withCopy(() => import('./market').then((m): SceneMap => m.marketScenes), ['marketView', 'toolArtifact']);
+const market = withCopy(() => import('./market').then((m): SceneMap => m.marketScenes), [
+  'marketView', 'pageViewer', 'toolArtifact',
+]);
 const automations = withCopy(() => import('./automations').then((m): SceneMap => m.automationScenes), [
   'automation', 'toolArtifact',
 ]);

@@ -163,12 +163,11 @@ export const NVDA = seriesOf(
 );
 
 /** One label in the agent's chart layer (`c.label`): the bar and price it
-    sits at, its text, and the agent's note on it. */
+    sits at, and its text. */
 export interface ChartEvent {
   i: number;
   price: number;
   title: string;
-  note?: string;
 }
 
 /** The title of the layer the agent publishes on NVDA's chart. */
@@ -177,12 +176,7 @@ export const NVDA_LAYER = 'News behind the moves';
 /** The news that layer labels, each at the bar it hit. */
 export const NVDA_EVENTS = {
   earnings: { i: 10, price: 184.5, title: 'Earnings beat' },
-  exportRule: {
-    i: 17,
-    price: 180.1,
-    title: 'New export rule',
-    note: 'Licenses tightened on AI chips sold abroad. NVDA fell 3% in a day.',
-  },
+  exportRule: { i: 17, price: 180.1, title: 'New export rule' },
   fedCut: { i: 23, price: 171.4, title: 'Fed cuts rates' },
   upgrade: { i: 38, price: 173.9, title: 'Analyst upgrade' },
 } satisfies Record<string, ChartEvent>;
