@@ -7,14 +7,20 @@ import asyncio
 import io
 import os
 import tarfile
+from pathlib import Path
 from typing import Any
 
 import structlog
+
+from ptc_agent.core.sandbox.providers._image_recipe import Copy, toolset_steps
 
 logger = structlog.get_logger(__name__)
 
 # The sandbox image is gigabytes, over whatever connection its owner has.
 IMAGE_PULL_TIMEOUT_S = 20 * 60
+# The checkout this module sits in, whose layout the Dockerfile's COPY lines
+# name: the build context is rooted there wherever the Dockerfile was found.
+_CHECKOUT = Path(__file__).resolve().parents[5]
 
 
 async def ensure_image(client: Any, image: str) -> None:
@@ -118,6 +124,13 @@ async def build_image(client: Any, image: str) -> None:
         build_tar = io.BytesIO()
         with tarfile.open(fileobj=build_tar, mode="w") as tar:
             tar.add(dockerfile_path, arcname=dockerfile_basename)
+            # The files the Dockerfile copies in, from where they sit in the
+            # checkout.
+            for step in toolset_steps():
+                if isinstance(step, Copy):
+                    for name in step.files:
+                        path = step.source / name
+                        tar.add(path, arcname=path.relative_to(_CHECKOUT).as_posix())
         build_tar.seek(0)
 
         async for log_line in client.images.build(

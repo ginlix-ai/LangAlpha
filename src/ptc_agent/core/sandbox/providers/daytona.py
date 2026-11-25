@@ -38,12 +38,15 @@ from ptc_agent.core.sandbox.platform_secrets import (
 )
 from ptc_agent.core.sandbox.providers._image_recipe import (
     BASE_IMAGE,
+    Copy,
     Env,
+    ImageName,
+    Recipe,
     Run,
-    Step,
     config_hash,
     image_identity,
-    image_steps,
+    image_name,
+    image_recipe,
 )
 from ptc_agent.core.sandbox.providers._metrics import normalize_samples
 from ptc_agent.core.sandbox.providers._tiers import TierChoice, resolve_tier
@@ -67,6 +70,8 @@ _SNAPSHOT_IN_PROGRESS = frozenset(
     {"pending", "pulling", "building", "snapshotting", "removing"}
 )
 _SNAPSHOT_FAILED = frozenset({"build_failed", "error"})
+# The most snapshots Daytona returns on one page.
+_SNAPSHOT_PAGE = 200
 
 # Every command the agent runs goes through one of these. A runner can serve
 # the wrong image for a snapshot ref (a bare busybox rootfs under Daytona's
@@ -505,7 +510,7 @@ class DaytonaProvider(SandboxProvider):
     def snapshot_name(self, mcp_packages: list[str], *, tier: str | None = None) -> str:
         """The snapshot ``create`` starts a sandbox of ``tier`` from."""
         choice, resources = self._resolve_tier(tier)
-        return self._snapshot_name(mcp_packages, choice.name, resources)
+        return str(self._image_name(mcp_packages, choice.name, resources))
 
     async def snapshot_state(self, name: str) -> str | None:
         """Daytona's state for the snapshot (``active``, ``building``, ...), None if absent."""
@@ -522,27 +527,25 @@ class DaytonaProvider(SandboxProvider):
         tier: str | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> str:
-        """Build ``tier``'s snapshot and wait until it is active; raises if the build fails.
-
-        A snapshot whose last build failed holds the name, so it is removed
-        first, and the build starts once Daytona has let the name go.
-        """
+        """Build ``tier``'s snapshot and wait until it is active; raises if the build fails."""
         choice, resources = self._resolve_tier(tier)
-        name = self._snapshot_name(mcp_packages, choice.name, resources)
+        name = str(self._image_name(mcp_packages, choice.name, resources))
         if await self.snapshot_state(name) in _SNAPSHOT_FAILED:
-            # A server's first create removes a failed snapshot too, and may get there first.
-            with contextlib.suppress(DaytonaNotFoundError):
-                await self._client.snapshot.delete(name)
-            for _ in range(60):
-                if await self.snapshot_state(name) is None:
-                    break
-                await asyncio.sleep(2)
-            else:
-                raise RuntimeError(
-                    f"{name} is still being removed; rerun once it is gone"
-                )
+            await self._remove_failed(name)
         await self._create_snapshot(name, mcp_packages, resources, on_log=on_log)
         return name
+
+    async def _remove_failed(self, name: str) -> None:
+        """Remove a snapshot whose last build failed, which holds its name, and
+        return once Daytona has let the name go."""
+        # Another server's first create, or the prebuild, may get there first.
+        with contextlib.suppress(DaytonaNotFoundError):
+            await self._client.snapshot.delete(name)
+        for _ in range(60):
+            if await self.snapshot_state(name) is None:
+                return
+            await asyncio.sleep(2)
+        raise RuntimeError(f"{name} is still being removed; rerun once it is gone")
 
     async def _settled_snapshot_state(self, name: str) -> str | None:
         """The snapshot's state once no build is under way, or after five minutes.
@@ -564,14 +567,22 @@ class DaytonaProvider(SandboxProvider):
         """Make an inactive snapshot usable again; returns the state Daytona reports for it."""
         return _state_value((await self._client.snapshot.activate(name)).state)
 
-    def _snapshot_name(
+    def _recipe(self, mcp_packages: list[str] | None, resources: Resources | None) -> Recipe:
+        return image_recipe(
+            working_dir=self._working_dir,
+            mcp_packages=mcp_packages,
+            cpu=resources.cpu if resources is not None else SANDBOX_FALLBACK_CPU,
+        )
+
+    def _image_name(
         self, mcp_packages: list[str] | None, tier: str, resources: Resources | None
-    ) -> str:
-        config_hash = self._get_snapshot_hash(mcp_packages, resources=resources)
+    ) -> ImageName:
+        """Family ``<base>-<tier>-<base hash>``, with no tier part without ``resources``."""
+        base_hash = config_hash(image_identity(self._recipe(mcp_packages, resources), resources))
         base_name = self._config.snapshot_name or "ptc-base"
         if resources is not None:
-            return f"{base_name}-{tier}-{config_hash}"
-        return f"{base_name}-{config_hash}"
+            return image_name(f"{base_name}-{tier}-{base_hash}")
+        return image_name(f"{base_name}-{base_hash}")
 
     async def _create_snapshot(
         self,
@@ -587,25 +598,6 @@ class DaytonaProvider(SandboxProvider):
             on_logs=on_log or (lambda log: logger.debug("Snapshot build", log=log)),
         )
 
-    def _image_steps(
-        self, mcp_packages: list[str] | None, resources: Resources | None
-    ) -> list[Step]:
-        return image_steps(
-            working_dir=self._working_dir,
-            mcp_packages=mcp_packages,
-            cpu=resources.cpu if resources is not None else SANDBOX_FALLBACK_CPU,
-        )
-
-    def _get_snapshot_hash(
-        self,
-        mcp_packages: list[str] | None = None,
-        *,
-        resources: Resources | None = None,
-    ) -> str:
-        """Generate an 8-char hash for snapshot versioning (see ``image_identity``)."""
-        steps = self._image_steps(mcp_packages, resources)
-        return config_hash(image_identity(steps, resources))
-
     def _create_snapshot_image(
         self,
         mcp_packages: list[str] | None = None,
@@ -614,11 +606,14 @@ class DaytonaProvider(SandboxProvider):
     ) -> Image:
         """Translate the shared image recipe into Daytona's Image DSL."""
         image = Image.base(BASE_IMAGE)
-        for step in self._image_steps(mcp_packages, resources):
+        for step in self._recipe(mcp_packages, resources).steps:
             if isinstance(step, Run):
                 image = image.run_commands(*step.commands)
             elif isinstance(step, Env):
                 image = image.env(dict(step.values))
+            elif isinstance(step, Copy):
+                for name in step.files:
+                    image = image.add_local_file(step.source / name, f"{step.dest}/{name}")
             else:
                 image = image.workdir(step.path)
 
@@ -636,128 +631,143 @@ class DaytonaProvider(SandboxProvider):
         tier: str | None = None,
         resources: Resources | None = None,
     ) -> str | None:
-        """Ensure a snapshot exists for the current configuration.
+        """The snapshot a sandbox of this configuration starts from, None for none.
 
         When ``resources`` is given (a non-default tier), they're baked into a
-        tier-specific snapshot — the only way to size a snapshot-born sandbox on
+        tier-specific snapshot: the only way to size a snapshot-born sandbox on
         hosted Daytona, which supports neither runtime resize nor per-sandbox
         resource overrides.
 
-        Returns:
-            Snapshot name if available, None otherwise.
+        Short of the exact name, the newest usable snapshot of its family
+        serves (see ``ImageName``); only a new base builds here.
         """
         if not self._config.snapshot_enabled:
             logger.debug("Snapshot feature disabled in config")
             return None
 
-        snapshot_name = self._snapshot_name(
-            mcp_packages, tier or self._config.default_tier, resources
-        )
-        logger.info("Checking for snapshot", snapshot_name=snapshot_name)
-
-        # Check if snapshot exists and is usable
+        wanted = self._image_name(mcp_packages, tier or self._config.default_tier, resources)
+        name = str(wanted)
+        logger.info("Checking for snapshot", snapshot_name=name)
         try:
-            snapshots_result = await self._client.snapshot.list()
-            snapshots = (
-                snapshots_result.items
-                if hasattr(snapshots_result, "items")
-                else snapshots_result
+            state = await self.snapshot_state(name)
+        except Exception as e:
+            logger.warning("Error reading snapshot", snapshot_name=name, error=str(e))
+            state = None
+        if await self._usable(name, state):
+            logger.info("Using existing snapshot", snapshot_name=name)
+            return name
+        sibling = await self._newest_usable_sibling(wanted)
+        if sibling is not None:
+            logger.info(
+                "Using a snapshot of the same base; its toolset converges at the first acquire",
+                snapshot_name=sibling,
+                wanted=name,
             )
+            return sibling
+        return await self._wait_or_build(name, state, mcp_packages, resources)
 
-            snapshot_obj = None
-            for s in snapshots:
-                if hasattr(s, "name") and s.name == snapshot_name:
-                    snapshot_obj = s
-                    break
+    async def _usable(self, name: str, state: str | None) -> bool:
+        """Whether a sandbox can start from the snapshot, activating it if it must.
 
-            if snapshot_obj:
-                state = _state_value(snapshot_obj.state)
-                if state == "build_failed":
-                    logger.warning(
-                        "Found failed snapshot, will recreate",
-                        snapshot_name=snapshot_name,
-                        error=snapshot_obj.error_reason,
-                    )
-                    try:
-                        await self._client.snapshot.delete(snapshot_obj)
-                        logger.info(
-                            "Deleted failed snapshot",
-                            snapshot_name=snapshot_name,
-                        )
-                        await asyncio.sleep(2)
-                    except Exception as del_err:
-                        logger.warning(
-                            "Could not delete failed snapshot",
-                            error=str(del_err),
-                        )
-                    snapshot_exists = False
-                elif state == "active":
-                    snapshot_exists = True
-                elif state == "inactive":
-                    # Daytona refuses to create a sandbox from an inactive
-                    # snapshot, and deactivates one left unused for a while.
-                    logger.info("Activating snapshot", snapshot_name=snapshot_name)
-                    state = await self.activate_snapshot(snapshot_name)
-                    if state != "active":
-                        state = await self._settled_snapshot_state(snapshot_name)
-                    snapshot_exists = state == "active"
-                elif state in _SNAPSHOT_IN_PROGRESS:
-                    logger.info(
-                        "Snapshot is still building, waiting...",
-                        snapshot_name=snapshot_name,
-                        state=state,
-                    )
-                    state = await self._settled_snapshot_state(snapshot_name)
-                    if state in _SNAPSHOT_IN_PROGRESS:
-                        logger.warning(
-                            "Snapshot build timed out", snapshot_name=snapshot_name
-                        )
-                        return None
-                    snapshot_exists = state == "active"
-                else:
-                    logger.warning(f"Snapshot in unexpected state: {state}")
-                    snapshot_exists = False
-            else:
-                snapshot_exists = False
+        Daytona refuses to create a sandbox from an inactive snapshot, and
+        deactivates one left unused for a while.
+        """
+        if state == "active":
+            return True
+        if state != "inactive":
+            return False
+        logger.info("Activating snapshot", snapshot_name=name)
+        try:
+            state = await self.activate_snapshot(name)
+            if state != "active":
+                state = await self._settled_snapshot_state(name)
+        except Exception as e:
+            logger.warning("Could not activate snapshot", snapshot_name=name, error=str(e))
+            return False
+        return state == "active"
 
+    async def _newest_usable_sibling(self, wanted: ImageName) -> str | None:
+        """The newest usable snapshot of ``wanted``'s family under another tag.
+
+        One still building is passed over: it would hold the create for as long
+        as the build the exact name waits on. An active one is taken before any
+        inactive one, and only the newest inactive one is activated, since each
+        activation can hold the create for minutes. A failed listing means no
+        fallback, never a failed create.
+        """
+        try:
+            listed = await self._list_snapshots()
         except Exception as e:
             logger.warning("Error listing snapshots", error=str(e))
-            snapshot_exists = False
+            return None
+        states = {s.name: _state_value(s.state) for s in listed}
+        siblings = wanted.siblings((s.name, s.created_at) for s in listed)
+        active = next((name for name in siblings if states[name] == "active"), None)
+        if active is not None:
+            return active
+        inactive = next((name for name in siblings if states[name] == "inactive"), None)
+        if inactive is not None and await self._usable(inactive, "inactive"):
+            return inactive
+        return None
 
-        # Create snapshot if it doesn't exist
-        if not snapshot_exists and self._config.snapshot_auto_create:
-            logger.info("Creating snapshot", snapshot_name=snapshot_name)
+    async def _list_snapshots(self) -> list[Any]:
+        """Every snapshot of the organization, all pages of them."""
+        snapshots: list[Any] = []
+        page = 1
+        while True:
+            result = await self._client.snapshot.list(page=page, limit=_SNAPSHOT_PAGE)
+            snapshots.extend(result.items)
+            if not result.items or page >= result.total_pages:
+                return snapshots
+            page += 1
+
+    async def _wait_or_build(
+        self,
+        name: str,
+        state: str | None,
+        mcp_packages: list[str] | None,
+        resources: Resources | None,
+    ) -> str | None:
+        """The exact name once a build already under way, or one started here,
+        makes it active."""
+        if state in _SNAPSHOT_IN_PROGRESS:
+            logger.info("Snapshot is still building, waiting...", snapshot_name=name, state=state)
+            state = await self._settled_snapshot_state(name)
+            if state in _SNAPSHOT_IN_PROGRESS:
+                logger.warning("Snapshot build timed out", snapshot_name=name)
+                return None
+            if state == "active":
+                logger.info("Using existing snapshot", snapshot_name=name)
+                return name
+        if not self._config.snapshot_auto_create:
+            logger.warning("Snapshot not found and auto_create disabled", state=state)
+            return None
+        if state in _SNAPSHOT_FAILED:
+            logger.warning("Found failed snapshot, will recreate", snapshot_name=name)
             try:
-                await self._create_snapshot(snapshot_name, mcp_packages, resources)
-                logger.info(
-                    "Snapshot created successfully",
-                    snapshot_name=snapshot_name,
-                )
-                return snapshot_name
+                await self._remove_failed(name)
             except Exception as e:
-                error_str = str(e)
-                if "already exists" in error_str.lower():
-                    # Another build holds the name, and a sandbox can start
-                    # from it only once that build is done.
-                    state = await self._settled_snapshot_state(snapshot_name)
-                    if state != "active":
-                        logger.error(
-                            "Snapshot another build holds is not usable",
-                            snapshot_name=snapshot_name,
-                            state=state,
-                        )
-                        return None
-                    logger.info(
-                        "Snapshot already exists, will use it",
-                        snapshot_name=snapshot_name,
-                    )
-                    return snapshot_name
+                logger.warning("Could not delete failed snapshot", error=str(e))
+        elif state not in (None, "inactive"):
+            logger.warning("Snapshot in unexpected state", snapshot_name=name, state=state)
+
+        logger.info("Creating snapshot", snapshot_name=name)
+        try:
+            await self._create_snapshot(name, mcp_packages, resources)
+        except Exception as e:
+            error_str = str(e)
+            if "already exists" not in error_str.lower():
                 logger.error("Failed to create snapshot", error=error_str)
                 return None
-
-        if snapshot_exists:
-            logger.info("Using existing snapshot", snapshot_name=snapshot_name)
-            return snapshot_name
-
-        logger.warning("Snapshot not found and auto_create disabled")
-        return None
+            # Another build holds the name, and a sandbox can start from it
+            # only once that build is done.
+            state = await self._settled_snapshot_state(name)
+            if state != "active":
+                logger.error(
+                    "Snapshot another build holds is not usable", snapshot_name=name, state=state
+                )
+                return None
+            logger.info("Snapshot already exists, will use it", snapshot_name=name)
+            return name
+        logger.info("Snapshot created successfully", snapshot_name=name)
+        return name

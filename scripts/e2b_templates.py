@@ -1,10 +1,13 @@
 """Build the E2B sandbox templates ahead of the first sandbox that needs them.
 
 Without this, the first computer created at each resource tier waits while its
-template builds (several minutes). Names come from the same recipe hash the
-create path computes, so a template built here is the one a sandbox starts from.
-A ready template, or one already building, is left alone unless ``--rebuild``
-is given; one whose last build failed is built again.
+template builds (several minutes). Names are the ones the create path asks for,
+``<prefix>-<tier>-<base hash>-t<toolset tag>``, so a template built here is the
+one a sandbox starts from. A change to ``toolset_runtime/units.json`` moves only
+the tag, and until its template is built here a create takes the newest ready
+one of the same base, whose computers install the new tools at their first
+start. A ready template, or one already building, is left alone unless
+``--rebuild`` is given; one whose last build failed is built again.
 
     uv run python scripts/e2b_templates.py                 # every tier
     uv run python scripts/e2b_templates.py --tier standard

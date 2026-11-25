@@ -3,10 +3,10 @@
 NOTE: `Dockerfile.sandbox` (the Docker provider's image) hand-mirrors
 `DEFAULT_DEPENDENCIES`, `SANDBOX_NODE_VERSION`, `SANDBOX_PLAYWRIGHT_VERSION`,
 `SANDBOX_IMAGE_ENV` and `sandbox_thread_env` below; it cannot import this module
-at build time. Keep both in sync when editing either.
+at build time. Keep both in sync when editing either. The browser's binary,
+Chrome's stable name and its policy are units of `toolset_runtime/units.json`,
+which every image installs with the same command.
 """
-
-from ptc_agent.core.sandbox.browser_runtime import protocol as _browser
 
 SANDBOX_NODE_VERSION = "24.22.0"  # Pinned; mirrored in Dockerfile.sandbox.
 
@@ -15,53 +15,6 @@ SANDBOX_NODE_VERSION = "24.22.0"  # Pinned; mirrored in Dockerfile.sandbox.
 # leaving either unpinned lets them drift apart and bake two Chromium revisions
 # (plus two headless shells) into the image. scrapling[all] requires >= 1.62.0.
 SANDBOX_PLAYWRIGHT_VERSION = "1.64.0"
-
-# The agent's browser CLI, as the release's one binary per platform rather than
-# the npm package, which carries every platform's (18 MB against 120 MB). Its
-# browser is the Chrome for Testing the Playwright pin above already bakes in.
-# The digests are the release's own, keyed as ``dpkg --print-architecture``
-# names the machine; mirrored in Dockerfile.sandbox.
-SANDBOX_AGENT_BROWSER_VERSION = _browser.ENGINE_VERSION
-SANDBOX_AGENT_BROWSER_SHA256 = {
-    "amd64": _browser.ENGINE_SHA256["linux-x64"],
-    "arm64": _browser.ENGINE_SHA256["linux-arm64"],
-}
-SANDBOX_AGENT_BROWSER_BIN = _browser.ENGINE_BIN
-SANDBOX_CHROME_BIN = _browser.CHROME_BIN
-# Playwright's "chromium" is Chrome for Testing, which reads policy here and
-# silently ignores /etc/chromium.
-SANDBOX_CHROME_POLICY_PATH = (
-    "/etc/opt/chrome_for_testing/policies/managed/langalpha.json"
-)
-# What the browser may reach is enforced by the proxy every request of it goes
-# through (``browser_runtime/proxy.py``), by the address a name resolves to.
-# These ask the same of Chrome itself where it can: the list stops a navigation
-# to the sandbox's metadata services and the agents beside it on loopback by
-# name, local network access stays gated (on by default in the pinned Chrome,
-# whose only switch for it is this opt-out), and WebRTC sends nothing the proxy
-# does not carry. The rest of loopback stays open, where the agent's own apps
-# run. Nothing asks to be remembered.
-SANDBOX_CHROME_POLICY = {
-    "URLBlocklist": [
-        # An IPv6 address is matched as a URL writes it, in brackets.
-        *(f"[{host}]" if ":" in host else host for host in _browser.METADATA_HOSTS),
-        *_browser.DOCKER_HOSTS,
-        # localhost and the address are one place reached by two names, so
-        # each port is listed for both.
-        *(
-            f"{host}:{port}"
-            for host in ("localhost", "127.0.0.1", "[::1]")
-            for port in _browser.SERVICE_PORTS
-        ),
-    ],
-    "LocalNetworkAccessRestrictionsTemporaryOptOut": False,
-    "WebRtcIPHandling": "disable_non_proxied_udp",
-    "PasswordManagerEnabled": False,
-    "AutofillAddressEnabled": False,
-    "AutofillCreditCardEnabled": False,
-    "BrowserSignin": 0,
-    "SyncDisabled": True,
-}
 
 # Thread cap for a snapshot built without resolved tier resources (an unknown
 # tier falls back to a platform-default-sized sandbox). One thread never

@@ -3,7 +3,7 @@ name: Sandbox Image
 on:
   push:
     branches: [main]
-    paths: [Dockerfile.sandbox]
+    paths: [Dockerfile.sandbox, src/ptc_agent/core/sandbox/toolset_runtime/**]
   workflow_dispatch:
 
 concurrency:
