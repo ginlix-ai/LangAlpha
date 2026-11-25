@@ -508,6 +508,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start PlatformSecretSweeper: {e}")
 
+        # Tool-table sweep: converges running computers whose tools are behind
+        # the server's table, which always-on computers' warm sessions would
+        # otherwise never reach. Needs the ComputerManager, as above.
+        try:
+            from src.server.services.toolset_sweep import ToolsetSweeper
+
+            ToolsetSweeper.get_instance().start()
+        except Exception as e:
+            logger.warning(f"Failed to start ToolsetSweeper: {e}")
+
         # Initialize PTC Agent checkpointer for state persistence
         from src.server.utils.checkpointer import (
             get_checkpointer,
@@ -945,6 +955,13 @@ async def lifespan(app: FastAPI):
         await PlatformSecretSweeper.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error stopping PlatformSecretSweeper: {e}")
+
+    try:
+        from src.server.services.toolset_sweep import ToolsetSweeper
+
+        await ToolsetSweeper.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping ToolsetSweeper: {e}")
 
     try:
         from src.server.services.egress.relay import close_relay_client

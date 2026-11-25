@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -15,6 +15,7 @@ from ptc_agent.core.sandbox.browser_runtime.protocol import Choices
 from ptc_agent.core.sandbox.providers import provider_class
 from ptc_agent.core.sandbox.runtime import SandboxProvider
 from ptc_agent.core.session import Session
+from src.server.services import browser_settings
 from src.server.services.livefs.drive_mount import DriveRuns
 from src.server.services.livefs.tracker import MountTracker
 
@@ -79,6 +80,16 @@ class WorkspaceNotFound(ValueError):
         )
 
 
+def row_facts(row: Mapping[str, Any]) -> Dict[str, Any]:
+    """What a binding takes from the computer's row for the machine's sync to
+    hand on: its owner's browser settings and the tool table it was last seen
+    current at."""
+    return {
+        "browser": browser_settings.read(row),
+        "toolset_version": row.get("toolset_version"),
+    }
+
+
 @dataclass(frozen=True)
 class ComputerBinding:
     """Which machine a project is on, and how to reach that machine's backend.
@@ -95,7 +106,9 @@ class ComputerBinding:
     none has come. files_backup is the machine's switch for routine backups,
     off only where its owner chose. browser is what its owner chose for its
     browser, None where the binding was made without the row, which hands
-    nothing."""
+    nothing. toolset_version is the tool table its sandbox was last seen
+    current at, None until one was, or where the binding was made without
+    the row."""
 
     workspace_id: str
     computer_id: str
@@ -113,6 +126,12 @@ class ComputerBinding:
     browser: Optional[Choices] = None
     #: The folder layout the machine's last sync reported; None until one has.
     layout_version: Optional[int] = None
+    toolset_version: Optional[str] = None
+
+    def with_row(self, row: Mapping[str, Any]) -> "ComputerBinding":
+        """This binding with what *row*, a fresher read of the computer, says
+        of the facts its machine is handed after a sync."""
+        return replace(self, **row_facts(row))
 
     @property
     def provider_identity(self) -> Tuple[str, str]:

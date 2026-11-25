@@ -70,6 +70,21 @@ async def running_sandbox(row: dict[str, Any]) -> AsyncIterator[Any | None]:
         yield runtime if await runtime.get_state() == RuntimeState.RUNNING else None
 
 
+@asynccontextmanager
+async def running_machine(row: dict[str, Any]) -> AsyncIterator[tuple[Any, str] | None]:
+    """:func:`running_sandbox`'s runtime and the internal sources its runtimes
+    are shipped under, or None when it is not running. E2B resumes a sandbox
+    it attaches to, so one paused meanwhile is read again and not worked on."""
+    from ptc_agent.core.paths import SandboxLayout
+    from ptc_agent.core.sandbox.runtime import RuntimeState
+
+    async with running_sandbox(row) as runtime:
+        if runtime is None or await runtime.refresh_state() != RuntimeState.RUNNING:
+            yield None
+        else:
+            yield runtime, SandboxLayout(await runtime.fetch_working_dir()).internal_src
+
+
 def token_writer(runtime: Any, path: str) -> Callable[[dict[str, Any]], Awaitable[bool]]:
     """Writes a token file at ``path`` in a sandbox ``running_sandbox``
     found running, unless it stopped since: E2B resumes a sandbox it

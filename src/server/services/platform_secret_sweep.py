@@ -25,10 +25,13 @@ worker at a time under that kind's advisory lock.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import random
 import time
 from typing import Any, Optional
+
+from src.server.services.sweep_loop import KeysetCursor
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +68,9 @@ class PlatformSecretSweeper:
         self._loop_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._busy_skips: dict[str, int] = {}
-        # Where the next pass resumes in the behind set, so machines that never
-        # converge cannot hold every batch. Per worker, like ``_busy_skips``:
-        # the advisory lock, not this, keeps workers off one machine.
-        self._cursor: Any = None
+        # Where the next pass resumes in the behind set. Per worker, like
+        # ``_busy_skips``: the advisory lock keeps workers off one machine.
+        self._cursor = KeysetCursor(SWEEP_BATCH_LIMIT)
         self._rebuild_retry_at: dict[str, float] = {}
         self._register_retry_at: dict[str, float] = {}
 
@@ -177,16 +179,8 @@ class PlatformSecretSweeper:
             )
             return 0
 
-        rows = await list_workspaces_behind_platform_secret(
-            rollout_sets, limit=SWEEP_BATCH_LIMIT, after=self._cursor
-        )
-        if not rows and self._cursor is not None:
-            # Past the end: wrap now rather than lose a pass.
-            rows = await list_workspaces_behind_platform_secret(
-                rollout_sets, limit=SWEEP_BATCH_LIMIT
-            )
-        self._cursor = (
-            rows[-1]["computer_id"] if len(rows) == SWEEP_BATCH_LIMIT else None
+        rows = await self._cursor.page(
+            functools.partial(list_workspaces_behind_platform_secret, rollout_sets)
         )
         if not rows:
             return 0

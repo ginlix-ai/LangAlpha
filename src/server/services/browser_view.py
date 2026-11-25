@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.browser_runtime import protocol
 from ptc_agent.core.sandbox.browser_runtime.protocol import (
     HoldAction,
@@ -27,7 +26,7 @@ from ptc_agent.core.sandbox.browser_runtime.protocol import (
     NavigateRefusal,
 )
 from ptc_agent.core.sandbox.runtime import RuntimeState
-from src.server.services import data_token_sweep
+from src.server.services import data_token_sweep, toolset
 from src.server.services.preview_base import preview_base
 from src.server.services.preview_capabilities import proxied, publish
 
@@ -105,15 +104,19 @@ class BrowserView:
 async def browser_view(
     sandbox: Any,
     workspace_id: str,
+    computer_id: str | None,
     *,
     start: bool = False,
     get_chrome: bool = False,
     viewer_id: str | None = None,
 ) -> BrowserView:
     """The view of the browser on *sandbox*, opening it first with *start*.
-    *viewer_id* is the shared workspace's member the stream is minted for. Where
-    the preview proxy runs, their stream ends once they may no longer use the
-    workspace; without it, a stream they already opened lasts until it drops.
+    *computer_id* is the computer it runs, whose row a tool update it starts
+    stamps; None, from a row read before the workspace was bound, starts none.
+    *viewer_id* is the shared workspace's member the stream is minted for.
+    Where the preview proxy runs, their stream ends once they may no longer
+    use the workspace; without it, a stream they already opened lasts until it
+    drops.
 
     A machine of the person's own with no browser yet is set up here while they
     wait, and with *get_chrome* starts downloading Chrome for Testing, which
@@ -145,7 +148,11 @@ async def browser_view(
     if status.installing:
         return BrowserView("installing")
     if not status.installed:
-        return BrowserView("unavailable" if sandbox.installs_browser else "outdated")
+        if sandbox.installs_browser:
+            return BrowserView("unavailable")
+        return BrowserView(
+            "installing" if await _updating(sandbox, computer_id, status.toolset) else "outdated"
+        )
     if status.low_memory:
         return BrowserView("low_memory")
     if not status.running or status.token is None:
@@ -168,6 +175,31 @@ async def browser_view(
         else None
     )
     return BrowserView("running", url, VIEW_LIFETIME_S, local)
+
+
+async def _updating(
+    sandbox: Any, computer_id: str | None, seen: protocol.Toolset | None
+) -> bool:
+    """Whether a cloud computer with no browser is getting it from a tool
+    update: one under way, or one this starts because its tools are behind the
+    server's. Current and still without one, its image predates the browser.
+    A read starts only the update the computer's next acquire would start.
+
+    *seen* is what the browser's own status read of the toolset; a runtime
+    synced before it reported that says nothing, and root is asked instead.
+    """
+    if seen is None:
+        try:
+            answer = await toolset.ask_status(sandbox.runtime, sandbox.layout.internal_src)
+        except Exception as e:
+            logger.debug("Tool status did not answer: %s", type(e).__name__)
+            return False
+        if answer is None:
+            return False
+        seen = protocol.Toolset(answer.version, answer.converging)
+    if seen.converging:
+        return True
+    return computer_id is not None and toolset.converge_soon(sandbox, computer_id, seen.version)
 
 
 def _local_url(port: int, token: str) -> str:
@@ -299,14 +331,10 @@ async def ask_running(computer: Mapping[str, Any], *command: str, timeout: float
     """
     if not computer.get("provider_ref") or computer.get("status") != "running":
         return NOT_RUNNING
-    async with data_token_sweep.running_sandbox(dict(computer)) as runtime:
-        if runtime is None:
+    async with data_token_sweep.running_machine(dict(computer)) as machine:
+        if machine is None:
             return NOT_RUNNING
-        # E2B resumes a sandbox it attaches to, so one paused meanwhile is
-        # not woken for this.
-        if await runtime.refresh_state() != RuntimeState.RUNNING:
-            return NOT_RUNNING
-        internal_src = SandboxLayout(await runtime.fetch_working_dir()).internal_src
+        runtime, internal_src = machine
         return await ask_runtime(runtime, internal_src, *command, timeout=timeout)
 
 

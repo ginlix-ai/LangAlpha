@@ -54,7 +54,7 @@ from src.server.services.persistence.file import (
     RestoreIdentityLost,
 )
 from src.server.services.persistence.sync_result import BackupIncomplete
-from src.server.services import browser_settings, browser_view
+from src.server.services import browser_settings, browser_view, toolset
 from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.workspace_layout import (
@@ -355,17 +355,20 @@ class ProvisioningMixin:
             raise
         if token is not None:
             await token
-        await self._keep_browser_settings(binding, sandbox)
+        await self._after_machine_sync(binding, sandbox)
         total = (time.time() - _sync_t0) * 1000
         logger.info(f"[SYNC_DETAIL] workspace_id={workspace_id} total={total:.0f}ms")
         return assets
 
     @staticmethod
-    async def _keep_browser_settings(binding: ComputerBinding, sandbox: Any) -> None:
-        """Hand the machine its owner's browser settings once its runtime has
-        synced, since the runtime is what takes them. Only the first acquire on
-        a sandbox writes, or one whose row says they changed. A machine that
-        sets the browser up itself starts doing so here."""
+    async def _after_machine_sync(binding: ComputerBinding, sandbox: Any) -> None:
+        """What waits on the machine's runtimes having synced, since they are
+        what run it: a machine whose row is behind the tool table starts
+        converging onto it, one that sets the browser up itself starts doing
+        so, both in the background so no tool call waits on a download, and
+        the machine takes its owner's browser settings. Only the first acquire
+        on a sandbox writes those, or one whose row says they changed."""
+        toolset.converge_soon(sandbox, binding.computer_id, binding.toolset_version)
         browser_view.install_soon(sandbox)
         await browser_settings.keep(sandbox, binding.browser)
 
@@ -384,9 +387,7 @@ class ProvisioningMixin:
             )
             return
         if computer is not None:
-            await self._keep_browser_settings(
-                replace(binding, browser=browser_settings.read(computer)), sandbox
-            )
+            await self._after_machine_sync(binding.with_row(computer), sandbox)
 
     async def refresh_project_assets(self, workspace_id: str, sandbox: Any) -> Any:
         """Force one project's assets back in sync on a machine already running.
@@ -1289,7 +1290,7 @@ class ProvisioningMixin:
             # Every acquire, warm ones included: most run no sync, and a save
             # that did not reach the machine waits for this. Free once it
             # has them.
-            await self._keep_browser_settings(binding, sandbox)
+            await self._after_machine_sync(binding, sandbox)
             return await self._attach_overlay_and_skills(
                 binding, session, user_id=user_id, links=attach_key is not None, later=later
             )
