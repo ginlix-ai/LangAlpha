@@ -46,6 +46,7 @@ import type { RequestKeyTracker } from '../hooks/utils/requestKey';
 import type { PreviewData } from '../hooks/utils/types';
 import type { StructuredError } from '@/utils/rateLimitError';
 import type { ChatMessage } from '@/types/chat';
+import type { ForkDividerEvent } from '@/types/api';
 
 /** Mutable ref container (matches both useRef cells and hand-built refs). */
 type Ref<T> = { current: T };
@@ -99,6 +100,9 @@ export interface HistoryRuntime {
   setFallbackSuggestion: React.Dispatch<React.SetStateAction<FallbackSuggestion | null>>;
   setThreadModels: React.Dispatch<React.SetStateAction<string[]>>;
   setTokenUsage: React.Dispatch<React.SetStateAction<TokenUsage | null>>;
+  /** Where a fork's borrowed turns end, as the replay of the page holding
+   *  the line said; null on a page without it. */
+  setForkDivider: React.Dispatch<React.SetStateAction<ForkDividerEvent | null>>;
   setReloadTrigger: React.Dispatch<React.SetStateAction<number>>;
   setThreadId: React.Dispatch<React.SetStateAction<string>>;
   // stable containers, ref-current reads — owned by this lane

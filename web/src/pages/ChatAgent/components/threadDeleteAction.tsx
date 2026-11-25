@@ -1,14 +1,17 @@
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { threadForkCountQuery } from '../utils/threadQueries';
 import { DeleteConfirmModal } from './lazyDialogs';
 
 export interface ThreadDeleteConfirm {
   /**
-   * Ask before deleting the thread titled `title`. `remove` runs on confirm;
-   * a rejection keeps the dialog open with the error, and success closes it.
+   * Ask before deleting thread `threadId`, titled `title`. `remove` runs on
+   * confirm; a rejection keeps the dialog open with the error, and success
+   * closes it.
    */
-  requestDelete: (title: string, remove: () => Promise<unknown>) => void;
+  requestDelete: (threadId: string, title: string, remove: () => Promise<unknown>) => void;
   /** Render once at the host's root. */
   dialog: React.ReactNode;
 }
@@ -16,14 +19,19 @@ export interface ThreadDeleteConfirm {
 /** The one confirm every thread delete goes through (gallery card, sidebar menu). */
 export function useThreadDeleteConfirm(): ThreadDeleteConfirm {
   const { t } = useTranslation();
-  const [pending, setPending] = useState<{ title: string; remove: () => Promise<unknown> } | null>(null);
+  const [pending, setPending] = useState<{ threadId: string; title: string; remove: () => Promise<unknown> } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const requestDelete = useCallback((title: string, remove: () => Promise<unknown>) => {
-    setPending({ title, remove });
+  const requestDelete = useCallback((threadId: string, title: string, remove: () => Promise<unknown>) => {
+    setPending({ threadId, title, remove });
     setError(null);
   }, []);
+  // Forks that borrow this thread's history stop showing it once it goes, so
+  // the dialog says how many there are.
+  const forkThreadId = pending?.threadId ?? '';
+  const { data: forkCount } = useQuery({ ...threadForkCountQuery(forkThreadId), enabled: !!forkThreadId });
+  const note = pending && forkCount ? t('thread.forkCountNote', { count: forkCount }) : null;
 
   const handleConfirm = async () => {
     if (!pending || busy) return;
@@ -56,6 +64,7 @@ export function useThreadDeleteConfirm(): ThreadDeleteConfirm {
           onCancel={() => { setPending(null); setError(null); }}
           isDeleting={busy}
           error={error}
+          note={note}
           itemType="thread"
         />
       </MountOnceOpen>

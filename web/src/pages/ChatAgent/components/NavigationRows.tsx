@@ -36,6 +36,8 @@ import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { useThreadFlags } from '@/lib/threadLifecycle/store';
+import { usePendingForks } from '../hooks/forkMutation';
+import { PendingForkRow } from './PendingForkRow';
 import { sidebarAgentRowLabel, type SidebarAgentRow } from '../session/subagents/subagentStatus';
 import { SubagentStatusIcon } from './taskStatusUi';
 import type { NavWorkspace } from '../hooks/useNavigationData';
@@ -703,9 +705,10 @@ function WorkspaceTreeRowImpl({
   const isPinned = Boolean(ws.is_pinned);
   const machine = useRowMachine(ws);
   const threads = threadsData?.threads || [];
+  const pendingForks = usePendingForks(wsId);
   // Row-order signature for the thread rows' glide: rows re-measure only when
   // membership or order actually changes, not on every panel render.
-  const threadOrderSignature = threads.map((th) => th.thread_id).join('|');
+  const threadOrderSignature = [...pendingForks.map((f) => f.key), ...threads.map((th) => th.thread_id)].join('|');
   const threadsLoading = threadsData?.loading || false;
   const isRenaming = rename.active;
   // The options menu isn't offered on Home (shared, immutable), mirroring
@@ -878,7 +881,7 @@ function WorkspaceTreeRowImpl({
             shrinks to header height (clean gap), and the DragOverlay chip
             carries the visual instead. */}
         <kit.Collapse show={isExpanded && !isDragging}>
-          {!threadsLoading && threads.length === 0 && (
+          {!threadsLoading && threads.length === 0 && pendingForks.length === 0 && (
             <div
               className="text-xs px-2 py-1"
               style={{ paddingLeft: 34, color: 'var(--color-icon-muted)' }}
@@ -887,6 +890,11 @@ function WorkspaceTreeRowImpl({
             </div>
           )}
           <kit.ThreadList>
+            {pendingForks.map((fork) => (
+              <kit.ThreadItem key={fork.key} order={threadOrderSignature}>
+                <PendingForkRow fork={fork} />
+              </kit.ThreadItem>
+            ))}
             {threads.map((thread) => (
               <kit.ThreadItem key={thread.thread_id} order={threadOrderSignature}>
                 <ThreadTreeRow

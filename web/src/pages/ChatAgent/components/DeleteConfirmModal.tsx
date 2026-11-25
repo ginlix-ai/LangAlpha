@@ -24,6 +24,8 @@ interface DeleteConfirmModalProps {
   onCancel: () => void;
   isDeleting: boolean;
   error?: string | null;
+  /** A line under the warning saying what else the delete changes. */
+  note?: string | null;
   itemType?: 'workspace' | 'thread';
   /** Set for a workspace on the user's own machine, where its files stay unless `deleteFiles`. */
   ownMachine?: OwnMachineFolder | null;
@@ -44,6 +46,7 @@ function DeleteConfirmModal({
   onCancel,
   isDeleting,
   error,
+  note = null,
   itemType = 'workspace',
   ownMachine = null,
   deleteFiles = false,
@@ -100,6 +103,11 @@ function DeleteConfirmModal({
             ) : (
               <p className="text-xs" style={{ color: 'var(--color-loss)', opacity: 0.8 }}>
                 This action cannot be undone. All data in this {itemLabel} will be permanently deleted.
+              </p>
+            )}
+            {note && (
+              <p className="mt-2 text-xs break-words" style={{ color: 'var(--color-text-secondary)' }}>
+                {note}
               </p>
             )}
           </div>

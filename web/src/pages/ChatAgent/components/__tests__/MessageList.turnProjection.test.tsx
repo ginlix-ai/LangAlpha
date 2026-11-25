@@ -10,9 +10,12 @@
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { act, fireEvent } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import { QueryClient } from '@tanstack/react-query';
 import { renderWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
+import type { ForkDividerEvent } from '@/types/api';
 import MessageList from '../MessageList';
 import { MessageActionsProvider, type MessageActions } from '../messageList/MessageActionsContext';
 import { computeReplyEnds, computeTurnTails, newestTurn, newestTurnUnstarted, projectTurns } from '../messageList/turnProjection';
@@ -97,11 +100,12 @@ const legacyEditTurnIndex = (messages: Msg[], rawIndex: number) =>
 const legacyFeedbackTurnIndex = (messages: Msg[], rawIndex: number) =>
   messages.slice(0, rawIndex + 1).filter((m) => m.role === 'assistant' && !m.isSteering).length - 1;
 
-function renderList(messages: Msg[], actions: MessageActions) {
+function renderList(messages: Msg[], actions: MessageActions, opts: { forkDivider?: ForkDividerEvent; queryClient?: QueryClient } = {}) {
   return renderWithProviders(
     <MessageActionsProvider actions={actions}>
-      <MessageList messages={messages as MessageRecord[]} isLoading={false} />
+      <MessageList messages={messages as MessageRecord[]} isLoading={false} forkDivider={opts.forkDivider} />
     </MessageActionsProvider>,
+    { queryClient: opts.queryClient },
   );
 }
 
@@ -353,8 +357,8 @@ describe('MessageList — regenerate lands on the last visible bubble', () => {
 describe('MessageList — copying a turn into a new chat', () => {
   const forkBtn = (container: HTMLElement, id: string) =>
     bubble(container, id)?.querySelector('[title="chat.actions.forkFromHere"]') ?? null;
-  const newChatBtn = (container: HTMLElement, id: string) =>
-    bubble(container, id)?.querySelector('[title="chat.actions.editInNewChat"]') ?? null;
+  const forkingBtn = (container: HTMLElement, id: string) =>
+    bubble(container, id)?.querySelector('[title="chat.actions.forking"]') ?? null;
 
   it('forks through the turn from its last visible reply only', async () => {
     const onForkFromTurn = vi.fn().mockResolvedValue(undefined);
@@ -371,36 +375,41 @@ describe('MessageList — copying a turn into a new chat', () => {
     expect(forkBtn(container, 'a1')).toBeNull();
     expect(forkBtn(container, 'a1-cont')).not.toBeNull();
     await act(async () => { fireEvent.click(forkBtn(container, 'a0') as HTMLElement); });
-    expect(onForkFromTurn).toHaveBeenCalledWith(0, 'through_turn');
+    expect(onForkFromTurn).toHaveBeenCalledWith(0);
     await act(async () => { fireEvent.click(forkBtn(container, 'a1-cont') as HTMLElement); });
-    expect(onForkFromTurn).toHaveBeenLastCalledWith(1, 'through_turn');
+    expect(onForkFromTurn).toHaveBeenLastCalledWith(1);
   });
 
-  it('opens a sent message in a new chat before its turn, and not a steer', async () => {
+  it('offers no fork on a sent message', () => {
     const onForkFromTurn = vi.fn().mockResolvedValue(undefined);
-    const messages: Msg[] = [
-      userMsg('u0'),
-      assistant('a0'),
-      userMsg('u1'),
-      assistant('a1'),
-      userMsg('u2-steering', { steeringDelivered: true }),
-    ];
-    const { container } = renderList(messages, { onForkFromTurn });
-
-    expect(newChatBtn(container, 'u2-steering')).toBeNull();
-    await act(async () => { fireEvent.click(newChatBtn(container, 'u1') as HTMLElement); });
-    expect(onForkFromTurn).toHaveBeenCalledWith(1, 'before_turn');
-  });
-
-  it('holds the button while the copy is under way', async () => {
-    let settle: () => void = () => {};
-    const onForkFromTurn = vi.fn(() => new Promise<void>((resolve) => { settle = resolve; }));
     const { container } = renderList([userMsg('u0'), assistant('a0')], { onForkFromTurn });
 
+    expect(forkBtn(container, 'u0')).toBeNull();
+  });
+
+  it('spins the button whose fork is being made and holds the others', async () => {
+    const queryClient = new QueryClient();
+    let settle: () => void = () => {};
+    // The host runs the fork as the fork mutation, which the buttons read.
+    const onForkFromTurn = vi.fn((turnIndex: number) => {
+      void queryClient.getMutationCache().build(queryClient, {
+        mutationKey: queryKeys.threads.fork(),
+        mutationFn: () => new Promise<void>((resolve) => { settle = resolve; }),
+      }).execute({ threadId: 't1', turnIndex, workspaceId: 'ws', title: undefined });
+    });
+    const { container } = renderList(
+      [userMsg('u0'), assistant('a0'), userMsg('u1'), assistant('a1')],
+      { onForkFromTurn, reportThreadId: 't1' },
+      { queryClient },
+    );
+
     await act(async () => { fireEvent.click(forkBtn(container, 'a0') as HTMLElement); });
-    expect(forkBtn(container, 'a0')).toBeDisabled();
+    // React Query tells its readers a task later.
+    await waitFor(() => expect(forkingBtn(container, 'a0')).toBeDisabled());
+    expect(forkBtn(container, 'a1')).toBeDisabled();
     await act(async () => { settle(); });
-    expect(forkBtn(container, 'a0')).not.toBeDisabled();
+    await waitFor(() => expect(forkBtn(container, 'a0')).not.toBeDisabled());
+    expect(forkBtn(container, 'a1')).not.toBeDisabled();
   });
 
   it('forks from a finished reply while a later turn runs, but not from the running one', () => {
@@ -421,8 +430,6 @@ describe('MessageList — copying a turn into a new chat', () => {
     expect(forkBtn(container, 'a0')).not.toBeNull();
     expect(regenerateBtn(container, 'a0')).toBeNull();
     expect(forkBtn(container, 'a1')).toBeNull();
-    // The running turn's own message still forks before itself.
-    expect(newChatBtn(container, 'u1')).not.toBeNull();
   });
 
   it('draws no row on a finished reply that ends no turn while a later one runs', () => {
@@ -450,10 +457,9 @@ describe('MessageList — copying a turn into a new chat', () => {
     expect(row('a0-cont')).toBeNull();
   });
 
-  it('offers neither without the handler', () => {
+  it('offers no fork without the handler', () => {
     const { container } = renderList([userMsg('u0'), assistant('a0')], { onEditMessage: vi.fn() });
     expect(forkBtn(container, 'a0')).toBeNull();
-    expect(newChatBtn(container, 'u0')).toBeNull();
   });
 });
 
@@ -573,5 +579,62 @@ describe('turnProjection — whether the newest turn has started work', () => {
     expect(newestTurnUnstarted([ask, reply([]), { role: 'user', steering: true }])).toBe(true);
     // Nor is a send parked behind the compaction.
     expect(newestTurnUnstarted([ask, reply([]), { role: 'user', queued: true }])).toBe(true);
+  });
+});
+
+describe('MessageList: a fork that borrows its earlier turns', () => {
+  const divider = (overrides: Partial<ForkDividerEvent> = {}): ForkDividerEvent => ({
+    event: 'fork_divider',
+    source_thread_id: 'src',
+    turn_base: 2,
+    state: 'shown',
+    shown_through: 1,
+    segments: [{ thread_id: 'grand', first_turn: 0, through_turn: 0 }, { thread_id: 'src', first_turn: 1, through_turn: 1 }],
+    ...overrides,
+  });
+  const order = (container: HTMLElement) => [...container.querySelectorAll('[data-message-id], [data-testid="fork-divider"]')]
+    .map((el) => el.getAttribute('data-message-id') ?? 'divider');
+  const button = (container: HTMLElement, id: string, title: string) =>
+    bubble(container, id)?.querySelector(`[title="${title}"]`) ?? null;
+  const actions: MessageActions = { onForkFromTurn: vi.fn(), onRegenerate: vi.fn(), onThumbUp: vi.fn(), onEditMessage: vi.fn() };
+
+  it('draws the divider above the first own turn, and keeps the borrowed ones to Copy', () => {
+    const messages = [userMsg('u0'), assistant('a0'), userMsg('u1'), assistant('a1'), userMsg('u2'), assistant('a2')];
+    const { container } = renderList(messages, actions, { forkDivider: divider() });
+
+    expect(order(container)).toEqual(['u0', 'a0', 'u1', 'a1', 'divider', 'u2', 'a2']);
+    for (const id of ['a0', 'a1']) {
+      expect(button(container, id, 'chat.actions.copyMessage')).not.toBeNull();
+      expect(button(container, id, 'chat.actions.regenerate')).toBeNull();
+      expect(button(container, id, 'chat.actions.forkFromHere')).toBeNull();
+      expect(button(container, id, 'chat.actions.goodResponse')).toBeNull();
+    }
+    expect(button(container, 'u1', 'chat.actions.editMessage')).toBeNull();
+    expect(button(container, 'a2', 'chat.actions.regenerate')).not.toBeNull();
+    expect(button(container, 'a2', 'chat.actions.forkFromHere')).not.toBeNull();
+    expect(button(container, 'u2', 'chat.actions.editMessage')).not.toBeNull();
+  });
+
+  it('draws it below the last row while the fork has no turn of its own', () => {
+    const { container } = renderList([userMsg('u0'), assistant('a0'), userMsg('u1'), assistant('a1')], actions, { forkDivider: divider() });
+    expect(order(container)).toEqual(['u0', 'a0', 'u1', 'a1', 'divider']);
+  });
+
+  it('draws it alone when nothing is shown and nothing is the fork\'s own yet', () => {
+    const { container } = renderList([], actions, { forkDivider: divider({ state: 'deleted', shown_through: null, segments: [] }) });
+    expect(order(container)).toEqual(['divider']);
+  });
+
+  it('keeps the borrowed rows mounted when the divider arrives', () => {
+    const messages = [userMsg('u0'), assistant('a0')];
+    const { container, rerender } = renderList(messages, actions);
+    const before = bubble(container, 'a0');
+    rerender(
+      <MessageActionsProvider actions={actions}>
+        <MessageList messages={messages as MessageRecord[]} isLoading={false} forkDivider={divider({ turn_base: 1 })} />
+      </MessageActionsProvider>,
+    );
+    expect(bubble(container, 'a0')).toBe(before);
+    expect(order(container)).toEqual(['u0', 'a0', 'divider']);
   });
 });

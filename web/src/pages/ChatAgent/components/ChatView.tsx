@@ -50,7 +50,7 @@ import { useCardState } from '../hooks/useCardState';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { classifyAgentPath, isSubagentFilePath } from '../utils/agentPaths';
 import { fileArtifactPath } from '../utils/fileArtifact';
-import type { FileOperationArtifactPayload, ThreadForkCut } from '@/types/api';
+import type { FileOperationArtifactPayload } from '@/types/api';
 import { taskIdFromAgentId } from '../utils/agentId';
 import {
   routeStopAction,
@@ -159,6 +159,7 @@ import { usePanelChart } from './chatView/usePanelChart';
 import { useMessageActionBundles } from './chatView/useMessageActionBundles';
 import { useForkThread } from './chatView/useForkThread';
 import { ForkedFromLink } from './chatView/ForkedFromLink';
+import type { SubagentInfo } from './messageList/types';
 import { ThreadPrivacyRow } from './chatView/threadPrivacy';
 import { useThreadPrivacy } from './chatView/useThreadPrivacy';
 import { withCopy } from '@/i18n';
@@ -402,6 +403,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     forThread,
     threadId: currentThreadId,
     threadModels,
+    forkDivider,
     marketWatch,
     isShared: threadIsShared,
     handleThumbUp,
@@ -1181,14 +1183,25 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const fromThreadId = state?.fromThreadId;
   const fromWorkspaceId = state?.fromWorkspaceId;
   // Every exit to another thread marks itself intentional as it goes, and
-  // asks the file panel about unsaved drafts first (`leaveToThread`).
-  const goToThread = useCallback((targetThreadId: string, navState: LocationState) => {
+  // asks the file panel about unsaved drafts first (`leaveToThread`). A task
+  // id opens one of the thread's tasks there.
+  const goToThread = useCallback((targetThreadId: string, navState: LocationState, taskId?: string) => {
     intentionalExitRef.current = true;
-    navigate(`/chat/t/${targetThreadId}`, { state: navState });
+    navigate(taskId ? `/chat/t/${targetThreadId}/${taskId}` : `/chat/t/${targetThreadId}`, { state: navState });
   }, [navigate]);
-  const leaveToThread = useCallback((targetThreadId: string, navState: LocationState) => {
-    leaveFiles(() => goToThread(targetThreadId, navState));
+  const leaveToThread = useCallback((targetThreadId: string, navState: LocationState, taskId?: string) => {
+    leaveFiles(() => goToThread(targetThreadId, navState, taskId));
   }, [leaveFiles, goToThread]);
+  // A task card in a turn a fork borrowed opens in the thread that holds the
+  // task's runs; the route looks up its workspace.
+  const openSubagentTaskFromChat = useCallback((info: SubagentInfo, ownerThreadId?: string) => {
+    if (!ownerThreadId || ownerThreadId === currentThreadId) {
+      handleOpenSubagentTask(info);
+      return;
+    }
+    const agentId = resolveSubagentIdToAgentId ? resolveSubagentIdToAgentId(info.subagentId) : info.subagentId;
+    leaveToThread(ownerThreadId, {}, taskIdFromAgentId(agentId) ?? undefined);
+  }, [currentThreadId, handleOpenSubagentTask, leaveToThread, resolveSubagentIdToAgentId]);
   const openDispatcher = useCallback((dispatcherThreadId: string) => {
     leaveToThread(
       dispatcherThreadId,
@@ -1196,37 +1209,30 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     );
   }, [leaveToThread, fromThreadId, fromWorkspaceId]);
 
-  // "Fork from here" and "Edit in new chat": a copy of this thread up to a
-  // turn, opened as a new chat while this view is still the one in front. A
-  // view kept mounted after the user moved on leaves the fork in the list.
-  // The file panel is asked before the copy is made, so declining leaves no
+  // "Fork from here": a new chat carrying on from this thread through a
+  // reply, opened while this view is still the one in front. A view kept
+  // mounted after the user moved on leaves the fork in the list.
+  // The file panel is asked before the fork is made, so declining leaves no
   // fork behind, and asked again on the way out unless the user already
-  // agreed to discard: a draft typed while the copy ran is asked about too.
-  // A copy that waits on its dialog runs without the button's pending state,
-  // which ends when the dialog opens.
+  // agreed to discard: a draft typed meanwhile is asked about too. The button
+  // spins from when the request goes, so not while the dialog asks.
   const forkDiscardAgreedRef = useRef(false);
   const openFork = useCallback((forkThreadId: string, navState: LocationState) => {
     if (!isActiveRef.current) return;
     if (forkDiscardAgreedRef.current) goToThread(forkThreadId, navState);
     else leaveToThread(forkThreadId, navState);
   }, [goToThread, leaveToThread]);
-  const forkFromTurn = useForkThread({ threadId: currentThreadId, open: openFork });
-  const handleForkFromTurn = useCallback(
-    (turnIndex: number, cut: ThreadForkCut) => new Promise<void>((resolve) => {
-      // The guard runs this at once when nothing was unsaved, and later only
-      // once the user agreed in its dialog.
-      let inline = true;
-      let went = false;
-      leaveFiles(() => {
-        went = true;
-        forkDiscardAgreedRef.current = !inline;
-        void forkFromTurn(turnIndex, cut).finally(resolve);
-      });
-      inline = false;
-      if (!went) resolve();
-    }),
-    [leaveFiles, forkFromTurn],
-  );
+  const forkFromTurn = useForkThread({ threadId: currentThreadId, workspaceId, open: openFork });
+  const handleForkFromTurn = useCallback((turnIndex: number) => {
+    // The guard runs this at once when nothing was unsaved, and later only
+    // once the user agreed in its dialog.
+    let inline = true;
+    leaveFiles(() => {
+      forkDiscardAgreedRef.current = !inline;
+      forkFromTurn(turnIndex);
+    });
+    inline = false;
+  }, [leaveFiles, forkFromTurn]);
 
   // The file cards' Publish, one dialog for the chat.
   const { onPublishFile, dialog: publishDialog } = usePublishFile(workspaceId || null);
@@ -1236,6 +1242,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const { messageActions, subagentMessageActions } = useMessageActionBundles({
     reportThreadId: currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined,
     feedbackLoading,
+    onOpenThread: leaveToThread,
     onOpenFile: handleOpenFileFromChat,
     onDownloadFile: handleDownloadFileFromChat,
     onPublishFile,
@@ -1246,7 +1253,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     onToolCallDetailClick: handleToolCallDetailClick,
     onOpenChart: handleOpenChart,
     onOpenArtifactComment: handleOpenArtifactComment,
-    onOpenSubagentTask: handleOpenSubagentTask,
+    onOpenSubagentTask: openSubagentTaskFromChat,
     onOpenDispatcher: openDispatcher,
     onAnswerQuestion: handleAnswerQuestion,
     onSkipQuestion: handleSkipQuestion,
@@ -1794,6 +1801,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                               ranHere={mainRanHere}
                               holding={heldBeforeWork}
                               holdLine={compactionAbove && <CompactingLine {...compactionAbove} />}
+                              forkDivider={forkDivider}
                             />
                           </DispatchStatusProvider>
                         </MessageActionsProvider>

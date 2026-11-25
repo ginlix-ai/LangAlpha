@@ -3,7 +3,7 @@
  */
 import { api, type RequestConfig } from '@/api/client';
 import { authSessionCheck } from '@/lib/authResets';
-import type { Thread, ThreadForkCut, ThreadsResponse } from '@/types/api';
+import type { Thread, ThreadsResponse } from '@/types/api';
 import type { WakeupCancelResponse, WakeupsResponse } from '@/types/wakeups';
 import type { CommandStopResponse, CommandsResponse } from '@/types/commands';
 
@@ -98,27 +98,36 @@ export async function getThread(threadId: string): Promise<Thread> {
 export interface ThreadForkResult {
   /** The new thread, as `GET /threads/{id}` reads it. */
   thread: Thread;
-  turns_copied: number;
-  /** The cut turn's message on a `before_turn` fork, else null. */
-  prefill: string | null;
+  /** Turns the fork shows from the threads it came from, which it does not hold. */
+  turns_borrowed: number;
 }
 
 /**
- * Copy a thread's conversation up to a turn into a new thread. The new thread
- * starts no run; the user's next send to it is an ordinary send. A refusal
- * (409 while the cut turn is unfinished or the chat moved, 404, 400) carries
- * `detail.message` written for the user.
+ * Make a new thread that carries on from this one through a turn. The new
+ * thread starts no run; the user's next send to it is an ordinary send. A
+ * refusal (409 while the turn is unfinished or the chat moved, 404, 400)
+ * carries `detail.message` written for the user.
  */
 export async function forkThread(
   threadId: string,
-  opts: { cut: ThreadForkCut; turnIndex: number; title?: string; platform?: string },
+  opts: { turnIndex: number; title?: string; platform?: string },
 ): Promise<ThreadForkResult> {
   if (!threadId) throw new Error('Thread ID is required');
-  const body: Record<string, unknown> = { cut: opts.cut, turn_index: opts.turnIndex };
+  const body: Record<string, unknown> = { turn_index: opts.turnIndex };
   if (opts.title) body.title = opts.title;
   if (opts.platform) body.platform = opts.platform;
   const { data } = await api.post<ThreadForkResult>(`/api/v1/threads/${threadId}/fork`, body);
   return data;
+}
+
+/**
+ * How many forks borrow this thread's history, which they stop showing once
+ * it is deleted.
+ */
+export async function getThreadForkCount(threadId: string): Promise<number> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.get<{ count: number }>(`/api/v1/threads/${threadId}/fork-count`);
+  return typeof data?.count === 'number' ? data.count : 0;
 }
 
 export interface MarketWatchResponse {

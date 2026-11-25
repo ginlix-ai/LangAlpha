@@ -51,7 +51,7 @@ import { namesStagedFiles, stagedFilesOf, type AttachmentMeta } from '../utils/f
 import { discardAttachment, freshenStaged } from '../utils/attachmentUpload';
 import type { HitlResponseBody } from '@/types/api';
 import type { AssistantMessage, UserMessage, ChatMessage } from '@/types/chat';
-import type { ArtifactCommentsShown } from '@/types/api';
+import type { ArtifactCommentsShown, ForkDividerEvent } from '@/types/api';
 import type { PreviewData } from './utils/types';
 import type { ComposerDraft } from '@/components/ui/chat-input.types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
@@ -333,6 +333,10 @@ export function useChatMessages(
 
   // Token usage tracking (for context window progress ring)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  // Where a fork's borrowed turns end, from the replay of the page that
+  // holds the line; null until that page is loaded, and in a thread that is
+  // no such fork.
+  const [forkDivider, setForkDivider] = useState<ForkDividerEvent | null>(null);
   // What the next send summarizes first, as the server last read it.
   const [nextSummary, setNextSummary] = useState<NextSummary | null>(null);
   // Whether the stream still owes the next reading (`StreamRuntime`).
@@ -778,6 +782,7 @@ export function useChatMessages(
     setFallbackSuggestion,
     setThreadModels,
     setTokenUsage,
+    setForkDivider,
     setNextSummary,
     setReloadTrigger,
     setHasActiveSubagents,
@@ -936,6 +941,7 @@ export function useChatMessages(
         setMessages([]);
         setThreadModels([]);
         setTokenUsage(null);
+        setForkDivider(null);
         setNextSummary(null);
         nextSummaryOwedRef.current = false;
         setFallbackSuggestion(null);
@@ -3868,6 +3874,7 @@ export function useChatMessages(
     liveMessages: liveView,
     threadId,
     threadModels,
+    forkDivider,
     isLoading,
     marketWatch,
     hasActiveSubagents,

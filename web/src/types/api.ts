@@ -826,34 +826,51 @@ export type ReportSource =
       chart_layers?: PublishedLayer[] | null;
     };
 
-/**
- * Where a fork cuts its source: `through_turn` keeps the turn and its reply,
- * `before_turn` stops short of it and hands the turn's message back as
- * `prefill` for the user to send again.
- */
-export type ThreadForkCut = 'through_turn' | 'before_turn';
-
-/** `metadata.fork` on a thread copied from another. */
+/** `metadata.fork` on a thread made from another, as far as the web reads it. */
 export interface ThreadForkOrigin {
-  kind: string;
   /** The source thread. */
   thread_id: string;
-  cut: ThreadForkCut;
-  turn_index: number;
-  /** The source's checkpoint the copy was cut at. */
-  checkpoint_id: string | null;
-  /** When the copy was made. */
-  at: string;
-  /** The title the fork was made with, which its first message retitles from; not the source's. */
-  title: string | null;
-  /** Finished subagent task runs carried over. */
-  tasks: number;
-  /** Whether the source's scratchpad was copied too. */
-  copy_scratchpad: boolean;
-  /** The user who made the fork. */
-  by: string;
-  /** Set once the fork's first turn carried its scratchpad and notice; absent on older rows. */
-  carried_at?: string | null;
+  /** Set on a fork that borrows its earlier turns from the threads that hold
+   *  them, whose replay draws a divider that names the source; absent on a
+   *  fork that copied its whole history. */
+  borrow?: {
+    /** The first turn the fork holds itself. */
+    turn_base: number;
+    /** The threads it shows turns from, oldest first. */
+    ancestors?: { thread_id: string }[];
+  };
+}
+
+/** A run of borrowed turns and the thread that holds them. */
+export interface ForkSegment {
+  thread_id: string;
+  /** The first and last turn shown from it, inclusive. */
+  first_turn: number;
+  through_turn: number;
+}
+
+/**
+ * What a fork's borrowed history shows: `shown` all of it, `changed` part of
+ * it (an original, or a fork of a fork's earlier source, changed or went
+ * since), `deleted` and `unavailable` none of the original's (it is gone, or
+ * the viewer cannot open it).
+ */
+export type ForkDividerState = 'shown' | 'changed' | 'deleted' | 'unavailable';
+
+/**
+ * The `fork_divider` replay frame: sent once, first on the page holding the
+ * fork's first own turn (or the newest page while it has none). The list
+ * places it by `turn_base`, not by where it arrived.
+ */
+export interface ForkDividerEvent {
+  event: 'fork_divider';
+  /** The thread the fork was made from. */
+  source_thread_id: string;
+  turn_base: number;
+  state: ForkDividerState;
+  /** The last borrowed turn shown; null when none is. */
+  shown_through: number | null;
+  segments: ForkSegment[];
 }
 
 export interface ThreadMetadata {

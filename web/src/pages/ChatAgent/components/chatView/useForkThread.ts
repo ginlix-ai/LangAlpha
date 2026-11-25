@@ -1,21 +1,22 @@
 /**
- * Copy the thread in view up to a turn into a new chat and open it. A
- * `before_turn` copy stops short of the turn and leaves its message in the new
- * chat's composer, unsent, through the same `draftMessage` route state other
- * surfaces hand the composer words with.
+ * Make a new chat that carries on from the thread in view through a reply,
+ * and open it. It runs as the fork mutation (`hooks/forkMutation.ts`), which
+ * the sidebar shows as a row from the click on, since the new chat can take
+ * a while to exist.
  */
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/use-toast';
 import { apiErrorDetailMessage } from '@/api/errors';
 import { queryKeys } from '@/lib/queryKeys';
 import { authSessionCheck } from '@/lib/authResets';
 import { cachedThreadTitle, refreshThreadLists } from '@/lib/threadListCache';
-import type { Thread, ThreadForkCut } from '@/types/api';
+import type { Thread } from '@/types/api';
 import { forkThread } from '../../utils/api';
 import { showNewThread } from '../../session/threadCreation';
+import type { ForkRequest } from '../../hooks/forkMutation';
 
 /**
  * The title a fork asks for: its source's, marked apart from it, since the
@@ -40,47 +41,58 @@ function clip(text: string, max: number): string {
   return points.length > max ? points.slice(0, max).join('') : text;
 }
 
-export function useForkThread({ threadId, open }: {
+export function useForkThread({ threadId, workspaceId, open }: {
   /** The thread in view; null or `__default__` before it exists. */
   threadId: string | null | undefined;
+  /** The thread's workspace, where the fork is made. */
+  workspaceId: string;
   /** Leaves the view for the new chat, as the view's other exits do. */
-  open: (threadId: string, state: { workspaceId: string; draftMessage?: string }) => void;
-}): (turnIndex: number, cut: ThreadForkCut) => Promise<void> {
+  open: (threadId: string, state: { workspaceId: string }) => void;
+}): (turnIndex: number) => void {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // One copy at a time across the transcript: a second button pressed while
-  // the first request runs would open a second chat behind the first.
-  const inFlight = useRef(false);
-  // A view gone by the time the copy lands opens nothing; the fork waits in the lists.
-  const mounted = useRef(false);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-
-  return useCallback(async (turnIndex: number, cut: ThreadForkCut) => {
-    if (!threadId || threadId === '__default__' || inFlight.current) return;
-    inFlight.current = true;
-    // Dropped if the user signs out or switches accounts while the copy runs.
-    const sameSession = authSessionCheck();
-    try {
-      const title = forkTitle(cachedThreadTitle(queryClient, threadId), t);
-      const { thread, turns_copied, prefill } = await forkThread(threadId, { cut, turnIndex, platform: 'web', title });
-      if (!sameSession()) return;
+  const { mutate } = useMutation({
+    mutationKey: queryKeys.threads.fork(),
+    // The lists take the fork before the mutation settles, so the sidebar's
+    // pending row gives way to the real one with nothing missing between.
+    // Resolves null when the user signed out or switched accounts meanwhile,
+    // which shows nothing.
+    mutationFn: async ({ threadId: sourceId, turnIndex, title }: ForkRequest): Promise<Thread | null> => {
+      const sameSession = authSessionCheck();
+      let made;
+      try {
+        made = await forkThread(sourceId, { turnIndex, platform: 'web', title });
+      } catch (err) {
+        if (!sameSession()) return null;
+        throw err;
+      }
+      if (!sameSession()) return null;
+      const { thread, turns_borrowed } = made;
       // The new chat's header reads its own row from here rather than asking.
       queryClient.setQueryData<Thread>(queryKeys.threads.detail(thread.thread_id), thread);
-      showNewThread(queryClient, { ...thread, turn_count: turns_copied });
+      // A fork counts the turns it borrows as its own, as it shows them.
+      showNewThread(queryClient, { ...thread, turn_count: turns_borrowed });
       refreshThreadLists(queryClient, thread.workspace_id);
-      if (!mounted.current) return;
-      open(thread.thread_id, {
-        workspaceId: thread.workspace_id,
-        ...(cut === 'before_turn' && prefill ? { draftMessage: prefill } : {}),
-      });
-    } catch (err) {
-      if (!sameSession()) return;
+      return thread;
+    },
+    // Here rather than on the call, so a refusal is shown even once the view
+    // that asked is gone.
+    onError: (err) => {
       toast({ variant: 'destructive', title: apiErrorDetailMessage(err) ?? t('chat.forkFailed') });
-    } finally {
-      inFlight.current = false;
-    }
-  }, [threadId, open, queryClient, t]);
+    },
+  });
+
+  return useCallback((turnIndex: number) => {
+    // One fork at a time: a second running beside the first would open a
+    // second chat behind it.
+    if (!threadId || threadId === '__default__' || queryClient.isMutating({ mutationKey: queryKeys.threads.fork() }) > 0) return;
+    const title = forkTitle(cachedThreadTitle(queryClient, threadId), t);
+    // The call's own callback does not run once the view is gone, which
+    // leaves the fork waiting in the lists rather than opening it.
+    mutate({ threadId, turnIndex, workspaceId, title }, {
+      onSuccess: (thread) => {
+        if (thread) open(thread.thread_id, { workspaceId: thread.workspace_id });
+      },
+    });
+  }, [threadId, workspaceId, open, queryClient, mutate, t]);
 }
