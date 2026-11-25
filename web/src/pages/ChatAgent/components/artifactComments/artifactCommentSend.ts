@@ -7,10 +7,12 @@
 import type {
   ArtifactComment,
   ArtifactCommentsShown,
+  ArtifactKind,
   ArtifactReading,
   CommentSend,
   ShownArtifactComment,
 } from '@/types/api';
+import { chartTitle, kindOf } from '@/lib/artifactTarget';
 import { oneLine } from './commentModel';
 import { anchorLabel } from './anchorKinds';
 import { basename } from '../../utils/fileRefResolver';
@@ -33,8 +35,9 @@ export function fileNameOf(path: string): string {
   return basename(path) || path;
 }
 
-/** What a comment's file is called: the document's title when it had one, else its name. */
-export function commentFileTitle(comment: Pick<ShownArtifactComment, 'title' | 'path'>): string {
+/** What a comment's file is called: the document's title when it had one, else its name; a chart by its symbol and timeframe. */
+export function commentFileTitle(comment: Pick<ShownArtifactComment, 'title' | 'path' | 'kind'>): string {
+  if (comment.kind === 'chart') return chartTitle(comment.path);
   return comment.title?.trim() || fileNameOf(comment.path);
 }
 
@@ -71,6 +74,7 @@ export function shownFromQueued(
         comment_id: c.comment_id,
         artifact_id: c.artifact_id,
         workspace_id: c.workspace_id,
+        kind: c.kind,
         path: c.path,
         title: c.title,
         number: c.number,
@@ -105,6 +109,7 @@ export function readArtifactCommentsShown(raw: unknown): ArtifactCommentsShown |
       comment_id: commentId,
       artifact_id: artifactId,
       workspace_id: str(c.workspace_id) ?? '',
+      kind: kindOf(c),
       path: str(c.path) ?? '',
       title: str(c.title),
       number: c.number,
@@ -133,8 +138,8 @@ export function commentSendKey(send: Pick<CommentSend, 'ids'> | null | undefined
   return send ? [...send.ids].sort().join(',') : '';
 }
 
-/** Comments grouped by file, in the order the send shows them. */
-export function commentsByFile<T extends { artifact_id: string; path: string; title: string | null }>(
+/** Comments grouped by file, or chart, in the order the send shows them. */
+export function commentsByFile<T extends { artifact_id: string; path: string; title: string | null; kind: ArtifactKind }>(
   comments: readonly T[],
 ): { artifactId: string; title: string; comments: T[] }[] {
   const groups: { artifactId: string; title: string; comments: T[] }[] = [];

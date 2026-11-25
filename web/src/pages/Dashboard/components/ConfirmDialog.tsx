@@ -10,6 +10,8 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel?: string;
+  /** The button that answers no; Cancel unless the question names what staying does. */
+  cancelLabel?: string;
   onConfirm?: () => void | Promise<void>;
   onOpenChange?: (open: boolean) => void;
   /** Open on the confirm button, so Enter confirms as a native confirm() does. */
@@ -22,7 +24,7 @@ interface ConfirmDialogProps {
 /**
  * Reusable confirmation dialog. Uses color tokens only.
  */
-function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onOpenChange, focusConfirm = false, surface = 'elevated' }: ConfirmDialogProps) {
+function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, onConfirm, onOpenChange, focusConfirm = false, surface = 'elevated' }: ConfirmDialogProps) {
   const { t } = useTranslation();
   const confirmRef = React.useRef<HTMLButtonElement>(null);
   // Radix hands focus back to a Dialog.Trigger, and this dialog opens from
@@ -66,7 +68,7 @@ function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onOpenCh
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--color-border-muted)'}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
           >
-            {t('common.cancel')}
+            {cancelLabel || t('common.cancel')}
           </button>
           <button
             ref={confirmRef}

@@ -9,8 +9,12 @@ import type { CommentInWorkspace } from './artifactCommentSend';
  * provides it (`useChatCommentSends`); a view with none posts each send itself.
  */
 export interface ArtifactCommentSender {
-  /** The thread beside the panel, if it is a real one; null in a view with no chat. */
-  besideThreadId: string | null;
+  /**
+   * Where the chat beside the panel sends: its thread, or, while it is a new
+   * chat with none yet, a new thread in its workspace, which its first message
+   * starts. Null in a view with no chat.
+   */
+  beside: CommentTarget | null;
   /** A turn runs on the thread beside, so a send there steers it. */
   running: boolean;
   /**
@@ -18,17 +22,13 @@ export interface ArtifactCommentSender {
    * through the chat, as the owner's own message, so it steers a running turn
    * and a refusal shows there; the composer's draft and its queued batch stay
    * put, and the chat marks the comments' send as it goes
-   * ({@link chatCarries}). Anywhere else it is posted with
+   * (`sameTarget`); a send to a new thread in a new chat's workspace
+   * starts that chat's thread. Anywhere else it is posted with
    * {@link postArtifactComments}. Either way it resolves once the server has
    * them, with the thread they went to, and rejects with a
    * `CommentSendRefused` saying why they did not go.
    */
   send: (comments: readonly CommentInWorkspace[], to: CommentTarget) => Promise<{ threadId: string }>;
-}
-
-/** A send to `to` is the chat's own, made beside the panel, which marks its comments itself. */
-export function chatCarries(sender: Pick<ArtifactCommentSender, 'besideThreadId'>, to: CommentTarget): boolean {
-  return sender.besideThreadId !== null && 'threadId' in to && to.threadId === sender.besideThreadId;
 }
 
 export const ArtifactCommentSendContext = createContext<ArtifactCommentSender | null>(null);
@@ -40,7 +40,7 @@ export function useArtifactCommentSender(): ArtifactCommentSender {
   const reading = readingFor(readArtifactAnswers(usePreferences().preferences), true);
   // Read by every comment card, so one object per reading rather than per render.
   const posting = useMemo<ArtifactCommentSender>(() => ({
-    besideThreadId: null,
+    beside: null,
     running: false,
     send: (comments, to) => postArtifactComments(comments.map((c) => c.comment_id), to, { reading }),
   }), [reading]);

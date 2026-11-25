@@ -13,7 +13,6 @@ import type {
 } from '@/types/chat';
 import type { ArtifactCommentsShown } from '@/types/api';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
-import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
 import type { AttachmentMeta } from '../../utils/fileUpload';
 
 // Re-export types for consumers
@@ -32,10 +31,9 @@ let _idSeq = 0;
 export function createUserMessage(
   message: string,
   turnIndex: number | undefined,
-  { attachments, widgetSnapshots, chartSelections, artifactComments, id }: {
+  { attachments, widgetSnapshots, artifactComments, id }: {
     attachments?: AttachmentMeta[] | null;
     widgetSnapshots?: WidgetContextSnapshot[] | null;
-    chartSelections?: ChartSelectionSnapshot[] | null;
     artifactComments?: ArtifactCommentsShown | null;
     id?: string;
   } = {},
@@ -57,9 +55,6 @@ export function createUserMessage(
   }
   if (widgetSnapshots && widgetSnapshots.length > 0) {
     msg.widgetSnapshots = widgetSnapshots;
-  }
-  if (chartSelections && chartSelections.length > 0) {
-    msg.chartSelections = chartSelections;
   }
   if (artifactComments && artifactComments.comments.length > 0) {
     msg.artifactComments = artifactComments;

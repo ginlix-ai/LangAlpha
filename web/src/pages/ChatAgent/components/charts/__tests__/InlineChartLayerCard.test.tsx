@@ -7,7 +7,7 @@ import { MessageActionsProvider } from '../../messageList/MessageActionsContext'
 import {
   resetLayerViewForTesting, setLayerHidden, useHiddenLayers, useShowLayersRequest,
 } from '@/pages/MarketView/stores/layerViewStore';
-import { chartKeyFor } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
 import type { ChartLayersCard } from '../../chartLayerGrouping';
 import { InlineChartLayerCard } from '../InlineChartLayerCard';

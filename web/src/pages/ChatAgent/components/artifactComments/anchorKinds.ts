@@ -4,18 +4,32 @@
  */
 import type { TFunction } from 'i18next';
 import type {
-  AreaAnchor, ArtifactCommentAnchor, ArtifactCommentRegionBox, BlockAnchor, CellsAnchor, PartEntry, RegionAnchor,
+  AreaAnchor, ArtifactCommentAnchor, ArtifactCommentAreaElement, ArtifactCommentCellRange, ArtifactCommentRegionBox, BlockAnchor,
+  CellsAnchor, ChartAnchor, ChartMark, PartEntry, RegionAnchor,
 } from '@/types/api';
+import { markKey } from '../viewers/comments/chart/chartMarks';
+import { markHeading, markLabel } from './chartMarkLabels';
 import { oneLine } from './commentModel';
 
 type Kind = ArtifactCommentAnchor['kind'];
 type Heading = { label: string; quote: string | null };
 
-interface Facets<A extends ArtifactCommentAnchor> {
+/** The entry each kind that lists its parts lists them by. */
+interface Parts {
+  area: ArtifactCommentAreaElement;
+  cells: ArtifactCommentCellRange;
+  region: ArtifactCommentRegionBox;
+  chart: ChartMark;
+}
+type PartOf<K extends Kind> = K extends keyof Parts ? Parts[K] : never;
+
+interface Facets<A extends ArtifactCommentAnchor, P extends PartEntry = PartEntry> {
   /** What names the spot in a line: its label, or where cells are. */
   place(anchor: A): string | undefined;
   /** The entries it lists its parts by, in its order, when it lists every part it holds; else null. */
-  partEntries(anchor: A): PartEntry[] | null;
+  partEntries(anchor: A): P[] | null;
+  /** What tells one of its parts from another, whatever a part has gained since it was listed (a picture). */
+  partKey(part: P): string;
   /** Each part by a short name, for a spot that is a list of parts. */
   partLabels(anchor: A, t: TFunction): string[] | null;
   /** A new comment's spot as its box names it, and what it holds under the name. */
@@ -60,6 +74,12 @@ function regionPhrase(t: TFunction, a: RegionAnchor): string {
   return box.page ? t('pageViewer:comments.onBoxOnPage', { page: box.page }) : t('pageViewer:comments.onBox');
 }
 
+/** Marks on a chart: one by its heading, several by how many. */
+function chartPhrase(t: TFunction, a: ChartAnchor): string {
+  const [mark] = a.marks;
+  return a.marks.length === 1 && mark ? markHeading(t, mark) : t('pageViewer:comments.partsTitle', { count: a.marks.length });
+}
+
 const onLabel = (t: TFunction, label: string) => t('pageViewer:comments.onLabel', { label });
 const onElement = (t: TFunction) => t('pageViewer:comments.onElement');
 
@@ -72,19 +92,22 @@ function byLabel<A extends { label?: string }>(unnamed: (t: TFunction, anchor: A
   };
 }
 
+/** For a kind that lists no parts, whose parts are never told apart. */
+const UNLISTED = { partEntries: () => null, partKey: () => '' };
+
 const KINDS = {
   element: {
     ...byLabel(onElement),
-    partEntries: () => null,
+    ...UNLISTED,
     partLabels: (a) => [a.label ?? a.quote ?? a.path ?? ''],
     outline: 'one',
   },
-  named: { ...byLabel(onElement), partEntries: () => null, partLabels: () => null, outline: 'words' },
+  named: { ...byLabel(onElement), ...UNLISTED, partLabels: () => null, outline: 'words' },
   // Words are named by the place they are in (the tile's label, else the
   // nearest heading, or a PDF's page) and quoted: they are what the owner means.
   text: {
     place: (a) => a.label,
-    partEntries: () => null,
+    ...UNLISTED,
     partLabels: () => null,
     heading: (t, a) => ({
       label: a.label ? onLabel(t, a.label) : a.page ? t('pageViewer:comments.onPage', { page: a.page }) : t('pageViewer:comments.onText'),
@@ -95,7 +118,7 @@ const KINDS = {
   },
   block: {
     ...byLabel((t, a: BlockAnchor) => onLines(t, a.lines)),
-    partEntries: () => null,
+    ...UNLISTED,
     partLabels: (a) => [blockName(a)],
     outline: 'one',
   },
@@ -103,6 +126,7 @@ const KINDS = {
   area: {
     ...byLabel<AreaAnchor>(areaTitle),
     partEntries: (a) => (a.elements.length >= 2 && a.count === a.elements.length ? a.elements : null),
+    partKey: (e) => JSON.stringify([e.path, e.lines, e.quote]),
     partLabels: (a) => a.elements.map((e) => (e.lines ? blockName(e) : (e.label ?? e.quote ?? e.path ?? ''))),
     heading: (t, a) => ({
       label: listsEvery(a) ? t('pageViewer:comments.partsTitle', { count: a.elements.length }) : areaTitle(t, a),
@@ -116,6 +140,7 @@ const KINDS = {
   cells: {
     place: cellsPlace,
     partEntries: (a) => a.ranges,
+    partKey: (r) => r.range,
     partLabels: (a) => a.ranges.map((r) => (r.values ? `${r.range} · ${oneLine(r.values, 24)}` : r.range)),
     heading: (t, a) => ({ label: onLabel(t, cellsPlace(a)), quote: a.ranges[0]?.values ?? null }),
     phrase: (t, a) => onLabel(t, oneLine(cellsPlace(a), 60)),
@@ -125,6 +150,7 @@ const KINDS = {
   region: {
     place: () => undefined,
     partEntries: (a) => a.boxes,
+    partKey: (b) => `${b.page ?? ''}|${b.x}|${b.y}|${b.w}|${b.h}`,
     partLabels: (a, t) => a.boxes.map((b, i) => {
       const n = i + 1;
       if (b.w === 0) return t('pageViewer:comments.partPoint', { n });
@@ -134,7 +160,19 @@ const KINDS = {
     phrase: regionPhrase,
     outline: 'list',
   },
-} satisfies { [K in Kind]: Facets<Extract<ArtifactCommentAnchor, { kind: K }>> };
+  // Marks on a chart are named by where they are, which a line has room
+  // for, and a shape by its layer and its own name; a region's picture
+  // shows the rest.
+  chart: {
+    place: () => undefined,
+    partEntries: (a) => a.marks,
+    partKey: markKey,
+    partLabels: (a, t) => a.marks.map((m) => markLabel(t, m)),
+    heading: (t, a) => ({ label: chartPhrase(t, a), quote: null }),
+    phrase: chartPhrase,
+    outline: 'list',
+  },
+} satisfies { [K in Kind]: Facets<Extract<ArtifactCommentAnchor, { kind: K }>, PartOf<K>> };
 
 function facets<A extends ArtifactCommentAnchor>(anchor: A): Facets<A> {
   return KINDS[anchor.kind] as unknown as Facets<A>;
@@ -146,6 +184,11 @@ export function anchorLabel(anchor: ArtifactCommentAnchor): string | undefined {
 
 export function partEntries(anchor: ArtifactCommentAnchor): PartEntry[] | null {
   return facets(anchor).partEntries(anchor);
+}
+
+/** What tells one part `anchor` lists from another, as its kind tells them apart. */
+export function partKey(anchor: ArtifactCommentAnchor, part: PartEntry): string {
+  return facets(anchor).partKey(part);
 }
 
 /**

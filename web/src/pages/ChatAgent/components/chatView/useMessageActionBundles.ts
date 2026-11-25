@@ -5,6 +5,7 @@ import type { ChatInputHandle } from '@/components/ui/chat-input';
 import type { MessageActions } from '../messageList/MessageActionsContext';
 import type { EditDraftStore } from '../../hooks/utils/editDrafts';
 import type { ModelOptions } from './types';
+import type { ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
 
 type Action<K extends keyof MessageActions> = NonNullable<MessageActions[K]>;
 
@@ -21,7 +22,8 @@ export interface MessageActionSources {
   onOpenSources: Action<'onOpenSources'>;
   onToolCallDetailClick: Action<'onToolCallDetailClick'>;
   onOpenChart: Action<'onOpenChart'>;
-  onOpenArtifactComment: Action<'onOpenArtifactComment'>;
+  /** Opens a comment of either kind, a file's in the panel and a chart's in its tab. */
+  onOpenArtifactComment: (comment: ArtifactCommentRef) => void;
   onOpenSubagentTask: Action<'onOpenSubagentTask'>;
   onOpenDispatcher: Action<'onOpenDispatcher'>;
   onAnswerQuestion: Action<'onAnswerQuestion'>;
@@ -76,6 +78,10 @@ export function useMessageActionBundles(src: MessageActionSources): {
   const stableToolCallDetail = useStableHandler(src.onToolCallDetailClick);
   const stableOpenChart = useStableHandler(src.onOpenChart);
   const stableOpenArtifactComment = useStableHandler(src.onOpenArtifactComment);
+  const openArtifactComment = useMemo(
+    () => ({ file: stableOpenArtifactComment, chart: stableOpenArtifactComment }),
+    [stableOpenArtifactComment],
+  );
   const stableOpenSubagentTask = useStableHandler(src.onOpenSubagentTask);
   const stableOpenDispatcher = useStableHandler(src.onOpenDispatcher);
   const stableAnswerQuestion = useStableHandler(src.onAnswerQuestion);
@@ -118,7 +124,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
     onOpenSources: stableOpenSources,
     onToolCallDetailClick: stableToolCallDetail,
     onOpenChart: stableOpenChart,
-    onOpenArtifactComment: stableOpenArtifactComment,
+    onOpenArtifactComment: openArtifactComment,
     onOpenSubagentTask: stableOpenSubagentTask,
     onOpenDispatcher: stableOpenDispatcher,
     onAnswerQuestion: stableAnswerQuestion,
@@ -147,7 +153,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
     feedbackLoading: src.feedbackLoading,
   }), [
     stableOpenFile, stableDownloadFile, stablePublishFile, stableDownloadKeyFor, stableRevealFiles, stableRevealMessage, stableOpenSources, stableToolCallDetail,
-    stableOpenChart, stableOpenArtifactComment, stableOpenSubagentTask, stableOpenDispatcher, stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
+    stableOpenChart, openArtifactComment, stableOpenSubagentTask, stableOpenDispatcher, stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
     stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
     stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,

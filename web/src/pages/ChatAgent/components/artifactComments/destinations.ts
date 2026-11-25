@@ -24,6 +24,23 @@ export interface DestinationChoice {
   isDefault: boolean;
 }
 
+/**
+ * Whether `a` and `b` are one destination: one thread, or a new thread in one
+ * workspace. A send to the chat beside (`ArtifactCommentSender.beside`) is the
+ * chat's own, which marks its comments itself.
+ */
+export function sameTarget(a: CommentTarget | null, b: CommentTarget): boolean {
+  if (!a) return false;
+  return 'threadId' in a
+    ? 'threadId' in b && a.threadId === b.threadId
+    : 'newThreadIn' in b && a.newThreadIn === b.newThreadIn;
+}
+
+/** The thread a destination names; null for a new one. */
+export function threadOf(target: CommentTarget | null): string | null {
+  return target && 'threadId' in target ? target.threadId : null;
+}
+
 /** A target's identity, to tell a pick from the default and to dedupe the menu. */
 export function targetKey(target: CommentTarget): string {
   return 'threadId' in target ? `thread:${target.threadId}` : 'new';
@@ -81,13 +98,16 @@ export function defaultsTo(fallback: CommentTarget | null, threadId: string | un
 
 /**
  * The menus and routes from the server's answer for one file, read beside
- * `besideThreadId`. `destinations` undefined is the wait for that answer.
+ * the chat's destination (`ArtifactCommentSender.beside`): its thread, or a
+ * new one in its workspace while it is a new chat. `destinations` undefined
+ * is the wait for that answer.
  */
 export function commentDestinations(
   t: TFunction,
   destinations: ArtifactDestinations | undefined,
-  besideThreadId: string | null,
+  beside: CommentTarget | null,
 ): CommentDestinations {
+  const besideThreadId = threadOf(beside);
   const fallback: CommentTarget | null = !destinations
     ? null
     : destinations.default.thread
@@ -104,7 +124,10 @@ export function commentDestinations(
       if (thread?.usable) add({ threadId: thread.thread_id }, threadLabel(t, thread, besideThreadId), isDefault);
     };
     if (destinations.default.thread) addThread(destinations.default.thread, true);
-    else add({ newThreadIn: destinations.default.workspace_id }, t('pageViewer:comments.newThread'), true);
+    else {
+      const fresh = { newThreadIn: destinations.default.workspace_id };
+      add(fresh, t(sameTarget(beside, fresh) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newThread'), true);
+    }
     addThread(destinations.beside);
     addThread(destinations.bound);
   }

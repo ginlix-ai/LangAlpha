@@ -1,3 +1,6 @@
+import { kindOf } from '@/lib/artifactTarget';
+import type { ArtifactKind } from '@/types/api';
+
 /**
  * What `reply_to_comment` leaves on its result (its `artifact_comment` tool
  * artifact, the snake-case fields of the same names): the comment answered,
@@ -8,7 +11,8 @@
 export interface ArtifactCommentReply {
   artifactId: string;
   workspaceId: string;
-  /** The file, workspace-relative. */
+  kind: ArtifactKind;
+  /** The file, workspace-relative; a chart's id for a chart. */
   path: string;
   commentId: string;
   number: number;
@@ -18,14 +22,18 @@ export interface ArtifactCommentReply {
   clipped: boolean;
 }
 
-/** A comment on a file, as far as opening the file on it needs. */
+/** A comment on a file or a chart, as far as opening it on the comment needs. */
 export interface ArtifactCommentRef {
   artifactId: string;
   workspaceId: string;
-  /** Workspace-relative. */
+  kind: ArtifactKind;
+  /** Workspace-relative; a chart's id for a chart. */
   path: string;
   commentId: string;
 }
+
+/** How a view opens a comment, one opener per kind; a kind it has no place to open is left out. */
+export type ArtifactCommentOpeners = Partial<Record<ArtifactKind, (comment: ArtifactCommentRef) => void>>;
 
 /** The reply a tool artifact names, or null when it is not one. */
 export function readArtifactCommentReply(artifact: unknown): ArtifactCommentReply | null {
@@ -38,6 +46,7 @@ export function readArtifactCommentReply(artifact: unknown): ArtifactCommentRepl
   return {
     artifactId,
     workspaceId: typeof a.workspace_id === 'string' ? a.workspace_id : '',
+    kind: kindOf(a),
     path: typeof a.path === 'string' ? a.path : '',
     commentId,
     number,

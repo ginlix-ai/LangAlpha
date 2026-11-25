@@ -10,15 +10,17 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { fetchArtifactComments } from '@/hooks/useArtifact';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useLatestRef } from '@/hooks/useLatestRef';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { ALL, refreshArtifactComments, type ArtifactRef } from '@/lib/artifactCache';
 import { readArtifactAnswers, readingFor } from '@/lib/artifactPreferences';
 import type { ArtifactCommentsShown } from '@/types/api';
 import { carriedIds, type CommentSendListener } from '../../hooks/utils/requestKey';
-import { CommentSendRefused, postArtifactComments } from '../../utils/api/artifacts';
+import { CommentSendRefused, postArtifactComments, type CommentTarget } from '../../utils/api/artifacts';
 import { shownFromQueued, type CommentInWorkspace } from './artifactCommentSend';
 import { CommentSendsContext, useCommentSendStore, type CommentSendStore } from './commentSendStore';
-import { ArtifactCommentSendContext, chatCarries, type ArtifactCommentSender } from './sendContext';
+import { sameTarget } from './destinations';
+import { ArtifactCommentSendContext, type ArtifactCommentSender } from './sendContext';
 import { useQueuedCommentDeck, type QueuedCommentDeck } from './useQueuedCommentDeck';
 
 export interface ChatCommentSends {
@@ -33,19 +35,29 @@ export interface ChatCommentSends {
 
 /** How the chat answered for a send of comments a file view handed it. */
 type ChatAnswer = { kind: 'taken' } | { kind: 'refused'; reason: string } | { kind: 'dropped' };
+/** What a wait reads once the chat is gone. */
+const GONE = Symbol('gone');
+/** A chat that never goes, before its mount has made the one that does. */
+const NEVER = new Promise<typeof GONE>(() => {});
 type Waiter = (ids: readonly string[], outcome: Exclude<Parameters<CommentSendListener>[1], 'returned'>, reason: string) => void;
 
-export function useChatCommentSends({ threadId, running, watch, chatCovered, sendToChat }: {
+export function useChatCommentSends({ threadId, workspaceId, running, watch, chatCovered, sendToChat }: {
   /** The thread beside the panel, if it is a real one. */
   threadId: string | undefined;
+  /** The workspace the chat sends in, where a new chat starts its thread. */
+  workspaceId: string | null | undefined;
   /** A turn runs on it. */
   running: boolean;
   /** The chat's account of each send's comments (`watchCommentSends`). */
   watch: (listener: CommentSendListener) => () => void;
   /** Whether the file panel covers the chat now, read as a send goes. */
   chatCovered: () => boolean;
-  /** Sends comments as the owner's own message in this chat, with no note. */
-  sendToChat: (artifactComments: ArtifactCommentsShown) => void;
+  /**
+   * Sends comments as the owner's own message in this chat, with no note:
+   * the thread the send goes to once its request is taken, or null for one
+   * that never went out (`whenTaken`).
+   */
+  sendToChat: (artifactComments: ArtifactCommentsShown) => Promise<string | null>;
 }): ChatCommentSends {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -96,27 +108,54 @@ export function useChatCommentSends({ threadId, running, watch, chatCovered, sen
   // owner picked one place for answers whatever is on screen.
   const take = useStableHandler((note: string) => deck.take(note, readingFor(answers, chatCovered())));
 
+  const beside = useMemo<CommentTarget | null>(
+    () => (threadId ? { threadId } : workspaceId ? { newThreadIn: workspaceId } : null),
+    [threadId, workspaceId],
+  );
+
+  // Settled when this chat goes (the market page remounts its chat on a
+  // symbol change), so no send waits on a chat nobody hears any more. Made
+  // per mount, which a strict-mode remount repeats.
+  const gone = useRef(NEVER);
+  useEffect(() => {
+    let leave!: () => void;
+    gone.current = new Promise<typeof GONE>((resolve) => { leave = () => resolve(GONE); });
+    return () => leave();
+  }, []);
+  // Sends waiting for a new chat's first send to make its thread: told the
+  // thread once named, or null once the send ends without one.
+  const naming = useRef(new Set<(made: string | null) => void>());
+  useEffect(() => {
+    if (!threadId && running) return;
+    for (const tell of naming.current) tell(threadId ?? null);
+    naming.current.clear();
+  }, [threadId, running]);
+  // Read after a wait, by when a new thread's id is the chat's.
+  const latestSendToChat = useLatestRef(sendToChat);
+
   // A file viewer's "Send now": its comments alone, with no note, leaving the
-  // draft and the queued batch where they are. To this chat's thread it is
-  // this chat's send, so it steers a running turn and a refusal shows here,
-  // and the chat says at once whether it took the comments. Anywhere else it
-  // goes out on its own and nobody here reads its stream, so the person reads
-  // the file.
+  // draft and the queued batch where they are. To this chat's thread, or to a
+  // new thread in a new chat's workspace, it is this chat's send, so it steers
+  // a running turn or starts the chat's thread, a refusal shows here, and the
+  // chat soon says whether it took the comments. Anywhere else it goes out on
+  // its own and nobody here reads its stream, so the person reads the file.
   const send = useStableHandler<Parameters<ArtifactCommentSender['send']>, ReturnType<ArtifactCommentSender['send']>>(
     async (comments, to) => {
-      if (!threadId || !chatCarries({ besideThreadId: threadId }, to)) {
+      if (!sameTarget(beside, to)) {
         return postArtifactComments(comments.map((c) => c.comment_id), to, { reading: readingFor(answers, true) });
       }
+      const leaving = gone.current;
+      // A new chat whose first send is still making its thread: these join
+      // that thread once it is made, as a steer, rather than start another.
+      if (!threadId && running) {
+        const made = await Promise.race([new Promise<string | null>((tell) => naming.current.add(tell)), leaving]);
+        if (!made || made === GONE) throw new CommentSendRefused('The comments were not sent.', null, null);
+      }
       const left = new Set(comments.map((c) => c.comment_id));
-      let carried = false;
       let answered!: (answer: ChatAnswer) => void;
       const answer = new Promise<ChatAnswer>((resolve) => { answered = resolve; });
       const waiter: Waiter = (ids, outcome, reason) => {
-        if (!ids.some((id) => left.has(id))) return;
-        if (outcome === 'began') {
-          carried = true;
-          return;
-        }
+        if (outcome === 'began' || !ids.some((id) => left.has(id))) return;
         if (outcome === 'accepted') {
           for (const id of ids) left.delete(id);
           if (left.size > 0) return;
@@ -125,24 +164,32 @@ export function useChatCommentSends({ threadId, running, watch, chatCovered, sen
         answered(outcome === 'accepted' ? { kind: 'taken' } : outcome === 'dropped' ? { kind: 'dropped' } : { kind: 'refused', reason });
       };
       waiters.current.add(waiter);
-      sendToChat(shownFromQueued('', readingFor(answers, chatCovered()), comments));
-      if (!carried) {
+      // A new chat's send is taken once the server names its thread.
+      const shown = shownFromQueued('', readingFor(answers, chatCovered()), comments);
+      const went = await Promise.race([latestSendToChat.current(shown), leaving]);
+      // Gone before the chat said: the comments' rows say where they are.
+      if (went === GONE) {
         waiters.current.delete(waiter);
-        throw new CommentSendRefused('The comments were not sent.', null, null);
+        return sentByRows(queryClient, comments, null);
       }
-      const outcome = await answer;
-      if (outcome.kind === 'taken') return { threadId };
+      if (!went) {
+        waiters.current.delete(waiter);
+        // A refusal the chat worded can come before its send gives up.
+        const said = await Promise.race([answer, Promise.resolve(null)]);
+        throw new CommentSendRefused(said?.kind === 'refused' ? said.reason : 'The comments were not sent.', null, said?.kind === 'refused' ? 409 : null);
+      }
+      // Once the chat is gone nobody answers: the comments' rows say where they are.
+      const outcome = await Promise.race([answer, leaving.then((): ChatAnswer => ({ kind: 'dropped' }))]);
+      waiters.current.delete(waiter);
+      if (outcome.kind === 'taken') return { threadId: went };
       // The chat's own words for it, which the card says after "Not sent."
       if (outcome.kind === 'refused') throw new CommentSendRefused(outcome.reason, null, 409);
-      return sentByRows(queryClient, comments, threadId);
+      return sentByRows(queryClient, comments, went);
     },
   );
   // Read by every comment card in the panel, so a fresh object per render
   // would redraw them all.
-  const sender = useMemo<ArtifactCommentSender>(
-    () => ({ besideThreadId: threadId ?? null, running, send }),
-    [threadId, running, send],
-  );
+  const sender = useMemo<ArtifactCommentSender>(() => ({ beside, running, send }), [beside, running, send]);
 
   // A turn's end puts back what it never read and leaves the agent's replies
   // and resolves, and unread counts, on files this view may not know of.
@@ -173,13 +220,24 @@ export function ChatCommentSendsProvider({ value, children }: { value: ChatComme
 async function sentByRows(
   queryClient: QueryClient,
   comments: readonly CommentInWorkspace[],
-  threadId: string,
+  threadId: string | null,
 ): Promise<{ threadId: string }> {
   const files = [...new Set(comments.map((c) => c.artifact_id))];
   const lists = await Promise.all(files.map((id) => fetchArtifactComments(queryClient, id))).catch(() => null);
   const rows = new Map((lists ?? []).flat().map((c) => [c.comment_id, c]));
-  if (lists && comments.every((c) => rows.get(c.comment_id)?.delivery === 'sent')) {
-    return { threadId: rows.get(comments[0].comment_id)?.thread_id ?? threadId };
-  }
+  const went = rows.get(comments[0].comment_id)?.thread_id ?? threadId;
+  if (lists && went && comments.every((c) => rows.get(c.comment_id)?.delivery === 'sent')) return { threadId: went };
   throw new CommentSendRefused('The comments were not sent.', null, null);
+}
+
+/**
+ * A chat send of comments as `sendToChat` answers for it: `send` hands the
+ * chat a callback its request calls once taken, with the thread it goes to;
+ * a send that ends without taking one (nothing to send, a stop during a new
+ * thread's create) answers null.
+ */
+export function whenTaken(send: (onTaken: (threadId: string) => void) => Promise<unknown> | void): Promise<string | null> {
+  return new Promise((resolve) => {
+    Promise.resolve(send(resolve)).then(() => resolve(null), () => resolve(null));
+  });
 }

@@ -90,6 +90,7 @@ function artifact(overrides: Partial<Artifact> = {}): Artifact {
     code: CODE,
     url: `/a/${CODE}`,
     workspace_id: WS,
+    kind: 'file',
     path: ENTRY,
     name: 'report.html',
     shared: false,
@@ -365,7 +366,7 @@ describe('PublishDialog', () => {
       expect(screen.getByText('Private')).toBeInTheDocument();
       // One get-or-create, and no read by path beside it.
       expect(mockEnsure).toHaveBeenCalledTimes(1);
-      expect(mockEnsure).toHaveBeenCalledWith(WS, ENTRY);
+      expect(mockEnsure).toHaveBeenCalledWith(WS, { kind: 'file', path: ENTRY });
       expect(mockFind).not.toHaveBeenCalled();
 
       expect(await screen.findByText('Publishing shares 2 files')).toBeInTheDocument();
@@ -445,7 +446,7 @@ describe('PublishDialog', () => {
 
     expect(await screen.findByText('Publishing shares 1 file')).toBeInTheDocument();
     expect(mockEnsure).toHaveBeenCalledTimes(1);
-    expect(mockEnsure).toHaveBeenCalledWith(WS, ENTRY);
+    expect(mockEnsure).toHaveBeenCalledWith(WS, { kind: 'file', path: ENTRY });
     expect(screen.getByText(HREF)).toBeInTheDocument();
   });
 

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ViewerComments, type ViewerCommentsTarget } from '../ViewerComments';
 import { scrollParent } from '../scrollParent';
-import { imageSource } from './regionPictures';
+import { imageSource, regionPictures } from './regionPictures';
 import { regionSpots, type RegionSurfaces } from './regionSpots';
 
 /** The image as the one surface boxes and points are drawn on: its box is the image's, at any size it is shown. */
@@ -34,7 +34,7 @@ export function ImageFile({ src, alt, comments, onOpen }: {
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   const scroller = useMemo(() => frame && scrollParent(frame), [frame]);
   const strategy = useMemo(() => (frame ? regionSpots(imageSurfaces(frame)) : null), [frame]);
-  const pictures = useMemo(() => (img ? imageSource(img, src) : null), [img, src]);
+  const pictures = useMemo(() => (img ? regionPictures(imageSource(img, src)) : null), [img, src]);
 
   return (
     <>

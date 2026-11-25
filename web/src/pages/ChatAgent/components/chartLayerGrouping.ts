@@ -17,7 +17,7 @@
  */
 
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
-import { chartKeyFor, chartKeyParts, type ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor, chartKeyParts, type ChartKey } from '@/lib/bars/chartId';
 import { displaySpelling } from '@/lib/bars/exchanges';
 import type { MessageProvenance } from '@/types/chat';
 import { isReportRow } from './messageList/messagePredicates';

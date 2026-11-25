@@ -27,6 +27,7 @@ import {
   sharedSeq,
 } from '@/hooks/useArtifact';
 import { usePageScout } from './viewers/html/usePageScout';
+import { targetFor } from '@/lib/artifactTarget';
 import type { ArtifactStatus, ArtifactVersion, ShareFileEntry } from '@/types/api';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { basename, dirname } from '../utils/fileRefResolver';
@@ -317,7 +318,7 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   const locale = useLocale();
   const root = useWorkspaceFolders()?.rootDir;
   // A file never recorded has no status to review, so this makes its private record.
-  const owned = useOwnedArtifact(workspaceId, path, { root });
+  const owned = useOwnedArtifact(workspaceId, targetFor('file', path, root));
   const artifact = owned.record ?? null;
   const latestSeq = artifact?.latest_seq ?? 0;
   // What the dialog says of visitors is said of their version, not the newest.

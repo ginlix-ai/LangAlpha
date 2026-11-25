@@ -24,6 +24,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { markThreadArchived } from '@/lib/deletedThreads';
 import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
 import { PING_STREAM_BEAT_MS } from '@/lib/streamSilence';
+import { kindOf } from '@/lib/artifactKind';
 import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
 import { createEmitter } from '@/lib/emitter';
@@ -489,7 +490,13 @@ function readArtifactEvent(raw: Record<string, unknown>): ArtifactCommentEvent |
   const { type, artifact_id: artifactId } = raw;
   if (typeof artifactId !== 'string' || !artifactId) return null;
   const str = (value: unknown) => (typeof value === 'string' ? value : '');
-  const common = { v: 1 as const, artifact_id: artifactId, workspace_id: str(raw.workspace_id), path: str(raw.path) };
+  const common = {
+    v: 1 as const,
+    artifact_id: artifactId,
+    workspace_id: str(raw.workspace_id),
+    kind: kindOf(raw),
+    path: str(raw.path),
+  };
   if (type === 'artifact_comment') {
     return {
       ...common,

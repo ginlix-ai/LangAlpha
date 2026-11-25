@@ -1,7 +1,5 @@
 import type { ReadyAttachment } from '@/components/ui/chat-input.types';
-import { selectionPriceBounds } from './selectionBounds';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
-import type { ChartSelection } from '@/pages/MarketView/stores/chartSelectionStore';
 
 /** An image by its MIME type, the server's `image` tag, or its name, for a file the browser could not type. */
 export function isImageFile({ type = '', name = '' }: { type?: string; name?: string }): boolean {
@@ -143,98 +141,6 @@ export function widgetSnapshotsToContexts(
         description: s.label,
       });
     }
-  }
-  return out;
-}
-
-type ChartSelectionCtxItem = {
-  type: 'chart_selection';
-  symbol: string;
-  timeframe: string;
-  selection_type: 'region' | 'price_level';
-  time_start?: string;
-  time_end?: string;
-  price_low: number;
-  price_high: number;
-  bars: ChartSelection['bars'];
-  bars_truncated: boolean;
-  label?: string;
-};
-
-type ChartSelectionImageItem = {
-  type: 'image';
-  data: string;
-  description: string;
-};
-
-/**
- * A selection time as the agent's structured block prints it: the exchange's
- * wall clock with no zone. The chart stamps that wall clock as UTC, so the `Z`
- * on the ISO string is false and a model that honored it would shift the time.
- */
-function chartTimeText(iso: string, timeframe: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const text = d.toISOString();
-  return timeframe === '1day' ? text.slice(0, 10) : `${text.slice(0, 10)} ${text.slice(11, 16)}`;
-}
-
-/** Caption for a region's cropped screenshot — the structured item holds the exact values. */
-export function describeSelectionImage(sel: ChartSelection): string {
-  const range = selectionPriceBounds(sel, 'en-US');
-  const span =
-    sel.timeStart && sel.timeEnd
-      ? `, ${chartTimeText(sel.timeStart, sel.timeframe)} → ${chartTimeText(sel.timeEnd, sel.timeframe)}`
-      : '';
-  return `Cropped chart image of ${sel.symbol} ${sel.timeframe} (price ${range}${span})`;
-}
-
-/**
- * Map a user's chart selection to `additional_context` items.
- *
- * Emits one structured `chart_selection` item (bounds + per-candle OHLCV the
- * agent can analyze and draw back onto the exact region). A region selection
- * with a cropped screenshot also emits a sibling `{type:"image", ...}` item
- * that rides the existing MultimodalContext channel — a vision-capable model
- * sees the region directly, others fall back to the bars via the backend
- * modality gate. The structured bars stay the primary signal.
- *
- * Pass `liveSymbol`/`liveTimeframe` to drop a stale selection (the chart was
- * switched to a different instance after the user drew it).
- */
-export function chartSelectionToContext(
-  sel: ChartSelection,
-  live?: { symbol?: string | null; timeframe?: string | null },
-): Array<ChartSelectionCtxItem | ChartSelectionImageItem> {
-  if (live) {
-    const liveSym = (live.symbol ?? '').toUpperCase();
-    const liveTf = live.timeframe ?? '';
-    if ((liveSym && liveSym !== sel.symbol) || (liveTf && liveTf !== sel.timeframe)) {
-      return [];
-    }
-  }
-
-  const comment = sel.comment?.trim();
-  const item: ChartSelectionCtxItem = {
-    type: 'chart_selection',
-    symbol: sel.symbol,
-    timeframe: sel.timeframe,
-    selection_type: sel.selectionType,
-    price_low: sel.priceLow,
-    price_high: sel.priceHigh,
-    bars: sel.bars,
-    bars_truncated: sel.barsTruncated,
-  };
-  if (sel.selectionType === 'region') {
-    item.time_start = sel.timeStart;
-    item.time_end = sel.timeEnd;
-  }
-  // The user's per-selection note rides as `label`, separate from the message.
-  if (comment) item.label = comment;
-
-  const out: Array<ChartSelectionCtxItem | ChartSelectionImageItem> = [item];
-  if (sel.croppedImage) {
-    out.push({ type: 'image', data: sel.croppedImage, description: describeSelectionImage(sel) });
   }
   return out;
 }

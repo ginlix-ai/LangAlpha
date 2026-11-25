@@ -22,6 +22,21 @@ export interface ArtifactVersion {
   published_at: string;
 }
 
+/**
+ * What a record holds comments on: a workspace file, or a market chart, which
+ * has no file, is never shared and is keyed by its chart id.
+ */
+export type ArtifactKind = 'file' | 'chart';
+
+/**
+ * A record's target as a lookup names it: a file by its workspace path, or a
+ * chart by its id, `SYMBOL:timeframe`, the key its chart layers use.
+ */
+export interface ArtifactTarget {
+  kind: ArtifactKind;
+  path: string;
+}
+
 /** A file's record, as its owner reads it: 404 when it is not theirs. */
 export interface Artifact {
   artifact_id: string;
@@ -29,7 +44,9 @@ export interface Artifact {
   /** App-relative, `/a/<code>`. */
   url: string;
   workspace_id: string;
-  /** Workspace-relative, canonical. */
+  /** Read as a file where an older server sends none (`kindOf`). */
+  kind: ArtifactKind;
+  /** Workspace-relative, canonical; a chart's id for a chart. */
   path: string;
   name: string;
   /** Whether visitors can open the link; they see the latest version. */
@@ -201,8 +218,60 @@ export interface ArtifactCommentRegionBox {
   picture?: string;
 }
 
-/** A part as its anchor lists it: an area's element, a range of cells, or a box. */
-export type PartEntry = ArtifactCommentAreaElement | ArtifactCommentCellRange | ArtifactCommentRegionBox;
+/**
+ * A time on a chart as its layers write it: `YYYY-MM-DD`, or
+ * `YYYY-MM-DDTHH:MM[:SS]` on an intraday chart, the exchange's wall clock
+ * with no zone.
+ */
+export type ChartTime = string;
+
+/** A span of a chart's bars and prices, and the picture of it written for the agent as the comment was sent. */
+export interface ChartRegionMark {
+  type: 'region';
+  start: ChartTime;
+  end: ChartTime;
+  low: number;
+  high: number;
+  picture?: string;
+}
+
+/** A click on an empty part of the chart: the bar's time and the price under the pointer. */
+export interface ChartPointMark {
+  type: 'point';
+  time: ChartTime;
+  price: number;
+}
+
+/**
+ * What a layer is made of, as its element keys name each kind. Declared here,
+ * not in the chart scene, so the page bridge can type against this file alone.
+ */
+export type ChartElementKind = 'series' | 'level' | 'alert' | 'marker' | 'regime' | 'drawing';
+
+/**
+ * A shape a layer the agent drew holds, found again by the layer's id, then
+ * its own id, then its name, then its place in its kind's list. `time` and
+ * `price` are where the user clicked it.
+ */
+export interface ChartElementMark {
+  type: 'element';
+  layer: string;
+  layer_title: string;
+  element_kind: ChartElementKind;
+  /** A drawing's type (`segment`, `box`, ...). */
+  element_type?: string;
+  element_id?: string;
+  /** Its label or title, as the chart shows it. */
+  element_name?: string;
+  index: number;
+  time: ChartTime;
+  price: number;
+}
+
+export type ChartMark = ChartRegionMark | ChartPointMark | ChartElementMark;
+
+/** A part as its anchor lists it: an area's element, a range of cells, a box, or a mark on a chart. */
+export type PartEntry = ArtifactCommentAreaElement | ArtifactCommentCellRange | ArtifactCommentRegionBox | ChartMark;
 
 /** Where on an anchored element, or area, the pin sits, as fractions of its box. */
 export interface AnchorPoint {
@@ -256,6 +325,13 @@ interface RegionAnchorFields {
   point?: AnchorPoint;
 }
 
+/** Each mark says where it sits on the chart, so a chart's comment has no pin point. */
+interface ChartAnchorFields {
+  kind: 'chart';
+  /** In the order they were picked: up to 64. */
+  marks: ChartMark[];
+}
+
 interface AreaAnchorFields {
   kind: 'area';
   /** Its elements in document order: a drag's first 8, or every part picked one by one (up to 64). */
@@ -270,7 +346,8 @@ interface AreaAnchorFields {
 }
 
 type AnchorKey = Exclude<
-  keyof TextAnchorFields | keyof BlockAnchorFields | keyof CellsAnchorFields | keyof AreaAnchorFields | keyof RegionAnchorFields,
+  | keyof TextAnchorFields | keyof BlockAnchorFields | keyof CellsAnchorFields | keyof AreaAnchorFields | keyof RegionAnchorFields
+  | keyof ChartAnchorFields,
   'kind'
 >;
 
@@ -292,6 +369,9 @@ export type CellsAnchor = Only<CellsAnchorFields>;
 /** Boxes, or points, on an image or a PDF's pages. */
 export type RegionAnchor = Only<RegionAnchorFields>;
 
+/** Regions, points and the agent's shapes on a chart. */
+export type ChartAnchor = Only<ChartAnchorFields>;
+
 /** A spot the file names itself. */
 export type NamedAnchor = Only<SpotAnchorFields & { kind: 'named' }>;
 
@@ -300,9 +380,11 @@ export type AreaAnchor = Only<AreaAnchorFields>;
 
 /**
  * What the owner pinned a comment to on the live file, read off it so it can
- * be found again after the file changes. The comment's `path` names the file.
+ * be found again after the file changes. The comment's `path` names the file,
+ * or the chart a `chart` anchor is on.
  */
-export type ArtifactCommentAnchor = ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor | BlockAnchor | CellsAnchor | RegionAnchor;
+export type ArtifactCommentAnchor =
+  | ElementAnchor | TextAnchor | NamedAnchor | AreaAnchor | BlockAnchor | CellsAnchor | RegionAnchor | ChartAnchor;
 
 export interface ArtifactCommentMessage {
   message_id: string;
@@ -333,11 +415,13 @@ export interface ArtifactComment {
   artifact_id: string;
   /** The pin's number on the file, never reused. */
   number: number;
-  /** The file's path when the comment was made. */
+  /** Read as a file where an older server sends none (`kindOf`). */
+  kind: ArtifactKind;
+  /** The file's path when the comment was made; a chart's id for a chart. */
   path: string;
-  /** The live file's hash when made; compare with `ArtifactStatus.live_sha256`. */
+  /** The live file's hash when made; compare with `ArtifactStatus.live_sha256`. Null on a chart. */
   file_sha256: string | null;
-  /** The document's title when made. */
+  /** The document's title when made; null on a chart. */
   title: string | null;
   anchor: ArtifactCommentAnchor;
   status: 'open' | 'resolved';
@@ -417,6 +501,8 @@ export interface ShownArtifactComment {
   comment_id: string;
   artifact_id: string;
   workspace_id: string;
+  /** Read as a file where an older server sends none (`kindOf`). */
+  kind: ArtifactKind;
   path: string;
   title: string | null;
   number: number;
@@ -441,6 +527,7 @@ export interface ArtifactCommentEvent {
   type: 'artifact_comment';
   artifact_id: string;
   workspace_id: string;
+  kind: ArtifactKind;
   path: string;
   /** The destination of the changed comments, whose queue to read again. */
   thread_id: string | null;
@@ -453,6 +540,7 @@ export interface ArtifactRecordEvent {
   type: 'artifact';
   artifact_id: string;
   workspace_id: string;
+  kind: ArtifactKind;
   path: string;
   shared: boolean;
   latest_seq: number;

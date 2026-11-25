@@ -2078,7 +2078,7 @@ export function useChatMessages(
     modelOptions: SendOptions = {},
     resend: Resend = {},
   ) => {
-    const { widgetSnapshots, chartSelections, artifactComments, chartViews } = modelOptions;
+    const { widgetSnapshots, artifactComments, chartViews } = modelOptions;
     const commentSend = commentSendOf(artifactComments);
     // The refused-steer queue the steer belongs to, for a refusal to rejoin
     // it only if no thread switch has ended it since.
@@ -2093,7 +2093,7 @@ export function useChatMessages(
     // key for its own re-send.
     const requestKey = requestKeys.take(sendFingerprint(threadId, message, commentSend), { alongside: true, key: resend.requestKey, comments: artifactComments });
     const userMessage: ChatMessage = {
-      ...createUserMessage(message, steeredTurn, { attachments: attachmentMeta, widgetSnapshots, chartSelections, artifactComments, id: resend.shown?.userId }),
+      ...createUserMessage(message, steeredTurn, { attachments: attachmentMeta, widgetSnapshots, artifactComments, id: resend.shown?.userId }),
       steering: true,
       requestKey,
       ...(currentRunIdRef.current ? { steeredRunId: currentRunIdRef.current } : {}),
@@ -2287,7 +2287,6 @@ export function useChatMessages(
       ...createUserMessage(message, newestTurn(liveMessages.get()) ?? undefined, {
         attachments: attachmentMeta,
         widgetSnapshots: modelOptions.widgetSnapshots,
-        chartSelections: modelOptions.chartSelections,
         artifactComments: modelOptions.artifactComments,
         id: shown?.userId,
       }),
@@ -2398,7 +2397,11 @@ export function useChatMessages(
     heldRetriesRef.current.set(bubbleId, { bubbleId, request: retryRequest(null, additionalContext), cut: null });
   };
 
-  const handleSendMessage = async (message: string, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: AttachmentMeta[] | null = null, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, sharedWithWorkspace, hiddenOpener = false, threadTitle, artifactComments, draft, keepFullContext = false, chartViews }: SendOptions = {}, resend: Resend = {}) => {
+  const handleSendMessage = async (message: string, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: AttachmentMeta[] | null = null, { model, reasoningEffort, fastMode, widgetSnapshots, subagentsAllowed, reasoningEffortOverride, fastModeOverride, sharedWithWorkspace, hiddenOpener = false, threadTitle, artifactComments, draft, keepFullContext = false, chartViews, onTaken }: SendOptions = {}, resend: Resend = {}) => {
+    // A new chat's placeholder is no thread a send can be found in.
+    const tookIn = (tid: string | null | undefined) => {
+      if (tid && tid !== '__default__') onTaken?.(tid);
+    };
     // What the request carries, and a resend of it again.
     const commentSend = commentSendOf(artifactComments);
     const hasContent = message.trim() || (additionalContext && additionalContext.length > 0) || !!commentSend;
@@ -2431,7 +2434,6 @@ export function useChatMessages(
       const queuedMsg = createUserMessage(message, undefined, {
         attachments: attachmentMeta,
         widgetSnapshots,
-        chartSelections,
         artifactComments,
       });
       const queuedMessage: ChatMessage = { ...queuedMsg, queued: true };
@@ -2452,7 +2454,7 @@ export function useChatMessages(
         additionalContext,
         attachmentMeta,
         // The draft rides along, for a stop to give back as the composer held it.
-        modelOptions: { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, artifactComments, keepFullContext, chartViews, draft },
+        modelOptions: { model, reasoningEffort, fastMode, widgetSnapshots, artifactComments, keepFullContext, chartViews, draft },
         messageId: queuedMessage.id as string,
         requestKey,
       };
@@ -2461,12 +2463,14 @@ export function useChatMessages(
         return appendMessage(base, queuedMessage);
       });
       setQueuedSend(message.trim() || '…');
+      tookIn(threadId);
       return;
     }
 
     // The resend of a refused steer is the queue's own; anything else waits behind it.
     if (resend.requestKey === undefined && notRunningSendsRef.current.length > 0) {
-      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews, draft }, { shown: resend.shown });
+      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews, draft }, { shown: resend.shown });
+      tookIn(threadId);
       return;
     }
 
@@ -2475,13 +2479,17 @@ export function useChatMessages(
     // the next turn, as a refused steer does, behind any sent before it; a
     // stop gives its files back to the composer with its text.
     if (isLoading && namesStagedFiles(additionalContext)) {
-      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews, draft }, resend);
+      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews, draft }, resend);
+      tookIn(threadId);
       return;
     }
 
     // If agent is already streaming, send as steering message
     if (isLoading) {
-      return handleSendSteering(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews }, resend);
+      // The steer takes its request before its first wait.
+      const steered = handleSendSteering(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext, chartViews }, resend);
+      tookIn(threadId);
+      return steered;
     }
 
     // Store model options so HITL resume can forward them
@@ -2494,7 +2502,6 @@ export function useChatMessages(
     const userMessage = hiddenOpener ? null : createUserMessage(message, turnIndex, {
       attachments: attachmentMeta,
       widgetSnapshots,
-      chartSelections,
       artifactComments,
       id: resend.shown?.userId,
     });
@@ -2508,6 +2515,7 @@ export function useChatMessages(
     // now, and the comments are on their way from the click.
     const takeKey = (tid: string) => requestKeys.take(sendFingerprint(tid, message, commentSend), { key: resend.requestKey, comments: artifactComments });
     const keyNow = !threadId || threadId === '__default__' ? null : takeKey(threadId);
+    if (keyNow) tookIn(threadId);
 
     // Track model used in this send
     if (model) {
@@ -2600,6 +2608,8 @@ export function useChatMessages(
     }
     const effectiveThreadId = created.threadId;
     const requestKey = keyNow ?? takeKey(effectiveThreadId);
+    // A send with no words learns its new thread's id from the server's first frame.
+    if (!keyNow) tookIn(effectiveThreadId);
     // How the request ended for its comments, unless the server answered first.
     let ended: SendOutcome = 'dropped';
     let wasDisconnected = false;
@@ -2651,6 +2661,7 @@ export function useChatMessages(
           currentRunIdRef.current = runId;
           if (resolvedThreadId && resolvedThreadId !== '__default__') {
             threadIdRef.current = resolvedThreadId;
+            if (!keyNow && effectiveThreadId === '__default__') tookIn(resolvedThreadId);
           }
         },
         signal: abortController.signal,

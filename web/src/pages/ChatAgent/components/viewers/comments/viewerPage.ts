@@ -19,19 +19,19 @@ import {
   MAX_AREA_COUNT, MAX_TITLE, parsePageMessage,
   type PageSelection, type PageToViewer, type PageToViewerWire, type ViewerToPage,
 } from '../html/pageProtocol';
+import type { PartEntry } from '@/types/artifacts';
 import { AddingKey } from './addingKey';
 import { DraftParts } from './draftParts';
 import { partEntries } from '../../artifactComments/anchorKinds';
 import { PageAnchors, round, toFrame } from './pageAnchors';
 import { PressTracker, type ReleasedArea } from './pressTracker';
-import { clip, squash, trimmed } from './spotKit';
+import { clip, ownChange, squash, trimmed } from './spotKit';
 import type { SpotAnchor, SpotPicker, SpotStrategy } from './spotStrategy';
 import { selectedWords } from './selectedWords';
 import { ADD_KEY } from './partModifier';
 import { canMark } from './textMarks';
 import { glyphAt } from './glyphs';
 import { PageHover } from './pageHover';
-import { ownChange } from './region/regionSpots';
 import './viewerPage.css';
 
 export interface ViewerPageOptions {
@@ -144,6 +144,12 @@ export class ViewerPage {
       sizes.observe(c);
       signal.addEventListener('abort', () => sizes.disconnect());
     }
+    // Content that moves on its own, as a chart does under a pan, says so.
+    const unwatch = this.strategy.watch?.(() => {
+      this.anchors.changed();
+      this.request();
+    });
+    if (unwatch) signal.addEventListener('abort', unwatch);
     if (typeof MutationObserver !== 'undefined') {
       // The file read again (the agent's edit) renders new blocks, and a
       // viewer showing another part of it in the same cells (a sheet) says so
@@ -170,6 +176,7 @@ export class ViewerPage {
       this.unselectTimer = null;
       this.hover.dispose();
       this.anchors.dispose();
+      this.strategy.dispose?.();
       delete c.dataset.commentCursor;
     };
   }
@@ -201,9 +208,11 @@ export class ViewerPage {
         window.getSelection()?.removeAllRanges();
         this.anchors.markPending(null);
         return;
-      case 'page:drop-part':
-        this.sendParts(this.parts.without(message.part));
+      case 'page:drop-part': {
+        const { spots, away } = this.parts.without(message.part);
+        this.sendParts(spots, away);
         return;
+      }
       case 'page:outlined':
         this.anchors.outline(message.id);
         this.request();
@@ -342,8 +351,7 @@ export class ViewerPage {
     this.sendSpot(message);
     // One too large to list is no list of parts, and one the viewer declined
     // is not the draft's: a modifier click starts from the draft's own.
-    const listed = partEntries(message.anchor);
-    if (listed && area.press !== this.declined) this.parts.keep(spots, listed);
+    if (partEntries(message.anchor) && area.press !== this.declined) this.parts.keep(spots, message.anchor);
   }
 
   /** The pick for spots in document order: one spot's anchor, or what several save. */
@@ -369,13 +377,31 @@ export class ViewerPage {
 
   // --- The draft's parts ---
 
-  /** The draft's parts are now `spots`: sent with `extend`, so the viewer keeps the box and its words on them. */
-  private sendParts(spots: Element[] | null): void {
-    const message = spots?.length ? this.spotMessage(spots, { extend: true }) : null;
+  /**
+   * The draft's parts are now `spots`, and `away`, those kept off the page:
+   * sent with `extend`, so the viewer keeps the box and its words on them.
+   */
+  private sendParts(spots: Element[] | null, away: PartEntry[] = this.parts.away()): void {
+    const keeps = away.length ? this.picker?.withAway : undefined;
+    const message = spots?.length ? this.spotMessage(spots, { extend: true }) : keeps ? this.awayMessage(keeps(null, away)) : null;
     if (!spots || !message) return;
-    this.parts.keep(spots, partEntries(message.anchor));
-    this.sendSpot(message);
+    // With parts off the page the draft is read back from its anchor, as the
+    // page shows it then: a mark back in view is one of its parts again.
+    if (away.length) this.parts.keep(null, null);
+    else this.parts.keep(spots, message.anchor);
+    this.sendSpot(spots.length && keeps ? { ...message, anchor: keeps(message.anchor, away) } : message);
     this.hoverAgain();
+  }
+
+  /**
+   * The draft as only parts off the page (a chart's marks out of view): the
+   * box stays where the draft is now, or over the content where nothing of
+   * it shows.
+   */
+  private awayMessage(anchor: SpotAnchor): SpotWire {
+    const draft = this.anchors.draft();
+    const edges = (draft && this.anchors.edgesFor(draft.id)) ?? this.content.getBoundingClientRect();
+    return { type: 'page:pick', anchor, rect: toFrame(this.scroller, edges), extend: true };
   }
 
   // --- Hover ---

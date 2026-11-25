@@ -12,7 +12,7 @@ export const PICTURES_DIR = '.agents/comments';
 /** The longest side of a picture, in pixels. */
 const MAX_SIDE = 1280;
 /** How many pictures a save draws and uploads at once: each is a canvas up to `MAX_SIDE` a side, and a comment may hold 64 boxes. */
-const PICTURES_AT_ONCE = 4;
+export const PICTURES_AT_ONCE = 4;
 /** The margin around a box, as a share of its size, and at least this share of the surface. */
 const MARGIN = 0.25;
 const MIN_MARGIN = 0.03;
@@ -31,6 +31,21 @@ export interface PictureSource {
   paint(canvas: HTMLCanvasElement, box: ArtifactCommentRegionBox, crop: Crop): Promise<void>;
   /** How much larger than its own size a crop may be drawn: a PDF draws sharp at any scale, an image does not. */
   maxScale: number;
+}
+
+/**
+ * Writes the pictures a new comment's anchor needs as the comment on `at` (a
+ * file's path, or a chart's id) is saved, and answers the anchor that names
+ * them: what a viewer that pictures what was boxed hands its layer.
+ */
+export type PictureWriter = (
+  anchor: ArtifactCommentAnchor,
+  at: { workspaceId: string; path: string },
+) => Promise<ArtifactCommentAnchor>;
+
+/** The writer for boxes on an image or a PDF's pages, cut from `source`. */
+export function regionPictures(source: PictureSource): PictureWriter {
+  return (anchor, at) => withPictures(anchor, { ...at, source });
 }
 
 /** The box and its margin, kept on the surface. */
@@ -123,7 +138,8 @@ function stemOf(path: string): string {
   return stem || 'file';
 }
 
-function stampOf(at: Date): string {
+/** When a save began, as a picture's name says it: `yyyymmdd-hhmmss`, the device's clock. */
+export function stampOf(at: Date): string {
   const two = (n: number) => String(n).padStart(2, '0');
   return `${at.getFullYear()}${two(at.getMonth() + 1)}${two(at.getDate())}-${two(at.getHours())}${two(at.getMinutes())}${two(at.getSeconds())}`;
 }
@@ -137,6 +153,11 @@ export function pictureName(path: string, box: ArtifactCommentRegionBox, at: Dat
   return `${stemOf(path)}${box.page ? `-p${box.page}` : ''}-${stampOf(at)}-${token}${index === null ? '' : `-${index + 1}`}.png`;
 }
 
+/** Four letters and digits that tell one save's pictures from another's begun in the same second. */
+export function saveToken(): string {
+  return Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+}
+
 /**
  * The anchor with a picture written for each box that has none, as the
  * comment on `path` is saved. A box whose picture cannot be read or written
@@ -148,26 +169,37 @@ export async function withPictures(
 ): Promise<ArtifactCommentAnchor> {
   if (anchor.kind !== 'region') return anchor;
   const at = new Date();
-  const token = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+  const token = saveToken();
   const several = anchor.boxes.filter((b) => b.w > 0).length > 1;
   const boxes = await inTurns(anchor.boxes, PICTURES_AT_ONCE, async (box, i) => {
     if (box.w === 0 || box.picture) return box;
-    try {
-      const blob = await pictureOf(source, box);
-      if (!blob) return box;
-      const name = pictureName(path, box, at, token, several ? i : null);
-      const picture = `${PICTURES_DIR}/${name}`;
-      await uploadWorkspaceFile(workspaceId, new File([blob], name, { type: 'image/png' }), picture);
-      return { ...box, picture };
-    } catch {
-      return box;
-    }
+    const picture = await writePicture(workspaceId, source, box, pictureName(path, box, at, token, several ? i : null));
+    return picture ? { ...box, picture } : box;
   });
   return { ...anchor, boxes };
 }
 
+/**
+ * Draws the picture of `box` and uploads it as `name`, answering where it
+ * went; null where it cannot be read or written (the computer is stopped),
+ * and what it pictures is saved without one.
+ */
+export async function writePicture(
+  workspaceId: string, source: PictureSource, box: ArtifactCommentRegionBox, name: string,
+): Promise<string | null> {
+  try {
+    const blob = await pictureOf(source, box);
+    if (!blob) return null;
+    const picture = `${PICTURES_DIR}/${name}`;
+    await uploadWorkspaceFile(workspaceId, new File([blob], name, { type: 'image/png' }), picture);
+    return picture;
+  } catch {
+    return null;
+  }
+}
+
 /** `run` over `items`, at most `limit` at a time, the results in their order. */
-async function inTurns<T, R>(items: readonly T[], limit: number, run: (item: T, index: number) => Promise<R>): Promise<R[]> {
+export async function inTurns<T, R>(items: readonly T[], limit: number, run: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
   const worker = async () => {

@@ -40,7 +40,7 @@ const SHOWN: ArtifactCommentsShown = {
   note: 'tighten these',
   reading: 'chat',
   comments: [{
-    comment_id: 'c-1', artifact_id: 'a-1', workspace_id: 'ws', path: 'reports/q3.html', title: 'Q3',
+    comment_id: 'c-1', artifact_id: 'a-1', workspace_id: 'ws', kind: 'file', path: 'reports/q3.html', title: 'Q3',
     number: 1, text: 'too dense', follow_up: false, label: null, quote: null,
   }],
 };

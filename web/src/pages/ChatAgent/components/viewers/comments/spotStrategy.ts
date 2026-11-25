@@ -5,7 +5,7 @@
  * comment protocol the same way for every viewer, as a framed HTML file's
  * bridge does it for a page. What the strategies share is in `spotKit`.
  */
-import type { AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, RegionAnchor, TextAnchor } from '@/types/artifacts';
+import type { AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, ChartAnchor, PartEntry, RegionAnchor, TextAnchor } from '@/types/artifacts';
 
 /** A box in client coordinates. */
 export interface Edges {
@@ -22,8 +22,8 @@ export interface Edges {
  */
 export type Found = { parts: (Element[] | null)[] } | { range: Range } | { parked: Element; show?: () => void };
 
-/** What a click in the app saves: a Markdown block or a run of code, a range of cells, several as an area, or boxes on a picture. */
-export type SpotAnchor = BlockAnchor | CellsAnchor | AreaAnchor | RegionAnchor;
+/** What a click in the app saves: a Markdown block or a run of code, a range of cells, several as an area, boxes on a picture, or marks on a chart. */
+export type SpotAnchor = BlockAnchor | CellsAnchor | AreaAnchor | RegionAnchor | ChartAnchor;
 
 /** What a click or a drag picks, in a viewer whose content has spots: a Markdown block, a line of code, a range of cells. */
 export interface SpotPicker {
@@ -61,6 +61,14 @@ export interface SpotPicker {
   draw?(box: Edges, from: { x: number; y: number }): Element[];
   /** A click at (x, y) on no spot, as a spot of its own (a point on an image); left out, such a click picks nothing. */
   pointAt?(x: number, y: number): Element | null;
+  /**
+   * `anchor` with `away`, parts the draft holds that are not on the page now,
+   * kept, in a viewer that takes a part off the page while it is out of view
+   * (a chart's marks off the span shown); with no anchor, `away` alone. Left
+   * out, a part not found again leaves with any change, as a document's does
+   * once the file changed.
+   */
+  withAway?(anchor: SpotAnchor | null, away: PartEntry[]): SpotAnchor;
 }
 
 export interface SpotStrategy {
@@ -74,6 +82,14 @@ export interface SpotStrategy {
   fresh?(): void;
   /** A pass of `find`s has ended: what none of its anchors named can go now, not a pass later. */
   settled?(): void;
+  /** The page is let go: what the strategy laid over the content goes with it, since the content may outlive it. */
+  dispose?(): void;
+  /**
+   * Calls `moved` whenever the content moves under the viewport with no
+   * scroll, resize or change to its nodes (a chart panned or zoomed), after
+   * which every anchor is found again. Returns the teardown.
+   */
+  watch?(moved: () => void): () => void;
   /** Left out where nothing is clicked or drawn: every drag is then the browser's own selection. */
   spots?: SpotPicker;
   /** The anchor of words selected in the content, already grown to whole words; left out where words take none (a sheet's cells). */

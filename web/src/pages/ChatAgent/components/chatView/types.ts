@@ -1,6 +1,5 @@
 /** ChatView's local type contracts, carved out of ChatView.tsx (5.9b). */
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
-import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
 import type { AttachmentMeta } from '../../utils/fileUpload';
 import type { SubagentTokenUsage } from '../../utils/tokenUsage';
 
@@ -81,12 +80,6 @@ export interface LocationState {
    * the bus state powers the visual chips and any follow-up the user types.
    */
   widgetSnapshots?: WidgetContextSnapshot[];
-  /**
-   * Chart selection snapshots forwarded from MarketView's PTC send so the
-   * auto-fired user message renders the selection cards live (they also persist
-   * to metadata, so replay re-renders them regardless).
-   */
-  chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
   /** What MarketView's chart showed at the send, for `initialMessage`'s `chart_views`. */
   chartViews?: import('@/pages/MarketView/types/chartView').ChartView[];
   /**
@@ -184,8 +177,6 @@ export interface ModelOptions {
    * per snapshot) by `handleSendWithAttachments`.
    */
   widgetSnapshots?: WidgetContextSnapshot[];
-  /** Chart selections riding this send, so the user bubble renders their cards. */
-  chartSelections?: ChartSelectionSnapshot[];
   /**
    * The thread's subagents setting, carried only by the send that creates the
    * thread (`useThreadSubagents`).

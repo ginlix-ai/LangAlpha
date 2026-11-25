@@ -1,7 +1,8 @@
 /**
  * What the explain card and "Ask about this" need for the elements worth
- * explaining, and the name the render report gives each one. The compile walk
- * (`compileLayers`) registers every element it visits.
+ * explaining, the name the render report gives each one, and who each one is
+ * to a comment's mark. The compile walk (`compileLayers`) registers every
+ * element it visits.
  */
 
 import type {
@@ -16,6 +17,7 @@ import type {
   LayerSeries,
   StoredChartLayer,
 } from '../../types/chartLayer';
+import type { ChartElementMark } from '@/types/artifacts';
 import { UNKNOWN_KIND_NAME, type AnyDrawingKind } from './kinds';
 import { drawingLabel, elementKey, type ElementKind } from './scene';
 
@@ -40,11 +42,16 @@ export interface ElementName {
   kind: string;
 }
 
+/** Which element of which layer, as a comment's mark names it and finds it again. */
+export type ElementIdentity = Omit<ChartElementMark, 'type' | 'time' | 'price'>;
+
 export interface LayerElements {
   /** Elements worth explaining (a note, a label, or a readout of their own), by key. */
   explain: Map<string, LayerElementInfo>;
   /** Every element's report name, by key. */
   names: Map<string, ElementName>;
+  /** Every element's identity, by key. */
+  identities: Map<string, ElementIdentity>;
 }
 
 const TYPE_KEYS: Record<Exclude<ElementKind, 'drawing'>, string> = {
@@ -58,6 +65,8 @@ const TYPE_KEYS: Record<Exclude<ElementKind, 'drawing'>, string> = {
 /** What one element tells the registry: how the report names it and what its explain card shows. */
 export interface ElementEntry {
   name: string;
+  /** The element's own id, for the kinds that have one. */
+  id?: string | null;
   reportKind: string;
   type: string;
   typeKey: string;
@@ -74,6 +83,7 @@ export const describe = {
     const last = s.data[s.data.length - 1];
     return {
       name: s.id,
+      id: s.id,
       reportKind: 'series',
       type: 'series',
       typeKey: TYPE_KEYS.series,
@@ -98,6 +108,7 @@ export const describe = {
   alert(al: LayerAlert, k: number, layer: ChartLayer): ElementEntry {
     return {
       name: al.id || `alerts[${k}]`,
+      id: al.id,
       reportKind: 'alert',
       type: 'alert',
       typeKey: TYPE_KEYS.alert,
@@ -138,6 +149,7 @@ export const describe = {
   drawing(d: LayerDrawing, k: number, kind: AnyDrawingKind | undefined): ElementEntry {
     return {
       name: d.id || `drawings[${k}]`,
+      id: d.id,
       reportKind: d.type,
       type: d.type,
       typeKey: kind?.nameKey ?? UNKNOWN_KIND_NAME,
@@ -150,15 +162,31 @@ export const describe = {
   },
 };
 
-/** Collects every element the compile walk visits: the explain card's info and the report's name. */
+/**
+ * Collects every element the compile walk visits: the explain card's info,
+ * the report's name and the identity. `index` is the element's place in its
+ * kind's list, which `idx` is for every kind but a series, keyed by its id.
+ */
 export class ElementRegistry {
   readonly explain = new Map<string, LayerElementInfo>();
   readonly names = new Map<string, ElementName>();
+  readonly identities = new Map<string, ElementIdentity>();
 
-  add(stored: StoredChartLayer, kind: ElementKind, idx: number | string, e: ElementEntry): void {
+  add(stored: StoredChartLayer, kind: ElementKind, idx: number | string, index: number, e: ElementEntry): void {
     const { layer } = stored;
     const key = elementKey(stored.layer_id, kind, idx);
     this.names.set(key, { layer: layer.id, element: e.name, kind: e.reportKind });
+    const id = e.id?.trim();
+    const name = e.label?.trim();
+    this.identities.set(key, {
+      layer: layer.id,
+      layer_title: layer.title,
+      element_kind: kind,
+      ...(kind === 'drawing' ? { element_type: e.type } : {}),
+      ...(id ? { element_id: id } : {}),
+      ...(name ? { element_name: name } : {}),
+      index,
+    });
     const label = e.label?.trim() || null;
     if (!e.always && !label && !e.note) return;
     this.explain.set(key, {

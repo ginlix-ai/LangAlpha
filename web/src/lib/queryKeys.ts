@@ -110,9 +110,13 @@ export const queryKeys = {
     // tab may have asked by another spelling of it.
     pathsIn:     (wsId: string) => [...queryKeys.artifacts.allByPath, wsId],
     byPath:      (wsId: string, path: string) => [...queryKeys.artifacts.pathsIn(wsId), path],
+    // A chart's record, among its workspace's reads so its events reach it. An
+    // object, so no file's path can spell the same key.
+    byChart:     (wsId: string, chart: string) => [...queryKeys.artifacts.pathsIn(wsId), { chart }],
     // The owner's get-or-create of a file's record. Beside the reads by path,
     // not under them, so an event that reads those again never makes one.
     ensured:     (wsId: string, path: string) => [...queryKeys.artifacts.all, 'ensured', wsId, path],
+    ensuredChart: (wsId: string, chart: string) => [...queryKeys.artifacts.all, 'ensured', wsId, { chart }],
     allDetails:  ['artifacts', 'detail'],
     detail:      (artifactId: string) => [...queryKeys.artifacts.allDetails, artifactId],
     versions:    (artifactId: string) => [...queryKeys.artifacts.all, 'versions', artifactId],
@@ -320,6 +324,8 @@ export const queryKeys = {
   chartLayers: {
     all:      ['chartLayers'],
     bySymbol: (workspaceId: string, symbol: string) => [...queryKeys.chartLayers.all, workspaceId, symbol],
+    // Held by a chart whose workspace is not known yet; never fetched.
+    none:     () => [...queryKeys.chartLayers.all, ''],
   },
   // The brokerage connectors this build ships. Deliberately its own family
   // rather than a child of `mcp`: it is static and user-independent, so the

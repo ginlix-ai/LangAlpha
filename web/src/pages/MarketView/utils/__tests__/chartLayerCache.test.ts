@@ -7,7 +7,7 @@ vi.mock('../api', () => ({ fetchChartLayers: vi.fn(), deleteChartLayer: vi.fn() 
 import { fetchChartLayers } from '../api';
 import { applyChartLayerEvent, applyLayerOp, invalidateReportedLayers, rowsOfChart } from '../chartLayerCache';
 import { chartLayersQuery } from '../../hooks/useChartLayerQuery';
-import { chartKeyFor } from '../chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import {
   getHiddenLayers,
   getShowLayersRequest,

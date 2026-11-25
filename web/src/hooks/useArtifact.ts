@@ -1,8 +1,9 @@
 /**
- * A workspace file's record (its artifact) and the owner's comments on it.
+ * A workspace file's record (its artifact), or a chart's, and the owner's
+ * comments on it.
  *
- * A view reads the record by path, which answers null for a file never
- * recorded, so any tab can ask without an error. The owner's own views of a
+ * A view reads the record by its target (`targetFor`), which answers null for
+ * one never recorded, so any tab can ask without an error. The owner's own views of a
  * file make it (`useOwnedArtifact`), one get-or-create per file shared by
  * every view and by a write that needs the id (`useEnsureArtifact`). Writes
  * land the server's answer in the cache at once and read again what they
@@ -14,6 +15,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { partialMatchKey, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { ALL, refreshArtifactComments, refreshArtifactRecord } from '@/lib/artifactCache';
+import { ensuredQueryKey, targetQueryKey } from '@/lib/artifactTarget';
 import { artifactUnread, readAll, readThrough, unreadComments, type ArtifactUnread } from '@/lib/artifactCommentReads';
 import { GRANT_RENEW_MARGIN_MS, MIN_RENEW_INTERVAL_MS, msUntilRenewal } from '@/lib/expiry';
 import { NO_PAGE_LOADS, usePageLoads } from '@/lib/pageLoads';
@@ -45,6 +47,7 @@ import type {
   ArtifactDestinations,
   ArtifactGrant,
   ArtifactStatus,
+  ArtifactTarget,
   ArtifactVersion,
   PublishArtifactRequest,
   QueuedArtifactComment,
@@ -75,7 +78,7 @@ export function artifactPathKey(path: string, root?: string | null): string {
  */
 export function putArtifact(qc: QueryClient, artifact: Artifact): void {
   qc.setQueryData(queryKeys.artifacts.detail(artifact.artifact_id), artifact);
-  qc.setQueryData(queryKeys.artifacts.byPath(artifact.workspace_id, artifact.path), artifact);
+  qc.setQueryData(targetQueryKey(artifact.workspace_id, artifact), artifact);
   qc.setQueriesData<Artifact | null>(
     { queryKey: queryKeys.artifacts.pathsIn(artifact.workspace_id) },
     (cached) => (cached?.artifact_id === artifact.artifact_id ? artifact : cached),
@@ -103,30 +106,32 @@ function cachedArtifact(qc: QueryClient, artifactId: string): Artifact | undefin
 
 // --- Records ---
 
-/** The read a file tab makes, shared with a prefetch. */
-export function artifactByPathQuery(workspaceId: string, path: string) {
+/** The read a tab makes of a target's record. */
+function artifactTargetQuery(workspaceId: string, target: ArtifactTarget) {
   return {
-    queryKey: queryKeys.artifacts.byPath(workspaceId, path),
-    queryFn: () => findArtifact(workspaceId, path),
+    queryKey: targetQueryKey(workspaceId, target),
+    queryFn: () => findArtifact(workspaceId, target),
     staleTime: 30_000,
     retry: retryUnlessClientError,
   };
 }
 
+/** A target as no hook reads one: a hook given none reads nothing. */
+const NO_TARGET: ArtifactTarget = { kind: 'file', path: '' };
+
 /**
- * A file's record by its workspace path, or null for a file never recorded.
- * Never makes one. `path` is read as the file routes read it, so an absolute
- * sandbox path and the workspace-relative one are one entry.
+ * A target's record, or null for one never recorded. Never makes one. The
+ * target is as `targetFor` keys it, so two spellings of a file are one entry.
  */
-export function useArtifactByPath(
+export function useArtifactRecord(
   workspaceId: string | null | undefined,
-  path: string | null | undefined,
-  { enabled = true, root }: { enabled?: boolean; root?: string | null } = {},
+  target: ArtifactTarget | null,
+  { enabled = true }: { enabled?: boolean } = {},
 ): UseQueryResult<Artifact | null, Error> {
-  const key = path ? artifactPathKey(path, root) : '';
+  const keyed = target ?? NO_TARGET;
   return useQuery<Artifact | null, Error>({
-    ...artifactByPathQuery(workspaceId ?? '', key),
-    enabled: enabled && !!workspaceId && !!key,
+    ...artifactTargetQuery(workspaceId ?? '', keyed),
+    enabled: enabled && !!workspaceId && !!keyed.path,
   });
 }
 
@@ -147,13 +152,13 @@ export function useArtifact(artifactId: string | null | undefined): UseQueryResu
  * reads by path once any still in flight is cancelled: one sent before the
  * record existed would land null over it.
  */
-function ensureQuery(qc: QueryClient, workspaceId: string, key: string) {
+function ensureQuery(qc: QueryClient, workspaceId: string, target: ArtifactTarget) {
   return {
-    queryKey: queryKeys.artifacts.ensured(workspaceId, key),
+    queryKey: ensuredQueryKey(workspaceId, target),
     queryFn: async (): Promise<Artifact> => {
-      const artifact = await ensureArtifact(workspaceId, key);
-      const asked = queryKeys.artifacts.byPath(workspaceId, key);
-      const canonical = queryKeys.artifacts.byPath(workspaceId, artifact.path);
+      const artifact = await ensureArtifact(workspaceId, target);
+      const asked = targetQueryKey(workspaceId, target);
+      const canonical = targetQueryKey(workspaceId, artifact);
       await Promise.all([
         qc.cancelQueries({ queryKey: asked, exact: true }),
         qc.cancelQueries({ queryKey: canonical, exact: true }),
@@ -186,16 +191,16 @@ export interface OwnedArtifact {
  */
 export function useOwnedArtifact(
   workspaceId: string | null | undefined,
-  path: string | null | undefined,
-  { enabled = true, root }: { enabled?: boolean; root?: string | null } = {},
+  target: ArtifactTarget | null,
+  { enabled = true }: { enabled?: boolean } = {},
 ): OwnedArtifact {
   const qc = useQueryClient();
-  const key = path ? artifactPathKey(path, root) : '';
-  const on = enabled && !!workspaceId && !!key;
-  const ensured = useQuery<Artifact, Error>({ ...ensureQuery(qc, workspaceId ?? '', key), enabled: on });
+  const keyed = target ?? NO_TARGET;
+  const on = enabled && !!workspaceId && !!keyed.path;
+  const ensured = useQuery<Artifact, Error>({ ...ensureQuery(qc, workspaceId ?? '', keyed), enabled: on });
   // Read only once ensured: the ensure seeds it, so this view sends no GET of its own.
   const read = useQuery<Artifact | null, Error>({
-    ...artifactByPathQuery(workspaceId ?? '', key),
+    ...artifactTargetQuery(workspaceId ?? '', keyed),
     enabled: on && ensured.isSuccess,
   });
   const dropped = on && ensured.isSuccess && read.data === null && read.dataUpdatedAt > ensured.dataUpdatedAt;
@@ -212,16 +217,44 @@ export function useOwnedArtifact(
 }
 
 /**
- * The record for a file, for a write that must name it (a first comment, a
+ * The comments' record for a view of them (`CommentLayer`). With `ensure` it
+ * is made if it has none, as `useOwnedArtifact` makes a file's; without, it is
+ * only read, which suits a chart: looked at far more often than commented on.
+ * `loaded` once there are no comments still to wait for, and `hashable` while
+ * a new comment should carry the live file's hash: a file with comments to
+ * compare against or versions published. A chart has no file to hash.
+ */
+export function useCommentRecord(
+  workspaceId: string,
+  target: ArtifactTarget,
+  { ensure }: { ensure: boolean },
+): { artifact: Artifact | undefined; error: Error | null; loaded: boolean; hashable: boolean } {
+  const owned = useOwnedArtifact(workspaceId, target, { enabled: ensure });
+  const found = useArtifactRecord(workspaceId, target, { enabled: !ensure });
+  const artifact = ensure ? owned.record : (found.data ?? undefined);
+  const comments = useArtifactComments(artifact?.artifact_id);
+  // A comments read that gave up ends the wait as a failed record read does,
+  // so an open asked of the layer settles on what is there instead of waiting.
+  const error = (ensure ? owned.error : found.error) ?? comments.error;
+  return {
+    artifact,
+    error,
+    // One that cannot have a record, or that has none yet and is only read, has no comments to wait for.
+    loaded: error !== null || (!ensure && found.data === null) || comments.isSuccess,
+    hashable: target.kind === 'file' && !!artifact && (artifact.open_comments > 0 || artifact.latest_seq > 0),
+  };
+}
+
+/**
+ * The record for a target, for a write that must name it (a first comment, a
  * bind) from a view that may not have it yet. A record already read is used
  * as it is; otherwise this joins the views' ensure, or starts it.
  */
-export function useEnsureArtifact(): (workspaceId: string, path: string) => Promise<Artifact> {
+export function useEnsureArtifact(): (workspaceId: string, target: ArtifactTarget) => Promise<Artifact> {
   const qc = useQueryClient();
-  return useCallback(async (workspaceId: string, path: string) => {
-    const key = artifactPathKey(path);
-    const known = qc.getQueryData<Artifact | null>(queryKeys.artifacts.byPath(workspaceId, key));
-    return known ?? qc.fetchQuery(ensureQuery(qc, workspaceId, key));
+  return useCallback(async (workspaceId: string, target: ArtifactTarget) => {
+    const known = qc.getQueryData<Artifact | null>(targetQueryKey(workspaceId, target));
+    return known ?? qc.fetchQuery(ensureQuery(qc, workspaceId, target));
   }, [qc]);
 }
 
@@ -253,8 +286,8 @@ export function useArtifactBinding() {
     void qc.invalidateQueries({ queryKey: queryKeys.artifacts.destinationsOf(artifact.artifact_id) });
   };
   const bind = useMutation({
-    mutationFn: async ({ workspaceId, path, threadId }: { workspaceId: string; path: string; threadId: string }) => {
-      const artifact = await ensure(workspaceId, path);
+    mutationFn: async ({ workspaceId, target, threadId }: { workspaceId: string; target: ArtifactTarget; threadId: string }) => {
+      const artifact = await ensure(workspaceId, target);
       return bindArtifact(artifact.artifact_id, threadId);
     },
     onSuccess: settle,

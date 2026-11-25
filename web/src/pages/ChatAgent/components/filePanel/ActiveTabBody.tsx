@@ -7,6 +7,7 @@ import type { ContextPayload } from '@/components/ui/chat-input.types';
 import type { ApiAdapter, ChartTabSpec, PanelTarget } from './types';
 import type { BrowserViewSession } from './browserStream';
 import type { FileTab, FileTabsApi } from './useFileTabs';
+import type { CommentUi } from '../viewers/html/comments/useCommentUi';
 import { BrowserViewer } from '../viewers/BrowserViewer';
 import { ChartTab } from './ChartTab';
 import { StoreTab } from './StoreTab';
@@ -40,13 +41,17 @@ interface ActiveTabBodyProps {
   canUpload: boolean;
   /** Null where the panel has no browser to show, as a share's does not. */
   browser: BrowserViewSession | null;
+  /** The owner's comment controls; null where the reader keeps no comments. */
+  commentUi: CommentUi | null;
+  /** The panel is the one in front. */
+  active: boolean;
 }
 
 /** What fills the viewer slot for the active tab. Preview panes are rendered beside this, kept mounted. */
 export function ActiveTabBody({
   activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled,
   onOpenFile, onOpenSubagentTask, transcript, onAddContext,
-  onOpenInMarketView, file, onPageCount, canUpload, browser,
+  onOpenInMarketView, file, onPageCount, canUpload, browser, commentUi, active,
 }: ActiveTabBodyProps): React.ReactNode {
   switch (activeTab.kind) {
     case 'preview':
@@ -61,6 +66,8 @@ export function ActiveTabBody({
           workspaceId={workspaceId}
           onAddContext={onAddContext}
           onOpenInMarketView={onOpenInMarketView}
+          commentUi={commentUi}
+          active={active}
         />
       );
     case 'settings':

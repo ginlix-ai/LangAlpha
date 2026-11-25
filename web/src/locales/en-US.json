@@ -942,7 +942,9 @@
         "labelQuote": "{{label}} · “{{quote}}”",
         "quote": "“{{quote}}”",
         "open": "Show it in the file",
-        "openLabel": "Show comment {{number}} in the file"
+        "openLabel": "Show comment {{number}} in the file",
+        "open_chart": "Show it on the chart",
+        "openLabel_chart": "Show comment {{number}} on the chart"
       },
       "reply": {
         "replied_one": "Replied to comment <nums/> on {{title}}",
@@ -953,7 +955,8 @@
         "unread": "Unread",
         "showMore": "Show more",
         "showLess": "Show less",
-        "readRest": "Read the whole reply in the file"
+        "readRest": "Read the whole reply in the file",
+        "readRest_chart": "Read the whole reply on the chart"
       },
       "deck": {
         "queuedCount_one": "{{count}} queued comment",
@@ -965,6 +968,7 @@
         "addToTurn": "Add to this turn",
         "addToTurnTitle": "Send them into the turn that is running, with what you wrote as their note",
         "showInFile": "Show it in the file",
+        "showInFile_chart": "Show it on the chart",
         "keepOne": "Keep as a note: it stays on the file, unsent",
         "keepOneLabel": "Keep comment {{number}} as a note",
         "more": "{{rest}} more",

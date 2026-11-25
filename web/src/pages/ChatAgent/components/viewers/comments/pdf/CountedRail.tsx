@@ -1,5 +1,6 @@
 import { useMemo, type ComponentProps } from 'react';
-import { artifactPathKey, useArtifactComments, useOwnedArtifact } from '@/hooks/useArtifact';
+import { useArtifactComments, useOwnedArtifact } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import PdfRail from '../../pdf/PdfRail';
 import { inFilter } from '../../../artifactComments/commentModel';
@@ -20,9 +21,9 @@ function pagesOf(anchor: ArtifactCommentAnchor): Set<number> {
  * answer that resolved one included), by its 1-based number. The same
  * queries the comment layer reads, so the counts move with its pins.
  */
-function usePageCommentCounts({ workspaceId, path }: ViewerCommentsTarget): ReadonlyMap<number, number> {
+function usePageCommentCounts({ workspaceId, kind, path }: ViewerCommentsTarget): ReadonlyMap<number, number> {
   const root = useWorkspaceFolders()?.rootDir;
-  const { record } = useOwnedArtifact(workspaceId, artifactPathKey(path, root));
+  const { record } = useOwnedArtifact(workspaceId, targetFor(kind, path, root));
   const { data } = useArtifactComments(record?.artifact_id ?? null);
   return useMemo(() => {
     if (!data?.length) return NO_COUNTS;

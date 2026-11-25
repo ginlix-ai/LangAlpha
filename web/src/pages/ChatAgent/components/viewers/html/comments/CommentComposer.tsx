@@ -116,6 +116,19 @@ export function CommentComposer({
     field.setSelectionRange(field.value.length, field.value.length);
   }, [autoFocus]);
 
+  // A part added or dropped is a press on the page or on a chip, which takes
+  // the focus from the words; it comes back so typing goes on. Not on a touch
+  // screen, where it would raise the keyboard over the page being picked on.
+  const partsKey = over ? [over.head, ...(over.parts?.labels ?? [])].join('\n') : null;
+  const partsSeen = useRef(partsKey);
+  useEffect(() => {
+    if (partsSeen.current === partsKey) return;
+    partsSeen.current = partsKey;
+    const active = document.activeElement;
+    const left = !active || active === document.body || active instanceof HTMLIFrameElement;
+    if (left && !window.matchMedia?.('(pointer: coarse)').matches) fieldRef.current?.focus({ preventScroll: true });
+  }, [partsKey]);
+
   // The question going (Esc, or writing on) takes its buttons with it: the
   // focus they held, or the ×'s, comes back to the words rather than the page.
   const asked = useRef(confirmDiscard);

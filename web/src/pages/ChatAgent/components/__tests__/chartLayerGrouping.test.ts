@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
-import { chartKeyFor } from '@/pages/MarketView/utils/chartInstanceKey';
+import { chartKeyFor } from '@/lib/bars/chartId';
 import { planChartLayerCards, planReportChartCards } from '../chartLayerGrouping';
 import { projectTurns } from '../messageList/turnProjection';
 import type { MessageRecord, ToolCallProcessRecord } from '../messageList/types';

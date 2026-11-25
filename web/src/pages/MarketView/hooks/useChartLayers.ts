@@ -34,7 +34,7 @@ import type { StoredChartLayer } from '../types/chartLayer';
 import { ChartLayerPrimitive } from '../utils/chartLayer/ChartLayerPrimitive';
 import type { BuiltinIndicators } from '../utils/chartLayer/builtinDuplicates';
 import { compileLayers, EMPTY_COMPILED } from '../utils/chartLayer/compileLayers';
-import type { LayerElementInfo } from '../utils/chartLayer/elements';
+import type { ElementIdentity, LayerElementInfo } from '../utils/chartLayer/elements';
 import { readLayerChips } from '../utils/chartLayer/domReport';
 import { readPaneTags, type LayerFrameReporter, type ReportContext } from '../utils/chartLayer/layerReport';
 import { buildLayerText } from '../utils/chartLayer/layerText';
@@ -63,6 +63,8 @@ export interface ChartLayersRender {
   markers: SeriesMarker<Time>[];
   /** Explainable elements by key, for the hover / ask overlay. */
   elements: Map<string, LayerElementInfo>;
+  /** Every element's identity by key, for a comment's mark on one. */
+  identities: Map<string, ElementIdentity>;
   /** The drawing primitive, for hit tests and hover emphasis. */
   primitiveRef: RefObject<ChartLayerPrimitive | null>;
   /** Layer series → element key, to explain a hovered series. */
@@ -202,5 +204,5 @@ export function useChartLayers({
     };
   }, []);
 
-  return { markers, elements: elements.explain, primitiveRef, seriesKeysRef, grid };
+  return { markers, elements: elements.explain, identities: elements.identities, primitiveRef, seriesKeysRef, grid };
 }

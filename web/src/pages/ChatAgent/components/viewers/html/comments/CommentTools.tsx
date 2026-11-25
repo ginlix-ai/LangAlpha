@@ -5,22 +5,23 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { InPlaceSwap, SwapCell } from '@/components/ui/crossfade';
-import { artifactPathKey, useArtifactByPath, useArtifactComments } from '@/hooks/useArtifact';
+import { useArtifactComments, useArtifactRecord } from '@/hooks/useArtifact';
 import { useLocale } from '@/hooks/useLocale';
 import { ALL, refreshArtifactComments } from '@/lib/artifactCache';
 import { unreadComments } from '@/lib/artifactCommentReads';
+import { targetFor } from '@/lib/artifactTarget';
 import { formatList } from '@/lib/format';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { TWEEN } from '@/lib/motion';
 import { cn } from '@/lib/utils';
-import type { ArtifactComment } from '@/types/api';
+import type { ArtifactComment, ArtifactTarget } from '@/types/api';
 import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import type { CommentSendStore } from '../../../artifactComments/commentSendStore';
-import { useArtifactCommentSender } from '../../../artifactComments/sendContext';
+import { useArtifactCommentSender, type ArtifactCommentSender } from '../../../artifactComments/sendContext';
 import { oneLine, openComments } from '../../../artifactComments/commentModel';
 import { queuedBatches, refusalReason, sendBatches, type BatchOutcome } from '../../../artifactComments/commentSends';
 import { SendingGlyph } from './SendingGlyph';
-import { targetKey } from '../../../artifactComments/destinations';
+import { sameTarget, targetKey, threadOf } from '../../../artifactComments/destinations';
 import { useCommentDestinations } from '../../../artifactComments/useCommentDestinations';
 import type { CommentUi } from './useCommentUi';
 import './CommentTools.css';
@@ -28,11 +29,14 @@ import './CommentTools.css';
 interface CommentToolsProps {
   tabId: string;
   workspaceId: string;
-  /** The HTML file, workspace-relative or as the tab holds it. */
-  path: string;
+  /** What the comments are on, as the tab holds it: an HTML file, or a chart. */
+  target: ArtifactTarget;
   ui: CommentUi;
-  /** `crumb` sits in the file panel's crumb row, `bar` in the standalone view's top bar. */
-  variant?: 'crumb' | 'bar';
+  /**
+   * `crumb` sits in the file panel's crumb row, `bar` in the standalone
+   * view's top bar, `chart` among a chart's own tool buttons.
+   */
+  variant?: 'crumb' | 'bar' | 'chart';
   /** Comment mode is not offered: a published version is read only. */
   modeDisabled?: boolean;
   /** The mode button's tooltip; left out, a page's. */
@@ -162,7 +166,7 @@ interface SendAllOutcome {
   refused: string | null;
 }
 
-function summarize(t: TFunction, locale: string, outcomes: readonly BatchOutcome[], besideThreadId: string | null): SendAllOutcome {
+function summarize(t: TFunction, locale: string, outcomes: readonly BatchOutcome[], { beside }: ArtifactCommentSender): SendAllOutcome {
   const parts: string[] = [];
   let refused = 0;
   // A destination's full batches went to one thread, so they read as one share.
@@ -179,7 +183,7 @@ function summarize(t: TFunction, locale: string, outcomes: readonly BatchOutcome
     else went.set(key, { first: outcome, count: size });
   }
   for (const { first: { batch, threadId }, count } of went.values()) {
-    if (threadId === besideThreadId) {
+    if (sameTarget(beside, batch.to)) {
       parts.push(t('pageViewer:comments.sentAllPartHere', { count }));
     } else if ('newThreadIn' in batch.to) {
       parts.push(t('pageViewer:comments.sentAllPartNew', { count }));
@@ -206,21 +210,25 @@ function summarize(t: TFunction, locale: string, outcomes: readonly BatchOutcome
  * moment; a refused comment stays queued with the reason on its card. Gone
  * once nothing waits and the outcome has been said.
  */
-function SendAll({ comments, artifactId, workspaceId, docPath, sends, bar }: {
+function SendAll({ comments, artifactId, workspaceId, doc, sends, bar, besideHolds = false }: {
   comments: readonly ArtifactComment[];
   artifactId: string;
   workspaceId: string;
-  docPath: string;
+  doc: ArtifactTarget;
   sends: CommentSendStore;
   bar: boolean;
+  /** The composer beside shows its thread's queue, so what waits for that thread is sent from there. */
+  besideHolds?: boolean;
 }): React.ReactElement {
   const { t } = useTranslation();
   const locale = useLocale();
   const queryClient = useQueryClient();
   const sender = useArtifactCommentSender();
-  const { targetFor } = useCommentDestinations(workspaceId, docPath);
+  const destinations = useCommentDestinations(workspaceId, doc);
   // One waiting for a thread the viewer cannot open is not theirs to send.
-  const queued = comments.filter((c) => c.status === 'open' && c.delivery === 'queued' && !c.thread_hidden);
+  const beside = besideHolds ? threadOf(sender.beside) : null;
+  const queued = comments.filter((c) => c.status === 'open' && c.delivery === 'queued' && !c.thread_hidden
+    && (beside === null || c.thread_id !== beside));
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<SendAllOutcome | null>(null);
   useEffect(() => {
@@ -235,13 +243,13 @@ function SendAll({ comments, artifactId, workspaceId, docPath, sends, bar }: {
     const waiting = queued
       .filter((c) => sends.get(c.comment_id)?.phase !== 'sending')
       .map((c) => ({ ...c, workspace_id: workspaceId }));
-    const batches = queuedBatches(waiting, targetFor);
+    const batches = queuedBatches(waiting, destinations.targetFor);
     if (batches.length === 0) return;
     setBusy(true);
     setOutcome(null);
     void sendBatches(batches, { sender, sends, reasonOf: (err) => refusalReason(t, err, true) }).then((outcomes) => {
       setBusy(false);
-      setOutcome(summarize(t, locale, outcomes, sender.besideThreadId));
+      setOutcome(summarize(t, locale, outcomes, sender));
       refreshArtifactComments(queryClient, [{ artifactId, workspaceId }], ALL);
     });
   };
@@ -322,12 +330,13 @@ function SendAll({ comments, artifactId, workspaceId, docPath, sends, bar }: {
  * layer over it shows: the one the tab opened, or another a link led to.
  */
 export function CommentTools({
-  tabId, workspaceId, path, ui, variant = 'crumb', modeDisabled = false, modeTitle,
+  tabId, workspaceId, target, ui, variant = 'crumb', modeDisabled = false, modeTitle,
 }: CommentToolsProps): React.ReactElement {
   const { t } = useTranslation();
   const rootDir = useWorkspaceFolders()?.rootDir;
-  const docPath = ui.docOf(tabId, artifactPathKey(path, rootDir));
-  const { data: artifact } = useArtifactByPath(workspaceId, docPath);
+  const opened = targetFor(target.kind, target.path, rootDir);
+  const doc: ArtifactTarget = { kind: opened.kind, path: ui.docOf(tabId, opened.path) };
+  const { data: artifact } = useArtifactRecord(workspaceId, doc);
   const commentsQuery = useArtifactComments(artifact?.artifact_id);
   const comments = artifact === null ? NONE : commentsQuery.data;
   const open = comments ? openComments(comments).length : 0;
@@ -344,11 +353,47 @@ export function CommentTools({
       comments={comments}
       artifactId={artifact.artifact_id}
       workspaceId={workspaceId}
-      docPath={docPath}
+      doc={doc}
       sends={ui.sends}
       bar={variant === 'bar'}
+      besideHolds={variant === 'chart'}
     />
   );
+
+  if (variant === 'chart') {
+    // A chart's own tool buttons, its other tools' size. What waits for the
+    // thread beside waits in its composer, so Send all here takes only what
+    // waits elsewhere: another thread the chart is bound to, or all of it
+    // with no chat beside (a phone).
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => ui.setMode(tabId, !mode)}
+          disabled={modeDisabled}
+          className={cn('chart-tool-btn', mode && 'chart-tool-btn-active')}
+          aria-pressed={mode}
+          aria-keyshortcuts="C"
+          aria-label={t('pageViewer:comments.comment')}
+          title={modeTitle ?? t('pageViewer:comments.modeTitle')}
+        >
+          <MessageSquarePlus size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => ui.setList(tabId, !listOpen)}
+          className={cn('chart-tool-btn', listOpen && 'chart-tool-btn-active')}
+          aria-pressed={listOpen}
+          aria-label={listLabel}
+          title={listLabel}
+        >
+          <MessageSquare size={14} />
+          {counts}
+        </button>
+        {sendAll}
+      </>
+    );
+  }
 
   if (variant === 'bar') {
     // The bar's own buttons, as its other actions draw them; on a phone the

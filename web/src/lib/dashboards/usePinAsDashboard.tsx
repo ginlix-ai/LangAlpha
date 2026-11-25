@@ -6,6 +6,7 @@ import { apiErrorReason } from '@/api/errors';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/components/ui/use-toast';
 import { artifactPathKey, useEnsureArtifact } from '@/hooks/useArtifact';
+import { targetFor } from '@/lib/artifactTarget';
 import { pageLoadsOf } from '@/lib/pageLoads';
 import { listArtifactVersions } from '@/pages/ChatAgent/utils/api/artifacts';
 import { keepCopy, releaseCopy, setKept } from './keptCopy';
@@ -94,7 +95,7 @@ export function usePinPageAsDashboard(
     setPending(true);
     let artifactId: string | null = null;
     try {
-      const record = await ensure(workspaceId, key);
+      const record = await ensure(workspaceId, targetFor('file', key));
       artifactId = record.artifact_id;
       keepCopy(artifactId);
       const kept = await setKept(qc, artifactId, true, pageLoadsOf(record.workspace_id, record.path));

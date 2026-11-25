@@ -49,14 +49,10 @@ import { useChartOverlays } from '../hooks/useChartOverlays';
 import { useChartLayerDrawing, useChartLayerIntegration } from '../hooks/useChartLayerIntegration';
 import type { ChartView } from '../types/chartView';
 import type { LayerFrameReporter } from '../utils/chartLayer/layerReport';
-import { chartKeyFor, normalizeTimeframe } from '../utils/chartInstanceKey';
-import { chartSelectionStore, useChartSelections } from '../stores/chartSelectionStore';
-import { SelectionPrimitive, type CommittedSelection } from '../utils/selectionPrimitive';
-import { SelectionCommentOverlay } from './SelectionCommentOverlay';
-import { snapToNearestBar, toUnixSeconds } from '../utils/barTime';
-import { downsampleBars } from '../utils/downsampleBars';
-import { clampToPricePane, isOnPricePane, pricePaneHeight } from '../utils/paneBounds';
-import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, SquareDashedMousePointer, Ruler } from 'lucide-react';
+import { chartIdFor, chartKeyFor } from '@/lib/bars/chartId';
+import type { ChartCommentsHost } from '@/pages/ChatAgent/components/viewers/comments/chart/ChartComments';
+import { useChartComments } from '../hooks/useChartComments';
+import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu } from 'lucide-react';
 
 import { loadPref, savePref } from '../utils/prefs';
 import type { Freshness, SnapshotData } from '@/types/market';
@@ -102,11 +98,11 @@ interface MarketChartProps {
   marketStatus?: Record<string, unknown> | null;
   snapshot: SnapshotData | null;
   /**
-   * Show the range/point selection tools. They write to a store only the
-   * MarketView page reads, so any other host would arm a hand-off nothing
-   * receives; a host opts in rather than out.
+   * The owner's comments on the chart, kept with the host's other comment
+   * targets and sent from its composer: the Comment tool and the layer it
+   * turns on. Left out where nothing could send them.
    */
-  selectionTools?: boolean;
+  comments?: ChartCommentsHost | null;
   /**
    * How the chart frames the latest bars after a load: `centered` keeps the
    * MarketView page's look (last bar mid-chart, room to the right) while the
@@ -173,16 +169,7 @@ export interface MarketChartHandle {
   showTimeRange: (from: string, to: string) => boolean;
 }
 
-/** Max OHLCV bars sent with a region selection (downsampled past this). */
-// Keep this <= the server cap (_MAX_SELECTION_BARS in additional_context.py,
-// currently 500). Raising it past the server cap makes the server silently
-// slice the payload and flag it truncated even when the client thought it wasn't.
-const MAX_SELECTION_BARS = 300;
-
 const scrollWidthOf = (el: HTMLElement): number => el.scrollWidth;
-
-/** A drag smaller than this (px, either axis) is treated as a click, not a region. */
-const MIN_DRAG_PX = 4;
 
 /**
  * Restore the series' default last-value styling. lightweight-charts'
@@ -210,7 +197,7 @@ const MarketChart = React.memo(function MarketChart({
   wsStatus: _wsStatus,
   marketStatus,
   snapshot,
-  selectionTools = false,
+  comments = null,
   defaultView = 'centered',
   modeSwitcher = true,
   onLayerFrame,
@@ -241,7 +228,6 @@ const MarketChart = React.memo(function MarketChart({
   const maSeriesRefs = useRef<Record<number, any>>({});
   const baselineSeriesRef = useRef<any>(null);
   const extHoursBgRef = useRef<ExtendedHoursBgPrimitive | null>(null);
-  const selectionPrimitiveRef = useRef<SelectionPrimitive | null>(null);
   const extCloseLineRef = useRef<any>(null);
   // Signature of the last-applied session presentation (priceMark + close-line
   // price) — makes applySessionPresentation idempotent across its call sites.
@@ -290,11 +276,6 @@ const MarketChart = React.memo(function MarketChart({
   const [magnetMode, setMagnetMode] = useState<boolean>(() => loadPref('magnetMode', false));
   const [showBaseline, setShowBaseline] = useState<boolean>(false);
   const [annotationsVisible, setAnnotationsVisible] = useState<boolean>(() => loadPref('annotationsVisible', false));
-  // User chart-selection tool: drag a region or click a price level to ask the agent.
-  const [selectMode, setSelectMode] = useState<'off' | 'region' | 'price_level'>('off');
-  const selectModeRef = useRef<'off' | 'region' | 'price_level'>('off');
-  const selectDragRef = useRef<{ startX: number; startY: number } | null>(null);
-  useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
   const [overlayVisibility, setOverlayVisibility] = useState<OverlayVisibility>(
     () => loadPref('overlayVisibility', { earnings: false, grades: false, priceTargets: false }),
   );
@@ -451,6 +432,9 @@ const MarketChart = React.memo(function MarketChart({
   // --- Agent chart layers: drawn here, before the load effect, as the other overlays are ---
   const isCustom = effectiveChartMode === 'custom';
   const layerChartKey = chartKeyFor(workspaceId, symbol, interval);
+  // Comments are kept on the chart its layers are drawn on, and only the Light chart draws them.
+  const chartId = chartIdFor(symbol, interval);
+  const chartComments = useChartComments(comments, isCustom, { workspaceId, chartId });
   // What the chart plots itself, so a layer's copy of it is not drawn twice.
   const layerBuiltins = useMemo(() => ({ rsiPeriod, maPeriods: enabledMaPeriods, volume: true }), [rsiPeriod, enabledMaPeriods]);
   const layerDrawing = useChartLayerDrawing({
@@ -468,252 +452,6 @@ const MarketChart = React.memo(function MarketChart({
   // --- Series markers via hook (earnings + grades + layer markers) ---
   useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, layerDrawing.markers, theme as 'dark' | 'light');
 
-  // Selections are keyed by the timeframe the agent draws on (unknown
-  // intervals -> '1day'), as layers are (`chartKeyFor`), or they would be
-  // invisible on intervals the agent cannot write.
-  const annotationInterval = normalizeTimeframe(interval);
-  const selectionSymbol = symbol ? symbol.toUpperCase() : '';
-  const { selections: userSelections, activeId: editorOpenId } = useChartSelections();
-
-  // --- User chart selection (region / price level → agent) ---
-  // Keep the selection primitive's theme in sync.
-  useEffect(() => {
-    selectionPrimitiveRef.current?.setTheme(theme === 'dark' ? 'dark' : 'light');
-  }, [theme]);
-
-  // Render every selection drawn on the current instance (pending + confirmed),
-  // emphasizing the one whose editor is open.
-  useEffect(() => {
-    const prim = selectionPrimitiveRef.current;
-    if (!prim) return;
-    const items: CommittedSelection[] = [];
-    for (const sel of userSelections) {
-      if (sel.symbol !== selectionSymbol || sel.timeframe !== annotationInterval) continue;
-      const active = sel.id === editorOpenId;
-      if (sel.selectionType === 'price_level') {
-        items.push({ type: 'price_level', priceLow: sel.priceLow, priceHigh: sel.priceLow, active });
-        continue;
-      }
-      const t1 = sel.timeStart ? toUnixSeconds(sel.timeStart) : null;
-      const t2 = sel.timeEnd ? toUnixSeconds(sel.timeEnd) : null;
-      if (t1 == null || t2 == null) continue;
-      items.push({ type: 'region', time1: t1, time2: t2, priceLow: sel.priceLow, priceHigh: sel.priceHigh, active });
-    }
-    prim.setCommitted(items);
-  }, [userSelections, editorOpenId, selectionSymbol, annotationInterval]);
-
-  // Disable drag-pan while a select tool is armed so the drag draws a box.
-  useEffect(() => {
-    try {
-      chartRef.current?.applyOptions({ handleScroll: { pressedMouseMove: selectMode === 'off' } } as any);
-    } catch { /* chart disposed */ }
-    return () => {
-      try {
-        chartRef.current?.applyOptions({ handleScroll: { pressedMouseMove: true } } as any);
-      } catch { /* chart disposed */ }
-    };
-  }, [selectMode]);
-
-  // Switching the viewed instance drops selections drawn on the old one.
-  useEffect(() => {
-    const stale = chartSelectionStore
-      .getAll()
-      .some((s) => s.symbol !== selectionSymbol || s.timeframe !== annotationInterval);
-    if (stale) chartSelectionStore.clearAll();
-    setSelectMode('off');
-  }, [selectionSymbol, annotationInterval]);
-
-  // While a select tool is armed, Esc disarms it (unless the note editor has
-  // focus — it handles Esc itself and stops propagation).
-  useEffect(() => {
-    if (selectMode === 'off') return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && chartSelectionStore.getActiveId() == null) setSelectMode('off');
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectMode]);
-
-  // Capture a cropped JPEG of the selection's pixel sub-rect from the chart's
-  // native screenshot. lightweight-charts renders to a device-pixel canvas, so
-  // the CSS-pixel rect is scaled by the screenshot/container ratio. Best-effort:
-  // returns null on any failure (disposed chart, tainted canvas) — the
-  // structured bars still ride, the image is a vision-model bonus.
-  const captureSelectionCrop = useCallback(
-    (leftX: number, topY: number, rightX: number, bottomY: number): string | null => {
-      try {
-        const chart = chartRef.current;
-        const container = chartContainerRef.current;
-        if (!chart || !container) return null;
-        const shot = chart.takeScreenshot();
-        if (!shot) return null;
-        const scaleX = shot.width / container.clientWidth;
-        const scaleY = shot.height / container.clientHeight;
-        if (!(scaleX > 0) || !(scaleY > 0)) return null;
-        const pad = 6;
-        const sx = Math.max(0, Math.round((leftX - pad) * scaleX));
-        const sy = Math.max(0, Math.round((topY - pad) * scaleY));
-        const sw = Math.min(shot.width - sx, Math.round((rightX - leftX + pad * 2) * scaleX));
-        const sh = Math.min(shot.height - sy, Math.round((bottomY - topY + pad * 2) * scaleY));
-        if (sw <= 0 || sh <= 0) return null;
-        const out = document.createElement('canvas');
-        out.width = sw;
-        out.height = sh;
-        const cctx = out.getContext('2d');
-        if (!cctx) return null;
-        cctx.drawImage(shot, sx, sy, sw, sh, 0, 0, sw, sh);
-        return out.toDataURL('image/jpeg', 0.85);
-      } catch (err) {
-        console.warn('Chart selection crop failed:', err);
-        return null;
-      }
-    },
-    [],
-  );
-
-  const commitRegionSelection = useCallback((x1: number, y1: number, x2: number, y2: number) => {
-    const chart = chartRef.current;
-    const series = candlestickSeriesRef.current;
-    const container = chartContainerRef.current;
-    if (!chart || !series || !container) return;
-    const leftX = Math.min(x1, x2);
-    const rightX = Math.max(x1, x2);
-    const topY = Math.min(y1, y2);
-    const bottomY = Math.max(y1, y2);
-    if (rightX - leftX < MIN_DRAG_PX || bottomY - topY < MIN_DRAG_PX) return; // ignore a click / micro-drag
-
-    const priceHigh = series.coordinateToPrice(topY);
-    const priceLow = series.coordinateToPrice(bottomY);
-    if (priceHigh == null || priceLow == null || !Number.isFinite(priceHigh) || !Number.isFinite(priceLow)) return;
-
-    const allBars = allDataRef.current;
-    const ts = chart.timeScale();
-    const rawL = ts.coordinateToTime(leftX);
-    const rawR = ts.coordinateToTime(rightX);
-    const secL = typeof rawL === 'number' ? rawL : null;
-    const secR = typeof rawR === 'number' ? rawR : null;
-    const t1 = secL != null ? (snapToNearestBar(allBars as any, secL) ?? secL) : (allBars[0]?.time ?? null);
-    const t2 = secR != null ? (snapToNearestBar(allBars as any, secR) ?? secR) : (allBars[allBars.length - 1]?.time ?? null);
-    if (t1 == null || t2 == null) return;
-    const startSec = Math.min(t1, t2);
-    const endSec = Math.max(t1, t2);
-
-    const inRange = allBars.filter((b) => b.time >= startSec && b.time <= endSec);
-    const { bars: chosen, truncated } = downsampleBars(inRange, MAX_SELECTION_BARS);
-    const selBars = chosen.map((b) => ({
-      time: new Date(b.time * 1000).toISOString(),
-      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
-    }));
-
-    // Crop the region from the chart now — the draft box is cleared right after
-    // commit and a pan/zoom would invalidate the pixel rect.
-    const croppedImage = captureSelectionCrop(leftX, topY, rightX, bottomY) ?? undefined;
-
-    chartSelectionStore.beginDraft({
-      symbol: selectionSymbol,
-      timeframe: annotationInterval,
-      selectionType: 'region',
-      timeStart: new Date(startSec * 1000).toISOString(),
-      timeEnd: new Date(endSec * 1000).toISOString(),
-      priceLow: Math.min(priceLow, priceHigh),
-      priceHigh: Math.max(priceLow, priceHigh),
-      // The axis's own places, so the bounds print as the chart showed them.
-      decimals: priceFormatRef.current.decimals,
-      bars: selBars,
-      barsTruncated: truncated,
-      croppedImage,
-    });
-  }, [selectionSymbol, annotationInterval, captureSelectionCrop, priceFormatRef]);
-
-  const handleSelectPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const mode = selectModeRef.current;
-    if (mode === 'off') return;
-    const container = chartContainerRef.current;
-    const prim = selectionPrimitiveRef.current;
-    if (!container || !prim) return;
-    const rect = container.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const rawY = e.clientY - rect.top;
-    // The RSI pane shares this container; a gesture there is not a price, and
-    // with no pane measured there is no price to read. Either tool starts on
-    // the price pane, so a selection's bounds are points the user chose.
-    const paneH = pricePaneHeight(chartRef.current);
-    if (paneH <= 0) return;
-    if (!isOnPricePane(rawY, paneH)) return;
-    const y = clampToPricePane(rawY, paneH);
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
-    selectDragRef.current = { startX: x, startY: y };
-    prim.setDraft(
-      mode === 'price_level'
-        ? { type: 'price_level', x1: 0, y1: y, x2: rect.width, y2: y }
-        : { type: 'region', x1: x, y1: y, x2: x, y2: y },
-    );
-  }, []);
-
-  const handleSelectPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = selectDragRef.current;
-    if (!drag) return;
-    const container = chartContainerRef.current;
-    const prim = selectionPrimitiveRef.current;
-    if (!container || !prim) return;
-    const rect = container.getBoundingClientRect();
-    const paneH = pricePaneHeight(chartRef.current);
-    if (paneH <= 0) return;
-    const x = e.clientX - rect.left;
-    const y = clampToPricePane(e.clientY - rect.top, paneH);
-    prim.setDraft(
-      selectModeRef.current === 'price_level'
-        ? { type: 'price_level', x1: 0, y1: y, x2: rect.width, y2: y }
-        : { type: 'region', x1: drag.startX, y1: drag.startY, x2: x, y2: y },
-    );
-  }, []);
-
-  const handleSelectPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = selectDragRef.current;
-    selectDragRef.current = null;
-    selectionPrimitiveRef.current?.setDraft(null);
-    if (!drag) return; // stray pointerup with no draw — stay armed
-    const mode = selectModeRef.current;
-    const container = chartContainerRef.current;
-    const series = candlestickSeriesRef.current;
-    const paneH = pricePaneHeight(chartRef.current);
-    if (container && series && paneH > 0) {
-      const rect = container.getBoundingClientRect();
-      const endX = e.clientX - rect.left;
-      const endY = clampToPricePane(e.clientY - rect.top, paneH);
-      try {
-        if (mode === 'price_level') {
-          const price = series.coordinateToPrice(endY);
-          if (price != null && Number.isFinite(price)) {
-            chartSelectionStore.beginDraft({
-              symbol: selectionSymbol,
-              timeframe: annotationInterval,
-              selectionType: 'price_level',
-              priceLow: price, priceHigh: price,
-              decimals: priceFormatRef.current.decimals,
-              bars: [], barsTruncated: false,
-            });
-          }
-        } else {
-          commitRegionSelection(drag.startX, drag.startY, endX, endY);
-        }
-      } catch (err) {
-        // The chart can be disposed mid-gesture (benign, rare); any other
-        // failure here is a real commit bug. Log at warn so it stays visible
-        // in prod — console.debug is below the browser's default threshold.
-        console.warn('Chart selection commit failed:', err);
-      }
-    }
-    // Tool stays armed so the user can keep drawing; Esc / the tool button disarms.
-  }, [commitRegionSelection, selectionSymbol, annotationInterval, priceFormatRef]);
-
-  const handleSelectPointerCancel = useCallback(() => {
-    // Pointer sequence aborted (touch interrupted, capture stolen) before a
-    // pointerup — drop the in-progress draft and disarm the drag so the box
-    // doesn't stick on screen. Tool stays armed, like a stray pointerup.
-    selectDragRef.current = null;
-    selectionPrimitiveRef.current?.setDraft(null);
-  }, []);
 
   // --- Session presentation (the one writer) ---
   // deriveMarketSession (lib/bars/marketSession) makes every "what does the
@@ -1329,11 +1067,6 @@ const MarketChart = React.memo(function MarketChart({
     extHoursBgRef.current = new ExtendedHoursBgPrimitive();
     candlestickSeriesRef.current.attachPrimitive(extHoursBgRef.current);
 
-    // User chart-selection primitive (draft + committed region / price level)
-    selectionPrimitiveRef.current = new SelectionPrimitive();
-    candlestickSeriesRef.current.attachPrimitive(selectionPrimitiveRef.current);
-    selectionPrimitiveRef.current.setTheme(theme === 'dark' ? 'dark' : 'light');
-
     // Volume histogram series
     volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
@@ -1819,7 +1552,7 @@ const MarketChart = React.memo(function MarketChart({
     interval,
     theme,
     enabled: isCustom,
-    explainEnabled: selectMode === 'off',
+    explainEnabled: !chartComments.mode,
     defaultView,
     loading,
   });
@@ -2115,30 +1848,6 @@ const MarketChart = React.memo(function MarketChart({
     </>
   );
 
-  // Region / price-level selection — first-class toolbar buttons (kept out of
-  // the secondary Tools dropdown so the agent hand-off is one click away).
-  const renderSelectionButtons = () => (
-    <>
-      <button
-        type="button"
-        className={`chart-tool-btn${selectMode === 'region' ? ' chart-tool-btn-active' : ''}`}
-        onClick={() => setSelectMode((m) => (m === 'region' ? 'off' : 'region'))}
-        title={t('marketView:selection.toolRegion')}
-        aria-label={t('marketView:selection.toolRegion')}
-      >
-        <SquareDashedMousePointer size={14} />
-      </button>
-      <button
-        type="button"
-        className={`chart-tool-btn${selectMode === 'price_level' ? ' chart-tool-btn-active' : ''}`}
-        onClick={() => setSelectMode((m) => (m === 'price_level' ? 'off' : 'price_level'))}
-        title={t('marketView:selection.toolPriceLevel')}
-        aria-label={t('marketView:selection.toolPriceLevel')}
-      >
-        <Ruler size={14} />
-      </button>
-    </>
-  );
 
   // Light / Advanced (custom vs TradingView) mode toggle. Inline by default;
   // tucked into the overflow menu at the narrowest tier (phone widths).
@@ -2303,14 +2012,9 @@ const MarketChart = React.memo(function MarketChart({
         <div className="chart-tools-right">
           {!isTV && (
             <>
-              {/* Selection tools — first-class, both layouts. Primary entry
-                  point for the chart → agent hand-off, so not buried in a
-                  dropdown. Only meaningful on the Light chart (custom mode). */}
-              {selectionTools && (
-                <div className="chart-tool-buttons">
-                  {renderSelectionButtons()}
-                </div>
-              )}
+              {/* Comments on the Light chart, inline at every width, as the
+                  other viewers keep their comment mode one click away. */}
+              {chartComments.tools}
               {/* Tools dropdown — inline until tier 3, then into the menu */}
               <div className="toolbar-dropdown toolbar-item--tools" ref={toolsDropdownRef}>
                 <button
@@ -2433,34 +2137,13 @@ const MarketChart = React.memo(function MarketChart({
                 suppressed={chartLayers.cardOpen}
               />
               {chartLayers.ui}
-              {effectiveChartMode === 'custom' && (
-                <div
-                  className="chart-selection-capture"
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    zIndex: 15,
-                    // Off while an editor is open so its textarea is usable; the
-                    // user finishes the note (Add/Cancel) before drawing the next.
-                    pointerEvents: selectMode !== 'off' && editorOpenId == null ? 'auto' : 'none',
-                    cursor: selectMode !== 'off' && editorOpenId == null ? 'crosshair' : 'default',
-                    touchAction: selectMode !== 'off' && editorOpenId == null ? 'none' : 'auto',
-                  }}
-                  onPointerDown={handleSelectPointerDown}
-                  onPointerMove={handleSelectPointerMove}
-                  onPointerUp={handleSelectPointerUp}
-                  onPointerCancel={handleSelectPointerCancel}
-                  onLostPointerCapture={handleSelectPointerCancel}
-                />
-              )}
-              {effectiveChartMode === 'custom' && (
-                <SelectionCommentOverlay
-                  chartRef={chartRef}
-                  seriesRef={candlestickSeriesRef}
-                  symbol={selectionSymbol}
-                  timeframe={annotationInterval}
-                />
-              )}
+              {chartComments.layer({
+                chart,
+                seriesRef: candlestickSeriesRef,
+                content: chart ? chartContainerRef.current : null,
+                drawing: layerDrawing,
+                interval,
+              })}
               {scrollLoading && (
                 <div className="chart-scroll-loading">
                   <Loader size={16} label={t('marketView:chart.loadingHistory')} style={{ color: 'var(--color-text-secondary)' }} />

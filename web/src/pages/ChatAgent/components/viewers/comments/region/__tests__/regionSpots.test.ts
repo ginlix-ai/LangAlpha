@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RegionAnchor } from '@/types/artifacts';
-import { OWN_ATTR, boxOf, ownChange, regionSpots, type RegionSurfaces } from '../regionSpots';
+import { OWN_ATTR, ownChange } from '../../spotKit';
+import { boxOf, regionSpots, type RegionSurfaces } from '../regionSpots';
 
 /** A surface 400 by 200 at (100, 50), as the browser would lay it out. */
 function surface(): HTMLElement {

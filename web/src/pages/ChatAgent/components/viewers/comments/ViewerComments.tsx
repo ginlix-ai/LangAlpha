@@ -2,16 +2,18 @@ import { Suspense, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { LazyCommentLayer } from '../html/comments/lazyCommentLayer';
 import type { CommentUi } from '../html/comments/useCommentUi';
-import type { ArtifactCommentAnchor } from '@/types/artifacts';
+import type { ArtifactCommentAnchor, ArtifactTarget } from '@/types/artifacts';
 import type { SpotStrategy } from './spotStrategy';
 import type { ViewerPageOptions } from './viewerPage';
 import { useViewerPage } from './useViewerPage';
-import { withPictures, type PictureSource } from './region/regionPictures';
+import type { PictureWriter } from './region/regionPictures';
 
-/** The owner's comments on a file a viewer in the app draws: where the file is, and the controls its tab holds. */
-export interface ViewerCommentsTarget {
+/**
+ * The owner's comments on a file a viewer in the app draws, or on a chart:
+ * what they are on, as the tab holds it, where, and the controls its tab holds.
+ */
+export interface ViewerCommentsTarget extends ArtifactTarget {
   workspaceId: string;
-  path: string;
   tabId: string;
   ui: CommentUi;
   /** The tab is in front of an active panel: keys and asks are its. */
@@ -33,15 +35,15 @@ export function ViewerComments({ scroller, content, strategy, target, modeHint, 
   /** What a click picks in this viewer, said while the mode is on. */
   modeHint: string;
   title?: ViewerPageOptions['title'];
-  /** What a box's picture is cut from, written for the agent as its comment is saved; left out where boxes are not drawn. */
-  pictures?: PictureSource | null;
+  /** Writes a box's picture for the agent as its comment is saved; left out where boxes are not drawn. */
+  pictures?: PictureWriter | null;
   /** A comment's box opens over or under its spot, so what was boxed stays in view. */
   keepSpotClear?: boolean;
 }) {
   const { bridge, view: pageView, pickWords, holdsWords } = useViewerPage({ scroller, content, strategy, path: target.path, title });
   const { workspaceId, path } = target;
   const writePictures = useMemo(
-    () => (pictures ? (anchor: ArtifactCommentAnchor) => withPictures(anchor, { workspaceId, path, source: pictures }) : undefined),
+    () => (pictures ? (anchor: ArtifactCommentAnchor) => pictures(anchor, { workspaceId, path }) : undefined),
     [workspaceId, path, pictures],
   );
   const host = scroller?.parentElement;
@@ -52,7 +54,7 @@ export function ViewerComments({ scroller, content, strategy, target, modeHint, 
       <LazyCommentLayer
         tabId={target.tabId}
         workspaceId={target.workspaceId}
-        path={target.path}
+        target={target}
         bridge={bridge}
         view={pageView}
         active={target.active}

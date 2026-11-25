@@ -685,3 +685,9 @@
   z-index: 17;
   max-width: min(320px, 45%);
 }
+
+/* The comment layer over the chart: its pins, box and list sit over the
+   legend, the tooltip and the explain card, as they do over a file. */
+.charts-container > .page-comments {
+  z-index: 22;
+}

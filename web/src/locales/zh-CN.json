@@ -937,7 +937,9 @@
         "labelQuote": "{{label}} · “{{quote}}”",
         "quote": "“{{quote}}”",
         "open": "在文件中查看",
-        "openLabel": "在文件中查看评论 {{number}}"
+        "openLabel": "在文件中查看评论 {{number}}",
+        "open_chart": "在图表上查看",
+        "openLabel_chart": "在图表上查看评论 {{number}}"
       },
       "reply": {
         "replied_other": "已回复 {{title}} 上的评论 <nums/>",
@@ -946,7 +948,8 @@
         "unread": "未读",
         "showMore": "展开",
         "showLess": "收起",
-        "readRest": "在文件中阅读完整回复"
+        "readRest": "在文件中阅读完整回复",
+        "readRest_chart": "在图表上阅读完整回复"
       },
       "deck": {
         "queuedCount_other": "{{count}} 条待发送评论",
@@ -957,6 +960,7 @@
         "addToTurn": "加入本轮",
         "addToTurnTitle": "发送到正在进行的这一轮，你写的内容作为它们的备注",
         "showInFile": "在文件中查看",
+        "showInFile_chart": "在图表上查看",
         "keepOne": "保留为笔记：留在文件上，不发送",
         "keepOneLabel": "将评论 {{number}} 保留为笔记",
         "more": "还有 {{rest}} 条",
