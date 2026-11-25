@@ -296,7 +296,7 @@ async def test_a_render_that_cannot_read_them_fails(monkeypatch, threads) -> Non
     _, on = threads
     _serve(monkeypatch, on, SliceStore())
 
-    async def unreadable(thread_id, tip, head):
+    async def unreadable(thread_id, tip, head, *, after=Window()):
         return None
 
     monkeypatch.setattr(window_module, "earlier_runs", unreadable)

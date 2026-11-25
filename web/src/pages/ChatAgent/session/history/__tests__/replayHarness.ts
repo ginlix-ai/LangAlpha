@@ -29,6 +29,7 @@ export function buildRuntime() {
     setFallbackSuggestion: vi.fn(),
     setThreadModels: vi.fn(),
     setTokenUsage: vi.fn(),
+    setForkDivider: vi.fn(),
     setNextSummary: vi.fn(),
     setReloadTrigger: vi.fn(),
     setThreadId: vi.fn(),

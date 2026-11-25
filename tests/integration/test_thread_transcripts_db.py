@@ -548,7 +548,7 @@ async def test_a_task_finishing_mid_export_ends_stored_finished(
 
     from ptc_agent.agent.transcript import TranscriptTarget, load_manifest
     from src.server.database.runs import subagent_runs
-    from src.server.database.thread_transcripts import load_stored
+    from src.server.database.thread_transcripts import ThreadCheckpoint, load_stored
     from src.server.services import transcripts
 
     lock = f"transcripts:export:{thread.id}"
@@ -589,8 +589,8 @@ async def test_a_task_finishing_mid_export_ends_stored_finished(
     monkeypatch.setattr(transcripts, "_cache", lambda: caches.pop(0))
     monkeypatch.setattr(transcripts, "_target", AsyncMock(return_value=target))
     monkeypatch.setattr(
-        "src.server.database.conversation.get_thread_checkpoint_id",
-        AsyncMock(return_value=CP_OLD),
+        "src.server.database.thread_transcripts.thread_checkpoint",
+        AsyncMock(return_value=ThreadCheckpoint(thread.workspace_id, CP_OLD, None)),
     )
     monkeypatch.setattr(
         "src.server.services.history.reader.CheckpointHistoryReader.get_instance",
@@ -598,7 +598,9 @@ async def test_a_task_finishing_mid_export_ends_stored_finished(
     )
 
     first = asyncio.create_task(transcripts.export_thread(thread.workspace_id, thread.id))
-    await first_reading.wait()
+    # Bounded: an export that never reads would otherwise hang the suite.
+    async with asyncio.timeout(5):
+        await first_reading.wait()
     if while_first_reads is not None:
         await while_first_reads()
     await subagent_runs.finalize_task_run(

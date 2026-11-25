@@ -58,7 +58,7 @@ class _Mount:
 
     async def save_transcript(self, target, messages, *, window):
         self.saved.append(len(messages))
-        return self.saves
+        return target if self.saves else None
 
 
 def _sandbox(saves: bool = True, linked: bool = True):

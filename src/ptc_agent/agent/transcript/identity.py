@@ -172,38 +172,55 @@ class Window:
             self.version,
         )
 
-    def holds(self, messages: Sequence[AnyMessage]) -> bool:
-        """Whether ``messages`` are exactly the ones trimmed."""
-        return len(messages) == self.messages and self._extend("", messages) == self.digest
+    def holds(self, messages: Sequence[AnyMessage], base: Window | None = None) -> bool:
+        """Whether ``messages`` are exactly the ones trimmed after ``base``
+        (none: from the first). A fork holds nothing before the state it was
+        made with, so its trimmed messages are checked from its window there."""
+        base = base or _EMPTY
+        return (
+            len(messages) == self.messages - base.messages
+            and self._extend(base.digest, messages) == self.digest
+        )
 
     def extend_held(
-        self, messages: Sequence[AnyMessage], held: Sequence[AnyMessage]
+        self,
+        messages: Sequence[AnyMessage],
+        held: Sequence[AnyMessage],
+        base: Window | None = None,
     ) -> Window | None:
         """This window with ``messages`` trimmed after it, if ``held`` is
-        exactly its messages and then those, else None, hashed under
-        ``DIGEST_VERSION``.
+        exactly its messages after ``base`` and then those, else None.
 
-        A window hashed under an older digest is rehashed from ``held``
-        unchecked: that digest took answers in the order they loaded, which
-        a later load need not repeat, and what it trimmed lives only in the
-        slices already. ``messages`` are still checked in full, where its
-        count puts them.
+        A window counted from the first message (an empty ``base``) and
+        hashed under an older digest is rehashed from ``held`` unchecked,
+        under ``DIGEST_VERSION``: that digest took answers in the order they
+        loaded, which a later load need not repeat, and what it trimmed lives
+        only in the slices already. One counted from a later ``base`` stays
+        under its digest, since nothing before ``base`` is in hand to rehash.
+        ``messages`` are still checked in full, where its count puts them.
         """
-        earlier, later = held[: self.messages], held[self.messages :]
-        if len(earlier) != self.messages or len(later) != len(messages):
+        base = base or _EMPTY
+        cut = self.messages - base.messages
+        if cut < 0:
             return None
-        base = self
-        if self.version != DIGEST_VERSION:
-            base = replace(self, digest=extend("", earlier), version=DIGEST_VERSION)
-        elif not self.holds(earlier):
+        earlier, later = held[:cut], held[cut:]
+        if len(earlier) != cut or len(later) != len(messages):
             return None
-        head = base.extend(messages)
-        return head if extend(base.digest, later) == head.digest else None
+        start = self
+        if self.version != DIGEST_VERSION and not base.messages:
+            start = replace(self, digest=extend("", earlier), version=DIGEST_VERSION)
+        elif not self.holds(earlier, base):
+            return None
+        head = start.extend(messages)
+        return head if start._extend(start.digest, later) == head.digest else None
 
     def _extend(self, digest: str, messages: Iterable[AnyMessage]) -> str:
         if self.version == DIGEST_VERSION:
             return extend(digest, messages)
         return _chain(digest, messages)
+
+
+_EMPTY = Window()
 
 
 def newest_lines(lines: Mapping[int, str], last: int) -> dict[int, str]:

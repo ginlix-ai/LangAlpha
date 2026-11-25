@@ -1,18 +1,18 @@
-"""What a fork's first turn carries over that the copy could not.
+"""What a fork's first turn carries over that the fork could not.
 
-The copy is made on the server, where no computer need be awake, so what
+The fork is made on the server, where no computer need be awake, so what
 lives on the computer (the scratchpad folder) goes at the fork's first turn,
 which has the computer. That turn's row also tells the agent it is in a fork,
 and the fork is titled after its first message.
 
-The fork's first turn, whatever it starts from (the cut, an edit of a copied
-turn, or a regenerate of a copied reply), claims the carry once by stamping ``carried_at``
-in the lineage, so a later edit back into the copied turns states and copies
-nothing again, and work done to the thread before any message (a model
-switch's hand-off, a compaction) does not hide its first turn. A first turn
-that fails after the claim keeps what it copied but not its notice. The title
-is apart from the claim: the first turn with words in it retitles the fork, a
-regenerate before it having none to title by.
+The fork's first turn, whatever it starts from (the cut, or an edit or a
+regenerate of that first turn), claims the carry once by stamping
+``carried_at`` in the lineage, so a later edit back to the cut states and
+copies nothing again, and work done to the thread before any message (a
+model switch's hand-off, a compaction) does not hide its first turn. A first
+turn that fails after the claim keeps what it copied but not its notice. The
+title is apart from the claim: the first turn with words in it retitles the
+fork, a regenerate before it having none to title by.
 """
 
 from __future__ import annotations
@@ -44,11 +44,11 @@ class ForkTurnStart:
     title, until a message retitles it. Nothing on any other thread."""
 
     lineage: Optional[ForkLineage] = None
-    #: The carry is unclaimed: any turn but a resume, a new message or a
-    #: regenerate of a copied reply.
+    #: The carry is unclaimed.
     carry: bool = False
-    #: The turn starts on history the copy made, which the notice speaks of;
-    #: false for a fork with none and for an edit of its first turn.
+    #: The turn starts on the state the fork was made with, which the notice
+    #: speaks of; false for a fork made with none and for a turn started
+    #: from the empty root.
     on_copied_history: bool = False
     #: The fork still has the title it was made with.
     retitle: bool = False

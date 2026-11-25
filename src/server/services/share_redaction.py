@@ -224,6 +224,25 @@ def _wakeup_args(args: Any) -> Any:
     return {**args, "triggers": without_keys(triggers, _WAKEUP_ORDER_KEYS)}
 
 
+def _anonymous_divider(data: dict[str, Any]) -> dict[str, Any]:
+    """A fork's divider with the threads it names replaced by stand-ins. A
+    viewer of the share opens none of them, so their ids only say which of
+    the owner's chats the fork came from. Each id keeps one stand-in, so the
+    turns the client reads as borrowed stay so."""
+    names: dict[str, str] = {}
+
+    def stand_in(thread_id: Any) -> str:
+        return names.setdefault(str(thread_id), f"original-{len(names) + 1}")
+
+    out = {**data, "source_thread_id": stand_in(data.get("source_thread_id"))}
+    if isinstance(data.get("segments"), list):
+        out["segments"] = [
+            {**seg, "thread_id": stand_in(seg.get("thread_id"))} if isinstance(seg, dict) else seg
+            for seg in data["segments"]
+        ]
+    return out
+
+
 def _without_user_id_pairs(text: str) -> str:
     """``text`` less every quoted ``user_id`` pair, with the comma it leaves."""
     return _USER_ID_PAIR_LAST.sub("", _USER_ID_PAIR_FIRST.sub("", text))
@@ -301,6 +320,8 @@ class ShareRedaction:
                 ]
         if event_type in _ERROR_TEXT_EVENTS:
             data.pop("error", None)
+        if event_type == "fork_divider":
+            data = _anonymous_divider(data)
         if event_type == "tool_calls":
             self._tool_calls(data)
         elif event_type == "tool_call_result":

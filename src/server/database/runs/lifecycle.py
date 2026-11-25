@@ -240,18 +240,24 @@ async def _lifecycle_connection(conn=None):
 
 
 async def allocate_turn_index(conn, thread_id: str) -> int:
-    """Next turn = MAX+1 across queries ∪ responses (gap-robust, unlike COUNT)."""
+    """Next turn = MAX+1 across queries ∪ responses (gap-robust, unlike COUNT).
+
+    A fork made from a snapshot holds no rows for the turns it borrows, so its
+    numbering starts at its lineage's ``borrow.turn_base``, continuing its source's."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             SELECT GREATEST(
                 COALESCE((SELECT MAX(turn_index) FROM conversation_queries
-                          WHERE conversation_thread_id = %s), -1),
+                          WHERE conversation_thread_id = %s), -1) + 1,
                 COALESCE((SELECT MAX(turn_index) FROM conversation_responses
-                          WHERE conversation_thread_id = %s), -1)
-            ) + 1 AS next_turn
+                          WHERE conversation_thread_id = %s), -1) + 1,
+                COALESCE((SELECT (metadata->'fork'->'borrow'->>'turn_base')::int
+                          FROM conversation_threads
+                          WHERE conversation_thread_id = %s), 0)
+            ) AS next_turn
             """,
-            (thread_id, thread_id),
+            (thread_id, thread_id, thread_id),
         )
         row = await cur.fetchone()
         return row["next_turn"]

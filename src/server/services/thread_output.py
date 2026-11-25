@@ -3,7 +3,9 @@
 ``GET /api/v1/threads/{id}/output`` serves it, which ``la threads output``
 prints; the Chief of Staff reads its analysts' threads that way. Relative file
 links are qualified with their workspace, so the reader resolves them in the
-right folder from anywhere.
+right folder from anywhere. A fork made from a snapshot of another thread
+holds no runs before its own, so a read that reaches past them says where
+they are.
 """
 
 import functools
@@ -21,6 +23,7 @@ from src.server.database.computer import get_computer_for_workspace
 from src.server.database.conversation.responses import get_recent_responses_for_thread
 from src.server.database.conversation.threads_read import get_thread_by_id
 from src.server.database.runs import lifecycle as tl_db
+from src.server.services.forks.model import ForkLineage
 from src.server.services.history.committed import committed_texts
 from src.server.services.runs.stream_writer import stream_key
 from src.tools.wakeups.clock import Zone, user_zone_of
@@ -472,8 +475,36 @@ async def extract_text_from_thread(
             room = MAX_OUTPUT_CHARS - len(blocks[1]) - len(_TURN_SEPARATOR)
             blocks[0] = _truncate_within(blocks[0], room)
         text = _join_recent_turns(blocks)
+        lineage = ForkLineage.of(thread.get("metadata"))
+        if lineage is not None and _reaches_borrowed(lineage, runs):
+            line = _forked_from_line(lineage)
+            text = f"{line}\n\n{text}" if text else line
 
     return ThreadOutput(workspace_id=workspace_id or None, status=status, text=text)
+
+
+def _reaches_borrowed(lineage: ForkLineage, runs: list[dict[str, Any]]) -> bool:
+    """Whether a read of a snapshot fork reached its first own turn, past
+    which its runs are the source's: it read none, or its oldest is there."""
+    borrow = lineage.borrow
+    if borrow is None or not borrow.ancestors:
+        return False
+    return not runs or (runs[0].get("turn_index") or 0) <= borrow.turn_base
+
+
+def _forked_from_line(lineage: ForkLineage) -> str:
+    """Where a snapshot fork's turns before its own are: the first
+    ``turn_base`` turns of the thread it was forked from. The cut, not the
+    fork's time, bounds them: that chat's later turns may predate the fork."""
+    assert lineage.borrow is not None
+    kept = lineage.borrow.turn_base
+    return (
+        f"[This chat carries on from the first {kept} turns of chat "
+        f"{lineage.thread_id}, which it was forked from, and holds only its own "
+        f"turns after them. `la threads output {lineage.thread_id} --turns N` "
+        f"prints that chat's newest N turns; any after its first {kept} are not "
+        "part of this one.]"
+    )
 
 
 def _run_block(run: dict[str, Any], text: str, zone: Zone) -> str:

@@ -29,6 +29,7 @@ from src.server.database.conversation import ThreadPrefixes
 from src.server.database.thread_transcripts import (
     StaleCopy,
     StoredTranscript,
+    ThreadCheckpoint,
     _changed_rows,
 )
 from src.server.services import transcripts
@@ -151,8 +152,8 @@ def store():
         patch.object(transcripts, "_render", render),
         patch.object(transcripts, "_target", AsyncMock(return_value=_target())),
         patch(
-            "src.server.database.conversation.get_thread_checkpoint_id",
-            AsyncMock(return_value="cp-1"),
+            "src.server.database.thread_transcripts.thread_checkpoint",
+            AsyncMock(return_value=ThreadCheckpoint("ws-1", "cp-1", None)),
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", lambda: state.cache),
         patch(

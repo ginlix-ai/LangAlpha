@@ -407,7 +407,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const handleDeleteClick = useCallback((thread: Record<string, unknown>) => {
     const { thread_id: threadId, title } = thread as ThreadRecord;
     if (!threadId) return;
-    requestDelete(title || t('nav.untitledThread'), async () => {
+    requestDelete(threadId, title || t('nav.untitledThread'), async () => {
       await deleteThreadRow(queryClient, workspaceId, threadId);
       // If the deleted thread is currently active, navigate back to thread gallery
       if (currentThreadId === threadId) {

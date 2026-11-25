@@ -5,6 +5,7 @@
  * page that something overtook on its way changes nothing.
  */
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
+import type { ForkDividerEvent } from '@/types/api';
 import { createRecentlySentTracker } from '../../hooks/utils/recentlySentTracker';
 import { createRequestKeyTracker } from '../../hooks/utils/requestKey';
 import { flushOffloadBatch } from '../../hooks/utils/contextWindowEvent';
@@ -56,6 +57,8 @@ export interface OlderHistoryPage {
   renderedInterruptIds: Set<string>;
   /** Models the page's turns ran on. */
   threadModels: string[];
+  /** Where a fork's borrowed turns end, when this page holds that point. */
+  forkDivider: ForkDividerEvent | null;
   /** Tasks the page touched, merged with what newer pages held of them. */
   subagents: Map<string, SubagentHistoryData>;
   /** The runs the page alone holds of each task it touched. */
@@ -110,6 +113,7 @@ export async function loadOlderHistoryPage(
 ): Promise<OlderHistoryPage | null> {
   let local: ChatMessage[] = [];
   let models: string[] = [];
+  let forkDivider: ForkDividerEvent | null = null;
   const usage: { current: TokenUsage | null } = { current: null };
   const noop = () => {};
   const renderedInterruptIds = new Set(rt.renderedInterruptIdsRef.current);
@@ -132,6 +136,9 @@ export async function loadOlderHistoryPage(
     },
     setTokenUsage: (next) => {
       usage.current = typeof next === 'function' ? next(usage.current) : next;
+    },
+    setForkDivider: (next) => {
+      forkDivider = typeof next === 'function' ? next(forkDivider) : next;
     },
     setReloadTrigger: noop,
     setThreadId: noop,
@@ -238,6 +245,7 @@ export async function loadOlderHistoryPage(
     },
     renderedInterruptIds,
     threadModels: models,
+    forkDivider,
     subagents,
     ownSubagents: ownCarry.subagents,
     tokens: {
@@ -306,6 +314,7 @@ export function commitOlderHistoryPage(
     // totals are what the view has loaded, so the page's calls join them.
     rt.setTokenUsage((prev) => withPageTotals(prev, older.tokens));
   }
+  if (older.forkDivider) rt.setForkDivider(older.forkDivider);
   if (older.threadModels.length > 0) {
     // Older turns first, so the list stays in the order the thread used them.
     rt.setThreadModels((prev) => [...new Set([...older.threadModels, ...prev])]);

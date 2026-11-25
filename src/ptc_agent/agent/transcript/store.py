@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import AnyMessage
 
@@ -47,12 +47,42 @@ def task_subdir(short_thread_id: str, task_id: str) -> str:
     return f"{transcript_subdir(short_thread_id)}/{task_relpath(task_id)}"
 
 
+#: Whether a forked thread's borrowed files still match what it saw:
+#: ``changed`` once the thread holding them was edited before the fork's cut,
+#: ``deleted`` once it is gone.
+BorrowedState = Literal["shown", "changed", "deleted", "unavailable"]
+
+
+@dataclass(frozen=True)
+class BorrowedFiles:
+    """Turns ``first`` to ``last`` of a forked thread, whose files are in
+    the transcript of thread ``thread_id``, which it was forked from."""
+
+    thread_id: str
+    first: int
+    last: int
+    state: BorrowedState = "shown"
+
+    def as_manifest(self, directory: str, unit: str = "turn") -> dict[str, Any]:
+        """The manifest's entry, ``directory`` being that thread's transcript
+        as the reader resolves it."""
+        return {
+            "thread_id": self.thread_id,
+            "transcript": directory,
+            "files_from": segment_file(unit, self.first),
+            "files_through": segment_file(unit, self.last),
+        }
+
+
 @dataclass(frozen=True)
 class TranscriptTarget:
     """One agent's transcript: a thread's turns, or one task's runs in it."""
 
     thread_id: str
     task_id: str | None = None
+    #: A forked thread's turns before its own, oldest first, in the
+    #: transcripts that hold them: its own files start after the last.
+    borrowed: tuple[BorrowedFiles, ...] = ()
 
     @classmethod
     def for_agent(cls, thread_id: str, checkpoint_ns: str = "") -> TranscriptTarget:
@@ -86,6 +116,30 @@ class TranscriptTarget:
     def prefix(self) -> str:
         """Where this agent's files sit in its thread's stored copy."""
         return f"{task_relpath(self.task_id)}/" if self.task_id else ""
+
+    def directory_of(self, number: int) -> str:
+        """The directory holding file ``number``: a borrowed one's thread's."""
+        for files in self.borrowed:
+            if files.first <= number <= files.last:
+                return TranscriptTarget(files.thread_id).directory
+        return self.directory
+
+    def file_name(self, number: int) -> str:
+        """File ``number`` as a summary names it: bare in this agent's
+        directory, under its directory when a chat this was forked from
+        holds it."""
+        name = segment_file(self.unit, number)
+        directory = self.directory_of(number)
+        return name if directory == self.directory else f"{directory}/{name}"
+
+    def file_path(self, number: int) -> str:
+        """File ``number``'s workspace-relative path."""
+        return f"{self.directory_of(number)}/{segment_file(self.unit, number)}"
+
+    @property
+    def own_first(self) -> int:
+        """The first file this agent's own manifest lists."""
+        return self.borrowed[-1].last + 1 if self.borrowed else 1
 
 
 def segment_file(unit: str, number: int) -> str:
@@ -161,6 +215,7 @@ def build_directory(
     header: dict[str, Any] | None = None,
     previous: dict[str, Any] | None = None,
     window: Window,
+    borrowed: int = 0,
 ) -> Directory:
     """Render the segments that changed since ``previous``, the manifest the
     stored copy was rendered with, and carry the rest over from it.
@@ -177,33 +232,47 @@ def build_directory(
     copy rendered from another branch (a live save labelled with an edit's
     fork point) shares its numbering, not its turns. Raises
     ``EarlierTurnsMissing`` when ``previous`` does not hold them.
+
+    A forked thread's first ``borrowed`` turns are files of the thread it was
+    forked from, so its own start at ``borrowed + 1`` (the manifest's
+    ``first``) and ``window`` is never short of them.
     """
+    if window.runs < borrowed:
+        raise ValueError(f"window at {window.runs} runs is short of {borrowed} borrowed")
     held: list[Any] = []
-    if previous and previous.get("schema") == SCHEMA_VERSION:
+    if (
+        previous
+        and previous.get("schema") == SCHEMA_VERSION
+        and previous.get("first", 1) == borrowed + 1
+    ):
         held = previous.get("segments") or []
     names: dict[str, str] = {}
     entries: list[dict[str, Any]] = []
     rendered: dict[str, bytes] = {}
     shape = through = ""
     base = window.runs
-    if base:
-        carried = held[:base]
+    trimmed = base - borrowed
+    if trimmed:
+        carried = held[:trimmed]
         if (
-            len(carried) < base
+            len(carried) < trimmed
             or not all(
                 _carriable(entry, unit, number)
-                for number, entry in enumerate(carried, start=1)
+                for number, entry in enumerate(carried, start=borrowed + 1)
             )
             or carried[-1].get("through") != window.digest
         ):
-            raise EarlierTurnsMissing(f"{len(carried)} of {base} trimmed turns held")
+            raise EarlierTurnsMissing(f"{len(carried)} of {trimmed} trimmed turns held")
         entries.extend(carried)
         # The key chains through every turn before it, the trimmed ones too.
         shape, through = carried[-1]["shape"], window.digest
+    elif borrowed:
+        through = window.digest
     for number, run in enumerate(split_runs(messages), start=base + 1):
         shape = segment_shape(number, run, unit=unit, previous=shape, tool_names=names)
         through = extend(through, run)
-        entry = held[number - 1] if number <= len(held) else None
+        own = number - borrowed
+        entry = held[own - 1] if own <= len(held) else None
         if not _reusable(entry, unit, number, shape):
             segment = render_segment(number, run, unit=unit, tool_names=names)
             entry = _entry(segment, unit, shape, through)
@@ -213,7 +282,8 @@ def build_directory(
             # render looks (reasoning, say), or it predates the field.
             entry = {**entry, "through": through}
         entries.append(entry)
-    manifest = {"schema": SCHEMA_VERSION, **(header or {}), "segments": entries}
+    first = {"first": borrowed + 1} if borrowed else {}
+    manifest = {"schema": SCHEMA_VERSION, **(header or {}), **first, "segments": entries}
     return Directory(
         manifest=dump_manifest(manifest),
         files={entry["file"]: (entry["sha256"], entry["bytes"]) for entry in entries},

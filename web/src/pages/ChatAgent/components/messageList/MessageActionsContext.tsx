@@ -21,13 +21,20 @@ import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ChartTabSpec } from '../filePanel/types';
 import type { ArtifactCommentOpeners } from '../artifactComments/artifactCommentReply';
 import type { EditDraftStore } from '../../hooks/utils/editDrafts';
-import type { ThreadForkCut } from '@/types/api';
 
 export interface MessageActions {
-  onOpenSubagentTask?: (info: SubagentInfo) => void;
+  /** Opens a task's transcript. `ownerThreadId` names the thread that holds
+   *  the task's runs when it is not this one: a task in a turn a fork
+   *  borrowed, which opens there. */
+  onOpenSubagentTask?: (info: SubagentInfo, ownerThreadId?: string) => void;
   /** Opens the thread that handed a turn to this one, where the thread's own
    *  back button goes. Only the host knows how that button gets there. */
   onOpenDispatcher?: (threadId: string) => void;
+  /** Leaves this view for another thread, or one of its tasks, as the view's
+   *  other exits do: a fork's original, from the divider. The workspace
+   *  rides along when the caller knows it. Absent where the view cannot
+   *  leave (a shared chat), which shows no link. */
+  onOpenThread?: (threadId: string, state: { workspaceId?: string }, taskId?: string) => void;
   onOpenFile?: OpenFileHandler;
   /** Brings a turn's deliverables deck into view as it unfolds. The deck owns
    *  no scroll container and must not grab one: the host's scroll controller
@@ -82,12 +89,13 @@ export interface MessageActions {
   editDrafts?: EditDraftStore;
   onRegenerate?: (messageId: string) => void;
   onRetry?: () => void;
-  /** Copies the thread up to a turn into a new chat and opens it there. Unlike
-   *  edit and regenerate it changes nothing in this thread, so reading the
-   *  thread is enough to offer it. Resolves once the request has settled, so
-   *  the button can hold itself disabled meanwhile; refusals are the host's
-   *  to show. Absent where no new chat can be made (a shared or subagent view). */
-  onForkFromTurn?: (turnIndex: number, cut: ThreadForkCut) => Promise<void>;
+  /** Makes a new chat that carries on from this one through a turn, and opens
+   *  it. Unlike edit and regenerate it changes nothing in this thread, so
+   *  reading the thread is enough to offer it. It runs as the fork mutation
+   *  (`useForkThread`), which the button reads its spinner from; refusals
+   *  are the host's to show. Absent where no new chat can be made (a shared
+   *  or subagent view). */
+  onForkFromTurn?: (turnIndex: number) => void;
   /** Feedback is addressed by BACKEND TURN, not by bubble — a steering
    *  continuation rates the turn it continues. MessageList supplies the index. */
   onThumbUp?: (turnIndex: number) => Promise<FeedbackResult | null>;

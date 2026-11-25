@@ -4,6 +4,8 @@ import { CardColumn } from './charts/TermCard';
 import { useStableArray } from '@/hooks/useStableArray';
 import { NotificationDivider } from './messageList/NotificationDivider';
 import { WakeupRow } from './messageList/WakeupRow';
+import { ForkDivider } from './messageList/ForkDivider';
+import { borrowedTurnOwner } from './messageList/borrowedTurns';
 import { QuietChecksRow } from './messageList/QuietChecksRow';
 import { MessageBubble } from './messageList/MessageBubble';
 import { SharedThreadContext } from './messageList/SharedThreadContext';
@@ -28,6 +30,7 @@ import { CollapseClock, CollapseClockContext } from './messageList/transcriptMot
 import { ProseTyping, ProseTypingContext } from './messageList/proseTyping';
 import { useLiveMessages, type LiveMessages } from '../session/stream/liveMessages';
 import type { ChatMessage, WakeupArrival } from '@/types/chat';
+import type { ForkDividerEvent } from '@/types/api';
 import { turnFilesByTurn } from '../utils/turnFiles';
 import { useCloudTurnFiles } from '../hooks/useCloudTurnFiles';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
@@ -155,14 +158,19 @@ interface MessageListProps {
   /** What holds it, drawn above its message: a compaction's line, where the
    *  divider its end leaves goes. */
   holdLine?: React.ReactNode;
+  /** Where a fork's borrowed turns end, as its replay said. The line is drawn
+   *  above the fork's first own turn, or below the last row while it has
+   *  none, and the turns above it are the original's. */
+  forkDivider?: ForkDividerEvent | null;
 }
 
 interface HeldTranscript {
   messages: MessageRecord[];
   plans?: ReadonlyMap<string, ShownPlan>;
+  forkDivider?: ForkDividerEvent | null;
 }
 
-function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere, plans: latestPlans, holding, holdLine }: MessageListProps): React.ReactElement | null {
+function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagentView, readOnly, allowFiles, feedbackByTurn, dispatcherContext, starting, ranHere: rememberedRanHere, plans: latestPlans, holding, holdLine, forkDivider: latestForkDivider = null }: MessageListProps): React.ReactElement | null {
   // A history load writes the transcript an event at a time as its response
   // arrives. Drawn as it went, a finished turn showed its work open above no
   // answer and then folded it away once the answer and its end landed. The
@@ -171,12 +179,14 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   // list that mounts mid-load (main shown again while the thread loads) drew
   // nothing before it, and what the load has written so far is the half it
   // must not show, so it holds nothing, which draws the skeleton. The plans
-  // are held with it, since they are read off the messages being rewritten.
+  // and a fork's divider are held with it, since they are read off the
+  // replay that is rewriting the messages.
   const [held, setHeld] = React.useState<HeldTranscript | null>(() => (isLoadingHistory ? { messages: [] } : null));
-  if (isLoadingHistory && held === null) setHeld({ messages: latest, plans: latestPlans });
+  if (isLoadingHistory && held === null) setHeld({ messages: latest, plans: latestPlans, forkDivider: latestForkDivider });
   if (!isLoadingHistory && held !== null) setHeld(null);
   const messages = isLoadingHistory ? held?.messages ?? latest : latest;
   const plans = isLoadingHistory && held ? held.plans : latestPlans;
+  const forkDivider = isLoadingHistory && held ? held.forkDivider ?? null : latestForkDivider;
   const isMobile = useIsMobile();
   const { onOpenFile } = useMessageActions();
   // The deck keeps the workspace's own notes file out on every surface; its
@@ -393,6 +403,16 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   }, [visible, spans, turned, turnTails, replyEnds, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles, quietEnds]);
 
   const items = React.useMemo(() => planQuietChecks(visible, quietEnds), [visible, quietEnds]);
+  // The item a fork's divider goes above: the first of its own turns, or past
+  // the last while it has none. -1 without one.
+  const dividerAt = React.useMemo(() => {
+    if (!forkDivider) return -1;
+    const at = items.findIndex((item) => {
+      const turn = item.kind === 'quiet' ? item.checks[0].turnIndex : visible[item.index].turnIndex;
+      return turn !== null && turn >= forkDivider.turn_base;
+    });
+    return at === -1 ? items.length : at;
+  }, [forkDivider, items, visible]);
   // In a shared workspace's thread, the entries that carry on another
   // member's run of messages, read against the entry drawn just above. A
   // plan drawn under a message ends the run, since it sits between.
@@ -401,7 +421,9 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     const runs = new Set<number>();
     if (!sharedView) return runs;
     let above: BubbleSender | undefined;
-    for (const item of items) {
+    for (const [at, item] of items.entries()) {
+      // A fork's divider sits between too.
+      if (at === dividerAt) above = undefined;
       if (item.kind !== 'entry') {
         above = undefined;
         continue;
@@ -412,10 +434,12 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       above = plans?.has(message.id as string) ? undefined : sender;
     }
     return runs;
-  }, [items, visible, sharedView, plans]);
+  }, [items, visible, sharedView, plans, dividerAt]);
 
-  // Empty state - show when no messages exist (hidden in subagent view)
-  if (messages.length === 0) {
+  // Empty state - show when no messages exist (hidden in subagent view). A
+  // fork with nothing of its own yet and none of its source's to show still
+  // draws its divider, which says why.
+  if (messages.length === 0 && !forkDivider) {
     if (isSubagentView || starting) return null;
     if (isLoadingHistory) {
       return (
@@ -460,13 +484,18 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   // Here it re-rendered, and re-ran its query hook, on every streamed frame.
   // sibling-space-y, not space-y: NotificationDivider's own my-1 would
   // otherwise replace the gap below it.
+  // A fork's divider joins the rows at its place under a key of its own, so
+  // its arrival leaves every row the element it was.
+  const withForkDivider = (rows: React.ReactElement[]): React.ReactElement[] => (forkDivider && dividerAt >= 0
+    ? [...rows.slice(0, dividerAt), <ForkDivider key="fork-divider" divider={forkDivider} />, ...rows.slice(dividerAt)]
+    : rows);
   const list = (
     <ProseTypingContext value={typing}>
     <CollapseClockContext value={collapseClock}>
     {/* Measured, so the cards lay out for this column: a desktop chat panel
         beside a chart is narrower than any phone layout assumes. */}
     <CardColumn className={`font-content ${isMobile ? 'sibling-space-y-4' : 'sibling-space-y-6'}`}>
-      {items.map((item) => {
+      {withForkDivider(items.map((item) => {
         if (item.kind === 'quiet') {
           return <QuietChecksRow key={`quiet-checks-${item.checks[0].turnIndex}`} checks={item.checks} />;
         }
@@ -489,6 +518,10 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
             {holdAbove && holdLine}
           </>
         );
+        // A turn above a fork's divider is the original's, held by the
+        // thread the divider names for it.
+        const borrowedFrom = forkDivider && turnIndex !== null && turnIndex < forkDivider.turn_base
+          ? borrowedTurnOwner(forkDivider, turnIndex) : null;
         if (isReportRow(message)) {
           const prev = visible[i - 1]?.message;
           // A fragment, not a wrapper: `together` closes the list's own gap.
@@ -502,6 +535,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
                 readOnly={readOnly}
                 dispatcherContext={dispatcherContext}
                 chartCards={reportCharts.byReport.get(message.id as string)}
+                taskThreadId={borrowedFrom}
               />
             </React.Fragment>
           );
@@ -548,6 +582,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           dispatcherContext,
           continuesSender: continuing.has(i),
           held: inHeldTurn,
+          borrowedFrom,
         };
         const plan = plans?.get(message.id as string);
         // Every bubble gets the wrapper from its first paint: a turn's row comes
@@ -579,7 +614,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
             )}
           </div>
         );
-      })}
+      }))}
     </CardColumn>
     </CollapseClockContext>
     </ProseTypingContext>

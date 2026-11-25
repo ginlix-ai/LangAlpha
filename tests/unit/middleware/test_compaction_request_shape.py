@@ -378,7 +378,9 @@ async def test_compact_messages_summarizes_the_offload_view(monkeypatch):
         return messages
 
     monkeypatch.setattr(compact_module, "aoffload_base64_content", _recording_offload)
-    mount = SimpleNamespace(save_transcript=AsyncMock(return_value=True))
+    mount = SimpleNamespace(
+        save_transcript=AsyncMock(side_effect=lambda target, messages, *, window: target)
+    )
     backend = SimpleNamespace(
         livefs=mount,
         transcripts=TranscriptReach(mount, shell=True),

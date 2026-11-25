@@ -12,6 +12,7 @@
 import i18n from '@/i18n';
 import { isOnline } from '@/lib/network';
 import type { AssistantMessage } from '@/types/chat';
+import type { ForkDividerEvent } from '@/types/api';
 import { replayThreadHistory } from '../../utils/api';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
@@ -164,6 +165,8 @@ export async function loadConversationHistory(
     let minReplayedTurnIndex: number | null = null;
     // The page header, when the replay was paged (null when it named no turn).
     let page: HistoryPageInfo | null | undefined;
+    // Where a fork's borrowed turns end, when this page holds that point.
+    let forkDivider = null as ForkDividerEvent | null;
 
     // Run ids of the turns this replay rendered (the server stamps run_id on
     // a user_message only once its run is terminal — a live run's stub
@@ -235,6 +238,13 @@ export async function loadConversationHistory(
         page = typeof event.first_turn_index === 'number'
           ? { firstTurnIndex: event.first_turn_index, hasMore: event.has_more === true }
           : null;
+        return;
+      }
+
+      // A fork's borrowed turns end here, and its own begin. The list draws
+      // the line from the turn numbers, so it is page data, not a row.
+      if (eventType === 'fork_divider') {
+        forkDivider = _rawEvent as unknown as ForkDividerEvent;
         return;
       }
 
@@ -844,7 +854,10 @@ export async function loadConversationHistory(
 
     // Replay settled (a 404 counts: brand-new thread, zero turns) — record
     // the watermark the reactivation staleness check compares against.
-    rt.lastRenderedTurnIndexRef.current = maxReplayedTurnIndex;
+    // A fork's next send opens its first own turn, whatever of its borrowed
+    // turns the replay showed, so the turn before it counts as rendered.
+    rt.lastRenderedTurnIndexRef.current = Math.max(maxReplayedTurnIndex, forkDivider ? forkDivider.turn_base - 1 : -1);
+    rt.setForkDivider(forkDivider);
     rt.replayedRunIdsRef.current = replayedRunIds;
 
     // An attach that opened while the replay was in flight already stands for

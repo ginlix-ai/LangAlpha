@@ -10,6 +10,8 @@ import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
 import { useThreadRoute } from './hooks/useThreadRoute';
 import { useDeletedThreads } from '@/lib/deletedThreads';
+import type { Thread } from '@/types/api';
+import { borrowsFrom } from './components/messageList/borrowedTurns';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
 import { useComputerStatusFanout } from './hooks/useComputers';
@@ -116,17 +118,22 @@ function ChatAgent(): React.ReactElement | null {
   // and arriving at its route (Back to an entry that still names it) leaves
   // for its workspace instead of making a view. Only on arrival: the sidebar
   // moves off a thread it deletes on its own, to the next one.
+  // A fork that borrows a deleted thread's turns goes with it, since its
+  // cached view would go on showing them; opened again, it loads without.
   const deletedThreads = useDeletedThreads();
   const threadDeleted = !!threadId && deletedThreads.has(threadId);
+  const queryClient = useQueryClient();
   useEffect(() => {
-    cache.evict(deletedThreads, threadId);
+    const borrowing = cache.entries
+      .filter((e) => borrowsFrom(queryClient.getQueryData<Thread>(queryKeys.threads.detail(e.threadId)), deletedThreads))
+      .map((e) => e.threadId);
+    cache.evict(borrowing.length ? new Set([...deletedThreads, ...borrowing]) : deletedThreads, threadId);
   }, [deletedThreads, threadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Use synchronous update to avoid stale workspace on first render after navigation
   if (workspaceId && workspaceId !== resolvedWorkspaceId) {
     setResolvedWorkspaceId(workspaceId);
   }
-  const queryClient = useQueryClient();
 
   // Proactively warm the sandbox the moment a user enters a workspace.
   // Covers direct URL nav, refresh, and back-button — the gallery-click

@@ -191,7 +191,7 @@ function NavigationPanel({
   // the same reason.
   const { requestDelete, dialog: deleteDialog } = useThreadDeleteConfirm();
   const handleDeleteThread = useCallback((wsId: string, threadId: string, title: string) => {
-    requestDelete(title, async () => { await onDeleteThread?.(wsId, threadId); });
+    requestDelete(threadId, title, async () => { await onDeleteThread?.(wsId, threadId); });
   }, [requestDelete, onDeleteThread]);
   const [shareTarget, setShareTarget] = useState<ShareThreadTarget | null>(null);
   const handleShareThread = useCallback((wsId: string, threadId: string) => {

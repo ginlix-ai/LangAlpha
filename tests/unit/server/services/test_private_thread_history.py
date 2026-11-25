@@ -186,7 +186,7 @@ async def test_the_turn_saves_and_points_at_the_transcript_where_its_file_tools_
 ):
     from src.server.services import transcripts
 
-    save = AsyncMock(return_value=True)
+    save = AsyncMock(side_effect=lambda target, messages, *, window, reader: target)
     monkeypatch.setattr(transcripts, "save_live", save)
     mount = MagicMock()
     mount.ready = AsyncMock(return_value=False)

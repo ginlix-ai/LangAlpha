@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Callable, cast
 
@@ -46,6 +47,7 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.results import EditTextResult
+from ptc_agent.agent.transcript.store import BorrowedFiles
 from ptc_agent.core.paths import langalpha_config_dir
 from ptc_agent.core.path_fold import on_file_mount, resolve_agent_path
 from ptc_agent.core.sandbox import PTCSandbox
@@ -86,6 +88,7 @@ class SandboxBackend(SandboxBackendProtocol):
         operation_callback: OperationCallback | None = None,
         preview_owner: str | None = None,
         history: HistoryFiles | None = None,
+        transcript_borrowed: tuple[BorrowedFiles, ...] = (),
     ) -> None:
         """Create a new SandboxBackend.
 
@@ -104,6 +107,9 @@ class SandboxBackend(SandboxBackendProtocol):
                      agent in process where what serves the computer's past
                      threads leaves it out; it is then where this agent's
                      transcripts reach its tools.
+            transcript_borrowed: The thread's turns a snapshot fork shows from
+                     the chats it was forked from, whose files its transcript
+                     pointers name there (``TranscriptReach.borrowed``).
         """
         self.sandbox = sandbox
         self._pinned_root = root_dir.rstrip("/") if root_dir else None
@@ -112,6 +118,7 @@ class SandboxBackend(SandboxBackendProtocol):
         self.operation_callback = operation_callback
         self.preview_owner = preview_owner
         self._history = history
+        self._transcript_borrowed = transcript_borrowed
         logger.debug("Initialized SandboxBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
 
     @property
@@ -129,8 +136,12 @@ class SandboxBackend(SandboxBackendProtocol):
         """Where this agent's transcripts reach its tools, or None while
         nothing serves them."""
         if self._history is not None:
-            return TranscriptReach(self._history, shell=False)
-        return self.sandbox.transcripts
+            reach = TranscriptReach(self._history, shell=False)
+        else:
+            reach = self.sandbox.transcripts
+        if reach is None or not self._transcript_borrowed:
+            return reach
+        return replace(reach, borrowed=self._transcript_borrowed)
 
     async def settled_livefs(
         self, workspace_id: str | None = None

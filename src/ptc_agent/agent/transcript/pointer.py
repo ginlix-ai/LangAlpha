@@ -3,15 +3,19 @@
 A summary alone reads as all that survived, so it names the transcript
 directory, the turns it covers, each turn's file beside the request that
 opened it, and how to search them, and the transcript is saved from the
-messages in hand before the summary is written. Only a sandbox
-the file mount serves, or one whose host serves past threads to the file tools
-(``HistoryFiles``), has a transcript to point at, and only a save that landed,
-where the tools can reach it, is pointed at.
+messages in hand before the summary is written. A forked thread's turns
+before its own are files of the chat it was forked from, so the pointer names
+that chat's directory and files for them, and says when that chat has changed
+since, as the save found it. Only a sandbox the file mount serves, or one
+whose host serves past threads to the file tools (``HistoryFiles``), has a
+transcript to point at, and only a save that landed, where the tools can
+reach it, is pointed at.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,7 +26,12 @@ from langchain_core.messages import AnyMessage
 from ptc_agent.agent.transcript.classify import is_summary_message
 from ptc_agent.agent.transcript.identity import Window, newest_lines
 from ptc_agent.agent.transcript.render import turn_map
-from ptc_agent.agent.transcript.store import TranscriptTarget, segment_file
+from ptc_agent.agent.transcript.store import (
+    BorrowedFiles,
+    TranscriptTarget,
+    segment_file,
+    transcript_subdir,
+)
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
@@ -52,6 +61,25 @@ _GAP_ONE_NOTE = (
     "leaves out."
 )
 _INDEX_HEAD = "\n\nEach {unit}'s file and the request that opened it:\n"
+_BORROWED_NOTE = (
+    " {span} came from a chat this one was forked from, and {files_are} in "
+    "`{directory}/` instead ({names}); Grep there for a detail from {them}."
+)
+_BORROWED_CHANGED_NOTE = (
+    " {span} came from a chat this one was forked from, and {files_are} in "
+    "`{directory}/` ({names}). That chat was edited after the fork, so "
+    "{files} may no longer match what this chat saw; where one disagrees with "
+    "this summary, the summary is right."
+)
+_BORROWED_DELETED_NOTE = (
+    " {span} came from a chat that has since been deleted, so {files_are} gone "
+    "and this summary is all that is left of {them}."
+)
+_BORROWED_UNAVAILABLE_NOTE = (
+    " {span} came from a chat this one was forked from, which this chat can no "
+    "longer read, so {files_are} out of reach and this summary is all that is "
+    "left of {them}."
+)
 
 
 @dataclass(frozen=True)
@@ -77,11 +105,11 @@ class TranscriptTurns:
 
     def file(self, message_id: str | None) -> str | None:
         number = self.turns.get(message_id or "")
-        return segment_file(self.target.unit, number) if number else None
+        return self.target.file_name(number) if number else None
 
     def path(self, message_id: str | None) -> str | None:
-        name = self.file(message_id)
-        return f"{self.target.directory}/{name}" if name else None
+        number = self.turns.get(message_id or "")
+        return self.target.file_path(number) if number else None
 
     def last(self, messages: Sequence[AnyMessage]) -> int | None:
         """The newest turn any of ``messages`` belongs to."""
@@ -94,19 +122,27 @@ class TranscriptTurns:
         stood in for or trimming dropped; this is what lets the summary cite
         them and the agent find them.
         """
-        unit = self.target.unit
+        target = self.target
         newest = newest_lines(self.lines, last)
         earlier = next(iter(newest), 1) - 1
         lines = []
         if earlier:
-            names = f"`{segment_file(unit, 1)}`"
+            unit = target.unit
+            names = f"`{target.file_name(1)}`"
             if earlier > 1:
-                names += f" to `{segment_file(unit, earlier)}`"
+                names += f" to `{target.file_name(earlier)}`"
+            listed = (
+                f"`{target.manifest}` lists this chat's files from "
+                f"`{target.file_name(target.own_first)}` and where the earlier "
+                "ones are (`forked_from`)"
+                if target.borrowed
+                else f"`{target.manifest}` lists every file"
+            )
             lines.append(
                 f"- {names}: {earlier} earlier {unit}{'s' if earlier > 1 else ''}, "
-                f"not listed here; `{self.target.manifest}` lists every file"
+                f"not listed here; {listed}"
             )
-        lines += [f"- `{segment_file(unit, n)}`: {text}" for n, text in newest.items()]
+        lines += [f"- `{target.file_name(n)}`: {text}" for n, text in newest.items()]
         return lines
 
 
@@ -134,9 +170,15 @@ def shell_reads_transcripts(backend: SandboxBackend | None) -> bool:
 def transcript_target(
     backend: SandboxBackend | None, thread_id: str | None, checkpoint_ns: str = ""
 ) -> TranscriptTarget | None:
-    if not thread_id or _reach(backend) is None:
+    reach = _reach(backend)
+    if not thread_id or reach is None:
         return None
-    return TranscriptTarget.for_agent(str(thread_id), checkpoint_ns)
+    target = TranscriptTarget.for_agent(str(thread_id), checkpoint_ns)
+    # Only the thread's own agent starts where a fork does; a task's runs
+    # are its own from the first.
+    if target.task_id is None and reach.borrowed:
+        return dataclasses.replace(target, borrowed=reach.borrowed)
+    return target
 
 
 async def aexport_transcript(
@@ -175,7 +217,7 @@ async def aexport_transcript(
         )
         return None
 
-    async def save_and_settle() -> tuple[bool, MountHandle | None]:
+    async def save_and_settle() -> tuple[TranscriptTarget | None, MountHandle | None]:
         # A task group, not gather: when one fails, the other is cancelled
         # rather than left saving past the timeout. The file tools read the
         # routes' rows themselves, so only the mount has links to wait for.
@@ -199,9 +241,11 @@ async def aexport_transcript(
             "[Compaction] transcript save for %s failed: %r", transcript.directory, e
         )
         return None
-    if not saved:
+    if saved is None:
         logger.warning("[Compaction] transcript save for %s did not land", transcript.directory)
         return None
+    # As it landed: a forked thread's names the files it borrows, and their state.
+    transcript = saved
     if reach.shell and settled is None:
         logger.warning(
             "[Compaction] transcript %s saved, but workspace %s has no file mount links",
@@ -234,9 +278,36 @@ def transcript_note(
             if first == last
             else _GAP_NOTE.format(units=f"{unit.capitalize()}s", first=first, last=last)
         )
+    for files in transcript.borrowed:
+        note += _borrowed_note(files, unit)
     if index:
         note += _INDEX_HEAD.format(unit=unit) + "\n".join(index)
     return note
+
+
+def _borrowed_note(borrowed: BorrowedFiles, unit: str) -> str:
+    first, last = segment_file(unit, borrowed.first), segment_file(unit, borrowed.last)
+    directory = transcript_subdir(borrowed.thread_id[:8])
+    if borrowed.first == borrowed.last:
+        span, names = f"{unit.capitalize()} {borrowed.first}", f"`{first}`"
+        files, are, them = "its file", "is", "it"
+    else:
+        span = f"{unit.capitalize()}s {borrowed.first} to {borrowed.last}"
+        names = f"`{first}` to `{last}`"
+        files, are, them = "their files", "are", "them"
+    template = {
+        "deleted": _BORROWED_DELETED_NOTE,
+        "changed": _BORROWED_CHANGED_NOTE,
+        "unavailable": _BORROWED_UNAVAILABLE_NOTE,
+    }.get(borrowed.state, _BORROWED_NOTE)
+    return template.format(
+        span=span,
+        files=files,
+        files_are=f"{files} {are}",
+        them=them,
+        directory=directory,
+        names=names,
+    )
 
 
 def summary_span(

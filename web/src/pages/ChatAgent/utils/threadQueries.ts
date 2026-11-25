@@ -6,7 +6,7 @@ import { queryOptions } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { isLastingRefusal } from '@/api/errors';
 import type { ThreadsResponse } from '@/types/api';
-import { getRecentThreads, getThread, getThreadShareStatus, getWorkspaceThreads } from './api';
+import { getRecentThreads, getThread, getThreadForkCount, getThreadShareStatus, getWorkspaceThreads } from './api';
 
 /**
  * One thread, read to learn its workspace on a direct link. No retry: the chat
@@ -17,6 +17,21 @@ export function threadDetailQuery(threadId: string) {
   return queryOptions({
     queryKey: queryKeys.threads.detail(threadId),
     queryFn: () => getThread(threadId),
+    retry: false,
+  });
+}
+
+/**
+ * How many forks borrow the thread's history, which they stop showing once it
+ * is deleted. Read fresh each time its delete dialog opens, and a read that
+ * fails says nothing, so it is not retried.
+ */
+export function threadForkCountQuery(threadId: string) {
+  return queryOptions({
+    queryKey: queryKeys.threads.forkCount(threadId),
+    queryFn: () => getThreadForkCount(threadId),
+    staleTime: 0,
+    gcTime: 0,
     retry: false,
   });
 }

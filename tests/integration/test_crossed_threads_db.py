@@ -137,7 +137,7 @@ class _Mount:
     """The computer's file mount as far as compaction uses it: a transcript
     saved the way the server saves one mid-turn."""
 
-    async def save_transcript(self, target, messages, *, window: Window) -> bool:
+    async def save_transcript(self, target, messages, *, window: Window):
         from src.server.services import transcripts
 
         return await transcripts.save_live(target, messages, window=window)

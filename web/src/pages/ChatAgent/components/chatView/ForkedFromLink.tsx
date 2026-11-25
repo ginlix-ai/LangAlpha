@@ -1,7 +1,9 @@
 /**
- * "Forked from <title>" in the chat header, for a thread copied from another.
- * Opens the source; a source that is gone reads as a deleted chat with nothing
- * to open. Nothing shows while the source is read or when it cannot be.
+ * "Forked from <title>" in the chat header, for a thread that copied its
+ * history from another. Opens the source; a source that is gone reads as a
+ * deleted chat with nothing to open. Nothing shows while the source is read
+ * or when it cannot be, nor on a fork that borrows its history, whose divider
+ * in the transcript names the source instead.
  */
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,7 +24,8 @@ export function ForkedFromLink({ threadId, onOpen }: {
   const { t } = useTranslation();
   const liveId = threadId && threadId !== '__default__' ? threadId : null;
   const { data: thread } = useQuery({ ...threadDetailQuery(liveId ?? ''), enabled: !!liveId });
-  const sourceId = thread?.metadata?.fork?.thread_id || null;
+  const fork = thread?.metadata?.fork;
+  const sourceId = fork && !fork.borrow ? fork.thread_id || null : null;
   const { data: source, error } = useQuery({ ...threadDetailQuery(sourceId ?? ''), enabled: !!sourceId });
 
   if (!sourceId) return null;

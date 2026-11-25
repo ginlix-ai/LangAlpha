@@ -44,6 +44,7 @@ export function ReportRow({
   readOnly,
   dispatcherContext,
   chartCards,
+  taskThreadId = null,
 }: {
   id: string;
   provenance: ReportProvenance;
@@ -52,6 +53,9 @@ export function ReportRow({
   chartCards?: readonly ChartLayersCard[];
   readOnly?: boolean;
   dispatcherContext?: DispatcherContext | null;
+  /** The thread that holds the report's task when it is another thread's: a
+   *  turn a fork borrowed, whose task opens there. */
+  taskThreadId?: string | null;
 }): React.ReactElement {
   const analyst = provenance.kind === 'analyst_report';
   return (
@@ -68,7 +72,7 @@ export function ReportRow({
         ? <AnalystReportRow provenance={provenance} readOnly={readOnly} dispatcherContext={dispatcherContext} />
         : provenance.kind === 'command_report'
           ? <CommandReportRow provenance={provenance} readOnly={readOnly} chartCards={chartCards} />
-          : <TaskReportRow provenance={provenance} readOnly={readOnly} />}
+          : <TaskReportRow provenance={provenance} readOnly={readOnly} taskThreadId={taskThreadId} />}
     </div>
   );
 }
@@ -163,7 +167,11 @@ function AnalystReportRow({
  * how the run ended, and the way into the subagent. A report with no title
  * names the task by its id.
  */
-function TaskReportRow({ provenance, readOnly }: { provenance: TaskReport; readOnly?: boolean }): React.ReactElement {
+function TaskReportRow({ provenance, readOnly, taskThreadId }: {
+  provenance: TaskReport;
+  readOnly?: boolean;
+  taskThreadId: string | null;
+}): React.ReactElement {
   const { onOpenSubagentTask } = useMessageActions();
   const { taskId, displayId, description, failed, subagentType } = provenance;
   return (
@@ -177,7 +185,11 @@ function TaskReportRow({ provenance, readOnly }: { provenance: TaskReport; readO
       glyph={failed ? 'alert' : null}
       outcomeKey={failed ? 'chat.provenance.taskFailed' : 'chat.provenance.taskFinished'}
       onOpen={taskId && onOpenSubagentTask && !readOnly
-        ? () => onOpenSubagentTask({ subagentId: `task:${taskId}`, description: description ?? undefined })
+        ? () => {
+          const task = { subagentId: `task:${taskId}`, description: description ?? undefined };
+          if (taskThreadId) onOpenSubagentTask(task, taskThreadId);
+          else onOpenSubagentTask(task);
+        }
         : undefined}
     />
   );

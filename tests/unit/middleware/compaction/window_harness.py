@@ -167,7 +167,7 @@ class TranscriptStore:
         self.files: dict[str, bytes] = {}
         self.saves: list[str] = []
 
-    async def save_transcript(self, target, messages, *, window: Window) -> bool:
+    async def save_transcript(self, target, messages, *, window: Window):
         directory = build_directory(
             list(messages),
             unit=target.unit,
@@ -177,7 +177,7 @@ class TranscriptStore:
         self.manifest = directory.manifest
         self.files.update(directory.rendered)
         self.saves.append(directory.manifest)
-        return True
+        return target
 
 
 def _backend(store: TranscriptStore) -> Any:

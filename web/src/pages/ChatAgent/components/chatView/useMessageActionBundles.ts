@@ -13,6 +13,7 @@ type Action<K extends keyof MessageActions> = NonNullable<MessageActions[K]>;
 export interface MessageActionSources {
   reportThreadId?: string;
   feedbackLoading?: boolean;
+  onOpenThread: Action<'onOpenThread'>;
   onOpenFile: Action<'onOpenFile'>;
   onDownloadFile: Action<'onDownloadFile'>;
   onPublishFile: Action<'onPublishFile'>;
@@ -84,6 +85,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
   );
   const stableOpenSubagentTask = useStableHandler(src.onOpenSubagentTask);
   const stableOpenDispatcher = useStableHandler(src.onOpenDispatcher);
+  const stableOpenThread = useStableHandler(src.onOpenThread);
   const stableAnswerQuestion = useStableHandler(src.onAnswerQuestion);
   const stableSkipQuestion = useStableHandler(src.onSkipQuestion);
   const stableApproveCreateWorkspace = useStableHandler(src.onApproveCreateWorkspace);
@@ -127,6 +129,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
     onOpenArtifactComment: openArtifactComment,
     onOpenSubagentTask: stableOpenSubagentTask,
     onOpenDispatcher: stableOpenDispatcher,
+    onOpenThread: stableOpenThread,
     onAnswerQuestion: stableAnswerQuestion,
     onSkipQuestion: stableSkipQuestion,
     onApproveCreateWorkspace: stableApproveCreateWorkspace,
@@ -153,7 +156,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
     feedbackLoading: src.feedbackLoading,
   }), [
     stableOpenFile, stableDownloadFile, stablePublishFile, stableDownloadKeyFor, stableRevealFiles, stableRevealMessage, stableOpenSources, stableToolCallDetail,
-    stableOpenChart, openArtifactComment, stableOpenSubagentTask, stableOpenDispatcher, stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
+    stableOpenChart, openArtifactComment, stableOpenSubagentTask, stableOpenDispatcher, stableOpenThread, stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
     stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
     stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,

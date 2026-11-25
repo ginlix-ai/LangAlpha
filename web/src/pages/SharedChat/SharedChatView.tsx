@@ -44,6 +44,7 @@ import {
 import type { SharedThreadMetadata, SSEEvent } from './api';
 import ShareUnavailable from './ShareUnavailable';
 import type { TextSegment } from '@/types/chat';
+import type { ForkDividerEvent } from '@/types/api';
 import { isTaskAgentId } from '../ChatAgent/utils/agentId';
 import type { FileLocation } from '../ChatAgent/utils/fileLocation';
 import { computeAgentArtifactRouting } from '../ChatAgent/utils/agentArtifactRouting';
@@ -88,6 +89,8 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
   }, [access]);
 
   const [messages, setMessages] = useState<MessageRecord[]>([]);
+  // Where a fork's borrowed turns end, as the replay said.
+  const [forkDivider, setForkDivider] = useState<ForkDividerEvent | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -181,6 +184,13 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
           if (eventType === 'replay_done') {
             stampSettledTurns();
             setLoading(false);
+            return;
+          }
+
+          // A fork's borrowed turns end here. The list draws the line, with
+          // no link: a visitor cannot open the original.
+          if (eventType === 'fork_divider') {
+            setForkDivider(event as unknown as ForkDividerEvent);
             return;
           }
 
@@ -680,6 +690,7 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
                           readOnly={true}
                           allowFiles={canBrowseFiles}
                           plans={plans}
+                          forkDivider={forkDivider}
                         />
                       </DispatchStatusProvider>
                       </MessageActionsProvider>

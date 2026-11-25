@@ -316,7 +316,8 @@ async def replay_shared_thread(share_token: str):
     owner sees; the thread resolves through the share token and every event
     passes ``ShareRedaction`` on the way out.
     """
-    from src.server.services.history.replay import finish_lines, read_replay_page
+    from src.server.services.history.replay.borrowed import read_thread_page
+    from src.server.services.forks.model import ForkLineage
 
     try:
         thread = await get_shared_thread(share_token)
@@ -324,22 +325,47 @@ async def replay_shared_thread(share_token: str):
         rows = await get_replay_thread_data(thread_id)
         if rows is None:
             raise HTTPException(status_code=404, detail="Shared thread not found")
-        page, _ = await read_replay_page(rows)
+        # A fork's borrowed turns show as its maker may read them now. In a
+        # shared workspace the thread's owner is the workspace, which reads
+        # every thread, so a link read as it would show a source its member
+        # has since made private.
+        lineage = ForkLineage.parse(rows.thread.get("fork"))
+        page = await read_thread_page(rows, lineage.by if lineage is not None else rows.owner_id)
         # Public replay has no /status reconciliation at all, so without the
         # stamp its task cards would be stuck "running" forever (see
         # history/task_status.py). Only the whitelisted status value is added,
         # which redaction leaves as it is.
-        await finish_lines(thread_id, page.lines, status_only=True)
+        lines = await page.finish(for_share=True)
     except DATABASE_UNAVAILABLE as e:
         # As the owner's replay answers it.
         raise database_unavailable("replaying a shared thread", logger, e)
-    items = [line.item() for line in page.lines]
-    redaction = ShareRedaction(items)
+    items = [line.item() for line in lines]
+    # A fork's borrowed turns arrive under the threads that hold them; the
+    # share names them as its own, as it names the divider's stand-ins, so
+    # its viewers learn none of the owner's other chats.
+    borrowed_from = (
+        {a.thread_id for a in lineage.borrow.ancestors}
+        if lineage is not None and lineage.borrow is not None
+        else set()
+    )
+
+    def source(data: dict[str, Any]) -> str:
+        held_by = data.get("thread_id")
+        return held_by if held_by in borrowed_from else thread_id
+
+    # Redacted per thread that holds the turns: a call's name follows its id
+    # within one stream, and ids one provider repeats across two chats must
+    # not lend a name from one to the other.
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        by_source.setdefault(source(item["data"]), []).append(item)
+    redactions = {key: ShareRedaction(held) for key, held in by_source.items()}
 
     async def event_generator():
         seq = 0
         for item in items:
             event_type, data = item["event"], item["data"]
+            redaction = redactions[source(data)]
             if event_type == "user_message":
                 replay_data = _shared_user_message(redaction, data)
             else:
@@ -347,6 +373,8 @@ async def replay_shared_thread(share_token: str):
                 if replay_data is None:
                     continue
                 replay_data.setdefault("thread_id", thread_id)
+            if replay_data.get("thread_id") in borrowed_from:
+                replay_data["thread_id"] = thread_id
             seq += 1
             yield (
                 f"id: {seq}\n"

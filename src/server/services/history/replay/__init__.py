@@ -120,7 +120,9 @@ class PageBudget:
     Turns vary from kilobytes to megabytes (a subagent's internals ride its
     parent turn), so a page counted only in turns can carry tens of megabytes.
     The floor is the client's: the turns that fill its screen, or on a reload
-    every turn back to where the reader had paged."""
+    every turn back to where the reader had paged. A floor of 0 lets the page
+    take no turn at all, which is what the rest of a page another thread has
+    already filled is held to (``borrowed``)."""
 
     min_turns: int
     max_bytes: int
@@ -132,6 +134,8 @@ class ReplayPage:
     # The oldest turn in this page; the next page asks for turns before it.
     first_turn_index: Any | None
     has_more: bool
+    # How many turns the page carries.
+    turns: int = 0
 
 
 async def load_thread_inputs(thread_id: str) -> tuple[ThreadRows, str] | None:
@@ -152,10 +156,13 @@ async def build_replay_page(
     limit: int | None = None,
     budget: PageBudget | None = None,
     turn_fallback: bool = False,
+    from_turn: Any | None = None,
 ) -> ReplayPage:
     """Replay lines for one page of the thread: with ``limit``, the newest N
     checkpointed turns before ``before_turn`` (all of them without it), plus
-    the persisted turns with no committed boundary among them.
+    the persisted turns with no committed boundary among them. ``from_turn``
+    leaves out every turn older than it, as if the thread began there: a fork
+    shows only part of the thread it borrows from (``borrowed``).
 
     Turns pair to persisted query rows by stamped ``turn_index`` metadata
     (the next persisted turn for a resume or a pre-stamping thread, see
@@ -207,7 +214,9 @@ async def build_replay_page(
     async def page_lines() -> tuple[
         list[tuple[Any, TurnAnchor | None]], bool, dict[Any, list[Line]]
     ]:
-        candidates, has_more = _select_page(anchored, inputs, before_turn, limit)
+        candidates, has_more = _select_page(
+            anchored, inputs, before_turn, limit, from_turn
+        )
         page, lines_by_turn = await _fill_page(
             read, candidates, budget, whole=not has_more
         )
@@ -246,6 +255,7 @@ async def build_replay_page(
         lines=out,
         first_turn_index=page[0][0] if page else None,
         has_more=has_more,
+        turns=len(page),
     )
 
 
@@ -256,6 +266,7 @@ async def read_replay_page(
     before_turn: Any | None = None,
     limit: int | None = None,
     budget: PageBudget | None = None,
+    from_turn: Any | None = None,
 ) -> tuple[ReplayPage, str]:
     """The page a thread replays as, and its source (``checkpoint`` or ``stub``).
 
@@ -282,6 +293,7 @@ async def read_replay_page(
             limit=limit,
             budget=budget,
             turn_fallback=source == "auto",
+            from_turn=from_turn,
         )
         return page, "checkpoint"
     except DATABASE_UNAVAILABLE:
@@ -307,7 +319,10 @@ async def read_replay_page(
             rows.thread_id,
             exc_info=True,
         )
-    return await stub_page(rows, before_turn, limit, budget, cause=cause), "stub"
+    page = await stub_page(
+        rows, before_turn, limit, budget, cause=cause, from_turn=from_turn
+    )
+    return page, "stub"
 
 
 async def stub_page(
@@ -317,6 +332,7 @@ async def stub_page(
     budget: PageBudget | None = None,
     *,
     cause: BaseException | None = None,
+    from_turn: Any | None = None,
 ) -> ReplayPage:
     """A page of stubs (``stubs.stub_lines``), over the same window the
     checkpoint path pages by, counted in persisted turns and held to the same
@@ -329,7 +345,9 @@ async def stub_page(
     turns = sorted(
         ti
         for ti in queries_by_turn
-        if ti is not None and (before_turn is None or ti < before_turn)
+        if ti is not None
+        and (before_turn is None or ti < before_turn)
+        and (from_turn is None or ti >= from_turn)
     )
     candidates = [(ti, None) for ti in (turns[-limit:] if limit is not None else turns)]
     lost: list[Any] = []
@@ -363,6 +381,7 @@ async def stub_page(
         lines=[line for ti in page_turns for line in lines[ti]],
         first_turn_index=page_turns[0] if page_turns else None,
         has_more=len(page_turns) < len(turns),
+        turns=len(page_turns),
     )
 
 
@@ -483,6 +502,7 @@ def _select_page(
     inputs: Inputs,
     before_turn: Any | None,
     limit: int | None,
+    from_turn: Any | None = None,
 ) -> tuple[list[tuple[Any, TurnAnchor | None]], bool]:
     """The page's ``(turn_index, anchor | None)`` pairs in order, and whether
     older turns remain.
@@ -493,7 +513,10 @@ def _select_page(
     earlier page.
     """
     in_range = [
-        (ti, a) for ti, a in anchored if before_turn is None or ti < before_turn
+        (ti, a)
+        for ti, a in anchored
+        if (before_turn is None or ti < before_turn)
+        and (from_turn is None or ti >= from_turn)
     ]
     has_more = limit is not None and len(in_range) > limit
     chosen: list[tuple[Any, TurnAnchor | None]] = list(
@@ -508,6 +531,8 @@ def _select_page(
         if oldest is not None and ti < oldest:
             continue
         if before_turn is not None and ti >= before_turn:
+            continue
+        if from_turn is not None and ti < from_turn:
             continue
         chosen.append((ti, None))
     chosen.sort(key=lambda p: p[0])
@@ -592,7 +617,8 @@ async def _budgeted_lines(
     floor = min(budget.min_turns, n)
     got: dict[Any, list[Line]] = {}
     taken = total = 0
-    want = floor
+    # A floor of 0 still reads one turn to learn whether it fits.
+    want = max(floor, 1)
     while taken < n:
         batch = candidates[n - want : n - taken]
         got |= await read(batch)

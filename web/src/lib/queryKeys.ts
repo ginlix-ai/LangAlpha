@@ -221,6 +221,11 @@ export const queryKeys = {
     recentAll:   () => [...queryKeys.threads.all, 'recent'],
     recent:      (limit: number) => [...queryKeys.threads.recentAll(), limit],
     status:      (threadId: string) => [...queryKeys.threads.all, 'status', threadId],
+    // How many forks borrow the thread's history, read when its delete dialog opens.
+    forkCount:   (threadId: string) => [...queryKeys.threads.all, 'fork-count', threadId],
+    // The mutation that makes a fork, which the button, the sidebar's pending
+    // row and every other fork button read while it runs.
+    fork:        () => [...queryKeys.threads.all, 'fork'],
     // The search across every thread (the command palette). Under the prefix,
     // so a rename, archive or delete rereads the results already on screen.
     searchAll:   () => [...queryKeys.threads.all, 'search'],

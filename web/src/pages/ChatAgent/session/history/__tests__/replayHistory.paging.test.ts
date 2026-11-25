@@ -415,6 +415,7 @@ describe('history replay: an older page', () => {
       page: { firstTurnIndex: 40, lastTurnIndex: 59, hasMore: true, carry: EMPTY_CARRY },
       renderedInterruptIds: new Set(),
       threadModels: [],
+      forkDivider: null,
       subagents: new Map([['task:done', task], ['task:live', task], ['task:quiet', task]]),
       ownSubagents: new Map([['task:done', own], ['task:live', own], ['task:quiet', own]]),
       tokens: { input: 0, output: 0, cached: 0 },
