@@ -52,6 +52,10 @@
         "title": "Dashboard",
         "description": "What your dashboard shows."
       },
+      "layout": {
+        "title": "Layout",
+        "description": "How the app's window is arranged."
+      },
       "other": {
         "title": "More",
         "description": "More features you can try."

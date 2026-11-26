@@ -146,7 +146,7 @@ export interface FeatureState {
   requires?: string[];
 }
 
-export type FeatureCategory = 'chat' | 'tools' | 'autonomy' | 'long_threads' | 'dashboard';
+export type FeatureCategory = 'chat' | 'tools' | 'autonomy' | 'long_threads' | 'dashboard' | 'layout';
 
 export interface FeatureGuide {
   /** Finish "Turn it on if" / "Leave it off if" (or "Keep it on if" / "Turn
