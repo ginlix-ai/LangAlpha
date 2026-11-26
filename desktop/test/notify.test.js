@@ -193,6 +193,42 @@ describe('what the notifier logs', () => {
 })
 
 describe('attention', () => {
+  test('the badge draws the count, a dot or nothing by the setting, as near as each platform can', (t) => {
+    const { app } = require('electron')
+    const drawn = []
+    const saved = { setBadgeCount: app.setBadgeCount, dock: app.dock }
+    app.setBadgeCount = (n) => { drawn.push(n) }
+    app.dock = { setBadge: (text) => { drawn.push(text) }, setMenu() {} }
+    t.after(() => Object.assign(app, saved))
+
+    let style = 'count'
+    const mac = attention.createAttention({ traits: MAC, getMainWindow: () => null, badge: () => style })
+    mac.set({ count: 3 })
+    style = 'dot'
+    mac.drawBadge()
+    mac.set({ count: 0 })
+    style = 'off'
+    mac.set({ count: 2 })
+    assert.deepEqual(drawn, [3, '•', 0, 0])
+
+    // The Unity launcher's badge is a number or nothing: a dot stays a number.
+    drawn.length = 0
+    style = 'dot'
+    const unity = traits('linux', { XDG_CURRENT_DESKTOP: 'Unity' })
+    attention.createAttention({ traits: unity, getMainWindow: () => null, badge: () => style }).set({ count: 2 })
+    assert.deepEqual(drawn, [2])
+
+    // A Windows overlay is a dot whatever the count, and gone when off.
+    const overlays = []
+    const win = { isDestroyed: () => false, setOverlayIcon: (icon, text) => { overlays.push([Boolean(icon), text]) } }
+    style = 'count'
+    const windows = attention.createAttention({ traits: WIN, getMainWindow: () => win, badge: () => style })
+    windows.set({ count: 2 })
+    style = 'off'
+    windows.drawBadge()
+    assert.deepEqual(overlays, [[true, '2 waiting'], [false, '']])
+  })
+
   test('trimmed to the contract: a count, and at most five threads of known states', () => {
     const v = attention.validate({
       count: 3.5,

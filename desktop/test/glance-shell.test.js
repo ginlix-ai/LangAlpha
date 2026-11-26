@@ -228,23 +228,23 @@ describe('the menu bar page sets the lines', () => {
       const bar = menubarWindow()
       const icon = trays.at(-1)
       const setItems = ipcListeners.get('shell:set-tray-items')
-      const items = [{ text: 'Port ▲0.42%' }, { text: 'NVDA ▼1%' }]
+      const items = [{ text: 'Port +0.42%' }, { text: 'NVDA −1%' }]
       const options = { refreshMs: 15000 }
 
       setItems(from(app, 'https://app.example.com/chat'), items, options)
       assert.equal(icon.title ?? '', '', 'the main window set the lines')
       setItems(from(bar, BAR_URL), items, options)
-      assert.equal(icon.title, ' Port ▲0.42%  NVDA ▼1%')
+      assert.equal(icon.title, ' Port +0.42%  NVDA −1%')
       // A layout the page sends is not the shell's to take; anything but options is no options.
       setItems(from(bar, BAR_URL), items, { style: 'rotate', rotateSeconds: 2 })
-      assert.equal(icon.title, ' Port ▲0.42%  NVDA ▼1%')
+      assert.equal(icon.title, ' Port +0.42%  NVDA −1%')
       setItems(from(bar, BAR_URL), items, 'junk')
-      assert.equal(icon.title, ' Port ▲0.42%  NVDA ▼1%')
+      assert.equal(icon.title, ' Port +0.42%  NVDA −1%')
 
       // The layout changed in Settings shows at once, before the page next reports.
       const set = ipcHandlers.get('shell:set-desktop-settings')
       set(from(app, 'https://app.example.com/settings'), { menubar: { style: 'rotate' } })
-      assert.equal(icon.title, ' Port ▲0.42%')
+      assert.equal(icon.title, ' Port +0.42%')
 
       // Turned off in Settings: the line goes at once, and a page a step behind cannot bring it back.
       set(from(app, 'https://app.example.com/settings'), { menubar: { items: [] } })

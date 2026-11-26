@@ -18,7 +18,7 @@ describe('desktop settings', () => {
   test('defaults are the contract\'s', () => {
     assert.deepEqual(settings.normalize(undefined), {
       notifications: { turn: true, needs_input: true, wakeup: true, automation: true, started: true },
-      menubar: { enabled: true, items: [], style: 'rotate', rotateSeconds: 4, show: 'change', extendedHours: true },
+      menubar: { enabled: true, items: [], style: 'rotate', rotateSeconds: 4, show: 'change', extendedHours: true, logo: true },
       panel: {
         sections: [
           { id: 'market', visible: true }, { id: 'portfolio', visible: true },
@@ -31,6 +31,7 @@ describe('desktop settings', () => {
         watchlistId: null,
         watchlistRows: 5,
       },
+      badge: 'count',
       openAtLogin: false,
       shortcut: '',
       keepRunningInTray: true,
@@ -40,22 +41,24 @@ describe('desktop settings', () => {
   test('a hand-edited file costs only its bad fields, and unknown keys go', () => {
     const read = settings.normalize({
       notifications: { turn: 'false', wakeup: false, extra: true },
-      menubar: { enabled: 0, items: 'NVDA', style: 'tape', rotateSeconds: '4', show: 'both', extendedHours: 'no', title: 'portfolio' },
+      menubar: { enabled: 0, items: 'NVDA', style: 'tape', rotateSeconds: '4', show: 'both', extendedHours: 'no', logo: 'off', title: 'portfolio' },
       panel: { tiles: {}, watchlistId: 42, watchlistRows: 'many', extra: 1 },
       openAtLogin: true,
       shortcut: 'Alt+CommandOrControl+L',
       keepRunningInTray: null,
+      badge: 'number',
       evil: 'x',
     })
     assert.equal(read.notifications.turn, true, 'the string "false" was read as a switch')
     assert.equal(read.notifications.wakeup, false)
     assert.equal('extra' in read.notifications, false)
     // `items` is not a list, and a key the shape does not have (`title`) is dropped.
-    assert.deepEqual(read.menubar, { enabled: true, items: [], style: 'rotate', rotateSeconds: 4, show: 'both', extendedHours: true })
+    assert.deepEqual(read.menubar, { enabled: true, items: [], style: 'rotate', rotateSeconds: 4, show: 'both', extendedHours: true, logo: true })
     assert.deepEqual(read.panel, settings.normalize({}).panel)
     assert.equal(read.openAtLogin, true)
     assert.equal(read.shortcut, 'Alt+CommandOrControl+L')
     assert.equal(read.keepRunningInTray, true)
+    assert.equal(read.badge, 'count')
     assert.equal('evil' in read, false)
   })
 
@@ -154,17 +157,35 @@ describe('desktop settings', () => {
   test('what each platform supports is a projection of its traits', () => {
     const mac = settings.support(traits('darwin', {}))
     assert.deepEqual(mac, {
-      menubarPanel: true, trayTitle: true, openAtLogin: true, shortcut: true, keepRunningInTray: false, notificationActions: true,
+      menubarPanel: true, trayTitle: true, trayLogo: true, badge: ['count', 'dot', 'off'], openAtLogin: true, shortcut: true, keepRunningInTray: false, notificationActions: true,
     })
     const win = settings.support(traits('win32', {}))
     assert.equal(win.trayTitle, false)
+    assert.deepEqual(win.badge, ['dot', 'off'])
     assert.equal(win.keepRunningInTray, true)
     assert.equal(win.menubarPanel, true)
     const x11 = settings.support(traits('linux', { XDG_SESSION_TYPE: 'x11' }))
     assert.equal(x11.menubarPanel, false)
+    assert.equal(x11.badge, undefined)
     assert.equal(x11.notificationActions, false)
     assert.equal(x11.shortcut, true)
     assert.equal(settings.support(traits('linux', { XDG_SESSION_TYPE: 'wayland' })).shortcut, false)
+  })
+
+  test('the badge is offered and shown as each platform draws it', () => {
+    const mac = traits('darwin', {})
+    const win = traits('win32', {})
+    assert.deepEqual(settings.support(win).badge, ['dot', 'off'])
+    const unity = traits('linux', { XDG_CURRENT_DESKTOP: 'Unity:Unity7:ubuntu' })
+    assert.deepEqual(settings.support(unity).badge, ['count', 'off'])
+    // Electron draws a Linux badge only under Unity, so elsewhere none is offered.
+    assert.equal(settings.support(traits('linux', { XDG_CURRENT_DESKTOP: 'ubuntu:GNOME' })).badge, undefined)
+    // Kept as chosen, shown as drawn: a number on Windows is its dot.
+    const stored = settings.normalize({ badge: 'count' })
+    assert.equal(settings.view(stored, { traits: win }).badge, 'dot')
+    assert.equal(settings.view(stored, { traits: mac }).badge, 'count')
+    assert.equal(settings.view(settings.normalize({ badge: 'dot' }), { traits: unity }).badge, 'count')
+    assert.equal(settings.shownBadge('off', win), 'off')
   })
 
   test('the view carries support and, only when there is one, the shortcut error', () => {
@@ -213,9 +234,8 @@ describe('platform traits', () => {
     )
     const win = traits('win32', {})
     assert.deepEqual(
-      [win.panel, win.tooltipLines, win.overlayBadge, win.jumpList, win.lastWindowClosed, win.loginItem],
-      ['taskbar', true, true, true, 'tray', 'run-key'],
+      [win.panel, win.tooltipLines, win.badge, win.jumpList, win.lastWindowClosed, win.loginItem],
+      ['taskbar', true, 'overlay', true, 'tray', 'run-key'],
     )
-    assert.equal(win.badgeCount, false)
   })
 })

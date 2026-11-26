@@ -38,21 +38,21 @@ describe('the lines beside the icon', () => {
 
   test('the page\'s items become short lines: blanks go, whitespace folds, at most eight', () => {
     assert.deepEqual(cleanLines('NVDA'), [])
-    assert.deepEqual(cleanLines([{ text: ' NVDA\n ▼5.60% ' }, { text: '' }, 'Port ▲0.42%', null, { text: 7 }]), [
-      'NVDA ▼5.60%', 'Port ▲0.42%',
+    assert.deepEqual(cleanLines([{ text: ' NVDA\n −5.60% ' }, { text: '' }, 'Port +0.42%', null, { text: 7 }]), [
+      'NVDA −5.60%', 'Port +0.42%',
     ])
     assert.equal(cleanLines([{ text: 'x'.repeat(80) }])[0].length, 32)
     assert.equal(cleanLines(Array.from({ length: 12 }, (_, i) => ({ text: `L${i}` }))).length, 8)
   })
 
   test('the title: rotate pads every frame to the longest; side shows three, two spaces apart; one is static', () => {
-    const lines = ['NVDA ▼5.60%', 'Port ▲0.4%', 'AAPL 230.11 ▲1.2%', 'TSLA ▲3%']
+    const lines = ['NVDA −5.60%', 'Port +0.4%', 'AAPL 230.11 +1.2%', 'TSLA +3%']
     const frames = titleFrames(lines, 'rotate')
-    assert.deepEqual(frames, ['NVDA ▼5.60%      ', 'Port ▲0.4%       ', 'AAPL 230.11 ▲1.2%', 'TSLA ▲3%         '])
+    assert.deepEqual(frames, ['NVDA −5.60%      ', 'Port +0.4%       ', 'AAPL 230.11 +1.2%', 'TSLA +3%         '])
     assert.equal(new Set(frames.map((f) => [...f].length)).size, 1, 'the frames differ in width')
-    assert.deepEqual(titleFrames(lines, 'side'), ['NVDA ▼5.60%  Port ▲0.4%  AAPL 230.11 ▲1.2%'])
-    assert.deepEqual(titleFrames(['NVDA ▼5.60%'], 'rotate'), ['NVDA ▼5.60%'])
-    assert.deepEqual(titleFrames(['NVDA ▼5.60%'], 'side'), ['NVDA ▼5.60%'])
+    assert.deepEqual(titleFrames(lines, 'side'), ['NVDA −5.60%  Port +0.4%  AAPL 230.11 +1.2%'])
+    assert.deepEqual(titleFrames(['NVDA −5.60%'], 'rotate'), ['NVDA −5.60%'])
+    assert.deepEqual(titleFrames(['NVDA −5.60%'], 'side'), ['NVDA −5.60%'])
     assert.deepEqual(titleFrames([], 'rotate'), [])
     assert.equal(frameAt(frames, 0), frames[0])
     assert.equal(frameAt(frames, 5), frames[1])
@@ -60,23 +60,23 @@ describe('the lines beside the icon', () => {
   })
 
   test('Windows lists them under the name in the tooltip, as many as fit; Linux heads the menu with them', () => {
-    const lines = ['NVDA ▼5.60%', 'Port ▲0.42%']
+    const lines = ['NVDA −5.60%', 'Port +0.42%']
     assert.deepEqual(layout(lines, { traits: WIN, appName: 'LangAlpha' }), {
-      frames: [], tooltip: 'LangAlpha\nNVDA ▼5.60%\nPort ▲0.42%', headlines: [],
+      frames: [], tooltip: 'LangAlpha\nNVDA −5.60%\nPort +0.42%', headlines: [],
     })
     assert.equal(layout([], { traits: WIN, appName: 'LangAlpha' }).tooltip, 'LangAlpha')
-    const long = Array.from({ length: 8 }, (_, i) => `SYMBOL${i} 1234.56 ▲12.34%`)
+    const long = Array.from({ length: 8 }, (_, i) => `SYMBOL${i} 1234.56 +12.34%`)
     const tip = tooltipText('LangAlpha', long)
     assert.ok(tip.length <= 127, `${tip.length} characters`)
     assert.deepEqual(tip.split('\n').slice(1), long.slice(0, tip.split('\n').length - 1), 'a line was cut part way')
     assert.deepEqual(layout(lines, { traits: LINUX, appName: 'LangAlpha' }), {
       frames: [],
       tooltip: 'LangAlpha',
-      headlines: [{ label: 'NVDA ▼5.60%', enabled: false }, { label: 'Port ▲0.42%', enabled: false }, { type: 'separator' }],
+      headlines: [{ label: 'NVDA −5.60%', enabled: false }, { label: 'Port +0.42%', enabled: false }, { type: 'separator' }],
     })
     assert.deepEqual(layout([], { traits: LINUX }).headlines, [])
     assert.deepEqual(layout(lines, { traits: MAC, style: 'side', appName: 'LangAlpha' }), {
-      frames: ['NVDA ▼5.60%  Port ▲0.42%'], tooltip: 'LangAlpha', headlines: [],
+      frames: ['NVDA −5.60%  Port +0.42%'], tooltip: 'LangAlpha', headlines: [],
     })
   })
 
@@ -98,20 +98,20 @@ describe('the lines beside the icon', () => {
     })
     t.show()
     const icon = trays.at(-1)
-    t.setItems([{ text: 'NVDA ▼5.60%' }, { text: 'Port ▲0.4%' }, { text: 'AAPL ▲1%' }], { refreshMs: 15000 })
-    assert.equal(icon.title, ' NVDA ▼5.60%')
+    t.setItems([{ text: 'NVDA −5.60%' }, { text: 'Port +0.4%' }, { text: 'AAPL +1%' }], { refreshMs: 15000 })
+    assert.equal(icon.title, ' NVDA −5.60%')
     assert.deepEqual(icon.titleOptions, { fontType: 'monospaced' })
     assert.deepEqual(timers.periods(), [4000, 15000])
     timers.fire(4000)
-    assert.equal(icon.title, ' Port ▲0.4% ')
+    assert.equal(icon.title, ' Port +0.4% ')
 
     // The page answers a refresh with new lines: the slot carries on, the clock is not reset.
     timers.fire(15000)
     assert.equal(refreshes, 1)
-    t.setItems([{ text: 'NVDA ▼5.70%' }, { text: 'Port ▲0.5%' }, { text: 'AAPL ▲1%' }], { refreshMs: 15000 })
-    assert.equal(icon.title, ' Port ▲0.5% ')
+    t.setItems([{ text: 'NVDA −5.70%' }, { text: 'Port +0.5%' }, { text: 'AAPL +1%' }], { refreshMs: 15000 })
+    assert.equal(icon.title, ' Port +0.5% ')
     timers.fire(4000)
-    assert.equal(icon.title, ' AAPL ▲1%   ')
+    assert.equal(icon.title, ' AAPL +1%   ')
     bar.set({ rotateSeconds: 10 })
     t.setItems([{ text: 'A' }, { text: 'B' }], { refreshMs: 15000 })
     assert.deepEqual(timers.periods(), [10000, 15000], 'a new period kept the old timer')
@@ -154,19 +154,43 @@ describe('the lines beside the icon', () => {
     t.hide()
   })
 
+  test('without the logo the lines stand alone, and the logo comes back whenever there are none', () => {
+    const timers = fakeTimers()
+    const bar = chosen({ logo: false })
+    const t = tray.createTray({ traits: MAC, timers, onClick() {}, menuTemplate: () => [], menubar: bar.read })
+    t.show()
+    const icon = trays.at(-1)
+    const logo = icon.image
+    // Nothing to show yet: the logo stays, or the item would be an empty sliver.
+    assert.equal(icon.image, logo)
+    t.setItems(['NVDA +3.57%'], { refreshMs: 15000 })
+    assert.deepEqual(icon.image, { empty: true })
+    assert.equal(icon.title, 'NVDA +3.57%', 'the gap after the logo stayed without it')
+    t.setItems([], { refreshMs: 15000 })
+    assert.notDeepEqual(icon.image, { empty: true })
+    assert.equal(icon.title, '')
+
+    t.setItems(['NVDA +3.57%'], { refreshMs: 15000 })
+    bar.set({ logo: true })
+    t.update()
+    assert.notDeepEqual(icon.image, { empty: true })
+    assert.equal(icon.title, ' NVDA +3.57%')
+    t.hide()
+  })
+
   test('with nothing chosen the icon stands alone, whatever the page sends', () => {
     const timers = fakeTimers()
     const bar = chosen({ items: [] })
     const t = tray.createTray({ traits: MAC, timers, onClick() {}, menuTemplate: () => [], menubar: bar.read })
     t.show()
     const icon = trays.at(-1)
-    t.setItems(['Port ▲0.42%'], { refreshMs: 15000 })
+    t.setItems(['Port +0.42%'], { refreshMs: 15000 })
     assert.equal(icon.title, '')
     assert.deepEqual(timers.periods(), [])
 
     bar.set({ items: [{ kind: 'portfolio' }] })
-    t.setItems(['Port ▲0.42%'], { refreshMs: 15000 })
-    assert.equal(icon.title, ' Port ▲0.42%')
+    t.setItems(['Port +0.42%'], { refreshMs: 15000 })
+    assert.equal(icon.title, ' Port +0.42%')
     // Turned off in Settings: the line goes at once, and does not come back
     // stale when something is chosen again; the page's next lines bring it.
     bar.set({ items: [] })
@@ -183,9 +207,9 @@ describe('the lines beside the icon', () => {
     const bar = chosen()
     const win = tray.createTray({ traits: WIN, timers: fakeTimers(), onClick() {}, menuTemplate: () => [], menubar: bar.read })
     win.show()
-    win.setItems(['NVDA ▼5.60%', 'Port ▲0.42%'], { refreshMs: 15000 })
+    win.setItems(['NVDA −5.60%', 'Port +0.42%'], { refreshMs: 15000 })
     assert.equal(trays.at(-1).title, undefined, 'Windows was given a title')
-    assert.equal(trays.at(-1).tooltip, 'LangAlpha\nNVDA ▼5.60%\nPort ▲0.42%')
+    assert.equal(trays.at(-1).tooltip, 'LangAlpha\nNVDA −5.60%\nPort +0.42%')
     win.hide()
 
     const linux = tray.createTray({
@@ -194,10 +218,10 @@ describe('the lines beside the icon', () => {
     linux.show()
     const icon = trays.at(-1)
     assert.deepEqual(icon.menu, [{ label: 'Quit' }])
-    linux.setItems(['NVDA ▼5.60%'], { refreshMs: 15000 })
-    assert.deepEqual(icon.menu, [{ label: 'NVDA ▼5.60%', enabled: false }, { type: 'separator' }, { label: 'Quit' }])
+    linux.setItems(['NVDA −5.60%'], { refreshMs: 15000 })
+    assert.deepEqual(icon.menu, [{ label: 'NVDA −5.60%', enabled: false }, { type: 'separator' }, { label: 'Quit' }])
     const before = icon.menu
-    linux.setItems(['NVDA ▼5.60%'], { refreshMs: 15000 })
+    linux.setItems(['NVDA −5.60%'], { refreshMs: 15000 })
     assert.equal(icon.menu, before, 'the same lines rebuilt the menu')
     linux.hide()
   })

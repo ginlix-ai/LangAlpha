@@ -177,6 +177,7 @@ class FakeTray extends EventEmitter {
     this.titleOptions = options
   }
 
+  setImage(image) { this.image = image }
   setToolTip(tip) { this.tooltip = tip }
   setContextMenu(menu) { this.menu = menu }
   popUpContextMenu(menu) { this.popped = menu }
@@ -225,6 +226,7 @@ const electronStub = {
     // Windows-only calls, reached when a test runs the shell as Windows.
     setAppUserModelId: () => {},
     setUserTasks: () => {},
+    setBadgeCount: () => true,
     // Never resolves unless a test asked for a ready app, so requiring main.js
     // registers its policy and stops there rather than trying to open windows
     // in a runtime that has none.
@@ -248,6 +250,8 @@ const electronStub = {
   Tray: FakeTray,
   nativeImage: {
     createFromBuffer: () => ({ addRepresentation() {}, setTemplateImage() {} }),
+    createEmpty: () => ({ empty: true }),
+    createFromBitmap: () => ({ bitmap: true }),
   },
   powerMonitor: new EventEmitter(),
   // Squirrel's, which the shell listens on for a quit that installs an update.
