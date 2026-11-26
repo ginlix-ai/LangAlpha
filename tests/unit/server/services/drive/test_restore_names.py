@@ -3,7 +3,7 @@
 import pytest
 
 from src.server.database.drive.keys import MAX_PATH_BYTES, MAX_SEGMENT_BYTES, check
-from src.server.database.drive.writes import _roots, beside
+from src.server.database.drive.trash import _roots, beside
 from src.server.services.drive import DriveError
 
 

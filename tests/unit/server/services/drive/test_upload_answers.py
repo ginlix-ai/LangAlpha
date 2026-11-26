@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.server.app import drive_mount
-from src.server.app.drive_http import status_of
+from src.server.services.drive.errors import http_status
 from src.server.dependencies.principal import Principal
 from src.server.database.drive.keys import normalize
 from src.server.models.drive import UploadIn
@@ -31,7 +31,7 @@ def test_a_path_with_a_lone_surrogate_is_refused_as_a_path():
 
 
 def test_too_many_uploads_is_not_read_as_throttling():
-    assert status_of(DriveError("too_many_uploads", "")) == 409
+    assert http_status("too_many_uploads") == 409
 
 
 def _row(state: str, entry_id: str | None) -> dict:
@@ -396,14 +396,49 @@ def test_each_version_says_whether_it_is_text(monkeypatch):
         return Version(seq, "ab" * 32, 3, "text/plain", when, None, None, by, is_text=is_text)
 
     monkeypatch.setattr(drive, "open", AsyncMock())
-    monkeypatch.setattr(drive, "stat", AsyncMock(return_value=SimpleNamespace(entry_id="e")))
-    monkeypatch.setattr(drive, "versions", AsyncMock(return_value=([version(2, False), version(1, True)], False)))
-    monkeypatch.setattr(drive, "history_bytes", AsyncMock(return_value=0))
+    entry = SimpleNamespace(entry_id="e", name="f", memo=None)
+    listed = (entry, [version(2, False), version(1, True)], False, 0, 0)
+    monkeypatch.setattr(drive, "versions", AsyncMock(return_value=listed))
 
     answer = TestClient(app).get("/api/v1/drive/s/versions", params={"path": "f"})
 
     assert answer.status_code == 200
     assert [v["is_text"] for v in answer.json()["versions"]] == [False, True]
+
+
+@pytest.mark.parametrize("line", ["Check memo.md out and say why", None], ids=["a memo", "any other file"])
+def test_a_save_of_held_bytes_is_filed_with_what_its_upload_would_have_said(mount, monkeypatch, line):
+    """Bytes the space holds are saved at begin, with no upload to file the
+    save's end, so the missing check-out is reported from here."""
+    from src.server.database.drive.records import Entry
+
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    entry = Entry(
+        entry_id="e", space_id="s", path="memo.md", parent="", name="memo.md", kind="file",
+        head_seq=2, sha256="ab" * 32, size=3, content_type="text/markdown", is_text=True,
+        created_at=when, modified_at=when, changed_seq=5, deleted_at=None, trash_id=None,
+        deleted_by=None, modified_by=None,
+    )
+    monkeypatch.setattr(drive, "open", AsyncMock(return_value=SimpleNamespace(space_id="s")))
+    monkeypatch.setattr(drive, "cursor", AsyncMock(return_value=5))
+    monkeypatch.setattr(drive_mount, "_reaches_store", AsyncMock(return_value=False))
+    monkeypatch.setattr(drive_mount.outcomes, "call_context", AsyncMock(return_value=None))
+    record = AsyncMock()
+    monkeypatch.setattr(drive_mount.outcomes, "record", record)
+    monkeypatch.setattr(uploads, "begin", AsyncMock(return_value={"mode": "held", "entry": entry}))
+    unchecked = AsyncMock(return_value=line)
+    monkeypatch.setattr(drive_mount.memo, "unchecked", unchecked)
+
+    answer = mount.post(
+        "/api/v1/livefs/drive/uploads?space=personal&path=memo.md",
+        json={"size": 3, "sha256": "ab" * 32},
+    )
+
+    assert answer.status_code == 200 and answer.json()["mode"] == "held"
+    shown = drive_mount.drive_notices.shown("/root", "personal", "memo.md")
+    assert unchecked.await_args.args[:2] == (entry, shown)
+    outcome = record.await_args.args[2]
+    assert outcome == {"op": "write", "ok": True, "path": shown, "size": 3} | ({"report": line} if line else {})
 
 
 @pytest.mark.parametrize(
@@ -453,7 +488,8 @@ async def test_a_clear_wakes_the_feed_only_when_it_dropped_a_version(monkeypatch
 
     @contextlib.asynccontextmanager
     async def upkeep(space_id, limits):
-        yield object()
+        file = SimpleNamespace(kind="file", path="f", has_record=False)
+        yield SimpleNamespace(file=AsyncMock(return_value=file))
 
     announced = AsyncMock()
     monkeypatch.setattr(drive, "limits", AsyncMock(return_value=None))
@@ -461,5 +497,44 @@ async def test_a_clear_wakes_the_feed_only_when_it_dropped_a_version(monkeypatch
     monkeypatch.setattr(drive.retention, "clear", AsyncMock(return_value=(dropped, 0)))
     monkeypatch.setattr(feed, "announce", announced)
     space = SimpleNamespace(space_id="s")
-    assert await drive.clear_history(space, str(uuid.UUID(int=1))) == (dropped, 0)
+    person = drive.Actor(kind="person", user_id="u", via="app")
+    assert await drive.clear_history(space, str(uuid.UUID(int=1)), actor=person) == (dropped, 0)
     assert announced.await_count == (1 if woken else 0)
+
+
+@pytest.mark.parametrize(
+    ("pinned_now", "shown", "refused"),
+    [(5, 5, False), (None, None, False), (None, 5, True), (6, 5, True), (5, None, True)],
+    ids=["same", "none", "unpinned since", "moved since", "pinned since"],
+)
+@pytest.mark.asyncio
+async def test_a_clear_is_bound_to_the_pinned_final_its_caller_was_shown(
+    monkeypatch, pinned_now, shown, refused
+):
+    """The person was told that version stays: once its pin has moved the
+    clear would take it, so it drops nothing."""
+    import contextlib
+
+    from src.server.services.drive import feed
+
+    @contextlib.asynccontextmanager
+    async def upkeep(space_id, limits):
+        file = SimpleNamespace(
+            kind="file", path="f", has_record=False, memo=SimpleNamespace(final_seq=pinned_now)
+        )
+        yield SimpleNamespace(file=AsyncMock(return_value=file))
+
+    cleared = AsyncMock(return_value=(2, 0))
+    monkeypatch.setattr(drive, "limits", AsyncMock(return_value=None))
+    monkeypatch.setattr(drive.writes, "upkeep", upkeep)
+    monkeypatch.setattr(drive.retention, "clear", cleared)
+    monkeypatch.setattr(feed, "announce", AsyncMock())
+    space = SimpleNamespace(space_id="s")
+    person = drive.Actor(kind="person", user_id="u", via="app")
+    call = drive.clear_history(space, str(uuid.UUID(int=1)), before=7, pinned=shown, actor=person)
+    if refused:
+        with pytest.raises(drive.DriveError) as err:
+            await call
+        assert err.value.code == "changed" and cleared.await_count == 0
+    else:
+        assert await call == (2, 0)

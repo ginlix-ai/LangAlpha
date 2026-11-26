@@ -203,7 +203,7 @@ class TestBaseline:
         # One section, never both: with the Drive on, the memos are its bullet.
         from ptc_agent.agent.prompts import init_loader
 
-        memo_bullet = "- The user's memos, documents they wrote or uploaded"
+        memo_bullet = "- Documents the user uploaded as their own reference"
         loader = init_loader()
         on = loader.get_system_prompt(drive_enabled=True, memo_enabled=True)
         off = loader.get_system_prompt(drive_enabled=False, memo_enabled=True)

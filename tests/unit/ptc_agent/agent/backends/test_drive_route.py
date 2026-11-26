@@ -185,19 +185,19 @@ def _sandbox() -> MagicMock:
     return sb
 
 
-def _build(*, drive: bool = True):
+def _build(*, drive: bool = True, no_bash: tuple[str, ...] = ()):
     gates = resolve_identity_gates(
         store=None, user_id=USER, own_data=True, workspace_id="ws-1",
         disable_subagents=False, drive=drive,
     )
     return build_filesystem_backend(
         backend=_sandbox(), gates=gates, store=None, user_id=USER, workspace_id="ws-1",
-        call=CallContext(workspace_id="ws-1", thread_id="thread-1"),
+        call=CallContext(workspace_id="ws-1", thread_id="thread-1", no_bash=no_bash),
     )
 
 
-def _tools(*, drive: bool = True):
-    backend, sources = _build(drive=drive)
+def _tools(*, drive: bool = True, no_bash: tuple[str, ...] = ()):
+    backend, sources = _build(drive=drive, no_bash=no_bash)
     return backend, sources, create_filesystem_tools(backend)
 
 
@@ -456,6 +456,23 @@ class TestRefusals:
             f"ERROR: {NOTE} was not saved: a file is at most 50 MB in one save. Write it in the "
             "workspace, then copy it in with `cp` where Bash reaches the Drive, or `la drive put`."
         )
+
+    @pytest.mark.asyncio
+    async def test_a_subagent_without_bash_is_told_to_hand_the_check_out_back(self, fake, run, monkeypatch):
+        async def refuse(*_a, **_k):
+            raise DriveError("checkout_required", "x", {"path": "notes/a.md", "last_change": None})
+
+        monkeypatch.setattr(fake, "write", refuse)
+        _, _, (_read, write, _edit) = _tools(no_bash=("writer",))
+        run("run-1", subagent="writer")
+        handed = await write.ainvoke({"file_path": NOTE, "content": "x"})
+        assert "you have no Bash" in handed and "Report this to the agent that gave you" in handed
+        # The main agent and a subagent with Bash get the ordinary form, which they can act on.
+        for name in (None, "researcher"):
+            run("run-2", subagent=name)
+            ordinary = await write.ainvoke({"file_path": NOTE, "content": "x"})
+            assert "you have no Bash" not in ordinary
+            assert "la drive checkout" in ordinary
 
     @pytest.mark.parametrize(
         ("code", "says"),

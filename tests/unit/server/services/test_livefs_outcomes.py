@@ -195,6 +195,31 @@ def test_a_report_from_a_save_after_its_command_returned_says_so():
     assert text == f"From an earlier command: {REPORT}"
 
 
+def test_a_report_said_again_is_shown_once():
+    """Every save of one memo in a command reports the same line."""
+    other = "Deleted job 01"
+    text = outcomes.describe(
+        [
+            _reported(AUTOMATIONS, REPORT, late=True),
+            _reported(AUTOMATIONS, other),
+            _reported(AUTOMATIONS, REPORT),
+            _reported(AUTOMATIONS, other),
+        ]
+    )
+    assert text.split("\n\n") == [REPORT, other]
+    late_only = [_reported(AUTOMATIONS, REPORT, late=True)] * 2
+    assert outcomes.describe(late_only) == f"From an earlier command: {REPORT}"
+
+
+def test_a_report_said_again_is_as_recent_as_its_last_saying():
+    """Eleven earlier reports, then this command says the first again: the
+    ten shown keep it, as this command's."""
+    earlier = [_reported(AUTOMATIONS, f"Deleted job {n:02}", late=True) for n in range(11)]
+    sections = outcomes.describe([*earlier, _reported(AUTOMATIONS, "Deleted job 00")]).split("\n\n")
+    assert sections[0] == "1 earlier changes are not listed; these are the last 10."
+    assert sections[-1] == "Deleted job 00" and len(sections) == 11
+
+
 # -- delivery by call id -------------------------------------------------------
 
 
@@ -350,6 +375,17 @@ async def test_who_a_command_runs_for_is_read_back_by_its_own_computer_and_call(
     assert redis.ttl[f"livefs:{{{COMPUTER}}}:ctx:{CALL_A}"] == 86400
     for computer, call in ((COMPUTER, CALL_B), ("computer-2", CALL_A), (COMPUTER, None)):
         assert await outcomes.call_context(computer, call) is None
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_subagents_that_have_no_bash_still_files_who_it_runs_for(redis):
+    # The filing is JSON: a field it cannot carry would lose the whole context,
+    # and a save through the mount would then name no conversation.
+    context = CallContext(workspace_id="ws-1", thread_id="thread-1", no_bash=("research",))
+    await outcomes.open_call(COMPUTER, CALL_A, context)
+
+    filed = await outcomes.call_context(COMPUTER, CALL_A)
+    assert filed is not None and filed.thread_id == "thread-1"
 
 
 @pytest.mark.asyncio
