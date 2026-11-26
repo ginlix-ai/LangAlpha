@@ -38,6 +38,7 @@ export const DEFAULT_MENUBAR: MenubarSettings = {
   rotateSeconds: 4,
   show: 'change',
   extendedHours: true,
+  logo: true,
 };
 
 export const DEFAULT_PANEL: PanelSettings = {

@@ -24,6 +24,13 @@ import { ItemChips, SectionList } from './DesktopLists';
 type NotificationKind = keyof DesktopSettings['notifications'];
 type Menubar = DesktopSettings['menubar'];
 type Panel = DesktopSettings['panel'];
+type Badge = DesktopSettings['badge'];
+
+const BADGE_LABEL: Record<Badge, string> = {
+  count: 'settings:desktop.badgeCount',
+  dot: 'settings:desktop.badgeDot',
+  off: 'settings:desktop.badgeOff',
+};
 
 /**
  * Where the menu bar items appear on this platform: beside the icon on a Mac,
@@ -101,6 +108,15 @@ export function DesktopPanel() {
             onChange={() => toggleNotification(kind)}
           />
         ))}
+        {support.badge && (
+          <SegmentedRow<Badge>
+            label={t('settings:desktop.badge')}
+            description={t('settings:desktop.badgeDesc')}
+            value={settings.badge}
+            onChange={(badge) => { if (badge !== settings.badge) save({ badge }); }}
+            options={support.badge.map((value) => ({ value, label: t(BADGE_LABEL[value]) }))}
+          />
+        )}
       </SettingsGroup>
 
       <SettingsGroup title={t('settings:desktop.menubarGroup')}>
@@ -133,6 +149,14 @@ export function DesktopPanel() {
             rotateSeconds={menubar.rotateSeconds}
             onStyle={(style) => { if (style !== menubar.style) saveMenubar({ style }); }}
             onRotateSeconds={(rotateSeconds) => saveMenubar({ rotateSeconds })}
+          />
+        )}
+        {menubarOn && support.trayLogo && (
+          <ToggleRow
+            label={t('settings:desktop.menubarLogo')}
+            description={t('settings:desktop.menubarLogoDesc')}
+            checked={menubar.logo}
+            onChange={() => saveMenubar({ logo: !menubar.logo })}
           />
         )}
         {menubarOn && (

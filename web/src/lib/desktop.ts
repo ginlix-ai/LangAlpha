@@ -149,7 +149,7 @@ export type MenubarItem = { kind: 'portfolio' } | QuoteRef;
 
 export type PanelSectionId = 'market' | 'portfolio' | 'watchlist' | 'agent';
 
-/** A formatted line for the menu bar, e.g. `NVDA ▼5.60%`. The shell lays them out; the page formats them. */
+/** A formatted line for the menu bar, e.g. `NVDA −5.60%`. The shell lays them out; the page formats them. */
 export interface TrayItemText {
   text: string;
 }
@@ -173,6 +173,8 @@ export interface DesktopSettings {
     show: 'change' | 'price' | 'both';
     /** Show the pre-market or after-hours move, tagged PM/AH, when there is one. */
     extendedHours: boolean;
+    /** Off: the items stand alone, and the logo shows only while there are none. */
+    logo: boolean;
   };
   panel: {
     /** All four, in display order. */
@@ -184,6 +186,8 @@ export interface DesktopSettings {
     /** 1 to 10. */
     watchlistRows: number;
   };
+  /** The app icon's badge for threads waiting on the user: the number, a dot, or none. In a view, the one this platform draws. */
+  badge: 'count' | 'dot' | 'off';
   openAtLogin: boolean;
   /** An Electron accelerator, or '' for none. */
   shortcut: string;
@@ -203,6 +207,10 @@ export interface DesktopSettingsView extends DesktopSettings {
   support: {
     menubarPanel: boolean;
     trayTitle: boolean;
+    /** The logo can be hidden behind the items. Absent from a shell older than the switch. */
+    trayLogo?: boolean;
+    /** The badges this platform can draw. Absent where it draws none, and from a shell older than the choice. */
+    badge?: Array<DesktopSettings['badge']>;
     openAtLogin: boolean;
     shortcut: boolean;
     keepRunningInTray: boolean;

@@ -1,7 +1,9 @@
 /**
  * The lines beside the menu bar icon, as text. The shell lays them out and
  * knows nothing of quotes, so every word of a line is decided here. The bar
- * is monochrome, so direction is a glyph (▲▼), never a color.
+ * is monochrome, so direction is a sign, never a color: `+` and `−` (U+2212,
+ * as wide as `+` in the bar's monospaced font). A triangle there fills its
+ * whole cell and touches the digit after it.
  */
 import type { MenubarSettings } from '@/lib/desktopSettings';
 import { createFormatter, grouped2 } from '@/lib/format';
@@ -23,11 +25,11 @@ export interface TrayFigure {
 
 const price4 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
-/** `▲5.60%`, `▼0.4%`, and a move that rounds to nothing unmarked: `0.00%`. */
+/** `+5.60%`, `−0.4%`, and a move that rounds to nothing unmarked: `0.00%`. */
 export function trayPercent(value: number, digits: 1 | 2): string {
   const size = Math.abs(value).toFixed(digits);
   if (Number(size) === 0) return `${size}%`;
-  return `${value > 0 ? '▲' : '▼'}${size}%`;
+  return `${value > 0 ? '+' : '−'}${size}%`;
 }
 
 export function trayPrice(value: number, locale: string, places = 2): string {
@@ -37,8 +39,8 @@ export function trayPrice(value: number, locale: string, places = 2): string {
 const finite = (n: number | null | undefined): n is number => n != null && Number.isFinite(n);
 
 /**
- * One line, `NVDA ▼5.60%` / `NVDA 163.99` / `NVDA 163.99 ▼5.6%`, with the
- * extended move standing in when asked for and there is one: `NVDA AH ▲2.08%`.
+ * One line, `NVDA −5.60%` / `NVDA 163.99` / `NVDA 163.99 −5.6%`, with the
+ * extended move standing in when asked for and there is one: `NVDA AH +2.08%`.
  * A figure that is not known yet falls back to the one that is (a price before
  * the day has a change); null when neither is, so a guess never shows.
  */

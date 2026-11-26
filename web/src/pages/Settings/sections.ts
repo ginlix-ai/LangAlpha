@@ -128,13 +128,14 @@ export const SETTINGS = {
   notifyNeedsInput: { section: 'desktop', anchor: 'notify-needs-input', labelKey: 'settings:desktop.notifyNeedsInput', descKey: 'settings:desktop.notifyNeedsInputDesc', alsoKeys: ['settings:desktop.notificationsGroup'] },
   notifyWakeup: { section: 'desktop', anchor: 'notify-wakeup', labelKey: 'settings:desktop.notifyWakeup', descKey: 'settings:desktop.notifyWakeupDesc', alsoKeys: ['settings:desktop.notificationsGroup'] },
   notifyAutomation: { section: 'desktop', anchor: 'notify-automation', labelKey: 'settings:desktop.notifyAutomation', descKey: 'settings:desktop.notifyAutomationDesc', alsoKeys: ['settings:desktop.notificationsGroup'] },
-  notifyStarted: { section: 'desktop', anchor: 'notify-started', labelKey: 'settings:desktop.notifyStarted', descKey: 'settings:desktop.notifyStartedDesc', alsoKeys: ['settings:desktop.notificationsGroup'] },
+  // The badge row under it is drawn only where the shell draws a badge.
+  notifyStarted: { section: 'desktop', anchor: 'notify-started', labelKey: 'settings:desktop.notifyStarted', descKey: 'settings:desktop.notifyStartedDesc', alsoKeys: ['settings:desktop.notificationsGroup', 'settings:desktop.badge'] },
   // The rows under it are drawn only where the platform can do them.
   menubarIcon: { section: 'desktop', anchor: 'menubar-icon', labelKey: 'settings:desktop.menubarIcon', descKey: 'settings:desktop.menubarIconDesc', alsoKeys: ['settings:desktop.shortcut', 'settings:desktop.keepRunning', 'settings:desktop.openAtLogin'] },
   // Drawn while the icon is on, which it is by default. Rotate / side by side
-  // is drawn only where the text sits beside the icon (macOS), so it is found
-  // through the list it lays out.
-  menubarItems: { section: 'desktop', anchor: 'menubar-items', labelKey: 'settings:desktop.menubarItems', descKey: 'settings:desktop.menubarItemsDesc', alsoKeys: ['settings:desktop.menubarStyle', 'settings:desktop.menubarStyleRotate', 'settings:desktop.menubarStyleSide', 'settings:desktop.addSymbol'] },
+  // and the logo switch are drawn only where the text sits beside the icon
+  // (macOS), so they are found through the list they lay out.
+  menubarItems: { section: 'desktop', anchor: 'menubar-items', labelKey: 'settings:desktop.menubarItems', descKey: 'settings:desktop.menubarItemsDesc', alsoKeys: ['settings:desktop.menubarStyle', 'settings:desktop.menubarStyleRotate', 'settings:desktop.menubarStyleSide', 'settings:desktop.menubarLogo', 'settings:desktop.addSymbol'] },
   menubarShow: { section: 'desktop', anchor: 'menubar-show', labelKey: 'settings:desktop.menubarShow', descKey: 'settings:desktop.menubarShowDesc', alsoKeys: ['settings:desktop.menubarGroup'] },
   menubarExtendedHours: { section: 'desktop', anchor: 'menubar-extended-hours', labelKey: 'settings:desktop.menubarExtended', descKey: 'settings:desktop.menubarExtendedDesc', alsoKeys: ['settings:desktop.menubarGroup'] },
   panelSections: { section: 'desktop', anchor: 'panel-sections', labelKey: 'settings:desktop.panelSections', descKey: 'settings:desktop.panelSectionsDesc', alsoKeys: ['settings:desktop.panelGroup'] },
