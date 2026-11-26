@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { KeyRound } from 'lucide-react';
@@ -232,7 +232,6 @@ function SubscriptionStep({ flow }: { flow: Flow }) {
   const { providers, byokEnabled } = useConfiguredProviders();
   const { planGroups } = useProviderCatalog();
   const defaults = useSaveConnectedDefault();
-  const [defaultFailed, setDefaultFailed] = useState(false);
   const configured = useMemo(() => connectedProviders(providers, { answering: true, byokEnabled }), [providers, byokEnabled]);
   // As main's chooser goes on from a pick, a connection that runs as it is
   // coming back here (with `connected`) to be made the default.
@@ -244,17 +243,34 @@ function SubscriptionStep({ flow }: { flow: Flow }) {
 
   // Back from a connect page with what it connected: that becomes the
   // default once it is decided (`settled`), its models listed and its own
-  // list read; one it cannot vouch for saves nothing, and the default step
-  // picks. Continue waits for that, so the pick is never dropped.
+  // list read; one it cannot vouch for saves nothing. The connection answers
+  // this step ("Pick one now"), so it then goes on by itself, even where the
+  // save failed, since the next step is the one that picks the default.
+  // Continue waits meanwhile, and Back stays.
   const justConnected = (location.state as { connected?: string } | null)?.connected ?? null;
   const connectedSettled = !!justConnected && defaults.settled(justConnected);
   const connectedPick = justConnected && connectedSettled ? defaults.modelFor(justConnected) : null;
-  const { save } = defaults;
+  // Each arrival goes on once, StrictMode's second run included; a pick of a
+  // connected provider here is a new arrival on the same page.
+  const handled = useRef<string | null>(null);
+  // Back during the save leaves the step, which must not then go on. Not the
+  // effect's cleanup: the replace below re-runs it on the same arrival.
+  const here = useRef(false);
   useEffect(() => {
-    if (!connectedSettled) return;
+    here.current = true;
+    return () => { here.current = false; };
+  }, []);
+  const { save } = defaults;
+  const { finish } = flow;
+  useEffect(() => {
+    if (!connectedSettled || handled.current === location.key) return;
+    handled.current = location.key;
     navigate(location.pathname, { replace: true, state: null });
-    if (connectedPick) void save(connectedPick).then((ok) => setDefaultFailed(!ok));
-  }, [connectedSettled, connectedPick, save, navigate, location.pathname]);
+    void (async () => {
+      if (connectedPick) await save(connectedPick);
+      if (here.current) await finish();
+    })();
+  }, [connectedSettled, connectedPick, save, finish, navigate, location.pathname, location.key]);
 
   return (
     <div>
@@ -282,7 +298,6 @@ function SubscriptionStep({ flow }: { flow: Flow }) {
         </button>
       )}
       <OwnAccessNote variant="setup" />
-      {defaultFailed && <StepError quiet>{t('setup:answers.model.saveDefaultFailed')}</StepError>}
       {flow.finishFailed && <StepError>{t('setup:answers.saveFailed')}</StepError>}
       <SetupFooter
         back={flow.back ? { label: t('setup:back'), onClick: flow.back } : null}

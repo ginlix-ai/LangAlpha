@@ -280,7 +280,6 @@
       "planOutNote": "Claude 套餐用完后，Claude Code 的对话会等额度重置后再继续，除非你在设置中另行选择。不会改用其他模型。",
       "subTitle": "连接你的订阅或 API key",
       "subLead": "先选一个，之后可以在设置中添加更多。",
-      "saveDefaultFailed": "已连接，但没能设为默认模型。你可以在下一步选择它。",
       "claudeCodeUnavailableTitle": "你暂时无法使用 Claude Code",
       "claudeCodeUnavailableLead": "你的账户在这里无法使用 Claude Code，所以不需要添加 setup token。修改回答，改用其他模型。",
       "withApiKey": "改用 API key 继续"
