@@ -12,11 +12,14 @@ const { clampInt } = require('./desktopSettings')
 // light or dark menu bar and for the highlighted state; elsewhere the app's own
 // colours, since neither taskbar tints anything.
 //
-// Beside it, the lines the menu bar page formats (`NVDA ▼5.60%`, `Port ▲0.42%`).
+// Beside it, the lines the menu bar page formats (`NVDA −5.60%`, `Port +0.42%`).
 // The page formats; this lays them out per platform and keeps them moving. How
 // they are laid out (`style`, `rotateSeconds`) and whether any are wanted at all
 // (`items`) is read from the desktop settings, never from the page, so a page a
-// step behind the settings cannot show what the user turned off.
+// step behind the settings cannot show what the user turned off. So is whether
+// the logo stays beside them (`logo`): without it the lines stand alone, but only
+// while there are lines, since a status item with neither is an empty sliver
+// nobody can find to click.
 // Rotation lives here rather than in the page because the page is a hidden
 // window, and a hidden page's timers are throttled to once a minute: a slot that
 // should turn every four seconds would sit for sixty. For the same reason the
@@ -149,6 +152,7 @@ function createTray({
   let rotationEvery = 0
   let refresh = null
   let refreshEvery = 0
+  let bare = false
 
   // With nothing chosen the icon stands alone, whatever the page sends.
   const gate = (next) => (menubar().items.length > 0 ? next : [])
@@ -172,10 +176,19 @@ function createTray({
     return handle
   }
 
+  /** The logo goes only where the user asked and there is text to stand in for it. */
+  function drawIcon() {
+    const next = traits.trayTitle && !menubar().logo && current().frames.length > 0
+    if (next === bare) return
+    bare = next
+    tray.setImage(bare ? nativeImage.createEmpty() : trayImage(traits))
+  }
+
   function drawTitle() {
     if (!tray || !traits.trayTitle) return
     const frame = frameAt(current().frames, slot)
-    tray.setTitle(frame ? ` ${frame}` : '', { fontType: 'monospaced' })
+    // The leading space is the gap after the logo.
+    tray.setTitle(frame && !bare ? ` ${frame}` : frame, { fontType: 'monospaced' })
   }
 
   /**
@@ -216,6 +229,7 @@ function createTray({
 
   function apply() {
     if (!tray) return
+    drawIcon()
     drawTitle()
     tray.setToolTip(current().tooltip)
     schedule()
@@ -245,6 +259,7 @@ function createTray({
     if (!tray) return
     tray.destroy()
     tray = null
+    bare = false
   }
 
   /** The page's lines, and how often it wants to be asked for fresh ones (`{ refreshMs }`). */

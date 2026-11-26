@@ -23,11 +23,16 @@
  * - `globalShortcut`: Wayland gives an app no way to grab a key outside its
  *   own windows.
  * - `loginItem`: which mechanism opens the app at login.
+ * - `badge`: where the count of what needs the user is drawn: the Dock
+ *   (`'dock'`, any text), an overlay on the taskbar button (`'overlay'`, a dot
+ *   whatever the count), the Unity launcher (`'launcher'`, a number), or
+ *   nowhere (`null`): Electron draws a Linux badge only under Unity.
  */
 function traits(platform = process.platform, env = process.env) {
   const mac = platform === 'darwin'
   const win = platform === 'win32'
   const linux = !mac && !win
+  const unity = linux && String(env.XDG_CURRENT_DESKTOP ?? '').split(':').includes('Unity')
   return Object.freeze({
     panel: mac ? 'menubar' : win ? 'taskbar' : null,
     trayTitle: mac,
@@ -43,8 +48,7 @@ function traits(platform = process.platform, env = process.env) {
     // only `close()` on the same object takes it down from there.
     toastOutlivesClose: win,
     appUserModelId: win,
-    badgeCount: mac || linux,
-    overlayBadge: win,
+    badge: mac ? 'dock' : win ? 'overlay' : unity ? 'launcher' : null,
     // The Dock: a menu of its own, and a way in that needs no window or icon.
     dock: mac,
     jumpList: win,

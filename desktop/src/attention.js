@@ -2,16 +2,22 @@
 
 const { app, Menu, nativeImage } = require('electron')
 
+const { shownBadge } = require('./desktopSettings')
+
 // What the app wants the user to come back for, said where the OS says it: the
 // Dock badge and Dock menu on macOS, a dot on the taskbar button and a jump list
 // task on Windows, the launcher badge on Linux where the desktop has one. The
-// menu bar page reports it (`setAttention`); this only draws it.
+// menu bar page reports it (`setAttention`); this only draws it, as a number, a
+// dot or nothing by the user's `badge` setting (`shownBadge`).
 
 const STATES = ['running', 'unread', 'needs_input']
 const MAX_THREADS = 5
 
 // A glyph before each thread in the Dock menu, which shows no secondary text.
 const PREFIX = { needs_input: '◆', unread: '●', running: '◌' }
+
+// The Dock's badge without the number: its red capsule around a dot.
+const DOCK_DOT = '•'
 
 /** The attention the page reported, trimmed to the contract. */
 function validate(raw) {
@@ -70,7 +76,7 @@ function dotBitmap(size = 16, [r, g, b] = [0xe5, 0x48, 0x4d]) {
   return buf
 }
 
-function createAttention({ traits, getMainWindow, onNewThread, onGlance, onOpen }) {
+function createAttention({ traits, getMainWindow, onNewThread, onGlance, onOpen, badge }) {
   let current = { count: 0, threads: [] }
   let lastDockKey = null
   let dot = null
@@ -80,18 +86,27 @@ function createAttention({ traits, getMainWindow, onNewThread, onGlance, onOpen 
     return dot
   }
 
-  /** The taskbar overlay on whatever main window exists now; called again when one is made. */
-  function applyOverlay() {
-    if (!traits.overlayBadge) return
-    const win = getMainWindow()
-    if (!win || win.isDestroyed()) return
+  /**
+   * The count as the setting and the platform have it drawn. Called again when
+   * the setting changes, and when a main window is made, since the Windows
+   * overlay sits on that window.
+   */
+  function drawBadge() {
     const n = current.count
-    win.setOverlayIcon(n > 0 ? overlayDot() : null, n > 0 ? `${n} waiting` : '')
+    const shown = n > 0 ? shownBadge(badge(), traits) : 'off'
+    if (traits.badge === 'overlay') {
+      const win = getMainWindow()
+      if (win && !win.isDestroyed()) win.setOverlayIcon(shown === 'off' ? null : overlayDot(), shown === 'off' ? '' : `${n} waiting`)
+    } else if (shown === 'dot') {
+      app.dock.setBadge(DOCK_DOT)
+    } else {
+      app.setBadgeCount(shown === 'count' ? n : 0)
+    }
   }
 
   function set(raw) {
     current = validate(raw)
-    if (traits.badgeCount) app.setBadgeCount(current.count)
+    drawBadge()
     if (traits.dock && app.dock) {
       // Rebuilt only when it changed: the page reports on every feed event, and
       // a Dock menu rebuilt under an open menu closes it.
@@ -101,7 +116,6 @@ function createAttention({ traits, getMainWindow, onNewThread, onGlance, onOpen 
         app.dock.setMenu(Menu.buildFromTemplate(dockTemplate(current, { onNewThread, onGlance, onOpen })))
       }
     }
-    applyOverlay()
   }
 
   /**
@@ -122,7 +136,7 @@ function createAttention({ traits, getMainWindow, onNewThread, onGlance, onOpen 
     }])
   }
 
-  return { set, applyOverlay, installUserTasks }
+  return { set, drawBadge, installUserTasks }
 }
 
 module.exports = { createAttention, validate, dockTemplate, dotBitmap, threadLabel }
